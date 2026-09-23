@@ -45,7 +45,7 @@ import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
 
-export { describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./YourMacsCard";
+export { describeThisComputerMissing } from "./YourMacsCard";
 
 const REPO_BRIDGE_DISMISS_KEY = "ade.account.repoBridgeDismissed.v1";
 

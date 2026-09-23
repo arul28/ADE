@@ -8,7 +8,10 @@ import type {
   PairedRuntimeRpcOpenPayload,
   PairedRuntimeSyncEnvelope,
 } from "../../../../desktop/src/shared/types/pairedRuntime";
-import { PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE } from "../../../../desktop/src/shared/types/pairedRuntime";
+import {
+  PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
+  PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON,
+} from "../../../../desktop/src/shared/types/pairedRuntime";
 import {
   startJsonRpcServer,
   type JsonRpcHandler,
@@ -83,7 +86,7 @@ function trackRpcRequestLabels(
   handler: SyncRuntimeRpcHandler,
   labels: Map<string, string>,
 ): SyncRuntimeRpcHandler {
-  const tracked = (async (request) => {
+  const tracked: JsonRpcHandler = async (request) => {
     const key = rpcRequestIdKey(request.id);
     if (key != null) {
       const params = request.params as Record<string, unknown> | undefined;
@@ -97,10 +100,12 @@ function trackRpcRequestLabels(
       }
     }
     return await handler(request);
-  }) as SyncRuntimeRpcHandler;
-  if (handler.dispose) tracked.dispose = () => handler.dispose?.();
-  if (handler.setNotifier) tracked.setNotifier = (notify) => handler.setNotifier?.(notify);
-  return tracked;
+  };
+  // The optional members the channel calls: `dispose` and `setNotifier`.
+  return Object.assign(tracked, {
+    dispose: handler.dispose?.bind(handler),
+    setNotifier: handler.setNotifier?.bind(handler),
+  } satisfies Omit<SyncRuntimeRpcHandler, keyof JsonRpcHandler>);
 }
 
 let configuredRuntimeRpcHandlerFactory: SyncRuntimeRpcHandlerFactory | null = null;
@@ -434,15 +439,13 @@ export function createSyncPairedChannelService<TPeer extends object>(
     const pendingRequestLabels = new Map<string, string>();
     const closeOverBudget = (
       bytes: Buffer,
+      label: string | null,
       sentBytes: number,
       extraBytes: number,
     ): void => {
-      const requestId = readRpcReplyId(bytes);
-      const label = requestId != null ? pendingRequestLabels.get(requestId) : undefined;
-      if (requestId != null) pendingRequestLabels.delete(requestId);
       args.logger.warn("sync_paired.rpc_channel_over_budget", {
         channelId,
-        method: label ?? readRpcNotificationMethod(bytes) ?? null,
+        method: label,
         replyBytes: bytes.byteLength,
         sentBytes,
         nextWriteBytes: extraBytes,
@@ -452,7 +455,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
       closeRpc(
         peer,
         channelId,
-        "Runtime RPC channel fell behind the sync connection.",
+        PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON,
         true,
         PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
       );
@@ -488,19 +491,23 @@ export function createSyncPairedChannelService<TPeer extends object>(
         // alive and does not report the machine as unreachable.
         const overBudget = (extraBytes: number): boolean =>
           args.getBufferedAmount(peer) + extraBytes >= rpcBackpressureBytes;
+        // Read once, before the chunk loop: a close part-way through a reply
+        // must still name the method.
+        const replyId = readRpcReplyId(bytes);
+        const label = (replyId != null ? pendingRequestLabels.get(replyId) : undefined)
+          ?? readRpcNotificationMethod(bytes);
+        if (replyId != null) pendingRequestLabels.delete(replyId);
         if (overBudget(bytes.byteLength)) {
-          closeOverBudget(bytes, 0, bytes.byteLength);
+          closeOverBudget(bytes, label, 0, bytes.byteLength);
           return;
         }
-        const replyId = readRpcReplyId(bytes);
-        if (replyId != null) pendingRequestLabels.delete(replyId);
         for (let offset = 0; offset < bytes.byteLength; offset += RPC_DATA_CHUNK_BYTES) {
           const chunk = bytes.subarray(
             offset,
             Math.min(bytes.byteLength, offset + RPC_DATA_CHUNK_BYTES),
           );
           if (offset > 0 && overBudget(chunk.byteLength)) {
-            closeOverBudget(bytes, offset, chunk.byteLength);
+            closeOverBudget(bytes, label, offset, chunk.byteLength);
             return;
           }
           if (!args.send(peer, "rpc_data", {

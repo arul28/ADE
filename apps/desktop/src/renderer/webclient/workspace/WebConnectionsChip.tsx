@@ -7,10 +7,7 @@ import {
   DotsThree,
 } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../components/lanes/laneDesignTokens";
-import {
-  accountMachineRemovalConfirmBody,
-  accountMachineRowLabel,
-} from "../../../shared/accountDirectory";
+import { accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -21,6 +18,7 @@ import {
   WEB_MACHINE_DOT_COLOR,
   webMachineHeldSessionCount,
   webMachineRosterSummary,
+  webMachineRowLabel,
   webMachineRowStatusLine,
   type WebMachineEntry,
 } from "./webWorkspaceModel";
@@ -393,7 +391,7 @@ function WebMachineRow({
                 style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
                 title={machine.accountMachine?.adeHome ?? undefined}
               >
-                {(machine.accountMachine && accountMachineRowLabel(machine.accountMachine)) || machine.name}
+                {webMachineRowLabel(machine)}
               </span>
             </span>
             {/* Connected is the one status worth spending colour on:
@@ -505,7 +503,7 @@ function WebMachineRow({
                 setMenuKey(null);
                 // Same words as the desktop sheet, including the warning for a
                 // machine that reported in minutes ago.
-                const label = accountMachineRowLabel(accountMachine) ?? machine.name;
+                const label = webMachineRowLabel(machine);
                 if (!window.confirm(`Remove ${label} from your ADE account?\n\n${accountMachineRemovalConfirmBody(accountMachine)}`)) return;
                 void run(machine, async () => {
                   await workspace.removeAccountMachine(machineKey);

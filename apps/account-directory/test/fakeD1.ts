@@ -23,8 +23,8 @@ export type StoredMachine = {
   power: string | null;
   sleep_state: string | null;
   sleep_state_at: number | null;
-  channel?: string | null;
-  ade_home?: string | null;
+  channel: string | null;
+  ade_home: string | null;
   last_seen_at: number | null;
   created_at: number | null;
 };
@@ -34,7 +34,7 @@ export type StoredDeviceAuthorization = {
   user_code: string;
   device_secret_hash: string;
   machine_key: string | null;
-  machine_name?: string | null;
+  machine_name: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;

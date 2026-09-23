@@ -14,7 +14,7 @@ import { extractError } from "../../lib/format";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
 import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
-import { describeThisComputerRefusal, reconnectBrowserPromptText } from "../../lib/thisComputerRefusal";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { ReportIssueButton } from "../app/ReportIssueButton";
 import {
@@ -551,6 +551,9 @@ export function RemoteTargetList({
     },
   });
   const refusalCopy = refusal && reconnect.available ? describeThisComputerRefusal(refusal) : null;
+  const reconnectAction = refusalCopy
+    ? reconnect.view({ label: refusalCopy.action, detail: refusalCopy.title })
+    : null;
 
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
@@ -1318,26 +1321,16 @@ export function RemoteTargetList({
                 }}
               >
                 <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
-                {refusalCopy ? (
+                {reconnectAction ? (
                   <>
-                    <span>
-                      {reconnect.signInPrompt
-                        ? reconnectBrowserPromptText(reconnect.signInPrompt.userCode)
-                        : reconnect.outcome && reconnect.outcome.tone !== "success"
-                          ? reconnect.outcome.message
-                          : refusalCopy.title}
-                    </span>
+                    <span>{reconnectAction.detail}</span>
                     <button
                       type="button"
-                      disabled={reconnect.reconnecting && !reconnect.signInPrompt}
-                      onClick={reconnect.signInPrompt ? reconnect.cancel : () => void reconnect.reconnect()}
+                      disabled={reconnectAction.disabled}
+                      onClick={reconnectAction.onClick}
                       style={outlineButton({ height: 22, padding: "0 8px", fontSize: 11 })}
                     >
-                      {reconnect.signInPrompt
-                        ? "Cancel"
-                        : reconnect.reconnecting
-                          ? "Reconnecting…"
-                          : refusalCopy.action}
+                      {reconnectAction.label}
                     </button>
                   </>
                 ) : (

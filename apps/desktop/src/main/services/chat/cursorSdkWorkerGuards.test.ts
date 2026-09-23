@@ -62,14 +62,28 @@ describe("sendToCursorSdkParent", () => {
     expect(errors).toEqual([]);
   });
 
-  it("returns false instead of throwing when send throws", () => {
+  it("returns false instead of throwing when the channel closes during the send", () => {
     const proc = {
       connected: true,
       send: () => {
+        proc.connected = false;
         throw new Error("write EPIPE");
       },
     };
     expect(sendToCursorSdkParent(proc, { type: "log" })).toBe(false);
+  });
+
+  it("rethrows a send failure on an open channel, so the request fails instead of hanging", () => {
+    const proc = new FakeIpcProcess();
+    // What Node's `process.send` throws for a message JSON cannot serialize.
+    vi.spyOn(proc, "send").mockImplementation(() => {
+      throw new TypeError("Do not know how to serialize a BigInt");
+    });
+    const errors: unknown[] = [];
+    proc.on("error", (error) => errors.push(error));
+
+    expect(() => sendToCursorSdkParent(proc, { type: "response", result: 1n })).toThrow(/BigInt/);
+    expect(errors).toEqual([]);
   });
 
   it("delivers the message while connected", () => {

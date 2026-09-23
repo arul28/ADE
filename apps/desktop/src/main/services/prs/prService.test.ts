@@ -2665,6 +2665,12 @@ describe("prService.getGithubSnapshot", () => {
 });
 
 describe("prService.ingestGithubWebhook", () => {
+  // Several tests fake timers to flush the coalesced `prs-updated`. A failed
+  // assertion must not leave fake timers on for the tests after it.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -2848,6 +2854,43 @@ describe("prService.ingestGithubWebhook", () => {
       expect(events.filter((event: any) => event.type === "prs-updated")).toHaveLength(0);
       vi.runOnlyPendingTimers();
       expect(events.filter((event: any) => event.type === "prs-updated")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The coalesced event fires from a timer. The project runtime can close its
+  // database inside the window, and a throw from a timer callback exits the
+  // brain.
+  it("logs, not throws, when the coalesced PR update fires after the database closed", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow({ github_pr_number: 90, head_branch: "my-feature" })]);
+    const { service, logger } = buildService({ db, laneService: makeLaneService([]) });
+    const events: unknown[] = [];
+    service.setEventEmitter((event) => events.push(event));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await service.ingestGithubWebhook({
+        eventName: "check_run",
+        deliveryId: "check-run-closed-db",
+        payload: {
+          action: "completed",
+          repository: { full_name: `${REPO.owner}/${REPO.name}`, owner: { login: REPO.owner }, name: REPO.name },
+          check_run: {
+            pull_requests: [{
+              number: 90,
+              head: { ref: "my-feature", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+              base: { ref: "main", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+            }],
+          },
+        },
+      });
+      db.all.mockImplementation(() => {
+        throw new Error("database is not open");
+      });
+      expect(() => vi.runOnlyPendingTimers()).not.toThrow();
+      expect(events.filter((event: any) => event.type === "prs-updated")).toHaveLength(0);
+      expect(logger.warn).toHaveBeenCalledWith("prs.coalesced_update_failed", { error: "database is not open" });
     } finally {
       vi.useRealTimers();
     }

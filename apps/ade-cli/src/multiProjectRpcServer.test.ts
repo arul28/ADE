@@ -1045,6 +1045,43 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  // An agent could pass the token itself, so the token never put a person in
+  // the loop. Removal is for people only.
+  it("refuses machine removal from an agent even with the confirmation token", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      // A chat caller is already demoted to the agent role, so the role check
+      // refuses it first. Orchestrator identities keep the CTO role, and the
+      // agent check is what refuses them.
+      for (const [identity, refusal] of [
+        [{ role: "cto", chatSessionId: "chat-1" }, /requires the cto role|not available to agents/],
+        [{ role: "cto", runId: "run-1" }, /not available to agents/],
+        [{ role: "cto", attemptId: "attempt-1" }, /not available to agents/],
+      ] as const) {
+        const handler = createMultiProjectRpcRequestHandler({
+          serverVersion: "test",
+          projectRegistry: registry,
+          accountAuthService,
+        });
+        await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { identity } });
+        await expect(
+          handler({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "account.call",
+            params: { action: "deleteMachine", args: { machine: "mk_studio", confirmation: "REMOVE" } },
+          }),
+        ).rejects.toThrow(refusal);
+        handler.dispose();
+      }
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("prioritizes the invoking project config root for durable token creation", async () => {
     const { projectRoot, registry } = createRegistry();
     const accountAuthService = makeAccountAuthServiceMock();

@@ -672,24 +672,27 @@ describe("createEventBuffer", () => {
    * poll.
    */
   it("stops a drain at its byte budget and always returns at least one event", () => {
-    const buffer = createEventBuffer(100, { maxBytes: 1024 * 1024, maxEventBytes: 64 * 1024 });
+    const buffer = createEventBuffer(100, { maxBytes: 1024 * 1024, maxEventBytes: 64 * 1024, drainMaxBytes: 25_000 });
+    const tiny = createEventBuffer(100, { maxBytes: 1024 * 1024, maxEventBytes: 64 * 1024, drainMaxBytes: 100 });
     for (let i = 0; i < 10; i++) {
-      buffer.push({ timestamp: "2026-09-22T18:53:02Z", category: "runtime", payload: { data: "x".repeat(10_000), i } });
+      const event = { timestamp: "2026-09-22T18:53:02Z", category: "runtime" as const, payload: { data: "x".repeat(10_000), i } };
+      buffer.push(event);
+      tiny.push(event);
     }
 
-    const first = buffer.drain(0, 200, { maxBytes: 25_000 });
+    const first = buffer.drain(0, 200);
     expect(first.events.map((event) => event.id)).toEqual([1, 2]);
     expect(first.nextCursor).toBe(2);
     expect(first.hasMore).toBe(true);
 
-    const oneOversized = buffer.drain(first.nextCursor, 200, { maxBytes: 100 });
+    const oneOversized = tiny.drain(first.nextCursor, 200);
     expect(oneOversized.events.map((event) => event.id)).toEqual([3]);
     expect(oneOversized.hasMore).toBe(true);
 
     let cursor = oneOversized.nextCursor;
     const seen = [3];
     for (let guard = 0; guard < 10; guard++) {
-      const batch = buffer.drain(cursor, 200, { maxBytes: 25_000 });
+      const batch = buffer.drain(cursor, 200);
       seen.push(...batch.events.map((event) => event.id));
       cursor = batch.nextCursor;
       if (!batch.hasMore) break;

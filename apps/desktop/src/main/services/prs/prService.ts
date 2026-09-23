@@ -10586,7 +10586,14 @@ export function createPrService({
     if (coalescedPrsUpdatedTimer) return;
     coalescedPrsUpdatedTimer = setTimeout(() => {
       coalescedPrsUpdatedTimer = null;
-      emitPrsUpdated();
+      // A timer callback, so a throw here is an uncaught exception, which
+      // exits the brain. The project runtime can close its database inside
+      // the window (a repair, a removal, a sync-host move).
+      try {
+        emitPrsUpdated();
+      } catch (error) {
+        logger.warn("prs.coalesced_update_failed", { error: getErrorMessage(error) });
+      }
     }, PRS_UPDATED_COALESCE_MS);
     coalescedPrsUpdatedTimer.unref?.();
   };

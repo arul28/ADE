@@ -216,6 +216,9 @@ export function automaticReconnectBackoffMs(failureCount: number): number {
 }
 
 function isImplicitConnectionFailure(error: unknown): boolean {
+  // One oversized reply closed one RPC channel. The host answered, so the
+  // machine is reachable; the next call opens a new channel.
+  if (isPairedRuntimeRpcOverBudgetError(error)) return false;
   if (isRemoteRuntimeConnectionError(error)) return true;
   const message = errorMessage(error);
   return /remote (?:runtime|ADE service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
@@ -1374,10 +1377,6 @@ export class RemoteConnectionService {
    */
   private markCallFailure(targetId: string, error: unknown): void {
     if (!isImplicitConnectionFailure(error)) return;
-    // One oversized reply closed one RPC channel. The host is alive, so the
-    // dot stays green and no reconnect backoff starts; the caller's own retry
-    // opens a new channel.
-    if (isPairedRuntimeRpcOverBudgetError(error)) return;
     this.mergeStatus(targetId, {
       state: "error",
       ...errorStatusPatch(

@@ -342,6 +342,25 @@ describe("device authorization bridge", () => {
     const unnamedDevice = await unnamed.json() as Record<string, unknown>;
     const unnamedPreview = await handleRequest(new Request(String(unnamedDevice.verification_uri_complete)), env, { now: () => now });
     expect(await unnamedPreview.text()).toContain("ADE on your computer asked to sign in.");
+    // Format characters go: a right-to-left override could make the name read
+    // as another computer.
+    await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes-four",
+        machine_name: "Mac\u202Eorp kooBcaM\u200B",
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(env.DB.deviceRows[3]?.machine_name).toBe("Mac orp kooBcaM");
+
+    // A code that can no longer be confirmed shows no client-chosen name.
+    env.DB.deviceRows[0]!.status = "consumed";
+    const deadPreview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
+    const deadHtml = await deadPreview.text();
+    expect(deadHtml).not.toContain("A computer named");
+    expect(deadHtml).toContain("ADE on your computer asked to sign in.");
+
   });
 
   it("keeps verification-link GET previews read-only until explicit confirmation", async () => {

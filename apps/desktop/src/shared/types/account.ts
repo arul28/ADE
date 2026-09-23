@@ -4,6 +4,7 @@
 
 import type { MachinePower, MachineSleepState } from "./power";
 import type { MachineInventorySummary } from "./machineInventory";
+import type { AppPackageChannel } from "../packageChannel";
 
 /** Which identity provider signed this account in, when known. */
 export type AdeAccountProvider = "github" | "google" | "apple" | "email";
@@ -102,10 +103,10 @@ export type AdeAccountMachineEndpoint = {
   port?: number;
 };
 
-/** One machine in the account directory (#814 Worker `GET /account/machines`). */
 /** Which ADE build an install runs. A custom ADE home has no channel. */
-export type AdeInstallChannel = "stable" | "beta" | "alpha";
+export type AdeInstallChannel = AppPackageChannel;
 
+/** One machine in the account directory (#814 Worker `GET /account/machines`). */
 export type AdeAccountMachine = {
   machineKey: string;
   deviceId: string | null;

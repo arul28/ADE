@@ -7,6 +7,7 @@ import {
 import { WebSocket, type RawData } from "ws";
 import {
   PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
+  PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON,
   type DesktopPairedMachineCredentials,
   type PairedRuntimeHelloOkPayload,
 } from "../../../shared/types/pairedRuntime";
@@ -516,15 +517,9 @@ export async function openPairedSyncConnection(
   }
 }
 
-/**
- * The host refused one reply as too large for its send budget. Hosts from
- * before `PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE` send only the reason, and this
- * exact sentence is the only close they send for that cause.
- */
-const LEGACY_RPC_OVER_BUDGET_REASON = "Runtime RPC channel fell behind the sync connection.";
-
+/** The host refused one reply as too large for its send budget. */
 function isRpcOverBudgetClose(code: unknown, reason: string): boolean {
-  return code === PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE || reason === LEGACY_RPC_OVER_BUDGET_REASON;
+  return code === PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE || reason === PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON;
 }
 
 export async function openSyncRuntimeTransport(

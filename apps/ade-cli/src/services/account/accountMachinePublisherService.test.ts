@@ -1498,6 +1498,8 @@ describe("account machine registration publisher", () => {
     // A custom home is a dev or test install. It is never called plain "ADE".
     expect(describeAdeInstall({ ADE_HOME: path.join(home, "lanes", "ade-dev") }, home))
       .toEqual({ adeHome: "~/lanes/ade-dev" });
+    // The home folder itself is "~": its folder name is the username.
+    expect(describeAdeInstall({ ADE_HOME: home }, home)).toEqual({ adeHome: "~" });
     // Outside the home folder only the folder name leaves the machine.
     expect(describeAdeInstall({ ADE_HOME: path.join(os.tmpdir(), "elsewhere", ".ade-beta"), ADE_PACKAGE_CHANNEL: "beta" }, home))
       .toEqual({ channel: "beta", adeHome: ".ade-beta" });
@@ -1904,6 +1906,10 @@ describe("account machine registration publisher", () => {
 
     service.recordPairingRecoveryGaveUp(1_000);
     expect(service.getPublisherHealth().recoveryGaveUpAt).toBe(1_000);
+    // A new repair episode is trying again, so the give-up no longer holds.
+    service.clearPairingRecoveryGaveUp();
+    expect(service.getPublisherHealth().recoveryGaveUpAt).toBeUndefined();
+    service.recordPairingRecoveryGaveUp(1_000);
 
     // An accepted re-pair clears both, so the banner cannot outlive the fix.
     fetchImpl.mockResolvedValue(new Response("{}", { status: 200 }));

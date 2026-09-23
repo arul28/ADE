@@ -501,6 +501,8 @@ describe("machine directory", () => {
       power: null,
       sleep_state: null,
       sleep_state_at: null,
+      channel: null,
+      ade_home: null,
       last_seen_at: index,
       created_at: index,
     }));

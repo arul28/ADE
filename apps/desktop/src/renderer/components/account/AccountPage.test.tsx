@@ -4,7 +4,8 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { AccountPage, SignInCard, describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./AccountPage";
+import { AccountPage, SignInCard, describeThisComputerMissing } from "./AccountPage";
+import { reconnectNeedsFreshSignIn } from "../../hooks/useReconnectThisComputer";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
 import type { AdeAccountMachine, AdeAccountMachineRemovalResult, AdeAccountStatus } from "../../../shared/types";
@@ -1133,11 +1134,12 @@ describe("AccountPage signed-in", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
 
+    // The same words and the same Cancel as the shell banner and the
+    // Connections pane, in place of the row's body.
     expect(
-      await screen.findByText(/Confirm it's you in your browser to reconnect this computer/),
+      await screen.findByText("Confirm it's you in your browser. If the page asks for a code, enter WDJB-MJHT."),
     ).toBeTruthy();
-    expect(screen.getByText("WDJB-MJHT")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Waiting for your browser…" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getAllByRole("button", { name: "Cancel" })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(cancelled?.()).toBe(true);
@@ -1228,9 +1230,14 @@ describe("describeThisComputerMissing", () => {
     expect(describeThisComputerMissing("expired").body).toMatch(/sign-in expired/);
     expect(describeThisComputerMissing("expired").body).toMatch(/Repair restarts ADE's background service/);
     expect(describeThisComputerMissing("expired").body).not.toMatch(/It was removed/);
-    // The action is the button on this card, never "Sign in again".
-    expect(describeThisComputerMissing("expired").body).toMatch(/Reconnect this computer/);
-    expect(describeThisComputerMissing("expired").body).not.toMatch(/Sign in again/i);
+    // This person IS signed out, and Reconnect fails without a session, so the
+    // sign-in comes first here, and only here.
+    expect(describeThisComputerMissing("expired").body).toMatch(/Sign in again, then choose Reconnect this computer/);
+  });
+
+  it("never tells a signed-in person to sign in again", () => {
+    expect(describeThisComputerMissing("active").body).not.toMatch(/Sign in again/i);
+    expect(describeThisComputerMissing("unreadable").body).not.toMatch(/Sign in again/i);
   });
 
   it("states the removal and its date only when the directory said so", () => {

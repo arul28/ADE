@@ -1,10 +1,10 @@
 import { useCallback } from "react";
 import { useLocation, type NavigateFunction } from "react-router-dom";
 import { accountSessionBanner, accountSessionState, useAccountStatus } from "../../lib/account";
-import { describeThisComputerRefusal, reconnectBrowserPromptText } from "../../lib/thisComputerRefusal";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
 import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
-import { Banner, type BannerAction, type BannerModel } from "../shared/Banner";
+import { Banner, type BannerModel } from "../shared/Banner";
 
 /**
  * The permanent bar ADE shows while the account is not usable.
@@ -72,25 +72,19 @@ export function AccountSignedOutBanner({ navigate }: { navigate: NavigateFunctio
   if (state !== "active" || !refusal || !reconnect.available) return null;
 
   const refusalCopy = describeThisComputerRefusal(refusal);
-  let detail = refusalCopy.detail;
-  let actions: BannerAction[] = [{ label: refusalCopy.action, onClick: () => void reconnect.reconnect(), variant: "primary" }];
-  if (reconnect.signInPrompt) {
-    detail = reconnectBrowserPromptText(reconnect.signInPrompt.userCode);
-    actions = [{ label: "Cancel", onClick: reconnect.cancel, variant: "secondary" }];
-  } else if (reconnect.reconnecting) {
-    actions = [{ label: "Reconnecting…", onClick: () => undefined, variant: "primary" }];
-  } else if (reconnect.outcome && reconnect.outcome.tone !== "success") {
-    // A failed attempt keeps the button and says why, so the bar never
-    // dead-ends on the brain's reason.
-    detail = reconnect.outcome.message;
-  }
+  const action = reconnect.view({ label: refusalCopy.action, detail: refusalCopy.detail });
 
   const model: BannerModel = {
     id: "this-computer-refused",
     severity: "warning",
     title: refusalCopy.title,
-    detail,
-    actions,
+    detail: action.detail,
+    actions: [{
+      label: action.label,
+      onClick: action.onClick,
+      disabled: action.disabled,
+      variant: action.cancels ? "secondary" : "primary",
+    }],
     dismiss: false,
   };
   return (

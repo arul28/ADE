@@ -13,6 +13,7 @@ import {
   mintPairingGrant,
   type PairingProofBroker,
 } from "./pairingGrants";
+import { boundedDisplayText } from "./displayText";
 import { logDirectoryLifecycle, logDirectoryRefusal } from "./logging";
 import { trustedHttpsOrigin } from "./trustedOrigin";
 
@@ -316,11 +317,8 @@ function parseInstallChannel(value: unknown): MachineInstallChannel | null {
   return value === "stable" || value === "beta" || value === "alpha" ? value : null;
 }
 
-/** Display text only. Cleaned and cut to length rather than refused. */
 function parseAdeHome(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const cleaned = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
-  return cleaned ? Array.from(cleaned).slice(0, MAX_ADE_HOME_CHARS).join("") : null;
+  return boundedDisplayText(value, MAX_ADE_HOME_CHARS);
 }
 
 function parseSleepState(value: unknown): MachineSleepStateValue | null {

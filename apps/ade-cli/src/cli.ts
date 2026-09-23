@@ -119,6 +119,7 @@ import {
 } from "../../desktop/src/renderer/lib/terminalAttention";
 import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/githubIntegrationStatus";
 import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
+import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../desktop/src/shared/types/account";
 import {
   IOS_SIMULATOR_ACCESSIBILITY_OPTIONS,
   IOS_SIMULATOR_CONTENT_SIZES,
@@ -18625,7 +18626,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // Same shape as `lanes archive-and-reclaim`: the only destructive account
     // command, and the only one whose damage a re-run cannot undo. Removal
     // revokes the machine and purges its Activity, and the machine can only
-    // come back through a fresh interactive sign-in on it.
+    // come back when someone confirms it on that computer.
     //
     // Read before the positional: the readers consume as they go, so a bare
     // `machines rm --confirm REMOVE` would otherwise take REMOVE as the
@@ -18636,7 +18637,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     if (!machine?.trim()) {
       throw new CliUsageError(`machines ${sub} requires a stable machine key.`);
     }
-    if (confirmation !== "REMOVE") {
+    if (confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(
         `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
@@ -22393,6 +22394,7 @@ async function runServe(
       },
       budget: machineCloudRelayStore,
       logger: headlessProjectLogger,
+      onEpisodeStarted: () => accountMachinePublisher?.clearPairingRecoveryGaveUp(),
       // The loop has stopped arguing and this computer is still disconnected.
       onGaveUp: ({ code }) => {
         // The report alone was invisible when its upload failed. The publisher
@@ -22466,7 +22468,7 @@ async function runServe(
 
   // A brain that died without unwinding (the loop watchdog SIGKILLs it) left
   // its Cursor SDK workers behind. Reap the ones whose owning brain is gone.
-  void import("../../desktop/src/main/services/chat/cursorSdkPool")
+  void import("../../desktop/src/main/services/chat/cursorSdkWorkerOrphans")
     .then(({ recoverCursorSdkWorkerOrphans }) => recoverCursorSdkWorkerOrphans({ logger: headlessProjectLogger }))
     .catch(() => {});
 
@@ -27240,8 +27242,11 @@ async function recoverAccountMachineReconnect(
   options: GlobalOptions,
 ): Promise<boolean> {
   if (!accountReconnectNeedsFreshSignIn(result)) return false;
+  // The person is signed in; the directory wants proof of a fresh sign-in.
+  // `PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE` stays the wire sentence that
+  // older brains are matched against, but it is not what a person reads here.
   process.stderr.write(
-    `\n${PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE}\n`,
+    "\nConfirm it's you in your browser to reconnect this computer.\n",
   );
   const login = await runAccountLogin(
     { kind: "account-login", maxWaitSec: null, explicitHeadless: true },
@@ -27249,7 +27254,7 @@ async function recoverAccountMachineReconnect(
   );
   if (login.exitCode !== 0) {
     process.stderr.write(
-      "Sign-in did not complete, so this computer is still disconnected from your account.\n",
+      "The browser confirmation did not complete, so this computer is still disconnected from your account.\n",
     );
     return false;
   }

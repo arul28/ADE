@@ -20,11 +20,6 @@ export type EventBufferDrainResult = {
 };
 
 export type EventBufferDrainOptions = {
-  /**
-   * Byte budget for the events one drain returns. The first event always
-   * returns, so one large event cannot stall the stream.
-   */
-  maxBytes?: number;
   /** Returns only matching events. The cursor still moves past the rest. */
   filter?: (event: BufferedEvent) => boolean;
   /** With `filter`: the most events one drain looks at. Defaults to `limit`. */
@@ -48,6 +43,11 @@ type RetainedBufferedEvent = {
 export type EventBufferOptions = {
   maxBytes?: number;
   maxEventBytes?: number;
+  /**
+   * Byte budget for the events one drain returns. The first event always
+   * returns, so one large event cannot stall the stream.
+   */
+  drainMaxBytes?: number;
 };
 
 const DEFAULT_EVENT_BUFFER_MAX_BYTES = 16 * 1024 * 1024;
@@ -71,6 +71,7 @@ export function createEventBuffer(
   const eventEpoch = randomUUID();
   const maxBytes = Math.max(0, Math.floor(options.maxBytes ?? DEFAULT_EVENT_BUFFER_MAX_BYTES));
   const maxEventBytes = Math.max(0, Math.floor(options.maxEventBytes ?? DEFAULT_EVENT_BUFFER_MAX_EVENT_BYTES));
+  const drainMaxBytes = Math.max(0, Math.floor(options.drainMaxBytes ?? DEFAULT_EVENT_BUFFER_DRAIN_MAX_BYTES));
   let nextId = 1;
   let retainedBytes = 0;
   let lastSkippedCursor: number | null = null;
@@ -121,12 +122,12 @@ export function createEventBuffer(
         }
       }
     },
-    drain(cursor, limit = 100, options = {}) {
+    drain(cursor, limit = 100, drainOptions = {}) {
       const clamped = Math.max(1, Math.min(1000, limit));
-      const maxScan = options.filter
-        ? Math.max(clamped, Math.min(1000, Math.floor(options.maxScan ?? clamped)))
+      const { filter } = drainOptions;
+      const maxScan = filter
+        ? Math.max(clamped, Math.min(1000, Math.floor(drainOptions.maxScan ?? clamped)))
         : clamped;
-      const maxBytes = Math.max(0, Math.floor(options.maxBytes ?? DEFAULT_EVENT_BUFFER_DRAIN_MAX_BYTES));
       const metadata = drainMetadata(cursor);
       const startIdx = events.findIndex((e) => e.event.id > cursor);
       if (startIdx === -1) {
@@ -144,11 +145,11 @@ export function createEventBuffer(
       let index = startIdx;
       for (; index < events.length && index - startIdx < maxScan && drained.length < clamped; index += 1) {
         const entry = events[index]!;
-        if (options.filter && !options.filter(entry.event)) {
+        if (filter && !filter(entry.event)) {
           nextCursor = entry.event.id;
           continue;
         }
-        if (drained.length > 0 && drainedBytes + entry.bytes > maxBytes) break;
+        if (drained.length > 0 && drainedBytes + entry.bytes > drainMaxBytes) break;
         drained.push(entry.event);
         drainedBytes += entry.bytes;
         nextCursor = entry.event.id;

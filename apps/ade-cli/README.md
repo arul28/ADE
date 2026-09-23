@@ -318,6 +318,11 @@ it and keep account-machine pairing on the DPoP-bound runtime path. Every
 machine-directory action is CTO-only, including `renameMachine` and
 `repairMachinePairing`, which the shared ADE action registry does not list.
 
+`deleteMachine` is for people only. It refuses a caller that carries an agent
+identity (a chat, run, step or attempt), and it refuses without
+`confirmation: "REMOVE"`, the token `ade machines remove --confirm REMOVE`
+sends.
+
 `machine.updateAndRestart` is the host half of "Update & restart": it checks for
 a newer build for this machine's channel, applies it, and asks the login service
 to restart the brain, reporting one step at a time. It is CTO-gated and always

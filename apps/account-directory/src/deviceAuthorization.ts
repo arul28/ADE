@@ -1,4 +1,5 @@
 import { isLoopbackHostname } from "./trustedOrigin";
+import { boundedDisplayText } from "./displayText";
 
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
@@ -46,10 +47,10 @@ type DeviceAuthorizationRow = {
   machine_key: string | null;
   /**
    * Display name the client sent for the computer that started this sign-in.
-   * Older clients send none, so the confirmation page treats an absent value
-   * as "your computer".
+   * Older clients send none, so the confirmation page treats null as "your
+   * computer".
    */
-  machine_name?: string | null;
+  machine_name: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;
@@ -92,18 +93,6 @@ function html(value: string, status = 200): Response {
       "x-content-type-options": "nosniff",
     },
   });
-}
-
-/**
- * The computer name a client sent with `/device/code`. Display text only: it
- * is cleaned and cut to length rather than refused, so an odd name can never
- * block a sign-in.
- */
-function readMachineName(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const cleaned = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
-  if (!cleaned) return null;
-  return Array.from(cleaned).slice(0, MAX_MACHINE_NAME_CHARS).join("").trim() || null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -236,19 +225,6 @@ function confirmationPage(userCode: string, machineName: string | null): Respons
         <button type="submit">Continue</button>
       </form>`,
   });
-}
-
-/**
- * The page a browser link carries the code with it. `user_code` present means
- * `verification_uri_complete`; absent means the CLI path, where the reader has
- * to type the code.
- */
-function approvalFormForQuery(rawUserCode: string | null, machineName: string | null): Response {
-  if (rawUserCode) {
-    const userCode = normalizeUserCode(rawUserCode);
-    if (userCode) return confirmationPage(userCode, machineName);
-  }
-  return approvalForm();
 }
 
 /**
@@ -385,7 +361,7 @@ async function handleDeviceCode(
     return json({ error: "invalid_request", error_description: "machine_key is too long" }, { status: 400 });
   }
 
-  const machineName = readMachineName(body?.machine_name);
+  const machineName = boundedDisplayText(body?.machine_name, MAX_MACHINE_NAME_CHARS);
 
   const now = options.now();
   if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
@@ -466,15 +442,13 @@ async function handleDeviceApproval(
 ): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET") {
-    const rawUserCode = url.searchParams.get("user_code");
-    if (!rawUserCode) return approvalForm();
-    // A read-only preview looks up the name the client sent with this code.
-    const previewCode = normalizeUserCode(rawUserCode);
-    const row = previewCode ? await findByUserCode(env, previewCode) : null;
-    const machineName = typeof row?.machine_name === "string" && row.machine_name.trim()
-      ? row.machine_name
-      : null;
-    return approvalFormForQuery(rawUserCode, machineName);
+    const userCode = normalizeUserCode(url.searchParams.get("user_code") ?? "");
+    if (!userCode) return approvalForm();
+    // A read-only preview. It names the computer only while the code can
+    // still be confirmed: a dead code shows no client-chosen name.
+    const row = await findByUserCode(env, userCode);
+    const live = row?.status === "pending" && row.expires_at > options.now();
+    return confirmationPage(userCode, live ? row.machine_name : null);
   }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   if (!isSameOriginConfirmation(request, url)) {

@@ -303,13 +303,15 @@ describe("createSyncPairedChannelService", () => {
       rpcBackpressureBytes: ceiling,
     });
     sentRef.current = harness.sent;
-    const { service, sent, peer } = harness;
+    const { service, sent, peer, logger } = harness;
 
     await service.handleEnvelope(peer, "rpc_open", { channelId: "rpc-stall" }, true, true);
     await service.handleEnvelope(peer, "rpc_data", {
       channelId: "rpc-stall",
-      data: Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "read" })}\n`, "utf8")
-        .toString("base64"),
+      data: Buffer.from(
+        `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ade/actions/call", params: { name: "stream_events" } })}\n`,
+        "utf8",
+      ).toString("base64"),
     }, true, true);
 
     await waitFor(
@@ -321,6 +323,13 @@ describe("createSyncPairedChannelService", () => {
     // payload was refused rather than pushed onto a buffer that had stopped moving.
     expect(chunks).toBeGreaterThan(0);
     expect(chunks).toBeLessThan(Math.ceil(big.length / (256 * 1024)));
+    // The close came part-way through the reply, which is how the real 11 MB
+    // drains tripped it, and the log still names the method.
+    expect(logger.warn).toHaveBeenCalledWith("sync_paired.rpc_channel_over_budget", expect.objectContaining({
+      channelId: "rpc-stall",
+      method: "ade/actions/call stream_events",
+      sentBytes: expect.any(Number),
+    }));
     service.dispose();
   });
 

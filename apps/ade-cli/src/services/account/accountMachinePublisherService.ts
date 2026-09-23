@@ -19,6 +19,10 @@ import {
 import type { MachinePowerSource } from "../power/machinePowerMonitor";
 import { borrowSharedMachinePowerSource } from "../power/sharedMachinePowerMonitor";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
+import {
+  normalizeAppPackageChannel,
+  packageChannelNameSuffix,
+} from "../../../../desktop/src/shared/packageChannel";
 import { normalizeHarnessPresetList } from "../../../../desktop/src/shared/harnessPresets";
 import {
   buildMachineInventoryDetail,
@@ -568,12 +572,7 @@ export function publishedMachineName(
   packageChannel: string | null | undefined,
 ): string {
   const normalizedName = name.trim();
-  const channel = packageChannel?.trim().toLowerCase();
-  const suffix = channel === "beta"
-    ? " · Beta"
-    : channel === "alpha"
-      ? " · Alpha"
-      : "";
+  const suffix = packageChannelNameSuffix(normalizeAppPackageChannel(packageChannel));
   return suffix && !normalizedName.endsWith(suffix)
     ? `${normalizedName}${suffix}`
     : normalizedName;
@@ -594,16 +593,17 @@ export function describeAdeInstall(
   homeDir: string = os.homedir(),
 ): { channel?: AdeInstallChannel; adeHome?: string } {
   const adeDir = resolveMachineAdeDir(env);
-  const explicit = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
-  const channel: AdeInstallChannel | null = explicit === "alpha" || explicit === "beta"
+  const explicit = normalizeAppPackageChannel(env.ADE_PACKAGE_CHANNEL);
+  const channel: AdeInstallChannel | null = explicit !== "stable"
     ? explicit
     : path.basename(adeDir) === ".ade"
       ? "stable"
       : null;
   const relative = path.relative(homeDir, adeDir);
-  const insideHome = relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+  const insideHome = !relative.startsWith("..") && !path.isAbsolute(relative);
+  // The home folder itself is "~": its folder name is the username.
   const adeHome = insideHome
-    ? `~/${relative.split(path.sep).join("/")}`
+    ? (relative ? `~/${relative.split(path.sep).join("/")}` : "~")
     : path.basename(adeDir);
   return {
     ...(channel ? { channel } : {}),
@@ -1910,6 +1910,11 @@ export function createAccountMachinePublisherService(options: {
      */
     recordPairingRecoveryGaveUp(atMs: number = Date.now()): void {
       recoveryGaveUpAtMs = atMs;
+    },
+
+    /** The automatic repair is trying again, so the old give-up no longer holds. */
+    clearPairingRecoveryGaveUp(): void {
+      recoveryGaveUpAtMs = null;
     },
 
     getPublisherHealth(): SyncAccountDirectoryHealth {

@@ -5,7 +5,7 @@ import {
   type SyncAccountDirectoryState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
-import { readThisMachineRefusal } from "../../../shared/accountMachineRefusal";
+import type { ThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import { accountSessionConnectionsSubtitle } from "../../lib/account";
 import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 
@@ -44,11 +44,12 @@ export function accountDirectorySummary(
   status: SyncRoleSnapshot,
   sessionState: AdeAccountSessionState,
   /**
-   * False when the snapshot is another machine's (a remote-bound pane, or the
-   * hosted web client). The refusal copy says "This computer", which would
-   * then name the wrong machine.
+   * The directory's refusal of THIS computer, read once by the caller with the
+   * same guard that shows its Reconnect button. Null when the snapshot is
+   * another machine's (a remote-bound pane, or the hosted web client): the
+   * refusal copy says "This computer", which would then name the wrong machine.
    */
-  options: { describesThisComputer?: boolean } = {},
+  refusal: ThisMachineRefusal | null,
 ): AccountDirectorySummary {
   if (sessionState === "unreadable") {
     return {
@@ -83,7 +84,6 @@ export function accountDirectorySummary(
   // A refusal is not "can't reach your account, retrying": the directory
   // answered, and nothing retries on its own. Say what happened; the card
   // puts the Reconnect button beside this line.
-  const refusal = options.describesThisComputer === false ? null : readThisMachineRefusal(health);
   if (refusal) {
     return { label: describeThisComputerRefusal(refusal).title, healthy: false };
   }

@@ -954,6 +954,22 @@ export function createMultiProjectRpcRequestHandler(
   };
 
   /**
+   * Is this connection an agent: a chat, an orchestrator run or an attempt?
+   * The `ade` CLI fills these from the environment ADE gives an agent's shell.
+   * A person's terminal carries none of them.
+   */
+  const callerIsAgent = (): boolean => {
+    const identity =
+      isRecord(initializedParams) && isRecord(initializedParams.identity)
+        ? (initializedParams.identity as Record<string, unknown>)
+        : null;
+    if (!identity) return false;
+    return ["chatSessionId", "runId", "stepId", "attemptId"].some((key) =>
+      typeof identity[key] === "string" && identity[key].trim().length > 0,
+    );
+  };
+
+  /**
    * One notification shape for both scopes. `scope` is the discriminator and
    * `projectId` is null for the personal scope — a client keyed only on
    * `projectId` would otherwise have to guess what a missing one meant.
@@ -1693,9 +1709,17 @@ export function createMultiProjectRpcRequestHandler(
           // went but its Activity did not, and that error is the user-facing
           // sentence — let it propagate unwrapped.
           //
+          // People only. An agent could supply the confirmation token itself,
+          // so the token alone never puts a person in the loop; the Account
+          // page and `ade machines remove` in a terminal do.
+          if (callerIsAgent()) {
+            throw new JsonRpcError(
+              JsonRpcErrorCode.policyDenied,
+              "account.deleteMachine is not available to agents. Ask the user to remove the machine on the Account page or with `ade machines remove` in their own terminal.",
+            );
+          }
           // The explicit token is the same one `ade machines remove --confirm
-          // REMOVE` requires. Without it, a CTO-role agent could remove a
-          // machine in one call and nobody would see a question first.
+          // REMOVE` requires.
           if (actionArgs.confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
             throw new JsonRpcError(
               JsonRpcErrorCode.invalidParams,

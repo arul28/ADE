@@ -237,6 +237,31 @@ describe("AccountSignedOutBanner — this computer refused", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy());
   });
 
+  it("shows Reconnecting… as a disabled action while the attempt runs", async () => {
+    let release!: () => void;
+    repairMachinePairing.mockReturnValue(new Promise((resolve) => {
+      release = () => resolve({
+        repaired: true,
+        wasRevoked: true,
+        published: true,
+        pushRestored: true,
+        state: "registered",
+        reason: null,
+      });
+    }));
+    renderBanner();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect this computer" }));
+
+    const pending = await screen.findByRole("button", { name: "Reconnecting…" });
+    expect((pending as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(pending);
+    expect(repairMachinePairing).toHaveBeenCalledTimes(1);
+
+    release();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Reconnecting…" })).toBeNull());
+  });
+
   it("stays silent for a healthy machine and for a 403 it cannot name", async () => {
     health = createSyncAccountDirectoryHealth("published", null);
     renderBanner();

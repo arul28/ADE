@@ -9,6 +9,7 @@ import { fromMachinePowerRecord } from "./types/power";
 import type { MachinePower, MachineSleepState } from "./types/power";
 import type { MachineInventorySummary } from "./types/machineInventory";
 import { isTailnetHostname } from "./tailnet";
+import { appPackageChannelDisplayName, packageChannelNameSuffix } from "./packageChannel";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const MAX_MACHINES = 500;
@@ -318,18 +319,12 @@ export function accountMachineDisplayName(machine: AdeAccountMachine): string | 
   return machine.customName?.trim() || machine.name?.trim() || null;
 }
 
-const INSTALL_CHANNEL_LABELS: Record<AdeInstallChannel, string> = {
-  stable: "ADE",
-  beta: "ADE Beta",
-  alpha: "ADE Alpha",
-};
-
 /**
  * Which ADE install a row is, as "ADE Alpha" — or the ADE home when the install
  * has no channel (a custom home). Null when the directory did not say.
  */
 export function accountMachineInstallLabel(machine: AdeAccountMachine): string | null {
-  if (machine.channel) return INSTALL_CHANNEL_LABELS[machine.channel];
+  if (machine.channel) return appPackageChannelDisplayName(machine.channel);
   return machine.adeHome?.trim() || null;
 }
 
@@ -348,10 +343,9 @@ export function accountMachineRowLabel(machine: AdeAccountMachine): string | nul
   const custom = machine.customName?.trim();
   const reported = machine.name?.trim();
   if (!install) return custom || reported || null;
+  const suffix = machine.channel ? packageChannelNameSuffix(machine.channel) : "";
   const base = custom
-    || (reported && machine.channel && machine.channel !== "stable"
-      ? reported.replace(machine.channel === "alpha" ? / · Alpha$/ : / · Beta$/, "")
-      : reported)
+    || (reported && suffix && reported.endsWith(suffix) ? reported.slice(0, -suffix.length) : reported)
     || null;
   return base ? `${base} · ${install}` : install;
 }

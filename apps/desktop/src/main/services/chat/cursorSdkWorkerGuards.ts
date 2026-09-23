@@ -17,7 +17,7 @@
  *
  * It sits in argv, not the env, so `ps` on macOS/Linux and the CIM command line
  * on Windows show it without reading another process's environment. The orphan
- * sweep in `cursorSdkPool.ts` reads it back.
+ * sweep in `cursorSdkWorkerOrphans.ts` reads it back.
  */
 export const CURSOR_SDK_OWNER_PID_ARG = "--ade-owner-pid=";
 
@@ -41,7 +41,7 @@ export function readCursorSdkOwnerPid(source: readonly string[] | string): numbe
   const text = typeof source === "string" ? source : source.join(" ");
   // Strict digits, like `readEmbeddedParentPid`: a malformed value must not
   // resolve to some unrelated live pid.
-  const match = text.match(/--ade-owner-pid=(\d+)(?![\w.])/);
+  const match = text.match(new RegExp(`${CURSOR_SDK_OWNER_PID_ARG}(\\d+)(?![\\w.])`));
   if (!match) return null;
   const pid = Number.parseInt(match[1]!, 10);
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
@@ -60,8 +60,11 @@ type IpcProcessLike = {
 /**
  * Sends one message to the parent, or drops it when the channel is gone.
  *
- * Never throws and never lets a failed send become a process `'error'` event.
- * Returns true only when the message was handed to the channel.
+ * A closed channel never throws and never becomes a process `'error'` event.
+ * Any other throw reaches the caller: a message that cannot be serialized
+ * (a circular value, a BigInt) must fail the request that sent it, or the
+ * pool waits for a reply that never comes. Returns true only when the message
+ * was handed to the channel.
  */
 export function sendToCursorSdkParent(proc: IpcProcessLike, message: unknown): boolean {
   if (typeof proc.send !== "function" || !proc.connected) return false;
@@ -69,8 +72,9 @@ export function sendToCursorSdkParent(proc: IpcProcessLike, message: unknown): b
     // With a callback, a send that fails after the check above (the channel
     // closed mid-flight) reports here instead of emitting `'error'`.
     return proc.send(message, undefined, undefined, () => {});
-  } catch {
-    return false;
+  } catch (error) {
+    if (!proc.connected) return false;
+    throw error;
   }
 }
 

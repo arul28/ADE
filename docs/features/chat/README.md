@@ -2172,15 +2172,23 @@ Every exit path now also arms a 2 s timer deadline, because timers still fire
 when promises cannot settle. The worker exits on `disconnect`, and it also
 polls its owner as a second guard. The pool puts the owner pid in argv
 (`--ade-owner-pid=<pid>`), so `ps` and the Windows CIM command line show it.
-`recoverCursorSdkWorkerOrphans` runs once at brain startup and before the first
-fork. It terminates only workers whose owner pid is dead: SIGTERM, then SIGKILL
-after 1.5 s on POSIX, and `taskkill /T /F` on Windows. A worker whose owner is
-alive is never touched, because that owner can be another brain. A worker from
-a build before the marker counts as orphaned only on POSIX with ppid 1. Windows
-keeps a dead parent's pid as the ppid, so the sweep leaves an unmarked worker
-alone there. At shutdown, `disposeAllCursorSdkConnections` releases every
-pooled worker, including the shared `cloud-oneshot:` and `local-oneshot:`
-workers that no session owns.
+`recoverCursorSdkWorkerOrphans` (`cursorSdkWorkerOrphans.ts`) runs once at
+brain startup and once at desktop main startup, next to the OpenCode sweep. It
+terminates only workers whose owner pid is dead: SIGTERM, then SIGKILL after
+1.5 s on POSIX, and an async `taskkill /T /F` on both passes on Windows. Before
+every kill except the first, the sweep lists the processes again: a pid freed
+during a grace can be reused, and a tree kill would take the new owner's tree.
+A worker whose owner is alive is never touched, because that owner can be
+another brain. A worker from a build before the marker counts as orphaned only
+on POSIX with ppid 1, and only when its whole command line is the shape old
+builds forked: a node, Electron, or `ADE.app/Contents/MacOS/ADE` executable
+followed by the absolute script path and nothing else. So a reparented
+`tail -f …/cursorSdkWorker.cjs` is not taken for a worker. Windows keeps a dead
+parent's pid as the ppid, so the sweep leaves an unmarked worker alone there.
+The listing parser, the wait for exit, and the kill ladder are shared with the
+OpenCode sweep (`services/shared/processOrphans.ts`). At shutdown,
+`disposeAllCursorSdkConnections` releases every pooled worker, including the
+shared `cloud-oneshot:` and `local-oneshot:` workers that no session owns.
 
 ### Message delivery, turn health, and quiet diagnostics
 

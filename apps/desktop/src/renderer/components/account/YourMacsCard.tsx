@@ -104,6 +104,7 @@ import {
   webMachineCatalogKeys,
   webMachineRosterSummary,
   webMachineRowStatusLine,
+  webMachineRowLabel,
   type WebMachineEntry,
 } from "../../webclient/workspace/webWorkspaceModel";
 
@@ -237,9 +238,6 @@ export function ConfirmSheet({
   );
 }
 
-// Moved beside the flow it decides; re-exported for the tests that pin it.
-export { reconnectNeedsFreshSignIn } from "../../hooks/useReconnectThisComputer";
-
 /**
  * Body copy when this computer is missing from the account directory.
  *
@@ -264,7 +262,7 @@ export function describeThisComputerMissing(
     case "expired":
       return {
         title,
-        body: "This computer's ADE sign-in expired, so it stopped publishing itself to your account. Reconnect this computer to add it back. If the row still doesn't come back, Repair restarts ADE's background service on this computer.",
+        body: "This computer's ADE sign-in expired, so it stopped publishing itself to your account. Sign in again, then choose Reconnect this computer. If the row still doesn't come back, Repair restarts ADE's background service on this computer.",
       };
     case "unreadable":
       return {
@@ -389,7 +387,7 @@ function displayRowFromWebMachine(machine: WebMachineEntry): ComputerDisplayRow 
   return {
     key: machine.key,
     name: machine.name,
-    label: (machine.accountMachine && accountMachineRowLabel(machine.accountMachine)) || machine.name,
+    label: webMachineRowLabel(machine),
     adeHome: machine.accountMachine?.adeHome ?? null,
     thisMac: false,
     rememberedOnly: machine.rememberedOnly,
@@ -646,14 +644,12 @@ export function YourMacsCard() {
     isThisMac,
     onSettled: refreshRefusal,
   });
-  const canReconnect = !webMode && reconnectFlow.available;
-  const {
-    reconnecting,
-    signInPrompt,
-    outcome: reconnectOutcome,
-    reconnect: reconnectThisMachine,
-    cancel: cancelReconnect,
-  } = reconnectFlow;
+  const canReconnect = reconnectFlow.available;
+  const { reconnecting, outcome: reconnectOutcome } = reconnectFlow;
+  const showReconnectRow = (thisMachineMissing || refusal != null) && canReconnect;
+  // The card keeps its own idle label: it offers the same button whether the
+  // directory refused this computer or only stopped listing it.
+  const reconnectAction = reconnectFlow.view({ label: "Reconnect this computer", detail: missingCopy.body });
 
   // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
   // stack behind, the cards that follow this one (mirrors the TabNav pattern).
@@ -847,7 +843,7 @@ export function YourMacsCard() {
         computer: the shell banner hides on this page and points here, so a
         stale row must not hide the only Reconnect button.
       */}
-      {(thisMachineMissing || refusal != null) && canReconnect ? (
+      {showReconnectRow ? (
         <div
           style={{
             display: "flex",
@@ -863,29 +859,28 @@ export function YourMacsCard() {
             <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
               {missingCopy.title}
             </div>
-            <div style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-              {missingCopy.body}
+            <div
+              role={reconnectAction.cancels ? "status" : undefined}
+              style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}
+            >
+              {reconnectAction.detail}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 10 }}>
               <button
                 type="button"
-                disabled={reconnecting || repair.pending}
-                onClick={() => void reconnectThisMachine()}
-                style={primaryButton({
+                disabled={reconnectAction.disabled || repair.pending}
+                onClick={reconnectAction.onClick}
+                style={(reconnectAction.cancels ? outlineButton : primaryButton)({
                   height: 30,
                   fontSize: 12,
                   padding: "0 12px",
                   flexShrink: 0,
-                  opacity: reconnecting || repair.pending ? 0.6 : 1,
-                  cursor: reconnecting || repair.pending ? "not-allowed" : "pointer",
+                  opacity: reconnectAction.disabled || repair.pending ? 0.6 : 1,
+                  cursor: reconnectAction.disabled || repair.pending ? "not-allowed" : "pointer",
                 })}
               >
-                {reconnecting ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : null}
-                {signInPrompt
-                  ? "Waiting for your browser…"
-                  : reconnecting
-                    ? "Reconnecting…"
-                    : "Reconnect this computer"}
+                {reconnectAction.busy ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : null}
+                {reconnectAction.label}
               </button>
               {repair.available ? (
                 <BrainRepairButton repair={repair} height={30} disabled={reconnecting} />
@@ -1223,9 +1218,11 @@ export function YourMacsCard() {
       {/*
         The directory refused the re-pair without proof of a fresh sign-in, so
         the "Confirm it's you" step is in flight. The browser is already open on the pre-filled page;
-        the code is shown for the case where it opened without it.
+        the code is shown for the case where it opened without it. The warning
+        row above says the same words and holds the Cancel when it is shown;
+        this row carries them when the attempt came from the ⋮ menu instead.
       */}
-      {signInPrompt ? (
+      {reconnectAction.cancels && !showReconnectRow ? (
         <div
           role="status"
           style={{
@@ -1239,31 +1236,25 @@ export function YourMacsCard() {
         >
           <CircleNotch size={14} weight="bold" className="animate-spin" color={COLORS.textSecondary} />
           <div style={{ minWidth: 0, flex: 1, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-            Confirm it's you in your browser to reconnect this computer…
-            <div style={{ color: COLORS.textMuted }}>
-              If the page asks for a code, enter{" "}
-              <span style={{ color: COLORS.textPrimary, fontWeight: 600, letterSpacing: 0.5 }}>
-                {signInPrompt.userCode}
-              </span>
-              .
-            </div>
+            {reconnectAction.detail}
           </div>
           <button
             type="button"
-            onClick={cancelReconnect}
+            onClick={reconnectAction.onClick}
             style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px", flexShrink: 0 })}
           >
-            Cancel
+            {reconnectAction.label}
           </button>
         </div>
       ) : null}
 
       {/*
-        Rendered independently of the banner: a successful reconnect refreshes
-        the directory and the banner disappears with it, and the confirmation
-        must outlive the state that prompted it.
+        Rendered independently of the warning row: a successful reconnect
+        refreshes the directory and the row disappears with it, and the
+        confirmation must outlive the state that prompted it. While the row is
+        shown it already carries a failure's reason in place of its body.
       */}
-      {reconnectOutcome ? (
+      {reconnectOutcome && (!showReconnectRow || reconnectOutcome.tone === "success") ? (
         <div
           role="status"
           style={{
@@ -1400,10 +1391,10 @@ export function YourMacsCard() {
                   <button
                     type="button"
                     role="menuitem"
-                    disabled={reconnecting}
+                    disabled={reconnectAction.disabled}
                     onClick={() => {
                       closeMenu();
-                      void reconnectThisMachine();
+                      reconnectAction.onClick();
                     }}
                     style={{
                       display: "flex",
@@ -1417,15 +1408,11 @@ export function YourMacsCard() {
                       fontFamily: SANS_FONT,
                       fontSize: 12.5,
                       textAlign: "left",
-                      cursor: reconnecting ? "not-allowed" : "pointer",
-                      opacity: reconnecting ? 0.6 : 1,
+                      cursor: reconnectAction.disabled ? "not-allowed" : "pointer",
+                      opacity: reconnectAction.disabled ? 0.6 : 1,
                     }}
                   >
-                    {signInPrompt
-                      ? "Waiting for your browser…"
-                      : reconnecting
-                        ? "Reconnecting…"
-                        : "Reconnect this computer"}
+                    {reconnectAction.label}
                   </button>
                 ) : null}
                 {/*

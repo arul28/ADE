@@ -1,4 +1,4 @@
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
@@ -248,6 +248,49 @@ export function killWindowsProcessTree(
     });
   }
   return false;
+}
+
+/**
+ * {@link killWindowsProcessTree} without blocking the event loop.
+ *
+ * Same trusted `taskkill /T /F` invocation and `windowsHide`. For code that
+ * kills on a startup path, where a synchronous `taskkill` per pid stalls
+ * everything else the process has to do.
+ */
+export function killWindowsProcessTreeAsync(
+  pid: number,
+  onFailure?: (detail: ProcessTreeFailureDetail) => void,
+): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const fail = (detail: Omit<ProcessTreeFailureDetail, "pid">): void => {
+      onFailure?.({ pid, ...detail });
+      resolve(false);
+    };
+    try {
+      const invocation = windowsTaskkillInvocation(pid, { force: true });
+      execFile(
+        invocation.command,
+        invocation.args,
+        { encoding: "utf8", windowsHide: true, timeout: 15_000 },
+        (error, stdout, stderr) => {
+          if (!error) {
+            resolve(true);
+            return;
+          }
+          const code = (error as NodeJS.ErrnoException & { code?: unknown }).code;
+          fail({
+            status: typeof code === "number" ? code : null,
+            stdout: processOutputToString(stdout),
+            stderr: processOutputToString(stderr),
+            error,
+          });
+        },
+      );
+    } catch (error) {
+      fail({ status: null, stdout: "", stderr: "", error });
+    }
+  });
 }
 
 export function terminateProcessTree(

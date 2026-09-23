@@ -8,11 +8,13 @@ import type { Config as OpenCodeConfig } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
 import {
-  processOutputToString,
+  killWindowsProcessTree,
   quoteWindowsCmdArg,
   resolveWindowsCmdLineInvocation,
   shouldUseWindowsCmdWrapper,
+  windowsPowerShellCommand,
 } from "../shared/processExecution";
+import { parseProcessRows, terminateOrphanProcess as terminateProcessOrphan } from "../shared/processOrphans";
 import { probeOpenCodeBinaryQuarantine, resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
 export type OpenCodeServerLeaseKind = "shared" | "dedicated";
@@ -267,7 +269,8 @@ function listWindowsProcessesFromPowerShell(): OpenCodeProcessSnapshot[] {
   const script =
     "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation";
   const result = spawnSync(
-    "powershell.exe",
+    // The System32 path, so a poisoned PATH cannot answer the listing.
+    windowsPowerShellCommand(),
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
     {
       encoding: "utf8",
@@ -287,20 +290,6 @@ function listWindowsProcesses(): OpenCodeProcessSnapshot[] {
     return fromWmic;
   }
   return listWindowsProcessesFromPowerShell();
-}
-
-function parseUnixPsProcessRows(stdout: string): OpenCodeProcessSnapshot[] {
-  const rows: OpenCodeProcessSnapshot[] = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-    if (!match) continue;
-    rows.push({
-      pid: Number(match[1]),
-      ppid: Number(match[2]),
-      command: match[3] ?? "",
-    });
-  }
-  return rows;
 }
 
 function withDarwinCandidateEnvironments(rows: OpenCodeProcessSnapshot[]): OpenCodeProcessSnapshot[] {
@@ -323,7 +312,7 @@ function withDarwinCandidateEnvironments(rows: OpenCodeProcessSnapshot[]): OpenC
     return rows;
   }
 
-  const enrichedByPid = new Map(parseUnixPsProcessRows(result.stdout).map((proc) => [proc.pid, proc]));
+  const enrichedByPid = new Map(parseProcessRows(result.stdout).map((proc) => [proc.pid, proc]));
   return rows.map((proc) => enrichedByPid.get(proc.pid) ?? proc);
 }
 
@@ -342,7 +331,7 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
     if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
       return [];
     }
-    const rows = parseUnixPsProcessRows(result.stdout);
+    const rows = parseProcessRows(result.stdout);
     if (process.platform === "linux") {
       return rows.map((proc) => {
         if (!commandLooksLikeOpenCodeServe(proc.command)) return proc;
@@ -389,22 +378,11 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
   killProcessTree(pid: number): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     if (process.platform === "win32") {
-      try {
-        const out = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
-        if (!out.error && out.status === 0) {
-          return true;
-        }
-        console.error("opencode.kill_process_tree_taskkill_failed", {
-          pid,
-          status: out.status,
-          stdout: processOutputToString(out.stdout),
-          stderr: processOutputToString(out.stderr),
-          error: out.error,
-        });
-      } catch (error) {
-        console.error("opencode.kill_process_tree_taskkill_failed", { pid, error });
-      }
-      return false;
+      // The trusted System32 `taskkill /T /F`, so a poisoned PATH cannot
+      // answer the kill.
+      return killWindowsProcessTree(pid, (detail) => {
+        console.error("opencode.kill_process_tree_taskkill_failed", detail);
+      });
     }
     // Unix: best-effort tree kill. Send SIGTERM to the process group first
     // (covers children spawned via setsid/group leader). Then walk any
@@ -997,28 +975,15 @@ function parseManagedOwnerPid(command: string): number | null {
  * grace period. Windows has no POSIX signals, so it uses a `taskkill /T /F`
  * tree kill on both passes; Unix escalates SIGTERM → SIGKILL.
  */
-async function terminateOrphanProcess(pid: number): Promise<boolean> {
-  if (process.platform === "win32") {
-    openCodeProcessController.killProcessTree(pid);
-    if (await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS)) return true;
-    openCodeProcessController.killProcessTree(pid);
-    return await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-  }
-  openCodeProcessController.killProcess(pid, "SIGTERM");
-  if (await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS)) return true;
-  openCodeProcessController.killProcess(pid, "SIGKILL");
-  return await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-}
-
-async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
-  const attempts = Math.max(1, Math.ceil(timeoutMs / 50));
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!openCodeProcessController.isProcessAlive(pid)) {
-      return true;
-    }
-    await openCodeProcessController.waitForMs(50);
-  }
-  return !openCodeProcessController.isProcessAlive(pid);
+function terminateOrphanProcess(pid: number): Promise<boolean> {
+  return terminateProcessOrphan(pid, {
+    platform: process.platform,
+    graceMs: ORPHAN_RECOVERY_TERM_GRACE_MS,
+    isAlive: (target) => openCodeProcessController.isProcessAlive(target),
+    waitMs: (ms) => openCodeProcessController.waitForMs(ms),
+    kill: (target, signal) => openCodeProcessController.killProcess(target, signal),
+    killTree: (target) => openCodeProcessController.killProcessTree(target),
+  });
 }
 
 function pruneIdleSharedEntries(

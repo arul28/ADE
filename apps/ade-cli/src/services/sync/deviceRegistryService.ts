@@ -75,7 +75,6 @@ function normalizePlatform(value: unknown): SyncPeerPlatform {
 }
 
 let cachedDeviceDisplayName: string | null = null;
-let deviceDisplayNameRefreshStarted = false;
 let deviceDisplayNameRefresh: Promise<void> | null = null;
 
 function externalIdentityProbesEnabled(): boolean {
@@ -115,10 +114,9 @@ export function resolveDeviceDisplayName(): string {
   if (cachedDeviceDisplayName == null) cachedDeviceDisplayName = fallback;
   if (
     process.platform === "darwin"
-    && !deviceDisplayNameRefreshStarted
+    && deviceDisplayNameRefresh == null
     && externalIdentityProbesEnabled()
   ) {
-    deviceDisplayNameRefreshStarted = true;
     deviceDisplayNameRefresh = execFileText("scutil", ["--get", "ComputerName"], 2_000).then((value) => {
       const computerName = value?.trim() ?? "";
       if (computerName) cachedDeviceDisplayName = computerName;
