@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -18,12 +19,14 @@ import {
   Cursor,
   Monitor,
   Plus,
+  Power,
   Record,
   Stop,
   WarningCircle,
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { macDesktopNotParkedPhrase, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
+import { macDesktopPaneCaption } from "../../../shared/types/macDesktop";
+import { macDesktopNotParkedSentence } from "./macDesktopActivityText";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
@@ -45,7 +48,13 @@ import {
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { H264VideoCanvas } from "./H264VideoCanvas";
 import { macDesktopApi } from "./macDesktopApi";
-import { MacDesktopPermissionBlock } from "./MacDesktopPermissionBlock";
+import {
+  MacDesktopPermissionCard,
+  macDesktopMissingPermissions,
+  type MacDesktopPermissionCheck,
+} from "./MacDesktopPermissionCard";
+import { MAC_DESKTOP_SECONDARY_BUTTON, MacDesktopStateCard } from "./MacDesktopStateCard";
+import { MAC_DESKTOP_NOT_ANSWERING } from "./macDesktopStatusStore";
 import { MacDesktopStatusStrip, type MacDesktopStripMessage } from "./MacDesktopStatusStrip";
 import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
 import {
@@ -116,6 +125,23 @@ export const MAC_DESKTOP_FULLSCREEN_Z = 40_000;
 
 /** The picture's breathing room inside the overlay, in CSS px. */
 const MAC_DESKTOP_FULLSCREEN_MARGIN = 16;
+
+/**
+ * A video that has not started after this long is not coming.
+ *
+ * The first frame normally arrives in under two seconds. Past this the strip
+ * says so and offers Reconnect and Stop, so a display that died with no event
+ * cannot leave the pane on "Connecting video" with nothing to press.
+ */
+export const MAC_DESKTOP_CONNECT_SLOW_MS = 20_000;
+
+/** A Check again that answers at once still shows it looked. */
+const MAC_DESKTOP_CHECK_MIN_MS = 600;
+
+const SETTINGS_PANE: Record<MacDesktopPermissionKind, SystemSettingsPaneId> = {
+  screenRecording: "macos-screen-recording",
+  accessibility: "macos-accessibility",
+};
 
 /**
  * This window's identity as a lease controller.
@@ -253,7 +279,11 @@ export function ChatMacDesktopPanel({
     setStatus,
     error: statusError,
     setError: setStatusError,
+    readError,
+    unconfirmed,
     refresh: refreshStatus,
+    stop: stopDisplay,
+    stopping,
     start,
     starting,
     gaveUp,
@@ -397,24 +427,23 @@ export function ChatMacDesktopPanel({
   const claimAppIcons = useMemo(() => macDesktopClaimAppIcons(windows), [windows]);
 
   /**
-   * The one permission that is blocking, and which pane it opens.
+   * The grants the host reported as off, Screen Recording first.
    *
-   * Screen Recording first when both are missing: without it there is no
-   * picture at all, so it is the grant that changes what the user can see. The
-   * pane ids are the app-level ones from `SYSTEM_SETTINGS_PANE_URLS`, which is
-   * the one table main resolves against — the renderer never holds the URL.
-   * Computed above the empty-state branch because the denied first screen is
-   * its own block, not the one-line start card.
+   * Without Screen Recording there is no picture at all, so a lane with no
+   * display cannot start until it is on. Without Accessibility the picture
+   * works and clicks do not, so Start stays possible and the card says so.
    */
-  const blockedPermission: {
-    kind: MacDesktopPermissionKind;
-    pane: SystemSettingsPaneId;
-  } | null =
-    status?.permissions.screenRecording === "denied"
-      ? { kind: "screenRecording", pane: "macos-screen-recording" }
-      : status?.permissions.accessibility === "denied"
-        ? { kind: "accessibility", pane: "macos-accessibility" }
-        : null;
+  const missingPermissions = macDesktopMissingPermissions(status?.permissions);
+  const [permissionCheck, setPermissionCheck] = useState<MacDesktopPermissionCheck | null>(null);
+  /**
+   * The pane's own "Stop Mac Desktop?" question, for the header's Stop and
+   * for Reset while a display may still exist.
+   */
+  const [confirmStop, setConfirmStop] = useState(false);
+  /** The video has been connecting for longer than a connect ever takes. */
+  const [connectSlow, setConnectSlow] = useState(false);
+  /** The stopped-video card's Details fold. */
+  const [videoDetailsOpen, setVideoDetailsOpen] = useState(false);
 
   /**
    * Whether a grant can be made from THIS window.
@@ -450,10 +479,19 @@ export function ChatMacDesktopPanel({
   // While the video connects, re-read the status: a display that went away
   // without an event must turn into the Off card, not a "Connecting video"
   // that never ends.
-  useMacDesktopRecheck(
-    Boolean(display) && !starting && live.status !== "playing" && live.status !== "error",
-    refreshStatus,
-  );
+  const connecting = Boolean(display) && !starting && live.status !== "playing" && live.status !== "error";
+  useMacDesktopRecheck(connecting, refreshStatus);
+  // And past a normal connect, the strip says so and offers the ways out.
+  useEffect(() => {
+    setConnectSlow(false);
+    if (!connecting) return undefined;
+    const timer = window.setTimeout(() => setConnectSlow(true), MAC_DESKTOP_CONNECT_SLOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [connecting]);
+  // A new failure starts with its Details folded.
+  useEffect(() => {
+    setVideoDetailsOpen(false);
+  }, [live.error]);
 
   /* ── Geometry ────────────────────────────────────────────────────────── */
 
@@ -1003,62 +1041,53 @@ export function ChatMacDesktopPanel({
   }, [setStatusError]);
 
   /**
-   * "Check again": restart the helper, re-probe, and start only if the grant is
-   * now there.
+   * "Check again": re-probe the grants and say what it found. It never starts
+   * a display: Start is the one start, so the pane does not jump from the
+   * permission card to "Starting" behind the person's back.
    *
-   * The restart is the point. macOS usually will not show a grant made after a
-   * process started to that same process, so re-reading the old helper's cached
-   * "denied" is exactly the retry that never worked. `start()` then runs only
-   * when Screen Recording is not denied, because creating a display without it
-   * can only fail again with the same error.
+   * With no display the helper is restarted first. macOS usually will not show
+   * a Screen Recording grant made after a process started to that same
+   * process, so re-reading the old helper's cached "denied" is the retry that
+   * never worked. With a live display the helper is NOT restarted, because
+   * that would close the display, and the Accessibility probe is live anyway.
    */
   const checkAgain = useCallback(async () => {
     setCheckingPermissions(true);
     setStatusError(null);
+    const began = Date.now();
+    let result: MacDesktopPermissionCheck;
     try {
       const permissions = await macDesktopApi().recheckPermissions(
-        { restartDriver: true },
+        { restartDriver: !display },
         pinRef.current,
       );
       setStatus((current) => (current ? { ...current, permissions } : current));
-      if (permissions.screenRecording !== "denied") {
-        await start();
-      } else {
-        await refreshStatus();
-      }
+      await refreshStatus().catch(() => undefined);
+      result = { at: Date.now(), stillMissing: macDesktopMissingPermissions(permissions) };
     } catch (error) {
-      setStatusError(errorText(error));
-    } finally {
-      setCheckingPermissions(false);
+      result = { at: Date.now(), error: errorText(error) ?? "Could not check. Try again." };
     }
-  }, [errorText, refreshStatus, start, setStatus, setStatusError]);
+    const wait = MAC_DESKTOP_CHECK_MIN_MS - (Date.now() - began);
+    if (wait > 0) await new Promise((resolve) => window.setTimeout(resolve, wait));
+    setPermissionCheck(result);
+    setCheckingPermissions(false);
+  }, [display, errorText, refreshStatus, setStatus, setStatusError]);
 
   /** Reads the status again after a failed read, and nothing more. */
   const readAgain = useCallback(async () => {
     setStatusError(null);
-    try {
-      await refreshStatus();
-    } catch (error) {
-      setStatusError(errorText(error));
-    }
-  }, [errorText, refreshStatus, setStatusError]);
+    await refreshStatus().catch(() => undefined);
+  }, [refreshStatus, setStatusError]);
 
   /**
-   * "Ask macOS": the explicit local prompt. Only ever drawn for a display on
-   * this computer, and the host refuses it for a remote caller regardless.
+   * Stop, after the pane's own question. Reset is the same stop, offered when
+   * the pane cannot tell what state the lane is in.
    */
-  const askMacos = useCallback(async (which: MacDesktopPermissionKind) => {
-    setCheckingPermissions(true);
-    setStatusError(null);
-    try {
-      const permissions = await macDesktopApi().requestPermission({ which }, pinRef.current);
-      setStatus((current) => (current ? { ...current, permissions } : current));
-    } catch (error) {
-      setStatusError(errorText(error));
-    } finally {
-      setCheckingPermissions(false);
-    }
-  }, [errorText, setStatus, setStatusError]);
+  const stopNow = useCallback(() => {
+    setConfirmStop(false);
+    setExpanded(false);
+    void stopDisplay();
+  }, [stopDisplay]);
 
   /* ── Render ──────────────────────────────────────────────────────────── */
 
@@ -1074,70 +1103,137 @@ export function ChatMacDesktopPanel({
     );
   }
 
+  /**
+   * Every screen without a picture keeps a slim top row with the per-chat
+   * floating-preview toggle, as the Apple tool's rail does. The Off, permission
+   * and waiting screens used to return early with no row at all, so the toggle
+   * was only reachable once a display was live.
+   */
+  const idle = (screen: ReactNode) => (
+    <div className="relative flex h-full min-h-0 flex-col gap-2" data-testid="mac-desktop-panel">
+      <div className={cn(WORK_TOOL_CHROME_ROW, "flex-nowrap justify-end gap-1")} data-testid="mac-desktop-idle-row">
+        <WorkToolPreviewControls tool="mac-desktop" chatSessionId={sessionId} showMaximize={false} />
+      </div>
+      <div className="min-h-0 flex-1">{screen}</div>
+    </div>
+  );
+
+  // A stop in flight wins over whatever the last status said. The host keeps
+  // listing the display until the stop lands, and showing it live meanwhile is
+  // the flicker a reopened tab used to have.
+  if (stopping) {
+    return idle(<MacDesktopStateCard testId="mac-desktop-stopping" tone="busy" title="Stopping Mac Desktop…" />);
+  }
+
   if (!display) {
     /*
-      No display is the Off card, not a spinner.
+      No display: one state at a time, in this order, each on the same card.
 
-      Watching never creates a display, so a settled status with none is "Mac
-      Desktop is off." and Start. `statusError` is the display's own failure (a
-      denied permission, a refused create, a start that took too long), and it
-      replaces the sentence. A start that took too long offers Start again. A
-      failed first read only reads again: that button must not create a
-      display. Any other failure re-checks the grants and then starts.
+        Stopping  a stop is in flight (above, whether or not a display shows)
+        Starting  the person pressed Start here
+        Checking  the first read has not answered (it times out into the next)
+        Not answering  the newest read failed: Try again, or Reset
+        Permissions    a grant is off: the permission card
+        Failed    a Start that failed: the reason, and Start again
+        Off       "Mac Desktop is off" and Start
+
+      Watching never creates a display, and nothing on this list starts one
+      except the person's Start. That is the fix for a pane that went from Off
+      to Starting on its own: "Check again" used to start a display when the
+      grants came back.
     */
-    /*
-      A denied grant is its own screen, not the one-line start card. The card
-      offered a single "Try again" that re-read a cached "denied" and changed
-      nothing, which is the exact bug this block replaces. The block leads with
-      the two things that can actually change the state: opening the pane, and a
-      restart-and-reprobe.
-    */
-    if (blockedPermission) {
-      return (
-        <MacDesktopPermissionBlock
-          kind={blockedPermission.kind}
-          appName={status?.responsibleAppName ?? "ADE"}
-          signing={status?.signing ?? "unknown"}
-          hostIsLocal={laneHostIsLocal}
-          machineName={machineFacts.machineName}
-          checking={checkingPermissions}
-          onOpenSettings={() => openSettingsPane(blockedPermission.pane)}
-          onCheckAgain={() => void checkAgain()}
-          onAskMacos={laneHostIsLocal ? () => void askMacos(blockedPermission.kind) : null}
+    const resetButton = (
+      <button
+        type="button"
+        data-testid="mac-desktop-reset"
+        className={MAC_DESKTOP_SECONDARY_BUTTON}
+        onClick={() => void stopDisplay()}
+      >
+        <Power size={14} />
+        Reset
+      </button>
+    );
+    if (starting) {
+      return idle(
+        <MacDesktopStateCard
+          testId="mac-desktop-starting"
+          tone="busy"
+          title="Starting Mac Desktop…"
+          detail="Making a private screen for this lane."
         />
       );
     }
-    if (starting || (status == null && !statusError)) {
-      return (
-        <WorkToolEmptyLine
-          testId="mac-desktop-starting"
-          title={starting ? "Starting Mac Desktop…" : "Checking Mac Desktop…"}
+    if (status == null || (unconfirmed && readError)) {
+      if (!readError) {
+        return idle(<MacDesktopStateCard testId="mac-desktop-checking" tone="busy" title="Checking Mac Desktop…" />);
+      }
+      return idle(
+        <MacDesktopStateCard
+          testId="mac-desktop-unreachable"
+          tone="error"
+          title="Can't reach Mac Desktop"
+          detail={readError}
+          actions={(
+            <>
+              <button
+                type="button"
+                data-testid="mac-desktop-read-again"
+                className={WORK_TOOL_PRIMARY_BUTTON}
+                onClick={() => void readAgain()}
+              >
+                Try again
+              </button>
+              {resetButton}
+            </>
+          )}
+        />
+      );
+    }
+    if (missingPermissions.length > 0) {
+      return idle(
+        <MacDesktopPermissionCard
+          variant="page"
+          permissions={status.permissions}
+          appName={status.responsibleAppName ?? "ADE"}
+          signing={status.signing ?? "unknown"}
+          hostIsLocal={laneHostIsLocal}
+          machineName={machineFacts.machineName}
+          checking={checkingPermissions}
+          lastCheck={permissionCheck}
+          onOpenSettings={(kind) => openSettingsPane(SETTINGS_PANE[kind])}
+          onCheckAgain={() => void checkAgain()}
+          onStartAnyway={missingPermissions.includes("screenRecording") ? null : () => void start()}
         />
       );
     }
     if (statusError) {
-      return (
-        <WorkToolEmptyLine
+      return idle(
+        <MacDesktopStateCard
           testId="mac-desktop-failed"
-          title={statusError}
-          action={(
+          tone="error"
+          title={gaveUp ? "Mac Desktop did not start" : "Something went wrong"}
+          detail={statusError}
+          actions={(
             <button
               type="button"
+              data-testid="mac-desktop-start"
               className={WORK_TOOL_PRIMARY_BUTTON}
-              onClick={() => void (gaveUp ? start() : status == null ? readAgain() : checkAgain())}
+              onClick={() => void start()}
             >
               <Monitor size={14} />
-              {gaveUp ? "Start" : "Try again"}
+              Start again
             </button>
           )}
         />
       );
     }
-    return (
-      <WorkToolEmptyLine
+    return idle(
+      <MacDesktopStateCard
         testId="mac-desktop-off"
-        title="Mac Desktop is off."
-        action={(
+        tone="idle"
+        title="Mac Desktop is off"
+        detail="A private screen for this lane's apps."
+        actions={(
           <button
             type="button"
             data-testid="mac-desktop-start"
@@ -1181,15 +1277,6 @@ export function ChatMacDesktopPanel({
     ownedCount: windows.filter((entry) => entry.laneId === laneId).length,
     parkedCount: parkedWindows.length,
   });
-  const notParkedNewest = notParked[0] ?? null;
-  // The window's own title when the lane still knows it, and its id when it
-  // does not — an id is what the user can find in Mission Control, a title is
-  // what they already see on their screen.
-  const notParkedLabel = notParkedNewest
-    ? windows.find((entry) => entry.id === notParkedNewest.windowId)?.title?.trim()
-      || String(notParkedNewest.windowId)
-    : null;
-
   /* ── The chrome row, built once and drawn in two places ───────────────
 
      The pane's 40px row and full screen's bar carry the SAME controls, which
@@ -1231,6 +1318,17 @@ export function ChatMacDesktopPanel({
     return (
       <>
         {renderStatusDot(scope)}
+
+        {/* The per-chat floating-preview toggle, beside the dot at the left.
+            At the far right it was the first thing a narrow MacBook pane
+            clipped, and the owner could not find it. Maximize is
+            `mac-desktop-expand` below, so this adds only the toggle. */}
+        <WorkToolPreviewControls
+          tool="mac-desktop"
+          chatSessionId={sessionId}
+          showMaximize={false}
+          testIdSuffix={suffix}
+        />
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           {iHaveControl ? (
@@ -1291,6 +1389,18 @@ export function ChatMacDesktopPanel({
             </WorkToolChromeButton>
           )}
 
+          {/* Always here while a display exists: the way out that does not
+              depend on the picture, the lease or the video working. */}
+          <WorkToolChromeButton
+            label="Stop Mac Desktop"
+            onClick={() => setConfirmStop(true)}
+            disabled={stopping}
+            active={confirmStop}
+            testId={`mac-desktop-stop${suffix}`}
+          >
+            <Power size={16} />
+          </WorkToolChromeButton>
+
           {/* The way out, spelled out in full screen and an icon in the pane —
               the one control whose label is a fact about where the row is. */}
           {scope === "fullscreen" ? (
@@ -1319,16 +1429,6 @@ export function ChatMacDesktopPanel({
               {paneMaximize?.maximized ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
             </WorkToolChromeButton>
           )}
-
-          {/* The pane's per-chat preview toggle, at the far right. Maximize is
-              already `mac-desktop-expand` above, so this row adds only the
-              toggle rather than a second control for the same state. */}
-          <WorkToolPreviewControls
-            tool="mac-desktop"
-            chatSessionId={sessionId}
-            showMaximize={false}
-            testIdSuffix={suffix}
-          />
         </div>
       </>
     );
@@ -1381,9 +1481,9 @@ export function ChatMacDesktopPanel({
             or not expanded. */}
         <div ref={active ? attachCanvasSlot : undefined} className="absolute inset-0" />
 
-        {/* Only the wait is painted on the picture. A stopped video is the
-            strip's to say, because the strip has the Reconnect. */}
-        {active && live.status !== "playing" && live.status !== "error" ? (
+        {/* Only the wait is painted on the picture here. A stopped or stuck
+            video is the overlay card's to say, because it has the Reconnect. */}
+        {active && live.status !== "playing" && live.status !== "error" && !connectSlow ? (
           <p
             className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-[12px] text-muted-fg"
             data-testid="mac-desktop-surface-status"
@@ -1475,9 +1575,31 @@ export function ChatMacDesktopPanel({
   const inputErrorText = realInput.inputError
     ? macDesktopErrorText(realInput.inputError, { laneId, laneName })
     : null;
-  const hostSuffix = laneHostIsLocal ? "" : ` on ${machineFacts.machineName ?? "the lane's Mac"}`;
-  const appName = status?.responsibleAppName ?? "ADE";
   const stripMessage = ((): MacDesktopStripMessage | null => {
+    // The host did not answer the newest read. Everything below may be out of
+    // date, so this outranks every symptom it could be causing.
+    if (unconfirmed) {
+      return {
+        key: `unconfirmed:${readError ?? ""}`,
+        tone: "error",
+        sentence: "Mac Desktop is not answering. This picture may be out of date.",
+        detail: readError === MAC_DESKTOP_NOT_ANSWERING ? null : readError,
+        actions: [
+          { label: "Try again", onClick: () => void readAgain() },
+          { label: "Reset", onClick: () => setConfirmStop(true) },
+        ],
+        testId: "mac-desktop-unconfirmed",
+      };
+    }
+    if (statusError) {
+      return {
+        key: `status:${statusError}`,
+        tone: "error",
+        sentence: statusError,
+        onDismiss: () => setStatusError(null),
+        testId: "mac-desktop-status-error",
+      };
+    }
     if (captureError) {
       return {
         key: `capture:${captureError}`,
@@ -1505,48 +1627,129 @@ export function ChatMacDesktopPanel({
         testId: "mac-desktop-input-error",
       };
     }
-    if (blockedPermission) {
-      // The picture streams without Accessibility; the mouse does not work.
-      // The strip names the grant and carries the same two buttons as the
-      // first screen, so the fix is never a hunt through System Settings.
-      const screenRecording = blockedPermission.kind === "screenRecording";
-      return {
-        key: `permission:${blockedPermission.kind}`,
-        tone: "notice",
-        sentence: screenRecording
-          ? `Screen Recording is off for ${appName}${hostSuffix}. The picture cannot stream.`
-          : `Accessibility is off for ${appName}${hostSuffix}. The mouse and keyboard do nothing until it is on.`,
-        actions: [
-          ...(laneHostIsLocal
-            ? [{
-              label: `Open ${screenRecording ? "Screen Recording" : "Accessibility"} settings`,
-              onClick: () => openSettingsPane(blockedPermission.pane),
-            }]
-            : []),
-          {
-            label: checkingPermissions ? "Checking…" : "Check again",
-            onClick: () => void checkAgain(),
-            disabled: checkingPermissions,
-            muted: laneHostIsLocal,
-          },
-        ],
-        testId: "mac-desktop-permission",
-      };
-    }
-    if (live.status === "error") {
-      return {
-        key: `video:${live.error ?? ""}`,
-        tone: "error",
-        sentence: "Video stopped.",
-        detail: macDesktopErrorText(live.error, { laneId, laneName }),
-        // A fresh `startStream`, budget included: the automatic retries give
-        // up after a few tries, and this is the way back after that.
-        actions: [{ label: "Reconnect", onClick: live.restart }],
-        testId: "mac-desktop-video-stopped",
-      };
-    }
+    // A missing grant is not a strip line any more: it is the permission card
+    // under the top row, which names the grant, its path and its one button.
+    // The video's own state is not a strip line either: it is drawn on the
+    // picture (`renderVideoOverlay`), where the problem is.
     return null;
   })();
+
+  /**
+   * The video's trouble, on the picture it is about.
+   *
+   * This used to be the top strip: a full-width red bar reading "Video
+   * stopped." with RECONNECT and DETAILS in red capitals, which the owner
+   * called the message up top that did not fit. It is now a small card over
+   * the picture, in the Apple pane's tone: one sentence, one Reconnect, and
+   * Details as a quiet link that folds the raw reason open.
+   *
+   * A sibling of the surface, never a child: the surface takes control on any
+   * pointer-down, and pressing Reconnect must not also grab the lease.
+   */
+  const renderVideoOverlay = (scope: MacDesktopChromeScope) => {
+    if (scope !== (expanded ? "fullscreen" : "pane")) return null;
+    const stopped = live.status === "error";
+    if (!stopped && !connectSlow) return null;
+    const detail = stopped ? macDesktopErrorText(live.error, { laneId, laneName }) : null;
+    const suffix = scope === "pane" ? "" : "-fs";
+    return (
+      <div className="pointer-events-none absolute inset-0 z-[12] flex items-center justify-center p-3">
+        <div
+          role="status"
+          data-testid={`${stopped ? "mac-desktop-video-stopped" : "mac-desktop-connect-slow"}${suffix}`}
+          className="pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 rounded-[12px] border border-border/70 bg-[color-mix(in_srgb,var(--color-surface)_92%,transparent)] px-4 py-3 text-center font-sans shadow-float"
+        >
+          <p className="text-[13px] font-medium text-fg">
+            {stopped ? "Video stopped" : "The picture is not coming through"}
+          </p>
+          <p className="text-[12px] leading-5 text-muted-fg">
+            {stopped ? "Mac Desktop is still running." : "Mac Desktop is up, but no video has arrived yet."}
+          </p>
+          <div className="flex items-center gap-3">
+            {/* A fresh `startStream`, budget included: the automatic retries
+                give up after a few tries, and this is the way back after that. */}
+            <button type="button" className={cn(WORK_TOOL_PRIMARY_BUTTON, "h-7")} onClick={live.restart}>
+              Reconnect
+            </button>
+            {stopped && detail ? (
+              <button
+                type="button"
+                aria-expanded={videoDetailsOpen}
+                className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
+                onClick={() => setVideoDetailsOpen((open) => !open)}
+              >
+                Details
+              </button>
+            ) : null}
+            {stopped ? null : (
+              <button
+                type="button"
+                className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
+                onClick={() => setConfirmStop(true)}
+              >
+                Stop
+              </button>
+            )}
+          </div>
+          {stopped && detail && videoDetailsOpen ? (
+            <p className="max-w-full break-words text-left font-mono text-[11px] leading-4 text-muted-fg">{detail}</p>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
+  /** Missing grants while a display is live: the card, not a strip line. */
+  const renderPermissionNotice = () => (missingPermissions.length > 0 && status ? (
+    <MacDesktopPermissionCard
+      variant="inline"
+      permissions={status.permissions}
+      appName={status.responsibleAppName ?? "ADE"}
+      signing={status.signing ?? "unknown"}
+      hostIsLocal={laneHostIsLocal}
+      machineName={machineFacts.machineName}
+      checking={checkingPermissions}
+      lastCheck={permissionCheck}
+      onOpenSettings={(kind) => openSettingsPane(SETTINGS_PANE[kind])}
+      onCheckAgain={() => void checkAgain()}
+    />
+  ) : null);
+
+  /**
+   * "Stop Mac Desktop?", asked in the pane like the Apple pane asks before it
+   * switches devices. Stop sends the lane's windows back to the main screen.
+   */
+  const renderStopConfirm = () => (confirmStop ? (
+    <div
+      role="alertdialog"
+      aria-label="Stop Mac Desktop?"
+      data-testid="mac-desktop-stop-confirm"
+      className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 font-sans text-[12px] text-fg"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="font-medium">Stop Mac Desktop?</span>
+        <span className="text-muted-fg"> Its windows go back to your main screen.</span>
+      </span>
+      <button
+        type="button"
+        className={cn(MAC_DESKTOP_SECONDARY_BUTTON, "h-7")}
+        onClick={() => setConfirmStop(false)}
+      >
+        Keep running
+      </button>
+      <button
+        type="button"
+        data-testid="mac-desktop-stop-confirm-yes"
+        className={cn(
+          MAC_DESKTOP_SECONDARY_BUTTON,
+          "h-7 border-[color-mix(in_srgb,var(--color-error)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-error)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-error)_26%,transparent)]",
+        )}
+        onClick={stopNow}
+      >
+        Stop
+      </button>
+    </div>
+  ) : null);
 
   /**
    * The recording pill and the "Saved to proof" receipt, over the picture.
@@ -1647,6 +1850,8 @@ export function ChatMacDesktopPanel({
           A missing grant, a refused action, or a stopped video, one at a
           time and each with the button that fixes it. */}
       <MacDesktopStatusStrip message={stripMessage} suffix="" />
+      {renderStopConfirm()}
+      {renderPermissionNotice()}
 
       {/* ── The screen, and the windows on it ───────────────────────────
 
@@ -1666,6 +1871,7 @@ export function ChatMacDesktopPanel({
         <div className="relative flex w-full min-w-0 shrink-0 flex-col items-stretch">
           {renderPicture("pane")}
           {renderCaptureOverlay("pane")}
+          {renderVideoOverlay("pane")}
         </div>
 
         {/* ── Apps ────────────────────────────────────────────────────────
@@ -1713,67 +1919,73 @@ export function ChatMacDesktopPanel({
             </button>
           </div>
 
-          {/* ── The agent's last look ─────────────────────────────────
-              One row: what the AGENT last did to this screen, when, how much
-              it saw, and the frame it saw it on when the live view has one to
-              lend. Named for whose action it is — "Last observation" read
-              like something the person watching had done. */}
-          {lastObservation ? (
-            <div
-              className="mt-1 flex items-center gap-2 px-1 text-[11px] text-muted-fg"
-              data-testid="mac-desktop-last-observation"
-            >
-              {lastFrame ? (
-                <img
-                  src={lastFrame.dataUrl}
-                  alt=""
-                  aria-hidden
-                  className="h-7 w-[46px] shrink-0 rounded-[4px] object-cover opacity-80 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_60%,transparent)]"
-                />
-              ) : null}
-              <span className="min-w-0 flex-1 truncate" title={lastObservation.caption ?? undefined}>
-                <span className="text-muted-fg/70">Agent’s last look</span>
-                <span className="px-1 opacity-60">·</span>
-                {lastObservation.caption ?? "Looked at this screen"}
-              </span>
-              <span className="shrink-0 tabular-nums">
-                {macDesktopRelativeTime(lastObservation.at, Date.now())}
-                <span className="px-1 opacity-60">·</span>
-                {`${lastObservation.elementCount} elements`}
-              </span>
-            </div>
-          ) : null}
         </div>
+
+        {/* ── Activity ────────────────────────────────────────────────
+            What happened on this screen that the picture does not show: a
+            window that would not move over, and the agent's last look.
+
+            These used to be two differently styled lines, one of them a
+            footer pinned under the whole pane, which read as a stray log.
+            They are one list now, in the Apps section's row shape: a glyph,
+            one truncating line, and a fixed right-hand column. */}
+        {notParked.length > 0 || lastObservation ? (
+          <div className="flex min-h-0 shrink-0 flex-col gap-0.5" data-testid="mac-desktop-activity">
+            <div className="flex h-7 items-center gap-1 px-1">
+              <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Activity</span>
+            </div>
+            <ul className="flex flex-col">
+              {notParked.map((entry) => {
+                const label = windows.find((candidate) => candidate.id === entry.windowId)?.title?.trim()
+                  || `Window ${entry.windowId}`;
+                const sentence = macDesktopNotParkedSentence(label, entry.reason);
+                return (
+                  <li
+                    key={entry.windowId}
+                    data-testid="mac-desktop-not-parked"
+                    className="group flex h-8 min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 text-[12px] hover:bg-white/[0.04]"
+                  >
+                    <WarningCircle size={14} weight="fill" className="shrink-0 text-[var(--color-warning)]" />
+                    <span className="min-w-0 flex-1 truncate text-fg/85" title={sentence}>{sentence}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] text-muted-fg transition-colors hover:bg-white/[0.07] hover:text-fg"
+                      data-testid="mac-desktop-not-parked-dismiss"
+                      onClick={() => dismissNotParked(entry.windowId)}
+                    >
+                      Dismiss
+                    </button>
+                  </li>
+                );
+              })}
+              {lastObservation ? (
+                <li
+                  data-testid="mac-desktop-last-observation"
+                  className="flex h-8 min-w-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 text-[12px] hover:bg-white/[0.04]"
+                >
+                  {lastFrame ? (
+                    <img
+                      src={lastFrame.dataUrl}
+                      alt=""
+                      aria-hidden
+                      className="h-5 w-[34px] shrink-0 rounded-[3px] object-cover opacity-85 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_60%,transparent)]"
+                    />
+                  ) : (
+                    <Cursor size={14} className="shrink-0 text-muted-fg/80" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-fg/85" title={lastObservation.caption ?? undefined}>
+                    <span className="text-muted-fg">Agent looked · </span>
+                    {lastObservation.caption ?? "this screen"}
+                  </span>
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-fg">
+                    {`${macDesktopRelativeTime(lastObservation.at, Date.now())} · ${lastObservation.elementCount} items`}
+                  </span>
+                </li>
+              ) : null}
+            </ul>
+          </div>
+        ) : null}
       </div>
-
-      {/*
-        ── A window that would not go ──────────────────────────────────
-
-        The service forwards `window-not-parked` precisely because the window is
-        still on the user's OWN screen, and until this line existed the only
-        surface that knew was the event log. Newest only: the list holds three so
-        a repeat replaces the entry instead of stacking, but the footer has room
-        for one sentence and the second one would push the screen up.
-      */}
-      {notParkedNewest ? (
-        <p
-          className="flex items-center gap-2 px-1 text-[11px] text-amber-300"
-          data-testid="mac-desktop-not-parked"
-        >
-          <WarningCircle size={12} className="shrink-0" />
-          <span className="truncate">
-            {`Window ${notParkedLabel} ${macDesktopNotParkedPhrase(notParkedNewest.reason)}. It is still on your main screen.`}
-          </span>
-          <button
-            type="button"
-            className="ml-auto shrink-0 underline underline-offset-2"
-            data-testid="mac-desktop-not-parked-dismiss"
-            onClick={() => dismissNotParked(notParkedNewest.windowId)}
-          >
-            Dismiss
-          </button>
-        </p>
-      ) : null}
 
       {/*
         ── Full screen ──────────────────────────────────────────────────
@@ -1809,12 +2021,19 @@ export function ChatMacDesktopPanel({
                 {renderChromeRow("fullscreen")}
               </div>
               <MacDesktopStatusStrip message={stripMessage} suffix="-fs" />
+              {confirmStop || missingPermissions.length > 0 ? (
+                <div className="flex shrink-0 flex-col gap-2 px-4 pt-3">
+                  {renderStopConfirm()}
+                  {renderPermissionNotice()}
+                </div>
+              ) : null}
               <div
                 className="relative flex min-h-0 flex-1 items-stretch justify-stretch"
                 style={{ padding: MAC_DESKTOP_FULLSCREEN_MARGIN }}
               >
                 {renderPicture("fullscreen")}
                 {renderCaptureOverlay("fullscreen")}
+                {renderVideoOverlay("fullscreen")}
               </div>
             </div>,
             document.documentElement,

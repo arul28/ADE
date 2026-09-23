@@ -249,29 +249,33 @@ names the holding lane.
 2. **Permissions.** Screen Recording and Accessibility are reported by the
    helper's own `ping` reply — the service never shells out
    to probe, so nothing runs ungated on a non-Mac host. A missing grant is a
-   card (`MacDesktopPermissionBlock`): the grant named in the title, the app
-   macOS lists, an "Open … settings" button that deep-links to the exact row
-   (the `com.apple.settings.PrivacySecurity.extension` address form — the older
-   `com.apple.preference.security` one opens the Privacy & Security root on
-   macOS 26), three numbered steps, and a "Check again" that
-   restarts the helper before re-probing (`recheckPermissions`): macOS often does
-   not show a grant made after a process started to that same process, which is
-   why re-reading the old helper's cached "denied" never worked. The block also
-   names the app macOS accuses (`responsibleAppName`, `ADE`/`ADE Alpha`/`ADE
-   Beta`) and, when the build is ad-hoc (`signing === "adhoc"`, read from the
-   packaging marker beside the app's resources), says macOS forgets the grant on
-   every rebuild. While a viewer is reading the lane's status the service tells
+   card (`MacDesktopPermissionCard`) with one row per grant: its name ("Screen &
+   System Audio Recording", "Accessibility"), what it is for, On or Off, and for
+   an Off row the exact path in words and one "Open Settings" button that
+   deep-links to that list (the `com.apple.settings.PrivacySecurity.extension`
+   address form — the older `com.apple.preference.security` one opens the
+   Privacy & Security root on macOS 26). "Check again" shows a spinner, then
+   what it found ("Still off: …" or "All set."). With no display it restarts the
+   helper before re-probing (`recheckPermissions`): macOS often does not show a
+   grant made after a process started to that same process. With a live display
+   it does not restart the helper, because that would close the display. It
+   never starts a display; Start is the only start. A folded help line, "It's
+   on, but still says missing?", gives the fix for a stale macOS entry: select
+   the app (`responsibleAppName`, `ADE`/`ADE Alpha`/`ADE Beta`), press −, add
+   it again with +, and press Check again. It is open by default when the build
+   is ad-hoc (`signing === "adhoc"`), because macOS forgets the grant on every
+   rebuild of such a build. While a viewer is reading the lane's status the service tells
    the helper to watch for a transition (`watch-permissions`), so an already
    open pane flips off "denied" by itself within 3 seconds of the toggle; with
    no watch and no display the helper probes nothing. A grant revoked mid-session
    otherwise arrives as a `permission-changed` event (10-second cadence while a
    display exists, emitted only on a transition), and every action then fails
-   with `MAC_DESKTOP_PERMISSION_REQUIRED`. The one prompt the driver may fire is
-   `request-permission`, and only for a local user's explicit "Ask macOS" click:
-   the service passes `allowPrompt` true only when the window asking is on the
-   host, the helper ignores the request without it, and the action is CTO-only so
-   an agent cannot reach it. Accessibility missing while the picture already
-   streams is the pane's status strip with the same two buttons, because a
+   with `MAC_DESKTOP_PERMISSION_REQUIRED`. The driver can fire the system
+   prompt through `request-permission` (only when the window asking is on the
+   host, and the action is CTO-only), but the pane no longer offers it: macOS
+   shows that prompt only once, and it only offers to open the same list.
+   Accessibility missing while the picture already streams is the same card,
+   listing only the missing grant, under the pane's top row, because a
    synthetic event posted without Accessibility is dropped by macOS with no
    error: the service refuses real input with `MAC_DESKTOP_PERMISSION_REQUIRED`
    naming the grant (`macDesktopInput.ts`) instead of letting a takeover look

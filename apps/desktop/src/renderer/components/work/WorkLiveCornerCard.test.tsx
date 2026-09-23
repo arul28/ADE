@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkLiveCornerCard } from "./WorkLiveCornerCard";
 import { NativeToolFeedsProvider } from "../terminals/NativeToolFeedsContext";
@@ -1048,19 +1048,57 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
     expect(await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 })).toBeTruthy();
   });
 
-  it("shows the mac-desktop card for a chat that watches the lane (D1)", async () => {
+});
+
+/** The floating Mac Desktop, found only while it is in view (`hidden` hides it from roles). */
+function macPlayer(): HTMLElement | null {
+  return screen.queryByRole("group", { name: "Mac Desktop, floating" });
+}
+
+function findMacPlayer(): Promise<HTMLElement> {
+  return screen.findByRole("group", { name: "Mac Desktop, floating" }, { timeout: 3_000 });
+}
+
+/** Hover the player and press Close on its bar. */
+function closeMacPlayer(player: HTMLElement): void {
+  fireEvent.pointerEnter(player);
+  fireEvent.click(within(player).getByRole("button", { name: "Close" }));
+}
+
+/** jsdom has no PointerEvent; React reads the type and the coordinates. */
+function pointer(target: EventTarget, type: string, clientX: number, clientY: number): void {
+  act(() => {
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX, clientY }));
+  });
+}
+
+describe("Mac Desktop floating player", () => {
+  function watching() {
     macDesktopGetStreamStatus.mockResolvedValue(
       makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
     );
     setMacDesktopFrame(macDesktopFrame());
+  }
+
+  it("floats for a chat that watches the lane, in the shared player and not the corner card (D1)", async () => {
+    watching();
     renderCard({ activeTool: "browser" });
-    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    const player = await findMacPlayer();
+    // The same shell as the floating Apple device: a dot at rest, eight
+    // resize zones, and the picture from the lane's last frame.
+    expect(player.querySelector("[data-mac-mini-dot='idle']")).toBeTruthy();
+    expect(player.querySelectorAll("[data-mac-mini-resize]")).toHaveLength(8);
+    expect(player.querySelector<HTMLImageElement>("[data-mac-mini-poster]")?.getAttribute("src"))
+      .toBe("data:image/jpeg;base64,ZnJhbWU=");
+    expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull();
+    // The bar is hidden until the pointer arrives.
+    expect(within(player).queryByRole("button", { name: "Open in pane" })).toBeNull();
   });
 
   it("reads the lane's desktop with the focused CHAT's machine pin", async () => {
     // A Studio chat selected from a MacBook-bound tab: every mac-desktop read
-    // the card makes must address the Studio, because that is where the display
-    // lives. `TerminalsPage` supplies the pin; the card must spend it.
+    // the player makes must address the Studio, because that is where the
+    // display lives. `TerminalsPage` supplies the pin; the player must spend it.
     const studioPin: OpenProjectBinding = {
       kind: "remote",
       key: "remote:target-studio:project-a",
@@ -1071,10 +1109,7 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
       rootPath: "/repo",
       displayName: "ADE",
     };
-    macDesktopGetStreamStatus.mockResolvedValue(
-      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
-    );
-    setMacDesktopFrame(macDesktopFrame());
+    watching();
     renderCard({ activeTool: "browser", runtimePin: studioPin });
 
     await waitFor(() => expect(macDesktopGetStreamStatus).toHaveBeenCalledWith(
@@ -1086,10 +1121,86 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
       studioPin,
     );
     expect(macDesktopOnEvent).toHaveBeenCalledWith(expect.any(Function), studioPin);
-    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    expect(await findMacPlayer()).toBeTruthy();
   });
 
-  it("keeps a closed mac-desktop card closed through a recreated display, until the toggle (M2)", async () => {
+  it("never floats while the tools pane shows the Mac Desktop, even when floated", async () => {
+    watching();
+    floatWorkLiveCardForChat("chat-1", "mac-desktop");
+    const view = renderCard({ activeTool: "mac-desktop" });
+    await waitFor(() => expect(macDesktopGetStreamStatus).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(macPlayer()).toBeNull();
+    // Mounted and hidden, so it comes back where it was.
+    expect(document.querySelector("[data-mac-mini-player='lane-1']")?.hasAttribute("hidden")).toBe(true);
+
+    // The pane moves to another tool: the desktop floats.
+    view.rerender(
+      <NativeToolFeedsProvider active runtimePin={null}>
+        <WorkLiveCornerCard
+          active
+          laneId="lane-1"
+          activeTool="git"
+          chatSessionId="chat-1"
+          runtimePin={null}
+          onPick={view.onPick}
+        />
+      </NativeToolFeedsProvider>,
+    );
+    expect(await findMacPlayer()).toBeTruthy();
+  });
+
+  it("opens in the pane from the hover bar, and offers picture in picture there", async () => {
+    watching();
+    const { onPick } = renderCard({ activeTool: null });
+    const player = await findMacPlayer();
+    fireEvent.pointerEnter(player);
+    expect(within(player).getByRole("button", { name: "Picture in picture" })).toBeTruthy();
+    fireEvent.click(within(player).getByRole("button", { name: "Open in pane" }));
+    expect(onPick).toHaveBeenCalledWith("mac-desktop");
+  });
+
+  it("drags from the picture and resizes from an edge, and remembers both", async () => {
+    watching();
+    renderCard({ activeTool: null });
+    const player = await findMacPlayer();
+    // The column is the stubbed 900×600; a 16:9 frame opens top right.
+    expect(player.style.width).toBe("320px");
+    expect(player.style.left).toBe(`${900 - 12 - 320}px`);
+    expect(player.style.top).toBe("12px");
+
+    const picture = player.querySelector("[data-mac-mini-picture]")!;
+    pointer(picture, "pointerdown", 700, 50);
+    pointer(window, "pointermove", 500, 250);
+    pointer(window, "pointerup", 500, 250);
+    expect(player.style.left).toBe(`${568 - 200}px`);
+    expect(player.style.top).toBe("212px");
+
+    const east = player.querySelector("[data-mac-mini-resize='east']")!;
+    pointer(east, "pointerdown", 688, 300);
+    pointer(window, "pointermove", 768, 300);
+    pointer(window, "pointerup", 768, 300);
+    expect(player.style.width).toBe("400px");
+    expect(player.style.left).toBe("368px");
+
+    expect(JSON.parse(window.localStorage.getItem("ade.macDesktop.floatingPlayer.v1") ?? "null"))
+      .toEqual({ width: 400, position: { x: 368, y: 212 } });
+  });
+
+  it("opens where the user last left it", async () => {
+    window.localStorage.setItem(
+      "ade.macDesktop.floatingPlayer.v1",
+      JSON.stringify({ width: 400, position: { x: 40, y: 60 } }),
+    );
+    watching();
+    renderCard({ activeTool: null });
+    const player = await findMacPlayer();
+    expect(player.style.width).toBe("400px");
+    expect(player.style.left).toBe("40px");
+    expect(player.style.top).toBe("60px");
+  });
+
+  it("keeps a closed player closed through a recreated display, until the toggle (M2)", async () => {
     macDesktopGetStatus.mockResolvedValue({
       supported: true,
       display: macDesktopDisplay(),
@@ -1097,22 +1208,22 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
       windows: [],
       recording: null,
     });
-    macDesktopGetStreamStatus.mockResolvedValue(
-      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
-    );
-    setMacDesktopFrame(macDesktopFrame());
+    watching();
     renderCard({ activeTool: "browser" });
-    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+    const player = await findMacPlayer();
+    // Wait for the display's key, which the close records.
+    await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
+    await act(async () => {});
 
-    fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
-    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    closeMacPlayer(player);
+    await waitFor(() => expect(macPlayer()).toBeNull());
     // The close still records the display it was showing, not the lane.
     expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"])
       .toBe("display:31:2026-09-18T19:00:00.000Z");
 
     // The display dies...
     emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
-    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    await waitFor(() => expect(macPlayer()).toBeNull());
     // ...and a new one is a new session, but the toggle is what decides: a
     // dismissed preview stays dismissed.
     emitMacDesktopEvent({
@@ -1121,18 +1232,15 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
     });
     act(() => { setMacDesktopFrame({ ...macDesktopFrame(), at: Date.now() + 1 }); });
     await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull();
+    expect(macPlayer()).toBeNull();
 
-    // Turning the preview back on brings the card back for the new display.
+    // Turning the preview back on brings the player back for the new display.
     act(() => { setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true); });
-    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    expect(await findMacPlayer()).toBeTruthy();
   });
 
-  it("keeps the stream alive, and decodes it, when the pane goes away (D2)", async () => {
-    macDesktopGetStreamStatus.mockResolvedValue(
-      makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }),
-    );
-    setMacDesktopFrame(macDesktopFrame());
+  it("keeps the stream alive, and decodes it in the player, when the pane goes away (D2)", async () => {
+    watching();
     const onPick = vi.fn();
     /**
      * The card and the pane, with the pane mount toggleable without disturbing
@@ -1157,29 +1265,29 @@ describe("WorkLiveCornerCard live tools that predate the card", () => {
     const view = render(<Harness showPane />);
     // The pane is the decoder owner: it starts the stream once.
     await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledTimes(1));
-    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+    const player = await findMacPlayer();
+    expect(player.querySelector("[data-mac-mini-decoder]")).toBeNull();
 
     // Hiding the pane is an unmount: before the lease this stopped the encoder
-    // (and with it the chat's viewer entry) under the card still showing it.
+    // (and with it the chat's viewer entry) under the player still showing it.
     view.rerender(<Harness showPane={false} />);
     await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledTimes(2));
     expect(macDesktopStopStream).not.toHaveBeenCalled();
-    // The pane's release waits out its grace and then finds the card holding
+    // The pane's release waits out its grace and then finds the player holding
     // the same chat, so it sends no stop at all.
     await new Promise((resolve) => setTimeout(resolve, MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS + 150));
     expect(macDesktopStopStream).not.toHaveBeenCalled();
-    // ...and the card owns a decoder now, so frames keep reaching the store.
-    const cardNode = screen.getByLabelText("Mac Desktop live preview");
-    await waitFor(() => expect(cardNode.parentElement?.querySelector("[data-live-card-decoder]")).toBeTruthy());
+    // ...and the player owns the decoder now, drawn in its own box.
+    await waitFor(() => expect(player.querySelector("[data-mac-mini-decoder] canvas")).toBeTruthy());
 
-    // Dismissing the card is the last release: the stream stops.
-    fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
+    // Closing the player is the last release: the stream stops.
+    closeMacPlayer(player);
     await waitFor(() => expect(macDesktopStopStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
     expect(macDesktopStopStream).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", localViewer: true }, null);
   });
 });
 
-describe("WorkLiveCornerCard Mac Desktop floated by the chat's agent", () => {
+describe("Mac Desktop floated by the chat's agent", () => {
   /** No tab and no viewer entry: only the agent's activity can authorize. */
   function withLaneDisplay() {
     (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -1203,7 +1311,9 @@ describe("WorkLiveCornerCard Mac Desktop floated by the chat's agent", () => {
       { laneId: "lane-1", chatSessionId: "chat-1" },
       null,
     ));
-    expect(await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 })).toBeTruthy();
+    // No frame in the store yet: the player's own decoder produces the first.
+    const player = await findMacPlayer();
+    expect(player.querySelector("[data-mac-mini-decoder] canvas")).toBeTruthy();
   });
 
   it("authorizes nothing for another chat, even on the same lane", async () => {
@@ -1213,11 +1323,11 @@ describe("WorkLiveCornerCard Mac Desktop floated by the chat's agent", () => {
     renderCard({ activeTool: "browser" });
     await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull();
+    expect(macPlayer()).toBeNull();
     expect(macDesktopStartStream).not.toHaveBeenCalled();
   });
 
-  it("stays off with the chat's preview toggle off, and × turns the agent's float off", async () => {
+  it("stays off with the chat's preview toggle off, and Close turns the agent's float off", async () => {
     withLaneDisplay();
     grantMacDesktopCardForChat("lane-1", "chat-1");
     setMacDesktopFrame(macDesktopFrame());
@@ -1225,12 +1335,11 @@ describe("WorkLiveCornerCard Mac Desktop floated by the chat's agent", () => {
     renderCard({ activeTool: "browser" });
     await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull();
+    expect(macPlayer()).toBeNull();
 
     act(() => { setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true); });
-    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
-    fireEvent.click(screen.getByLabelText("Hide the Mac Desktop preview"));
-    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    closeMacPlayer(await findMacPlayer());
+    await waitFor(() => expect(macPlayer()).toBeNull());
     expect(macDesktopCardGrantedAt("lane-1", "chat-1")).toBeNull();
     expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"]).toBeTruthy();
   });
@@ -1242,8 +1351,8 @@ describe("WorkLiveCornerCard Mac Desktop floated by the chat's agent", () => {
     const start = vi.fn(async () => ({ supported: true, display: macDesktopDisplay({ displayId: 57 }) }));
     (window.ade.macDesktop as unknown as { start: unknown }).start = start;
     renderCard({ activeTool: "browser" });
-    const card = await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
-    expect(card.querySelector("[data-live-card-off]")).toBeNull();
+    const player = await findMacPlayer();
+    expect(player.querySelector("[data-mac-mini-off]")).toBeNull();
 
     emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
     expect(await screen.findByText("Mac Desktop is off")).toBeTruthy();
@@ -1254,19 +1363,19 @@ describe("WorkLiveCornerCard Mac Desktop floated by the chat's agent", () => {
     await waitFor(() => expect(screen.queryByText("Mac Desktop is off")).toBeNull());
   });
 
-  it("lets a card nobody floated leave with its display", async () => {
+  it("lets a player nobody floated leave with its display", async () => {
     withLaneDisplay();
     macDesktopGetStreamStatus.mockResolvedValue(makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }));
     setMacDesktopFrame(macDesktopFrame());
     renderCard({ activeTool: "browser" });
-    await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
+    await findMacPlayer();
     emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
-    await waitFor(() => expect(screen.queryByLabelText("Mac Desktop live preview")).toBeNull());
+    await waitFor(() => expect(macPlayer()).toBeNull());
     expect(screen.queryByText("Mac Desktop is off")).toBeNull();
   });
 });
 
-describe("WorkLiveCornerCard Mac Desktop tags and picture in picture", () => {
+describe("Mac Desktop floating player: who drives, recording, picture in picture", () => {
   const AGENT_LEASE = {
     laneId: "lane-1",
     holder: "agent" as const,
@@ -1276,7 +1385,7 @@ describe("WorkLiveCornerCard Mac Desktop tags and picture in picture", () => {
     expiresAt: "2026-09-18T19:01:00.000Z",
   };
 
-  async function showMacDesktopCard(status: Partial<MacDesktopStatus> = {}) {
+  async function showMacDesktopPlayer(status: Partial<MacDesktopStatus> = {}) {
     (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
       makeBuiltInBrowserStatus({ visible: false, activeTabId: null, tabs: [] }),
     );
@@ -1293,20 +1402,23 @@ describe("WorkLiveCornerCard Mac Desktop tags and picture in picture", () => {
     );
     setMacDesktopFrame(macDesktopFrame());
     const { onPick } = renderCard({ activeTool: "browser" });
-    const card = await screen.findByLabelText("Mac Desktop live preview", {}, { timeout: 3_000 });
-    return Object.assign(card, { onPick });
+    const player = await findMacPlayer();
+    return Object.assign(player, { onPick });
   }
 
-  function pillText(card: HTMLElement): string {
-    return card.querySelector("[data-live-card-pill]")?.textContent ?? "";
+  /** The owner tag on the hover bar, or null. */
+  function ownerTag(player: HTMLElement): string | null {
+    fireEvent.pointerEnter(player);
+    return player.querySelector<HTMLElement>("[data-mac-mini-owner]")?.dataset.macMiniOwner ?? null;
   }
 
-  function restStatus(card: HTMLElement): string | undefined {
-    return card.querySelector<HTMLElement>("[data-live-card-status]")?.dataset.liveCardStatus;
+  function restDot(player: HTMLElement): string | undefined {
+    fireEvent.pointerLeave(player);
+    return player.querySelector<HTMLElement>("[data-mac-mini-dot]")?.dataset.macMiniDot;
   }
 
   it("names the agent holding the lease and pulses red while the desktop records", async () => {
-    const card = await showMacDesktopCard({
+    const player = await showMacDesktopPlayer({
       lease: AGENT_LEASE,
       recording: {
         laneId: "lane-1",
@@ -1318,26 +1430,25 @@ describe("WorkLiveCornerCard Mac Desktop tags and picture in picture", () => {
       },
     });
 
-    await waitFor(() => expect(pillText(card)).toContain("· agent"));
-    expect(restStatus(card)).toBe("recording");
-    expect(card.querySelector("[data-live-card-pill] [title='Recording']")).toBeTruthy();
+    await waitFor(() => expect(ownerTag(player)).toBe("agent"));
+    expect(restDot(player)).toBe("recording");
   });
 
   it("follows the lease and the recording as they change", async () => {
-    const card = await showMacDesktopCard();
+    const player = await showMacDesktopPlayer();
     await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
-    expect(pillText(card)).not.toContain("· agent");
-    expect(restStatus(card)).toBe("idle");
+    expect(ownerTag(player)).toBeNull();
+    expect(restDot(player)).toBe("idle");
 
     emitMacDesktopEvent({ type: "lease-changed", laneId: "lane-1", lease: AGENT_LEASE });
-    await waitFor(() => expect(pillText(card)).toContain("· agent"));
+    await waitFor(() => expect(ownerTag(player)).toBe("agent"));
 
     emitMacDesktopEvent({
       type: "lease-changed",
       laneId: "lane-1",
       lease: { ...AGENT_LEASE, holder: "user", holderId: "ade-window:1", holderLabel: "You" },
     });
-    await waitFor(() => expect(pillText(card)).toContain("· you"));
+    await waitFor(() => expect(ownerTag(player)).toBe("you"));
 
     emitMacDesktopEvent({
       type: "recording-changed",
@@ -1350,26 +1461,26 @@ describe("WorkLiveCornerCard Mac Desktop tags and picture in picture", () => {
         caption: null,
       },
     });
-    await waitFor(() => expect(restStatus(card)).toBe("recording"));
+    await waitFor(() => expect(restDot(player)).toBe("recording"));
 
     // Another lane's events say nothing about this one.
     emitMacDesktopEvent({ type: "lease-changed", laneId: "lane-2", lease: null });
-    expect(pillText(card)).toContain("· you");
+    expect(ownerTag(player)).toBe("you");
 
     emitMacDesktopEvent({ type: "lease-changed", laneId: "lane-1", lease: null });
     emitMacDesktopEvent({
       type: "recording-changed",
       status: { laneId: "lane-1", running: false, startedAt: null, filePath: "/tmp/r.mp4", durationMs: 900, caption: null },
     });
-    await waitFor(() => expect(restStatus(card)).toBe("idle"));
-    expect(pillText(card)).not.toContain("· you");
+    await waitFor(() => expect(restDot(player)).toBe("idle"));
+    expect(ownerTag(player)).toBeNull();
   });
 
   it("keeps picture in picture off where the window cannot do it", async () => {
-    const card = await showMacDesktopCard();
-    const button = card.querySelector<HTMLButtonElement>("[aria-label='Picture in picture']");
-    expect(button).toBeTruthy();
-    expect(button?.disabled).toBe(true);
+    const player = await showMacDesktopPlayer();
+    fireEvent.pointerEnter(player);
+    const button = within(player).getByRole<HTMLButtonElement>("button", { name: "Picture in picture" });
+    expect(button.disabled).toBe(true);
   });
 
   it("offers no picture in picture on a browser card", async () => {
@@ -1378,28 +1489,29 @@ describe("WorkLiveCornerCard Mac Desktop tags and picture in picture", () => {
     expect(card.querySelector("[aria-label='Picture in picture']")).toBeNull();
   });
 
-  it("floats the card's decoder canvas into picture in picture, and comes back when it closes", async () => {
+  it("floats the player's decoder canvas into picture in picture, and comes back when it closes", async () => {
     fakeDecoder.playing = true;
     pipSupport.supported = true;
-    const card = await showMacDesktopCard();
+    const player = await showMacDesktopPlayer();
     const canvas = await screen.findByTestId("fake-decoder-canvas", {}, { timeout: 3_000 });
-    const button = card.querySelector<HTMLButtonElement>("[aria-label='Picture in picture']");
-    await waitFor(() => expect(button?.disabled).toBe(false));
+    fireEvent.pointerEnter(player);
+    const button = () => within(player).getByRole<HTMLButtonElement>("button", { name: "Picture in picture" });
+    await waitFor(() => expect(button().disabled).toBe(false));
 
     await act(async () => {
-      fireEvent.click(button!);
+      fireEvent.click(button());
     });
     const { enterCanvasPictureInPicture } = await import("./workLiveIosPictureInPicture");
     expect(enterCanvasPictureInPicture).toHaveBeenCalledWith(canvas);
-    await waitFor(() => expect(card.hasAttribute("data-live-card-pip")).toBe(true));
+    await waitFor(() => expect(player.hasAttribute("data-mac-mini-pip")).toBe(true));
     expect(pipSessions).toHaveLength(1);
-    // The button is the card's chrome, not a click through to the pane.
-    expect(card.onPick).not.toHaveBeenCalled();
+    // The button is the player's chrome, not a trip to the pane.
+    expect(player.onPick).not.toHaveBeenCalled();
 
     act(() => {
       pipSessions[0]!.video.dispatchEvent(new Event("leavepictureinpicture"));
     });
-    await waitFor(() => expect(card.hasAttribute("data-live-card-pip")).toBe(false));
+    await waitFor(() => expect(player.hasAttribute("data-mac-mini-pip")).toBe(false));
     expect(pipSessions[0]!.stop).toHaveBeenCalled();
   });
 });

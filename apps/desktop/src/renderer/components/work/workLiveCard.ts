@@ -180,6 +180,55 @@ export function selectWorkLiveCardTool(args: {
   return best?.tool ?? null;
 }
 
+/**
+ * Whether the floating Mac Desktop is mounted, and whether it is in view.
+ *
+ * The Mac Desktop floats in its own player (`MacDesktopMiniPlayer`), not in the
+ * corner card, so this is its whole selection rule. It WANTS to show for the
+ * chat in front when that chat may see the lane's desktop (a viewer, the lease
+ * holder, or granted by its agent), the chat has not turned the preview off,
+ * and there is something to show: a picture, the Off state of a display the
+ * agent was using, or an explicit float waiting for its first frame.
+ *
+ * It is never in view while the tools pane shows the Mac Desktop. A float does
+ * not override that, unlike the corner card's Float: a copy of the pane next to
+ * the pane is the "banner over the open pane" the owner reported.
+ *
+ * `present` also covers a player that holds the lane's decoder before its first
+ * frame. The decoder lives in the player's box, so the box mounts (hidden) to
+ * produce the frame that then makes it visible.
+ */
+export function macDesktopFloatState(args: {
+  active: boolean;
+  laneId: string | null;
+  chatSessionId: string | null;
+  /** False only once the host said it cannot host a display. */
+  supported: boolean;
+  authorized: boolean;
+  dismissed: boolean;
+  hasPicture: boolean;
+  off: boolean;
+  floated: boolean;
+  /** The player holds the lane's decoder right now. */
+  decoding: boolean;
+  /** The tool filling the tools pane, or null when the pane is closed. */
+  paneTool: WorkSidebarTab | null;
+}): { present: boolean; visible: boolean } {
+  const wanted = Boolean(
+    args.active
+    && args.laneId
+    && args.chatSessionId
+    && args.supported
+    && args.authorized
+    && !args.dismissed
+    && (args.hasPicture || args.off || args.floated),
+  );
+  return {
+    present: wanted || args.decoding,
+    visible: wanted && args.paneTool !== "mac-desktop",
+  };
+}
+
 /* ── Per-tool source adapters ─────────────────────────────────────────────── */
 
 /**

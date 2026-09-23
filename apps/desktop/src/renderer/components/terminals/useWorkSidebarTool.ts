@@ -11,6 +11,7 @@ import {
 } from "../../state/appStore";
 import { closeWorkToolForReal } from "./closeWorkToolForReal";
 import { confirmAppleToolClose } from "../apple/AppleShutdownConfirm";
+import { confirmMacDesktopToolClose } from "../chat/MacDesktopStopConfirm";
 
 /**
  * The scope key is the store's own — `laneWorkViewScopeKey`. Re-exported under
@@ -197,11 +198,11 @@ export function useWorkSidebarTool(
 
   const closeTool = useCallback(
     (target: WorkSidebarTab) => {
-      const drop = () => {
+      const drop = (stopTool = true) => {
         // A4: closing a tab closes the tool behind it. Dispatched before the
         // strip write, and never awaited — the tab leaves the strip even if the
         // runtime refuses or is unreachable (see `closeWorkToolForReal`).
-        closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin });
+        if (stopTool) closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin });
         const current = latestStrip.current;
         const next = closeWorkToolTab(current.openTools, current.tool, target);
         write({
@@ -218,7 +219,17 @@ export function useWorkSidebarTool(
        * is what removes the tab, and a confirmation that ran after it would be
        * asking about a tab that had already gone. Every other tool closes on
        * the spot, with no await and no dialog.
+       *
+       * Mac Desktop asks too, while a display runs, and has a third answer:
+       * "Keep running" closes the tab and leaves the display up.
        */
+      if (target === "mac-desktop") {
+        void confirmMacDesktopToolClose({ laneId, chatSessionId, runtimePin }).then((answer) => {
+          if (answer === "stop") drop();
+          else if (answer === "keep") drop(false);
+        });
+        return;
+      }
       if (target !== "ios") {
         drop();
         return;

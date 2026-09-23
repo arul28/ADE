@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -15,6 +15,7 @@ import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes"
 import { ChatMacDesktopPanel } from "./ChatMacDesktopPanel";
 import { resetMacDesktopFrames } from "./macDesktopFrameStore";
 import { resetMacDesktopLiveViewLeasesForTests } from "./macDesktopLiveViewLease";
+import { resetMacDesktopStatusStoreForTests, stopMacDesktopLane } from "./macDesktopStatusStore";
 
 /**
  * The pane's two contracts with a machine that is not this one:
@@ -93,6 +94,7 @@ const macDesktop = {
   recheckPermissions: vi.fn(),
   requestPermission: vi.fn(),
   start: vi.fn(),
+  stop: vi.fn(async (_args: unknown, _pin?: unknown): Promise<unknown> => ({ stopped: true, releasedWindows: 0 })),
   onEvent: vi.fn((_cb: (event: MacDesktopEventPayload) => void, _pin?: OpenProjectBinding | null) => () => {}),
   startStream: vi.fn(async () => makeStreamStatus()),
   stopStream: vi.fn(async () => makeStreamStatus()),
@@ -125,11 +127,13 @@ const openPath = vi.fn(async (_path: string) => undefined);
 beforeEach(() => {
   resetMacDesktopFrames();
   resetMacDesktopLiveViewLeasesForTests();
+  resetMacDesktopStatusStoreForTests();
   vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue("00000000-0000-4000-8000-000000000000");
   for (const fn of Object.values(macDesktop)) {
     if (typeof fn === "function" && "mockClear" in fn) fn.mockClear();
   }
   macDesktop.startStream.mockResolvedValue(makeStreamStatus());
+  macDesktop.stop.mockResolvedValue({ stopped: true, releasedWindows: 0 });
   macDesktop.resolveStreamUrl.mockResolvedValue({ url: null, forwarded: false, error: "no address" });
   macDesktop.recheckPermissions.mockResolvedValue({ screenRecording: "granted", accessibility: "granted" });
   macDesktop.requestPermission.mockResolvedValue({ screenRecording: "granted", accessibility: "granted" });
@@ -580,35 +584,23 @@ describe("ChatMacDesktopPanel strip", () => {
     // The default fakes hand back no stream address, so the live view fails.
     renderPanel();
 
-    const strip = await screen.findByTestId("mac-desktop-video-stopped");
-    expect(strip.textContent).toContain("Video stopped.");
-    // The reason is folded behind Details rather than painted on the picture.
+    // On the picture, in sentence case, not a red bar across the top.
+    const card = await screen.findByTestId("mac-desktop-video-stopped");
+    expect(card.textContent).toContain("Video stopped");
+    expect(screen.getByTestId("mac-desktop-body").contains(card)).toBe(true);
     expect(screen.queryByTestId("mac-desktop-surface-status")).toBeNull();
-    expect(strip.textContent).not.toContain("returned no stream address");
+    // Not inside the surface: pressing Reconnect must not take control.
+    expect(screen.getByTestId("mac-desktop-surface").contains(card)).toBe(false);
+    // The reason is folded behind a quiet Details link.
+    expect(card.textContent).not.toContain("returned no stream address");
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
-    expect(strip.textContent).toContain("returned no stream address");
+    expect(card.textContent).toContain("returned no stream address");
 
     const before = macDesktop.startStream.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     await waitFor(() => expect(macDesktop.startStream.mock.calls.length).toBeGreaterThan(before));
   });
 
-  it("puts a revoked grant in the same strip, ahead of the stopped video it causes", async () => {
-    macDesktop.getStatus.mockResolvedValue(makeStatus({
-      hostIsLocal: true,
-      responsibleAppName: "ADE",
-      permissions: { screenRecording: "granted", accessibility: "denied" },
-    } as Partial<MacDesktopStatus>));
-
-    renderLocalPanel();
-
-    const strip = await screen.findByTestId("mac-desktop-permission");
-    expect(strip.textContent).toContain("Accessibility is off for ADE.");
-    expect(screen.getByRole("button", { name: "Open Accessibility settings" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
-    await waitFor(() => expect(macDesktop.recheckPermissions).toHaveBeenCalled());
-    expect(screen.queryByTestId("mac-desktop-video-stopped")).toBeNull();
-  });
 });
 
 describe("ChatMacDesktopPanel Apps section", () => {
@@ -699,7 +691,50 @@ describe("ChatMacDesktopPanel permission first screen", () => {
     macDesktop.start.mockRejectedValue(new Error("ADE needs Screen Recording permission."));
   });
 
-  it("shows the settings button, the steps, and the ad-hoc note only when signing is adhoc", async () => {
+  it("lists both grants with their state, one Open Settings per missing one, and its exact path", async () => {
+    macDesktop.getStatus.mockResolvedValue(deniedStatus({
+      responsibleAppName: "ADE Alpha",
+      signing: "identity",
+      permissions: { screenRecording: "denied", accessibility: "denied" },
+    }));
+    const openSystemSettingsPane = vi.fn(async () => ({ opened: true }));
+    (window as unknown as { ade: { app: Record<string, unknown> } }).ade.app.openSystemSettingsPane = openSystemSettingsPane;
+
+    renderLocalPanel();
+
+    const card = await screen.findByTestId("mac-desktop-permission-card");
+    expect(card.textContent).toContain("Mac Desktop needs two permissions");
+    expect(card.textContent).toContain("Turn these on for ADE Alpha in System Settings.");
+    expect(screen.getByTestId("mac-desktop-permission-row-screenRecording").getAttribute("data-state")).toBe("missing");
+    expect(screen.getByTestId("mac-desktop-permission-path-screenRecording").textContent)
+      .toBe("System Settings › Privacy & Security › Screen & System Audio Recording");
+    expect(screen.getByTestId("mac-desktop-permission-path-accessibility").textContent)
+      .toBe("System Settings › Privacy & Security › Accessibility");
+    // One button per missing grant, and no second button that does the same.
+    expect(screen.queryByTestId("mac-desktop-ask-macos")).toBeNull();
+    fireEvent.click(screen.getByTestId("mac-desktop-open-settings-accessibility"));
+    expect(openSystemSettingsPane).toHaveBeenCalledWith("macos-accessibility");
+    fireEvent.click(screen.getByTestId("mac-desktop-open-settings-screenRecording"));
+    expect(openSystemSettingsPane).toHaveBeenCalledWith("macos-screen-recording");
+    // Screen Recording is off, so nothing offers to start without it.
+    expect(screen.queryByTestId("mac-desktop-start-anyway")).toBeNull();
+  });
+
+  it("shows a granted row as On, and offers Start when only Accessibility is off", async () => {
+    macDesktop.getStatus.mockResolvedValue(deniedStatus({
+      signing: "identity",
+      permissions: { screenRecording: "granted", accessibility: "denied" },
+    }));
+
+    renderLocalPanel();
+
+    await screen.findByTestId("mac-desktop-permission-card");
+    expect(screen.getByTestId("mac-desktop-permission-row-screenRecording").getAttribute("data-state")).toBe("granted");
+    expect(screen.queryByTestId("mac-desktop-open-settings-screenRecording")).toBeNull();
+    expect(screen.getByTestId("mac-desktop-start-anyway")).toBeTruthy();
+  });
+
+  it("explains the stale entry fix, and opens it by default for an ad-hoc build", async () => {
     macDesktop.getStatus.mockResolvedValue(deniedStatus({
       responsibleAppName: "ADE Alpha",
       signing: "adhoc",
@@ -707,19 +742,13 @@ describe("ChatMacDesktopPanel permission first screen", () => {
 
     renderLocalPanel();
 
-    expect(await screen.findByTestId("mac-desktop-permission-block")).toBeTruthy();
-    expect(screen.getByTestId("mac-desktop-open-settings")).toBeTruthy();
-    expect(screen.getByText("Let ADE see this screen")).toBeTruthy();
-    expect(screen.getByText(/Turn on ADE Alpha under Screen Recording\./)).toBeTruthy();
-    expect(screen.getByText("Find ADE Alpha in the list and turn it on.")).toBeTruthy();
-    expect(screen.getByText("If macOS asks to quit and reopen, press Later.")).toBeTruthy();
-    expect(screen.getByText(/Press Check again\. The screen updates by itself/)).toBeTruthy();
+    const help = await screen.findByTestId("mac-desktop-permission-help");
+    expect(help.textContent).toContain("In the list, select ADE Alpha and press −.");
+    expect(help.textContent).toContain("Press +, choose ADE Alpha, and turn it on.");
     expect(screen.getByTestId("mac-desktop-adhoc-note")).toBeTruthy();
-    // The local explicit prompt is a third control on this host only.
-    expect(screen.getByTestId("mac-desktop-ask-macos")).toBeTruthy();
   });
 
-  it("hides the ad-hoc note for an identity-signed build", async () => {
+  it("keeps the help folded for an identity-signed build", async () => {
     macDesktop.getStatus.mockResolvedValue(deniedStatus({
       responsibleAppName: "ADE",
       signing: "identity",
@@ -727,7 +756,10 @@ describe("ChatMacDesktopPanel permission first screen", () => {
 
     renderLocalPanel();
 
-    expect(await screen.findByTestId("mac-desktop-permission-block")).toBeTruthy();
+    await screen.findByTestId("mac-desktop-permission-card");
+    expect(screen.queryByTestId("mac-desktop-permission-help")).toBeNull();
+    fireEvent.click(screen.getByTestId("mac-desktop-permission-help-toggle"));
+    expect(screen.getByTestId("mac-desktop-permission-help")).toBeTruthy();
     expect(screen.queryByTestId("mac-desktop-adhoc-note")).toBeNull();
   });
 
@@ -741,32 +773,66 @@ describe("ChatMacDesktopPanel permission first screen", () => {
     // The pin, not `hostIsLocal`, is what says the lane's Mac is elsewhere.
     renderPanel();
 
-    expect(await screen.findByTestId("mac-desktop-permission-block")).toBeTruthy();
-    expect(screen.queryByTestId("mac-desktop-open-settings")).toBeNull();
-    expect(screen.queryByTestId("mac-desktop-ask-macos")).toBeNull();
-    expect(screen.getByText(
-      "Grant it on Mac Studio: System Settings › Privacy & Security › Screen Recording, then press Check again.",
-    )).toBeTruthy();
+    await screen.findByTestId("mac-desktop-permission-card");
+    expect(screen.queryByTestId("mac-desktop-open-settings-screenRecording")).toBeNull();
+    expect(screen.getByTestId("mac-desktop-permission-path-screenRecording").textContent).toBe(
+      "On Mac Studio: System Settings › Privacy & Security › Screen & System Audio Recording",
+    );
   });
 
-  it("Check again calls recheck before start", async () => {
+  it("Check again re-checks, says what it found, and never starts a display", async () => {
     macDesktop.getStatus.mockResolvedValue(deniedStatus({ signing: "identity" }));
-    // The start that follows the recheck succeeds and brings the display.
-    macDesktop.start.mockResolvedValue(makeStatus());
+    macDesktop.recheckPermissions.mockResolvedValue({ screenRecording: "denied", accessibility: "granted" });
 
     renderLocalPanel();
     fireEvent.click(await screen.findByTestId("mac-desktop-check-again"));
+    expect((await screen.findByTestId("mac-desktop-check-again")).textContent).toContain("Checking…");
 
     await waitFor(() => expect(macDesktop.recheckPermissions).toHaveBeenCalledWith(
       { restartDriver: true },
       null,
     ));
-    // Opening the pane started nothing; the one start follows the recheck.
-    const recheckOrder = macDesktop.recheckPermissions.mock.invocationCallOrder.at(-1) ?? 0;
-    await waitFor(() => expect(
-      macDesktop.start.mock.invocationCallOrder.some((order) => order > recheckOrder),
-    ).toBe(true));
-    expect(macDesktop.start).toHaveBeenCalledTimes(1);
+    expect((await screen.findByTestId("mac-desktop-check-result")).textContent)
+      .toBe("Still off: Screen & System Audio Recording.");
+    expect(macDesktop.start).not.toHaveBeenCalled();
+  });
+
+  it("goes to the Off card, not Starting, once Check again finds every grant", async () => {
+    macDesktop.getStatus
+      .mockResolvedValueOnce(deniedStatus({ signing: "identity" }))
+      .mockResolvedValue(makeStatus({ display: null, hostIsLocal: true }));
+
+    renderLocalPanel();
+    fireEvent.click(await screen.findByTestId("mac-desktop-check-again"));
+
+    expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-starting")).toBeNull();
+    expect(macDesktop.start).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatMacDesktopPanel with a live display and a missing grant", () => {
+  it("shows the missing grant as a card under the top row, not a strip line", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus({
+      hostIsLocal: true,
+      responsibleAppName: "ADE",
+      permissions: { screenRecording: "granted", accessibility: "denied" },
+    } as Partial<MacDesktopStatus>));
+
+    renderLocalPanel();
+
+    const notice = await screen.findByTestId("mac-desktop-permission-inline");
+    expect(notice.textContent).toContain("Accessibility");
+    expect(notice.textContent).toContain("System Settings › Privacy & Security › Accessibility");
+    // Only the missing one is listed while the picture is live.
+    expect(screen.queryByTestId("mac-desktop-permission-row-screenRecording")).toBeNull();
+    expect(screen.queryByTestId("mac-desktop-permission")).toBeNull();
+    fireEvent.click(screen.getByTestId("mac-desktop-check-again"));
+    // A live display is never closed by a re-check.
+    await waitFor(() => expect(macDesktop.recheckPermissions).toHaveBeenCalledWith(
+      { restartDriver: false },
+      null,
+    ));
   });
 });
 
@@ -787,5 +853,104 @@ describe("ChatMacDesktopPanel with no display", () => {
     ));
     expect(await screen.findByTestId("mac-desktop-surface")).toBeTruthy();
     expect(macDesktop.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the floating-preview toggle on the Off screen", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+
+    renderPanel();
+
+    await screen.findByTestId("mac-desktop-off");
+    expect(screen.getByTestId("mac-desktop-idle-row").contains(screen.getByTestId("work-tool-preview-toggle"))).toBe(true);
+  });
+
+  it("reads again when the brain restarts, so a display that died with it goes to Off", async () => {
+    let runtimeChanged: () => void = () => {};
+    (window as unknown as { ade: { app: Record<string, unknown> } }).ade.app.onRuntimeStatusChanged = (cb: () => void) => {
+      runtimeChanged = cb;
+      return () => {};
+    };
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+
+    renderPanel();
+    await screen.findByTestId("mac-desktop-surface");
+
+    // The new brain has no display and sends no display-destroyed for the old one.
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    await act(async () => { runtimeChanged(); });
+    expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
+  });
+
+  it("turns a failed read into Can't reach, with Try again and a Reset that stops the lane", async () => {
+    macDesktop.getStatus.mockRejectedValue(new Error("Mac Desktop is not answering."));
+
+    renderPanel();
+
+    const card = await screen.findByTestId("mac-desktop-unreachable");
+    expect(card.textContent).toContain("Can't reach Mac Desktop");
+    expect(card.textContent).toContain("Mac Desktop is not answering.");
+
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    fireEvent.click(screen.getByTestId("mac-desktop-reset"));
+    await waitFor(() => expect(macDesktop.stop).toHaveBeenCalledWith(
+      { laneId: "lane-1", chatSessionId: "chat-1" },
+      STUDIO_PIN,
+    ));
+    expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
+  });
+
+  it("waits for a stop the closed tab sent, instead of showing the display that is going", async () => {
+    let finishStop: () => void = () => {};
+    macDesktop.stop.mockReturnValueOnce(new Promise((resolve) => {
+      finishStop = () => resolve({ stopped: true, releasedWindows: 0 });
+    }));
+    void stopMacDesktopLane({ laneId: "lane-1", chatSessionId: "chat-1", runtimePin: STUDIO_PIN });
+    // The host still lists the display until the stop lands.
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+
+    renderPanel();
+
+    expect(await screen.findByTestId("mac-desktop-stopping")).toBeTruthy();
+    expect(macDesktop.getStatus).not.toHaveBeenCalled();
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    await act(async () => { finishStop(); });
+    expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-surface")).toBeNull();
+  });
+});
+
+describe("ChatMacDesktopPanel way out", () => {
+  it("has Stop in the top row, asks first, and Keep running changes nothing", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("mac-desktop-stop"));
+    expect(screen.getByTestId("mac-desktop-stop-confirm").textContent).toContain("Stop Mac Desktop?");
+    fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
+    expect(screen.queryByTestId("mac-desktop-stop-confirm")).toBeNull();
+    expect(macDesktop.stop).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("mac-desktop-stop"));
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    fireEvent.click(screen.getByTestId("mac-desktop-stop-confirm-yes"));
+    await waitFor(() => expect(macDesktop.stop).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
+  });
+
+  it("says the host is not answering when a re-read fails, and offers Try again and Reset", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+
+    renderPanel();
+    await screen.findByTestId("mac-desktop-surface");
+
+    macDesktop.getStatus.mockRejectedValue(new Error("Mac Desktop is not answering."));
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+
+    const strip = await screen.findByTestId("mac-desktop-unconfirmed");
+    expect(strip.textContent).toContain("Mac Desktop is not answering.");
+    expect(strip.textContent).toContain("Try again");
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expect(screen.getByTestId("mac-desktop-stop-confirm")).toBeTruthy();
   });
 });

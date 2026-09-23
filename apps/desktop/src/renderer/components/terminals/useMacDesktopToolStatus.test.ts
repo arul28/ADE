@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { MacDesktopDisplay } from "../../../shared/types/macDesktop";
-import { macDesktopStatusLineText } from "./useMacDesktopToolStatus";
+import type { MacDesktopDisplay, MacDesktopStatus } from "../../../shared/types/macDesktop";
+import { macDesktopStatusLineText, macDesktopToolStateFromEntry } from "./useMacDesktopToolStatus";
 
 /**
  * The Mac Desktop picker card's line.
@@ -37,6 +37,23 @@ describe("macDesktopStatusLineText", () => {
       line: "Mac Desktop is off",
       live: false,
     });
+  });
+
+  it("never says active about a screen the host did not just confirm", () => {
+    expect(macDesktopStatusLineText({ display: display(), windowCount: 1, confirmed: false })).toEqual({
+      line: "Mac Desktop is not answering",
+      live: false,
+    });
+  });
+
+  it("reads the pane's entry, so the card and the pane say the same thing", () => {
+    const status = { display: display(), windows: [{ onDisplayId: 65 }, { onDisplayId: 1 }] } as unknown as MacDesktopStatus;
+    expect(macDesktopToolStateFromEntry({ status, confirmed: true })).toEqual({
+      display: display(),
+      windowCount: 1,
+      confirmed: true,
+    });
+    expect(macDesktopToolStateFromEntry(null)).toBeNull();
   });
 
   it("reports a live screen, and counts the windows only when there are some", () => {

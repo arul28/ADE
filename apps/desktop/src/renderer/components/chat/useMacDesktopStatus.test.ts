@@ -17,12 +17,18 @@ import {
 } from "../../../shared/types/macDesktop";
 import {
   MAC_DESKTOP_LOADING_RECHECK_MS,
+  MAC_DESKTOP_REVALIDATE_MIN_MS,
   MAC_DESKTOP_START_GIVE_UP_MS,
   MAC_DESKTOP_START_TOO_LONG,
   macDesktopCursorFromEvent,
   reduceMacDesktopStatus,
   useMacDesktopStatus,
 } from "./useMacDesktopStatus";
+import {
+  MAC_DESKTOP_NOT_ANSWERING,
+  MAC_DESKTOP_READ_TIMEOUT_MS,
+  resetMacDesktopStatusStoreForTests,
+} from "./macDesktopStatusStore";
 
 const display = (laneId: string): MacDesktopDisplay => ({
   laneId,
@@ -289,8 +295,8 @@ describe("macDesktopNotParkedPhrase", () => {
     expect(macDesktopNotParkedPhrase("accessibility_denied")).toBe("needs Accessibility permission");
   });
 
-  it("falls through to the raw reason, which beats a vague sentence", () => {
-    expect(macDesktopNotParkedPhrase("something_new")).toBe("something_new");
+  it("says an unknown code in plain words, never the code", () => {
+    expect(macDesktopNotParkedPhrase("window_not_movable")).toBe("couldn't move to the lane screen");
   });
 });
 
@@ -365,6 +371,7 @@ describe("useMacDesktopStatus", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    resetMacDesktopStatusStoreForTests();
     api.getStatus.mockReset();
     api.start.mockReset();
     api.onEvent.mockClear();
@@ -484,6 +491,58 @@ describe("useMacDesktopStatus", () => {
     await flush();
     expect(api.getStatus).toHaveBeenCalledTimes(2);
     expect(result.current.status?.display?.laneId).toBe("lane-1");
+  });
+
+  it("turns a host that never answers into a read error, instead of Checking forever", async () => {
+    api.getStatus.mockReturnValue(new Promise(() => {}));
+    const { result } = mount();
+    await flush();
+    expect(result.current.readError).toBeNull();
+
+    await advance(MAC_DESKTOP_READ_TIMEOUT_MS);
+    expect(result.current.status).toBeNull();
+    expect(result.current.readError).toBe(MAC_DESKTOP_NOT_ANSWERING);
+    expect(result.current.unconfirmed).toBe(true);
+
+    // The next good read clears it by itself.
+    api.getStatus.mockResolvedValue(off());
+    await act(async () => { await result.current.refresh(); });
+    expect(result.current.readError).toBeNull();
+    expect(result.current.unconfirmed).toBe(false);
+    expect(result.current.status?.display).toBeNull();
+  });
+
+  it("does not let a slow read undo a display event that came after it was sent", async () => {
+    api.getStatus.mockResolvedValue(baseStatus());
+    const { result } = mount();
+    await flush();
+    expect(result.current.status?.display?.laneId).toBe("lane-1");
+
+    const slow = deferred<MacDesktopStatus>();
+    api.getStatus.mockReturnValueOnce(slow.promise);
+    act(() => { void result.current.refresh(); });
+    act(() => emit({ type: "display-destroyed", laneId: "lane-1", reason: "driver_lost" }));
+    expect(result.current.status?.display).toBeNull();
+
+    await act(async () => {
+      slow.resolve(baseStatus());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.status?.display).toBeNull();
+  });
+
+  it("re-reads when the window comes back into focus", async () => {
+    api.getStatus.mockResolvedValue(baseStatus());
+    const { result } = mount();
+    await flush();
+    await advance(MAC_DESKTOP_REVALIDATE_MIN_MS);
+
+    api.getStatus.mockResolvedValue(off());
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.status?.display).toBeNull();
   });
 
   it("re-reads every 8 s while the first read has not answered", async () => {

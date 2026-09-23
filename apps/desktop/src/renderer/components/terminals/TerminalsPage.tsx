@@ -30,6 +30,7 @@ import {
   waitForWorkToolOnScreen,
 } from "../../lib/workToolOnScreen";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
+import { MacDesktopStopConfirmHost } from "../chat/MacDesktopStopConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -1712,6 +1713,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               renders nothing until something asks.
             */}
             <AppleShutdownConfirmHost />
+            {/* The Mac Desktop tab's "Stop Mac Desktop?", for the same reason. */}
+            <MacDesktopStopConfirmHost />
           </div>
           {/* Resize handle stays a row-level sibling so its width math is correct. */}
           {workSidebarVisible && !workToolsMaximized ? (

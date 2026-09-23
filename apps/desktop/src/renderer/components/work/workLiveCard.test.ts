@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  macDesktopFloatState,
   WORK_LIVE_CARD_DEFAULT_WIDTH,
   WORK_LIVE_CARD_INSET,
   WORK_LIVE_CARD_MAX_HEIGHT,
@@ -862,5 +863,50 @@ describe("picture-in-picture gating", () => {
   it("strips the query string the helper never reads", () => {
     expect(workLiveIosStreamRequestUrl("http://127.0.0.1:9/stream?token=secret"))
       .toBe("http://127.0.0.1:9/stream");
+  });
+});
+
+describe("macDesktopFloatState", () => {
+  const BASE = {
+    active: true,
+    laneId: "lane-1",
+    chatSessionId: "chat-1",
+    supported: true,
+    authorized: true,
+    dismissed: false,
+    hasPicture: true,
+    off: false,
+    floated: false,
+    decoding: false,
+    paneTool: null,
+  } as const;
+
+  it("floats a picture the chat may see while the pane shows something else", () => {
+    expect(macDesktopFloatState(BASE)).toEqual({ present: true, visible: true });
+    expect(macDesktopFloatState({ ...BASE, paneTool: "git" })).toEqual({ present: true, visible: true });
+  });
+
+  it("is never in view while the pane shows the Mac Desktop, floated or not", () => {
+    expect(macDesktopFloatState({ ...BASE, paneTool: "mac-desktop" })).toEqual({ present: true, visible: false });
+    expect(macDesktopFloatState({ ...BASE, paneTool: "mac-desktop", floated: true }).visible).toBe(false);
+  });
+
+  it("wants a picture, the Off state, or an explicit float", () => {
+    expect(macDesktopFloatState({ ...BASE, hasPicture: false }).present).toBe(false);
+    expect(macDesktopFloatState({ ...BASE, hasPicture: false, off: true }).visible).toBe(true);
+    expect(macDesktopFloatState({ ...BASE, hasPicture: false, floated: true }).visible).toBe(true);
+  });
+
+  it("mounts hidden while it decodes the first frame", () => {
+    expect(macDesktopFloatState({ ...BASE, hasPicture: false, decoding: true }))
+      .toEqual({ present: true, visible: false });
+  });
+
+  it("shows nothing to a chat that may not see it, or that turned it off", () => {
+    expect(macDesktopFloatState({ ...BASE, authorized: false }).present).toBe(false);
+    expect(macDesktopFloatState({ ...BASE, dismissed: true }).present).toBe(false);
+    expect(macDesktopFloatState({ ...BASE, chatSessionId: null }).present).toBe(false);
+    expect(macDesktopFloatState({ ...BASE, supported: false }).present).toBe(false);
+    expect(macDesktopFloatState({ ...BASE, active: false }).present).toBe(false);
   });
 });

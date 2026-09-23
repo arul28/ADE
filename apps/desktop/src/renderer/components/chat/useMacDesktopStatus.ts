@@ -13,6 +13,16 @@ import { MAC_DESKTOP_CURSOR_FADE_MS } from "./macDesktopGeometry";
 import { captionMacDesktopFrame, clearMacDesktopFrame } from "./macDesktopFrameStore";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import { macDesktopApi } from "./macDesktopApi";
+import {
+  MAC_DESKTOP_STOP_WAIT_MS,
+  macDesktopPendingStop,
+  macDesktopStatusKey,
+  publishMacDesktopStatus,
+  publishMacDesktopUnconfirmed,
+  stopMacDesktopLane,
+  subscribeMacDesktopRuntimeChanges,
+  withMacDesktopTimeout,
+} from "./macDesktopStatusStore";
 
 /**
  * One lane's desktop status: the first read, then events, and an explicit start.
@@ -42,6 +52,14 @@ export const MAC_DESKTOP_LOADING_RECHECK_MS = 8_000;
  */
 export const MAC_DESKTOP_START_GIVE_UP_MS = 150_000;
 export const MAC_DESKTOP_START_TOO_LONG = "Mac Desktop is taking too long to start.";
+/**
+ * Coming back to the window re-reads the status, at most this often.
+ *
+ * Returning to the pane after typing elsewhere used to show whatever the pane
+ * last knew, and a display that died meanwhile stayed "live" until an event
+ * that never came.
+ */
+export const MAC_DESKTOP_REVALIDATE_MIN_MS = 3_000;
 
 /**
  * Re-reads the status every `MAC_DESKTOP_LOADING_RECHECK_MS` while `waiting`.
@@ -167,7 +185,24 @@ export type UseMacDesktopStatus = {
   /** The last thing that went wrong loudly enough to replace the picture. */
   error: string | null;
   setError: (message: string | null) => void;
+  /**
+   * Why the newest status read failed, or null once one succeeds.
+   *
+   * Kept apart from `error`: a read that failed or timed out says nothing
+   * about the display, only that the host did not answer, and the next good
+   * read clears it by itself.
+   */
+  readError: string | null;
+  /**
+   * The newest read failed. What `status` says may be out of date, so the
+   * pane must not present it as live without saying so.
+   */
+  unconfirmed: boolean;
   refresh: () => Promise<MacDesktopStatus>;
+  /** Stops the lane's display, then reads the truth. */
+  stop: () => Promise<boolean>;
+  /** A stop is in flight, from this pane or from closing the tab. */
+  stopping: boolean;
   /** Creates the lane's display. Idempotent on the host, so a retry is safe. */
   start: () => Promise<MacDesktopStatus | null>;
   /** A create is in flight — the empty state says so instead of offering one. */
@@ -208,15 +243,74 @@ export function useMacDesktopStatus(args: {
    */
   const [graceTick, setGraceTick] = useState(0);
 
+  const [readError, setReadError] = useState<string | null>(null);
+  const [unconfirmed, setUnconfirmed] = useState(false);
+  const storeKey = macDesktopStatusKey(laneId, runtimePin);
+  const [stopping, setStopping] = useState(() => macDesktopPendingStop(storeKey) !== null);
+
+  const errorText = useCallback((caught: unknown) => macDesktopErrorText(
+    caught instanceof Error ? caught.message : String(caught),
+    { laneId, laneName, machineName, machineVersion },
+  ), [laneId, laneName, machineName, machineVersion]);
+  const errorTextRef = useRef(errorText);
+  errorTextRef.current = errorText;
+
+  /**
+   * Which read is the newest, and how many display events came in since.
+   *
+   * Reads overlap: the first read, the recheck, a focus re-read and a Start's
+   * follow-up can all be out at once, and the slowest used to win. Only the
+   * newest read may write, and only if no display event arrived while it was
+   * out, because that event is newer than anything the read saw.
+   *
+   * "Newest" is by when a read was sent, among the ones that have answered.
+   * Ranking against reads still out would let an 8 s recheck supersede every
+   * read before its 10 s timeout fired, and a stuck host would never be said
+   * to be stuck.
+   */
+  const readSeqRef = useRef(0);
+  const settledSeqRef = useRef(0);
+  const eventEpochRef = useRef(0);
+
   const refresh = useCallback(async () => {
-    const next = await macDesktopApi().getStatus({ laneId, chatSessionId: sessionId }, runtimePin);
-    setStatus(next);
-    return next;
+    const seq = readSeqRef.current + 1;
+    readSeqRef.current = seq;
+    const epoch = eventEpochRef.current;
+    const newest = () => {
+      if (seq <= settledSeqRef.current) return false;
+      settledSeqRef.current = seq;
+      return true;
+    };
+    try {
+      // A read that never answers is a failed read. Without the timeout the
+      // pane sat on "Checking Mac Desktop…" for as long as the host was stuck.
+      const next = await withMacDesktopTimeout(
+        macDesktopApi().getStatus({ laneId, chatSessionId: sessionId }, runtimePin),
+      );
+      if (newest()) {
+        if (epoch === eventEpochRef.current) setStatus(next);
+        setReadError(null);
+        setUnconfirmed(false);
+      }
+      return next;
+    } catch (caught) {
+      if (newest()) {
+        setReadError(errorTextRef.current(caught));
+        setUnconfirmed(true);
+      }
+      throw caught;
+    }
   }, [laneId, runtimePin, sessionId]);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   const statusRef = useRef(status);
   statusRef.current = status;
+
+  // The tool card draws from the same entry, so the two cannot disagree.
+  useEffect(() => {
+    if (status) publishMacDesktopStatus(storeKey, { status, confirmed: !unconfirmed });
+    else if (unconfirmed) publishMacDesktopUnconfirmed(storeKey);
+  }, [status, storeKey, unconfirmed]);
 
   /**
    * The explicit start: the Off card's Start, "Check again" and a retry.
@@ -255,17 +349,39 @@ export function useMacDesktopStatus(args: {
       else void refresh().catch(() => undefined);
       return started;
     } catch (caught) {
-      if (current()) {
-        setError(macDesktopErrorText(
-          caught instanceof Error ? caught.message : String(caught),
-          { laneId, laneName, machineName, machineVersion },
-        ));
-      }
+      if (current()) setError(errorText(caught));
       return null;
     } finally {
       if (current()) setStartedAt(null);
     }
-  }, [laneId, laneName, machineName, machineVersion, refresh, runtimePin, sessionId]);
+  }, [errorText, laneId, laneName, refresh, runtimePin, sessionId]);
+
+  /**
+   * Stop: the header's Stop, and Reset when the pane cannot tell what state
+   * the lane is in. Always followed by a read, so the pane shows what the host
+   * says rather than what the stop promised.
+   */
+  const stop = useCallback(async (): Promise<boolean> => {
+    settleStart();
+    setGaveUp(false);
+    setError(null);
+    setStopping(true);
+    let stopped = true;
+    try {
+      await withMacDesktopTimeout(
+        stopMacDesktopLane({ laneId, chatSessionId: sessionId, runtimePin }),
+        MAC_DESKTOP_STOP_WAIT_MS,
+        "Mac Desktop did not stop in time.",
+      );
+    } catch (caught) {
+      stopped = false;
+      setError(errorText(caught));
+    } finally {
+      setStopping(false);
+    }
+    await refresh().catch(() => undefined);
+    return stopped;
+  }, [errorText, laneId, refresh, runtimePin, sessionId, settleStart]);
 
   // A display for this lane ends the start, whether the promise, the event or
   // a re-read brought it.
@@ -292,29 +408,55 @@ export function useMacDesktopStatus(args: {
 
   // The first read only. Watching never creates a display. It runs again when
   // the machine's name or version arrives, so a failure can name them.
+  //
+  // A stop still in flight is waited for first. Closing the tab sends one and
+  // does not wait, and a pane reopened a moment later used to read the display
+  // that was about to go, show it, then flip to Off.
   useEffect(() => {
     let cancelled = false;
     setError(null);
     setGaveUp(false);
     void (async () => {
-      try {
-        await refresh();
-      } catch (caught) {
-        if (!cancelled) {
-          setError(macDesktopErrorText(
-            caught instanceof Error ? caught.message : String(caught),
-            { laneId, laneName, machineName, machineVersion },
-          ));
-        }
+      const pendingStop = macDesktopPendingStop(storeKey);
+      if (pendingStop) {
+        setStopping(true);
+        await withMacDesktopTimeout(pendingStop, MAC_DESKTOP_STOP_WAIT_MS).catch(() => undefined);
+        if (cancelled) return;
+        setStopping(false);
       }
+      // A failure lands in `readError`, which the pane shows with Try again.
+      await refresh().catch(() => undefined);
     })();
     return () => {
       cancelled = true;
     };
-  }, [laneId, laneName, machineName, machineVersion, refresh]);
+  }, [laneId, laneName, machineName, machineVersion, refresh, storeKey]);
 
   // While the first read or a start is pending, re-read the truth.
-  useMacDesktopRecheck(starting || (status === null && error === null), refresh);
+  useMacDesktopRecheck(starting || (status === null && readError === null && !stopping), refresh);
+
+  // Coming back to the window re-reads. A display that died while the person
+  // was typing elsewhere must not still look live when they return. So does a
+  // brain restart or a runtime reconnect: the new brain has no display to say
+  // "destroyed" about, so no event would ever correct the pane.
+  useEffect(() => {
+    let last = 0;
+    const revalidate = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - last < MAC_DESKTOP_REVALIDATE_MIN_MS) return;
+      last = now;
+      void refreshRef.current().catch(() => undefined);
+    };
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", revalidate);
+    const disposeRuntime = subscribeMacDesktopRuntimeChanges(revalidate);
+    return () => {
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", revalidate);
+      disposeRuntime();
+    };
+  }, []);
 
   useEffect(() => {
     const api = window.ade.macDesktop;
@@ -325,6 +467,10 @@ export function useMacDesktopStatus(args: {
         (event.type === "display-created" && event.display.laneId === laneId)
         || (event.type === "display-destroyed" && event.laneId === laneId)
       ) {
+        // A read already out saw the world before this event. Only once there
+        // is a status for the event to have changed: before that the reducer
+        // drops it, and the read is the only thing that can fill the pane.
+        if (statusRef.current) eventEpochRef.current += 1;
         // Before the first read lands the reducer drops the event, so read
         // again: the pane must not wait for the next tick to show the change.
         if (!statusRef.current) void refreshRef.current().catch(() => undefined);
@@ -388,7 +534,11 @@ export function useMacDesktopStatus(args: {
     setStatus,
     error,
     setError,
+    readError,
+    unconfirmed,
     refresh,
+    stop,
+    stopping,
     start,
     starting,
     gaveUp,

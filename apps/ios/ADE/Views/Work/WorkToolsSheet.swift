@@ -709,7 +709,8 @@ struct WorkToolsSheet: View {
     if code.contains("permission") || code.contains("accessibility") || code.contains("not_trusted") {
       return "needs Accessibility permission"
     }
-    return reason
+    // Never the raw code: a user cannot act on "window_not_movable".
+    return "couldn't move to the lane screen"
   }
 
   private func refresh() async {

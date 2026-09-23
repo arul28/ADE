@@ -5,6 +5,7 @@ import {
   suppressAppleMiniPlayerHandoff,
 } from "../apple/appleMiniPlayerStore";
 import { forgetAppleStreamLeasesForLane } from "../apple/appleStreamLease";
+import { stopMacDesktopLane } from "../chat/macDesktopStatusStore";
 
 /**
  * Closing a tool's TAB closes the tool, not just its tab.
@@ -138,7 +139,10 @@ export function closeWorkToolForReal(
     case "mac-desktop": {
       const macDesktop = window.ade?.macDesktop;
       if (!macDesktop?.stop || !laneId) return;
-      void macDesktop.stop({ laneId, chatSessionId }, pin)
+      // Through the status store, so a pane reopened before the stop answers
+      // waits for it ("Stopping Mac Desktop…") instead of showing the display
+      // that is about to go.
+      void stopMacDesktopLane({ laneId, chatSessionId, runtimePin })
         .catch((error) => logCloseFailure(tool, error));
       return;
     }
