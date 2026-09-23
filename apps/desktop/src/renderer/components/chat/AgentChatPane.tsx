@@ -6646,7 +6646,7 @@ export function AgentChatPane({
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
-    options?: { force?: boolean },
+    options?: { force?: boolean; keepOnError?: boolean },
   ) => {
     if (!sessionId) {
       computerUseSnapshotInFlightRef.current = null;
@@ -6679,7 +6679,7 @@ export function AgentChatPane({
           setComputerUseSnapshot(snapshot);
         }
       } catch {
-        if (selectedSessionIdRef.current === sessionId) {
+        if (selectedSessionIdRef.current === sessionId && !options?.keepOnError) {
           setComputerUseSnapshot(null);
         }
       } finally {
@@ -7468,23 +7468,30 @@ export function AgentChatPane({
   // for that read, so "shown" and "no proof yet" both follow real data.
   const [proofShowRequested, setProofShowRequested] = useState(false);
   const [proofScrollNonce, setProofScrollNonce] = useState(0);
+  // One per show. Closing the drawer or changing chat bumps it too, so a read
+  // that comes back after either does not reopen a proof section nobody asked for.
+  const proofShowTokenRef = useRef(0);
   const openProofDrawerForShow = useCallback(() => {
     setChatActionsOpen(true);
-    const sessionId = selectedSessionIdRef.current;
-    void refreshComputerUseSnapshot(sessionId, { force: true }).finally(() => {
-      if (selectedSessionIdRef.current !== sessionId) return;
+    const token = ++proofShowTokenRef.current;
+    // A failed read keeps the proof already on screen rather than blanking it.
+    void refreshComputerUseSnapshot(selectedSessionIdRef.current, { force: true, keepOnError: true }).finally(() => {
+      if (proofShowTokenRef.current !== token) return;
       setProofShowRequested(true);
       setProofScrollNonce((nonce) => nonce + 1);
     });
   }, [refreshComputerUseSnapshot]);
   useEffect(() => {
-    if (!chatActionsOpen) setProofShowRequested(false);
+    if (chatActionsOpen) return;
+    proofShowTokenRef.current += 1;
+    setProofShowRequested(false);
   }, [chatActionsOpen]);
   // Before the show handler registers: a show held while this chat was out of
   // view is delivered as the handler registers, and it must not be closed
   // again by this reset in the same commit.
   useEffect(() => {
     setChatActionsOpen(false);
+    proofShowTokenRef.current += 1;
     setProofShowRequested(false);
     setHandoffBusy(false);
     setModelPickerOpenRequest(undefined);
@@ -7823,7 +7830,6 @@ export function AgentChatPane({
     readableSessionId,
     refreshComputerUseSnapshot,
   ]);
-
 
   useEffect(() => {
     optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;
