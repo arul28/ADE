@@ -1,156 +1,228 @@
 import SwiftUI
 
-/// Compact disclosure above a chat transcript: "Tools · Browser active · 3 tabs".
-///
-/// The Work tools pane — browser, App Control, iOS simulator — runs on the
-/// desktop and cannot run here. What the phone can usefully answer is *what is
-/// my Mac doing right now*, so this row summarises that in one line and opens a
-/// read-only sheet. It is a disclosure, not a control: nothing behind it drives
-/// anything.
-///
-/// The row hides itself completely when the brain does not advertise
-/// `workTools.getLaneState`, or when there is nothing to say. An empty "Tools ›"
-/// that opens onto "nothing here" is worse than no row at all.
-struct WorkToolsRow: View {
-  let laneId: String
+// MARK: - Chips (pure)
 
-  /// Poll cadence while the row is on screen. Deliberately much slower than
-  /// `WorkToolsSheet`'s 3s: the sheet is a surface the user opened to watch,
-  /// whereas this row sits behind every chat transcript, so it only has to
-  /// catch up within a few breaths of the Mac switching tools or closing tabs.
-  private static let refreshInterval: Duration = .seconds(10)
+/// What a lane tool chip opens onto. Only things the phone can actually watch
+/// or read get a chip: the Mac's active tool on its own ("Apple active") is a
+/// fact about someone else's window, not something to tap, so it has none.
+enum WorkToolChipKind: Equatable {
+  /// The lane's Apple device, while it is up. Opens `AppleDeviceViewer`.
+  /// `family` is the status's raw family, for the glyph.
+  case simulator(family: String?)
+  /// The desktop browser's tabs. Opens `WorkToolsSheet`.
+  case browser
+  /// What App Control is attached to. Opens `WorkToolsSheet`.
+  case appControl
+}
 
-  @EnvironmentObject private var syncService: SyncService
-  @State private var state: WorkToolsLaneState?
-  @State private var toolsPresented = false
+struct WorkToolChip: Equatable, Identifiable {
+  let kind: WorkToolChipKind
+  let label: String
+  /// Browser chip only: a chat in this lane is driving the browser right now.
+  var agentUsingBrowser: Bool = false
 
-  /// One root, so the probe and the sheet keep a single identity. Branching at
-  /// the top level would give the two cases different identities, cancelling
-  /// the poll and tearing down an open sheet every time the row appears or
-  /// disappears.
-  var body: some View {
-    Group {
-      if syncService.supportsWorkToolsState, let summary = summaryLine {
-        summaryButton(summary)
-      }
+  var id: String {
+    switch kind {
+    case .simulator: return "simulator"
+    case .browser: return "browser"
+    case .appControl: return "app-control"
     }
-    .task(id: laneId) { await refresh() }
-    .task(id: laneId) {
-      // The desktop's state is not table-backed, so there is nothing to
-      // subscribe to; poll while the row is alive and stop when it is not.
-      // The poll lives beside the initial load rather than inside it — the
-      // same two-`.task` shape `WorkToolsSheet` uses — so a slow first
-      // response cannot delay the cadence.
-      while !Task.isCancelled {
-        try? await Task.sleep(for: Self.refreshInterval)
-        guard !Task.isCancelled else { return }
-        // The sheet is presented *from* this row, so the row stays mounted and
-        // this loop keeps running underneath it. Skip while it is up: the
-        // sheet polls the same `workTools.getLaneState` every 3s and is the
-        // authoritative view, so a second read here is a duplicate RPC and a
-        // duplicate decode for a summary line nobody can see. The row catches
-        // up on the next tick after dismissal.
-        guard !toolsPresented else { continue }
-        await refresh()
-      }
-    }
-    .sheet(isPresented: $toolsPresented) {
-      WorkToolsSheet(laneId: laneId)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-    }
-  }
-
-  private func summaryButton(_ summary: String) -> some View {
-    Button {
-      ADEHaptics.light()
-      toolsPresented = true
-    } label: {
-      HStack(spacing: 6) {
-        Image(systemName: "wrench.and.screwdriver")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text(summary)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        // A globe while an agent is driving the browser. A glyph rather than
-        // another word in the summary: this row truncates at the width of a
-        // phone, and the one thing that must survive the truncation is the fact
-        // that something is happening RIGHT NOW. It sits outside the elastic
-        // text so it cannot be truncated away.
-        if isAgentUsingBrowser {
-          Image(systemName: "globe")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .accessibilityHidden(true)
-        }
-        Spacer(minLength: 0)
-        Image(systemName: "chevron.right")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 5)
-      .frame(minHeight: 32)
-      .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.6)
-      )
-      // The capsule stays visually compact — it sits above a transcript, not in
-      // a toolbar — but the tappable region is padded out to the 44pt minimum
-      // and made a full rectangle, so the hit area is not the drawn capsule.
-      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      isAgentUsingBrowser
-        ? "Tools on your Mac. \(summary). An agent is using the browser."
-        : "Tools on your Mac. \(summary)"
-    )
-    .accessibilityHint("Opens a read-only view of this lane's tools")
-    .accessibilityAddTraits(.isButton)
-  }
-
-  /// One line, most-specific-first: the pane the desktop has open, then what is
-  /// actually in it. Returns nil when there is genuinely nothing to report.
-  private var summaryLine: String? {
-    guard let state else { return nil }
-    var parts: [String] = []
-    if let label = workToolsDisplayName(state.activeTool) {
-      parts.append("\(label) active")
-    }
-    if let tabCount = state.browser?.tabs.count, tabCount > 0 {
-      parts.append(tabCount == 1 ? "1 tab" : "\(tabCount) tabs")
-    }
-    if let appControl = state.appControl {
-      parts.append(appControl.appName)
-    }
-    // An agent on the browser is reason enough for the row to exist even when
-    // there is nothing else to name — the glyph beside this text is the news,
-    // so it adds no words of its own.
-    guard !parts.isEmpty else { return isAgentUsingBrowser ? "Tools" : nil }
-    return (["Tools"] + parts).joined(separator: " · ")
-  }
-
-  /// Whether a chat in this lane is driving the browser right now. Derived on the
-  /// Mac from the browser commands themselves, and it expires on its own — so a
-  /// row that stops seeing it simply stops showing it.
-  private var isAgentUsingBrowser: Bool {
-    !(state?.agentBrowserPresence ?? []).isEmpty
-  }
-
-  private func refresh() async {
-    guard syncService.supportsWorkToolsState else { return }
-    let next = try? await syncService.fetchWorkToolsLaneState(laneId: laneId)
-    guard !Task.isCancelled else { return }
-    state = next
   }
 }
+
+/// The lane's tool chips for the chat's floating badge row, in order:
+/// simulator, browser, App Control.
+///
+/// - Simulator: only while the lane's device is up (`appleDeviceRunningName`).
+///   A device the lane keeps after Shut down is not advertised.
+/// - Browser: when the desktop browser has tabs ("1 tab" / "N tabs"), or when
+///   an agent is driving it with none listed ("Browser") — an agent on the
+///   browser was always reason enough to surface it.
+/// - App Control: the attached app's name.
+func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) -> [WorkToolChip] {
+  var chips: [WorkToolChip] = []
+  if let name = appleDeviceRunningName(appleDevice) {
+    chips.append(WorkToolChip(kind: .simulator(family: appleDevice?.device?.family), label: name))
+  }
+  let tabCount = state?.browser?.tabs.count ?? 0
+  let agentUsingBrowser = workToolsAgentIsUsingBrowser(state)
+  if tabCount > 0 || agentUsingBrowser {
+    let label: String
+    switch tabCount {
+    case 0: label = "Browser"
+    case 1: label = "1 tab"
+    default: label = "\(tabCount) tabs"
+    }
+    chips.append(WorkToolChip(kind: .browser, label: label, agentUsingBrowser: agentUsingBrowser))
+  }
+  if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
+     !appName.isEmpty {
+    chips.append(WorkToolChip(kind: .appControl, label: appName))
+  }
+  return chips
+}
+
+/// Whether a chat in this lane is driving the browser right now. Derived on the
+/// Mac from the browser commands themselves, and it expires on its own — so a
+/// chip that stops seeing it simply stops showing it.
+func workToolsAgentIsUsingBrowser(_ state: WorkToolsLaneState?) -> Bool {
+  !(state?.agentBrowserPresence ?? []).isEmpty
+}
+
+/// The lane's device name while it is up ("iPhone 16 Pro"), nil otherwise.
+///
+/// Up means simctl reports it `Booted`, or the host is streaming it. A device
+/// the lane keeps after Shut down carries its own `state` ("Shutdown"), and a
+/// status with no device state at all is not evidence the device is on, so
+/// both read as off. The host fills a missing name with the udid; that is not
+/// a name, so the family ("iPhone") stands in for it.
+func appleDeviceRunningName(_ status: AppleDeviceStatus?) -> String? {
+  guard let device = status?.device else { return nil }
+  let booted = device.state?.caseInsensitiveCompare("Booted") == .orderedSame
+  guard booted || status?.stream?.running == true else { return nil }
+  let name = device.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let usableName = (name?.isEmpty == false && name != device.udid) ? name : nil
+  return usableName ?? appleDeviceFamilyLabel(device.family) ?? "Simulator"
+}
+
+// MARK: - Model
+
+/// Reads the lane's tool state for the chat's badge row.
+///
+/// The Work tools pane — browser, App Control, the Apple device — runs on the
+/// Mac. The phone can watch the device and read the rest, so the chat shows a
+/// chip for each of those that exists right now. The Mac's state is not
+/// table-backed, so this polls: one loop per chat, every 10 s, cancelled with
+/// the chat's `.task`.
+///
+/// Only the derived chips are published. `apple.status` carries fps and
+/// bitrate, which change on every read while a stream runs; publishing the raw
+/// status would re-render the whole chat every tick for numbers no chip shows.
+@MainActor
+final class WorkLaneToolsModel: ObservableObject {
+  /// Deliberately much slower than `WorkToolsSheet`'s 3 s: that is a surface
+  /// the user opened to watch, whereas these chips sit behind every chat.
+  static let refreshInterval: Duration = .seconds(10)
+
+  @Published private(set) var chips: [WorkToolChip] = []
+  /// Handed to `AppleDeviceViewer` as its first frame of state. Not published.
+  private(set) var appleStatus: AppleDeviceStatus?
+  /// True while the tools sheet or the device viewer is up. Both poll the same
+  /// reads faster and are the authoritative view, so a tick here would be a
+  /// duplicate RPC for chips nobody can see. The next tick after dismissal
+  /// catches up.
+  var paused = false
+
+  func run(laneId: String, syncService: SyncService) async {
+    chips = []
+    appleStatus = nil
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    await refresh(laneId: trimmed, syncService: syncService)
+    while !Task.isCancelled {
+      try? await Task.sleep(for: Self.refreshInterval)
+      guard !Task.isCancelled else { return }
+      guard !paused else { continue }
+      await refresh(laneId: trimmed, syncService: syncService)
+    }
+  }
+
+  /// Both reads at once, each gated on its own action: a Mac with the pane
+  /// state but no Apple support keeps the chips it always could show, and
+  /// neither read goes on the wire unadvertised.
+  func refresh(laneId: String, syncService: SyncService) async {
+    let readTools = syncService.supportsWorkToolsState
+    let readApple = syncService.supportsAppleDeviceStatus
+    async let nextState: WorkToolsLaneState? = readTools
+      ? (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))
+      : nil
+    async let nextApple: AppleDeviceStatus? = readApple
+      ? (try? await syncService.fetchAppleDeviceStatus(laneId: laneId))
+      : nil
+    let (tools, apple) = await (nextState, nextApple)
+    guard !Task.isCancelled else { return }
+    appleStatus = apple
+    let next = workToolChips(state: tools, appleDevice: apple)
+    if next != chips { chips = next }
+  }
+
+  #if DEBUG
+  /// Fixture seam for previews and simulator screenshots.
+  func installPreview(state: WorkToolsLaneState?, appleStatus: AppleDeviceStatus?) {
+    self.appleStatus = appleStatus
+    chips = workToolChips(state: state, appleDevice: appleStatus)
+  }
+  #endif
+}
+
+#if DEBUG
+/// What a preview installs into `WorkLaneToolsModel` in place of the poll.
+struct WorkLaneToolsPreview {
+  var state: WorkToolsLaneState?
+  var appleStatus: AppleDeviceStatus?
+}
+#endif
+
+// MARK: - Chip view
+
+/// One lane tool chip in the chat's badge row. Same capsule as the PR and chat
+/// info chips (`WorkComposerBadgeCapsule`), so the row reads as one set.
+struct WorkLaneToolChipView: View {
+  let chip: WorkToolChip
+  let onOpen: () -> Void
+
+  var body: some View {
+    WorkComposerBadgeCapsule(
+      tint: tint,
+      spacing: 6,
+      accessibilityLabel: accessibilityText,
+      onOpen: onOpen
+    ) {
+      Image(systemName: symbol)
+        .font(.system(size: 13, weight: .semibold))
+      Text(chip.label)
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+      if case .simulator = chip.kind {
+        // The device is up: a small live dot, the one colour on the chip.
+        Circle()
+          .fill(ADEColor.success)
+          .frame(width: 6, height: 6)
+          .accessibilityHidden(true)
+      }
+    }
+  }
+
+  private var symbol: String {
+    switch chip.kind {
+    case .simulator(let family): return family == "ipad" ? "ipad" : "iphone"
+    case .browser: return "globe"
+    case .appControl: return "macwindow"
+    }
+  }
+
+  /// Neutral by default; the browser chip takes the accent while an agent is
+  /// driving it, which is the signal the old Tools row carried as a globe.
+  private var tint: Color {
+    chip.agentUsingBrowser ? ADEColor.accent : ADEColor.textSecondary
+  }
+
+  private var accessibilityText: String {
+    switch chip.kind {
+    case .simulator:
+      return "\(chip.label) running on your Mac. Tap to watch."
+    case .browser:
+      let base = chip.label == "Browser" ? "Browser on your Mac" : "Browser on your Mac, \(chip.label)"
+      return chip.agentUsingBrowser
+        ? "\(base). An agent is using the browser. Tap for details."
+        : "\(base). Tap for details."
+    case .appControl:
+      return "App Control on your Mac, \(chip.label). Tap for details."
+    }
+  }
+}
+
+// MARK: - Labels
 
 /// Human label for a `WorkToolId`. Unknown ids come from a newer desktop, so
 /// they are shown verbatim rather than dropped — the phone should not decide a

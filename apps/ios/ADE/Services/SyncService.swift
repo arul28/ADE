@@ -14943,8 +14943,8 @@ final class SyncService: ObservableObject {
   ///
   /// Optional on purpose: a brain that predates the feature, or a chat-only
   /// runtime that never built the aggregator, simply omits the action. The
-  /// phone hides the Tools row rather than offering a disclosure that opens
-  /// onto an error.
+  /// phone then shows no browser or App Control chips rather than a chip that
+  /// opens onto an error.
   var supportsWorkToolsState: Bool {
     supportsRemoteAction("workTools.getLaneState")
   }
