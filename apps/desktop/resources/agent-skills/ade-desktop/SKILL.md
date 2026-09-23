@@ -93,7 +93,12 @@ a native menu, a control with no `AXPress`.
   To finish, close only your own window (`ade mac-desktop press w --cmd --text`
   with your window focused) or `release` it. Do not "reset" an app the user has
   open to get a clean start — open a new window for your task instead.
-- **If `ade mac-desktop` is missing or refuses, stop and report it.** Do not
+- **`ade: Unknown command 'mac-desktop'` means your shell found an older
+  `ade`,** not that the lane has no screen: a login shell can rebuild PATH and
+  put an installed CLI ahead of the one this ADE launched. Run the same command
+  through the launched CLI: `"$ADE_CLI_PATH" mac-desktop status --text`, and
+  keep using `"$ADE_CLI_PATH"` for the rest of the task.
+- **If `ade mac-desktop` still refuses after that, stop and report it.** Do not
   fall back to the user's real screen, and do not record it with `ade proof
   record` — that command captures the user's whole screen.
 

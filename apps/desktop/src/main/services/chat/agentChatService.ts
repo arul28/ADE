@@ -7501,7 +7501,7 @@ export function buildComputerUseDirective(
         "### Mac Desktop — this lane's own screen (use it first)",
         "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-desktop** skill before your first action.",
         "The loop: `ade mac-desktop start`, `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `press`, `scroll`). For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`.",
-        "Quit or `release` only the windows you opened on the lane screen. If `ade mac-desktop` is missing or refuses, stop and report it; do not fall back to the user's real screen.",
+        "If the shell answers `Unknown command 'mac-desktop'`, it found an older `ade` on PATH: run the same command as `\"$ADE_CLI_PATH\" mac-desktop …` and keep using `\"$ADE_CLI_PATH\"`. Close or `release` only the windows you opened on the lane screen; never quit an app. If `ade mac-desktop` still refuses, stop and report it; do not fall back to the user's real screen.",
       ].join("\n"),
     );
   }

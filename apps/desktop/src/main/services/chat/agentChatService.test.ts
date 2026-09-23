@@ -2698,6 +2698,8 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("### Mac Desktop — this lane's own screen (use it first)");
     expect(result).toContain("ade mac-desktop record start --caption");
     expect(result).toMatch(/do not fall back to the user's real screen/);
+    // A login shell can put an installed, older `ade` first on PATH.
+    expect(result).toContain("$ADE_CLI_PATH");
     // The Codex/OpenAI computer-use plugin drives the real screen: only on request.
     expect(result).toMatch(/`mcp__computer_use`[^\n]*drives the user's real screen/);
     // `ade proof capture/record` is the real screen too, so it is not the default.
