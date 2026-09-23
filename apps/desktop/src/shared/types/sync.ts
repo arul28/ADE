@@ -2162,6 +2162,7 @@ export type SyncRemoteCommandAction =
   | "ai.cursorCloudStopRun"
   | "ai.getDevinCloudAuthStatus"
   | "ai.setDevinCloudCredentials"
+  | "ai.deleteDevinCloudCredentials"
   | "ai.getDevinCloudFleet"
   | "ai.pullDevinCloudSessionIntoLane"
   | "ai.terminateDevinCloudSession"

@@ -5911,15 +5911,13 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
 
   register("ai.getDevinCloudAuthStatus", { viewerAllowed: true }, async () =>
     requireService(args.aiIntegrationService, "AI integration service not available.").getDevinCloudAuthStatus());
-  register("ai.setDevinCloudCredentials", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+  // Same boundary as `ai.storeApiKey` (deliberately unregistered): adding or
+  // replacing a provider key is a desktop-only operation, so `localOnly`
+  // refuses every synced caller (viewers, controllers, relay). Remote clients
+  // can still remove the credential via `ai.deleteApiKey`.
+  register("ai.setDevinCloudCredentials", { viewerAllowed: false, controllerAllowed: true, queueable: false, localOnly: true }, async (payload) => {
     if (typeof payload.apiKey !== "string") {
       throw new Error("ai.setDevinCloudCredentials requires apiKey.");
-    }
-    // Same boundary as `ai.storeApiKey` (deliberately unregistered): adding or
-    // replacing a provider key is a desktop-only operation. Remote callers may
-    // only clear the stored credential with an empty string.
-    if (payload.apiKey.length > 0) {
-      throw new Error("Setting a Devin API key is a desktop-only operation — add the key in ADE's Settings on the host.");
     }
     if (typeof payload.orgId === "string" && payload.orgId.length > 256) {
       throw new Error("ai.setDevinCloudCredentials orgId is too long.");
@@ -5928,6 +5926,14 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       apiKey: payload.apiKey,
       ...(typeof payload.orgId === "string" ? { orgId: payload.orgId } : {}),
     });
+    args.devinCloudFleetService?.invalidateCache();
+    return status;
+  });
+  // Clearing is remote-allowed for parity with `ai.deleteApiKey`: a remote
+  // Remove still routes through the service so the stored org id and cached
+  // client are dropped, not just the key.
+  register("ai.deleteDevinCloudCredentials", { viewerAllowed: true, queueable: true }, async () => {
+    const status = await requireService(args.aiIntegrationService, "AI integration service not available.").setDevinCloudCredentials({ apiKey: "" });
     args.devinCloudFleetService?.invalidateCache();
     return status;
   });
