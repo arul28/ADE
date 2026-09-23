@@ -11142,6 +11142,22 @@ describe("ADE CLI", () => {
     expect(claimHelp.text).toContain("iOS Simulator: claim");
     expect(claimHelp.text).not.toContain("Unknown Apple device subcommand");
     expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
+
+    // `stop` powers the device off and is no longer a `shutdown` alias, so it
+    // has its own page; `device-detach` is listed in the top-level help too.
+    for (const [sub, heading] of [
+      ["stop", "Apple device: stop"],
+      ["power-off", "Apple device: stop"],
+      ["device-detach", "Apple device: device-detach"],
+    ] as const) {
+      const help = buildCliPlan(["apple", sub, "--help"]);
+      if (help.kind !== "help") throw new Error(`expected help for apple ${sub}`);
+      expect(help.text).toContain(heading);
+      expect(help.text).not.toContain("Unknown Apple device subcommand");
+    }
+    const shutdownHelp = buildCliPlan(["apple", "shutdown", "--help"]);
+    if (shutdownHelp.kind !== "help") throw new Error("expected help");
+    expect(shutdownHelp.text).not.toMatch(/Aliases: stop/);
   });
 
   it("rejects live-start and --backend; stream-start has no backend flag", () => {
@@ -13514,6 +13530,17 @@ describe("ADE CLI", () => {
       action: "deviceDelete",
       args: { chatSessionId: "chat-a", ignoreOwnership: true },
     });
+    // `device-detach` is an agent verb: the lane gives up its device and the
+    // simulator stays installed. It carries the caller's chat for the owner check.
+    expect(
+      iosSimActionArgs(["apple", "device-detach", "--lane", "lane-a", "--chat-session", "chat-a", "--force"]),
+    ).toMatchObject({
+      action: "deviceDetach",
+      args: { laneId: "lane-a", chatSessionId: "chat-a", force: true },
+    });
+    const detached = iosSimActionArgs(["apple", "detach", "--ignore-ownership"]);
+    expect(detached).toMatchObject({ action: "deviceDetach", args: { ignoreOwnership: true } });
+    expect((detached as { args: Record<string, unknown> }).args).not.toHaveProperty("force");
 
     const recordStart = iosSimActionArgs([
       "apple",

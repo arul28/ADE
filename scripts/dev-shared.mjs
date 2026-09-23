@@ -220,6 +220,22 @@ export function resolveDevSpawnInvocation(
   };
 }
 
+/**
+ * The spawn for `dev-detached.mjs`. On Windows a bare `npm` is `npm.cmd`,
+ * which `spawn` cannot find without a shell, so `npm` goes through
+ * `resolveNpmInvocation` and any other `.cmd`/`.bat` through
+ * `resolveDevSpawnInvocation`. `windowsHide` stops the detached child from
+ * opening a console window of its own.
+ */
+export function resolveDetachedDevInvocation(command, args, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const resolved = command === "npm"
+    ? { windowsVerbatimArguments: false, ...resolveNpmInvocation(args, { ...options, platform, env }) }
+    : resolveDevSpawnInvocation(command, args, env, platform);
+  return { ...resolved, windowsHide: true };
+}
+
 export function run(command, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     // Every dev child — the brain AND the desktop — starts from the sanitized

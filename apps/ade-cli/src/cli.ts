@@ -2176,7 +2176,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket apple launch --follow         Same, announcing the wait before the summary
     $ ade --socket apple claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket apple launch --bundle-id com.example Launch installed app
-    $ ade --socket apple shutdown                Tear down the active simulator session (alias: stop)
+    $ ade --socket apple shutdown                End this chat's simulator session (the device stays on)
     $ ade --socket apple shutdown --force        Force-release a session owned by another chat
     $ ade --socket apple launch --force          Take the simulator over in one step
     $ ade apple actions --text                   List every callable ios_simulator action
@@ -2219,6 +2219,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
     $ ade apple device-list --installed --text   Installed simulators for a picker
     $ ade apple device-list --text               The one device this lane owns
+    $ ade apple device-detach --text             Give up the lane's device; the simulator stays installed
     $ ade apple device-delete --text             Delete a clone (attached devices refuse)
 
   Recording:
@@ -11250,6 +11251,17 @@ function buildIosSimulatorPlan(
     // Same single-owner rule as `stop`: the chat id is what lets a chat delete
     // its own device and not another chat's.
     return iosAction("Apple device delete", "deviceDelete", {
+      ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
+      ...(force ? { force: true } : {}),
+      ...readIgnoreOwnershipArg(args),
+    });
+  }
+  if (sub === "device-detach" || sub === "detach") {
+    // The lane gives up its device and the simulator stays installed. Same
+    // single-owner rule as `stop` and `device-delete`.
+    const force = readFlag(args, ["--force", "-f"]);
+    return iosAction("Apple device detach", "deviceDetach", {
       ...(laneId ? { laneId } : {}),
       ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
       ...(force ? { force: true } : {}),

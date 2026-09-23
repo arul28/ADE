@@ -1775,6 +1775,13 @@ func workArtifactVideoTempURL(artifactId: String, fileExtension: String) -> URL 
     .appendingPathExtension(fileExtension)
 }
 
+/// True when the host is older than the slice read (`readArtifactRange`).
+/// Such a host answers "Unsupported file action: readArtifactRange", and the
+/// phone then uses the whole-file read (`readArtifact`) instead.
+func workArtifactHostLacksRangeRead(_ error: Error) -> Bool {
+  error.localizedDescription.contains("Unsupported file action")
+}
+
 /// "34 MB" for the play placeholder.
 func workArtifactSizeLabel(_ sizeBytes: Int) -> String {
   ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)

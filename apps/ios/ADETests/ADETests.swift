@@ -23839,6 +23839,26 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
   }
 
+  /// A host older than `readArtifactRange` refuses it with this text
+  /// (`handleFileRequest`'s default case). The phone must then use the
+  /// whole-file read. Any other failure must show as an error.
+  func testOlderHostWithoutTheSliceReadFallsBackToTheWholeFileRead() {
+    let legacy = NSError(
+      domain: "ADE",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported file action: readArtifactRange"]
+    )
+    XCTAssertTrue(workArtifactHostLacksRangeRead(legacy))
+
+    let offline = NSError(
+      domain: "ADE",
+      code: 16,
+      userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
+    )
+    XCTAssertFalse(workArtifactHostLacksRangeRead(offline))
+    XCTAssertFalse(workArtifactHostLacksRangeRead(CancellationError()))
+  }
+
   func testParseANSISegmentsTracksForegroundColors() {
     let segments = parseANSISegments("\u{001B}[31mError\u{001B}[0m plain \u{001B}[32mOK\u{001B}[0m")
 

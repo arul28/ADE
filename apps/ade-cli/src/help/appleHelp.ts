@@ -115,7 +115,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   iOS Simulator: shutdown
 
   Stops live view state, releases the drawer session, and clears related simulator work.
-  Aliases: stop, teardown, end, end-session.
+  The device stays on. To power the lane's device off, use "apple stop".
+  Aliases: teardown, end, end-session.
 
   Shutdown carries the caller's chat session ($ADE_CHAT_SESSION_ID or
   --chat-session). Releasing a session owned by a different chat is refused.
@@ -887,12 +888,51 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --installed            Installed simulators for a picker. ADE never downloads one.
     --lane, --lane-id <id> The lane whose device to report; defaults to $ADE_LANE_ID.
 `,
+  stop: `${ADE_BANNER}
+  Apple device: stop
+
+  Powers the lane's device off. This is the opposite of "start". It is not
+  "shutdown": "shutdown" ends this chat's session and the device stays on.
+  Aliases: device-stop, power-off, poweroff.
+
+  Refused while another chat is driving the device, unless you pass --force or
+  --ignore-ownership. Ask before you stop a device another chat uses.
+
+    $ ade --socket apple stop --text
+    $ ade --socket apple stop --udid <udid> --text
+
+  Flags:
+    --udid, --device <id>  Power off this simulator instead of the lane's.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --force, -f            Also release a session another chat owns.
+    --ignore-ownership     Stop without the owner check, in your own name.
+    --lane, --lane-id <id> Lane whose device to stop.
+`,
+  "device-detach": `${ADE_BANNER}
+  Apple device: device-detach
+
+  The lane gives up its device. The simulator stays installed, keeps its power
+  state, and shows as a free device in the picker. Nothing is deleted, clone
+  or attached. Use "device-delete" to remove a clone. Alias: detach.
+
+  Refused while another chat is driving the device, like stop.
+
+    $ ade --socket apple device-detach --text
+
+  Flags:
+    --force, -f            Detach a device another chat is driving as well.
+    --ignore-ownership     Detach without the owner check. Ask first.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --lane, --lane-id <id> Lane whose device to detach.
+`,
   "device-delete": `${ADE_BANNER}
   Apple device: device-delete
 
   Deletes this lane's cloned simulator. Attached devices refuse unless --force,
   and --force only detaches them — ADE never deletes a simulator it did not create.
-  Refused while another chat is driving the device, like stop.
+  Refused while another chat is driving the device, like stop. --force does
+  not change this; only --ignore-ownership does. To keep the simulator, use
+  "device-detach".
 
     $ ade --socket apple device-delete --text
     $ ade --socket apple device-delete --force --text
@@ -900,6 +940,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --force, -f            Detach an attached device instead of refusing.
     --ignore-ownership     Delete even while another chat is driving it. Ask first.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
     --lane, --lane-id <id> Lane whose device to delete.
 `,
   "record-start": `${ADE_BANNER}
@@ -1056,6 +1097,10 @@ export const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   teardown: "shutdown",
   end: "shutdown",
   "end-session": "shutdown",
+  "device-stop": "stop",
+  "power-off": "stop",
+  poweroff: "stop",
+  detach: "device-detach",
   capture: "screenshot",
   promote: "proof",
   screen: "snapshot",

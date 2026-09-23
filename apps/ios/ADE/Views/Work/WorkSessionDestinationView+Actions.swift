@@ -912,7 +912,7 @@ extension WorkSessionDestinationView {
       } catch is CancellationError {
         // Scrolled away or left: leave it unloaded so the next appear retries.
         return
-      } catch let error where error.localizedDescription.contains("Unsupported file action") {
+      } catch let error where workArtifactHostLacksRangeRead(error) {
         // Older host: use the whole-file read.
       } catch {
         publish(.error(artifactLoadErrorMessage(error)))
