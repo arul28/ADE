@@ -151,6 +151,41 @@ ade: proof attach failed — the runtime filed no proof record: Scratch capture 
 
 The file is copied into `.ade/artifacts/computer-use/`; the original is left in place. Internally `attach` calls the same `ingest_computer_use_artifacts` RPC tool with `backendStyle: "manual"` and `backendName: "ade-cli"`.
 
+### Already-filed bytes and older videos
+
+ADE stores the SHA-256 and byte size of every proof file it keeps
+(`metadata.contentSha256`, `metadata.contentBytes`). An attach whose bytes match
+earlier proof in the project, a renamed copy included, is refused:
+
+```
+ade: proof attach failed — PROOF_DUPLICATE: Same bytes as "Simulator recording · iPhone 17 · 0:12" (filed 5:19 AM). This file is already proof. Record a new one, or report that recording failed.
+```
+
+The check compares by size first and hashes only same-size rows that have no
+stored hash (at most 8 per attach, then written back). It also checks Apple
+recordings on disk under `.ade/artifacts/apple-recordings/` that never reached
+the drawer. It applies to `ade proof attach`, `ade proof ingest`, and the CTO's
+`captureProof`. ADE's own recorders and captures skip it. The CLI's ADE capture
+commands (`ade apple proof`, `ade app-control proof`, `ade browser proof`) file
+through the same tool, so their labels lift the check for still images only.
+
+For an attached MP4/MOV, ADE reads the video's own creation time from
+`moov/mvhd` (`metadata.mediaCreatedAt`). If it is more than 60 s before the
+owning chat's current or latest turn started, the attach still lands, with
+`metadata.recordedBeforeRequest: true`, and the command prints:
+
+```
+warning: This video was recorded at 5:19 AM, before this request. It will be marked as older in the proof drawer.
+```
+
+A missing or zero creation time is unknown and is never flagged.
+
+Every new proof also records `metadata.proofSource`: `ade-recorder` (the Apple
+recorder, `ade proof record`, with `recordedFrom`/`recordedTo`), `ade-capture`
+(ADE screenshots and scene snapshots), or `attached` (an existing file). The
+broker writes these fields itself and drops them from caller metadata. Rows
+filed before this have none and show nothing.
+
 On-disk imports are intentionally allow-listed to renderable evidence types
 (images, video, browser traces, and text/log files). Files such as `.env`,
 databases, private keys, and certificates are rejected even when they are under
@@ -281,6 +316,11 @@ Proof surfaces across chat and linked workflow contexts:
   of the set is one swipe away; page dots show only when there is somewhere to
   swipe. Preview/share actions, no review-state chrome. See
   [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
+- **Where it came from** — the drawer tile, the timeline card, and the iOS
+  Proof sheet row print one quiet line under the title: `Recorded by ADE ·
+  10:24–10:25 AM`, `Captured by ADE`, or `Attached by the agent`. A video
+  flagged as older adds an amber line: `Recorded at 5:19 AM, before this
+  request.` Rows without `proofSource` print nothing.
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
 Both clients resolve media through the owning runtime instead of opening the

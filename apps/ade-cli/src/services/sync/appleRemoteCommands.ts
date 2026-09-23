@@ -359,9 +359,10 @@ export function createAppleRemoteCommandHandlers(deps: {
         // A remote viewer always gets the capped encode. Starting the capture
         // here rather than on attach means the ticket can carry the real
         // geometry, so the viewer sizes its canvas before the first frame.
-        // `startStream` boots a shut-down device itself (§10), so a phone
-        // opening a lane whose simulator is off gets video, not the helper's
-        // "Device not booted".
+        // No `boot`: a phone or web tab opening the viewer is WATCHING, and
+        // watching never powers the Mac's simulator on. A device that is off
+        // rejects with `APPLE_DEVICE_OFF`, which the viewer shows as
+        // "{name} is off on your Mac."
         const started = await service.startStream({
           laneId,
           chatSessionId: asString(payload.chatSessionId),

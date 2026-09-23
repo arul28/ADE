@@ -176,6 +176,10 @@ import {
   isWorkToolId,
   workToolsUnavailableMessage,
 } from "../../desktop/src/shared/types/workTools";
+import {
+  WORK_TOOL_SHOW_SURFACES,
+  type WorkToolShowSurface,
+} from "../../desktop/src/shared/types/workToolShow";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
@@ -474,6 +478,7 @@ type FormatterId =
   | "browser-observation"
   | "browser-trace"
   | "work-tools-state"
+  | "work-tool-show"
   | "pty-create"
   | "terminal-list"
   | "terminal-read"
@@ -948,6 +953,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade ui show apple | floating-apple | browser | proof
+                                                    Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
@@ -1346,6 +1353,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Starts ADE's live H.264 view of the device framebuffer via the vendored
   helper. No Screen Recording grant and no Simulator.app window. There is one
   encoder now, so there is no backend to choose and no second start verb.
+  Boots the device first if it is off: this is an explicit start. Viewers
+  (the pane, a phone) never boot and get APPLE_DEVICE_OFF instead.
   Aliases: start-stream, stream, window-start, start-window, mirror-start,
   start-mirror, preview-start, start-preview.
 
@@ -1419,13 +1428,29 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Types text into the active launched app. Alias: text.
 
-    $ ade --socket apple type "hello" --text
-    $ ade --socket apple type --value "hello" --text
+    $ "$ADE_CLI_PATH" apple type "hello" --text
+    $ "$ADE_CLI_PATH" apple type "reddit" --submit --text
+    $ "$ADE_CLI_PATH" apple type --value "hello" --text
 
   Flags:
     --value, --message <v> Text to type. --text <value> is also accepted for
                            compatibility, but --text by itself controls ADE's
                            human-readable output mode.
+    --submit               Press Return after the text (submits a search or form).
+    --device, --udid <id>  Simulator device.
+`,
+  key: `${ADE_BANNER}
+  iOS Simulator: key
+
+  Presses one named key on the simulator keyboard.
+
+    $ "$ADE_CLI_PATH" apple key return --text
+    $ "$ADE_CLI_PATH" apple key tab --text
+
+  Keys: return (alias enter), tab.
+  To type text and then press Return, use: apple type "<text>" --submit.
+
+  Flags:
     --device, --udid <id>  Simulator device.
 `,
   "open-device": `${ADE_BANNER}
@@ -1928,12 +1953,20 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   typed-text badges) follow Settings unless --overlays is passed. Starting
   while an auto recording is running converts it to manual (no restart, no gap).
 
+  Still time is cut: a still screen longer than 2 s keeps 0.75 s in the video.
+  record-stop reports durationMs (video), wallDurationMs (real time) and
+  idleCutMs. A recording a chat owns stops itself after 10 minutes of real
+  time (stopReason "cap") and is filed as proof.
+
     $ ade --socket apple record-start --text
     $ ade --socket apple record-start --overlays off --label "signup" --text
+    $ ade --socket apple record-start --keep-idle --max-seconds 1200 --text
 
   Flags:
     --overlays on|off      Overlay compositor; default is Settings.
     --label <text>         Human label for the recording.
+    --keep-idle            Keep still stretches at real length.
+    --max-seconds <n>      Stop after n seconds of real time (default 600).
     --lane, --lane-id <id> Lane whose device to record.
 `,
   "record-stop": `${ADE_BANNER}
@@ -1998,13 +2031,37 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
     $ ade --socket apple button home --text
     $ ade --socket apple button volume-up --text
+    $ ade --socket apple button app-switcher --text
 
-  Names: home, lock, volume-up, volume-down, siri, shake.
+  Names: home, lock, volume-up, volume-down, siri, shake, app-switcher.
+
+  app-switcher is Simulator's own App Switcher command: two home presses
+  150 ms apart, sent by the helper as one command. To close an app the way a
+  person does, open the switcher, then swipe the app's card up (see the
+  ade-apple skill). "apple terminate --bundle-id <id>" stops an app without
+  showing anything.
 
   Flags:
     --name, --button <n>   Button name; also accepted as the next positional.
     --device, --udid <id>  Simulator device.
     --lane, --lane-id <id> Lane whose device to press.
+`,
+  show: `${ADE_BANNER}
+  Apple device: show
+
+  Puts this chat's Apple device on the user's screen: the Apple tool in the
+  tools pane, or the floating player with --floating. Same as "ade ui show
+  apple" / "ade ui show floating-apple".
+
+    $ ade apple show --text
+    $ ade apple show --floating --text
+
+  Prints shown, held (a window has the project open but not this chat; it opens
+  when the user goes to the chat) or no_desktop (nothing was shown; exits 1).
+
+  Flags:
+    --floating             Show the floating player instead of the pane.
+    --session <id>         Chat to show it in. Defaults to ADE_CHAT_SESSION_ID.
 `,
   rotate: `${ADE_BANNER}
   Apple device: rotate
@@ -2053,6 +2110,7 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "list-previews": "previews",
   press: "button",
   "press-button": "button",
+  reveal: "show",
   orientation: "rotate",
   "match-preview": "preview-match",
   "resolve-preview": "preview-match",
@@ -3224,6 +3282,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
   \`Attached 1 artifact to lane <id> / chat <id> (<title>)\`. Anything else is a
   failure: they exit non-zero and print \`ade: proof attach failed — <reason>\`.
   Pass --no-verify to skip the re-read.
+
+  Attaching a file that is already proof
+
+  ADE hashes every proof file. An attach whose bytes match earlier proof in
+  this project (a renamed copy included) fails with PROOF_DUPLICATE and names
+  the earlier proof. Record a new one, or report that recording failed.
+  An attached video whose own creation time is before the chat's request is
+  kept, marked older in the proof drawer, and the command prints a warning.
 `,
   "apple": `${ADE_BANNER}
   Apple Development
@@ -3234,8 +3300,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   For shared session state, prefer attached runtime mode (--socket) so
   launch/select/tap operate on the same long-lived ADE service. Launch keeps
   the device in the background; pass --open-drawer when the user should see the
-  Apple column. Tap, drag, type, and inspect go through the helper — no idb,
-  no Screen Recording grant, and no Simulator.app window.
+  Apple column, or run "apple show" at any time to put the device on screen.
+  Tap, drag, type, and inspect go through the helper — no idb, no Screen
+  Recording grant, and no Simulator.app window.
 
   Every rooted subcommand builds and captures in the lane worktree: an explicit
   --project-root wins, else --lane/ADE_LANE_ID, else the worktree the shell is
@@ -3250,6 +3317,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Discovery and lifecycle:
     $ ade apple status --text                    Show simulator readiness
+    $ ade apple show                             Show the device to the user (tools pane)
+    $ ade apple show --floating                  Show it as the floating player instead
     $ ade apple devices --text                   List available simulators
     $ ade apple apps --device <udid> --text      List launchable apps
     $ ade --socket apple launch --target <id>    Build, install, and launch an app
@@ -3310,6 +3379,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Device tools:
     $ ade apple button home --text               Press Home (also lock, volume-up, volume-down, siri)
+    $ ade apple button app-switcher --text       Open the App Switcher (two home presses)
     $ ade apple rotate landscape-left --text     Set orientation
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
@@ -3686,6 +3756,36 @@ const HELP_BY_COMMAND: Record<string, string> = {
                          On panel/switch, claims only when passed explicitly.
     --chat-session <id>  Claim chat/session for open/new-tab/claim/session/actions.
                          On panel/switch, claims only when passed explicitly.
+`,
+  ui: `${ADE_BANNER}
+  ADE ui
+
+  Shows a surface of this chat to the user. The desktop window that has the
+  chat in front opens it and says so; the command prints what really happened.
+
+    $ ade ui show apple            The Apple device, in the tools pane
+    $ ade ui show floating-apple   The floating device player over the chat
+    $ ade ui show browser          The browser, in the tools pane
+    $ ade ui show proof            The chat's proof drawer
+
+  Results:
+    shown       The surface is on screen now.
+    held        A desktop window has this project open, but this chat is not
+                in front. The surface opens when the user goes to this chat.
+    no_desktop  No desktop window is open for this chat. Nothing was shown;
+                tell the user. Exits 1.
+
+  A desktop on another machine that has this chat open answers too.
+
+  Flags:
+    --session <id>         Chat to show it in. Defaults to ADE_CHAT_SESSION_ID;
+                           an agent always shows its own chat.
+    --lane, --lane-id <id> The chat's lane. Defaults to ADE_LANE_ID.
+    --text                 Human-readable summary.
+    --json                 Structured JSON (default when piped).
+
+  "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
+  is "ui show floating-apple".
 `,
   "work-tools": `${ADE_BANNER}
   ADE work tools
@@ -4176,6 +4276,13 @@ function readRepeatedValues(args: string[], names: readonly string[]): string[] 
   }
   return values;
 }
+
+/** `ade apple key <name>`: each key as the character the helper types for it. */
+const APPLE_NAMED_KEYS: Readonly<Record<string, string>> = {
+  return: "\n",
+  enter: "\n",
+  tab: "\t",
+};
 
 export function readFlag(args: string[], names: readonly string[]): boolean {
   for (let index = 0; index < args.length; index += 1) {
@@ -11823,6 +11930,8 @@ function buildIosSimulatorPlan(
     ]);
     const bitrateKbps = readNumberOption(args, ["--bitrate-kbps", "--bitrate"]);
     return iosAction("iOS simulator live view start", "startStream", {
+      // An agent asking for a stream is an explicit start, so it may boot.
+      boot: true,
       deviceUdid: readIosSimulatorDevice(args),
       fps: readNumberOption(args, ["--fps"], 60),
       ...(scaleFactor == null ? {} : { scaleFactor }),
@@ -11895,14 +12004,33 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "type" || sub === "text") {
+    // `--submit` presses Return after the text. The helper types "\n" as the
+    // Return key, but an agent cannot write a newline in a shell argument
+    // easily, and without this it tapped the screen to submit a search.
+    const submit = readFlag(args, ["--submit"]);
+    const deviceUdid = readIosSimulatorDevice(args);
+    const typed = readValue(args, ["--value", "--message", "--input-text"]) ??
+      readCommandTextValue(args, ["--text"]) ??
+      args.filter((arg) => arg !== "--text").join(" ");
     return iosAction("iOS simulator type", "typeText", {
+      deviceUdid,
+      // After `requireValue`, which trims: the Return must survive it. With
+      // `--submit` and no text this presses Return alone.
+      text: submit
+        ? `${typed.trim() ? requireValue(typed, "text") : ""}\n`
+        : requireValue(typed, "text"),
+    });
+  }
+  if (sub === "key") {
+    // One named key, sent as the character the helper maps to it.
+    const name = (firstPositional([...args]) ?? "").toLowerCase();
+    const text = APPLE_NAMED_KEYS[name];
+    if (!text) {
+      throw new CliUsageError(`apple key: unknown key '${name || "(none)"}'. Valid keys: ${Object.keys(APPLE_NAMED_KEYS).join(", ")}.`);
+    }
+    return iosAction(`iOS simulator key ${name}`, "typeText", {
       deviceUdid: readIosSimulatorDevice(args),
-      text: requireValue(
-        readValue(args, ["--value", "--message", "--input-text"]) ??
-          readCommandTextValue(args, ["--text"]) ??
-          args.filter((arg) => arg !== "--text").join(" "),
-        "text",
-      ),
+      text,
     });
   }
   /*
@@ -12392,6 +12520,11 @@ function buildIosSimulatorPlan(
       }
     }
     const label = readValue(args, ["--label"]);
+    const keepIdle = readFlag(args, ["--keep-idle"]);
+    const maxSeconds = readNumberOption(args, ["--max-seconds"]);
+    if (maxSeconds != null && maxSeconds <= 0) {
+      throw new CliUsageError("record-start --max-seconds must be greater than 0.");
+    }
     return iosAction("Apple device record start", "recordStart", {
       // Same root the screenshot verbs send. Without it a caller with no
       // ADE_LANE_ID — every OpenCode agent — gives the runtime nothing to
@@ -12404,6 +12537,8 @@ function buildIosSimulatorPlan(
         : {}),
       ...(overlays == null ? {} : { overlays }),
       ...(label ? { label } : {}),
+      ...(keepIdle ? { keepIdle: true } : {}),
+      ...(maxSeconds == null ? {} : { maxSeconds }),
     });
   }
   if (sub === "record-stop") {
@@ -12450,13 +12585,22 @@ function buildIosSimulatorPlan(
       ...readIosSimulatorOutPath(args),
     });
   }
+  if (sub === "show" || sub === "reveal") {
+    // Same verb as `ade ui show apple`, spelled where an agent working on the
+    // device looks for it. `--floating` asks for the floating player instead.
+    const floating = readFlag(args, ["--floating", "--float"]);
+    return workToolShowPlan(
+      { chatSessionId: asString(claimArgs.chatSessionId), laneId },
+      floating ? "floating-apple" : "apple",
+    );
+  }
   if (sub === "button" || sub === "press-button" || sub === "press") {
     const name = readIosSimulatorEnum(args, {
       sub,
       names: ["--name", "--button"],
       label: "button name",
       noun: "button",
-      valid: ["home", "lock", "volume-up", "volume-down", "siri", "shake"] as const,
+      valid: ["home", "lock", "volume-up", "volume-down", "siri", "shake", "app-switcher"] as const,
     });
     return iosAction("Apple device button", "pressButton", {
       name,
@@ -13872,6 +14016,90 @@ function buildWorkToolsPlan(args: string[]): CliPlan {
   throw new CliUsageError(
     `Unknown work-tools command: ${sub}. Use state or actions.`,
   );
+}
+
+/** Spellings `ade ui show` accepts for each surface. */
+const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
+  apple: "apple",
+  ios: "apple",
+  device: "apple",
+  simulator: "apple",
+  "floating-apple": "floating-apple",
+  floating: "floating-apple",
+  float: "floating-apple",
+  "mini-player": "floating-apple",
+  browser: "browser",
+  proof: "proof",
+  "proof-drawer": "proof",
+};
+
+/**
+ * The chat and lane a show targets. Read before any positional, because the
+ * flags are spliced out and a positional read first would take their values.
+ */
+function readWorkToolShowScope(args: string[]): { chatSessionId: string | null; laneId: string | null } {
+  const chatSessionId = asString(
+    readValue(args, ["--session", "--session-id", "--chat-session", "--chat-session-id"])
+      ?? process.env.ADE_CHAT_SESSION_ID,
+  );
+  const laneId = asString(readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID);
+  return { chatSessionId: chatSessionId ?? null, laneId: laneId ?? null };
+}
+
+/**
+ * The one execute plan behind `ade ui show` and `ade apple show`.
+ *
+ * The chat defaults to ADE_CHAT_SESSION_ID, so an agent never passes it; the
+ * daemon also overwrites it with the caller's own chat. `--session` is for a
+ * human at a terminal. Exits 1 when no desktop answered, so a script cannot
+ * mistake "nothing appeared" for success.
+ */
+function workToolShowPlan(
+  scope: { chatSessionId: string | null; laneId: string | null },
+  surface: WorkToolShowSurface,
+): CliPlan {
+  if (!scope.chatSessionId) {
+    throw new CliUsageError(
+      "ui show needs the chat to show it in. Run it from an ADE chat, or pass --session <chat-session-id>.",
+    );
+  }
+  return {
+    kind: "execute",
+    label: "ui show",
+    formatter: "work-tool-show",
+    steps: [
+      actionStep("result", "work_tools", "show", {
+        surface,
+        chatSessionId: scope.chatSessionId,
+        ...(scope.laneId ? { laneId: scope.laneId } : {}),
+      }),
+    ],
+    exitCodeFromResult: (result) => {
+      const record = firstRecord(result, ["result"]) ?? (isRecord(result) ? result : {});
+      return record.status === "shown" || record.status === "held" ? 0 : 1;
+    },
+  };
+}
+
+/** `ade ui show <surface>` — put a surface of this chat on the user's screen. */
+function buildUiPlan(args: string[]): CliPlan {
+  const scope = readWorkToolShowScope(args);
+  const rawSurfaceFlag = readValue(args, ["--surface"]);
+  const sub = firstPositional(args) ?? "help";
+  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.ui };
+  if (sub !== "show" && sub !== "open" && sub !== "reveal") {
+    throw new CliUsageError(`Unknown ui command: ${sub}. Use "ade ui show <surface>".`);
+  }
+  const raw = asString(rawSurfaceFlag ?? firstPositional(args))?.toLowerCase() ?? null;
+  const surface = raw && Object.hasOwn(WORK_TOOL_SHOW_SURFACE_ALIASES, raw)
+    ? WORK_TOOL_SHOW_SURFACE_ALIASES[raw]
+    : undefined;
+  if (!surface) {
+    throw new CliUsageError(
+      `ui show needs a surface: ${WORK_TOOL_SHOW_SURFACES.join(", ")}${raw ? ` (got "${raw}")` : ""}.`,
+    );
+  }
+  return workToolShowPlan(scope, surface);
 }
 
 /**
@@ -17547,6 +17775,7 @@ function buildCliPlan(
     primary === "tools-pane"
   )
     return buildWorkToolsPlan(args);
+  if (primary === "ui") return buildUiPlan(args);
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
   if (primary === "storage" || primary === "disk")
@@ -21894,6 +22123,10 @@ async function runServe(
   const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
     ? rawSocketPath
     : path.resolve(rawSocketPath);
+  // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
+  // the socket it serves so the `ade` shim it hands its agents names it.
+  const { publishServedRuntimeSocket } = await import("./services/runtime/adeCliShim");
+  publishServedRuntimeSocket(socketPath);
   /*
    * Only the MACHINE brain publishes the machine heartbeat.
    *
@@ -25923,6 +26156,9 @@ function formatProofFiled(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const artifacts = firstArray(record, ["artifacts"]);
   const confirmation = asString(record.confirmation) ?? "";
+  const warnings = Array.isArray(record.warnings)
+    ? record.warnings.filter((warning): warning is string => typeof warning === "string")
+    : [];
   return [
     renderTable(
       ["artifact", "kind", "title", "path"],
@@ -25937,6 +26173,7 @@ function formatProofFiled(value: unknown): string {
     record.verified === true
       ? "verified: re-read through ade proof list"
       : "verified: skipped (--no-verify)",
+    ...warnings.map((warning) => `warning: ${warning}`),
     "",
     confirmation,
   ].join("\n");
@@ -26437,6 +26674,17 @@ function formatBrowserDevServers(value: unknown): string {
  * Observation paths are printed but not fetched: bytes come from
  * `work_tools.readObservationPreview`, deliberately not from a state read.
  */
+function formatWorkToolShow(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  return renderKeyValues("ADE show", [
+    ["surface", result.surface],
+    ["status", result.status],
+    ["desktop", result.desktopLabel],
+    ["chat", result.chatSessionId],
+    ["note", result.message],
+  ]);
+}
+
 function formatWorkToolsState(value: unknown): string {
   const state = isRecord(value) ? value : {};
   const browser = firstRecord(state, ["browser"]);
@@ -27920,6 +28168,8 @@ function formatTextOutput(
       return formatBrowserDevServers(value);
     case "work-tools-state":
       return formatWorkToolsState(value);
+    case "work-tool-show":
+      return formatWorkToolShow(value);
     case "browser-sessions":
       return formatBrowserSessions(value);
     case "browser-observation":
@@ -28245,6 +28495,11 @@ function summarizeProofFiling(
   }
 
   const title = asString(artifacts[0]?.title) ?? "untitled";
+  // The broker's own notes, e.g. a video recorded before this request. The
+  // agent has to repeat these to the user, so they travel with the result.
+  const warnings = Array.isArray(record.warnings)
+    ? record.warnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
+    : [];
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -28262,6 +28517,7 @@ function summarizeProofFiling(
       title: artifact.title,
       uri: artifact.uri,
     })),
+    ...(warnings.length ? { warnings } : {}),
     confirmation:
       `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
       + `to ${owner} (${title})`,

@@ -1167,6 +1167,8 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
       broker.updateArtifactReview(args),
     readArtifactPreview: (args: Parameters<typeof broker.readArtifactPreview>[0]) =>
       broker.readArtifactPreview(args),
+    readArtifactRange: (args: Parameters<typeof broker.readArtifactRange>[0]) =>
+      broker.readArtifactRange(args),
     getBackendStatus: () => broker.getBackendStatus(),
     getOwnerSnapshot: (args?: ComputerUseOwnerSnapshotArgs) => {
       if (!args?.owner) throw new Error("owner is required.");

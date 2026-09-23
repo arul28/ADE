@@ -362,6 +362,12 @@ import { createLinearIssueTracker, type LinearIssueTracker } from "./services/ct
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import {
+  artifactStreamMimeType,
+  getRemoteArtifactRangeReader,
+  resolveContainedArtifactFile,
+} from "./services/computerUse/artifactStreamProtocol";
+import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
@@ -1342,33 +1348,21 @@ app.whenReady().then(async () => {
     return;
   }
 
-  /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
+  /** Canonical artifacts dir for the active project; ade-artifact:// and the media server only serve under this path. */
   let adeArtifactAllowedDir: string | null = null;
 
-  const isPathInsideArtifactAllowRoot = (
-    resolvedFile: string,
-    allowedDir: string,
-  ): boolean => {
-    let allowed: string;
-    try {
-      allowed = fs.realpathSync(allowedDir);
-    } catch {
-      return false;
-    }
-    const normFile = path.normalize(resolvedFile);
-    const normAllowed = path.normalize(allowed);
-    if (process.platform === "win32") {
-      return (
-        normFile
-          .toLowerCase()
-          .startsWith(normAllowed.toLowerCase() + path.sep) ||
-        normFile.toLowerCase() === normAllowed.toLowerCase()
-      );
-    }
-    return (
-      normFile === normAllowed || normFile.startsWith(normAllowed + path.sep)
-    );
-  };
+  // Proof videos play from this loopback server, not `ade-artifact://`:
+  // `protocol.handle` cannot answer the second Range read a long recording
+  // needs. It starts on the first renderer ask and closes on quit.
+  const artifactMediaServer = createArtifactMediaServer({
+    localScope: () => ({ projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir }),
+    remoteReader: getRemoteArtifactRangeReader,
+    warn: (message, details) => console.warn(message, details),
+  });
+  ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
+  app.on("will-quit", () => {
+    void artifactMediaServer.close();
+  });
 
   // Handle ade-scene:// requests — serves agent-authored scenes from memory.
   // The id in `ade-scene://view/<id>` is a key into `sceneDocumentStore`, never
@@ -1379,63 +1373,39 @@ app.whenReady().then(async () => {
     return new Response(body, { status, headers });
   });
 
-  // Handle ade-artifact:// requests — serves local files for proof drawer previews.
-  // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png
+  // Handle ade-artifact:// requests — serves local files for proof drawer images.
+  // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png or
+  // ade-artifact://project/<relative path>. Videos use the media server above.
   protocol.handle("ade-artifact", (request) => {
     const url = new URL(request.url);
-    let filePath = decodeURIComponent(url.pathname);
-    if (url.hostname === "project") {
-      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
-      filePath = path.resolve(activeProjectRoot, filePath.replace(/^[/\\]+/, ""));
-    }
-    // On Windows, pathname starts with /C:/... — strip leading slash
-    if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(filePath)) {
-      filePath = filePath.slice(1);
-    }
-    if (!path.isAbsolute(filePath)) {
-      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
-      filePath = path.resolve(activeProjectRoot, filePath);
-    }
-    filePath = path.resolve(filePath);
-    let resolvedFile: string;
+    let requestedPath: string;
     try {
-      resolvedFile = fs.realpathSync(filePath);
+      requestedPath = decodeURIComponent(url.pathname);
     } catch {
-      console.warn("[ade-artifact] realpath failed", { filePath });
       return new Response("Not found", { status: 404 });
     }
-    const allowedDir = adeArtifactAllowedDir;
-    if (
-      !allowedDir ||
-      !isPathInsideArtifactAllowRoot(resolvedFile, allowedDir)
-    ) {
-      console.warn("[ade-artifact] rejected path outside artifacts dir", {
-        resolvedFile,
-        allowedDir,
-      });
+    const contained = resolveContainedArtifactFile({
+      requestedPath,
+      projectRelative: url.hostname === "project",
+      projectRoot: activeProjectRoot,
+      allowedDir: adeArtifactAllowedDir,
+    });
+    if (!contained.ok) {
+      if (contained.reason === "missing") {
+        console.warn("[ade-artifact] realpath failed", { filePath: contained.filePath });
+      } else if (contained.reason === "outside") {
+        console.warn("[ade-artifact] rejected path outside artifacts dir", {
+          resolvedFile: contained.filePath,
+          allowedDir: adeArtifactAllowedDir,
+        });
+      }
       return new Response("Not found", { status: 404 });
     }
+    const resolvedFile = contained.filePath;
     try {
-      const stat = fs.statSync(resolvedFile);
-      if (!stat.isFile()) return new Response("Not found", { status: 404 });
-      const fileSize = stat.size;
-      const ext = path.extname(resolvedFile).replace(/^\./, "").toLowerCase();
-      const mimeMap: Record<string, string> = {
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        webp: "image/webp",
-        gif: "image/gif",
-        bmp: "image/bmp",
-        svg: "image/svg+xml",
-        mp4: "video/mp4",
-        webm: "video/webm",
-        // Chromium refuses `video/quicktime` in a <video>; the same bytes play as MP4.
-        mov: "video/mp4",
-        avi: "video/x-msvideo",
-        mkv: "video/x-matroska",
-      };
-      const mime = mimeMap[ext] ?? "application/octet-stream";
+      const fileSize = contained.size;
+      // Serves `.mov` as `video/mp4`; Chromium refuses `video/quicktime`.
+      const mime = artifactStreamMimeType(resolvedFile);
 
       // Support Range requests — required for <video> playback and seeking
       const rangeHeader = request.headers.get("Range");
@@ -4569,6 +4539,10 @@ app.whenReady().then(async () => {
       });
     agentChatService.setComputerUseArtifactBrokerService(
       computerUseArtifactBrokerService,
+    );
+    // The broker judges an attached video against the chat's turn start.
+    computerUseArtifactBrokerService.setChatTurnStartResolver(
+      (sessionId) => agentChatService.getTurnStartedAt(sessionId),
     );
 
     // Backfill starts well past the boot window so index writes never compete

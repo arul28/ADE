@@ -10076,6 +10076,12 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  /**
+   * When each chat's latest turn started. `currentTurnStartedAt` clears when
+   * the turn settles, and the proof broker still needs the time afterwards to
+   * tell a fresh video from an older one.
+   */
+  const lastTurnStartedAtBySession = new Map<string, string>();
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -16948,6 +16954,7 @@ export function createAgentChatService(args: {
   const setSessionActive = (managed: ManagedChatSession): void => {
     if (managed.session.status !== "active") {
       managed.session.currentTurnStartedAt = nowIso();
+      lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -57434,6 +57441,13 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    /** The current turn's start, or the latest one's. Null when none ran in this process. */
+    getTurnStartedAt: (sessionId: string): string | null => {
+      const live = managedSessions.get(sessionId)?.session;
+      return (live?.status === "active" ? live.currentTurnStartedAt ?? null : null)
+        ?? lastTurnStartedAtBySession.get(sessionId)
+        ?? null;
+    },
     getTurnStatus,
     ensureSessionSurface,
     hasActiveWorkloads,

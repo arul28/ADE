@@ -22,6 +22,17 @@ import {
   takeHeldRemoteBrowserOpen,
 } from "../../lib/pendingRemoteBrowserOpens";
 import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
+import type { WorkToolShowRequest } from "../../../shared/types/workToolShow";
+import {
+  receiveWorkToolShowRequest,
+  resetWorkToolShowRequestsForTests,
+} from "../../lib/workToolShowRequests";
+import {
+  noteWorkToolMounted,
+  resetWorkToolOnScreenForTests,
+  setDocumentVisibleForTests,
+  setWorkToolsPaneVisibleProbeForTests,
+} from "../../lib/workToolOnScreen";
 
 const crossMachineMocks = vi.hoisted(() => ({
   cancelOptimistic: vi.fn(),
@@ -511,6 +522,15 @@ const miniPlayerProps = vi.hoisted(() => ({
   latest: undefined as undefined | { surface?: unknown },
 }));
 
+const floatMocks = vi.hoisted(() => ({
+  floatAppleMiniPlayerForChat: vi.fn(async () => true),
+}));
+
+vi.mock("../apple/appleMiniPlayerStore", async () => ({
+  ...(await vi.importActual<typeof import("../apple/appleMiniPlayerStore")>("../apple/appleMiniPlayerStore")),
+  floatAppleMiniPlayerForChat: floatMocks.floatAppleMiniPlayerForChat,
+}));
+
 vi.mock("../apple/AppleDeviceMiniPlayer", () => ({
   AppleDeviceMiniPlayer: (props: { surface?: unknown }) => {
     miniPlayerProps.latest = props;
@@ -605,6 +625,8 @@ describe("TerminalsPage chat session activation", () => {
     forgetWorkPtyLaunchPin({ sessionId: "shell-now-active", ptyId: "pty-shell-now-active" });
     forgetWorkPtyLaunchPin({ sessionId: "chat-foreign" });
     resetRemoteBrowserOpensForTests();
+    resetWorkToolShowRequestsForTests();
+    resetWorkToolOnScreenForTests();
     vi.clearAllMocks();
   });
 
@@ -1609,6 +1631,202 @@ describe("TerminalsPage chat session activation", () => {
     await screen.findByTestId("work-view-area");
     expect(miniPlayerProps.latest).toBeDefined();
     expect(miniPlayerProps.latest?.surface).toBeNull();
+  });
+
+  /*
+   * `ade ui show` and the floating device an agent's work brings up. The page
+   * takes requests only for the session in front: another lane's chat and the
+   * new-chat screen get nothing, and a request for a chat in the background is
+   * held for when the user opens it.
+   */
+  describe("show requests", () => {
+    let nextRequest = 1;
+    const showRequest = (overrides: Partial<WorkToolShowRequest>): WorkToolShowRequest => ({
+      requestId: `wts-${nextRequest++}`,
+      surface: "apple",
+      chatSessionId: "chat-1",
+      laneId: "lane-background",
+      auto: false,
+      requestedAt: new Date(0).toISOString(),
+      ...overrides,
+    });
+    const renderWithChatInFront = async (overrides: Record<string, unknown> = {}) => {
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      });
+      workMocks.projectRoot = "/repo";
+      const chatSession = workMocks.makeTerminalSession("chat-1", "lane-background", "codex-chat");
+      workMocks.currentWork = {
+        ...workMocks.baseWork,
+        sessions: [chatSession],
+        visibleSessions: [chatSession],
+        activeItemId: "chat-1",
+        closingPtyIds: new Set<string>(),
+        ...overrides,
+      };
+      render(<TerminalsPage />);
+      await screen.findByTestId("work-view-area");
+    };
+
+    /** The pane, as far as a show can tell: the tool mounts when it is written. */
+    const paneMountsWhatIsWritten = () => {
+      setDocumentVisibleForTests(true);
+      setWorkToolsPaneVisibleProbeForTests(() => true);
+      workMocks.fns.setLaneWorkViewState.mockImplementation(
+        (_root: string, laneId: string, next: { workSidebarTool?: string | null }) => {
+          if (next.workSidebarTool) noteWorkToolMounted(next.workSidebarTool, laneId);
+        },
+      );
+    };
+
+    it("opens the Apple tool or the browser for the chat in front", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront();
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toBe("shown");
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
+      );
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toBe("shown");
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "browser" }),
+      );
+    });
+
+    /*
+     * Regression, 2026-09-23 (chat 13d65dd4): `apple show` printed "shown"
+     * while only the floating player was on screen. "shown" now waits for the
+     * Apple tool to mount in a pane the user can see.
+     */
+    it("answers shown for the Apple tool only once it is on screen", async () => {
+      // The pane does not mount on its own here: this test mounts it.
+      workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
+      setDocumentVisibleForTests(true);
+      setWorkToolsPaneVisibleProbeForTests(() => true);
+      await renderWithChatInFront();
+      let answer: string | null = "pending";
+      const pending = receiveWorkToolShowRequest(showRequest({ surface: "apple" }))
+        .then((status) => { answer = status; });
+      await waitFor(() => expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "ios" }),
+      ));
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(answer).toBe("pending");
+      // The pane mounts the Apple tool (which takes the device back from the
+      // floating player): now it is shown.
+      noteWorkToolMounted("ios", "lane-background");
+      await pending;
+      expect(answer).toBe("shown");
+    });
+
+    it("answers held, not shown, when the pane never becomes visible", async () => {
+      // A hidden window runs no animation frames: the pane stays a sliver.
+      workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
+      setDocumentVisibleForTests(false);
+      await renderWithChatInFront();
+      noteWorkToolMounted("ios", "lane-background");
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toBe("held");
+    }, 10_000);
+
+    it("holds a request for a chat that is not in front without touching this pane", async () => {
+      await renderWithChatInFront();
+      workMocks.fns.setLaneWorkViewState.mockClear();
+      await expect(receiveWorkToolShowRequest(showRequest({ chatSessionId: "chat-other" }))).resolves.toBe("held");
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
+    });
+
+    it("floats the device for an agent driving the chat in front", async () => {
+      await renderWithChatInFront();
+      await receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true }));
+      expect(floatMocks.floatAppleMiniPlayerForChat).toHaveBeenCalledWith({
+        laneId: "lane-background",
+        chatSessionId: "chat-1",
+        runtimePin: null,
+        auto: true,
+      });
+    });
+
+    it("floats nothing for another chat's agent, and nothing on the new-chat screen", async () => {
+      await renderWithChatInFront();
+      await expect(receiveWorkToolShowRequest(
+        showRequest({ surface: "floating-apple", auto: true, chatSessionId: "chat-other", laneId: "lane-other" }),
+      )).resolves.toBeNull();
+      expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
+      cleanup();
+
+      workMocks.currentWork = {
+        ...workMocks.baseWork,
+        activeItemId: null,
+        draftLaneId: "lane-background",
+        closingPtyIds: new Set<string>(),
+      };
+      render(<TerminalsPage />);
+      await screen.findByTestId("work-view-area");
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
+        .resolves.toBeNull();
+      expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
+    });
+
+    it("does not float over the Apple tool when it is on screen, or while it opens", async () => {
+      workMocks.laneWorkViewByScope = {
+        "/repo::lane-background": { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
+      };
+      await renderWithChatInFront({ workSidebarOpen: true });
+      // Opening: written, not yet mounted.
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
+        .resolves.toBeNull();
+      setDocumentVisibleForTests(true);
+      setWorkToolsPaneVisibleProbeForTests(() => true);
+      noteWorkToolMounted("ios", "lane-background");
+      await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
+        .resolves.toBe("shown");
+      expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
+    });
+
+    it("opens the Apple tool when `apple launch --open-drawer` names the chat in front", async () => {
+      let iosListener: ((event: unknown) => void) | null = null;
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        value: {
+          builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+          iosSimulator: {
+            onEvent: vi.fn((listener: (event: unknown) => void) => {
+              iosListener = listener;
+              return vi.fn();
+            }),
+          },
+        },
+      });
+      workMocks.projectRoot = "/repo";
+      const chatSession = workMocks.makeTerminalSession("chat-1", "lane-background", "codex-chat");
+      workMocks.currentWork = {
+        ...workMocks.baseWork,
+        sessions: [chatSession],
+        visibleSessions: [chatSession],
+        activeItemId: "chat-1",
+        closingPtyIds: new Set<string>(),
+      };
+      render(<TerminalsPage />);
+      await waitFor(() => expect(iosListener).not.toBeNull());
+      iosListener!({ type: "drawer-open-requested", action: "launch", mode: "interact", chatSessionId: "chat-other", laneId: null });
+      expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "ios" }),
+      );
+      iosListener!({ type: "drawer-open-requested", action: "launch", mode: "interact", chatSessionId: "chat-1", laneId: "lane-background" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
+        "/repo",
+        "lane-background",
+        expect.objectContaining({ workSidebarTool: "ios" }),
+      );
+    });
   });
 
   it("hands the floating device the lane and machine of the session in front", async () => {

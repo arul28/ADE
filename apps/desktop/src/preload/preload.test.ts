@@ -9623,3 +9623,43 @@ describe("preload provider API credential bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
   });
 });
+
+describe("preload proof media server base", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  it("asks main once per launch, but asks again after main had none", async () => {
+    const answers: Array<string | null> = [null, "http://127.0.0.1:5000/tok"];
+    const invoke = vi.fn(async (channel: string) =>
+      channel === IPC.computerUseMediaBaseUrl ? answers.shift() : undefined);
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    expect(await bridge.computerUse.mediaBaseUrl()).toBeNull();
+    expect(await bridge.computerUse.mediaBaseUrl()).toBe("http://127.0.0.1:5000/tok");
+    expect(await bridge.computerUse.mediaBaseUrl()).toBe("http://127.0.0.1:5000/tok");
+    const asks = invoke.mock.calls.filter(([channel]) => channel === IPC.computerUseMediaBaseUrl);
+    expect(asks).toHaveLength(2);
+  });
+});

@@ -10560,6 +10560,67 @@ describe("sync host reliability guards", () => {
       cleanup();
     }
   });
+
+  it("sends a recording too large for one read in bounded slices, only from the artifact store", async () => {
+    // The owner's 2026-09-23 report: a 41 MB recording could not reach the
+    // phone at all, because `readArtifact` refuses anything over 8 MB.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const artifactPath = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1", "rec.mov");
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    const bytes = Buffer.alloc(8 * 1024 * 1024 + 11);
+    for (let index = 0; index < bytes.length; index += 997) bytes[index] = index % 256;
+    fs.writeFileSync(artifactPath, bytes);
+    fs.writeFileSync(path.join(projectRoot, "secret.mov"), Buffer.from("nope"));
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-artifact-range");
+      const received: Buffer[] = [];
+      let offset = 0;
+      for (let slice = 0; slice < 10; slice += 1) {
+        const requestId = `artifact-range-${slice}`;
+        peer.ws.send(encodeSyncEnvelope({
+          type: "file_request",
+          requestId,
+          payload: {
+            action: "readArtifactRange",
+            args: { uri: ".ade/artifacts/apple-recordings/lane-1/rec.mov", offset, length: 64 * 1024 * 1024 },
+          },
+        }));
+        const response = await waitForEnvelope(peer.envelopes, "file_response", requestId);
+        const result = (response.payload as { ok: boolean; result: {
+          totalSize: number; rangeStart: number; rangeEnd: number; content: string; eof: boolean;
+        } }).result;
+        expect(result.totalSize).toBe(bytes.length);
+        expect(result.rangeStart).toBe(offset);
+        // The host caps every slice, whatever the phone asks for.
+        expect(result.rangeEnd - result.rangeStart).toBeLessThanOrEqual(2 * 1024 * 1024);
+        received.push(Buffer.from(result.content, "base64"));
+        offset = result.rangeEnd;
+        if (result.eof) break;
+      }
+      expect(Buffer.concat(received)).toEqual(bytes);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "artifact-range-escape",
+        payload: { action: "readArtifactRange", args: { uri: ".ade/artifacts/../../secret.mov", offset: 0 } },
+      }));
+      const escape = await waitForEnvelope(peer.envelopes, "file_response", "artifact-range-escape");
+      expect(escape.payload).toMatchObject({ ok: false, action: "readArtifactRange" });
+      expect((escape.payload as { error?: { message?: string } }).error?.message)
+        .toMatch(/within \.ade\/artifacts/);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
 });
 
 describe("chat_subscribe snapshots", () => {

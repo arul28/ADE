@@ -16,6 +16,7 @@ import {
   shouldOpenSimulatorAppForLaunch,
 } from "./iosSimulatorService";
 import type { SimHelperClient } from "./simHelperClient";
+import { createAppleStreamRelayForService } from "./appleStreamRelay";
 import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
@@ -1095,7 +1096,8 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
 
     try {
       await service.startStream({ deviceUdid: "device-1", laneId: "lane-a" });
-      await service.startStream({ deviceUdid: "device-2", laneId: "lane-b" });
+      // device-2 is Shutdown in this fixture, so lane-b's start is an explicit one.
+      await service.startStream({ deviceUdid: "device-2", laneId: "lane-b", boot: true });
 
       expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
       expect(service.getStreamStatus({ laneId: "lane-b" }).deviceUdid).toBe("device-2");
@@ -1944,6 +1946,41 @@ describe("iosSimulatorService screenshots and platform guards", () => {
     }
   });
 
+  it("files a screenshot as proof captured by ADE", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-screenshot-proof-`);
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const filed: Array<Record<string, unknown>> = [];
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+      recordingDeps: {
+        artifactFiler: {
+          ingest(request) {
+            filed.push(request as Record<string, unknown>);
+            return { artifacts: [{ id: "artifact-1" }], links: [] };
+          },
+        },
+      },
+    });
+
+    try {
+      const shot = await service.screenshot({ projectRoot });
+      expect(shot.proofArtifactId).toBe("artifact-1");
+      expect(filed).toHaveLength(1);
+      expect(filed[0]).toMatchObject({
+        backend: { toolName: "apple_screenshot" },
+        provenance: { source: "ade-capture" },
+      });
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("refuses an --out that reaches outside the build root through a symlink", async () => {
     // The lexical containment check cannot see this: every segment sits under
     // the root, and the write still lands wherever the link points.
@@ -2291,6 +2328,15 @@ describe("iosSimulatorService screenshots and platform guards", () => {
 
       await expect(service.pressButton({ name: "power" as "home", deviceUdid: "device-1" }))
         .rejects.toThrow(/APPLE_BUTTON_UNSUPPORTED/);
+
+      // The app switcher is ONE helper command, whose double home press keeps
+      // Simulator's short gap. Two `home` calls would relaunch SpringBoard twice.
+      helper.sent.length = 0;
+      await service.pressButton({ name: "app-switcher", deviceUdid: "device-1", laneId: "lane-a" });
+      expect(helper.sent).toEqual([
+        expect.objectContaining({ type: "button", udid: "device-1", name: "app_switcher" }),
+      ]);
+      expect(noted).toEqual([]);
     } finally {
       service.dispose();
       restoreHelper();
@@ -2677,7 +2723,7 @@ describe("iosSimulatorService boot contract", () => {
       }
       return { stdout: "", stderr: "" };
     });
-    return { run, calls };
+    return { run, calls, devices };
   }
 
   function setup(options: {
@@ -2688,7 +2734,7 @@ describe("iosSimulatorService boot contract", () => {
     helperPid?: () => number | null;
   } = {}) {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    const { run, calls } = bootAwareRun(options);
+    const { run, calls, devices } = bootAwareRun(options);
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
     const helper = fakeSimHelper({
       ...(options.captureError ? {
@@ -2713,13 +2759,13 @@ describe("iosSimulatorService boot contract", () => {
       restoreHooks();
       platformSpy.mockRestore();
     };
-    return { service, calls, helper, events, phases, dispose };
+    return { service, calls, devices, helper, events, phases, dispose };
   }
 
-  it("startStream boots a shut-down device and waits for bootstatus before opening the capture", async () => {
+  it("an explicit startStream (boot: true) boots a shut-down device and waits for bootstatus before opening the capture", async () => {
     const { service, calls, helper, dispose } = setup();
     try {
-      const status = await service.startStream({ deviceUdid: "device-2", laneId: "lane-a" });
+      const status = await service.startStream({ deviceUdid: "device-2", laneId: "lane-a", boot: true });
       expect(status.running).toBe(true);
       const bootAt = calls.indexOf("xcrun simctl boot device-2");
       const statusAt = calls.indexOf("xcrun simctl bootstatus device-2 -b");
@@ -2758,10 +2804,10 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("startStream skips simctl boot for a device that is already booted", async () => {
+  it("an explicit startStream skips simctl boot for a device that is already booted", async () => {
     const { service, calls, dispose } = setup();
     try {
-      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a" });
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", boot: true });
       expect(calls).not.toContain("xcrun simctl boot device-1");
       expect(calls).toContain("xcrun simctl bootstatus device-1 -b");
     } finally {
@@ -2769,11 +2815,151 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("startStream tolerates simctl saying the device is already booted", async () => {
+  it("an explicit startStream tolerates simctl saying the device is already booted", async () => {
     const { service, dispose } = setup({ bootError: "Unable to boot device in current state: Booted" });
     try {
+      const status = await service.startStream({ deviceUdid: "device-2", laneId: "lane-a", boot: true });
+      expect(status.running).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: a viewer attaching to a device that is off gets APPLE_DEVICE_OFF and never boots it", async () => {
+    // The owner's 2026-09-23 report: reopening the tools pane after ADE
+    // restarted booted the simulator instead of showing "{name} is off."
+    // Watching is not asking for power.
+    const { service, calls, helper, dispose } = setup();
+    try {
+      await expect(service.startStream({ deviceUdid: "device-2", laneId: "lane-a", localViewer: true }))
+        .rejects.toMatchObject({ code: "APPLE_DEVICE_OFF", message: expect.stringMatching(/^APPLE_DEVICE_OFF: iPhone 17 is off\./) });
+      expect(calls).not.toContain("xcrun simctl boot device-2");
+      expect(helper.sent.some((command) => command.type === "capture-start")).toBe(false);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("a viewer refused for an off device leaves the lane's other stream running", async () => {
+    const { service, dispose } = setup();
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a" });
+      await expect(service.startStream({ deviceUdid: "device-2", laneId: "lane-a" }))
+        .rejects.toMatchObject({ code: "APPLE_DEVICE_OFF" });
+      expect(service.getStreamStatus({ laneId: "lane-a" })).toMatchObject({ running: true, deviceUdid: "device-1" });
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: a stream left 'running' on a device that has since gone off is published stopped, not handed out", async () => {
+    // A restart (or Xcode) powers the device off under a live status. The fast
+    // path used to hand that capture's dead address to the next viewer.
+    const { service, calls, events, devices, helper, dispose } = setup();
+    try {
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
+      const captures = helper.sent.filter((command) => command.type === "capture-start").length;
+      // Powered off outside ADE: simctl now says Shutdown, and no event said so.
+      devices.find((device) => device.udid === "device-2")!.state = "Shutdown";
+      await new Promise((resolve) => setTimeout(resolve, 600)); // past the device-list cache
+      calls.length = 0;
+
+      await expect(service.startStream({ laneId: "lane-a", localViewer: true }))
+        .rejects.toMatchObject({ code: "APPLE_DEVICE_OFF" });
+
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false);
+      expect(events.at(-1)).toMatchObject({ type: "stream-stopped" });
+      expect(calls).not.toContain("xcrun simctl boot device-2");
+      expect(helper.sent.filter((command) => command.type === "capture-start").length).toBe(captures);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: a remote viewer on an off device (relay openSource) is refused and nothing boots", async () => {
+    // The phone and the web tab reach the service through the relay. Before,
+    // `startStream` booted the device for them, so opening the viewer on a
+    // phone powered the Mac's simulator on.
+    const { service, calls, dispose } = setup();
+    try {
+      await service.deviceAttach({ laneId: "lane-a", simulator: "device-2" });
+      const connect = vi.fn();
+      const relay = createAppleStreamRelayForService({
+        service,
+        remoteBitrateKbpsCap: () => 1500,
+        connect: connect as never,
+      });
+      const ticket = relay.issue({ laneId: "lane-a" });
+      const closed: Array<[number | undefined, string | undefined]> = [];
+      const socket = {
+        send: vi.fn(),
+        close: (code?: number, reason?: string) => { closed.push([code, reason]); },
+        on: vi.fn(),
+      };
+      await relay.attach(socket, { ticket: ticket.ticket, token: ticket.token });
+      expect(closed).toEqual([[1011, "stream unavailable"]]);
+      expect(connect).not.toHaveBeenCalled();
+      expect(calls).not.toContain("xcrun simctl boot device-2");
+      relay.dispose();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: the Mac's last viewer leaving does not cut off a phone reading the same capture", async () => {
+    // The owner's 2026-09-23 report: the floating player went away and its
+    // lane-scoped stop ended the capture the phone was watching through the
+    // relay. The phone kept going only because it reconnected.
+    const { service, helper, dispose } = setup();
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      const upstreamClosed = vi.fn();
+      const relay = createAppleStreamRelayForService({
+        service,
+        remoteBitrateKbpsCap: () => null,
+        connect: (() => ({ onData: () => {}, onEnd: () => {}, close: upstreamClosed })) as never,
+      });
+      const ticket = relay.issue({ laneId: "lane-a" });
+      const socketListeners = new Map<string, (...args: unknown[]) => void>();
+      const socket = {
+        send: vi.fn(),
+        close: vi.fn(),
+        on: (event: string, listener: (...args: unknown[]) => void) => { socketListeners.set(event, listener); },
+      };
+      expect(await relay.attach(socket as never, { ticket: ticket.ticket, token: ticket.token })).toBe(true);
+      const captureStops = () => helper.sent.filter((command) => command.type === "capture-stop").length;
+
+      // The desktop's last lease goes: the renderer's stop carries localViewer.
+      await service.stopStream({ laneId: "lane-a", localViewer: true });
+      expect(captureStops()).toBe(0);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
+      expect(service.hasLocalViewer("lane-a")).toBe(false);
+
+      // The phone leaves too: now the relay, which took the stop over, stops it.
+      socketListeners.get("close")?.();
+      await vi.waitFor(() => expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(false));
+      expect(captureStops()).toBe(1);
+      relay.dispose();
+
+      // With no relay viewer at all, a local stop stops.
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      await service.stopStream({ laneId: "lane-a", localViewer: true });
+      expect(captureStops()).toBe(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("a viewer arriving while the device is booting waits for it instead of refusing or booting again", async () => {
+    const { service, calls, devices, dispose } = setup();
+    try {
+      devices.find((device) => device.udid === "device-2")!.state = "Booting";
       const status = await service.startStream({ deviceUdid: "device-2", laneId: "lane-a" });
       expect(status.running).toBe(true);
+      expect(calls).not.toContain("xcrun simctl boot device-2");
+      expect(calls).toContain("xcrun simctl bootstatus device-2 -b");
     } finally {
       dispose();
     }

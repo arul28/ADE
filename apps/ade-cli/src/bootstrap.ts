@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -183,6 +182,7 @@ import {
   createWorkToolsStateService,
   type WorkToolsStateService,
 } from "./services/workTools/workToolsStateService";
+import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
@@ -228,6 +228,12 @@ import {
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
 import { createTeardownStack } from "./services/runtime/startupTeardown";
+import {
+  adeCliShimDirName,
+  renderAdeCliShim,
+  resolveAdeCliShimBrain,
+  type AdeCliShimBrain,
+} from "./services/runtime/adeCliShim";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { createPrEventFanout } from "./prEventFanout";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
@@ -469,32 +475,16 @@ function resolveCurrentAdeCliEntry(): string | null {
   return null;
 }
 
-function isJavaScriptCliEntry(entryPath: string): boolean {
-  return /\.(?:cjs|mjs|js)$/i.test(entryPath);
-}
-
-function ensureAdeCliShim(entryPath: string): { dir: string; path: string } | null {
-  const hash = createHash("sha256").update(entryPath).digest("hex").slice(0, 16);
-  const shimDir = path.join(os.tmpdir(), "ade-cli-shims", hash);
+function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain): { dir: string; path: string } | null {
+  const shimDir = path.join(os.tmpdir(), "ade-cli-shims", adeCliShimDirName(entryPath, process.execPath, brain));
   const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
   try {
     fs.mkdirSync(shimDir, { recursive: true });
-    if (process.platform === "win32") {
-      const body = isJavaScriptCliEntry(entryPath)
-        ? `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${entryPath}" %*\r\n`
-        : `@echo off\r\n"${entryPath}" %*\r\n`;
-      if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
-        fs.writeFileSync(shimPath, body, "utf8");
-      }
-    } else {
-      const body = isJavaScriptCliEntry(entryPath)
-        ? `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} ${JSON.stringify(entryPath)} "$@"\n`
-        : `#!/bin/sh\nexec ${JSON.stringify(entryPath)} "$@"\n`;
-      if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
-        fs.writeFileSync(shimPath, body, "utf8");
-      }
-      fs.chmodSync(shimPath, 0o755);
+    const body = renderAdeCliShim({ entryPath, execPath: process.execPath, brain });
+    if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
+      fs.writeFileSync(shimPath, body, "utf8");
     }
+    if (process.platform !== "win32") fs.chmodSync(shimPath, 0o755);
     return { dir: shimDir, path: shimPath };
   } catch {
     return null;
@@ -614,7 +604,13 @@ export function cleanupLegacyBundledAdeSkillsForCli(): void {
 
 export function createHeadlessAdeCliAgentEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
-  options: { cliEntry?: string | null; resourcesPath?: string | null; cwd?: string | null } = {},
+  options: {
+    cliEntry?: string | null;
+    resourcesPath?: string | null;
+    cwd?: string | null;
+    /** The brain the shim defaults to. This process's own, unless a test says otherwise. */
+    brain?: AdeCliShimBrain;
+  } = {},
 ): NodeJS.ProcessEnv {
   cleanupLegacyBundledAdeSkillsForCli();
   const next: NodeJS.ProcessEnv = { ...baseEnv };
@@ -626,7 +622,7 @@ export function createHeadlessAdeCliAgentEnv(
   if (nextPath) setPathEnvValue(next, nextPath);
   const cliEntry = options.cliEntry === undefined ? resolveCurrentAdeCliEntry() : options.cliEntry;
   if (cliEntry) {
-    const shim = ensureAdeCliShim(cliEntry);
+    const shim = ensureAdeCliShim(cliEntry, options.brain ?? resolveAdeCliShimBrain(process.env));
     if (shim) {
       next.ADE_CLI_PATH = shim.path;
       next.ADE_CLI_BIN_DIR = shim.dir;
@@ -1663,6 +1659,12 @@ export async function createAdeRuntime(args: {
       macDesktopService,
       onStateChanged: (laneId) =>
         pushEvent("runtime", { type: WORK_TOOLS_STATE_CHANGED_EVENT, laneId }),
+      // `ade ui show`: the desktops on this project read the same runtime
+      // stream, so the request reaches a paired desktop on another machine too.
+      showRequests: createWorkToolShowRequests({
+        emitEvent: (payload) => pushEvent("runtime", payload),
+        logger,
+      }),
       logger,
     });
     teardown.push(() => workToolsStateService.dispose());
@@ -1824,6 +1826,10 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
+    // The broker judges an attached video against the chat's turn start.
+    computerUseArtifactBrokerService.setChatTurnStartResolver(
+      (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,
+    );
     bindIosSimulatorReleaseOnChatEnd({
       agentChatService,
       iosSimulatorService,

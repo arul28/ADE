@@ -102,6 +102,7 @@ describe("scene still filing", () => {
       sceneScopeKey: "row-1:aa",
       sceneTitle: "Merged pull requests",
       voiceCallId: "call-7",
+      proofSource: "ade-capture",
     });
   });
 

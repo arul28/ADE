@@ -64,7 +64,15 @@ public enum SimHelperCommand: Equatable, Sendable {
     case axDescribe(id: String, udid: String)
     case axFrontmost(id: String, udid: String)
     case screenshot(id: String, udid: String, path: String)
-    case recordStart(id: String, udid: String, path: String, overlays: Bool, fps: Int, accentColor: String?)
+    case recordStart(
+        id: String,
+        udid: String,
+        path: String,
+        overlays: Bool,
+        fps: Int,
+        accentColor: String?,
+        idleCompression: Bool
+    )
     case recordStop(id: String, udid: String)
     case overlayTap(id: String, udid: String, point: DevicePoint)
     case overlayText(id: String, udid: String, text: String, secure: Bool)
@@ -91,7 +99,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .axDescribe(id, _): return id
         case let .axFrontmost(id, _): return id
         case let .screenshot(id, _, _): return id
-        case let .recordStart(id, _, _, _, _, _): return id
+        case let .recordStart(id, _, _, _, _, _, _): return id
         case let .recordStop(id, _): return id
         case let .overlayTap(id, _, _): return id
         case let .overlayText(id, _, _, _): return id
@@ -116,7 +124,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .axDescribe(_, udid): return udid
         case let .axFrontmost(_, udid): return udid
         case let .screenshot(_, udid, _): return udid
-        case let .recordStart(_, udid, _, _, _, _): return udid
+        case let .recordStart(_, udid, _, _, _, _, _): return udid
         case let .recordStop(_, udid): return udid
         case let .overlayTap(_, udid, _): return udid
         case let .overlayText(_, udid, _, _): return udid
@@ -312,13 +320,17 @@ public enum SimHelperCommandParser {
                     throw Invalid.message("`fps` must be between 1 and 60.")
                 }
                 let accent = (dictionary["accentColor"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                // Idle cutting defaults ON: a recording of an agent thinking is
+                // mostly a frozen screen. `false` keeps wall-clock time.
+                let idleCompression = (dictionary["idleCompression"] as? NSNumber)?.boolValue ?? true
                 return .success(.recordStart(
                     id: id,
                     udid: udid,
                     path: path,
                     overlays: overlays,
                     fps: fps,
-                    accentColor: accent
+                    accentColor: accent,
+                    idleCompression: idleCompression
                 ))
 
             case "record-stop":
@@ -391,8 +403,10 @@ public enum SimHelperEvent: @unchecked Sendable {
     /// A recording is running and the file at `path` is being written.
     case recordStarted(id: String, udid: String, path: String)
     /// A recording finished. `bytes` is the file as it landed on disk, so ADE
-    /// can size the storage warning without stat-ing it again.
-    case recordStopped(udid: String, path: String, durationMs: Int, bytes: Int)
+    /// can size the storage warning without stat-ing it again. `durationMs` is
+    /// the video's length; `wallDurationMs` the real time it covers, and
+    /// `idleCutMs` the difference cut as dead time.
+    case recordStopped(udid: String, path: String, durationMs: Int, wallDurationMs: Int, idleCutMs: Int, bytes: Int)
 
     public var payload: [String: Any] {
         switch self {
@@ -421,12 +435,14 @@ public enum SimHelperEvent: @unchecked Sendable {
             return ["type": "capture-stopped", "udid": udid, "reason": reason]
         case let .recordStarted(id, udid, path):
             return ["type": "record-started", "id": id, "udid": udid, "path": path]
-        case let .recordStopped(udid, path, durationMs, bytes):
+        case let .recordStopped(udid, path, durationMs, wallDurationMs, idleCutMs, bytes):
             return [
                 "type": "record-stopped",
                 "udid": udid,
                 "path": path,
                 "durationMs": durationMs,
+                "wallDurationMs": wallDurationMs,
+                "idleCutMs": idleCutMs,
                 "bytes": bytes,
             ]
         }

@@ -44,9 +44,16 @@ vi.mock("./drawer/AppleToolsDrawer", () => ({
 }));
 
 const streamState = { value: "live" as AppleStreamState };
+/** What the pane last asked the stream hook for. */
+const streamReconnect = vi.hoisted(() => ({ fn: (() => {}) as () => void }));
+const streamArgs = vi.hoisted(() => ({
+  last: null as null | { deviceUdid: string | null; onError: (message: string | null) => void },
+}));
 
 vi.mock("./useAppleDeviceStream", () => ({
-  useAppleDeviceStream: () => ({
+  useAppleDeviceStream: (args: { deviceUdid: string | null; onError: (message: string | null) => void }) => {
+    streamArgs.last = args;
+    return {
     state: streamState.value,
     url: streamState.value === "live" ? "http://127.0.0.1:1/stream" : null,
     token: "token",
@@ -60,9 +67,10 @@ vi.mock("./useAppleDeviceStream", () => ({
     handleReaderStatus: vi.fn(),
     handleDimensions: vi.fn(),
     noteFrame: vi.fn(),
-    reconnect: vi.fn(),
+    reconnect: () => streamReconnect.fn(),
     applyStreamEvent: vi.fn(),
-  }),
+    };
+  },
 }));
 
 vi.mock("./appleRecording", async (importOriginal) => ({
@@ -80,7 +88,7 @@ vi.mock("./appleRecording", async (importOriginal) => ({
   }),
 }));
 
-const { AppleDevicePane } = await import("./AppleDevicePane");
+const { AppleDevicePane, APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./AppleDevicePane");
 const { expectNoHorizontalOverflow } = await import("./testLayout");
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
@@ -151,6 +159,8 @@ function setup(options: Setup = {}) {
     deviceStart,
     deviceDelete: vi.fn(async () => undefined),
     closeDevice: vi.fn(async () => ({})),
+    deviceStop: vi.fn(async () => ({})),
+    getStreamStatus: vi.fn(async () => ({ running: false })),
     screenshot: vi.fn(async () => ({ filePath: "/tmp/shot.png" })),
     getDeviceSettings: vi.fn(async () => ({
       deviceUdid: "pro",
@@ -304,10 +314,16 @@ describe("AppleDevicePane states", () => {
   });
 
   it("starting: advances to Connecting video on the boot event", async () => {
-    setup({ lane: null });
+    // The service says `streaming` once its capture is open; the pane's own
+    // reader is still connecting, which is the card's second step.
+    const { iosSimulator } = setup({ lane: null, stream: "starting" });
     renderPane();
     fireEvent.click(await screen.findByRole("button", { name: "Start iPhone 17 Pro Max" }));
     await screen.findByText("Booting device");
+    iosSimulator.deviceList = vi.fn(async () => ({
+      installed: [PRO, { ...MAX, state: "Booted" }],
+      lane: { ...LANE_DEVICE, udid: "max", name: "iPhone 17 Pro Max" },
+    }));
     act(() => {
       for (const listener of listeners) {
         listener({ type: "apple.device.state", laneId: "lane-1", udid: "max", phase: "streaming" });
@@ -695,5 +711,153 @@ describe("AppleDevicePane when another lane takes the device (round 5 picker)", 
       document.querySelector('[data-apple-owner-lane="lane-2"]'),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open iPhone 17 Pro" })).toBeNull();
+  });
+});
+
+/* ── An off device stays off; a loading card always ends ─────────────────── */
+
+function emit(event: unknown) {
+  act(() => {
+    for (const listener of listeners) listener(event);
+  });
+}
+
+/** The pane's loading re-check, run by hand instead of waiting 8 seconds. */
+function captureRecheck() {
+  const ticks: Array<() => void> = [];
+  const real = window.setInterval.bind(window);
+  const spy = vi.spyOn(window, "setInterval").mockImplementation(((handler: () => void, ms?: number) => {
+    if (ms === APPLE_LOADING_RECHECK_MS) ticks.push(handler);
+    return real(handler, ms);
+  }) as typeof window.setInterval);
+  return {
+    tick: async () => {
+      await act(async () => {
+        for (const handler of ticks) handler();
+        await Promise.resolve();
+      });
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
+  it("regression: a device that is off is shown Off, and the pane never asks for its stream", async () => {
+    // A device session outlives a power-off. The pane used to read it as
+    // "booted", ask for the stream, and the service booted the device for it.
+    setup({
+      lane: LANE_DEVICE,
+      installed: [{ ...PRO, state: "Shutdown" }],
+      status: status({ deviceSession: { deviceUdid: "pro" } as IosSimulatorStatus["deviceSession"] }),
+      stream: "idle",
+    });
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("stopped"));
+    expect(screen.getByText("iPhone 17 Pro is off.")).toBeTruthy();
+    expect(streamArgs.last?.deviceUdid).toBeNull();
+  });
+
+  it("a stream refused with APPLE_DEVICE_OFF lands on the Off card, not an error", async () => {
+    // The list still said Booted when the pane mounted; the service knows better.
+    const { deviceStart, iosSimulator } = setup({ lane: LANE_DEVICE, stream: "starting" });
+    renderPane();
+    await waitFor(() => expect(streamArgs.last?.deviceUdid).toBe("pro"));
+    // What a fresh `simctl list` says by the time the pane re-reads it.
+    iosSimulator.deviceList = vi.fn(async () => ({ installed: [{ ...PRO, state: "Shutdown" }, MAX], lane: LANE_DEVICE }));
+    act(() => {
+      streamArgs.last?.onError("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it.");
+    });
+    await waitFor(() => expect(paneState()).toBe("stopped"));
+    expect(screen.getByText("iPhone 17 Pro is off.")).toBeTruthy();
+    expect(screen.queryByText("Something went wrong with the simulator.")).toBeNull();
+    // And it stays off: nothing asks for the stream again until Start.
+    expect(streamArgs.last?.deviceUdid).toBeNull();
+    expect(deviceStart).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(deviceStart).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" }, null);
+  });
+
+  it("regression: a start whose reply never arrives leaves the loading card on the streaming event", async () => {
+    // "The booter was stuck; I went back to the tools pane and came back, and
+    // it instantly reloaded." The device was streaming; the card waited on a
+    // promise alone.
+    const { iosSimulator } = setup({ lane: null });
+    renderPane();
+    fireEvent.click(await screen.findByRole("button", { name: "Start iPhone 17 Pro Max" }));
+    await screen.findByText("Booting device");
+    iosSimulator.deviceList = vi.fn(async () => ({
+      installed: [PRO, { ...MAX, state: "Booted" }],
+      lane: { ...LANE_DEVICE, udid: "max", name: "iPhone 17 Pro Max" },
+    }));
+    emit({ type: "apple.device.state", laneId: "lane-1", udid: "max", phase: "streaming" });
+    // The deviceStart promise is still pending; the pane does not wait for it.
+    await waitFor(() => expect(paneState()).toBe("live"));
+  });
+
+  it("regression: with no reply and no event, the re-check finds the lane streaming and ends the card", async () => {
+    const recheck = captureRecheck();
+    try {
+      const { iosSimulator } = setup({ lane: null });
+      renderPane();
+      fireEvent.click(await screen.findByRole("button", { name: "Start iPhone 17 Pro Max" }));
+      await screen.findByText("Booting device");
+      iosSimulator.deviceList = vi.fn(async () => ({
+        installed: [PRO, { ...MAX, state: "Booted" }],
+        lane: { ...LANE_DEVICE, udid: "max", name: "iPhone 17 Pro Max" },
+      }));
+      iosSimulator.getStreamStatus = vi.fn(async () => ({ running: true }));
+      await recheck.tick();
+      await waitFor(() => expect(paneState()).toBe("live"));
+      expect(iosSimulator.getStreamStatus).toHaveBeenCalledWith(null, { laneId: "lane-1", chatSessionId: "chat-1" });
+    } finally {
+      recheck.restore();
+    }
+  });
+
+  it("a start that never finishes is given up with a sentence and Start, never an endless spinner", async () => {
+    const recheck = captureRecheck();
+    const realNow = Date.now;
+    try {
+      setup({ lane: null });
+      renderPane();
+      fireEvent.click(await screen.findByRole("button", { name: "Start iPhone 17 Pro Max" }));
+      await screen.findByText("Booting device");
+      const startedAt = realNow();
+      vi.spyOn(Date, "now").mockImplementation(() => startedAt + APPLE_START_GIVE_UP_MS + 1_000);
+      await recheck.tick();
+      expect(await screen.findByText("The simulator is taking too long to start.")).toBeTruthy();
+      expect(paneState()).not.toBe("starting");
+    } finally {
+      vi.mocked(Date.now).mockRestore?.();
+      recheck.restore();
+    }
+  });
+
+  it("regression: 'Connecting video' with no start in flight asks the stream again by itself", async () => {
+    // The owner's 2026-09-23 report: the pane opened over a floating device
+    // sat on "Connecting video" until a tab switch remounted it.
+    const recheck = captureRecheck();
+    const reconnect = vi.fn();
+    streamReconnect.fn = reconnect;
+    try {
+      setup({ lane: LANE_DEVICE, stream: "starting" });
+      renderPane();
+      await waitFor(() => expect(paneState()).toBe("starting"));
+      expect(screen.getByText("Connecting video")).toBeTruthy();
+      await recheck.tick();
+      expect(reconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      streamReconnect.fn = () => {};
+      recheck.restore();
+    }
+  });
+
+  it("the stopped event shows Off at once, and Power off really powers off", async () => {
+    const { iosSimulator } = setup({ lane: LANE_DEVICE, stream: "live" });
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    iosSimulator.deviceList = vi.fn(async () => ({ installed: [{ ...PRO, state: "Shutdown" }, MAX], lane: LANE_DEVICE }));
+    emit({ type: "apple.device.state", laneId: "lane-1", udid: "pro", phase: "stopped" });
+    await waitFor(() => expect(paneState()).toBe("stopped"));
   });
 });

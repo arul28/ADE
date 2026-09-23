@@ -516,6 +516,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
+      "readArtifactRange",
       "recoverArtifact",
     ]) {
       expect(isCtoOnlyAdeAction("computer_use_artifacts", action)).toBe(true);

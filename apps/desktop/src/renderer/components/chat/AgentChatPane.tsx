@@ -220,6 +220,9 @@ import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
+import { useWorkToolShowHandler } from "../../lib/workToolShowRequests";
+import { isDocumentVisible } from "../../lib/workToolOnScreen";
+import type { WorkToolShowSurface } from "../../../shared/types/workToolShow";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
@@ -3219,6 +3222,10 @@ function isLikelyMacRenderer(): boolean {
   if (typeof navigator === "undefined") return false;
   return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
 }
+
+/** What a chat pane can show when an agent asks (`ade ui show`). */
+const CHAT_PANE_SHOW_SURFACES: readonly WorkToolShowSurface[] = ["proof", "apple"];
+const CHAT_PANE_SHOW_SURFACES_IN_WORK: readonly WorkToolShowSurface[] = ["proof"];
 
 export function AgentChatPane({
   laneId,
@@ -7518,6 +7525,35 @@ export function AgentChatPane({
       setIosSimulatorDrawerModeRequest(null);
     }
   }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
+
+  // `ade ui show proof` for the chat this pane shows, while it is on screen.
+  // Outside Work this pane also owns the chat's Apple drawer, so it takes
+  // `ade ui show apple` too; in Work the tools pane does.
+  useWorkToolShowHandler(
+    isTileVisible ? selectedSessionId : null,
+    hideLaneToolDrawers ? CHAT_PANE_SHOW_SURFACES_IN_WORK : CHAT_PANE_SHOW_SURFACES,
+    (request) => {
+      if (request.chatSessionId !== selectedSessionIdRef.current) return false;
+      if (request.surface === "proof") {
+        openProofDrawer();
+        // Answered after the drawer's commit, and only in a window the user
+        // can see: "shown" means on screen, not asked for.
+        return new Promise<boolean>((resolve) => {
+          window.setTimeout(() => resolve(isDocumentVisible()), 0);
+        });
+      }
+      if (request.surface === "apple" && !hideLaneToolDrawers && laneId) {
+        setIosSimulatorAvailable(true);
+        if (!iosSimulatorOpenRef.current) {
+          setAppControlOpen(false);
+          setCursorCloudPaneOpen(false);
+        }
+        setIosSimulatorOpen(true);
+        return true;
+      }
+      return false;
+    },
+  );
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);

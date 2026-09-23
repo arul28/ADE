@@ -5385,6 +5385,98 @@ describe("adeRpcServer", () => {
     expect(setActiveTool).not.toHaveBeenCalled();
   });
 
+  it("scopes work_tools.show to the agent's own chat and keeps the desktop's answer for user clients", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const show = vi.fn(async (args: unknown) => ({ status: "shown", ...(args as object) }));
+    const acknowledgeShow = vi.fn(() => ({ ok: true }));
+    fixture.runtime.workToolsStateService = { show, acknowledgeShow };
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    // The chat and lane come from the caller, not from what it sent.
+    const shown = await callTool(agent, "run_ade_action", {
+      domain: "work_tools",
+      action: "show",
+      args: { surface: "apple" },
+    });
+    expect(shown?.isError).toBeUndefined();
+    expect(show).toHaveBeenCalledWith({ surface: "apple", chatSessionId: "chat-a", laneId: "lane-a" });
+
+    // Another chat's surfaces are not this agent's to show.
+    const other = await callTool(agent, "run_ade_action", {
+      domain: "work_tools",
+      action: "show",
+      args: { surface: "proof", chatSessionId: "chat-b" },
+    });
+    expect(other.isError).toBe(true);
+    expect(show).toHaveBeenCalledTimes(1);
+
+    // An agent cannot forge the desktop's answer to its own request.
+    const forged = await callTool(agent, "run_ade_action", {
+      domain: "work_tools",
+      action: "acknowledgeShow",
+      args: { requestId: "wts-1", status: "shown" },
+    });
+    expect(forged.isError).toBe(true);
+    expect(acknowledgeShow).not.toHaveBeenCalled();
+
+    // The desktop renderer is a user client: it answers, and a human at a
+    // terminal names the chat with --session.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const ack = await callTool(desktop, "run_ade_action", {
+      domain: "work_tools",
+      action: "acknowledgeShow",
+      args: { requestId: "wts-1", status: "shown" },
+    });
+    expect(ack?.isError).toBeUndefined();
+    expect(acknowledgeShow).toHaveBeenCalledWith({ requestId: "wts-1", status: "shown" });
+    const humanShow = await callTool(desktop, "run_ade_action", {
+      domain: "work_tools",
+      action: "show",
+      args: { surface: "browser", chatSessionId: "chat-b" },
+    });
+    expect(humanShow?.isError).toBeUndefined();
+    expect(show).toHaveBeenLastCalledWith({ surface: "browser", chatSessionId: "chat-b" });
+  });
+
+  it("tells the desktop when an agent drives its chat's Apple device, and not for reads or the user's own input", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const noteAgentAppleActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentAppleActivity };
+    fixture.runtime.iosSimulatorService = {
+      tap: vi.fn(async () => ({ ok: true })),
+      getStatus: vi.fn(async () => ({ ok: true })),
+    };
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const tapped = await callTool(agent, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "tap",
+      args: { x: 10, y: 20 },
+    });
+    expect(tapped?.isError).toBeUndefined();
+    expect(noteAgentAppleActivity).toHaveBeenCalledWith({ chatSessionId: "chat-a", laneId: "lane-a" });
+
+    noteAgentAppleActivity.mockClear();
+    await callTool(agent, "run_ade_action", { domain: "ios_simulator", action: "getStatus", args: {} });
+    expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+
+    // The desktop pane's own taps are the user's, not an agent's.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await callTool(desktop, "run_ade_action", { domain: "ios_simulator", action: "tap", args: { x: 1, y: 2 } });
+    expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+  });
+
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {
     // `isUserClientSession` and `resolveChatSessionLaneId` are not complements:
     // an orchestration step identified only by `runId`, or a chat whose session

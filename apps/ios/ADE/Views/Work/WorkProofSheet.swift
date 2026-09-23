@@ -12,25 +12,97 @@ struct WorkProofRowModel: Equatable {
   let kindLabel: String
   let relativeTime: String
   let isVideo: Bool
+  /// "Recorded by ADE · 10:24–10:25 AM", "Captured by ADE", "Attached by the
+  /// agent". Nil for a row filed before the host recorded where proof came from.
+  let sourceLine: String?
+  /// "Recorded at 5:19 AM, before this request." Nil unless the host flagged it.
+  let olderLine: String?
 
   /// "Screenshot · 2m ago"
   var subtitle: String {
     "\(kindLabel) · \(relativeTime)"
   }
 
-  /// "Screenshot, Login page, 2m ago"
+  /// "Screenshot, Login page, 2m ago", then the provenance lines when present.
   var accessibilityLabel: String {
-    "\(kindLabel), \(title), \(relativeTime)"
+    ["\(kindLabel), \(title), \(relativeTime)", sourceLine, olderLine]
+      .compactMap { $0 }
+      .joined(separator: ", ")
   }
 
-  init(artifact: ComputerUseArtifactSummary, now: Date = Date()) {
+  init(
+    artifact: ComputerUseArtifactSummary,
+    now: Date = Date(),
+    formatClock: (Date) -> String = workProofClock
+  ) {
     id = artifact.id
     kindLabel = workArtifactKindLabel(artifact.artifactKind)
     let trimmedTitle = artifact.title.trimmingCharacters(in: .whitespacesAndNewlines)
     title = trimmedTitle.isEmpty ? kindLabel : trimmedTitle
     relativeTime = workProofRelativeTime(artifact.createdAt, now: now)
     isVideo = workArtifactIsVideo(artifact)
+    let lines = workProofProvenanceLines(artifact.metadataJson, formatClock: formatClock)
+    sourceLine = lines.source
+    olderLine = lines.older
   }
+}
+
+/// "10:24 AM" in the phone's locale and time zone.
+func workProofClock(_ date: Date) -> String {
+  date.formatted(date: .omitted, time: .shortened)
+}
+
+/// The desktop drawer's two provenance lines, read from the metadata the host
+/// stamps on each proof (`proofSource`, `recordedFrom`/`recordedTo`,
+/// `mediaCreatedAt`, `recordedBeforeRequest`). Missing fields print nothing.
+func workProofProvenanceLines(
+  _ metadataJson: String?,
+  formatClock: (Date) -> String = workProofClock
+) -> (source: String?, older: String?) {
+  guard let data = metadataJson?.data(using: .utf8),
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+    return (nil, nil)
+  }
+  func date(_ key: String) -> Date? { workParsedDate(object[key] as? String) }
+
+  let source: String?
+  switch object["proofSource"] as? String {
+  case "ade-recorder":
+    if let from = date("recordedFrom"), let to = date("recordedTo") {
+      source = "Recorded by ADE · \(workProofClockRange(from, to, formatClock: formatClock))"
+    } else if let single = date("recordedFrom") ?? date("recordedTo") {
+      source = "Recorded by ADE · \(formatClock(single))"
+    } else {
+      source = "Recorded by ADE"
+    }
+  case "ade-capture":
+    source = "Captured by ADE"
+  case "attached":
+    source = "Attached by the agent"
+  default:
+    source = nil
+  }
+
+  var older: String?
+  if object["recordedBeforeRequest"] as? Bool == true {
+    older = date("mediaCreatedAt").map { "Recorded at \(formatClock($0)), before this request." }
+      ?? "Recorded before this request."
+  }
+  return (source, older)
+}
+
+/// "10:24–10:25 AM": a day period both ends share is said once.
+func workProofClockRange(_ from: Date, _ to: Date, formatClock: (Date) -> String = workProofClock) -> String {
+  let start = formatClock(from)
+  let end = formatClock(to)
+  if start == end { return start }
+  if let range = end.range(of: #"\s*[^\d\s:.]+\.?$"#, options: .regularExpression) {
+    let period = String(end[range])
+    if start.hasSuffix(period) {
+      return "\(start.dropLast(period.count))–\(end)"
+    }
+  }
+  return "\(start)–\(end)"
 }
 
 /// "now", "2m ago", "3h ago", "4d ago". Hand-rolled rather than
@@ -185,6 +257,18 @@ private struct WorkProofRow: View {
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
+        if let sourceLine = model.sourceLine {
+          Text(sourceLine)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+        if let olderLine = model.olderLine {
+          Text(olderLine)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.warning)
+            .lineLimit(1)
+        }
       }
 
       Spacer(minLength: 0)

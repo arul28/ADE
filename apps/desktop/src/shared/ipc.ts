@@ -431,6 +431,7 @@ export const IPC = {
   computerUseRecoverArtifact: "ade.computerUse.recoverArtifact",
   computerUseUpdateArtifactReview: "ade.computerUse.updateArtifactReview",
   computerUseReadArtifactPreview: "ade.computerUse.readArtifactPreview",
+  computerUseMediaBaseUrl: "ade.computerUse.mediaBaseUrl",
   computerUseEvent: "ade.computerUse.event",
   iosSimulatorGetStatus: "ade.iosSimulator.getStatus",
   iosSimulatorListDevices: "ade.iosSimulator.listDevices",

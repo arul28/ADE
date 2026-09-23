@@ -6,7 +6,7 @@ The broker runs inside the ADE runtime (`ade serve`) that owns the project. Arti
 
 ## Source file map
 
-- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services. `readArtifactPreview` serves only files inside the artifact root, caps data-URL responses at 10 MiB, and recognizes common image plus M4V/MOV/MP4/OGV/WebM video extensions.
+- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services. `readArtifactPreview` serves only files inside the artifact root, caps data-URL responses at 10 MiB, and recognizes common image plus M4V/MOV/MP4/OGV/WebM video extensions. `readArtifactRange` serves the same files under the same jail in slices of at most 2 MiB, for a paired desktop streaming a video; the phone's sync `readArtifactRange` file action does the same past `readArtifact`'s 8 MiB cap.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — storage helpers (`createComputerUseArtifactPath`, `toProjectArtifactUri`).
 - `apps/desktop/src/shared/types/computerUseArtifacts.ts` (via `shared/types`) — artifact/link/input/owner records plus availability, delete, broken-record, recovery, and event contracts.
 - `apps/desktop/src/shared/proofArtifacts.ts` — `normalizeComputerUseArtifactKind`, `resolveReportArtifactKind`.

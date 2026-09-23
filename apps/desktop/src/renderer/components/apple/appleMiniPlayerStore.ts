@@ -458,6 +458,67 @@ export async function handoffAppleMiniPlayerAsync(args: {
   });
 }
 
+/**
+ * Float the lane's device over a chat because of the chat's agent.
+ *
+ * `auto` is the agent merely driving the device (tap, record, `apple start`):
+ * it floats only while this chat's "Show preview when minimized" is on, which
+ * is the default and which × on the player turns off, and it never replaces a
+ * player that is already up. Not `auto` is the agent asking with `ade ui show
+ * floating-apple`, which is an explicit request and so opens it regardless.
+ *
+ * The caller has already checked that the chat is the one in front and that
+ * the Apple tool is not on screen. Returns true when the device is floating.
+ */
+export async function floatAppleMiniPlayerForChat(args: {
+  laneId: string | null;
+  chatSessionId: string | null;
+  runtimePin: OpenProjectBinding | null;
+  auto: boolean;
+}): Promise<boolean> {
+  const { laneId, chatSessionId } = args;
+  if (!laneId) return false;
+  const suppressed = () => Boolean(
+    args.auto && chatSessionId && !isWorkLivePreviewEnabled(readChatCompanionUiState(chatSessionId), "ios"),
+  );
+  if (suppressed()) return false;
+  if (current) {
+    if (current.laneId === laneId) return true;
+    if (args.auto) return false;
+  }
+  // An automatic float always asks whether the device is up: the pane's cache
+  // outlives a power-off, and a player floated uninvited over an off device
+  // would only show that it is off. An explicit ask may show it off, with the
+  // player's own Start.
+  let device = args.auto ? null : getAppleMiniPlayerLaneDevice(laneId);
+  if (!device) {
+    const api = window.ade?.iosSimulator;
+    if (!api?.deviceList) return false;
+    const listed = await api.deviceList({ laneId, installed: true }, args.runtimePin).catch(() => null);
+    const lane = listed?.lane ?? null;
+    if (!lane) return false;
+    const booted = listed?.installed.find((entry) => entry.udid === lane.udid)?.state === "Booted";
+    if (args.auto && !booted) return false;
+    device = { udid: lane.udid, name: lane.name, runtime: lane.runtime, family: lane.family };
+    noteAppleMiniPlayerLaneDevice(laneId, device);
+  }
+  // The lookup awaited: the user may have closed a player or turned the
+  // preview off in the meantime, and another float may have won.
+  if (suppressed()) return false;
+  if (current?.laneId === laneId) return true;
+  if (current && args.auto) return false;
+  openAppleMiniPlayer({
+    laneId,
+    chatSessionId,
+    deviceUdid: device.udid,
+    deviceName: device.name,
+    deviceRuntime: device.runtime,
+    family: device.family === "ipad" ? "ipad" : "iphone",
+    runtimePin: args.runtimePin,
+  });
+  return true;
+}
+
 export function getAppleMiniPlayerTarget(): AppleMiniPlayerTarget | null {
   return current;
 }

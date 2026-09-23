@@ -9028,6 +9028,8 @@ export function registerIpc({
             outcome = "unknown";
             broker.ingest({
               backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+              // The desktop drew these pixels; ADE captured them.
+              provenance: { source: "ade-capture" as const },
               ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
               inputs: [{
                 kind: "screenshot",

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,7 +28,14 @@ import type {
   ComputerUseEventPayload,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { ARTIFACT_RANGE_READ_MAX_BYTES } from "../../../shared/artifactStreamUrl";
+import { encodeCodedErrorMessage } from "../../../shared/codedError";
 import { normalizeComputerUseArtifactKind } from "../../../shared/proofArtifacts";
+import {
+  PROOF_DUPLICATE_CODE,
+  PROOF_PROVENANCE_METADATA_KEYS,
+  type ComputerUseProofSource,
+} from "../../../shared/proofProvenance";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { SqlValue } from "../state/kvDb";
@@ -44,6 +51,7 @@ import {
 } from "../shared/utils";
 import { commandExists } from "../ai/utils";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
+import { isIsoMediaExtension, readMp4CreationTimeFromFile } from "./mediaCreationTime";
 
 type StoredArtifactRow = {
   id: string;
@@ -95,7 +103,106 @@ type ResolvedStoredArtifact = {
   storageKind: "file" | "url";
   mimeType: string | null;
   stagedFilePath: string | null;
+  /** Where the stored bytes live on disk, when they live in the store. */
+  storedFilePath: string | null;
+  /** True when the bytes came from a file the caller named, not inline text. */
+  fromCallerFile: boolean;
+  /** Filled while copying, so an imported file is read once. */
+  fingerprint: ContentFingerprint | null;
 };
+
+type ContentFingerprint = { sha256: string; bytes: number };
+
+/** A proof whose bytes match a file being attached. */
+export type DuplicateProofMatch = {
+  artifactId: string | null;
+  title: string;
+  createdAt: string;
+};
+
+/**
+ * Refusal for an attach whose bytes are already proof.
+ *
+ * An agent that could not record once copied an old recording to a new name
+ * and attached it as the thing it was asked for. Same bytes, new caption. The
+ * code is in the message because the CLI only sees the message.
+ */
+export class ProofDuplicateError extends Error {
+  readonly code = PROOF_DUPLICATE_CODE;
+  readonly existing: DuplicateProofMatch;
+
+  constructor(existing: DuplicateProofMatch) {
+    super(encodeCodedErrorMessage(
+      PROOF_DUPLICATE_CODE,
+      `Same bytes as "${existing.title}" (filed ${formatLocalWhen(existing.createdAt)}). `
+      + "This file is already proof. Record a new one, or report that recording failed.",
+    ));
+    this.name = "ProofDuplicateError";
+    this.existing = existing;
+  }
+}
+
+/** Files larger than this are not hashed outside a copy. Proof is never this big. */
+const MAX_HASH_BYTES = 2 * 1024 * 1024 * 1024;
+/** Older rows with no stored hash are hashed on demand, at most this many per attach. */
+const MAX_LAZY_HASHES_PER_ATTACH = 8;
+/** Clock slack between a recorder and the host before a video counts as older. */
+const RECORDED_BEFORE_REQUEST_SLACK_MS = 60_000;
+
+/** "5:19 AM" today, "Sep 22, 5:19 AM" on another day, in the host's local time. */
+function formatLocalWhen(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return iso;
+  const sameDay = date.toDateString() === now.toDateString();
+  return sameDay
+    ? date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** SHA-256 of a file, read in chunks. Null when it cannot be read or is too big. */
+function hashFileSync(filePath: string): ContentFingerprint | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_HASH_BYTES) return null;
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    for (;;) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    return { sha256: hash.digest("hex"), bytes: position };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // The hash is already taken or abandoned.
+      }
+    }
+  }
+}
+
+/** An input's own metadata, minus the keys only the broker may stamp. */
+function callerMetadata(metadata: unknown): Record<string, unknown> {
+  if (!isRecord(metadata)) return {};
+  const next: Record<string, unknown> = { ...metadata };
+  for (const key of PROOF_PROVENANCE_METADATA_KEYS) delete next[key];
+  return next;
+}
+
+function validIsoOrNull(value: unknown): string | null {
+  const text = toOptionalString(value);
+  if (!text) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
 
 type RecoverableSourceResolution =
   | { status: "found"; path: string }
@@ -226,7 +333,58 @@ async function readArtifactPreviewDataUrl(args: {
   }
 }
 
-function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void {
+/**
+ * One bounded slice of a stored proof, for a paired desktop that streams it
+ * into a `<video>` instead of taking the whole file as a data URL.
+ *
+ * The jail is the preview read's: the uri must resolve inside this project's
+ * `.ade/artifacts` after symlinks, and only preview media types are served.
+ * Nothing about the caller widens it; a length above the cap is cut down.
+ */
+async function readArtifactRangeChunk(args: {
+  uri?: string;
+  offset?: number;
+  length?: number;
+  projectRoot: string;
+  artifactsDir: string;
+}): Promise<{ totalSize: number; offset: number; data: string; mimeType: string }> {
+  const uri = typeof args.uri === "string" ? args.uri.trim() : "";
+  if (!uri) throw new Error("Artifact uri is required.");
+  let resolved: string;
+  try {
+    resolved = resolvePathWithinRoot(
+      args.artifactsDir,
+      path.normalize(resolveRendererArtifactPath(uri, args.projectRoot)),
+    );
+  } catch {
+    throw new Error("Artifact path must resolve within .ade/artifacts.");
+  }
+  const ext = path.extname(resolved).replace(/^\./, "").toLowerCase();
+  const mimeType = ARTIFACT_PREVIEW_MIME_BY_EXTENSION[ext];
+  if (!mimeType) throw new Error("This artifact type cannot be streamed.");
+  const handle = await fs.promises.open(resolved, "r").catch(() => {
+    throw new Error("Artifact file does not exist.");
+  });
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error("Artifact file does not exist.");
+    const totalSize = stat.size;
+    const requestedOffset = Number(args.offset ?? 0);
+    const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
+    const requestedLength = Number(args.length ?? ARTIFACT_RANGE_READ_MAX_BYTES);
+    const length = Number.isFinite(requestedLength)
+      ? Math.max(1, Math.min(ARTIFACT_RANGE_READ_MAX_BYTES, Math.floor(requestedLength)))
+      : ARTIFACT_RANGE_READ_MAX_BYTES;
+    if (offset >= totalSize) return { totalSize, offset, data: "", mimeType };
+    const buffer = Buffer.alloc(Math.min(length, totalSize - offset));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    return { totalSize, offset, data: buffer.subarray(0, bytesRead).toString("base64"), mimeType };
+  } finally {
+    await handle.close();
+  }
+}
+
+function secureCopyFromDescriptor(sourcePath: string, targetPath: string): ContentFingerprint {
   const sourceFlags = fs.constants.O_RDONLY | (typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0);
   const sourceFd = fs.openSync(sourcePath, sourceFlags);
   const tempPath = `${targetPath}.tmp-${randomUUID()}`;
@@ -240,12 +398,16 @@ function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void 
 
     const targetFd = fs.openSync(tempPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, sourceStat.mode & 0o777);
     tempCreated = true;
+    // Hashed on the way through, so the duplicate check costs no second read.
+    const hash = createHash("sha256");
+    let copiedBytes = 0;
     try {
       const buffer = Buffer.allocUnsafe(64 * 1024);
       let position = 0;
       for (;;) {
         const bytesRead = fs.readSync(sourceFd, buffer, 0, buffer.length, position);
         if (bytesRead === 0) break;
+        hash.update(buffer.subarray(0, bytesRead));
 
         let offset = 0;
         while (offset < bytesRead) {
@@ -253,6 +415,7 @@ function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void 
         }
         position += bytesRead;
       }
+      copiedBytes = position;
       fs.fsyncSync(targetFd);
     } finally {
       fs.closeSync(targetFd);
@@ -260,6 +423,7 @@ function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void 
 
     fs.renameSync(tempPath, targetPath);
     tempCreated = false;
+    return { sha256: hash.digest("hex"), bytes: copiedBytes };
   } finally {
     if (tempCreated) {
       try {
@@ -469,8 +633,15 @@ export function createComputerUseArtifactBrokerService(args: {
   additionalAllowedImportRoots?: readonly string[];
   logger?: Logger | null;
   onEvent?: (payload: ComputerUseEventPayload) => void;
+  /**
+   * When the chat's current turn started, or its latest one. A narrow hook
+   * rather than the chat service, which is built after the broker. Set later
+   * with `setChatTurnStartResolver`.
+   */
+  resolveChatTurnStartedAt?: ((sessionId: string) => string | null | undefined) | null;
 }) {
   const { db, projectId, projectRoot, onEvent } = args;
+  let resolveChatTurnStartedAt = args.resolveChatTurnStartedAt ?? null;
   const layout = resolveAdeLayout(projectRoot);
   const allowedImportRoots = Array.from(new Set([
     layout.artifactsDir,
@@ -543,6 +714,9 @@ export function createComputerUseArtifactBrokerService(args: {
         storageKind: "url",
         mimeType: toOptionalString(input.mimeType),
         stagedFilePath: null,
+        storedFilePath: null,
+        fromCallerFile: false,
+        fingerprint: null,
       };
     }
 
@@ -600,6 +774,9 @@ export function createComputerUseArtifactBrokerService(args: {
           storageKind: "file",
           mimeType: toOptionalString(input.mimeType),
           stagedFilePath: null,
+          storedFilePath: existingArtifactPath,
+          fromCallerFile: true,
+          fingerprint: null,
         };
       } catch {
         // Fall through to external import handling.
@@ -610,12 +787,15 @@ export function createComputerUseArtifactBrokerService(args: {
       }
       const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
       const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
-      secureCopyFromDescriptor(absolutePath, targetPath);
+      const fingerprint = secureCopyFromDescriptor(absolutePath, targetPath);
       return {
         uri: toProjectArtifactUri(projectRoot, targetPath),
         storageKind: "file",
         mimeType: toOptionalString(input.mimeType),
         stagedFilePath: targetPath,
+        storedFilePath: targetPath,
+        fromCallerFile: true,
+        fingerprint,
       };
     }
 
@@ -625,6 +805,9 @@ export function createComputerUseArtifactBrokerService(args: {
       storageKind: "file",
       mimeType: toOptionalString(input.mimeType),
       stagedFilePath: materialized.stagedFilePath,
+      storedFilePath: materialized.stagedFilePath,
+      fromCallerFile: false,
+      fingerprint: null,
     };
   };
 
@@ -953,6 +1136,145 @@ export function createComputerUseArtifactBrokerService(args: {
     }));
   };
 
+  /**
+   * The proof whose bytes match `fingerprint`, or null.
+   *
+   * Cheap on purpose, because it runs on every attach: rows that stored a byte
+   * count are filtered by size in SQL, older rows are stat'ed, and only a row
+   * with the same size and no stored hash is hashed, at most
+   * {@link MAX_LAZY_HASHES_PER_ATTACH} of them. A hash taken here is written
+   * back so the next attach reads it. Apple recordings that never made it into
+   * the drawer are checked too, from their directory.
+   */
+  const findDuplicateProof = (fingerprint: ContentFingerprint): DuplicateProofMatch | null => {
+    const blob = "metadata_json";
+    const valid = `json_valid(${blob})`;
+    const storedBytes = `(case when ${valid} then json_extract(${blob}, '$.contentBytes') end)`;
+    const tag = `(case when ${valid} then json_extract(${blob}, '$.kind') end)`;
+    const rows = db.all<{ id: string; title: string; uri: string; created_at: string; metadata_json: string }>(
+      `
+        select id, title, uri, created_at, metadata_json
+        from computer_use_artifacts
+        where project_id = ?
+          and storage_kind = 'file'
+          and (${storedBytes} is null or ${storedBytes} = ?)
+          and (${tag} is null or ${tag} != 'scene_still')
+        order by created_at desc
+      `,
+      [projectId, fingerprint.bytes],
+    );
+    const checkedPaths = new Set<string>();
+    let lazyHashes = 0;
+    const lazyHash = (filePath: string): ContentFingerprint | null => {
+      if (lazyHashes >= MAX_LAZY_HASHES_PER_ATTACH) return null;
+      lazyHashes += 1;
+      return hashFileSync(filePath);
+    };
+
+    for (const row of rows) {
+      const metadata = safeJsonParse<Record<string, unknown>>(row.metadata_json, {});
+      const rowBytes = typeof metadata.contentBytes === "number" ? metadata.contentBytes : null;
+      const rowSha = toOptionalString(metadata.contentSha256);
+      const filePath = resolveArtifactFilePath({ storageKind: "file", uri: row.uri });
+      if (filePath) checkedPaths.add(filePath);
+      if (rowBytes !== null && rowSha) {
+        if (rowBytes === fingerprint.bytes && rowSha === fingerprint.sha256) {
+          return { artifactId: row.id, title: row.title, createdAt: row.created_at };
+        }
+        continue;
+      }
+      if (!filePath) continue;
+      let size: number;
+      try {
+        size = fs.statSync(filePath).size;
+      } catch {
+        continue;
+      }
+      if (size !== fingerprint.bytes) continue;
+      const hashed = rowSha ? { sha256: rowSha, bytes: size } : lazyHash(filePath);
+      if (!hashed) continue;
+      if (!rowSha) {
+        try {
+          db.run(
+            "update computer_use_artifacts set metadata_json = ? where id = ? and project_id = ?",
+            [JSON.stringify({ ...metadata, contentSha256: hashed.sha256, contentBytes: hashed.bytes }), row.id, projectId],
+          );
+        } catch {
+          // The backfill only saves the next attach a read.
+        }
+      }
+      if (hashed.sha256 === fingerprint.sha256) {
+        return { artifactId: row.id, title: row.title, createdAt: row.created_at };
+      }
+    }
+
+    // Recordings on disk. A recording normally has a drawer row and was
+    // checked above; one whose filing failed only exists here.
+    const recordingsRoot = path.join(layout.artifactsDir, "apple-recordings");
+    let laneDirs: string[] = [];
+    try {
+      laneDirs = fs.readdirSync(recordingsRoot);
+    } catch {
+      laneDirs = [];
+    }
+    for (const laneDir of laneDirs) {
+      let files: string[] = [];
+      try {
+        files = fs.readdirSync(path.join(recordingsRoot, laneDir));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.endsWith(".mp4")) continue;
+        const filePath = path.join(recordingsRoot, laneDir, file);
+        if (checkedPaths.has(filePath)) continue;
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(filePath);
+        } catch {
+          continue;
+        }
+        if (!stat.isFile() || stat.size !== fingerprint.bytes) continue;
+        const hashed = lazyHash(filePath);
+        if (!hashed || hashed.sha256 !== fingerprint.sha256) continue;
+        const id = file.slice(0, -".mp4".length);
+        const sidecar = safeJsonParse<Record<string, unknown>>(
+          (() => {
+            try {
+              return fs.readFileSync(path.join(recordingsRoot, laneDir, `${id}.json`), "utf8");
+            } catch {
+              return "{}";
+            }
+          })(),
+          {},
+        );
+        return {
+          artifactId: toOptionalString(sidecar.proofArtifactId),
+          title: toOptionalString(sidecar.label) ?? `Simulator recording ${id}`,
+          createdAt: toOptionalString(sidecar.startedAt) ?? stat.mtime.toISOString(),
+        };
+      }
+    }
+    return null;
+  };
+
+  /** When the chat that owns this attach started its current or latest turn. */
+  const readOwnerTurnStartedAt = (owners: ComputerUseArtifactOwner[]): number | null => {
+    const resolver = resolveChatTurnStartedAt;
+    if (!resolver) return null;
+    for (const owner of owners) {
+      if (owner.kind !== "chat_session") continue;
+      try {
+        const value = resolver(owner.id);
+        const ms = value ? Date.parse(value) : Number.NaN;
+        if (Number.isFinite(ms)) return ms;
+      } catch {
+        // No turn time means no age flag, never a failed attach.
+      }
+    }
+    return null;
+  };
+
   const getBackendStatus = (): ComputerUseBackendStatus => {
     const local = getLocalComputerUseCapabilities();
     const localKinds: ComputerUseArtifactKind[] = [];
@@ -1218,15 +1540,63 @@ export function createComputerUseArtifactBrokerService(args: {
         kind: ComputerUseArtifactKind;
         title: string;
         stored: ResolvedStoredArtifact;
+        fingerprint: ContentFingerprint | null;
+        mediaCreatedAt: string | null;
+        recordedBeforeRequest: boolean;
       }> = [];
       const stagedFilePaths: string[] = [];
+      // No provenance means an agent or a person attached a file that already
+      // existed. That is the case to check. ADE's recorders and captures say
+      // so, and they always write new bytes.
+      const proofSource: ComputerUseProofSource = request.provenance?.source ?? "attached";
+      const refuseDuplicates = request.provenance?.refuseDuplicates ?? proofSource === "attached";
+      const flagOlderMedia = request.provenance?.flagOlderMedia ?? proofSource === "attached";
+      const recordedFrom = proofSource === "ade-recorder" ? validIsoOrNull(request.provenance?.recordedFrom) : null;
+      const recordedTo = proofSource === "ade-recorder" ? validIsoOrNull(request.provenance?.recordedTo) : null;
+      const turnStartedAtMs = flagOlderMedia ? readOwnerTurnStartedAt(owners) : null;
+      const warnings: string[] = [];
       try {
         for (const input of request.inputs) {
           const kind = normalizeInputKind(input);
           const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
           const stored = resolveStoredUri(input, kind, title, callerRoot, requestImportRoots);
           if (stored.stagedFilePath) stagedFilePaths.push(stored.stagedFilePath);
-          resolved.push({ input, kind, title, stored });
+          const fingerprint = stored.fingerprint
+            ?? (stored.storedFilePath ? hashFileSync(stored.storedFilePath) : null);
+          if (refuseDuplicates && stored.fromCallerFile && fingerprint) {
+            const sameBatch = resolved.find((entry) =>
+              entry.fingerprint?.sha256 === fingerprint.sha256 && entry.fingerprint.bytes === fingerprint.bytes);
+            const duplicate = sameBatch
+              ? { artifactId: null, title: sameBatch.title, createdAt: nowIso() }
+              : findDuplicateProof(fingerprint);
+            if (duplicate) {
+              args.logger?.warn("computer_use.artifact_duplicate_refused", {
+                existingArtifactId: duplicate.artifactId,
+                bytes: fingerprint.bytes,
+                toolName: request.backend?.toolName ?? null,
+              });
+              throw new ProofDuplicateError(duplicate);
+            }
+          }
+          // A video's own header says when it was made. Read for every video;
+          // only an attach is judged by it.
+          const mediaCreated = stored.storedFilePath && isIsoMediaExtension(path.extname(stored.storedFilePath))
+            ? readMp4CreationTimeFromFile(stored.storedFilePath)
+            : null;
+          const mediaCreatedAt = mediaCreated ? mediaCreated.toISOString() : null;
+          const recordedBeforeRequest = Boolean(
+            flagOlderMedia
+            && mediaCreated
+            && turnStartedAtMs !== null
+            && mediaCreated.getTime() < turnStartedAtMs - RECORDED_BEFORE_REQUEST_SLACK_MS,
+          );
+          if (recordedBeforeRequest && mediaCreatedAt) {
+            warnings.push(
+              `This video was recorded at ${formatLocalWhen(mediaCreatedAt)}, before this request. `
+              + "It will be marked as older in the proof drawer.",
+            );
+          }
+          resolved.push({ input, kind, title, stored, fingerprint, mediaCreatedAt, recordedBeforeRequest });
         }
       } catch (error) {
         for (const stagedFilePath of stagedFilePaths) {
@@ -1238,14 +1608,20 @@ export function createComputerUseArtifactBrokerService(args: {
         }
         throw error;
       }
-      const artifacts = resolved.map(({ input, kind, title, stored }) => {
+      const artifacts = resolved.map(({ input, kind, title, stored, fingerprint, mediaCreatedAt, recordedBeforeRequest }) => {
         const { uri, storageKind, mimeType } = stored;
         const metadata = {
-          ...(isRecord(input.metadata) ? input.metadata : {}),
+          ...callerMetadata(input.metadata),
           sourcePath: toOptionalString(input.path),
           sourceUri: toOptionalString(input.uri),
           rawType: toOptionalString(input.rawType),
           ...(callerRoot ? { callerRoot } : {}),
+          proofSource,
+          ...(recordedFrom ? { recordedFrom } : {}),
+          ...(recordedTo ? { recordedTo } : {}),
+          ...(fingerprint ? { contentSha256: fingerprint.sha256, contentBytes: fingerprint.bytes } : {}),
+          ...(mediaCreatedAt ? { mediaCreatedAt } : {}),
+          ...(recordedBeforeRequest ? { recordedBeforeRequest: true } : {}),
         };
         const record = insertArtifactRecord({
           kind,
@@ -1281,7 +1657,13 @@ export function createComputerUseArtifactBrokerService(args: {
       return {
         artifacts,
         links: readLinkRows(artifacts.map((artifact) => artifact.id)),
+        ...(warnings.length ? { warnings } : {}),
       };
+    },
+
+    /** Late wiring for the chat service, which is built after the broker. */
+    setChatTurnStartResolver(resolver: ((sessionId: string) => string | null | undefined) | null): void {
+      resolveChatTurnStartedAt = resolver;
     },
 
     listArtifacts(args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] {
@@ -1522,6 +1904,16 @@ export function createComputerUseArtifactBrokerService(args: {
     readArtifactPreview(args: { uri?: string }): Promise<string | null> {
       return readArtifactPreviewDataUrl({
         uri: args?.uri,
+        projectRoot,
+        artifactsDir: layout.artifactsDir,
+      });
+    },
+
+    readArtifactRange(args: { uri?: string; offset?: number; length?: number }) {
+      return readArtifactRangeChunk({
+        uri: args?.uri,
+        offset: args?.offset,
+        length: args?.length,
         projectRoot,
         artifactsDir: layout.artifactsDir,
       });

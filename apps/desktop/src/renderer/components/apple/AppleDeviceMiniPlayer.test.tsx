@@ -21,6 +21,8 @@ vi.mock("./AppleDeviceStage", () => ({
 const stream = {
   frameVersion: 1,
   state: "live" as string,
+  error: null as string | null,
+  reconnect: vi.fn(),
   /** What the player last asked the stream for — `hidden` is the lease. */
   lastArgs: null as null | { hidden: boolean; enabled: boolean },
 };
@@ -35,14 +37,14 @@ vi.mock("./useAppleDeviceStream", () => ({
       reconnectNonce: 0,
       width: 1_179,
       height: 2_556,
-      error: null,
+      error: stream.error,
       chip: null,
       frameVersion: stream.frameVersion,
       streamStatus: null,
       handleReaderStatus: vi.fn(),
       handleDimensions: vi.fn(),
       noteFrame: vi.fn(),
-      reconnect: vi.fn(),
+      reconnect: stream.reconnect,
       applyStreamEvent: vi.fn(),
     };
   },
@@ -99,6 +101,8 @@ const SURFACE = { laneId: "lane-1", runtimePin: null, boundBinding: null };
 beforeEach(() => {
   stream.frameVersion = 1;
   stream.state = "live";
+  stream.error = null;
+  stream.reconnect = vi.fn();
   pipSessions.length = 0;
   stream.lastArgs = null;
   resetAppleStreamLeases();
@@ -288,6 +292,33 @@ describe("AppleDeviceMiniPlayer", () => {
  * its own lane on its own machine, and nowhere else; elsewhere it hides
  * WITHOUT closing, so coming back to the lane brings it back.
  */
+describe("AppleDeviceMiniPlayer, device off", () => {
+  it("says the device is off and starts it the way the pane does, then redials", async () => {
+    stream.state = "error";
+    stream.error = "APPLE_DEVICE_OFF: iPhone 17 Pro is off. Start it to watch.";
+    const deviceStart = vi.fn(async () => ({ ok: true }));
+    (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), deviceStart } };
+    openAppleMiniPlayer(TARGET);
+    render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} surface={SURFACE} />);
+
+    expect(screen.getByText("iPhone 17 Pro is off")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    });
+    expect(deviceStart).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" }, null);
+    expect(stream.reconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the generic picture for any other stream error", () => {
+    stream.state = "error";
+    stream.error = "The live view returned no address.";
+    openAppleMiniPlayer(TARGET);
+    render(<AppleDeviceMiniPlayer onOpenInPane={vi.fn()} surface={SURFACE} />);
+    expect(screen.queryByText("iPhone 17 Pro is off")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+  });
+});
+
 describe("AppleDeviceMiniPlayer, per surface", () => {
   const STUDIO = {
     kind: "remote" as const,

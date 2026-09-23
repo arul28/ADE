@@ -41,6 +41,20 @@ final class AppleDeviceStreamTests: XCTestCase {
     return try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
   }
 
+  // MARK: - Ticket refusals
+
+  func testAnOffDeviceReadsAsOffOnTheMacNotAsTheWireCode() {
+    XCTAssertEqual(
+      appleStreamTicketFailureMessage("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it."),
+      "iPhone 17 Pro is off on your Mac. Start it in ADE on the Mac to watch it here."
+    )
+    XCTAssertEqual(
+      appleStreamTicketFailureMessage("APPLE_DEVICE_OFF"),
+      "The simulator is off on your Mac. Start it in ADE on the Mac to watch it here."
+    )
+    XCTAssertEqual(appleStreamTicketFailureMessage("Something else broke."), "Something else broke.")
+  }
+
   func testParsesAConfigThenAKeyframeFromOneChunk() throws {
     var parser = AppleStreamRecordParser()
     let payload = Data([0, 0, 0, 1, 0x67, 0x42])

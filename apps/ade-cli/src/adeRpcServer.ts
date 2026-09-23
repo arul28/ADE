@@ -33,7 +33,10 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
-import { PROOF_LISTING_ARTIFACT_FILTER } from "../../desktop/src/shared/types/computerUseArtifacts";
+import {
+  PROOF_LISTING_ARTIFACT_FILTER,
+  type ComputerUseProofProvenanceInput,
+} from "../../desktop/src/shared/types/computerUseArtifacts";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
@@ -2343,6 +2346,47 @@ export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean 
   return toolArgs?.proof === true;
 }
 
+/**
+ * The ADE capture commands that file through `ingest_computer_use_artifacts`,
+ * by the backend and tool names the CLI writes for them.
+ */
+const ADE_CAPTURE_INGEST_LABELS: ReadonlyMap<string, "ade-capture" | "ade-recorder"> = new Map([
+  ["ade-ios-simulator\u0000ios-sim proof", "ade-capture"],
+  ["ade-app-control\u0000app-control proof", "ade-capture"],
+  ["ade-browser\u0000browser proof", "ade-capture"],
+  ["ade-browser\u0000browser record", "ade-recorder"],
+]);
+
+/**
+ * Where the bytes of an `ingest_computer_use_artifacts` call came from.
+ *
+ * `ade proof attach` and every other caller are attaches of an existing file,
+ * so the broker refuses bytes that are already proof and flags a video older
+ * than the request. ADE's own capture commands file through the same tool, and
+ * their labels are the only thing that tells them apart. Labels can be typed,
+ * so a label only lifts the duplicate check for still images, where a real
+ * capture of an unchanged screen can repeat bytes (`ade apple proof` also
+ * files the still twice, once from `screenshot`). A video is never exempt: a
+ * real recording is always new bytes. The age flag stays on for every call.
+ */
+export function resolveIngestToolProvenance(
+  backendName: string,
+  toolName: string | null,
+  inputs: Array<Record<string, unknown>>,
+): ComputerUseProofProvenanceInput {
+  const labelled = ADE_CAPTURE_INGEST_LABELS.get(`${backendName}\u0000${toolName ?? ""}`);
+  if (!labelled) return { source: "attached" };
+  const allStills = inputs.every((input) => {
+    const kind = asOptionalTrimmedString(input.kind);
+    return kind === "screenshot" || kind === "browser_trace";
+  });
+  return {
+    source: labelled,
+    refuseDuplicates: !allStills,
+    flagOlderMedia: true,
+  };
+}
+
 function validateComputerUseOwnerClaims(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3022,6 +3066,32 @@ function scopeWorkToolsAdeActionArgs(
   workToolsArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:work_tools.${action}`;
+  if (action === "acknowledgeShow") {
+    // The desktop answering `show`. An agent must not be able to forge the
+    // outcome its own CLI is about to print, same as `setActiveTool`.
+    if (!isUserClient) {
+      scopeAccessDenied("work_tools.acknowledgeShow is limited to user clients", method);
+    }
+    return workToolsArgs;
+  }
+  if (action === "show") {
+    // An agent shows surfaces of its OWN chat. A human at a terminal is a user
+    // client and names the chat with --session.
+    if (isUserClient) return workToolsArgs;
+    const ownChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!ownChatSessionId) {
+      scopeAccessDenied("work_tools.show needs the chat it runs in", method);
+    }
+    const askedFor = asOptionalTrimmedString(workToolsArgs.chatSessionId);
+    if (askedFor && askedFor !== ownChatSessionId) {
+      scopeAccessDenied("work_tools.show can only show this agent's own chat", method);
+    }
+    return {
+      ...workToolsArgs,
+      chatSessionId: ownChatSessionId,
+      laneId: resolveChatSessionLaneId(runtime, session) ?? null,
+    };
+  }
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
@@ -3180,6 +3250,33 @@ export function scopeMacDesktopAdeActionArgs(
     ...(sessionLaneId ? { laneId: sessionLaneId } : {}),
   };
 }
+
+/** `work_tools` actions scoped for every role, the CTO's included. */
+const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow"]);
+
+/**
+ * `ios_simulator` actions that mean an agent is driving the device, so the
+ * desktop may float the device over that agent's chat (see
+ * `work_tools.noteAgentAppleActivity`). Reads are not driving.
+ */
+const APPLE_AGENT_DRIVING_ACTIONS = new Set([
+  "deviceStart",
+  "openDevice",
+  "startStream",
+  "launch",
+  "relaunchApp",
+  "openUrl",
+  "tap",
+  "typeText",
+  "drag",
+  "swipe",
+  "scroll",
+  "pressButton",
+  "rotate",
+  "tapElement",
+  "fillElement",
+  "recordStart",
+]);
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
 const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
@@ -4013,6 +4110,9 @@ async function runTool(args: {
     toolArgs: Record<string, unknown>;
     /** True only for an explicit proof call — see `isExplicitProofCall`. */
     proof: boolean;
+    /** When `screencapture -v` ran, for a recording. */
+    recordedFrom?: string;
+    recordedTo?: string;
   }) => {
     if (!args.proof) {
       // Scratch capture: the caller gets the bytes, the proof drawer stays a
@@ -4060,6 +4160,10 @@ async function runTool(args: {
         style: "local_fallback",
         toolName: args.toolName,
       },
+      // ADE ran `screencapture` itself, into a new file.
+      provenance: args.kind === "video_recording"
+        ? { source: "ade-recorder", recordedFrom: args.recordedFrom ?? null, recordedTo: args.recordedTo ?? null }
+        : { source: "ade-capture" },
       inputs: [
         {
           kind: args.kind,
@@ -4439,11 +4543,15 @@ async function runTool(args: {
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
-    } else if (domain === "work_tools" && (!callerIsCto || action === "setActiveTool")) {
+    } else if (
+      domain === "work_tools"
+      && (!callerIsCto || WORK_TOOLS_ALWAYS_SCOPED_ACTIONS.has(action))
+    ) {
       // The CTO carve-out is a READ carve-out. `setActiveTool` is this domain's
       // one write, so it goes through the scoping function whatever the role and
       // is gated there on user clients — see that function's doc comment for
-      // which elevated caller this actually catches.
+      // which elevated caller this actually catches. `show` and
+      // `acknowledgeShow` are scoped for every role for the same reason.
       scopedObjectArgs = scopeWorkToolsAdeActionArgs(
         runtime,
         session,
@@ -4578,6 +4686,17 @@ async function runTool(args: {
       throw error;
     }
     noteBrowserActivityOnSuccess?.();
+    if (domain === "ios_simulator" && !isUserClient && APPLE_AGENT_DRIVING_ACTIONS.has(action)) {
+      // An agent just drove its chat's device. The desktop showing that chat
+      // may float the device if the user has not turned that off.
+      const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      if (chatSessionId) {
+        runtime.workToolsStateService?.noteAgentAppleActivity?.({
+          chatSessionId,
+          laneId: resolveChatSessionLaneId(runtime, session) ?? null,
+        });
+      }
+    }
     if (domain === "account" && action === "status") {
       result = scopeAccountStatusForRole(result, callerCtx.role);
     }
@@ -5324,12 +5443,16 @@ async function runTool(args: {
     const commandArgs = ["-v", `-V${durationSec}`, "-x"];
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
+    const recordedFrom = new Date().toISOString();
     runLocalCommand("screencapture", commandArgs);
+    const recordedTo = new Date().toISOString();
     return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,
       kind: "video_recording",
+      recordedFrom,
+      recordedTo,
       artifactPath,
       mimeType: "video/quicktime",
       metadata: {
@@ -5378,6 +5501,8 @@ async function runTool(args: {
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },
+      // Decided here from the call, never read from the caller's arguments.
+      provenance: resolveIngestToolProvenance(backendName, asOptionalTrimmedString(toolArgs.toolName), inputs),
       callerRoot: authorized.callerRoot,
       inputs: inputs.map((entry) => ({
         kind: asOptionalTrimmedString(entry.kind),

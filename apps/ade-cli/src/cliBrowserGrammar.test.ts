@@ -611,8 +611,12 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * 108 → 110: the CLI hand-off to $ADE_CLI_PATH (f004e42c2) wraps the entry in
  * `runMainAndExit` and `runMainUnlessDelegated`. Both reach argv only through
  * `main()` and read no browser flag of their own.
+ *
+ * 110 → 112: `ade ui show` and `ade apple show` (982bd4422) add
+ * `readWorkToolShowScope` and `buildUiPlan`. They read `--session`, `--lane`
+ * and `--surface`, never a browser flag.
  */
-const ARGV_READER_COUNT = 110;
+const ARGV_READER_COUNT = 112;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

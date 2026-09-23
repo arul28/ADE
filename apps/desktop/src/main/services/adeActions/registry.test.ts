@@ -44,6 +44,9 @@ describe("work_tools runtime action domain", () => {
     expect(isAllowedAdeAction("work_tools", "getLaneState")).toBe(true);
     expect(isAllowedAdeAction("work_tools", "setActiveTool")).toBe(true);
     expect(isAllowedAdeAction("work_tools", "readObservationPreview")).toBe(true);
+    // `ade ui show` and the desktop's answer to it.
+    expect(isAllowedAdeAction("work_tools", "show")).toBe(true);
+    expect(isAllowedAdeAction("work_tools", "acknowledgeShow")).toBe(true);
     // The pane itself is never driven through this domain — the browser and
     // App Control keep their own allowlists for that.
     expect(isAllowedAdeAction("work_tools", "click")).toBe(false);

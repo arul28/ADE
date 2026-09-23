@@ -8,6 +8,7 @@ import {
   APPLE_OWNED_BY_OTHER_SESSION_CODE,
   APPLE_RECORDING_PINNED_CODE,
   AUTO_RECORDING_MAX_MS,
+  MANUAL_RECORDING_MAX_MS,
   appleRecordingsDirectory,
   createSimRecordingService,
   type SimRecordingService,
@@ -25,11 +26,15 @@ function createFakeTransport(): SimHelperTransport & {
   commands: Array<Record<string, unknown>>;
   typed(type: string): Array<Record<string, unknown>>;
   failNext(error: Error): void;
+  /** Replace the reply to a command type, e.g. to play a newer helper. */
+  replies: Record<string, (command: Record<string, unknown>) => Record<string, unknown>>;
 } {
   const commands: Array<Record<string, unknown>> = [];
   let pendingError: Error | null = null;
+  const replies: Record<string, (command: Record<string, unknown>) => Record<string, unknown>> = {};
   return {
     commands,
+    replies,
     binaryPath: "/fake/ade-sim-helper",
     typed(type: string) {
       return commands.filter((command) => command.type === type);
@@ -44,6 +49,8 @@ function createFakeTransport(): SimHelperTransport & {
         pendingError = null;
         throw error;
       }
+      const override = replies[command.type];
+      if (override) return override(command);
       if (command.type === "record-stop") {
         return { path: String(command.path ?? ""), durationMs: 4200, bytes: 123_456 };
       }
@@ -163,22 +170,130 @@ describe("simRecordingService", () => {
     expect(transport.typed("record-stop")).toHaveLength(1);
   });
 
-  it("converts an auto recording to manual without restarting it, and clears the cap", async () => {
+  it("converts an auto recording to manual without restarting it, and restarts the cap from the conversion", async () => {
     vi.useFakeTimers();
     await service.noteInput({ laneId: lane, udid, chatSessionId: "chat-1", kind: "tap", x: 1, y: 2 });
+    await vi.advanceTimersByTimeAsync(AUTO_RECORDING_MAX_MS - 1000);
     const converted = await service.start({ laneId: lane, udid, chatSessionId: "chat-1", label: "sign-in" });
 
     expect(converted.mode).toBe("manual");
     expect(converted.label).toBe("sign-in");
+    expect(converted.maxDurationMs).toBe(MANUAL_RECORDING_MAX_MS);
     // The whole point: one `record-start`, so the file has no gap in it.
     expect(transport.typed("record-start")).toHaveLength(1);
 
-    await vi.advanceTimersByTimeAsync(AUTO_RECORDING_MAX_MS * 2);
+    // The auto cap would have fired here; the manual one counts from the
+    // conversion.
+    await vi.advanceTimersByTimeAsync(MANUAL_RECORDING_MAX_MS - 1);
     expect(transport.typed("record-stop")).toHaveLength(0);
 
     // And a turn ending no longer owns it either.
     await service.onTurnEnded("chat-1");
     expect(transport.typed("record-stop")).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(2);
+    expect(transport.typed("record-stop")).toHaveLength(1);
+  });
+
+  it("tells listeners when a recording starts, turns manual, and stops", async () => {
+    // The owner's 2026-09-23 report: an agent started a recording from the
+    // CLI after the pane opened, and the pane's recording bar never showed.
+    service.dispose();
+    const changes: Array<{ laneId: string; phase: string; mode: string; endedAt: string | null }> = [];
+    service = build({
+      onRecordingChange: ({ laneId, phase, recording }) => {
+        changes.push({ laneId, phase, mode: recording.mode, endedAt: recording.endedAt ?? null });
+      },
+    });
+    await service.noteInput({ laneId: lane, udid, chatSessionId: "chat-1", kind: "tap", x: 1, y: 2 });
+    await service.start({ laneId: lane, udid, chatSessionId: "chat-1" });
+    await service.stop({ laneId: lane, chatSessionId: "chat-1", keep: true });
+    await Promise.resolve();
+
+    expect(changes.map((change) => `${change.phase}:${change.mode}`)).toEqual([
+      "started:auto",
+      "updated:manual",
+      "stopped:manual",
+    ]);
+    expect(changes.every((change) => change.laneId === lane)).toBe(true);
+    // The stop is told with the finished row, not the one still recording.
+    expect(changes[2]!.endedAt).not.toBeNull();
+  });
+
+  it("stops a chat's manual recording at the ten-minute cap, files it, and says why", async () => {
+    vi.useFakeTimers();
+    const started = await service.start({ laneId: lane, udid, chatSessionId: "chat-1" });
+    expect(started.maxDurationMs).toBe(MANUAL_RECORDING_MAX_MS);
+
+    await vi.advanceTimersByTimeAsync(MANUAL_RECORDING_MAX_MS - 1);
+    expect(transport.typed("record-stop")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2);
+
+    expect(transport.typed("record-stop")).toHaveLength(1);
+    const [record] = await service.list({ laneId: lane });
+    expect(record).toMatchObject({ stopReason: "cap", proof: true, endedAt: expect.any(String) });
+    expect(filed).toHaveLength(1);
+    expect(filed[0]).toMatchObject({
+      inputs: [expect.objectContaining({ description: expect.stringContaining("Stopped at its 10:00 cap.") })],
+    });
+    expect(service.active({ laneId: lane })).toBeNull();
+  });
+
+  it("takes --max-seconds as the cap, and leaves a person's own recording uncapped", async () => {
+    vi.useFakeTimers();
+    await service.start({ laneId: lane, udid, chatSessionId: "chat-1", maxSeconds: 30 });
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(transport.typed("record-stop")).toHaveLength(1);
+
+    const mine = await service.start({ laneId: "lane-b", udid: "UDID-2", chatSessionId: null });
+    expect(mine.maxDurationMs).toBeNull();
+    await vi.advanceTimersByTimeAsync(MANUAL_RECORDING_MAX_MS * 3);
+    expect(transport.typed("record-stop")).toHaveLength(1);
+  });
+
+  it("asks the helper to cut idle time by default, and not with keepIdle", async () => {
+    await service.start({ laneId: lane, udid, chatSessionId: "chat-1" });
+    await service.start({ laneId: "lane-b", udid: "UDID-2", chatSessionId: "chat-1", keepIdle: true });
+    expect(transport.typed("record-start").map((command) => command.idleCompression)).toEqual([true, false]);
+  });
+
+  it("records the video length, the real time and the idle cut from a newer helper", async () => {
+    transport.replies["record-start"] = (command) => ({ path: command.path, idleCompression: command.idleCompression });
+    transport.replies["record-stop"] = () => ({ path: "", durationMs: 70_000, wallDurationMs: 197_000, idleCutMs: 127_000, bytes: 9 });
+    const named = build({ resolveDeviceName: () => "ADE Repro" });
+    const started = await named.start({ laneId: lane, udid, chatSessionId: "chat-7" });
+    expect(started.idleCompression).toBe(true);
+    fs.writeFileSync(started.path, "mp4");
+
+    const stopped = await named.stop({ laneId: lane, chatSessionId: "chat-7" });
+    expect(stopped).toMatchObject({
+      durationMs: 70_000,
+      wallDurationMs: 197_000,
+      idleCutMs: 127_000,
+      stopReason: "requested",
+    });
+    expect(filed[0]).toMatchObject({
+      // Wall-clock times, so the drawer's time range is real.
+      provenance: { source: "ade-recorder", recordedFrom: started.startedAt, recordedTo: stopped!.endedAt },
+      inputs: [expect.objectContaining({
+        title: "Simulator recording · ADE Repro · 1:10 · idle cut 2:07",
+        description: expect.stringContaining("2:07 cut from 3:17 of real time"),
+        metadata: expect.objectContaining({ durationMs: 70_000, wallDurationMs: 197_000, idleCutMs: 127_000 }),
+      })],
+    });
+    named.dispose();
+  });
+
+  it("works against an older helper that neither cuts idle time nor reports it", async () => {
+    // The default fake is the older helper: `{}` for record-start, and only
+    // durationMs and bytes for record-stop.
+    const started = await service.start({ laneId: lane, udid, chatSessionId: "chat-1" });
+    expect(started.idleCompression).toBe(false);
+    const stopped = await service.stop({ laneId: lane, chatSessionId: "chat-1" });
+    expect(stopped).toMatchObject({ durationMs: 4200, wallDurationMs: 4200, idleCutMs: 0 });
+    expect(filed[0]).toMatchObject({
+      inputs: [expect.objectContaining({ title: expect.not.stringContaining("idle cut") })],
+    });
   });
 
   it("refuses to stop a recording owned by another chat", async () => {
@@ -247,6 +362,8 @@ describe("simRecordingService", () => {
     expect(filed[0]).toMatchObject({
       inputs: [expect.objectContaining({ kind: "video_recording", path: started.path, mimeType: "video/mp4" })],
       owners: [{ kind: "chat_session", id: "chat-1" }, { kind: "lane", id: lane }],
+      // ADE's recorder made these bytes, from start to stop.
+      provenance: { source: "ade-recorder", recordedFrom: started.startedAt, recordedTo: pinned!.endedAt },
     });
     expect((await service.list({ laneId: lane }))[0]!.proof).toBe(true);
   });

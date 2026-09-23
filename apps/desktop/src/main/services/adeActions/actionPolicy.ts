@@ -229,6 +229,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
+      // A paired desktop streaming a proof video. Only the user's own desktop
+      // needs it; agents keep the bounded preview read.
+      "readArtifactRange",
       "recoverArtifact",
       "updateArtifactReview",
     ],
@@ -859,8 +862,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   graph_state: ["get", "set"],
   // Read-only for everyone except the desktop that owns the pane:
   // `setActiveTool` is how a desktop renderer publishes which tool it has open
-  // so phones and the hosted web client can mirror it.
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview"],
+  // so phones and the hosted web client can mirror it. `show` is an agent
+  // asking that desktop to put a surface of its own chat on screen, and
+  // `acknowledgeShow` is the desktop's answer (user clients only).
+  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview", "show", "acknowledgeShow"],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.
@@ -877,6 +882,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listBrokenArtifacts",
     "pruneBrokenArtifacts",
     "readArtifactPreview",
+    "readArtifactRange",
     "recoverArtifact",
     "updateArtifactReview",
   ],

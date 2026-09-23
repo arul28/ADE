@@ -46,10 +46,12 @@ export function buildLaneAppleDeviceDirective(device: LaneAppleDeviceRef): strin
   const name = cleanDeviceField(device.name, 80) || "Apple simulator";
   return [
     "<ade-lane-tools>",
-    `This lane's Apple device is ${name} (${udid}), shown live in the ADE tools pane. Drive it with \`ade --socket apple …\` (skill \`ade-apple\`; \`ade apple --help\`).`,
-    "Video proof: `ade --socket apple record-start --text`, then `ade --socket apple record-stop --text` (files to this chat's proof drawer automatically). Screenshot: `ade --socket apple screenshot --out shot.png --text`.",
+    `This lane's Apple device is ${name} (${udid}), shown live in the ADE tools pane. Drive it with \`"$ADE_CLI_PATH" apple <command>\` (skill \`ade-apple\`; \`"$ADE_CLI_PATH" apple --help\`); \`$ADE_CLI_PATH\` is the ADE that launched you.`,
+    "Video proof: `\"$ADE_CLI_PATH\" apple record-start --text`, then `\"$ADE_CLI_PATH\" apple record-stop --text` (files to this chat's proof drawer automatically). Screenshot: `\"$ADE_CLI_PATH\" apple screenshot --out shot.png --text`.",
     "Never run `open -a Simulator`, AppleScript/System Events, or `xcrun simctl io … recordVideo`/`screenshot` for this device.",
-    "If `ade` says \"Unknown command 'apple'\", run the same command as `\"$ADE_CLI_PATH\" --socket apple …`.",
+    "If recording fails, say so. Never attach an older recording or a file you did not just record.",
+    "Check each step before you report it: an ok result only means the input was sent. Confirm with `\"$ADE_CLI_PATH\" apple foreground`, `snapshot` or `assert-visible`, and report only what you saw. If a step did not work, say which one.",
+    "To show the device to the user, run `\"$ADE_CLI_PATH\" apple show`.",
     "</ade-lane-tools>",
   ].join("\n");
 }

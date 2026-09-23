@@ -5,6 +5,7 @@ import {
   APPLE_MINI_PLAYER_POSTER_TTL_MS,
   APPLE_STREAM_HANDOVER_HOLD_MS,
   closeAppleMiniPlayer,
+  floatAppleMiniPlayerForChat,
   getAppleMiniPlayerLaneDevice,
   getAppleMiniPlayerTarget,
   handoffAppleMiniPlayer,
@@ -282,6 +283,79 @@ describe("the cold path", () => {
     await handoffAsync();
     expect(deviceList).not.toHaveBeenCalled();
     expect(getAppleMiniPlayerTarget()).toBeNull();
+  });
+});
+
+describe("floating on the agent's activity", () => {
+  const float = (auto: boolean, laneId: string | null = LANE) => floatAppleMiniPlayerForChat({
+    laneId,
+    chatSessionId: "chat-1",
+    runtimePin: null,
+    auto,
+  });
+
+  it("floats the chat's lane device by default, asking the runtime which one it is", async () => {
+    const { deviceList } = installDeviceList("Booted");
+    await expect(float(true)).resolves.toBe(true);
+    expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, null);
+    expect(getAppleMiniPlayerTarget()).toMatchObject({ laneId: LANE, chatSessionId: "chat-1", deviceUdid: UDID });
+  });
+
+  it("stays down while the chat's preview is off, and after × on the player", async () => {
+    installDeviceList("Booted");
+    setWorkLivePreviewEnabledForChat("chat-1", "ios", false);
+    await expect(float(true)).resolves.toBe(false);
+    expect(getAppleMiniPlayerTarget()).toBeNull();
+
+    setWorkLivePreviewEnabledForChat("chat-1", "ios", true);
+    await expect(float(true)).resolves.toBe(true);
+    closeAppleMiniPlayer();
+    await expect(float(true)).resolves.toBe(false);
+    expect(getAppleMiniPlayerTarget()).toBeNull();
+  });
+
+  it("an explicit ask opens it anyway and turns the chat's preview back on", async () => {
+    installDeviceList("Booted");
+    setWorkLivePreviewEnabledForChat("chat-1", "ios", false);
+    await expect(float(false)).resolves.toBe(true);
+    expect(getAppleMiniPlayerTarget()).not.toBeNull();
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "ios")).toBe(true);
+  });
+
+  it("never floats a device that is off on its own, or for a lane with no device", async () => {
+    installDeviceList("Shutdown");
+    await expect(float(true)).resolves.toBe(false);
+    // Not even when the pane's cache still names it: the cache outlives a
+    // power-off, so the automatic path always asks.
+    noteAppleMiniPlayerLaneDevice(LANE, { udid: UDID, name: "ADE Repro", runtime: "iOS 26.3", family: "iphone" });
+    await expect(float(true)).resolves.toBe(false);
+    installDeviceList(null);
+    await expect(float(true)).resolves.toBe(false);
+    await expect(float(true, null)).resolves.toBe(false);
+    expect(getAppleMiniPlayerTarget()).toBeNull();
+  });
+
+  it("an explicit ask floats an off device, which then shows its own Off state", async () => {
+    installDeviceList("Shutdown");
+    await expect(float(false)).resolves.toBe(true);
+    expect(getAppleMiniPlayerTarget()).toMatchObject({ deviceUdid: UDID });
+  });
+
+  it("does not replace a player another lane's device is using unless asked", async () => {
+    installDeviceList("Booted");
+    openAppleMiniPlayer({
+      laneId: "lane-2",
+      chatSessionId: "chat-2",
+      deviceUdid: "device-2",
+      deviceName: "Other",
+      deviceRuntime: null,
+      family: "iphone",
+      runtimePin: null,
+    });
+    await expect(float(true)).resolves.toBe(false);
+    expect(getAppleMiniPlayerTarget()?.deviceUdid).toBe("device-2");
+    await expect(float(false)).resolves.toBe(true);
+    expect(getAppleMiniPlayerTarget()?.deviceUdid).toBe(UDID);
   });
 });
 

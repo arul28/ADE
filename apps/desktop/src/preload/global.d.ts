@@ -935,6 +935,7 @@ import type {
   WorkToolsLaneState,
   WorkToolsObservationPreview,
 } from "../shared/types/workTools";
+import type { WorkToolShowAck, WorkToolShowRequest } from "../shared/types/workToolShow";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -2345,6 +2346,8 @@ declare global {
           args: { uri: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<string | null>;
+        /** `http://127.0.0.1:<port>/<token>` for proof videos, or null when main has none. */
+        mediaBaseUrl: () => Promise<string | null>;
         onEvent: (
           cb: (ev: ComputerUseEventPayload) => void,
           pin?: OpenProjectBinding | null,
@@ -3933,6 +3936,16 @@ declare global {
         readObservationPreview: (
           observationPath: string,
         ) => Promise<WorkToolsObservationPreview | null>;
+        /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
+        onShowRequest: (
+          cb: (request: WorkToolShowRequest) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /** Answer a show request on the runtime it came from. */
+        acknowledgeShow: (
+          ack: WorkToolShowAck,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
       };
       tests: {
         listSuites: () => Promise<TestSuiteDefinition[]>;

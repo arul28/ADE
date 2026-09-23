@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APPLE_GENERIC_ERROR_SENTENCE, describeAppleError, stripIpcPrefix } from "./appleErrors";
+import { APPLE_GENERIC_ERROR_SENTENCE, describeAppleError, isAppleDeviceOffError, stripIpcPrefix } from "./appleErrors";
 
 const IPC = (message: string) => new Error(`Error invoking remote method 'ade.iosSimulator.startStream': Error: ${message}`);
 
@@ -142,6 +142,14 @@ describe("describeAppleError", () => {
       expect(described.sentence, code).not.toBe(APPLE_GENERIC_ERROR_SENTENCE);
       expect(described.detail, code).toContain("the app stayed portrait");
     }
+  });
+
+  it("reads APPLE_DEVICE_OFF as an off device with Start, and can tell it apart", () => {
+    const off = new Error("Error invoking remote method 'x': Error: APPLE_DEVICE_OFF: iPhone 17 is off. Watching a device never boots it.");
+    expect(describeAppleError(off)).toMatchObject({ sentence: "The device is off.", action: "start" });
+    expect(isAppleDeviceOffError(off)).toBe(true);
+    expect(isAppleDeviceOffError({ code: "APPLE_DEVICE_OFF", message: "off" })).toBe(true);
+    expect(isAppleDeviceOffError(new Error("APPLE_STREAM_NOT_RUNNING: gone"))).toBe(false);
   });
 
   it("carries a string or non-Error object's message into detail", () => {

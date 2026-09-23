@@ -3019,6 +3019,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!proofIngest) return unavailable("The proof artifact broker");
       return attempt(() => proofIngest.ingest({
         backend: { name: "cto", style: "manual", toolName: "captureProof" },
+        // An existing file: the broker refuses bytes that are already proof.
+        provenance: { source: "attached" },
         inputs: [{
           kind,
           title,
