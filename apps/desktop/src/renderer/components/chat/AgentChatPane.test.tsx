@@ -2323,6 +2323,94 @@ describe("AgentChatPane companion drawers", () => {
     }
   });
 
+  it("a slow older proof read never overwrites a newer one, and a failed read after a chat switch never shows the other chat's proof", async () => {
+    setDocumentVisibleForTests(true);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    const artifact = (id: string, title: string): ComputerUseArtifactView => ({
+      id,
+      kind: "screenshot",
+      backendStyle: "local_fallback",
+      backendName: "ADE",
+      sourceToolName: "capture",
+      originalType: "image",
+      title,
+      description: null,
+      uri: `.ade/artifacts/${id}.png`,
+      storageKind: "file",
+      mimeType: "image/png",
+      metadata: {},
+      createdAt: "2026-07-28T12:00:00.000Z",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+      reviewNote: null,
+      availability: "available",
+    });
+    const snapshotFor = (sessionId: string, artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnapshot => ({
+      owner: { kind: "chat_session", id: sessionId },
+      backendStatus: {
+        backends: [],
+        localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+      },
+      summary: `${artifacts.length} proof items`,
+      activeBackend: null,
+      artifacts,
+      recentArtifacts: artifacts,
+      activity: [],
+    });
+    const showProof = (requestId: string, chatSessionId: string) => answerWorkToolShowRequest({
+      requestId,
+      surface: "proof",
+      chatSessionId,
+      laneId: "lane-1",
+      auto: false,
+      requestedAt: new Date(0).toISOString(),
+    });
+    try {
+      const first = buildSession("session-1", { title: "First chat" });
+      const second = buildSession("session-2", { title: "Second chat" });
+      installAdeMocks({ sessions: [first, second] });
+      // The pane's own first read is slow; the show's forced read overtakes it.
+      let finishSlowRead: (snapshot: ComputerUseOwnerSnapshot) => void = () => {};
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot)
+        .mockImplementationOnce(() => new Promise<ComputerUseOwnerSnapshot>((resolve) => { finishSlowRead = resolve; }))
+        .mockResolvedValue(snapshotFor(first.sessionId, [artifact("proof-new", "Newer proof")]));
+      seedDrawerStore();
+      const paneFor = (session: AgentChatSessionSummary) => (
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={session.laneId}
+            lockSessionId={session.sessionId}
+            hideSessionTabs
+            initialSessionSummary={session}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>
+      );
+      const view = render(paneFor(first));
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      await waitFor(() => expect(window.ade.computerUse.getOwnerSnapshot).toHaveBeenCalledTimes(1));
+      await expect(showProof("wts-newer", first.sessionId)).resolves.toMatchObject({ status: "shown" });
+      expect(screen.getByText("Newer proof")).toBeTruthy();
+      await act(async () => { finishSlowRead(snapshotFor(first.sessionId, [artifact("proof-old", "Older proof")])); });
+      expect(screen.getByText("Newer proof")).toBeTruthy();
+      expect(screen.queryByText("Older proof")).toBeNull();
+
+      // The pane moves to the second chat, whose proof cannot be read.
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockRejectedValue(new Error("runtime offline"));
+      view.rerender(paneFor(second));
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      await showProof("wts-second", second.sessionId);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.queryByText("Newer proof")).toBeNull();
+    } finally {
+      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(null);
+      layout.mockRestore();
+    }
+  }, 15_000);
+
   it("regression: a proof show held while the chat was out of view opens its drawer when the chat mounts", async () => {
     setDocumentVisibleForTests(true);
     const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
