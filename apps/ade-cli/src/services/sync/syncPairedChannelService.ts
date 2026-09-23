@@ -48,6 +48,8 @@ export type SyncRuntimeRpcHandler = JsonRpcHandler & {
 
 export type SyncRuntimeRpcHandlerFactory = () => SyncRuntimeRpcHandler;
 
+type SyncRuntimeRpcHandlerMembers = Omit<SyncRuntimeRpcHandler, keyof JsonRpcHandler>;
+
 // Enough for every call a desktop has in flight; a channel whose replies never
 // arrive cannot grow the map without bound.
 const MAX_TRACKED_RPC_REQUESTS = 512;
@@ -101,11 +103,13 @@ function trackRpcRequestLabels(
     }
     return await handler(request);
   };
-  // The optional members the channel calls: `dispose` and `setNotifier`.
-  return Object.assign(tracked, {
+  // Every optional member of the handler must be listed here: the type makes a
+  // new one a compile error instead of a member the wrapper drops.
+  const members: { [K in keyof Required<SyncRuntimeRpcHandlerMembers>]: SyncRuntimeRpcHandlerMembers[K] } = {
     dispose: handler.dispose?.bind(handler),
     setNotifier: handler.setNotifier?.bind(handler),
-  } satisfies Omit<SyncRuntimeRpcHandler, keyof JsonRpcHandler>);
+  };
+  return Object.assign(tracked, members);
 }
 
 let configuredRuntimeRpcHandlerFactory: SyncRuntimeRpcHandlerFactory | null = null;

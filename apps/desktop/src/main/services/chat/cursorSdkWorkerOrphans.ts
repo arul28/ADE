@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import type { Logger } from "../logging/logger";
 import { killWindowsProcessTreeAsync, windowsPowerShellCommand } from "../shared/processExecution";
 import { parseProcessRows, terminateOrphanProcess, type ProcessRow } from "../shared/processOrphans";
+import { CURSOR_SDK_KILL_ESCALATION_MS } from "./cursorSdkPolicy";
 import { readCursorSdkOwnerPid } from "./cursorSdkWorkerGuards";
 import { processIsAlive } from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
 
@@ -13,7 +14,7 @@ export type CursorSdkOrphanSweepDeps = {
   /** POSIX only. */
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   /** Windows only: `taskkill /PID <pid> /T /F`. */
-  killTree?: (pid: number) => unknown;
+  killTree?: (pid: number) => boolean | Promise<boolean>;
   waitMs?: (ms: number) => Promise<void>;
 };
 
@@ -22,11 +23,6 @@ export type CursorSdkOrphanSweepResult = {
   failedPids: number[];
 };
 
-/**
- * Time an orphan gets to exit after SIGTERM (or the first taskkill). The same
- * 1.5 s the pool gives a live worker between dispose and kill.
- */
-const CURSOR_SDK_ORPHAN_TERM_GRACE_MS = 1_500;
 /** Script name of the worker bundle. Both the desktop and CLI builds use it. */
 const CURSOR_SDK_WORKER_SCRIPT_PATTERN = /(?:^|[\\/"\s])cursorSdkWorker\.cjs(?=["\s]|$)/;
 /**
@@ -178,7 +174,7 @@ export function recoverCursorSdkWorkerOrphans(args: {
     };
     const terminationDeps = {
       platform,
-      graceMs: CURSOR_SDK_ORPHAN_TERM_GRACE_MS,
+      graceMs: CURSOR_SDK_KILL_ESCALATION_MS,
       isAlive,
       waitMs: deps.waitMs ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
       kill: deps.kill ?? killProcessQuietly,

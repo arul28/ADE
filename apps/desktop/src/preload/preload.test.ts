@@ -1003,11 +1003,13 @@ describe("preload Apple device input routing", () => {
       // An explicit remote pin streams to that machine, never through the command.
       await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
         .resolves.toEqual({ path: "/remote/uploaded.png" });
+      // The machine's own route limit travels with the bytes.
       expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, {
         id: "target-2",
         projectId: "project-2",
         data: args.data,
         filename: args.filename,
+        maxBytes: 50 * 1024 * 1024,
       });
       expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
 
@@ -1041,6 +1043,14 @@ describe("preload Apple device input routing", () => {
         expect.stringContaining("[ade-attachments] Streamed upload failed"),
         expect.objectContaining({ error: "Attachment upload failed (HTTP 502)." }),
       );
+
+      // A payload the command cannot carry is not resent through it. The
+      // upload's own reason reaches the caller.
+      invoke.mockClear();
+      const oversized = { data: "A".repeat(Math.ceil((10 * 1024 * 1024) / 3) * 4 + 4), filename: "big.png" };
+      await expect(bridge.agentChat.saveTempAttachment(oversized, pinnedRemote))
+        .rejects.toThrow("Attachment upload failed (HTTP 502).");
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
 
       // A local pin never probes a remote machine.
       invoke.mockClear();

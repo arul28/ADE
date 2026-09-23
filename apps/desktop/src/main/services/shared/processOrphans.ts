@@ -55,7 +55,7 @@ export type OrphanTerminationDeps = {
   /** POSIX only. */
   kill: (pid: number, signal: NodeJS.Signals) => void;
   /** Windows only: `taskkill /PID <pid> /T /F`. */
-  killTree: (pid: number) => unknown;
+  killTree: (pid: number) => boolean | Promise<boolean>;
   /**
    * Runs before each kill. False skips that kill and every later one.
    *

@@ -1291,8 +1291,13 @@ Renderer surfaces:
   [Composer and UI](../chat/composer-and-ui.md), "Remote hosts"). A failed save
   is never silent: the terminal logs an `[ade-term] image paste failed` warning
   (it reaches the main log as `window.console`) and shows "Couldn't attach the
-  image: <reason>" in the pane for 8 seconds. A failed save counts as handled, so
-  the paste is not tried a second time. Selected terminal
+  image: <reason>" in the pane for 8 seconds. When the error carries no message,
+  the reason is "no reason was given.", because a failed clipboard read also
+  lands here and nothing was saved. A failed save counts as handled, so the
+  paste is not tried a second time. The paste code lives in
+  `terminalImagePaste.ts`, which sees the runtime through a narrow interface
+  (session id, pin, disposed, the notice fields, `notify`, `writeInput`); the
+  message is `TerminalImagePasteNotice`. Selected terminal
   text copies through the local desktop clipboard bridge (with browser clipboard
   fallback for previews). Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,

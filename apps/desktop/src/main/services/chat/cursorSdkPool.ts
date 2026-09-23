@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 import { pathKey } from "../shared/pathCompare";
-import { CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
+import { CURSOR_SDK_KILL_ESCALATION_MS, CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import type {
@@ -128,7 +128,6 @@ const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
  * would drift, and the drift is only observable as a failed turn an hour into a
  * session.
  */
-const CURSOR_SDK_KILL_ESCALATION_MS = 1_500;
 /**
  * Cap how long a replacement waits for the previous worker of the same pool key.
  *

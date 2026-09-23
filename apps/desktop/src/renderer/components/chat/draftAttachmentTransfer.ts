@@ -20,6 +20,7 @@ import {
   getIosContextAttachmentPath,
   stripDataUrlPrefix,
 } from "../../lib/visualContextFormatting";
+import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 
 export type LocalImageAttachment = AgentChatLocalFileRef & { type: "image" };
 
@@ -92,10 +93,7 @@ export async function copyDraftImageAttachmentsToMachine(args: {
   targetBinding: OpenProjectBinding;
 }): Promise<LocalImageAttachment[]> {
   return Promise.all(args.attachments.map(async (attachment) => {
-    const { dataUrl } = await window.ade.agentChat.getImageDataUrl(
-      attachment.path,
-      args.sourceBinding,
-    );
+    const { dataUrl } = await readAttachmentImageDataUrl(attachment.path, args.sourceBinding);
     const filename = attachment.path.split(/[\\/]/).pop() || "attachment.png";
     const saved = await window.ade.agentChat.saveTempAttachment({
       data: stripDataUrlPrefix(dataUrl),

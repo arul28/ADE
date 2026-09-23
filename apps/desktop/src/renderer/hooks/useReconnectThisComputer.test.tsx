@@ -9,7 +9,9 @@ vi.mock("../lib/accountLogin", () => ({
   runAccountDeviceLogin: (options?: unknown) => runAccountDeviceLogin(options),
 }));
 
-import { reconnectActionView, useReconnectThisComputer } from "./useReconnectThisComputer";
+import { resetReconnectFlowForTests } from "../lib/reconnectThisComputer";
+import { reconnectActionView } from "../lib/thisComputerRefusal";
+import { useReconnectThisComputer } from "./useReconnectThisComputer";
 
 const PAIRING_REFUSAL = {
   repaired: false,
@@ -43,6 +45,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetReconnectFlowForTests();
   delete (window as { ade?: unknown }).ade;
   repairMachinePairing.mockReset();
   listMachines.mockReset();
@@ -79,8 +82,10 @@ describe("useReconnectThisComputer — one flow per window", () => {
     act(() => {
       first = banner.result.current.reconnect();
     });
-    await waitFor(() => expect(pane.result.current.signInPrompt).toEqual(PROMPT));
-    expect(banner.result.current.signInPrompt).toEqual(PROMPT);
+    const promptText = "Confirm it's you in your browser. If the page asks for a code, enter WDJB-MJHT.";
+    const idle = { label: "Reconnect this computer" };
+    await waitFor(() => expect(pane.result.current.view(idle).detail).toBe(promptText));
+    expect(banner.result.current.view(idle)).toMatchObject({ label: "Cancel", detail: promptText });
 
     let second!: Promise<void>;
     act(() => {
@@ -92,10 +97,10 @@ describe("useReconnectThisComputer — one flow per window", () => {
 
     // A Cancel on either surface stops the one browser step.
     act(() => {
-      pane.result.current.cancel();
+      pane.result.current.view(idle).onClick();
     });
     expect(isCancelled?.()).toBe(true);
-    expect(banner.result.current.signInPrompt).toBeNull();
+    expect(banner.result.current.view(idle).label).toBe("Reconnecting…");
 
     await act(async () => {
       finish();
@@ -153,6 +158,35 @@ describe("useReconnectThisComputer — one flow per window", () => {
 
     expect(cardLoad).toHaveBeenCalledTimes(1);
     expect(listMachines).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resetReconnectFlowForTests", () => {
+  it("frees the next test from an attempt that never ended", async () => {
+    repairMachinePairing.mockReturnValueOnce(new Promise(() => {}));
+    const first = renderHook(() => useReconnectThisComputer());
+    act(() => {
+      void first.result.current.reconnect();
+    });
+    expect(first.result.current.reconnecting).toBe(true);
+    cleanup();
+    resetReconnectFlowForTests();
+
+    repairMachinePairing.mockResolvedValue({
+      repaired: true,
+      wasRevoked: false,
+      published: true,
+      pushRestored: false,
+      state: "registered",
+      reason: null,
+    });
+    const next = renderHook(() => useReconnectThisComputer());
+    expect(next.result.current.reconnecting).toBe(false);
+    await act(async () => {
+      await next.result.current.reconnect();
+    });
+    expect(repairMachinePairing).toHaveBeenCalledTimes(2);
+    expect(next.result.current.outcome?.message).toBe("This computer is already connected to your account.");
   });
 });
 

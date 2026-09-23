@@ -83,7 +83,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import {
@@ -206,10 +206,7 @@ type SessionState = {
 };
 
 function isUserClientSession(session: SessionState): boolean {
-  return !session.identity.runId
-    && !session.identity.stepId
-    && !session.identity.attemptId
-    && !session.identity.chatSessionId;
+  return !callerIdentityIsAgent(session.identity);
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";

@@ -85,7 +85,7 @@ describe("ChatAttachmentTray", () => {
       />,
     );
 
-    await waitFor(() => expect(getRuntimeImageDataUrl).toHaveBeenCalledWith("/tmp/screenshot.png"));
+    await waitFor(() => expect(getRuntimeImageDataUrl).toHaveBeenCalledWith("/tmp/screenshot.png", undefined));
 
     const openButton = screen.getByRole("button", { name: "Open screenshot.png" });
     expect(screen.getByAltText("screenshot.png").getAttribute("src")).toBe("data:image/png;base64,runtime123");
@@ -142,7 +142,7 @@ describe("ChatAttachmentTray", () => {
       />,
     );
 
-    await waitFor(() => expect(getRuntimeImageDataUrl).toHaveBeenCalledWith("/tmp/local-outside-project.png"));
+    await waitFor(() => expect(getRuntimeImageDataUrl).toHaveBeenCalledWith("/tmp/local-outside-project.png", undefined));
     await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith("/tmp/local-outside-project.png"));
     expect(screen.getByAltText("local-outside-project.png").getAttribute("src")).toBe("data:image/png;base64,abc123");
   });

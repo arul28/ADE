@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   createSyncAccountDirectoryHealth,
+  MAX_ADE_HOME_DISPLAY_CHARS,
   type AdeAccountMachineEndpoint,
   type AdeInstallChannel,
   type SyncAccountDirectoryHealth,
@@ -607,7 +608,7 @@ export function describeAdeInstall(
     : path.basename(adeDir);
   return {
     ...(channel ? { channel } : {}),
-    ...(adeHome ? { adeHome: adeHome.slice(0, 120) } : {}),
+    ...(adeHome ? { adeHome: adeHome.slice(0, MAX_ADE_HOME_DISPLAY_CHARS) } : {}),
   };
 }
 

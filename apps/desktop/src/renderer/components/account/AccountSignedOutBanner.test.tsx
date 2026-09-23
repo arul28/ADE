@@ -51,6 +51,7 @@ vi.mock("../../lib/accountLogin", () => ({
 
 import { AccountSignedOutBanner } from "./AccountSignedOutBanner";
 import { resetLocalSyncStatusReaderForTests } from "../../lib/localSyncStatusReader";
+import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 import { createSyncAccountDirectoryHealth, type SyncAccountDirectoryHealth } from "../../../shared/types";
 
 function renderBanner(route = "/work") {
@@ -62,6 +63,11 @@ function renderBanner(route = "/work") {
   );
   return navigate;
 }
+
+// The reconnect flow is one per window, so it outlives each test's render.
+afterEach(() => {
+  resetReconnectFlowForTests();
+});
 
 describe("AccountSignedOutBanner", () => {
   afterEach(() => {

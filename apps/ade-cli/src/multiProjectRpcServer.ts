@@ -71,7 +71,7 @@ import {
   isCtoOnlyAdeAction,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/actionPolicy";
-import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -937,11 +937,12 @@ export function createMultiProjectRpcRequestHandler(
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
+  const callerIdentity = (): Record<string, unknown> | null =>
+    isRecord(initializedParams) && isRecord(initializedParams.identity)
+      ? initializedParams.identity
+      : null;
   const callerRole = () => {
-    const identityRecord =
-      isRecord(initializedParams) && isRecord(initializedParams.identity)
-        ? (initializedParams.identity as Record<string, unknown>)
-        : null;
+    const identityRecord = callerIdentity();
     return resolveSessionBoundRole({
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
       requestedRole: normalizeAdeRuntimeRole(
@@ -951,22 +952,6 @@ export function createMultiProjectRpcRequestHandler(
         ? identityRecord.chatSessionId.trim() || null
         : null,
     });
-  };
-
-  /**
-   * Is this connection an agent: a chat, an orchestrator run or an attempt?
-   * The `ade` CLI fills these from the environment ADE gives an agent's shell.
-   * A person's terminal carries none of them.
-   */
-  const callerIsAgent = (): boolean => {
-    const identity =
-      isRecord(initializedParams) && isRecord(initializedParams.identity)
-        ? (initializedParams.identity as Record<string, unknown>)
-        : null;
-    if (!identity) return false;
-    return ["chatSessionId", "runId", "stepId", "attemptId"].some((key) =>
-      typeof identity[key] === "string" && identity[key].trim().length > 0,
-    );
   };
 
   /**
@@ -1712,7 +1697,10 @@ export function createMultiProjectRpcRequestHandler(
           // People only. An agent could supply the confirmation token itself,
           // so the token alone never puts a person in the loop; the Account
           // page and `ade machines remove` in a terminal do.
-          if (callerIsAgent()) {
+          // The identity is the caller's own claim, so an agent that strips its
+          // environment still passes; this stops the ordinary agent path, and
+          // a human-approval step would be the next layer.
+          if (callerIdentityIsAgent(callerIdentity())) {
             throw new JsonRpcError(
               JsonRpcErrorCode.policyDenied,
               "account.deleteMachine is not available to agents. Ask the user to remove the machine on the Account page or with `ade machines remove` in their own terminal.",

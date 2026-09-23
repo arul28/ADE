@@ -1122,16 +1122,28 @@ allowing a cross-provider fork.
   Pasted bytes take the same route. Preload `agentChat.saveTempAttachment`
   checks the machine first: for a paired machine (an explicit remote pin,
   or no pin in a window bound to one) that takes uploads, it sends the
-  base64 to `IPC.remoteRuntimeUploadChatAttachment` as `data`. Main writes
-  the bytes to a private temp file (`withTempAttachmentFile`), runs the same
-  two-leg upload, and removes the file. A failed upload logs an
-  `[ade-attachments]` warning and falls back to the runtime command. The
-  composer's clipboard paste and the terminal's image paste both go through
-  this call, so neither sends a screenshot inside one runtime command when
-  the machine can take a stream.
-- **Thumbnails.** An attachment's thumbnail is read on the chat's machine
-  (`agentChat.getImageDataUrl(path, machinePin)`). For a remote chat the tray
-  never retries the path on this computer, where it does not exist.
+  base64 to `IPC.remoteRuntimeUploadChatAttachment` as `data`, with the
+  machine's advertised `maxBytes`. The IPC handler only validates and calls
+  `remoteConnectionService.uploadChatAttachmentBytes`. That method enforces the
+  smaller of `maxBytes` and `MAX_CHAT_ATTACHMENT_BYTES`, checks the encoded
+  length before it decodes (`maxBase64EncodedLength`), writes the bytes to a
+  private temp file (`withTempAttachmentFile`), runs the same two-leg upload,
+  and removes the file. A failed upload logs an `[ade-attachments]` warning
+  and falls back to the runtime command, but only when the payload fits the
+  command's 10 MB cap. A larger payload would only be refused again with a
+  misleading 10 MB reason, or overflow the host's RPC buffer, so the upload's
+  own error reaches the caller. The composer's clipboard paste and the
+  terminal's image paste both go through this call, so neither sends a
+  screenshot inside one runtime command when the machine can take a stream.
+- **Attachment images.** Every surface that shows or copies an attachment
+  image (the tray thumbnail, the prompt stash, draft transfer between
+  machines) reads it through `readAttachmentImageDataUrl(path, pin)` in
+  `renderer/lib/attachmentImage.ts`. It reads through the pin's runtime (no
+  pin means the window's machine). It falls back to this computer's
+  `app.getImageDataUrl` only when the owner is this computer: a local pin,
+  or no pin in a window bound to a local project. A remote-owned path is
+  never read here, because on this computer it is missing or names a
+  different file.
 - **File-shaped attachments over sync (iOS).** Documents and videos cannot
   use either of the routes above: `chat.saveTempAttachment` sniffs for an
   image MIME and rejects them, and the HTTP upload route needs a direct TCP

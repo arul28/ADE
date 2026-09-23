@@ -41,6 +41,7 @@ import type {
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_BYTES,
+  maxBase64EncodedLength,
 } from "../shared/chatAttachmentLimits";
 import {
   type AttentionAcknowledgmentOutcome,
@@ -2022,6 +2023,20 @@ async function readRemoteAttachmentStagingMode(targetId: string): Promise<ChatAt
 }
 
 /**
+ * The paired machine that owns an attachment, or null when it is not a paired
+ * machine. No pin means the machine this window is bound to.
+ */
+async function resolveRemoteUploadBinding(
+  pin: OpenProjectBinding | null | undefined,
+): Promise<Extract<OpenProjectBinding, { kind: "remote" }> | null> {
+  if (pin) return pin.kind === "remote" ? pin : null;
+  // During a project switch the command path decides, because it raises the
+  // switching error.
+  if (projectRuntimeTransitionDepth > 0) return null;
+  return await getRemoteProjectBinding();
+}
+
+/**
  * Stage attachment bytes on a paired machine through the streamed upload
  * route, when that machine takes it.
  *
@@ -2031,20 +2046,17 @@ async function readRemoteAttachmentStagingMode(targetId: string): Promise<ChatAt
  * pasted bytes (a terminal's clipboard image, a composer screenshot) on the
  * same route.
  *
- * Returns null when the machine only takes the command, or when the upload
- * fails, so the caller keeps the command as the fallback.
+ * Returns null when the machine only takes the command, so the caller uses the
+ * command. A failed upload also returns null, but only for a payload the
+ * command can carry. A larger one would only be refused again with the
+ * command's 10 MB reason, or overflow the host's RPC buffer, so the upload's
+ * own error is thrown instead.
  */
 async function uploadAttachmentBytesToRemote(
   pin: OpenProjectBinding | null | undefined,
   args: { data: string; filename: string },
 ): Promise<{ path: string } | null> {
-  // No pin means the machine this window is bound to. During a project switch
-  // the command path decides, because it raises the switching error.
-  const binding = pin
-    ? (pin.kind === "remote" ? pin : null)
-    : projectRuntimeTransitionDepth > 0
-      ? null
-      : await getRemoteProjectBinding();
+  const binding = await resolveRemoteUploadBinding(pin);
   if (!binding) return null;
   let mode: ChatAttachmentStagingMode;
   try {
@@ -2059,8 +2071,10 @@ async function uploadAttachmentBytesToRemote(
       projectId: binding.projectId,
       data: args.data,
       filename: args.filename,
+      maxBytes: mode.maxBytes,
     })) as { path: string };
   } catch (error) {
+    if (args.data.length > maxBase64EncodedLength(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)) throw error;
     console.warn("[ade-attachments] Streamed upload failed; sending the bytes in the runtime command instead.", {
       targetId: binding.targetId,
       error: error instanceof Error ? error.message : String(error),

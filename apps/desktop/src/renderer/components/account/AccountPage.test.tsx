@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AccountPage, SignInCard, describeThisComputerMissing } from "./AccountPage";
-import { reconnectNeedsFreshSignIn } from "../../hooks/useReconnectThisComputer";
+import { reconnectNeedsFreshSignIn } from "../../lib/thisComputerRefusal";
+import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
 import type { AdeAccountMachine, AdeAccountMachineRemovalResult, AdeAccountStatus } from "../../../shared/types";
@@ -71,6 +72,11 @@ function machine(overrides: Partial<AdeAccountMachine>): AdeAccountMachine {
     ...overrides,
   };
 }
+
+// The reconnect flow is one per window, so it outlives each test's render.
+afterEach(() => {
+  resetReconnectFlowForTests();
+});
 
 describe("AccountPage signed-out card", () => {
   const originalAde = window.ade;

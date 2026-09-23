@@ -106,6 +106,9 @@ export type AdeAccountMachineEndpoint = {
 /** Which ADE build an install runs. A custom ADE home has no channel. */
 export type AdeInstallChannel = AppPackageChannel;
 
+/** The longest ADE home a host sends and a row shows. The directory keeps the same cap. */
+export const MAX_ADE_HOME_DISPLAY_CHARS = 120;
+
 /** One machine in the account directory (#814 Worker `GET /account/machines`). */
 export type AdeAccountMachine = {
   machineKey: string;

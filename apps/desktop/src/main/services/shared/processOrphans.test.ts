@@ -57,6 +57,7 @@ describe("terminateOrphanProcess", () => {
     const killTree = vi.fn(async (pid: number) => {
       await Promise.resolve();
       order.push(`kill ${pid}`);
+      return true;
     });
     const kill = vi.fn();
 

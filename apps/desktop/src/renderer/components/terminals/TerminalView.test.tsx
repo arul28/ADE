@@ -1890,7 +1890,7 @@ describe("TerminalView", () => {
     expect(window.ade.agentChat.saveTempAttachment).toHaveBeenCalledWith({
       data: "abc123",
       filename: "clipboard.png",
-    });
+    }, undefined);
     expect(ptyWrite).toHaveBeenCalledWith({
       ptyId: "pty-runtime-image-paste",
       data: "\x1b[200~ADE clipboard image attached.\nPath: /remote/project/.ade/attachments/clipboard.png\nType: image/png\n\x1b[201~",

@@ -127,6 +127,7 @@ import { getModelById } from "../../../shared/modelRegistry";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
+  maxBase64EncodedLength,
 } from "../../../shared/chatAttachmentLimits";
 import {
   projectAttachmentsDir,
@@ -483,7 +484,7 @@ function normalizeAgentChatParallelLaunchState(
 
 
 async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: string; filename?: string }): Promise<{ path: string }> {
-  const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
+  const maxEncodedLength = maxBase64EncodedLength(MAX_TEMP_ATTACHMENT_BYTES);
   if (typeof arg.data !== "string") {
     throw new Error("Temporary attachment data is required.");
   }

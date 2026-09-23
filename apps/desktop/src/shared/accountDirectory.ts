@@ -4,6 +4,7 @@ import type {
   AdeAccountMachinesResult,
   AdeInstallChannel,
 } from "./types/account";
+import { MAX_ADE_HOME_DISPLAY_CHARS } from "./types/account";
 import type { SyncHelloOkPayload } from "./types/sync";
 import { fromMachinePowerRecord } from "./types/power";
 import type { MachinePower, MachineSleepState } from "./types/power";
@@ -245,7 +246,7 @@ function parseMachineInstall(value: Record<string, unknown>): {
   const channel = value.channel === "stable" || value.channel === "beta" || value.channel === "alpha"
     ? value.channel
     : null;
-  const adeHome = optionalBoundedString(value.adeHome, 120);
+  const adeHome = optionalBoundedString(value.adeHome, MAX_ADE_HOME_DISPLAY_CHARS);
   return {
     ...(channel ? { channel } : {}),
     ...(adeHome ? { adeHome } : {}),

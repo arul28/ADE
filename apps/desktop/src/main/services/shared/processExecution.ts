@@ -278,9 +278,8 @@ export function killWindowsProcessTreeAsync(
             resolve(true);
             return;
           }
-          const code = (error as NodeJS.ErrnoException & { code?: unknown }).code;
           fail({
-            status: typeof code === "number" ? code : null,
+            status: typeof error.code === "number" ? error.code : null,
             stdout: processOutputToString(stdout),
             stderr: processOutputToString(stderr),
             error,

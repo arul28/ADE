@@ -30,6 +30,7 @@ import {
   type SyncConnections,
 } from "./SyncDevicesSection";
 import { accountDirectorySummary } from "./accountDirectorySummary";
+import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 
 vi.mock("qrcode.react", () => ({
   QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
@@ -166,6 +167,11 @@ const autoConfirm = async () => true;
 function openPairing() {
   fireEvent.click(screen.getByRole("button", { name: /^Manual pairing code/ }));
 }
+
+// The reconnect flow is one per window, so it outlives each test's render.
+afterEach(() => {
+  resetReconnectFlowForTests();
+});
 
 describe("ThisMacCard", () => {
   afterEach(() => {

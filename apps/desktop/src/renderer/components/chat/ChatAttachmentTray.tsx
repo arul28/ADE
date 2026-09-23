@@ -3,6 +3,7 @@ import { Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
+import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { formatAttachmentSize } from "../../../shared/chatAttachmentLimits";
 import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
@@ -311,31 +312,7 @@ function ImageAttachmentPreview({
         cancelled = true;
       };
     }
-    const runtimeImageDataUrl = window.ade?.agentChat?.getImageDataUrl;
-    const localImageDataUrl = window.ade?.app?.getImageDataUrl;
-    if (!runtimeImageDataUrl && !localImageDataUrl) {
-      setPreviewFailed(true);
-      return;
-    }
-    // A remote chat's attachment path names a file on that machine. Read it
-    // there, and never retry it on this computer, where the path does not exist.
-    const pin = machinePinRef.current;
-    const remoteOwner = pin?.kind === "remote";
-    const readPreview = async (): Promise<{ dataUrl: string }> => {
-      if (!runtimeImageDataUrl) {
-        if (remoteOwner) throw new Error("This build cannot read images from another machine.");
-        return localImageDataUrl!(attachment.path);
-      }
-      try {
-        return pin
-          ? await runtimeImageDataUrl(attachment.path, pin)
-          : await runtimeImageDataUrl(attachment.path);
-      } catch (error) {
-        if (remoteOwner || !localImageDataUrl) throw error;
-        return localImageDataUrl(attachment.path);
-      }
-    };
-    readPreview()
+    readAttachmentImageDataUrl(attachment.path, machinePinRef.current)
       .then((result) => {
         if (!cancelled) setDataUrl(result.dataUrl);
       })

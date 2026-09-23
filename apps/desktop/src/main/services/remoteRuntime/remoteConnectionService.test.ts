@@ -20,7 +20,6 @@ import {
   encodePairingQrUrl,
 } from "../../../shared/pairingQr";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
-import { withTempAttachmentFile } from "./attachmentUploadClient";
 import {
   automaticReconnectBackoffMs,
   RemoteConnectionService,
@@ -1651,15 +1650,15 @@ describe("uploadChatAttachment", () => {
       .resolves.toHaveLength(1);
   });
 
-  it("streams pasted bytes, which have no file, through a temp file on the same route", async () => {
-    // A terminal or composer paste holds bytes in memory. The IPC handler
-    // writes them to a temp file and hands that to the same two-leg upload a
-    // picked file takes, so a paste to a paired machine never rides one
-    // runtime command.
+  /** A real upload route plus a service whose ticket leg runs the real registry. */
+  async function startPasteUploadHost(): Promise<{
+    projectRoot: string;
+    service: RemoteConnectionService;
+    remote: RemoteRuntimeTarget;
+    callActionForTarget: ReturnType<typeof vi.fn>;
+  }> {
     const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-paste-project-"));
-    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-paste-temp-"));
-    tempDirs.push(projectRoot, tempRoot);
-
+    tempDirs.push(projectRoot);
     const uploads = createAttachmentUploadRegistry();
     const server = http.createServer((request, response) => {
       if (uploads.handleRequest(request, response)) return;
@@ -1679,6 +1678,13 @@ describe("uploadChatAttachment", () => {
       },
     };
     const remote = target("paired-host", Date.now());
+    const callActionForTarget = vi.fn(
+      async (
+        _target: RemoteRuntimeTarget,
+        _projectId: string,
+        request: { domain: string; action: string; args?: Record<string, unknown> },
+      ) => dispatchRunAdeAction(runtime, request),
+    );
     const service = new RemoteConnectionService({
       list: vi.fn(() => [remote]),
       get: vi.fn((id: string) => (id === remote.id ? remote : null)),
@@ -1689,27 +1695,46 @@ describe("uploadChatAttachment", () => {
         url: `http://127.0.0.1:${port}/ade-attachments/upload`,
         maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
       })),
-      callActionForTarget: vi.fn(
-        async (
-          _target: RemoteRuntimeTarget,
-          _projectId: string,
-          request: { domain: string; action: string; args?: Record<string, unknown> },
-        ) => dispatchRunAdeAction(runtime, request),
-      ),
+      callActionForTarget,
     } as unknown as RemoteConnectionPool);
+    return { projectRoot, service, remote, callActionForTarget };
+  }
 
+  it("streams pasted bytes, which have no file, through a temp file on the same route", async () => {
+    // A terminal or composer paste holds bytes in memory. They go to a temp
+    // file and through the same two-leg upload a picked file takes, so a paste
+    // to a paired machine never rides one runtime command.
+    const { projectRoot, service, remote } = await startPasteUploadHost();
     const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
-    const staged = await withTempAttachmentFile(png, (sourcePath) => service.uploadChatAttachment({
+
+    const staged = await service.uploadChatAttachmentBytes({
       targetId: remote.id,
       projectId: "project-1",
-      sourcePath,
+      data: png.toString("base64"),
       filename: "clipboard-image.png",
-    }), tempRoot);
+      maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+    });
 
     expect(path.dirname(staged.path)).toBe(projectAttachmentsDir(projectRoot));
     expect(path.extname(staged.path)).toBe(".png");
     await expect(fs.promises.readFile(staged.path)).resolves.toEqual(png);
-    await expect(fs.promises.readdir(tempRoot)).resolves.toEqual([]);
+  });
+
+  it("refuses pasted bytes over the machine's advertised limit before minting a ticket", async () => {
+    // The host knows its own route limit, so the smaller of it and the product
+    // cap wins, and the refusal names the real limit.
+    const { projectRoot, service, remote, callActionForTarget } = await startPasteUploadHost();
+    const data = Buffer.alloc(2048, 1).toString("base64");
+
+    await expect(service.uploadChatAttachmentBytes({
+      targetId: remote.id,
+      projectId: "project-1",
+      data,
+      filename: "clipboard-image.png",
+      maxBytes: 1024,
+    })).rejects.toThrow('File "clipboard-image.png" is too large (2.0 KB). Maximum allowed size is 1.0 KB.');
+    expect(callActionForTarget).not.toHaveBeenCalled();
+    await expect(fs.promises.readdir(projectAttachmentsDir(projectRoot))).rejects.toThrow();
   });
 
   it("reports the machine cannot accept uploads when it is not hosting sync", async () => {
