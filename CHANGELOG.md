@@ -12,7 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Opus 5.5 (`claude-opus-5-5`) is the generic Opus model, with medium effort and Fast mode. Opus 5 stays selectable. Opus 4.8 is removed from the picker and its saved ids resolve to Opus 5.
 - Claude Agent SDK 0.3.280.
 
-## [1.2.77] - 2026-09-22
+## [1.2.77] - 2026-09-23
+
+### Apple devices
+
+- Apple device environment: one simulator per lane, one device pane with live stream, inspect, and recording; web and iOS stream; `ade apple` CLI (#1283).
+
+### Pull requests
+
+- PR detail view redesigned on desktop, iOS, and the TUI; new draft, ready, and auto-merge actions (#1292).
+
+### Models
+
+- Claude Opus 5.5 added and Opus 4.8 dropped (#1284); GPT-6 Sol/Luna; model directory updates without a release; Codex 0.156.0 (#1285).
 
 ### Usage
 
@@ -28,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Chat handoff surfaces redesigned and moved into the session menu; auto-handoff rules pinned to the chat's machine (#1277).
 - CTO project memory persists outside the chat and the git repo; brief shown as fields (#1280).
 - Board Needs-you column no longer conflates ready and idle sessions (#1279).
+- New-lane chats open instantly with live lane setup (#1289).
+
+### Automations
+
+- No hidden wall-clock cap on agent turns; opt-in stop-after and stop-when-idle limits (#1286).
+
+### Remote connections
+
+- PR webhook bursts no longer flap remote connections; removed computers can sign in and reconnect (#1287, #1288, #1290, #1291).
 
 ### Removed
 

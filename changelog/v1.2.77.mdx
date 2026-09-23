@@ -1,11 +1,28 @@
 ---
 title: "v1.2.77"
-description: "Release notes for ADE v1.2.77 - September 22, 2026"
+description: "Release notes for ADE v1.2.77 - September 23, 2026"
 ---
 
-Live usage limits per signed-in account, Claude Agent SDK 0.3.278, redesigned chat handoff, CTO project memory that survives restarts, bundled skills delivered natively to every provider, and the retired Review tab.
+A real Apple device environment, a redesigned PR detail view, instant new-lane chats, Claude Opus 5.5 and GPT-6 Sol/Luna through a model directory that updates without a release, live usage limits per signed-in account, redesigned chat handoff, durable CTO project memory, and the retired Review tab.
 
 ---
+
+## Apple devices
+
+- **A real Apple device environment.** Each lane gets its own simulator, created on first use and deleted when the lane is archived. One device pane in the tools pane has a picker, a labeled rail, live inspect, Home and Rotate, and recording with tap rings and typed-text badges. Start attaches, boots, and streams in one click.
+- The web client can drive the stream, and the iOS app can view it. The CLI is now `ade apple`; `ade ios-sim` stays as an alias for one minor release.
+
+## Pull requests
+
+- **The PR detail view is redesigned** on desktop, iOS, and the TUI around what happens next: a header card, a Needs attention block, a timeline split per push, and a floating dock for Merge, Comment, Reviewers, Labels, and Assignees.
+- The Merge card guides but never gates. Merge anyway lists what it skips, and an admin can bypass rules.
+- New draft, ready, and auto-merge actions: `ade prs draft|ready|auto-merge` and `/pr draft`, `/pr ready`, `/pr auto-merge` in the TUI.
+
+## Models
+
+- **Claude Opus 5.5, GPT-6 Sol, and GPT-6 Luna.** Opus 5.5 is the default model. Opus 4.8 is dropped, and saved 4.x ids resolve forward.
+- **The model directory updates without a release.** ADE bundles a model manifest and re-fetches it from GitHub, so new models and defaults arrive between releases.
+- Pricing comes from models.dev only. Codex runtime is 0.156.0.
 
 ## Usage
 
@@ -23,6 +40,16 @@ Live usage limits per signed-in account, Claude Agent SDK 0.3.278, redesigned ch
 - **Chat handoff is redesigned.** Handoff controls move into the session menu, auto-handoff rules are pinned to the chat's machine, and the rule editor lists the models and lanes that exist on that machine.
 - **CTO project memory lives outside the chat and the git repo.** The brief, facts, and directed threads survive a restart and a cleared session, and the memory pane shows the brief as fields.
 - The board's Needs-you column no longer files ready and idle sessions as needing you.
+- **New-lane chats open instantly.** The chat shows lane setup live and sends the opening prompt when the lane is ready. A retry after a restart never sends the prompt twice.
+
+## Automations
+
+- **Agent turns have no hidden time limit.** Optional stop-after and stop-when-idle limits are on the agent step. A stopped or failed turn fails the run.
+
+## Remote connections
+
+- A burst of PR webhooks no longer makes a remote connection flap.
+- A removed computer can sign in again and reconnect. The device sign-in, re-pair, and machine removal now work in production.
 
 ## Removed
 
@@ -31,3 +58,4 @@ Live usage limits per signed-in account, Claude Agent SDK 0.3.278, redesigned ch
 ## iOS
 
 - Per-account usage rows and rings match the desktop, and the retired review tables are dropped on upgrade.
+- The redesigned PR detail view with a merge bar, new-lane chat launch, the Apple device stream (view only), and the new models.
