@@ -2306,6 +2306,8 @@ declare global {
           args: { uri: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<string | null>;
+        /** `http://127.0.0.1:<port>/<token>` for proof videos, or null when main has none. */
+        mediaBaseUrl: () => Promise<string | null>;
         onEvent: (
           cb: (ev: ComputerUseEventPayload) => void,
           pin?: OpenProjectBinding | null,

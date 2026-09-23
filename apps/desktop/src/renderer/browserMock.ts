@@ -4090,6 +4090,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getOwnerSnapshot: resolvedArg({} as any),
       updateArtifactReview: resolvedArg({} as any),
       readArtifactPreview: resolvedArg(null),
+      mediaBaseUrl: resolved(null),
       // The drawer calls these directly; without them the standalone web
       // renderer throws a TypeError on the delete and recover controls.
       deleteArtifacts: resolvedArg({ deleted: [], missing: [], failed: [], freedBytes: 0 }),

@@ -96,6 +96,8 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
     ? "'self' http://localhost:* http://127.0.0.1:*"
     : "'self' file: app:";
   const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
+  // Local http carries the simulator stream helpers and the proof video media
+  // server (`artifactMediaServer.ts`), which is why media-src names it.
   const cspLocalSources = " http://localhost:* http://127.0.0.1:*";
   const cspConnectLocalSources = isDevMode ? "" : cspLocalSources;
   // GitHub serves comment-body images from a spread of hosts: avatars and the

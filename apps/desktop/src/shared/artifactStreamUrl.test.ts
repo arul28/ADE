@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  localArtifactMediaUrl,
   localArtifactStreamUrl,
-  parseRemoteArtifactStreamUrl,
+  parseArtifactMediaPath,
   projectRelativeArtifactPath,
-  remoteArtifactStreamUrl,
+  remoteArtifactMediaUrl,
 } from "./artifactStreamUrl";
+
+const BASE = "http://127.0.0.1:5000/tok";
+
+/** The part of a media URL the server parses. */
+function afterBase(url: string | null): string {
+  expect(url?.startsWith(`${BASE}/`)).toBe(true);
+  return url!.slice(BASE.length + 1);
+}
 
 describe("proof stream URLs", () => {
   const root = "/Users/me/repo";
@@ -37,30 +46,46 @@ describe("proof stream URLs", () => {
     expect(projectRelativeArtifactPath(`${root}/`, root)).toBeNull();
   });
 
-  it("round-trips a paired machine's proof through the remote URL", () => {
-    const url = remoteArtifactStreamUrl({
+  it("builds media server URLs for videos here and on a paired machine, and parses them back", () => {
+    const local = localArtifactMediaUrl(`${BASE}/`, `${root}/.ade/artifacts/a b#1.mp4`, root);
+    expect(local).toBe(`${BASE}/project/.ade/artifacts/a%20b%231.mp4`);
+    expect(parseArtifactMediaPath(afterBase(local))).toEqual({
+      kind: "project",
+      relativePath: ".ade/artifacts/a b#1.mp4",
+    });
+    expect(localArtifactMediaUrl(BASE, "../x.mp4", root)).toBeNull();
+    expect(localArtifactMediaUrl("", ".ade/artifacts/x.mp4", root)).toBeNull();
+
+    const remote = remoteArtifactMediaUrl(BASE, {
       uri: "/remote/repo/.ade/artifacts/rec 1.mov",
       targetId: "target/1",
       projectId: "project-1",
       remoteProjectRoot: "/remote/repo",
     });
-    expect(url).toBe("ade-artifact://remote/target%2F1/project-1/.ade/artifacts/rec%201.mov");
-    expect(parseRemoteArtifactStreamUrl(url!)).toEqual({
+    expect(remote).toBe(`${BASE}/remote/target%2F1/project-1/.ade/artifacts/rec%201.mov`);
+    expect(parseArtifactMediaPath(afterBase(remote))).toEqual({
+      kind: "remote",
       targetId: "target/1",
       projectId: "project-1",
       relativePath: ".ade/artifacts/rec 1.mov",
     });
-    expect(remoteArtifactStreamUrl({ uri: "/elsewhere/x.mp4", targetId: "t", projectId: "p", remoteProjectRoot: "/remote/repo" }))
+    expect(remoteArtifactMediaUrl(BASE, { uri: "/elsewhere/x.mp4", targetId: "t", projectId: "p", remoteProjectRoot: "/remote/repo" }))
       .toBeNull();
   });
 
-  it("refuses a remote URL that walks out of the project instead of folding it", () => {
-    expect(parseRemoteArtifactStreamUrl("ade-artifact://remote/t/p/.ade/../../etc/passwd")).toBeNull();
-    expect(parseRemoteArtifactStreamUrl("ade-artifact://remote/t/p/.ade/%2E%2E/x.mp4")).toBeNull();
-    expect(parseRemoteArtifactStreamUrl("ade-artifact://remote/t/p/./x.mp4")).toBeNull();
-    expect(parseRemoteArtifactStreamUrl("ade-artifact://remote/t/p/a%2F..%2Fb.mp4")).toBeNull();
-    expect(parseRemoteArtifactStreamUrl("ade-artifact://remote/t/p")).toBeNull();
-    expect(parseRemoteArtifactStreamUrl("ade-artifact://remote//p/x.mp4")).toBeNull();
-    expect(parseRemoteArtifactStreamUrl("ade-artifact://project/x.mp4")).toBeNull();
+  it("refuses a media path that walks out of the project instead of folding it", () => {
+    expect(parseArtifactMediaPath("project/.ade/../../etc/passwd")).toBeNull();
+    expect(parseArtifactMediaPath("project/.ade/%2E%2E/x.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("project/./x.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("project/a%2F..%2Fb.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("project/a%5Cb.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("project/%E0%A4%A.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("project")).toBeNull();
+    expect(parseArtifactMediaPath("remote/t/p/.ade/../../etc/passwd")).toBeNull();
+    expect(parseArtifactMediaPath("remote/t/p/.ade/%2E%2E/x.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("remote/t/p")).toBeNull();
+    expect(parseArtifactMediaPath("remote//p/x.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("elsewhere/x.mp4")).toBeNull();
+    expect(parseArtifactMediaPath("project/x.mp4?t=1")).toEqual({ kind: "project", relativePath: "x.mp4" });
   });
 });

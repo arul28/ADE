@@ -3971,6 +3971,8 @@ const agentChatEventFanout = createIpcEventFanout<AgentChatEventEnvelope>(
   // the 1s summary cache before listeners can read a stale value.
   () => agentChatSummaryCache.clear(),
 );
+let computerUseMediaBaseUrl: Promise<string | null> | null = null;
+
 const computerUseEventFanout = createIpcEventFanout<ComputerUseEventPayload>(
   IPC.computerUseEvent,
   () => computerUseOwnerSnapshotCache.clear(),
@@ -7974,6 +7976,18 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
       ),
+    // The loopback server proof videos play from. One per app launch, so the
+    // first answer is kept; a failed ask is not, so the next one retries.
+    mediaBaseUrl: (): Promise<string | null> => {
+      computerUseMediaBaseUrl ??= (ipcRenderer.invoke(IPC.computerUseMediaBaseUrl) as Promise<string | null>)
+        .then((base) => (typeof base === "string" && base ? base : null))
+        .catch(() => null)
+        .then((base) => {
+          if (!base) computerUseMediaBaseUrl = null;
+          return base;
+        });
+      return computerUseMediaBaseUrl;
+    },
     onEvent: subscribeComputerUseEvents,
   },
   iosSimulator: {

@@ -88,11 +88,14 @@ function snapshotOf(artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnaps
   };
 }
 
+const MEDIA_BASE = "http://127.0.0.1:43210/tok";
+
 beforeEach(() => {
   delete (window as unknown as { IntersectionObserver?: unknown }).IntersectionObserver;
   (window as unknown as { ade: unknown }).ade = {
     computerUse: {
       readArtifactPreview: vi.fn().mockResolvedValue("data:image/png;base64,AAAA"),
+      mediaBaseUrl: vi.fn().mockResolvedValue(MEDIA_BASE),
     },
     app: {
       openExternal: vi.fn().mockResolvedValue(undefined),
@@ -152,7 +155,9 @@ describe("proof rendering", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("keeps large local recordings on the range-capable artifact protocol", async () => {
+  it("plays large local recordings from the media server, not the artifact protocol", async () => {
+    // 2026-09-23: `protocol.handle` failed the tail Range read a long MP4
+    // needs, so the drawer said "ADE could not play this video".
     vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce(null);
     const uri = "ade-artifact://project/.ade/artifacts/proof.mov";
     const view = render(
@@ -168,7 +173,29 @@ describe("proof rendering", () => {
     );
 
     await waitFor(() => {
-      expect(view.container.querySelector("video")?.getAttribute("src")).toBe(uri);
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/proof.mov`);
+    });
+  });
+
+  it("keeps local images on the artifact protocol", async () => {
+    const view = render(<ChatProofTimeline allowLocalArtifactProtocol artifacts={[artifact(5)]} />);
+
+    await waitFor(() => {
+      expect(view.container.querySelector("img")?.getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/proof-5.png");
+    });
+    expect(window.ade.computerUse.mediaBaseUrl).not.toHaveBeenCalled();
+    expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
+  });
+
+  it("reads a local video the capped way when main has no media server", async () => {
+    vi.mocked(window.ade.computerUse.mediaBaseUrl).mockResolvedValueOnce(null);
+    vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce("data:video/mp4;base64,EEEE");
+    const view = render(<ChatProofTimeline allowLocalArtifactProtocol artifacts={[recording(6)]} />);
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src")).toBe("data:video/mp4;base64,EEEE");
     });
   });
 
@@ -185,7 +212,7 @@ describe("proof rendering", () => {
 
     await waitFor(() => {
       expect(view.container.querySelector("video")?.getAttribute("src"))
-        .toBe("ade-artifact://project/.ade/artifacts/apple-recordings/lane-1/rec.mov");
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/apple-recordings/lane-1/rec.mov`);
     });
     expect(view.container.querySelector("video")?.getAttribute("preload")).toBe("metadata");
     expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
@@ -206,7 +233,7 @@ describe("proof rendering", () => {
 
     await waitFor(() => {
       expect(view.container.querySelector('[data-chat-proof-artifact="artifact-21"] video')?.getAttribute("src"))
-        .toBe("ade-artifact://project/.ade/artifacts/inside.mp4");
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/inside.mp4`);
     });
     expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledTimes(1);
     expect(window.ade.computerUse.readArtifactPreview)
@@ -221,7 +248,7 @@ describe("proof rendering", () => {
 
     await waitFor(() => {
       expect(view.container.querySelector("video")?.getAttribute("src"))
-        .toBe("ade-artifact://remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov");
+        .toBe(`${MEDIA_BASE}/remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov`);
     });
     expect(view.container.querySelector("video")?.getAttribute("preload")).toBe("metadata");
     // Only the image took the data URL read.
@@ -238,7 +265,9 @@ describe("proof rendering", () => {
 
     const streamed = await waitFor(() => {
       const video = view.container.querySelector("video");
-      expect(video?.getAttribute("src")).toMatch(/^ade-artifact:\/\/remote\//);
+      expect(video?.getAttribute("src")).toBe(
+        `${MEDIA_BASE}/remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov`,
+      );
       return video!;
     });
     fireEvent.error(streamed);

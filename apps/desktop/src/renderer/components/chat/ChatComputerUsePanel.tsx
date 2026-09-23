@@ -30,8 +30,9 @@ import {
   readProofProvenance,
 } from "../../../shared/proofProvenance";
 import {
+  localArtifactMediaUrl,
   localArtifactStreamUrl,
-  remoteArtifactStreamUrl,
+  remoteArtifactMediaUrl,
 } from "../../../shared/artifactStreamUrl";
 import { cn } from "../ui/cn";
 import { playableMediaDataUrl } from "../../lib/playableMedia";
@@ -195,12 +196,12 @@ function ArtifactKindIcon({ artifact, size = 14 }: {
 /**
  * Where a tile's picture comes from.
  *
- * A proof on this computer streams through `ade-artifact://project/`, which
- * answers Range requests, so a long recording costs only what the player
- * reads. A video on a paired computer streams through
- * `ade-artifact://remote/`, which main answers with bounded chunk reads from
- * that machine. Everything else, and a paired machine too old to stream, takes
- * the capped data URL read.
+ * An image on this computer streams through `ade-artifact://project/`. A video
+ * on this computer or on a paired one plays from main's loopback media server,
+ * which answers every Range read, so a long recording loads, seeks, and costs
+ * only what the player reads. Everything else, a paired machine too old to
+ * stream, and a main process with no media server take the capped data URL
+ * read.
  */
 type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
 
@@ -276,7 +277,9 @@ function useVisibleArtifactPreview(
       || isBrokenArtifact(artifact)
       || (!isImageArtifact(artifact) && !isVideoArtifact(artifact))
     ) return;
-    const localStream = allowLocalArtifactProtocol
+    const video = isVideoArtifact(artifact);
+    // Images only: `protocol.handle` cannot serve the tail read a long video needs.
+    const localStream = allowLocalArtifactProtocol && !video
       ? localArtifactStreamUrl(artifact.uri, scope.rootPath)
       : null;
     if (localStream) {
@@ -291,39 +294,59 @@ function useVisibleArtifactPreview(
       setLoaded(true);
       return;
     }
-    // Images stay on the data URL read; a video has no size cap this way.
-    const remoteStream = !allowLocalArtifactProtocol
-      && !remoteStreamRefused
-      && isVideoArtifact(artifact)
-      && targetId
-      && projectId
-      && !isWebClientMode()
-      ? remoteArtifactStreamUrl({ uri: artifact.uri, targetId, projectId, remoteProjectRoot: remoteRoot })
-      : null;
-    if (remoteStream) {
-      setPreview(remoteStream);
-      setSource("remote-stream");
-      setLoaded(true);
-      return;
-    }
     let cancelled = false;
-    setLoading(true);
-    void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin)
-      .then((dataUrl) => {
+    const readDataUrl = () => {
+      setLoading(true);
+      void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin)
+        .then((dataUrl) => {
+          if (cancelled) return;
+          setPreview(playableMediaDataUrl(dataUrl));
+          setSource(dataUrl ? "data-url" : null);
+          // A machine that refused to stream and then sent nothing is the cause.
+          if (!dataUrl && remoteStreamRefused) setFailure("unsent");
+          setLoading(false);
+          setLoaded(true);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setPreview(null);
+          setSource(null);
+          if (scope.isRemote) setFailure("unsent");
+          setLoading(false);
+          setLoaded(true);
+        });
+    };
+    // Images on a paired machine stay on the data URL read; a video has no size cap this way.
+    const mediaServer = video
+      && !isWebClientMode()
+      && (allowLocalArtifactProtocol || (!remoteStreamRefused && Boolean(targetId && projectId)));
+    if (!mediaServer) {
+      readDataUrl();
+      return () => {
+        cancelled = true;
+      };
+    }
+    const mediaBaseUrl = window.ade.computerUse.mediaBaseUrl;
+    void (mediaBaseUrl ? mediaBaseUrl() : Promise.resolve(null))
+      .catch(() => null)
+      .then((base) => {
         if (cancelled) return;
-        setPreview(playableMediaDataUrl(dataUrl));
-        setSource(dataUrl ? "data-url" : null);
-        // A machine that refused to stream and then sent nothing is the cause.
-        if (!dataUrl && remoteStreamRefused) setFailure("unsent");
-        setLoading(false);
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setPreview(null);
-        setSource(null);
-        if (scope.isRemote) setFailure("unsent");
-        setLoading(false);
+        const url = !base
+          ? null
+          : allowLocalArtifactProtocol
+            ? localArtifactMediaUrl(base, artifact.uri, scope.rootPath)
+            : remoteArtifactMediaUrl(base, {
+              uri: artifact.uri,
+              targetId: targetId ?? "",
+              projectId: projectId ?? "",
+              remoteProjectRoot: remoteRoot,
+            });
+        if (!url) {
+          readDataUrl();
+          return;
+        }
+        setPreview(url);
+        setSource(allowLocalArtifactProtocol ? "local-stream" : "remote-stream");
         setLoaded(true);
       });
     return () => {

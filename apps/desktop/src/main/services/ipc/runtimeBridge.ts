@@ -449,8 +449,8 @@ export function registerRuntimeBridge({
     { appVersion, getAccountRelayProof, getAuthorizedAccountOwnerId },
     pairedMachineStore,
   );
-  // `ade-artifact://remote/...` reads a proof from a paired computer through
-  // this connection, one bounded chunk per call. The broker on that machine
+  // The media server's `/remote/...` route reads a proof video from a paired
+  // computer through this connection, one bounded chunk per call. The broker on that machine
   // resolves the path inside its own `.ade/artifacts` and refuses the rest.
   setRemoteArtifactRangeReader(async ({ targetId, projectId, relativePath, offset, length }) => {
     const response = await remoteConnectionService.callAction(targetId, projectId, {

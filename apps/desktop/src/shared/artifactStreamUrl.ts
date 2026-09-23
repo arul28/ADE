@@ -2,11 +2,17 @@
  * The URLs a proof preview streams from, and the reverse parse the main
  * process does before it serves one.
  *
- * Both forms ride the `ade-artifact:` scheme, which the renderer CSP already
- * allows for images and media and which answers Range requests:
+ * Images ride the `ade-artifact:` scheme, which the renderer CSP allows:
  *
- *   ade-artifact://project/<path>                         this computer
- *   ade-artifact://remote/<targetId>/<projectId>/<path>   a paired computer
+ *   ade-artifact://project/<path>                          this computer
+ *
+ * Videos come from main's loopback media server instead. Electron's
+ * `protocol.handle` cannot answer the second Range read a `<video>` makes when
+ * the index sits at the end of the file, so a long recording never loads
+ * there. The server's base is `http://127.0.0.1:<port>/<token>`:
+ *
+ *   <base>/project/<path>                                  this computer
+ *   <base>/remote/<targetId>/<projectId>/<path>            a paired computer
  *
  * `<path>` is always project-relative, one encoded segment at a time. It can
  * never hold `..` or `.`. That rule is only a first gate: the machine that
@@ -18,7 +24,6 @@
 export const ARTIFACT_RANGE_READ_MAX_BYTES = 2 * 1024 * 1024;
 
 const PROJECT_PREFIX = /^ade-artifact:\/\/project(?:\/|$)/i;
-const REMOTE_PREFIX = "ade-artifact://remote/";
 
 function isAbsolutePath(value: string): boolean {
   return value.startsWith("/") || value.startsWith("\\\\") || /^[a-zA-Z]:[\\/]/.test(value);
@@ -110,8 +115,27 @@ export function localArtifactStreamUrl(uri: string, projectRoot: string | null |
   return relative ? `ade-artifact://project/${encodePath(relative)}` : null;
 }
 
-/** The streaming URL for a proof on a paired computer, or null when it has none. */
-export function remoteArtifactStreamUrl(args: {
+/** Where a media server path points, after the token. */
+export type ArtifactMediaTarget =
+  | { kind: "project"; relativePath: string }
+  | { kind: "remote"; targetId: string; projectId: string; relativePath: string };
+
+function withMediaBase(base: string, tail: string): string {
+  return `${withoutTrailingSlash(base.trim())}/${tail}`;
+}
+
+/** The media server URL for a video on this computer, or null when it has none. */
+export function localArtifactMediaUrl(
+  base: string,
+  uri: string,
+  projectRoot: string | null | undefined,
+): string | null {
+  const relative = projectRelativeArtifactPath(uri, projectRoot);
+  return relative && base.trim() ? withMediaBase(base, `project/${encodePath(relative)}`) : null;
+}
+
+/** The media server URL for a video on a paired computer, or null when it has none. */
+export function remoteArtifactMediaUrl(base: string, args: {
   uri: string;
   targetId: string;
   projectId: string;
@@ -119,29 +143,39 @@ export function remoteArtifactStreamUrl(args: {
 }): string | null {
   const targetId = args.targetId.trim();
   const projectId = args.projectId.trim();
-  if (!targetId || !projectId) return null;
+  if (!targetId || !projectId || !base.trim()) return null;
   const relative = projectRelativeArtifactPath(args.uri, args.remoteProjectRoot);
   if (!relative) return null;
-  return `${REMOTE_PREFIX}${encodeURIComponent(targetId)}/${encodeURIComponent(projectId)}/${encodePath(relative)}`;
+  return withMediaBase(
+    base,
+    `remote/${encodeURIComponent(targetId)}/${encodeURIComponent(projectId)}/${encodePath(relative)}`,
+  );
 }
 
-export type RemoteArtifactStreamTarget = {
-  targetId: string;
-  projectId: string;
-  /** Project-relative, `/`-separated, with no `.` or `..` segment. */
-  relativePath: string;
-};
+/** Decodes a relative path strictly: any `.` or `..` is a refusal, not something to fold away. */
+function strictRelativePath(parts: string[]): string | null {
+  const decoded = decodeSegments(parts.join("/"));
+  if (!decoded) return null;
+  if (decoded.some((segment) => segment === "." || segment === "..")) return null;
+  const safe = safeSegments(decoded);
+  return safe ? safe.join("/") : null;
+}
 
 /**
- * The reverse of {@link remoteArtifactStreamUrl}. Parsed by hand, not with
+ * The reverse of {@link localArtifactMediaUrl} and {@link remoteArtifactMediaUrl}
+ * for the part of the path after the token. Parsed by hand, not with
  * `new URL`: URL parsing folds `..` away, which would turn a hostile path into
- * a different target id instead of a refusal.
+ * a different target instead of a refusal.
  */
-export function parseRemoteArtifactStreamUrl(url: string): RemoteArtifactStreamTarget | null {
-  if (url.slice(0, REMOTE_PREFIX.length).toLowerCase() !== REMOTE_PREFIX) return null;
-  const rest = url.slice(REMOTE_PREFIX.length).split(/[?#]/, 1)[0] ?? "";
+export function parseArtifactMediaPath(pathAfterToken: string): ArtifactMediaTarget | null {
+  const rest = (pathAfterToken.split(/[?#]/, 1)[0] ?? "").replace(/^\/+/, "");
   const parts = rest.split("/");
-  if (parts.length < 3) return null;
+  const kind = parts.shift();
+  if (kind === "project") {
+    const relativePath = strictRelativePath(parts);
+    return relativePath ? { kind: "project", relativePath } : null;
+  }
+  if (kind !== "remote" || parts.length < 3) return null;
   let targetId: string;
   let projectId: string;
   try {
@@ -151,11 +185,6 @@ export function parseRemoteArtifactStreamUrl(url: string): RemoteArtifactStreamT
     return null;
   }
   if (!targetId || !projectId) return null;
-  const decoded = decodeSegments(parts.slice(2).join("/"));
-  if (!decoded) return null;
-  // Any `.` or `..` is a refusal here, not something to fold away.
-  if (decoded.some((segment) => segment === "." || segment === "..")) return null;
-  const safe = safeSegments(decoded);
-  if (!safe) return null;
-  return { targetId, projectId, relativePath: safe.join("/") };
+  const relativePath = strictRelativePath(parts.slice(2));
+  return relativePath ? { kind: "remote", targetId, projectId, relativePath } : null;
 }

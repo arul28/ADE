@@ -1,17 +1,14 @@
+import fs from "node:fs";
 import path from "node:path";
 
-import {
-  ARTIFACT_RANGE_READ_MAX_BYTES,
-  parseRemoteArtifactStreamUrl,
-} from "../../../shared/artifactStreamUrl";
+import { isPathInside } from "../shared/pathCompare";
 
 /**
- * Serving `ade-artifact://` bytes to a `<video>` or `<img>`.
- *
- * The local half lives in `main.ts`. This file owns what both halves share,
- * the type table and the Range parse, and the whole remote half:
- * `ade-artifact://remote/<targetId>/<projectId>/<path>` is answered by reading
- * the file in bounded chunks from the paired machine's broker.
+ * What every path that serves proof bytes to a `<video>` or `<img>` shares:
+ * the `ade-artifact://` handler in `main.ts` and the loopback media server in
+ * `artifactMediaServer.ts`. The type table, the Range parse, the one
+ * containment check both use for files on this computer, and the reader the
+ * runtime bridge installs for files on a paired computer.
  */
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -82,14 +79,13 @@ export function setRemoteArtifactRangeReader(reader: RemoteArtifactRangeReader |
   remoteReader = reader;
 }
 
-function textResponse(status: number, message: string): Response {
-  return new Response(message, {
-    status,
-    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
-  });
+/** The installed reader, or null before the runtime bridge is up. */
+export function getRemoteArtifactRangeReader(): RemoteArtifactRangeReader | null {
+  return remoteReader;
 }
 
-function decodeChunk(chunk: unknown): { totalSize: number; bytes: Buffer } {
+/** Reads one chunk answer. Throws on anything that is not one. */
+export function decodeRemoteArtifactChunk(chunk: unknown): { totalSize: number; bytes: Buffer } {
   const record = chunk && typeof chunk === "object" ? chunk as Partial<RemoteArtifactRangeChunk> : null;
   const totalSize = Number(record?.totalSize);
   if (!record || !Number.isSafeInteger(totalSize) || totalSize < 0 || typeof record.data !== "string") {
@@ -99,91 +95,77 @@ function decodeChunk(chunk: unknown): { totalSize: number; bytes: Buffer } {
 }
 
 /**
- * Answers one `ade-artifact://remote/...` request.
- *
- * The body is pulled one chunk at a time, so a `<video preload="metadata">`
- * that reads the header and stops costs one or two round trips, not the file.
- * The Content-Range covers what was asked for; the chunking is invisible to
- * the media stack. Containment is the other machine's job: its broker resolves
- * the path inside its own `.ade/artifacts` and refuses anything else. The
- * parse here only refuses `..` early.
+ * The bytes to send for a file of `size`. Null when the range cannot be
+ * satisfied (416), or when there is no range and the file is empty.
  */
-export async function respondToRemoteArtifactRequest(
-  request: Request,
-  reader: RemoteArtifactRangeReader | null = remoteReader,
-): Promise<Response> {
-  const target = parseRemoteArtifactStreamUrl(request.url);
-  if (!target) return textResponse(404, "Not found");
-  if (!reader) return textResponse(503, "Paired computers are not ready yet.");
+export function resolveByteRange(
+  range: RequestedByteRange | null,
+  size: number,
+): { start: number; end: number } | null {
+  if (!range) return size > 0 ? { start: 0, end: size - 1 } : null;
+  if (range.kind === "suffix") {
+    if (!Number.isSafeInteger(range.length) || range.length <= 0 || size === 0) return null;
+    return { start: Math.max(0, size - range.length), end: size - 1 };
+  }
+  const end = Math.min(range.end ?? size - 1, size - 1);
+  if (range.start >= size || end < range.start) return null;
+  return { start: range.start, end };
+}
 
-  const read = async (offset: number, length: number) => decodeChunk(await reader({
-    ...target,
-    offset,
-    length: Math.max(1, Math.min(length, REMOTE_ARTIFACT_CHUNK_BYTES, ARTIFACT_RANGE_READ_MAX_BYTES)),
-  }));
+export type ContainedArtifactFile =
+  | { ok: true; filePath: string; size: number }
+  | { ok: false; reason: "no-project" | "missing" | "outside" | "not-file"; filePath?: string };
 
-  const range = parseRangeHeader(request.headers.get("Range"));
-  let start = range?.kind === "from" ? range.start : 0;
-  let first: { totalSize: number; bytes: Buffer };
+/**
+ * The one containment check for serving a file on this computer.
+ *
+ * `requestedPath` is resolved against the active project root when it is
+ * relative (or when `projectRelative` says so), then realpath'd, so a symlink
+ * cannot point out. The result must sit inside the active project's artifacts
+ * dir, realpath'd the same way. Both the `ade-artifact://` handler and the
+ * media server call this, so the two cannot drift.
+ */
+export function resolveContainedArtifactFile(args: {
+  requestedPath: string;
+  projectRelative: boolean;
+  projectRoot: string | null;
+  allowedDir: string | null;
+  platform?: NodeJS.Platform;
+}): ContainedArtifactFile {
+  const platform = args.platform ?? process.platform;
+  let filePath = args.requestedPath;
+  if (args.projectRelative) {
+    if (!args.projectRoot) return { ok: false, reason: "no-project" };
+    filePath = path.resolve(args.projectRoot, filePath.replace(/^[/\\]+/, ""));
+  }
+  // A Windows path out of a URL starts `/C:/...`.
+  if (platform === "win32" && /^[/\\][a-zA-Z]:/.test(filePath)) filePath = filePath.slice(1);
+  if (!path.isAbsolute(filePath)) {
+    if (!args.projectRoot) return { ok: false, reason: "no-project" };
+    filePath = path.resolve(args.projectRoot, filePath);
+  }
+  filePath = path.resolve(filePath);
+  let resolvedFile: string;
+  let allowed: string;
   try {
-    if (range?.kind === "suffix") {
-      // The size decides where a suffix starts, so ask for it first.
-      const probe = await read(0, 1);
-      start = Math.max(0, probe.totalSize - range.length);
-    }
-    first = await read(start, REMOTE_ARTIFACT_CHUNK_BYTES);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return textResponse(502, message || "The other computer did not send this file.");
+    resolvedFile = fs.realpathSync(filePath);
+  } catch {
+    return { ok: false, reason: "missing", filePath };
   }
-
-  const totalSize = first.totalSize;
-  if (start >= totalSize) {
-    return new Response(null, {
-      status: 416,
-      headers: { "Content-Range": `bytes */${totalSize}` },
-    });
+  try {
+    allowed = args.allowedDir ? fs.realpathSync(args.allowedDir) : "";
+  } catch {
+    allowed = "";
   }
-  const requestedEnd = range?.kind === "from" && range.end !== null ? range.end : totalSize - 1;
-  const end = Math.min(requestedEnd, totalSize - 1);
-  if (end < start) {
-    return new Response(null, {
-      status: 416,
-      headers: { "Content-Range": `bytes */${totalSize}` },
-    });
+  if (!allowed || !isPathInside(resolvedFile, allowed, platform)) {
+    return { ok: false, reason: "outside", filePath: resolvedFile };
   }
-
-  let next = start;
-  let pending: Buffer | null = first.bytes;
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        let bytes = pending;
-        pending = null;
-        if (!bytes) bytes = (await read(next, end - next + 1)).bytes;
-        if (bytes.length === 0) {
-          controller.error(new Error("The file ended early on the other computer."));
-          return;
-        }
-        const slice = bytes.subarray(0, end - next + 1);
-        next += slice.length;
-        controller.enqueue(new Uint8Array(slice));
-        if (next > end) controller.close();
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-  }, { highWaterMark: 0 });
-
-  const headers: Record<string, string> = {
-    "Content-Type": artifactStreamMimeType(target.relativePath),
-    "Content-Length": String(end - start + 1),
-    "Accept-Ranges": "bytes",
-    "Cache-Control": "no-store",
-  };
-  if (range) {
-    headers["Content-Range"] = `bytes ${start}-${end}/${totalSize}`;
-    return new Response(body, { status: 206, headers });
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolvedFile);
+  } catch {
+    return { ok: false, reason: "missing", filePath: resolvedFile };
   }
-  return new Response(body, { status: 200, headers });
+  if (!stat.isFile()) return { ok: false, reason: "not-file", filePath: resolvedFile };
+  return { ok: true, filePath: resolvedFile, size: stat.size };
 }
