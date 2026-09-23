@@ -649,25 +649,18 @@ export function CreatePrModal({
     }
     let cancelled = false;
     setLaneSyncLoadingById(Object.fromEntries(laneIds.map((laneId) => [laneId, true])));
-    void Promise.allSettled(
-      laneIds.map(async (laneId) => ({
-        laneId,
-        status: await window.ade.git.getSyncStatus({ laneId }),
-      }))
-    ).then((results) => {
-      if (cancelled) return;
-      const nextStatuses: Record<string, GitUpstreamSyncStatus | null> = {};
-      const nextLoading: Record<string, boolean> = {};
-      for (const laneId of laneIds) {
-        nextLoading[laneId] = false;
-      }
-      for (const result of results) {
-        if (result.status !== "fulfilled") continue;
-        nextStatuses[result.value.laneId] = result.value.status;
-      }
-      setLaneSyncStatusById(nextStatuses);
-      setLaneSyncLoadingById(nextLoading);
-    });
+    window.ade.git.getSyncStatuses({ laneIds })
+      .then((statuses) => {
+        if (!cancelled) setLaneSyncStatusById(statuses);
+      })
+      .catch((err: unknown) => {
+        console.warn("[CreatePrModal] getSyncStatuses failed", err);
+        if (!cancelled) setLaneSyncStatusById({});
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLaneSyncLoadingById(Object.fromEntries(laneIds.map((laneId) => [laneId, false])));
+      });
     return () => {
       cancelled = true;
     };

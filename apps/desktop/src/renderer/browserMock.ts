@@ -60,6 +60,7 @@ import {
   type ChatMentionSuggestArgs,
   type ChatMentionSuggestion,
   type ChatMentionSuggestResult,
+  type GitSyncStatusesArgs,
   type LaneListSnapshot,
   type LaneSummary,
   type OpenProjectBinding,
@@ -6641,6 +6642,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         diverged: false,
         recommendedAction: "none",
       }),
+      getSyncStatuses: async (args: GitSyncStatusesArgs) => Object.fromEntries(
+        (Array.isArray(args?.laneIds) ? args.laneIds : []).map((laneId: string) => [laneId, {
+          hasUpstream: true,
+          upstreamState: "tracking",
+          upstreamRef: "origin/main",
+          ahead: 0,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "none",
+        }]),
+      ),
       getOriginRemote: resolvedArg({
         remoteUrl: "git@github.com:ade/browser-preview.git",
         branch: "main",

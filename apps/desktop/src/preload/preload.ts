@@ -356,6 +356,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -10494,6 +10496,17 @@ const adeBridge = {
         "getSyncStatus",
         { args },
         () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
+      ),
+    getSyncStatuses: async (
+      args: GitSyncStatusesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitSyncStatuses> =>
+      callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
+        pin,
+        "git",
+        "getSyncStatuses",
+        { args },
+        () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, args),
       ),
     getOriginRemote: async (
       args: { laneId: string },

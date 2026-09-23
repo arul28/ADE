@@ -141,7 +141,7 @@ describe("CreatePrModal", () => {
         listAll: vi.fn().mockResolvedValue([]),
       },
       git: {
-        getSyncStatus: vi.fn().mockResolvedValue(null),
+        getSyncStatuses: vi.fn().mockResolvedValue({}),
         listBranches: vi.fn().mockResolvedValue([
           { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
           { name: "develop", isCurrent: false, isRemote: false, upstream: "origin/develop" },

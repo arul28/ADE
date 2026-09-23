@@ -304,6 +304,8 @@ import type {
   GitPullArgs,
   GitPushArgs,
   GitResetCommitArgs,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitRevertArgs,
   GitStashPushArgs,
@@ -10418,6 +10420,11 @@ export function registerIpc({
   ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.getSyncStatus(arg);
+  });
+
+  ipcMain.handle(IPC.gitGetSyncStatuses, async (_event, arg: GitSyncStatusesArgs): Promise<GitSyncStatuses> => {
+    const ctx = ensureGitContext();
+    return await ctx.gitService.getSyncStatuses(arg);
   });
 
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {

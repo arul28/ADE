@@ -90,6 +90,7 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
     stashList: (args: unknown, pin?: Pin) => guarded("git.stashList", args, pin, []),
     stashClear: (args: unknown, pin?: Pin) => guarded("git.stashClear", args, pin, gitActionFallback, false),
     getSyncStatus: (args: unknown, pin?: Pin) => guarded("git.getSyncStatus", args, pin, null),
+    getSyncStatuses: (args: unknown, pin?: Pin) => guarded("git.getSyncStatuses", args, pin, {}),
     getOriginRemote: (args: unknown, pin?: Pin) =>
       guarded("git.getOriginRemote", args, pin, { remoteUrl: null, branch: null }),
     getOpenPrForBranch: (args: unknown, pin?: Pin) =>
