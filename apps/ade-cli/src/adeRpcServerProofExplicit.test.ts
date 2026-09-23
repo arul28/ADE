@@ -150,6 +150,42 @@ describe("explicit proof capture", () => {
     expect(capturePath.startsWith(path.join(projectRoot, ".ade", "artifacts", "computer-use"))).toBe(true);
   });
 
+  it("regression: an unbound caller's proof capture is owned by the lane it stands in", async () => {
+    // `ade proof capture` and `ade proof record` file through a door that had
+    // no lane inference of its own, so a caller with no chat session produced
+    // an artifact with an EMPTY owner list — stored, and reachable by no
+    // drawer. Seven such records existed on the owner's machine, alongside 36
+    // from `proof attach`.
+    const fixture = createRuntime();
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-7");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-7", worktreePath: laneRoot, attachedRootPath: null },
+    ]);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      // No chatSessionId: the shape of every OpenCode agent's shell.
+      params: { identity: { callerId: "ade-cli:4242", role: "agent" } },
+    });
+
+    const result = await callTool(handler, "screenshot_environment", {
+      proof: true,
+      name: "capture from a lane worktree",
+      callerRoot: laneRoot,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(fixture.ingest).toHaveBeenCalledTimes(1);
+    const [firstCall] = fixture.ingest.mock.calls as unknown as Array<[{ owners?: Array<{ kind: string; id: string }> }]>;
+    const owners = firstCall?.[0]?.owners ?? [];
+    expect(owners).toEqual([expect.objectContaining({ kind: "lane", id: "lane-7" })]);
+    // And never a process id masquerading as a chat.
+    expect(owners.some((owner) => owner.id.includes(":"))).toBe(false);
+  });
+
   it("keeps record_environment scratch unless the call asks for proof", async () => {
     const bare = createRuntime();
     const bareHandler = await handlerFor(bare);

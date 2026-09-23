@@ -943,7 +943,17 @@ describe("browser value flags", () => {
     // no positional after the flag, so the collisions are inert — but they are
     // the ONLY ones allowed. A new name here means some command just started
     // swallowing the token after a boolean flag.
+    //
+    // `--keep` is the third of that kind. `browser proof` reads it as an alias
+    // of `--keep-count` and therefore as a value; `apple record-stop --keep`
+    // (spec §5: `record-stop [--keep|--discard]`) reads it as a boolean. Inert
+    // for both of the reasons above: this carrier set is consulted only on the
+    // `browser` command — `BROWSER_VALUE_CARRIER_FLAGS` is passed to the
+    // browser positional readers and to `browser` help alone, while every
+    // other command splits with `VALUE_CARRIER_FLAGS`, which does not contain
+    // it — and `record-stop` takes no positional for a boolean to eat.
     expect(BROWSER_VALUE_FLAGS.filter((flag) => ALL_BOOLEAN_FLAGS.has(flag)).sort()).toEqual([
+      "--keep",
       "--lane",
       "--title",
     ]);

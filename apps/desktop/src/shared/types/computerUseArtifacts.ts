@@ -225,6 +225,14 @@ export type ComputerUseArtifactBrokenRecord = {
   laneId: string | null;
   /** Absolute path this record still resolves to inside a surviving worktree. */
   recoverablePath: string | null;
+  /**
+   * How many owners (lane, chat, run) this artifact is linked to.
+   *
+   * Zero means it is in nobody's proof drawer. Reported here because the only
+   * caller that can act on it — the broken-proof prune — otherwise has to ask
+   * per artifact, and a scoped caller could never reach an ownerless row at all.
+   */
+  ownerCount: number;
 };
 
 export type ComputerUseArtifactReviewArgs = {

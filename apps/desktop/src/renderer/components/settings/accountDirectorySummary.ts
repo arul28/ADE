@@ -7,7 +7,9 @@ import {
   type SyncAccountDirectoryState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import type { ThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import { accountSessionConnectionsSubtitle } from "../../lib/account";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 
 export type AccountDirectorySummary = {
   label: string;
@@ -47,8 +49,8 @@ function unpublishedMachineSummary(
   // exception is the competing-sync-host instruction — "Quit that ADE" is a thing
   // this reader can do, and the line above it cannot be acted on without it.
   //
-  // `health` is passed through because an answered refusal decodes from it: a
-  // 403 `machine_revoked` is the directory replying, not being unreachable.
+  // `health` is passed through for the competing-sync-host owner it names. An
+  // answered refusal is decided by the caller (see `accountDirectorySummary`).
   const { summary, nextAction } = describeUnpublishedAccountDirectory(state, health);
   const label = `Signed in — ${summary}`;
   if (nextAction === QUIT_COMPETING_SYNC_HOST_ADVICE) {
@@ -60,6 +62,13 @@ function unpublishedMachineSummary(
 export function accountDirectorySummary(
   status: SyncRoleSnapshot,
   sessionState: AdeAccountSessionState,
+  /**
+   * The directory's refusal of THIS computer, read once by the caller with the
+   * same guard that shows its Reconnect button. Null when the snapshot is
+   * another machine's (a remote-bound pane, or the hosted web client): the
+   * refusal copy says "This computer", which would then name the wrong machine.
+   */
+  refusal: ThisMachineRefusal | null,
 ): AccountDirectorySummary {
   if (sessionState === "unreadable") {
     return {
@@ -91,5 +100,17 @@ export function accountDirectorySummary(
     // plumbing detail the reader could neither act on nor interpret.
     return { label: "Connected to your ADE account", healthy: true };
   }
-  return { ...unpublishedMachineSummary(health.state, health), healthy: false };
+  // A refusal is not "can't reach your account, retrying": the directory
+  // answered, and nothing retries on its own. Say what happened; the card
+  // puts the Reconnect button beside this line.
+  if (refusal) {
+    return { label: describeThisComputerRefusal(refusal).title, healthy: false };
+  }
+  // Without a refusal from the caller, the `http_error` line must not decode
+  // one from `health` either: a remote-bound pane shows another machine, and
+  // the refusal copy would name this computer.
+  return {
+    ...unpublishedMachineSummary(health.state, health.state === "http_error" ? null : health),
+    healthy: false,
+  };
 }

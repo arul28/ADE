@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  describeRuntimeRpcCall,
   RuntimeRpcClient,
   summarizeRemoteRuntimeStderr,
   type RuntimeRpcTransport,
@@ -386,5 +387,24 @@ describe("summarizeRemoteRuntimeStderr", () => {
     expect(summarizeRemoteRuntimeStderr("ADE beta brain socket was not available\n")).toBe(
       "ADE beta brain socket was not available",
     );
+  });
+});
+
+describe("describeRuntimeRpcCall", () => {
+  it("names the action a timeout was waiting for", () => {
+    // Every runtime action in the product travels as `ade/actions/call`, so
+    // the round-2 Apple log was dozens of identical timeout lines that named
+    // nothing. The envelope already knew.
+    expect(describeRuntimeRpcCall("ade/actions/call", {
+      projectId: "p",
+      name: "run_ade_action",
+      arguments: { domain: "ios_simulator", action: "tap", args: { x: 1, y: 2 } },
+    })).toBe("ade/actions/call ios_simulator.tap");
+  });
+
+  it("falls back to the bare method when there is no action in it", () => {
+    expect(describeRuntimeRpcCall("projects.list", {})).toBe("projects.list");
+    expect(describeRuntimeRpcCall("ade/actions/call", { name: "run_ade_action" }))
+      .toBe("ade/actions/call");
   });
 });

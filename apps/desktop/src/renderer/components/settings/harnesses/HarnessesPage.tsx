@@ -31,14 +31,14 @@ import { useHarnessPresets } from "./useHarnessPresets";
  * Settings → Providers → Custom.
  *
  * "Custom" is the user-facing name for what the code still calls a harness
- * preset: an agent and the model source it runs on, saved together. The ids and
+ * preset: a harness and the model source it runs on, saved together. The ids and
  * types keep the old word because they are storage, not copy.
  *
  * The rows lie flat on the page rather than inside a bordered table. A manager
  * page is already a card; a second box drawn inside it, with its own header
  * strip and its own hairlines, read as a spreadsheet embedded in a settings
  * page. Each row now says the same things in reading order — mark, name, the
- * agent that runs it, the models it thinks with — with the actions at the end.
+ * harness that runs it, the models it thinks with — with the actions at the end.
  *
  * Import is deliberately a read, not a merge: the file becomes a prefilled
  * wizard with its gaps listed, so what lands in your list is something you
@@ -46,7 +46,7 @@ import { useHarnessPresets } from "./useHarnessPresets";
  */
 
 /** The one sentence behind the "?" beside the title. */
-const CUSTOM_HELP = "An agent and the model it runs on, saved together — pick one in any model picker to start a chat with that whole setup.";
+const CUSTOM_HELP = "A custom provider combines a harness and a model into one setup you can pick from any model picker.";
 
 /**
  * One icon per row action, named for the screen reader and the tooltip.
@@ -270,7 +270,7 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
       {rows.length === 0 ? (
         <SettingsManagerEmpty
           title="Nothing custom yet"
-          description="Save an agent and its model together, and every model picker can start a chat with that whole setup in one click."
+          description="A custom provider combines a harness and a model into one setup you can pick from any model picker."
           action={
             <button
               type="button"
@@ -321,7 +321,7 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
                 </span>
               </span>
 
-              {/* 2 — the agent that runs it, with its brand mark. */}
+              {/* 2 — the harness that runs it, with its brand mark. */}
               <PresetAgent harness={preset.harness} />
 
               {/* 3 — what it thinks with, labelled by role. */}
@@ -364,7 +364,6 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
                             ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
                             subagentModel: preset.subagentModel,
                             agentOverrides: preset.agentOverrides,
-                            permissionMode: preset.permissionMode,
                             accentColor: preset.accentColor,
                             logo: preset.logo,
                           },
@@ -423,7 +422,6 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
                 ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
                 subagentModel: preset.subagentModel,
                 agentOverrides: preset.agentOverrides,
-                permissionMode: preset.permissionMode,
                 accentColor: preset.accentColor,
                 logo: preset.logo,
               });

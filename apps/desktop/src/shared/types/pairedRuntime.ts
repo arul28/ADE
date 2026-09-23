@@ -13,9 +13,33 @@ export type PairedRuntimeRpcDataPayload = {
   data: string;
 };
 
+/**
+ * The host closed an RPC channel because a reply would pass its send budget.
+ * The host is alive and the next call opens a new channel, so a client must
+ * not report the machine as unreachable for it.
+ */
+export const PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE = "rpc_over_budget";
+
+/**
+ * The reason the host sends with that close. Hosts from before the code send
+ * only this sentence, and it is the only close they send for that cause, so a
+ * client reads it the same way.
+ */
+export const PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON = "Runtime RPC channel fell behind the sync connection.";
+
+/**
+ * The host closes an older connection from the same device when a newer one
+ * authenticates. Code and reason travel together because the tunnel relay also
+ * uses 4000, for "partner closed", which means something else.
+ */
+export const PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE = 4000;
+export const PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON = "Superseded by a newer connection for this device";
+
 export type PairedRuntimeRpcClosePayload = {
   channelId: string;
   reason?: string | null;
+  /** Machine-readable cause. Absent on hosts older than the code. */
+  code?: typeof PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE | null;
 };
 
 export type PairedRuntimeForwardOpenPayload = {

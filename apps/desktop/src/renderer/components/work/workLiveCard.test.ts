@@ -14,6 +14,7 @@ import {
   formatWorkLiveActionCaption,
   workLiveActionVerb,
   formatWorkLiveAge,
+  isWorkLivePictureInPictureSupported,
   isWorkLiveScreenTool,
   isWorkLiveCardClosed,
   isWorkLiveCardSeen,
@@ -33,6 +34,8 @@ import {
   workLiveBottomReserve,
   workLiveActivityBelongsToChat,
   workLiveHostLabel,
+  workLiveIosCaption,
+  workLiveIosStreamRequestUrl,
   workLiveMacDesktopSessionKey,
   workLivePreviewMaxWidth,
   workLiveScrubIndex,
@@ -791,13 +794,25 @@ describe("workLiveSource", () => {
     }).sessionKey).toBe("display:31:2026-09-18T19:00:00.000Z");
   });
 
-  it("only the browser can be recording", () => {
-    expect(workLiveSource("ios", { ...empty, iosSession: { appName: "ADE" } })).toMatchObject({
+  it("reads a simulator recording from status, and captions app over device", () => {
+    expect(workLiveSource("ios", {
+      ...empty,
+      iosSession: {
+        appName: "ADE",
+        deviceName: "iPhone 17",
+        chatSessionId: "chat-9",
+        recording: { id: "rec-1" },
+      },
+    })).toMatchObject({
       live: true,
       caption: "ADE",
-      recording: null,
-      ownerLabel: null,
+      recording: { id: "rec-1" },
+      ownerLabel: "agent",
     });
+    expect(workLiveSource("ios", {
+      ...empty,
+      iosSession: { deviceName: "iPhone 17" },
+    }).caption).toBe("iPhone 17");
   });
 
   it("reports nothing for a tool with no state", () => {
@@ -811,5 +826,25 @@ describe("workLiveSource", () => {
         sessionKey: null,
       });
     }
+  });
+});
+
+describe("workLiveIosCaption", () => {
+  it("prefers the foreground app, then the device name", () => {
+    expect(workLiveIosCaption({ appName: "MyApp", name: "iPhone 17" })).toBe("MyApp");
+    expect(workLiveIosCaption({ appName: null, name: "iPhone 17" })).toBe("iPhone 17");
+    expect(workLiveIosCaption({ appName: "  ", name: "  " })).toBeNull();
+  });
+});
+
+describe("picture-in-picture gating", () => {
+  it("is off in jsdom, where the document has no PiP API", () => {
+    expect(isWorkLivePictureInPictureSupported()).toBe(false);
+    expect(isWorkLivePictureInPictureSupported({ pictureInPictureEnabled: false })).toBe(false);
+  });
+
+  it("strips the query string the helper never reads", () => {
+    expect(workLiveIosStreamRequestUrl("http://127.0.0.1:9/stream?token=secret"))
+      .toBe("http://127.0.0.1:9/stream");
   });
 });

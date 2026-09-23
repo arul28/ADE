@@ -55,6 +55,56 @@ export class PairedRuntimeHelloRejectedError extends Error {
   }
 }
 
+/**
+ * The host closed this RPC channel because one reply would pass its send
+ * budget. The host is alive: it answered, and the next call opens a new
+ * channel. A caller must not report the machine as unreachable for it.
+ */
+export class PairedRuntimeRpcOverBudgetError extends Error {
+  readonly code = "PAIRED_RUNTIME_RPC_OVER_BUDGET" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "PairedRuntimeRpcOverBudgetError";
+  }
+}
+
+/** True for `PairedRuntimeRpcOverBudgetError`, also when a wrapper carries it as `cause`. */
+export function isPairedRuntimeRpcOverBudgetError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof PairedRuntimeRpcOverBudgetError) return true;
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * The host closed this connection because another connection from the same
+ * device replaced it. Something else on this computer that shares this
+ * machine's pairing (a second ADE on the same home, for example) is connected
+ * now. Reconnecting on our own would only close that one in turn, and the two
+ * would take the machine from each other forever.
+ */
+export class PairedRuntimeSupersededError extends Error {
+  readonly code = "PAIRED_RUNTIME_SUPERSEDED" as const;
+
+  constructor(message = "Another ADE on this computer is using this connection.") {
+    super(message);
+    this.name = "PairedRuntimeSupersededError";
+  }
+}
+
+/** True for `PairedRuntimeSupersededError`, also when a wrapper carries it as `cause`. */
+export function isPairedRuntimeSupersededError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof PairedRuntimeSupersededError) return true;
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export class PairedRuntimeCompatibilityError extends Error {
   readonly code = "PAIRED_RUNTIME_COMPATIBILITY" as const;
 

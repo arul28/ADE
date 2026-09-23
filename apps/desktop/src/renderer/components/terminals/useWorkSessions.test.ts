@@ -3926,7 +3926,8 @@ describe("buildWorkBoardModel", () => {
 
     const { buckets } = buildWorkBoardModel({
       runningFiltered: [running],
-      awaitingInputFiltered: [needsYou],
+      needsYouFiltered: [needsYou],
+      restingFiltered: [],
       endedFiltered: [ended],
       settledFiltered: [settled],
       snoozedFiltered: [snoozed],
@@ -3955,7 +3956,8 @@ describe("buildWorkBoardModel", () => {
 
     const { buckets, waitingReasonBySessionId } = buildWorkBoardModel({
       runningFiltered: [ciRunning, plain],
-      awaitingInputFiltered: [],
+      needsYouFiltered: [],
+      restingFiltered: [],
       endedFiltered: [],
       settledFiltered: [],
       snoozedFiltered: [],
@@ -3973,7 +3975,8 @@ describe("buildWorkBoardModel", () => {
   it("moves a running chat whose lane PR has a review requested into Waiting", () => {
     const { buckets, waitingReasonBySessionId } = buildWorkBoardModel({
       runningFiltered: [makeSession("s-review", "lane-review")],
-      awaitingInputFiltered: [],
+      needsYouFiltered: [],
+      restingFiltered: [],
       endedFiltered: [],
       settledFiltered: [],
       snoozedFiltered: [],
@@ -3988,7 +3991,8 @@ describe("buildWorkBoardModel", () => {
   it("labels a snoozed row's wait as the snooze, never as a PR", () => {
     const { waitingReasonBySessionId } = buildWorkBoardModel({
       runningFiltered: [],
-      awaitingInputFiltered: [],
+      needsYouFiltered: [],
+      restingFiltered: [],
       endedFiltered: [],
       settledFiltered: [],
       snoozedFiltered: [makeSession("s-snoozed", "lane-ci")],
@@ -3998,12 +4002,66 @@ describe("buildWorkBoardModel", () => {
     expect(waitingReasonBySessionId.get("s-snoozed")).toBe("snoozed");
   });
 
+  it("files a resting row under Done, not under the amber Needs you column", () => {
+    // The defect this covers: the board took the list's whole `awaiting-input`
+    // bucket — which holds `needs_you`, `ready` AND `idle` — and labelled all of
+    // it "Needs you". A user saw five sessions claimed to be blocked on them
+    // while every one of those cards showed its own emerald "Done" dot, and
+    // none had a raised hand. Only `needs_you` earns the amber column.
+    const raised = makeSession("s-raised", "lane-a");
+    const finished = makeSession("s-finished", "lane-a");
+    const idle = makeSession("s-idle", "lane-b");
+
+    const { buckets } = buildWorkBoardModel({
+      runningFiltered: [],
+      needsYouFiltered: [raised],
+      restingFiltered: [finished, idle],
+      endedFiltered: [makeSession("s-ended", "lane-c")],
+      settledFiltered: [makeSession("s-settled", "lane-c")],
+      snoozedFiltered: [],
+      laneWaitingReason: noPrWait,
+    });
+
+    expect(buckets["needs_you"].map((s) => s.id)).toEqual(["s-raised"]);
+    // Loudest tier first: resting rows are live and just finished, so they are
+    // the ones worth looking at; settled is what the user already filed.
+    expect(buckets.done.map((s) => s.id)).toEqual([
+      "s-finished",
+      "s-idle",
+      "s-ended",
+      "s-settled",
+    ]);
+  });
+
+  it("keeps the columns a partition when resting rows are present", () => {
+    const all = ["s-raised", "s-resting", "s-running", "s-ended", "s-settled", "s-snoozed"];
+    const { buckets } = buildWorkBoardModel({
+      runningFiltered: [makeSession("s-running", "lane-a")],
+      needsYouFiltered: [makeSession("s-raised", "lane-a")],
+      restingFiltered: [makeSession("s-resting", "lane-a")],
+      endedFiltered: [makeSession("s-ended", "lane-b")],
+      settledFiltered: [makeSession("s-settled", "lane-b")],
+      snoozedFiltered: [makeSession("s-snoozed", "lane-c")],
+      laneWaitingReason: noPrWait,
+    });
+
+    const filed = [
+      ...buckets["needs_you"],
+      ...buckets.working,
+      ...buckets.waiting,
+      ...buckets.done,
+    ].map((s) => s.id);
+    expect(filed.sort()).toEqual([...all].sort());
+    expect(new Set(filed).size).toBe(all.length);
+  });
+
   it("leaves a needs-you row in Needs you even when its lane PR is mid-CI", () => {
     // A raised hand outranks every other filing rule (see the snooze precedence
     // in `sessionStatusPresentation`); the board must not bury one behind CI.
     const { buckets } = buildWorkBoardModel({
       runningFiltered: [],
-      awaitingInputFiltered: [makeSession("s-needs", "lane-ci")],
+      needsYouFiltered: [makeSession("s-needs", "lane-ci")],
+      restingFiltered: [],
       endedFiltered: [],
       settledFiltered: [],
       snoozedFiltered: [],

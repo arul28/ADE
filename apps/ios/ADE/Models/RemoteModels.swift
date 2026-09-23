@@ -910,7 +910,7 @@ struct AgentChatSetScheduledWorkPausedResult: Codable, Equatable {
   var nextWakeAt: String?
 }
 
-enum AgentChatSpawnKind: Equatable, Codable {
+enum AgentChatSpawnKind: Equatable, Codable, Hashable {
   case subagent
   case peer
   case legacyUntyped
@@ -972,6 +972,8 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
   /// Turn that hit the limit. Anchors the state to the failure in the transcript.
   var turnId: String?
   var updatedAt: String
+  /// Another signed-in account that still has room. Absent when none does.
+  var alternateAccount: AgentChatUsageLimitAlternateAccount?
 
   init(
     state: AgentChatUsageLimitResumeState,
@@ -982,7 +984,8 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
     attempts: Int = 0,
     providerDetail: String? = nil,
     turnId: String? = nil,
-    updatedAt: String = ""
+    updatedAt: String = "",
+    alternateAccount: AgentChatUsageLimitAlternateAccount? = nil
   ) {
     self.state = state
     self.provider = provider
@@ -993,6 +996,7 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
     self.providerDetail = providerDetail
     self.turnId = turnId
     self.updatedAt = updatedAt
+    self.alternateAccount = alternateAccount
   }
 
   init(from decoder: Decoder) throws {
@@ -1007,7 +1011,20 @@ struct AgentChatUsageLimitResume: Codable, Equatable {
     self.providerDetail = try container.decodeIfPresent(String.self, forKey: .providerDetail)
     self.turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
     self.updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
+    // A missing or malformed offer must not drop the whole resume. The pill
+    // still works without the other-account button.
+    self.alternateAccount = try? container.decode(
+      AgentChatUsageLimitAlternateAccount.self,
+      forKey: .alternateAccount
+    )
   }
+}
+
+/// Another account that can take a usage-limited chat. The host only publishes
+/// this when that account is signed in and still has room.
+struct AgentChatUsageLimitAlternateAccount: Codable, Equatable {
+  var instanceId: String
+  var label: String
 }
 
 /// Result of `chat.resumeUsageLimitNow` / `personalChats.resumeUsageLimitNow`.
@@ -1603,30 +1620,38 @@ struct CtoAttention: Codable, Hashable {
   static let idle = CtoAttention(status: .idle, awaitingInput: false, since: nil)
 }
 
-/// Returned by the `cto.getMemory` sync command: the durable facts the CTO
-/// keeps (`MEMORY.md`), the rolling `thread-state.md`, and today's daily log.
-/// Every field is tolerant of a missing/null value so a partial host response
-/// still decodes — older hosts that don't implement the command surface as a
-/// command error, not a decode failure.
+/// Returned by the `cto.getMemory` sync command: local notes, the rolling
+/// thread state, today's daily log, and the project brief, facts, and directed
+/// threads when the host sends them. Missing keys stay nil so an older host
+/// still decodes.
 struct CtoMemory: Codable, Hashable {
   var memory: String
   var threadState: String
   var dailyLog: String
   var dailyLogDate: String
   var updatedAt: String?
+  var projectBrief: String?
+  var projectThreads: String?
+  var projectItems: String?
 
   init(
     memory: String = "",
     threadState: String = "",
     dailyLog: String = "",
     dailyLogDate: String = "",
-    updatedAt: String? = nil
+    updatedAt: String? = nil,
+    projectBrief: String? = nil,
+    projectThreads: String? = nil,
+    projectItems: String? = nil
   ) {
     self.memory = memory
     self.threadState = threadState
     self.dailyLog = dailyLog
     self.dailyLogDate = dailyLogDate
     self.updatedAt = updatedAt
+    self.projectBrief = projectBrief
+    self.projectThreads = projectThreads
+    self.projectItems = projectItems
   }
 
   init(from decoder: Decoder) throws {
@@ -1639,6 +1664,9 @@ struct CtoMemory: Codable, Hashable {
     dailyLog = str(.dailyLog) ?? ""
     dailyLogDate = str(.dailyLogDate) ?? ""
     updatedAt = str(.updatedAt)
+    projectBrief = str(.projectBrief)
+    projectThreads = str(.projectThreads)
+    projectItems = str(.projectItems)
   }
 
   /// True when the host returned no substantive memory content yet.
@@ -1646,6 +1674,9 @@ struct CtoMemory: Codable, Hashable {
     memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && threadState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && dailyLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (projectBrief ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (projectThreads ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (projectItems ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 }
 
@@ -4537,6 +4568,11 @@ struct TerminalResumeMetadata: Codable, Equatable {
   var launch: TerminalResumeLaunchConfig
   var target: String?
   var permissionMode: String?
+  /// Same fields as desktop `TerminalResumeMetadata`. Older hosts and older
+  /// phone caches omit them; decode-if-present so a JSON blob that already
+  /// carries lineage survives a SQLite round trip.
+  var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 }
 
 struct FilesQuickOpenItem: Codable, Identifiable, Equatable {
@@ -4627,6 +4663,11 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// `TerminalSessionSummary.parentIdentityKey` in
   /// `apps/desktop/src/shared/types/sessions.ts`.
   var parentIdentityKey: String? = nil
+  /// Spawn lineage projected from the chat record or CLI resume metadata.
+  /// Same-lane `spawnKind == .subagent` chats nest under this parent in the
+  /// by-lane Work list. Older hosts omit both keys.
+  var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 
   /// True when this row is a chat the CTO spawned. The host only stamps
   /// `parentIdentityKey` when there genuinely is a parent, so the key alone is
@@ -4682,6 +4723,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.parentIdentityKey == rhs.parentIdentityKey
+      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.spawnKind == rhs.spawnKind
   }
 }
 
@@ -4729,6 +4772,8 @@ extension TerminalSessionSummary {
     case cursorCloudAgentId
     case cursorRuntime
     case parentIdentityKey
+    case orchestrationParentSessionId
+    case spawnKind
   }
 
   init(from decoder: Decoder) throws {
@@ -4775,6 +4820,8 @@ extension TerminalSessionSummary {
     cursorCloudAgentId = try container.decodeIfPresent(String.self, forKey: .cursorCloudAgentId)
     cursorRuntime = try container.decodeIfPresent(String.self, forKey: .cursorRuntime)
     parentIdentityKey = try container.decodeIfPresent(String.self, forKey: .parentIdentityKey)
+    orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
+    spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
   }
 }
 

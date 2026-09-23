@@ -190,6 +190,15 @@ export function ChatUsageLimitResumePill({
     return null;
   });
 
+  const continueOnAccount = () => run(async () => {
+    const send = window.ade.agentChat.continueUsageLimitOnAlternate;
+    if (typeof send !== "function") {
+      return "This ADE runtime can't switch accounts yet. Update the app and try again.";
+    }
+    const result = await send({ sessionId }, runtimePin);
+    return result.ok ? null : result.message;
+  });
+
   // Same action id and the same event the quota card's Fork button dispatches,
   // so forking from the pill and forking from the card land on one code path.
   const fork = () => {
@@ -272,6 +281,20 @@ export function ChatUsageLimitResumePill({
             >
               {popover.primary.label}
             </button>
+            {popover.continueOnAccount ? (
+              <button
+                type="button"
+                data-testid="usage-limit-continue-on-account"
+                disabled={busy}
+                onClick={() => { void continueOnAccount(); }}
+                className={cn(
+                  POPOVER_BUTTON_CLASS,
+                  "border border-white/[0.14] bg-white/[0.09] text-fg/90 hover:bg-white/[0.14] focus-visible:bg-white/[0.14]",
+                )}
+              >
+                {`Continue on ${popover.continueOnAccount.label}`}
+              </button>
+            ) : null}
             <button
               type="button"
               data-testid="usage-limit-resume-fork"

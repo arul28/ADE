@@ -998,6 +998,17 @@ describe("iosDeviceHub proof bundle", () => {
     expect(harness.mkdirs).toEqual([bundle.dir]);
     expect(bundle.screenshotPath).toBe(SCREENSHOT.filePath);
     expect(bundle.metadataPath).toBe(path.join(bundle.dir, "metadata.json"));
+    /*
+     * The device and the size travel WITH the bundle.
+     *
+     * Not decoration: the service files `screen.png` as the proof-drawer row
+     * for this capture, and without these it would have to take a second
+     * screenshot to learn what it just captured. `proof-bundle` filed nothing
+     * at all before that — a proof verb that wrote a directory and returned.
+     */
+    expect(bundle.deviceUdid).toBe(SCREENSHOT.deviceUdid);
+    expect(bundle.width).toBe(SCREENSHOT.width);
+    expect(bundle.height).toBe(SCREENSHOT.height);
     expect(bundle.elementsPath).toBe(path.join(bundle.dir, "elements.json"));
     expect(bundle.logPath).toBe(path.join(bundle.dir, "log.json"));
     const { elementsPath, logPath } = bundle;
@@ -1258,6 +1269,10 @@ describe("createIosDeviceTools setters", () => {
         key: "ReduceTransparencyEnabled",
         notification: "com.apple.Accessibility.ReduceTransparencyEnabledChanged",
       },
+      "button-shapes": {
+        key: "ButtonShapesEnabled",
+        notification: "com.apple.Accessibility.ButtonShapesEnabledChanged",
+      },
       "bold-text": {
         key: "BoldTextEnabled",
         notification: "com.apple.Accessibility.BoldTextEnabledChanged",
@@ -1396,6 +1411,7 @@ describe("readSettings", () => {
         "increase-contrast": true,
         "reduce-motion": true,
         "reduce-transparency": false,
+        "button-shapes": false,
         "bold-text": false,
         "invert-colors": false,
         grayscale: false,
@@ -1443,8 +1459,8 @@ describe("readSettings", () => {
   it("reads every toggle concurrently in one pass", async () => {
     const harness = toolsCreateHarness({ respond: respondWithDefaults });
     await harness.tools.readSettings(TOOLS_DEVICE_UDID);
-    // appearance + content_size + increase_contrast + 6 defaults reads.
-    expect(harness.calls).toHaveLength(9);
+    // appearance + content_size + increase_contrast + 7 defaults reads.
+    expect(harness.calls).toHaveLength(10);
   });
 
   it("rejects an empty device udid", async () => {

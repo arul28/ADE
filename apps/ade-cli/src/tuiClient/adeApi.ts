@@ -1,5 +1,6 @@
 import { launchIdentityFields, resolveLaunchIdentity } from "./launchIdentity";
 import {
+  adoptHostModelManifest,
   getDefaultModelDescriptor,
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -21,6 +22,7 @@ import type {
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -812,7 +814,10 @@ export async function getModelCatalog(
   connection: AdeCodeConnection,
   args: AgentChatModelCatalogArgs = {},
 ): Promise<AgentChatModelCatalog> {
-  return await connection.action<AgentChatModelCatalog>("chat", "modelCatalog", args);
+  const catalog = await connection.action<AgentChatModelCatalog>("chat", "modelCatalog", args);
+  // Overlay the host's model directory so TUI lookups see the same models.
+  adoptHostModelManifest(catalog?.modelManifest);
+  return catalog;
 }
 
 export async function getAiSettingsStatus(
@@ -1224,6 +1229,21 @@ export async function resumeUsageLimitNow(
   return await connection.action<AgentChatResumeUsageLimitNowResult>("chat", "resumeUsageLimitNow", {
     sessionId,
   });
+}
+
+/**
+ * Continue a usage-limited chat on another signed-in account that still has
+ * room. The host starts a new chat; this one stays parked.
+ */
+export async function continueUsageLimitOnAlternate(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatContinueUsageLimitOnAlternateResult> {
+  return await connection.action<AgentChatContinueUsageLimitOnAlternateResult>(
+    "chat",
+    "continueUsageLimitOnAlternate",
+    { sessionId },
+  );
 }
 
 /**

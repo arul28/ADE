@@ -63,12 +63,15 @@ export function WorkToolPicker({
   statuses,
   loading,
   onPick,
+  playing = true,
 }: {
   activeTool: WorkSidebarTab | null;
   context: WorkToolContext;
   statuses: WorkToolStatusMap;
   loading: boolean;
   onPick: (tool: WorkSidebarTab) => void;
+  /** False pauses the mesh loop without dropping the last frame. */
+  playing?: boolean;
 }) {
   const theme = useAppStore((s) => s.theme);
   const reasonIdPrefix = useId();
@@ -89,6 +92,7 @@ export function WorkToolPicker({
   // browser's own activation rather than a second key handler that could
   // disagree with the click path about which card is disabled.
   useEffect(() => {
+    if (!playing) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const step = event.key === "ArrowRight" || event.key === "ArrowDown"
@@ -112,7 +116,7 @@ export function WorkToolPicker({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cardCount, focusCard]);
+  }, [cardCount, focusCard, playing]);
 
   return (
     // Two boxes, because the backdrop must not scroll. `inset: 0` inside the
@@ -123,7 +127,7 @@ export function WorkToolPicker({
     <div ref={rootRef} className="ade-pane-chrome relative h-full min-h-0">
       {/* Behind everything and untouchable: the canvas must never eat a click
           meant for the card on top of it, and it is never in the tab order. */}
-      <WorkToolPickerBackdrop theme={theme} className="ade-tool-picker-backdrop" />
+      <WorkToolPickerBackdrop theme={theme} playing={playing} />
       {/* Between the gradient and the cards. The backdrop is bold enough now
           that the middle of the pane needs calming for a 12px muted line to
           hold contrast — but only the middle, which is why this is a scrim and

@@ -12,6 +12,7 @@ import {
   buildCursorSdkWorkerEnv,
   cleanupCursorSdkRuntimePaths,
   CURSOR_SDK_REPLACE_WAIT_MS,
+  disposeAllCursorSdkConnections,
   isCursorSdkPooledAlive,
   MAX_CURSOR_SDK_SOCKET_PATH_BYTES,
   poisonCursorSdkConnection,
@@ -1426,5 +1427,43 @@ describe("Cursor SDK pool paths", () => {
       sessionId: "session-1",
       policy: { ...TEST_POLICY },
     })).rejects.toThrow(/NGHTTP2_ENHANCE_YOUR_CALM/);
+  });
+});
+
+describe("Cursor SDK worker orphan guard", () => {
+  it("puts the owner pid in the worker argv", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-owner-arg:${Date.now()}:${Math.random()}`;
+    const acquired = await acquireCursorSdkConnection({
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    });
+
+    expect(forkMock.mock.calls[0]?.[1]).toEqual([`--ade-owner-pid=${process.pid}`]);
+    releaseCursorSdkConnection(poolKey, acquired.generation);
+  });
+
+  it("releases the shared one-shot workers, which no session owns", async () => {
+    const child = new OneShotSdkChild();
+    const replacement = new OneShotSdkChild();
+    forkMock.mockReturnValueOnce(child).mockReturnValueOnce(replacement);
+    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-dispose-all-${Date.now()}-${Math.random()}`);
+    // The prompt returns and leaves the worker warm for the idle window.
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    expect(child.disposeCount).toBe(0);
+
+    await disposeAllCursorSdkConnections();
+
+    expect(child.disposeCount).toBe(1);
+    expect(child.exitCode).toBe(0);
+    // The warm entry is gone, so the next one-shot forks a fresh worker.
+    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    await disposeAllCursorSdkConnections();
   });
 });

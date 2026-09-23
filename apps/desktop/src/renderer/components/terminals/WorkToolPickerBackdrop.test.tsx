@@ -274,7 +274,7 @@ describe("WorkToolPickerBackdrop", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 
     const { container } = render(
-      <WorkToolPickerBackdrop theme="dark" className="ade-tool-picker-backdrop" />,
+      <WorkToolPickerBackdrop theme="dark" />,
     );
 
     // No canvas left behind: a canvas element with no context is a layer the
@@ -284,7 +284,7 @@ describe("WorkToolPickerBackdrop", () => {
     expect(fallback).toBeTruthy();
     // Both classes: the caller's positioning and the gradient itself.
     expect(fallback?.className).toContain("ade-tool-picker-backdrop");
-    expect(fallback?.className).toContain("ade-tool-picker-static");
+    expect(fallback?.querySelector(".ade-tool-picker-static")).toBeTruthy();
     expect(fallback?.getAttribute("aria-hidden")).toBe("true");
   });
 
@@ -400,6 +400,15 @@ describe("WorkToolPickerBackdrop context lifecycle", () => {
     expect(container.querySelector("[data-backdrop='static']")).toBeTruthy();
     // …and the loop stopped rather than spinning on a dead context.
     expect(cancel).toHaveBeenCalled();
+  });
+
+  it("paints the CSS gradient under the canvas so the first frame is not empty", () => {
+    const { gl } = stubGl();
+    useStubGl(gl);
+    const { container } = render(<WorkToolPickerBackdrop theme="dark" />);
+    expect(container.querySelector("[data-backdrop='shader']")).toBeTruthy();
+    expect(container.querySelector(".ade-tool-picker-static")).toBeTruthy();
+    expect(container.querySelector("canvas")).toBeTruthy();
   });
 
   it("measures the layout once per frame, not once per scroll event", async () => {

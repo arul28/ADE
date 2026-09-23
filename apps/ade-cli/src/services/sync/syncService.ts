@@ -77,6 +77,7 @@ import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, typ
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import {
   buildAddressCandidates,
   buildPairingConnectInfo,
@@ -167,6 +168,10 @@ type SyncServiceArgs = {
    * served to iOS and the hosted web client through `workTools.*`.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /** Apple device environment for remote surfaces; absent off macOS. */
+  appleDeviceService?: AppleDeviceRemoteService | null;
+  appleStreamRelay?: AppleStreamTicketIssuer | null;
+  getAppleRemoteBitrateKbpsCap?: () => number | null;
   /**
    * The runtime's Mac Desktop service, when this runtime can hold a display.
    * Serves `macDesktop.*` to paired viewers and supplies the loopback transport
@@ -789,6 +794,9 @@ export function createSyncService(args: SyncServiceArgs) {
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
     macDesktopSyncStream,
+    appleDeviceService: args.appleDeviceService,
+    appleStreamRelay: args.appleStreamRelay,
+    getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
@@ -938,6 +946,9 @@ export function createSyncService(args: SyncServiceArgs) {
       workToolsStateService: args.workToolsStateService,
       macDesktopService,
       macDesktopSyncStream,
+      appleDeviceService: args.appleDeviceService,
+      appleStreamRelay: args.appleStreamRelay,
+      getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,

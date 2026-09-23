@@ -187,7 +187,7 @@ func workFilterChatModelsForCursorAvailability(
   models.filter { workAgentChatModelSupportsCursorAvailabilityMode($0, mode: mode) }
 }
 
-/// Preserve the host's flat model catalog while pinning GPT-6 Astra and the
+/// Preserve the host's flat model catalog while pinning the GPT-6 family and the
 /// GPT-5.6 family to the required Codex order. This never injects a model an
 /// older host omitted.
 func workPrioritizeGPT56ChatModels(
@@ -199,7 +199,7 @@ func workPrioritizeGPT56ChatModels(
   func priority(_ model: AgentChatModelInfo) -> Int {
     let canonicalId = model.modelId.flatMap(workCanonicalCodexRegistryId(for:))
       ?? workCanonicalCodexRegistryId(for: model.id)
-    return workCodexFamilySortPriority(canonicalId) ?? 4
+    return workCodexFamilySortPriority(canonicalId) ?? 6
   }
 
   return models.enumerated().sorted { lhs, rhs in
@@ -405,9 +405,9 @@ private func workVisibleReasoningEfforts(
     return fallback
   }
   switch canonicalId {
-  case "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
+  case "openai/gpt-6-sol", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra":
     return workCodex56ReasoningEfforts(includeUltra: true)
-  case "openai/gpt-6-astra", "openai/gpt-5.6-luna":
+  case "openai/gpt-6-astra", "openai/gpt-6-luna", "openai/gpt-5.6-luna":
     return workCodex56ReasoningEfforts(includeUltra: false)
   default:
     return []
@@ -433,7 +433,7 @@ private func workVisibleDefaultReasoningEffort(
   }
   switch canonicalId {
   case "openai/gpt-6-astra", "openai/gpt-5.6-sol": return "low"
-  case "openai/gpt-5.6-terra", "openai/gpt-5.6-luna": return "medium"
+  case "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna": return "medium"
   default: return nil
   }
 }
@@ -486,6 +486,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "Anthropic",
         models: [
           WorkModelOption(
+            id: "claude-opus-5-5",
+            displayName: "Claude Opus 5.5",
+            tier: .flagship,
+            tagline: "Agentic coding · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "medium",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
             id: "claude-fable-5-1",
             displayName: "Claude Fable 5.1",
             tier: .flagship,
@@ -495,19 +505,18 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             defaultReasoningEffort: "high",
             serviceTiers: ["fast"]
           ),
+          WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
+          WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
           WorkModelOption(
             id: "claude-opus-5",
             displayName: "Claude Opus 5",
             tier: .flagship,
-            tagline: "Agentic coding · 1M context",
+            tagline: "Previous Opus · 1M context",
             provider: "claude",
             reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
             defaultReasoningEffort: "high",
             serviceTiers: ["fast"]
           ),
-          WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
-          WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
-          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
         ]
       )
     ]
@@ -529,6 +538,26 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             provider: "codex",
             reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: false),
             defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
+            id: "gpt-6-sol",
+            displayName: "GPT-6 Sol",
+            tier: .balanced,
+            tagline: "Daily coding · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "medium",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
+            id: "gpt-6-luna",
+            displayName: "GPT-6 Luna",
+            tier: .fast,
+            tagline: "Fastest · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: false),
+            defaultReasoningEffort: "medium",
             serviceTiers: ["fast"]
           ),
           WorkModelOption(
@@ -685,18 +714,27 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             serviceTiers: ["fast"]
           ),
           WorkModelOption(
+            id: "opencode/anthropic/claude-opus-5-5",
+            displayName: "Claude Opus 5.5",
+            tier: .flagship,
+            tagline: "Agentic coding · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "medium",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(id: "opencode/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced coder · 1M context", provider: "claude"),
+          WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
+          WorkModelOption(
             id: "opencode/anthropic/claude-opus-5",
             displayName: "Claude Opus 5",
             tier: .flagship,
-            tagline: "Agentic coding · 1M context",
+            tagline: "Previous Opus · 1M context",
             provider: "claude",
             reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
             defaultReasoningEffort: "high",
             serviceTiers: ["fast"]
           ),
-          WorkModelOption(id: "opencode/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced coder · 1M context", provider: "claude"),
-          WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
         ]
       ),
       WorkModelProvider(
@@ -1058,26 +1096,30 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
 
 private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "opus", "opus-5.5", "opus-5-5",
+       "claude-opus-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api",
+       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
+    return "anthropic/claude-opus-5-5"
   case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
        "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
        "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
        "opencode/anthropic/claude-fable-5-1", "opencode/anthropic/claude-fable-5":
     return "anthropic/claude-fable-5-1"
-  case "opus", "opus-5", "opus-5.0", "opus-5-0",
+  case "opus-5", "opus-5.0", "opus-5-0",
        "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
-       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
+       "opencode/anthropic/claude-opus-5":
     return "anthropic/claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m",
        "opencode/anthropic/claude-opus-4-8":
-    return "anthropic/claude-opus-4-8"
+    return "anthropic/claude-opus-5"
   case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
-    return "anthropic/claude-opus-4-8"
+    return "anthropic/claude-opus-5"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
-    return "anthropic/claude-opus-4-8"
+    return "anthropic/claude-opus-5"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
@@ -1092,26 +1134,30 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
 
 private func workClaudeRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "opus", "opus-5.5", "opus-5-5",
+       "claude-opus-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api",
+       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
+    return "claude-opus-5-5"
   case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
        "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
        "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
        "opencode/anthropic/claude-fable-5-1", "opencode/anthropic/claude-fable-5":
     return "claude-fable-5-1"
-  case "opus", "opus-5", "opus-5.0", "opus-5-0",
+  case "opus-5", "opus-5.0", "opus-5-0",
        "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
-       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
+       "opencode/anthropic/claude-opus-5":
     return "claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m",
        "opencode/anthropic/claude-opus-4-8":
-    return "claude-opus-4-8"
+    return "claude-opus-5"
   case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
-    return "claude-opus-4-8"
+    return "claude-opus-5"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
-    return "claude-opus-4-8"
+    return "claude-opus-5"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
@@ -1127,9 +1173,11 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
 private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
   switch canonicalId {
   case "openai/gpt-6-astra": return 0
-  case "openai/gpt-5.6-sol": return 1
-  case "openai/gpt-5.6-terra": return 2
-  case "openai/gpt-5.6-luna": return 3
+  case "openai/gpt-6-sol": return 1
+  case "openai/gpt-6-luna": return 2
+  case "openai/gpt-5.6-sol": return 3
+  case "openai/gpt-5.6-terra": return 4
+  case "openai/gpt-5.6-luna": return 5
   default: return nil
   }
 }
@@ -1142,11 +1190,15 @@ private func workCanonicalCodexRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "openai/gpt-6-astra"
-  case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
+  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+    return "openai/gpt-6-sol"
+  case "luna", "gpt-6-luna", "openai/gpt-6-luna":
+    return "openai/gpt-6-luna"
+  case "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "openai/gpt-5.6-sol"
   case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
     return "openai/gpt-5.6-terra"
-  case "luna", "gpt-5.6-luna", "openai/gpt-5.6-luna":
+  case "gpt-5.6-luna", "openai/gpt-5.6-luna":
     return "openai/gpt-5.6-luna"
   case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
     return "openai/gpt-5.5"
@@ -1169,11 +1221,15 @@ private func workCodexRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "gpt-6-astra"
-  case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
+  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+    return "gpt-6-sol"
+  case "luna", "gpt-6-luna", "openai/gpt-6-luna":
+    return "gpt-6-luna"
+  case "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "gpt-5.6-sol"
   case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
     return "gpt-5.6-terra"
-  case "luna", "gpt-5.6-luna", "openai/gpt-5.6-luna":
+  case "gpt-5.6-luna", "openai/gpt-5.6-luna":
     return "gpt-5.6-luna"
   case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
     return "gpt-5.5"
@@ -1221,26 +1277,30 @@ struct WorkModelIdMatcher {
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
+  case "opus", "opus-5.5", "opus-5-5",
+       "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api", "claude-opus-5-5",
+       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
+    return "Claude Opus 5.5"
   case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
        "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api", "claude-fable-5-1",
        "opencode/anthropic/claude-fable-5-1", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
        "claude-fable-5", "opencode/anthropic/claude-fable-5":
     return "Claude Fable 5.1"
-  case "opus", "opus-5", "opus-5.0", "opus-5-0",
+  case "opus-5", "opus-5.0", "opus-5-0",
        "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
-       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
+       "opencode/anthropic/claude-opus-5":
     return "Claude Opus 5"
   case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]",
        "opencode/anthropic/claude-opus-4-8":
-    return "Claude Opus 4.8"
+    return "Claude Opus 5"
   case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7",
        "opus-4.6", "opus-4-6", "anthropic/claude-opus-4-6", "claude-opus-4-6":
-    return "Claude Opus 4.8"
+    return "Claude Opus 5"
   case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",
        "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
-    return "Claude Opus 4.8"
+    return "Claude Opus 5"
   case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
        "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
@@ -1250,11 +1310,15 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
     return "Claude Haiku 4.5"
   case "astra", "gpt-6-astra", "openai/gpt-6-astra":
     return "GPT-6 Astra"
-  case "sol", "gpt-5.6-sol", "openai/gpt-5.6-sol":
+  case "sol", "gpt-6-sol", "openai/gpt-6-sol":
+    return "GPT-6 Sol"
+  case "luna", "gpt-6-luna", "openai/gpt-6-luna":
+    return "GPT-6 Luna"
+  case "gpt-5.6-sol", "openai/gpt-5.6-sol":
     return "GPT-5.6 Sol"
   case "terra", "gpt-5.6-terra", "openai/gpt-5.6-terra":
     return "GPT-5.6 Terra"
-  case "luna", "gpt-5.6-luna", "openai/gpt-5.6-luna":
+  case "gpt-5.6-luna", "openai/gpt-5.6-luna":
     return "GPT-5.6 Luna"
   case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":
     return "GPT-5.5"
@@ -1652,13 +1716,13 @@ private func workDynamicModelTier(for modelId: String, curated: WorkModelOption?
   if normalized.contains("fable") || normalized.contains("opus") || normalized.contains("gpt-6-astra") || normalized.contains("gpt-5.6-sol") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
     return .flagship
   }
-  if normalized.contains("gpt-5.6-luna") {
+  if normalized.contains("gpt-6-luna") || normalized.contains("gpt-5.6-luna") {
     return .fast
   }
   return .balanced
 }
 
-/// Keep GPT-6 Astra and the GPT-5.6 family at the top of every host-driven
+/// Keep the GPT-6 family and the GPT-5.6 family at the top of every host-driven
 /// Codex/OpenAI list, even when an older or authenticated host catalog returns
 /// a different order.
 private func workPrioritizeCodex56Models(
@@ -1671,7 +1735,7 @@ private func workPrioritizeCodex56Models(
   }
 
   func priority(_ modelId: String) -> Int {
-    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? 4
+    workCodexFamilySortPriority(workCanonicalCodexRegistryId(for: modelId)) ?? 6
   }
 
   return models.enumerated().sorted { lhs, rhs in

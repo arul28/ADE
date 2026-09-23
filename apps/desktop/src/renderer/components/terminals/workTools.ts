@@ -1,6 +1,5 @@
 import {
   Desktop,
-  DeviceMobile,
   FolderOpen,
   GitBranch,
   Globe,
@@ -8,6 +7,7 @@ import {
   Terminal,
   type Icon,
 } from "@phosphor-icons/react";
+import { AppleLogo } from "../ui/appleIcons";
 import type { WorkSidebarTab } from "../../state/appStore";
 
 /**
@@ -21,6 +21,17 @@ import type { WorkSidebarTab } from "../../state/appStore";
 export type WorkToolDefinition = {
   id: WorkSidebarTab;
   label: string;
+  /**
+   * Name on the tools tab strip. Omitted means the card label is also the tab
+   * name, which is now true of every tool: the Apple card used to read
+   * "Simulator" while its tab read "Apple", and one tool with two names is one
+   * name too many (spec §0).
+   */
+  tabLabel?: string;
+  /**
+   * Idle-tab tooltip. When omitted, the tab uses the same summary as the card.
+   */
+  tabTooltip?: string;
   icon: Icon;
   /** Accent for the card glyph and the active header icon. */
   color: string;
@@ -86,15 +97,18 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
   },
   {
     id: "ios",
-    // "Simulator", not "iOS Simulator". The picker already had to shorten it
-    // to fit a card, so the pane was calling one tool two names — the card said
-    // Simulator, the header and the palette said iOS Simulator. The icon is a
-    // phone and the availability rule is "macOS only"; the platform word was
-    // never carrying anything the surface did not already say.
-    label: "Simulator",
-    icon: DeviceMobile,
+    /*
+     * One name everywhere: card, tab, palette, settings, docs, CLI, phone and
+     * web (§B1). Round 2 called it "Apple", which named the company rather
+     * than the work and sat under a generic phone glyph that could equally
+     * have been the browser's. The subtitle is the device and what it is doing
+     * (`appleToolCardSubtitle`), which is the part worth reading twice.
+     */
+    label: "Apple Development",
+    tabTooltip: "Apple simulators and previews",
+    icon: AppleLogo,
     color: "#60a5fa",
-    hint: "Boot a simulator",
+    hint: "Open an Apple device",
   },
   {
     id: "app-control",
@@ -132,6 +146,12 @@ export function workToolContextLabel(id: WorkSidebarTab, context: WorkToolHeader
 }
 
 export function workToolLabel(id: WorkSidebarTab): string {
+  const definition = WORK_TOOL_DEFINITIONS_BY_ID.get(id);
+  return definition?.tabLabel ?? definition?.label ?? id;
+}
+
+/** Card / picker name. Identical to `workToolLabel` for every tool today. */
+export function workToolCardLabel(id: WorkSidebarTab): string {
   return WORK_TOOL_DEFINITIONS_BY_ID.get(id)?.label ?? id;
 }
 
@@ -144,7 +164,13 @@ export function workToolLabel(id: WorkSidebarTab): string {
  * platform sniff in the renderer would offer it three tools that answer nothing.
  */
 export type WorkToolContext = {
-  /** This computer can host an iOS simulator. */
+  /**
+   * The bound runtime can host an iOS simulator.
+   *
+   * This is `iosSimulator.getStatus().supported` for that runtime, not the
+   * viewer's OS. A Windows desktop pinned to a Mac reports true; a Linux
+   * runtime reports false.
+   */
   supportsIosSimulator: boolean;
   /** Running as the hosted browser web client, where native namespaces are stubs. */
   isWebClient: boolean;
@@ -179,22 +205,39 @@ const AVAILABLE: WorkToolAvailability = { available: true, reason: null };
  * The browser and App Control both leave a describable trail on the machine —
  * a tab list, an attached app, a screenshot — so the hosted client shows that
  * read-only rather than a dead "Desktop app only" card. The iOS simulator is
- * absent from this set because there is nothing equivalent to report: its pane
- * is a live video stream and nothing else.
+ * absent from this set because it is not read-only on the web at all: the
+ * hosted client drives the device for real over the brain's H.264 pipe.
  *
- * Mac Desktop IS here, and for the browser's reason rather than the
- * simulator's: the lane's screen leaves a describable trail — a display, a
- * window list, a lease holder, and a live stream the web client plays over
- * the sync socket — so a web client shows that instead of a dead card. It may
- * start and stop the lane's display, and when the host advertises
- * `hello_ok.features.macDesktopControl` it may also take the input lease and
- * drive the pointer from the browser. The membership here is therefore about
- * the WATCHING fallback, not about a permanent no-control rule: a host without
- * the control commands (or a browser that fails the capability check) still
- * renders this read-only pane, and `WORK_TOOLS_CONTROL_HINT` says control
- * stays on the desktop exactly then.
+ * Mac Desktop IS here, and for the browser's reason: the lane's screen leaves a
+ * describable trail — a display, a window list, a lease holder, and a live
+ * stream the web client plays over the sync socket — so a web client shows
+ * that instead of a dead card. It may start and stop the lane's display, and
+ * when the host advertises `hello_ok.features.macDesktopControl` it may also
+ * take the input lease and drive the pointer from the browser. The membership
+ * here is therefore about the WATCHING fallback, not about a permanent
+ * no-control rule: a host without the control commands (or a browser that
+ * fails the capability check) still renders this read-only pane, and
+ * `WORK_TOOLS_CONTROL_HINT` says control stays on the desktop exactly then.
  */
 const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control", "mac-desktop"]);
+
+/*
+ * There is deliberately no "local only" set any more.
+ *
+ * Work tools follow the SESSION's machine, not the project tab's binding, so a
+ * remote-pinned session is a first-class driver rather than a dimmed card. The
+ * browser is hosted by this desktop's own main process and reaches a remote
+ * lane's loopback URLs through a port-forward; App Control attaches over the
+ * session's runtime; and the Apple device environment runs its helper — H.264
+ * encode and touch injection alike — entirely on the bound runtime. That last
+ * one is also why Apple is absent from the web read-only set above: a browser
+ * tab needs no native namespace to drive it, only the brain's video pipe and
+ * the `apple.*` commands. The viewer's OS is irrelevant; Apple's availability
+ * follows the bound runtime's `status.supported` and nothing else.
+ */
+
+/** Shown on the picker when the bound runtime reports `supported: false`. */
+export const IOS_RUNTIME_UNSUPPORTED_REASON = "The runtime for this project is not a Mac";
 
 /** True when this surface may only watch the tool's live view, never drive it. */
 export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
@@ -206,11 +249,8 @@ export function workToolAvailability(
   context: WorkToolContext,
 ): WorkToolAvailability {
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
-  if (id === "ios" && context.isWebClient) {
-    return { available: false, reason: "Desktop app only" };
-  }
   if (id === "ios" && !context.supportsIosSimulator) {
-    return { available: false, reason: "macOS only" };
+    return { available: false, reason: IOS_RUNTIME_UNSUPPORTED_REASON };
   }
   // The HOST's platform, not this one. The reason says so, because "macOS only"
   // on a Mac desktop watching a Linux runtime reads as a bug in ADE.

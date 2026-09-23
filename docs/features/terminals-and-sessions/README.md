@@ -420,7 +420,21 @@ Shared types and IPC:
   Plan mode is a property of a live turn only: a background-promoted row never
   reads **Planning**.
   It also owns the short working-duration formatter; renderer icon components
-  map its dependency-free glyph ids to platform symbols.
+  map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
+  is the nested-compact filter: the status word is painted only for Needs you
+  or a red Failed tone.
+- `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
+  rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
+  `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
+  nest under the parent; peers stay top-level. Demote un-nests; promote nests
+  again. Cross-lane children stay top-level. A quiet parent (snoozed or
+  settled) pulls not-done children up; done children stay nested. Grandchildren
+  flatten into the root parent's one drawer. Collapse keys:
+  `chat-subagents:<parentId>` vs shells `chat:<parentId>`. It also owns
+  `isChatToolType` (Cursor and every `*-chat` tool type are chats; tracked CLI
+  subagents are not) so filing can run in shared rather than the renderer, and
+  `nestedSubagentDrawerAttention` (Failed wins over a needs-you pip). Tested in
+  `sessionSpawnNesting.test.ts`.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze
   presentation. The derivations themselves live in `shared/sessionCanonicalState.ts`
   and are shared with `ade code` and iOS; this module owns the re-export plus the
@@ -480,14 +494,17 @@ Shared types and IPC:
   list.
 - `apps/desktop/src/renderer/components/terminals/SessionStatusLabel.tsx` —
   the pure label half of the slot below: shared glyph id to Phosphor icon, tone
-  class, and the elapsed/countdown text. It was extracted so the account-wide
+  class, and the elapsed/countdown text. Nested compact rows pass
+  `hideLabelUnlessShout`, which keeps the word only when
+  `sessionStatusShoutsLabel` is true. It was extracted so the account-wide
   Activity card can speak the same status vocabulary **without** inheriting the
   slot's mutation controls, which act on this Mac's local session service and
   would be wrong — sometimes destructively so — on a row that belongs to
   another machine. Anything both surfaces must agree on belongs here.
 - `apps/desktop/src/renderer/components/terminals/SessionStatusSlot.tsx` —
   the row's single status surface and no-layout-shift hover/focus action swap.
-  It renders `SessionStatusLabel` and adds the mutations: it ticks running
+  It renders `SessionStatusLabel` (including `hideLabelUnlessShout`) and adds
+  the mutations: it ticks running
   elapsed time from immutable `currentTurnStartedAt` for **every** session
   type, not just chat, falling back to last activity for legacy rows — a CLI
   repainting its TUI would otherwise reset the timer every few seconds, because
@@ -532,6 +549,13 @@ Shared types and IPC:
   `sessionCanonicalState.ts`, wake and woke-reason copy from `sessionSnooze.ts`,
   duration grammar from `sessionSnoozeDuration.ts`. `/chat settle` and
   `/chat unsettle` keep their own active-only dispatch in `app.tsx`.
+- `apps/ade-cli/src/tuiClient/workListModel.ts`, `workListLayout.ts`, and
+  `components/WorkSessionsPane.tsx` — ADE Code sessions pane. Same-lane
+  subagent chats indent as one-line nested rows under the parent (shout-only
+  Needs you / Failed). A terminal cannot paint provider logos, so there is no
+  collapsible **N subagents** drawer. Filing imports `indexNestedSubagents`
+  from `sessionSpawnNesting.ts`. A nested row is one line; a full card is
+  three. See [ADE Code](../ade-code/README.md).
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts`,
   `adapter/sessionLifecycleSupport.ts`, and `shell/sessionLifecycleChrome.ts` —
   the hosted-web halves. ADE Web has no local database, so every lifecycle
@@ -688,11 +712,14 @@ Renderer surfaces:
   capability-to-action policy consumed by both desktop and `ade code`, so the
   two surfaces expose the same safe Continue/Copy choices.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` —
-  Work draft/new-chat surface. In draft mode the lane picker stays at
-  the top, with Shell and Import buttons below; Import opens
-  `ImportSessionBrowser` when the caller provides `onImportedSession`.
-  Auto-created lane launches keep import disabled because there is no
-  existing target lane to import into yet.
+  Work draft/new-chat surface. The ADE wordmark sits above an optically
+  lifted composer; the machine/lane launch shelf tucks under it. Usage
+  stays in that stack, a step below the shelf, capped to the
+  launch-shelf width, with an opaque fill that matches the machine/lane
+  submenu. Shell and Import live
+  on that shelf; Import opens `ImportSessionBrowser` when the caller
+  provides `onImportedSession`. Auto-created lane launches keep import
+  disabled because there is no existing target lane to import into yet.
 - `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` —
   right-edge tools pane tied to the active lane (and active Work session
   when present). It shows a **picker page** of tool cards, or **one
@@ -709,9 +736,12 @@ Renderer surfaces:
   inspect mode. The browser is not lane-scoped: each ADE window owns its
   own tabs and active inspect state, while all windows share the same
   `persist:ade-browser` partition for authentication. On a web-client Work
-  surface Simulator is disabled ("Desktop app only") and Browser / App Control
-  stay read-only. Desktop Simulator and App Control follow the session
-  machine, including a remote Mac. An active tool that becomes
+  surface Browser / App Control stay read-only, while Apple is full-interact
+  (its helper runs on the bound runtime, so the browser tab needs no native
+  namespace). Every tool follows the session machine, including a remote Mac;
+  Apple is additionally gated on that runtime's
+  `iosSimulator.getStatus().supported`, which reads "The runtime for this
+  project is not a Mac" when false. An active tool that becomes
   unavailable falls back to the picker. It still flows selections to the
   active chat through the same dispatch path as before. The active
   Work session picks the sidebar's insertion target
@@ -738,11 +768,14 @@ Renderer surfaces:
   controls affect the running tool while inserted context goes to the
   current chat, draft, or CLI target. The pane is a tab strip plus one
   page: one tab per open tool, one of them on screen, and the picker page
-  behind the grid button and the `+`. A tool is open once — there is no
+  behind the grid button and the `+`. The picker stays mounted while a
+  tool is on screen (`inert`, `aria-hidden`, `playing={false}`) so the
+  mesh does not recompile on return; tool panels never sit in an `inert`
+  subtree. A tool is open once — there is no
   multi-instance. A narrow pane sheds tab labels for glyphs and then
   overflows tabs into a `…` menu; below that the splitter clamp
   (`workSidebarSplitter.ts`) refuses to shrink the pane past the width its
-  36 px header needs.
+  32 px header needs.
 
   The pane follows the **chat's** machine, not the tab's. `runtimePin`
   (supplied by `TerminalsPage` from `activeWorkSessionRuntimePin`) names the
@@ -782,12 +815,12 @@ Renderer surfaces:
   `WorkToolPickerBackdrop.tsx`, `WorkToolHeader.tsx`,
   `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
   the pane's tab strip, its two pages, and the panel mounts. The picker is one centred 512 px
-  column of translucent cards over a slow violet WebGL mesh (the backdrop, at
+  column of translucent cards over a slow violet-to-indigo WebGL mesh (the backdrop, at
   DPR 1 / 600 k pixels / 30 fps, paused when unwatched and a static CSS
   gradient with no WebGL) — name plus one line, which is the tool's measured
   status, else its catalogue `hint`, else the reason it cannot run here — and
   the only mark a card carries is a red dot for a broken tool; the header is
-  the 36 px tab strip — the `⊞ Tools` button, one tab per open tool with a
+  the 32 px tab strip — the `⊞ Tools` button, one tab per open tool with a
   hover `×` (glyph-only under 420 px, overflowing into a `…` menu when even
   those do not fit — `workToolTabLayout`), a `+`, state-coloured activity dots
   for tools with no tab, and ✕; the `×` is untouchable until the tab is
@@ -808,8 +841,9 @@ Renderer surfaces:
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
   `WorkToolPickerBackdrop.tsx` is only the React shell. The shader module is
   data: the two GLSL programs, the light and dark palettes (`backdropThemeFor`
-  — no colour is named in the fragment shader, so a token change is one line
-  here), the builder's non-colour uniforms, and the pure size policy
+  — no colour is named in the fragment shader; dark walks `--color-bg` through
+  `--color-accent-deep`, indigo `#6366F1`, `--color-accent`, and
+  `--color-accent-bright`), the builder's non-colour uniforms, and the pure size policy
   (`resolveBackdropSize`, `BACKDROP_MAX_DPR` / `BACKDROP_PIXEL_BUDGET` /
   `BACKDROP_FRAME_MS`, `isSoftwareRenderer`) that is testable without a GPU.
   The renderer module is React-free: `createBackdropRenderer` takes a canvas
@@ -833,7 +867,7 @@ Renderer surfaces:
   splitter clamp.
 - `apps/desktop/src/renderer/components/terminals/workToolChrome.tsx` — the one
   chrome vocabulary every tool panel spends instead of inventing: a single
-  40 px row per tool under the pane's 36 px header, ghost controls that change
+  40 px row per tool under the pane's 32 px header, ghost controls that change
   fill only over 120 ms, an inset focus hairline, 16 px icons, no sentences in
   the row, and an 8 px inset / 10 px radius / 1 px inset ring around any
   content that is its own surface. The browser composes its own row and App
@@ -862,9 +896,9 @@ Renderer surfaces:
   unconditionally. See
   [Chat › An agent is using the browser](../chat/README.md#an-agent-is-using-the-browser).
 - `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`,
-  `workLiveCard.ts`, `iosSimulatorPreviewStream.ts` — the floating
+  `workLiveCard.ts`, `WorkLiveIosStreamView.tsx` — the floating
   live-preview card for the most recently active screen tool that is *not*
-  in the pane. See
+  in the pane, plus one H.264 card per Apple device. See
   [UI surfaces](ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx).
 - `apps/desktop/src/renderer/components/terminals/workLaneBranchClusters.ts` —
   same-branch adjacency for the Work by-lane list: normalize `branchRef`, skip
@@ -883,12 +917,20 @@ Renderer surfaces:
   own `renderCardCore`, so click, context menu, hover card, PR pill, provider
   glyph, and lineage chip are literally the same component in both views.
 - `apps/desktop/src/renderer/components/terminals/AutoHandoffModal.tsx` —
-  the chat menu's front door to the automation platform: it arms rules that hand
-  a chat to another model when it dies. Pure layer first
+  the front door to the automation platform from the chat context menu and the
+  Chat actions → Handoff tab: it arms rules that hand a chat to another model
+  when it dies. Pure layer first
   (`AUTO_HANDOFF_CONDITIONS`, `AUTO_HANDOFF_LANE_TARGETS`,
   `autoHandoffRuleId`, `buildAutoHandoffDrafts`, `formFromRules`,
   `selectAutoHandoffRulesForSession`, `staleAutoHandoffRuleIds`,
-  `autoHandoffFormIsValid`), then the dialog. It writes **one rule per
+  `autoHandoffFormIsValid`), then the dialog. `loadAutoHandoffRulesForSession`
+  is the one canonical async read both entry points use to seed the editor with
+  a chat's existing rules (`null` when the automations surface is unreadable or
+  the read fails — deliberately distinct from `[]`, "authoritatively no rules",
+  so a failed read can never delete rules it never saw), and
+  the `AutoHandoffSession` prop shape is the minimal chat identity the editor
+  reads, so the chat pane's `AgentChatSession` and a `TerminalSessionSummary`
+  both fit without widening either. It writes **one rule per
   condition**, because both the draft normalizer and the runtime normalizer
   collapse a rule to a single trigger; rule ids are deterministic so a second
   Save upserts instead of appending `-2`. Its default target model is the first
@@ -919,6 +961,20 @@ Renderer surfaces:
   settled filter because Status grouping already exposes the full lifecycle.
   Collapsed tails are excluded from shift-range selection so a hidden row cannot
   enter a bulk action accidentally.
+  In by-lane list mode, same-lane `spawnKind: "subagent"` chats (and tracked
+  CLI `--type subagent` sessions) nest under the parent in an expanded-by-default
+  **N subagents** drawer (`chat-subagents:<parentId>`), above the attached-shells
+  drawer (`chat:<parentId>`). Compact nested rows keep the identicon, title,
+  then the provider glyph on the right of the card (same seat as every other
+  session card), plus the status glyph; they spell Needs you / Failed only.
+  The drawer header is empty, a needs-you pip, or the red word **Failed**
+  (Failed wins). Peers stay top-level. Grandchildren flatten into the root
+  parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
+  children up to top-level cards; done children stay nested. Demote-to-peer
+  un-nests; promote nests again. Cross-lane children stay top-level in their
+  own lane with the lineage chip. Status, time, and Kanban stay flat.
+  `ade chat list` stays a flat table. Filing lives in
+  `sessionSpawnNesting.ts`.
   It also hosts the list/board toggle and, in board mode, swaps its own body for
   `WorkKanbanBoard` — rebuilding `renderedSessionIds` in board reading order
   (columns left to right, cards top to bottom) so keyboard range selection still
@@ -1107,7 +1163,9 @@ Renderer surfaces:
   `SessionStatusSlot`; line two is the elastic title with a singleton lane's
   fixed-width PR badge at the right edge, directly beneath the status; line
   three keeps the sanitized preview, Claude TTL, failure exit code, and
-  provider mark. A foreign singleton adds the fixed-width amber machine glyph to
+  provider mark. Nested-subagent drawer rows (`nestedSubagent`) collapse to
+  identicon, title, then the provider glyph on the right (same seat as a full
+  card) plus shout-only status words (Needs you / Failed). A foreign singleton adds the fixed-width amber machine glyph to
   the line-one status cluster; grouped lane headers own repeated machine/PR
   identity. A lane with exactly one session has no redundant header and promotes
   the lane identity and PR navigation onto the card.
@@ -1147,7 +1205,9 @@ Renderer surfaces:
   animated dots; chat title, lane name, and status line pass their own
   pending copy so visible and accessible labels stay consistent.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
-  tabs/grid/single Work view. The grid mode renders through the shared
+  tabs/grid/single Work view. The empty new-chat surface paints
+  `WorkToolPickerBackdrop` behind the draft (the chat shell is
+  transparent there). The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from
   `buildWorkSessionTilingTree`. It builds a session-title index and threads it
   into locked `AgentChatPane` embeddings so spawned-chat roster rows use live
@@ -1222,9 +1282,20 @@ Renderer surfaces:
   counters, and transcript replay mode for disposed chat-CLI sessions so an
   ended tracked CLI tab can repaint the full retained transcript before falling
   back to `terminal.preview`. Work-tracked agent CLI terminals paste clipboard
-  images by saving the bytes as chat temp attachments through the active runtime
-  and bracketed-pasting a short path/type stub into the PTY, while standalone
-  terminals keep the native clipboard-image shortcut behavior. Selected terminal
+  images by saving the bytes as chat temp attachments on the session's machine
+  (`agentChat.saveTempAttachment` with the session's `runtimePin`) and
+  bracketed-pasting a short path/type stub into the PTY, while standalone
+  terminals keep the native clipboard-image shortcut behavior. On a paired
+  machine that takes the streamed upload, preload sends the bytes through that
+  upload, not the runtime command (see
+  [Composer and UI](../chat/composer-and-ui.md), "Remote hosts"). A failed save
+  is never silent: the terminal logs an `[ade-term] image paste failed` warning
+  (it reaches the main log as `window.console`) and shows "Couldn't attach the
+  image: <reason>" in the pane for 8 seconds. When the error carries no message,
+  the reason is "no reason was given.", because a failed clipboard read also
+  lands here and nothing was saved. A failed save counts as handled, so the
+  paste is not tried a second time. The paste code lives in
+  `terminalImagePaste.ts` (see below). Selected terminal
   text copies through the local desktop clipboard bridge (with browser clipboard
   fallback for previews). Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,
@@ -1255,6 +1326,18 @@ Renderer surfaces:
   `rehydrate-after-fit`, `hydrate-normalize-declined`, `hydrate-complete`, …);
   a dims mismatch warns on **columns only**, since row disagreement is normal
   and columns are what decide wrapping.
+- `apps/desktop/src/renderer/components/terminals/terminalImagePaste.ts`,
+  `TerminalImagePasteNotice.tsx`, and `terminalBracketedPaste.ts` — the image
+  paste path of a Work-tracked CLI terminal, split out of `TerminalView`.
+  `terminalImagePaste.ts` reads the clipboard image, saves it on the session's
+  machine, and writes the path stub into the PTY. It sees the runtime through a
+  narrow interface (session id, pin, disposed, the notice fields, `notify`,
+  `writeInput`), so tests drive it without a mounted terminal. A failure goes
+  through one reporter that logs the `[ade-term] image paste failed` line and
+  sets the pane message for `IMAGE_PASTE_NOTICE_MS` (8 s).
+  `TerminalImagePasteNotice` renders that message with a dismiss button.
+  `terminalBracketedPaste.ts` holds the DEC mode 2004 start and end markers
+  that `TerminalView` and the paste path share.
 - `apps/desktop/src/renderer/components/terminals/terminalTranscriptNormalize.ts`
   — the runtime-free transcript hydration helpers, split out of `TerminalView`
   so they are testable without a mounted terminal. `inferTranscriptColumns`
@@ -1571,7 +1654,11 @@ Renderer surfaces:
   overlay. The context menu sections identity, Lifecycle, Go to, Copy, optional
   **Open in**, optional singleton-lane actions, and fenced destructive rows;
   chat rows also expose a `Name & status` submenu for inline Rename and the
-  three metadata-generation choices, while Copy, Snooze, Lane, and Open in
+  three metadata-generation choices, and a `Hand off…` submenu (Local handoff /
+  Another machine / Auto handoff…, plus Remove auto handoff once rules exist)
+  whose Local and Another-machine rows queue the destination through
+  `renderer/lib/chatHandoffIntent.ts` and select the row so the chat pane can
+  open the matching surface, while Copy, Snooze, Lane, and Open in
   remain pointer/keyboard submenus. Every action row carries a duotone glyph.
   `openIn` is an `OpenInTarget` from
   `resolveOpenInTarget`. Local and headerless foreign singleton rows omit
@@ -1610,7 +1697,8 @@ Renderer surfaces:
   cannot reuse a pre-mutation snapshot. Promise identity guards prevent a
   superseded response from repopulating the cache.
 - `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers,
-  `isChatToolType`, and `isPtyContextInsertableToolType` (claude / codex /
+  a re-export of `isChatToolType` from `sessionSpawnNesting.ts`, and
+  `isPtyContextInsertableToolType` (claude / codex /
   cursor-cli / droid / opencode; shells host terminals but are not a
   context-insertion target), shared by `TerminalsPage` and `WorkSidebar`,
   plus `getStaleRunningCliSessionAgeHours`, a separate process-cleanup
@@ -1648,7 +1736,8 @@ iOS Work surfaces:
   `WorkRootScreen+Actions.swift`, `WorkRootScreen+Selection.swift`, and
   `WorkRootComponents.swift` — mobile Work list: the one-row header
   (search + filter funnel + a compose menu holding **New chat** / **New lane**),
-  the filter panel, sticky lane section headers, the child-shell section, and
+  the filter panel, sticky lane section headers, the nested-subagent then
+  child-shell drawers, and
   the `WorkSessionListRow` action shell that hangs swipe and context menus off a
   row. Visibility mirrors desktop
   (`workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift`):
@@ -1672,14 +1761,21 @@ iOS Work surfaces:
   (`workSessionRowPreviewSource`, `workLinkifiedPreview`). Split out of
   `WorkRootComponents.swift`, which keeps the surrounding list chrome. Card
   surface is neutral — background, border and shadow are reserved for selection
-  and press, never for state, matching desktop `SessionCard.tsx`. See
+  and press, never for state, matching desktop `SessionCard.tsx`. Nested
+  compact rows put the identicon and title on the leading edge and the
+  provider mark on the trailing edge, then shout-only status words. See
   [the iOS companion](../sync-and-multi-device/ios-companion.md#work-session-list-rows).
+- `apps/ios/ADE/Views/Work/WorkSpawnNesting.swift` — Swift mirror of
+  `sessionSpawnNesting.ts` (same-lane subagent filing, quiet-parent pull-up,
+  grandchild flatten, `chat-subagents:<parentId>` drawer ids, Failed-wins
+  drawer attention).
 - `apps/ios/ADE/Views/Work/WorkSessionGrouping.swift` — the by-lane (default) /
   by-status / by-time grouping, `WorkViewStateStore`, and the trailing quiet
   zone: a **Snoozed** shelf above a **Settled** shelf, both collapsed until
   explicitly opened via an inverted `shelf-open:<id>` marker. By-lane is exempt
   from the shelves — a settled row still belongs to its lane there, and the
-  per-lane quiet fold already handles it.
+  per-lane quiet fold already handles it. Nested subagent/shell drawers come
+  from `WorkSpawnNesting.swift`.
 - `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
   `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
   surface for CLI sessions. It subscribes with `sinceOffset`, applies
@@ -1878,10 +1974,28 @@ hand translation at the drop handler.
 
 | Column | Membership | Drop target |
 | --- | --- | --- |
-| **Needs you** | the awaiting-input partition | yes |
+| **Needs you** | the `needs_you` phase only — a raised hand | yes |
 | **Working** | what is left of the running partition after Waiting takes its share | yes |
 | **Waiting** | snoozed rows, plus running rows whose lane PR is mid-CI or has a review requested | **no** |
-| **Done** | ended rows, then settled rows (settled is the quieter tier, so it sinks) | yes |
+| **Done** | resting rows (`ready`/`idle`), then ended rows, then settled rows | yes |
+
+The first column takes the `needs_you` phase, **not** the list's whole
+`awaiting-input` partition. That partition is a container holding three phases —
+`needs_you`, `ready` and `idle` — which is why the list names it "Your move" and
+lets each card state its own phase. The board's first column is a claim, not a
+container: it is amber and it says the row is blocked on the user. `ready` and
+`idle` are already emerald "Done" on their own cards, so they file under Done
+here, loudest tier first — resting rows are live sessions that just finished a
+turn, settled is what the user already filed away.
+
+The host's `deriveWorkBoardColumn` maps a phase through
+`canonicalBoardColumnForPhase`; the renderer's `buildWorkBoardModel` reaches the
+same answer one level up, from the list's filing buckets plus a `needs_you`
+split. The two must agree, or a drag's host-authored "you moved this chat from
+<column>" message names a column the user never saw. They previously both filed
+the whole `awaiting-input` partition under "Needs you", so a board could claim
+five sessions were blocked on the user while every one of those cards showed an
+emerald "Done" dot and none had a raised hand.
 
 Waiting is not droppable because a row sits there for a reason a drag cannot
 assert — it is snoozed, or its PR is waiting on someone else. `canAcceptDrop`
@@ -2510,6 +2624,15 @@ degrades to "no ADE prompt" rather than a failed launch.
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
+  The predicate lives in `sessionSpawnNesting.ts` (re-exported from
+  `renderer/lib/sessions.ts`) because by-lane filing also has to tell a chat
+  from a tracked CLI subagent.
+- **Spawn nesting is one shared rule.** Same-lane `spawnKind: "subagent"`
+  filing lives in `sessionSpawnNesting.ts`, with a Swift mirror in
+  `WorkSpawnNesting.swift`. Desktop, ADE Code, and iOS consult that index. Do
+  not re-derive nest / quiet-parent pull-up / grandchild flatten in a list
+  renderer — a demote, a quiet parent, or a grandchild will disagree across
+  surfaces. `ade chat list` stays a flat table on purpose.
 - **Mobile/web replacing hydrates cannot replay a transcript tail for an
   alt-screen TUI.** Desktop keeps a headless xterm and hydrates from
   SerializeAddon current-screen CSI. A days-long Claude Code session's last

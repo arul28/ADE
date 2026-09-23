@@ -5,7 +5,7 @@
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/state/kvDb.ts` | Opens the project database (enabling `journal_mode = WAL` + `synchronous = NORMAL` at open), runs the interrupted-rebuild recovery pass, classifies database-open errors (`classifySqliteOpenError(error, { path })`, whose `storage_read_failed` bucket is checked *before* the integrity bucket so an unreadable file is never reported as a corrupt one; the errno rules themselves now live in `storage/storageErrnoClassifier.ts`, and the `path` argument is required rather than optional because a SQLite error rarely carries one and the classifier will not call a bare errno a storage fault without it), creates the headroom-gated migration backup, and exports `rebuildTableInTransaction` / `recoverInterruptedTableRebuilds`. Attaches the optional `maintenance` (`DbMaintenanceApi`) handle — the prune / compact / vacuum hooks the storage doctor invokes. The machine-local `local_lane_storage_state` and `local_storage_lifecycle_runs` tables retain reclaim retry/estimate and scan timing state; both are excluded from CRR sync because paths and cleanup results belong only to this checkout. |
-| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `REVIEW_ARTIFACT_RETENTION_DAYS` = 30, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
+| `apps/desktop/src/main/services/state/dbMaintenanceApi.ts` | The `DbMaintenanceApi` interface consumed by the storage doctor, plus the single source of truth for the DB retention/count bounds (`INGRESS_EVENT_RETENTION_MS` = 7 days, `INGRESS_EVENT_MAX_ROWS_PER_PROJECT` = 2,000, `PR_SNAPSHOT_RETENTION_DAYS` = 60, `EVENT_LOG_RETENTION_DAYS` = 30) imported by the ingress writer, the kvDb hooks, and the storage ledger so the policy can never drift across enforcement sites. Also exports `pruneRowsInBatches` — the paced `delete … where rowid in (select rowid … limit N)` loop (`MAINTENANCE_DELETE_BATCH_ROWS` = 2,000, `MAINTENANCE_DELETE_MAX_BATCHES` = 200) that every new prune uses. |
 | `apps/desktop/src/main/services/state/durableFile.ts` | Atomic temp-write-and-rename persistence, one-generation `.lkg` JSON backup, validation, and primary/previous recovery reads. `AtomicWriteOptions.mode` creates the temp file with the caller's permission bits so a secret is never briefly world-readable, and a rename refused with `EXDEV` / `EPERM` / `EACCES` / `EBUSY` falls back to a copy — a deliberately closed list that leaves `ENOSPC` and `EIO` terminal. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
 | `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
@@ -32,7 +32,7 @@
 | `apps/desktop/src/main/services/storage/storageInsightsService.ts` | Builds categorized storage snapshots and preview-confirmed cleanup plans without following symlinks or deleting protected state. `proof_attachments` is a manual `review_first` cleanup target for `.ade/artifacts` and `.ade/attachments`; after bytes are removed it invokes the broker's `purgeArtifactRecordsUnder` hook so proof rows cannot outlive their files. It also runs the lane-lifecycle scan at the configured interval: safely archives excess or inactive lanes, marks old archived worktrees for review, and never removes lane files in the background. The **storage doctor** compresses history and maintains the database; filesystem candidates such as staging, backups, DerivedData, and build output remain review-first. Every run is journaled and emits one deduped `ade_feature_used` analytics event. Populates the snapshot's optional `extras` plus lifecycle policy/status and per-item ownership, age, blocked reasons, and reclaim estimates. |
 | `apps/desktop/src/main/services/lanes/laneService.ts` | Owns the lane-aware `getReclaimRisk`, `archiveAndReclaim`, and restore-aware `unarchive` operations. It proves exact path-and-branch ownership against this project's Git worktree registry, rejects symlinks, rechecks directory identity before removal, shares the database-backed lane worktree lease with PR workflows, and stores retryable reclaim failures locally. |
 | `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory ADE writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
-| `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, review artifacts, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
+| `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
 | `apps/desktop/src/main/services/storage/storageMaintenanceJournal.ts` | Read/write helpers for the storage-doctor journal — a plain rebuildable JSON file (`storage-doctor-journal.json` under `.ade/cache`, no DB/CRR) capping the last 30 runs, written via temp-file-then-rename so a crash never leaves a torn journal. |
 | `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. |
 | `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
@@ -493,7 +493,7 @@ go through the lane-aware typed-confirmation path.
 2. Compress inactive chat/terminal history (`fs.transcripts`).
 3. Record filesystem review candidates without deleting them.
 4. Invoke the kvDb DB-maintenance hooks: prune `automation_ingress_events`,
-   `review_run_artifacts`, `pull_request_snapshots`, `ai_usage_log`, and the
+   `pull_request_snapshots`, `ai_usage_log`, and the
    retained event logs; compact cr-sqlite sync bookkeeping; and vacuum when the
    freelist is fragmented.
 
@@ -539,7 +539,6 @@ its target table exists:
 
 - `pruneIngressEvents` — age (7 d) + per-project count (2,000) prune of
   `automation_ingress_events`.
-- `pruneReviewArtifacts` — delete `review_run_artifacts` older than 30 days.
 - `prunePrSnapshots` — delete `pull_request_snapshots` not updated in 60 days.
   Machine-local telemetry behind Stats and the per-feature daily budget check,
   and the largest single source of cr-sqlite metadata in a measured project
@@ -666,7 +665,7 @@ journal degrades to empty.
 
 The Settings > Storage snapshot carries an optional `extras` block built from the
 journal and a `dbstat` scan: the project-database breakdown (webhooks, sync
-bookkeeping, review artifacts, PR cache, core — `dbstat` is treated as optional
+bookkeeping, PR cache, core — `dbstat` is treated as optional
 and degrades to no breakdown when the SQLite build lacks it), the recent-runs
 journal, the derived per-category policy chips, and a safe-reclaimable byte
 estimate. The renderer's "Health & diagnostics" strip renders a DB-size
@@ -687,7 +686,6 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 | Last-failure reports | Current + 1 previous | Repeated same-signature failures increment the current report; a changed signature rotates current to previous. |
 | Database migration backup | 1 | `<db>.pre-crsqlite-w1.bak` is created once and only with sufficient headroom. |
 | Automation ingress events | 7 days / 2,000 rows per project | Age-pruned at write time and by the doctor; the newest 2,000 non-`dispatched` rows per project are kept regardless of age (dispatched rows are age-pruned only). Raw webhook payloads are no longer persisted. |
-| Review artifacts | 30 days | `review_run_artifacts` older than the cutoff are deleted (re-derivable from a fresh review). |
 | PR snapshots | 60 days | `pull_request_snapshots` not updated within the window are deleted (re-fetchable from GitHub). |
 | AI usage log | 90 days | `ai_usage_log` rows older than the cutoff are deleted in paced batches. Stats and the daily budget check read a shorter window than this. |
 | Retained event logs | 30 days | `linear_sync_events`, `linear_workflow_run_events`, `worker_agent_cost_events`, and `pack_events`, each on `created_at`, in paced batches. `linear_ingress_events`, `cto_session_logs`, and `worker_agent_runs` are deliberately exempt — see [the exemptions](#event-log-retention-and-the-three-tables-deliberately-exempt). |
@@ -932,7 +930,7 @@ the two populations stay separable on the server.
 | Recovery diagnosis reached a terminal state | `main/services/runtime/projectRecoveryService.ts` (`diagnose`, via `onTerminalDiagnosis`) | the `AdeRecoveryErrorCode` — `disk_full`, `brain_crash_looping`, … |
 | Renderer crash | `renderer/components/app/RendererErrorBoundary.tsx` (`componentDidCatch`, via `IPC.diagnosticsAutoReport`) | `renderer_crash` |
 | Post-update transaction failed | `main/main.ts`, beside `autoUpdate.transaction_failed` | `update_<step>` |
-| Pairing auto-recovery gave up | `ade-cli/.../machinePairingAutoRecovery.ts` (`onGaveUp`) | the refusal code, or `snapshot_failed` |
+| Pairing auto-recovery gave up | `ade-cli/.../machinePairingAutoRecovery.ts` (`onGaveUp`, wired in `cli.ts`; the same hook records `recoveryGaveUpAt` in publisher health, so the desktop also shows a lasting banner and does not depend on this report) | the refusal code, or `snapshot_failed` |
 | Account publisher failing > 5 min | `ade-cli/.../accountMachinePublisherService.ts` (`onSustainedFailure`) | the health state, e.g. `snapshot_failed` |
 | Sync host refused by unreadable storage, 3 attempts running | `ade-cli/.../sync/syncHostStartupLoop.ts` (`onSustainedStorageFault`) | `storage_read_failed` |
 

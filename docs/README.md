@@ -51,7 +51,7 @@ docs/
     ├── cto/                               # CTO agent: single thread, smart memory, model switching, Linear
     ├── files-and-editor/                  # watcher, editor, Monaco, search
     ├── history/                           # operations timeline, transcripts, export
-    ├── ios-simulator/                     # chat-side iOS Simulator drawer + ADEInspector
+    ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade mac-desktop`

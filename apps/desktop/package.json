@@ -20,12 +20,14 @@
     "build": "tsup && vite build",
     "build:notch": "node ./scripts/build-attention-notch.mjs",
     "build:desktop-driver": "node ./scripts/build-mac-desktop-driver.mjs",
-    "build:mac-native": "npm run build:notch && npm run build:desktop-driver && npm run build:capture-helper",
+    "build:mac-native": "npm run build:notch && npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper",
     "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
     "build:capture-helper:win": "node ./scripts/build-capture-helper-win.mjs",
     "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
+    "build:sim-helper": "node ./scripts/build-sim-helper.mjs",
+    "test:sim-helper": "swift test --package-path ./native/ADESimHelper",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
     "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win && npm run validate:win:release",
@@ -76,12 +78,12 @@
   },
   "//dependencies": "Only packages the PACKAGED runtime resolves from node_modules belong here: electron-builder ships every production dependency into app.asar. main/preload are bundled by tsup (dependencies stay external, so a bare require() in dist/main or dist/preload means the package must ship), the packaged ade-cli resolves its own externals through NODE_PATH into app.asar[.unpacked]/node_modules (see src/main/services/runtime/packagedNodePath.ts), and a few binaries are located by path. Everything the renderer uses is inlined into dist/renderer by Vite and belongs in devDependencies.",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.258",
+    "@anthropic-ai/claude-agent-sdk": "0.3.280",
     "@cursor/sdk": "1.0.31",
-    "@factory/droid-sdk": "0.2.0",
+    "@factory/droid-sdk": "0.9.1",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.155.1",
+    "@openai/codex": "0.156.0",
     "@opencode-ai/sdk": "1.18.31",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
@@ -127,6 +129,7 @@
     "@types/react-dom": "^18.2.24",
     "@types/sql.js": "^1.4.9",
     "@types/ssh2": "^1.15.5",
+    "@types/three": "^0.186.0",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
@@ -168,6 +171,7 @@
     "sql.js": "^1.13.0",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^4.1.18",
+    "three": "^0.186.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
     "vite": "^8.0.3",
@@ -318,7 +322,8 @@
         "to": "native",
         "filter": [
           "ade-capture-helper",
-          "ade-capture-helper.exe"
+          "ade-capture-helper.exe",
+          "ade-sim-helper"
         ]
       },
       {

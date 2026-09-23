@@ -20,6 +20,7 @@ import {
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatChatResumeNow,
+  formatChatContinueOnAccount,
   formatChatResumeRelativeDelta,
   formatChatStatus,
   formatDiagnosticError,
@@ -30,6 +31,8 @@ import {
   includeHostProjectInCatalog,
   iosSimulatorErrorHint,
   iosSimulatorSubcommandFromArgv,
+  IOS_SIM_ALIAS_DEPRECATION,
+  resetIosSimAliasDeprecationForTests,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
@@ -358,6 +361,11 @@ describe("ADE CLI", () => {
       steps: [{
         method: "account.call",
         params: { action: "status", args: {} },
+      }, {
+        // A signed-in computer the account removed must not read as healthy.
+        key: "thisComputer",
+        method: "sync.getStatus",
+        optional: true,
       }],
     });
     expect(shouldAutoRegisterProjectForPlan(statusPlan)).toBe(false);
@@ -458,7 +466,8 @@ describe("ADE CLI", () => {
       connectRole: "cto",
       steps: [{
         method: "account.call",
-        params: { action: "deleteMachine", args: { machine: "mk_studio" } },
+        // The action refuses without the token, so the command forwards it.
+        params: { action: "deleteMachine", args: { machine: "mk_studio", confirmation: "REMOVE" } },
       }],
     });
     expect(shouldAutoRegisterProjectForPlan(remove)).toBe(false);
@@ -489,6 +498,22 @@ describe("ADE CLI", () => {
     expect(typeof reconnect.retryAfterRecovery).toBe("function");
     expect(() => buildCliPlan(["machines", "reconnect", "mk_studio"])).toThrow(
       /does not accept a machine selector/,
+    );
+    // --text says what happened in the desktop's words, including the partial
+    // success where the machine is back but Activity is still gated.
+    const reconnectText = (value: unknown) =>
+      formatOutput(value, { text: true } as any, inferFormatter(reconnect));
+    expect(reconnectText({
+      repaired: true, wasRevoked: true, published: true, pushRestored: true, state: "published", reason: null,
+    })).toBe("This computer is back on your account. Activity and alerts are delivering again.\n");
+    expect(reconnectText({
+      repaired: true, wasRevoked: true, published: true, pushRestored: false, state: "published", reason: null,
+    })).toContain("isn't delivering Activity yet");
+    expect(reconnectText({
+      repaired: false, wasRevoked: true, published: false, pushRestored: false, state: "http_error",
+      reason: "The account directory is unreachable", reasonCode: null,
+    })).toBe(
+      "Couldn't reconnect this computer: The account directory is unreachable. It's still disconnected from your account.\n",
     );
     expect(() => buildCliPlan([
       "machines",
@@ -613,6 +638,50 @@ describe("ADE CLI", () => {
       text: true,
     }, inferFormatter(statusPlan))).toBe(
       "Not signed in — run `ade login`.\n",
+    );
+
+    // Signed in, but the directory refuses this computer: the answer names the
+    // removal date and the command, as the desktop banner does.
+    const removed = summarizeExecution({
+      plan: statusPlan,
+      connection,
+      values: {
+        result: { signedIn: true, email: "person@example.com", source: "device" },
+        thisComputer: {
+          routeHealth: {
+            accountDirectory: {
+              state: "http_error",
+              lastHttpStatus: 403,
+              lastHttpReason: "machine_revoked",
+              revokedAt: "2026-08-14T10:00:00.000Z",
+              recoveryGaveUpAt: Date.parse("2026-08-15T10:00:00.000Z"),
+            },
+          },
+        },
+      },
+    });
+    expect(removed).toMatchObject({
+      signedIn: true,
+      thisComputerRefusal: {
+        code: "machine_revoked",
+        revokedAt: "2026-08-14T10:00:00.000Z",
+        recoveryGaveUpAt: Date.parse("2026-08-15T10:00:00.000Z"),
+      },
+    });
+    expect(formatOutput(removed, { text: true } as any, "account-auth")).toBe(
+      "Signed in as person@example.com (device)\n"
+        + "This computer was removed from your ADE account on 2026-08-14. "
+        + "ADE stopped trying to reconnect it on its own. Run `ade machines reconnect` to rejoin.\n",
+    );
+    // A failed sync read (the step is optional) leaves the answer as it was.
+    const unknown = summarizeExecution({
+      plan: statusPlan,
+      connection,
+      values: { result: { signedIn: true, email: "person@example.com", source: "device" } },
+    });
+    expect(unknown).toMatchObject({ thisComputerRefusal: null });
+    expect(formatOutput(unknown, { text: true } as any, "account-auth")).toBe(
+      "Signed in as person@example.com (device)\n",
     );
   });
 
@@ -2162,6 +2231,24 @@ describe("ADE CLI", () => {
     expect(output).toContain("Shell: Stop the active shell before transferring the host.");
     expect(output).toContain("Paused chats remain available.");
     expect(output).toContain("Live sessions must stop first.");
+    // An HTTP 401 is not a refusal of this computer, so no removal rows.
+    expect(output).not.toContain("this computer");
+
+    const removedOutput = formatOutput({
+      routeHealth: {
+        accountDirectory: {
+          state: "http_error",
+          skipReason: "This machine was removed from your ADE account. Pair it again to reconnect.",
+          lastHttpStatus: 403,
+          lastHttpReason: "machine_revoked",
+          revokedAt: "2026-08-14T10:00:00.000Z",
+          recoveryGaveUpAt: Date.parse("2026-08-15T10:00:00.000Z"),
+        },
+      },
+    }, { text: true } as any, inferFormatter(plan));
+    expect(removedOutput).toMatch(/this computer\s+removed from your ADE account on 2026-08-14/);
+    expect(removedOutput).toMatch(/auto repair stopped\s+2026-08-15T10:00:00\.000Z/);
+    expect(removedOutput).toMatch(/reconnect with\s+ade machines reconnect/);
   });
 
   it("formats the authoritative relay blocker without mistaking historical control errors for one", () => {
@@ -6321,6 +6408,36 @@ describe("ADE CLI", () => {
     }
   });
 
+  it("builds chat continue-on-account as chat.continueUsageLimitOnAlternate", () => {
+    const plan = buildCliPlan(["chat", "continue-on-account", "chat-9"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("chat continue-on-account");
+    expect(plan.formatter).toBe("chat-continue-on-account");
+    expect(inferFormatter(plan)).toBe("chat-continue-on-account");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "continueUsageLimitOnAlternate",
+        args: { sessionId: "chat-9" },
+      },
+    });
+    expect(plan.exitCodeFromResult?.({ ok: true, sessionId: "chat-10" })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ ok: false, reason: "no_alternate_account" })).toBe(1);
+  });
+
+  it("formats chat continue-on-account as the new chat, or the host's refusal", () => {
+    expect(formatChatContinueOnAccount({ ok: true, sessionId: "chat-10" }))
+      .toBe("Continuing on the other account · chat chat-10");
+    expect(formatChatContinueOnAccount({
+      ok: false,
+      reason: "no_alternate_account",
+      message: "No other account has room for this chat.",
+    })).toBe("No other account has room for this chat.");
+    expect(formatChatContinueOnAccount({ ok: false })).toBe("No other account can take this chat.");
+  });
+
   it("formats chat resume-now as a sent turn, or a one-line reason when it was refused", () => {
     expect(formatChatResumeNow({ ok: true, turnId: "turn-3" })).toBe("Resume sent · turn turn-3");
     expect(formatChatResumeNow({ result: { ok: true, turnId: null } })).toBe("Resume sent · turn pending");
@@ -6915,9 +7032,15 @@ describe("ADE CLI", () => {
       for (const request of initializeRequests) {
         expect(request.params).toMatchObject({ identity: { role: "cto" } });
       }
-      expect(requests.at(-1)).toEqual({
+      expect(requests.at(-2)).toEqual({
         method: "account.call",
         params: { action: "status", args: {} },
+      });
+      // The refusal read is optional: this server refuses it, and the sign-in
+      // answer above is unchanged.
+      expect(requests.at(-1)).toEqual({
+        method: "sync.getStatus",
+        params: { includeTransferReadiness: false },
       });
       expect(requests.some((request) => request.method === "projects.add")).toBe(false);
 
@@ -8882,6 +9005,27 @@ describe("ADE CLI", () => {
           values: { result: ingestResult, verify: { artifacts: [] } },
         }),
       ).toThrow(/proof attach failed — the runtime reported artifact-1/);
+    });
+
+    it("regression: fails when the record lands with no lane and no chat session", () => {
+      // The incident this guard exists for. The runtime filed the row, the
+      // re-read found it — because the unscoped caller lists project-wide —
+      // and the only owner was a process id, so no drawer could show it. The
+      // agent read "verified" and told its owner the proof was attached.
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      const orphaned = {
+        artifacts: [{ id: "artifact-1", kind: "screenshot", title: "orphan", laneId: null }],
+        links: [
+          { artifactId: "artifact-1", ownerKind: "chat_session", ownerId: "ade-cli:56056" },
+        ],
+      };
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: { result: orphaned, verify: { artifacts: [{ id: "artifact-1" }] } },
+        }),
+      ).toThrow(/proof attach failed — filed artifact-1 with no lane and no chat session/);
     });
 
     it("fails when the runtime files nothing at all", () => {
@@ -10986,31 +11130,22 @@ describe("ADE CLI", () => {
     expect(claimHelp.kind).toBe("help");
     if (claimHelp.kind !== "help") return;
     expect(claimHelp.text).toContain("iOS Simulator: claim");
+    expect(claimHelp.text).not.toContain("Unknown Apple device subcommand");
     expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
   });
 
-  it("rejects an unknown ios-sim --backend as a usage error", () => {
-    // A bare Error here printed a stack trace and exited 1; a usage error
-    // prints the message and exits 2.
-    let thrown: unknown;
-    try {
-      buildCliPlan(["ios-sim", "live-start", "--backend", "nope"]);
-    } catch (error) {
-      thrown = error;
-    }
-    expect((thrown as Error | undefined)?.constructor.name).toBe(
-      "CliUsageError",
+  it("rejects live-start and --backend; stream-start has no backend flag", () => {
+    expect(() => buildCliPlan(["apple", "live-start"])).toThrow(
+      /live-start is gone; use stream-start/,
     );
-    // The message names the subcommand the caller actually typed and the
-    // values that would have worked.
-    expect((thrown as Error).message).toContain("ios-sim live-start");
-    expect((thrown as Error).message).toContain("unknown --backend 'nope'");
-    expect((thrown as Error).message).toContain("auto, simulator-window-capture");
-    // Every valid value still builds a plan.
-    for (const backend of ["auto", "simulator-window-capture"]) {
-      const plan = buildCliPlan(["ios-sim", "stream-start", "--backend", backend]);
-      expect(plan.kind).toBe("execute");
-    }
+    expect(() => buildCliPlan(["ios-sim", "live-start"])).toThrow(
+      /live-start is gone; use stream-start/,
+    );
+    expect(() =>
+      buildCliPlan(["apple", "stream-start", "--backend", "idb-h264"]),
+    ).toThrow(/--backend is gone/);
+    const plan = buildCliPlan(["apple", "stream-start", "--fps", "30"]);
+    expect(plan.kind).toBe("execute");
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
@@ -12232,9 +12367,13 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "ios_simulator",
         action: "startStream",
-        args: { fps: 30, backend: "simulator-window-capture" },
+        args: { fps: 30 },
       },
     });
+    expect(
+      (start.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })
+        ?.arguments?.args,
+    ).not.toHaveProperty("backend");
 
     const stop = buildCliPlan(["ios-sim", "preview-stop"]);
     expect(stop.kind).toBe("execute");
@@ -12620,34 +12759,30 @@ describe("ADE CLI", () => {
     ).toThrow(/--timeout-ms must be a number/);
   });
 
-  it("ios-sim stream-start accepts the idb-h264 backend and its encoder flags", () => {
+  it("ios-sim stream-start forwards encoder flags and rejects --backend", () => {
     const plan = iosSimActionArgs([
       "ios-sim",
       "stream-start",
-      "--backend",
-      "idb-h264",
       "--scale-factor",
       "0.5",
+      "--bitrate-kbps",
+      "2500",
     ]);
     expect(plan.action).toBe("startStream");
-    expect(plan.args).toMatchObject({ backend: "idb-h264", scaleFactor: 0.5 });
+    expect(plan.args).toMatchObject({ scaleFactor: 0.5, bitrateKbps: 2500 });
+    expect(plan.args).not.toHaveProperty("backend");
 
     const tuned = iosSimActionArgs([
       "ios-sim",
       "stream-start",
-      "--backend",
-      "idb-h264",
       "--compression-quality",
       "0.7",
     ]);
     expect(tuned.args).toMatchObject({ compressionQuality: 0.7 });
 
-    // Window capture stays the default and carries neither encoder flag.
-    const windowCapture = iosSimActionArgs(["ios-sim", "stream-start"]);
-    expect(windowCapture.args).toMatchObject({
-      backend: "simulator-window-capture",
-    });
-    expect(windowCapture.args).not.toHaveProperty("scaleFactor");
+    const plain = iosSimActionArgs(["ios-sim", "stream-start"]);
+    expect(plain.args).not.toHaveProperty("backend");
+    expect(plain.args).not.toHaveProperty("scaleFactor");
   });
 
   it("ios-sim status --text shows the device session and the live view", () => {
@@ -12661,7 +12796,7 @@ describe("ADE CLI", () => {
       activeDevice: { name: "iPhone 17 Pro", state: "Booted" },
       activeSession: { bundleId: "com.ade.ios", appName: "ADE", buildRoot: "/lane", laneId: "lane-1" },
       deviceSession: { deviceName: "iPhone 17 Pro", chatSessionId: "chat-7" },
-      stream: { running: true, backend: "idb-h264", fps: 16, bitrateKbps: 661, lastError: null },
+      stream: { running: true, backend: "helper-h264", fps: 16, bitrateKbps: 661, lastError: null },
       tools: [],
     }, {
       ...baseResolveOpts(),
@@ -12672,7 +12807,7 @@ describe("ADE CLI", () => {
 
     expect(text).toContain("open device");
     expect(text).toContain("chat-7");
-    expect(text).toContain("idb-h264");
+    expect(text).toContain("helper-h264");
     expect(text).toContain("16 fps");
     expect(text).toContain("661 kbit/s");
     expect(text).toContain("ADE");
@@ -13256,6 +13391,202 @@ describe("ADE CLI", () => {
       expect(plan.steps[0]?.params).toMatchObject({
         arguments: { domain: "ios_simulator", action: "listDevices" },
       });
+    }
+  });
+
+  it("`apple` is the canonical command group and maps the same RPC methods as ios-sim", () => {
+    const status = buildCliPlan(["apple", "status"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "getStatus" },
+    });
+
+    const launch = buildCliPlan(["apple", "launch", "--target", "app"]);
+    expect(launch.kind).toBe("execute");
+    if (launch.kind !== "execute") return;
+    expect(launch.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "launch" },
+    });
+  });
+
+  it("apple device, record, and frame verbs call the new iosSimulator RPC methods", () => {
+    const created = iosSimActionArgs([
+      "apple",
+      "device-create",
+      "--from",
+      "iPhone 17",
+      "--name",
+      "iPhone 17 — lane-a",
+    ]);
+    expect(created).toMatchObject({
+      domain: "ios_simulator",
+      action: "deviceCreate",
+      args: { from: "iPhone 17", name: "iPhone 17 — lane-a" },
+    });
+
+    const attached = iosSimActionArgs([
+      "apple",
+      "device-attach",
+      "--simulator",
+      "AAA-BBB",
+    ]);
+    expect(attached).toMatchObject({
+      action: "deviceAttach",
+      args: { simulator: "AAA-BBB" },
+    });
+
+    const listed = iosSimActionArgs(["apple", "device-list", "--installed"]);
+    expect(listed).toMatchObject({
+      action: "deviceList",
+      args: { installed: true },
+    });
+
+    // `start` is the boot contract: attach-or-create, boot, bootstatus, stream.
+    const startedAttached = iosSimActionArgs(["apple", "start", "--udid", "AAA-BBB", "--lane", "lane-a"]);
+    expect(startedAttached).toMatchObject({
+      action: "deviceStart",
+      args: { udid: "AAA-BBB", laneId: "lane-a" },
+    });
+    expect((startedAttached as { args: Record<string, unknown> }).args).not.toHaveProperty("create");
+    const startedCloned = iosSimActionArgs(["apple", "start", "--create", "SRC-1"]);
+    expect(startedCloned).toMatchObject({
+      action: "deviceStart",
+      args: { create: { sourceUdid: "SRC-1" } },
+    });
+    const startedOwned = iosSimActionArgs(["apple", "start"]);
+    expect(startedOwned).toMatchObject({ action: "deviceStart" });
+    expect((startedOwned as { args: Record<string, unknown> }).args).not.toHaveProperty("udid");
+    expect(() => buildCliPlan(["apple", "start", "--udid", "A", "--create", "B"])).toThrow(/not both/);
+
+    const deleted = iosSimActionArgs(["apple", "device-delete", "--force"]);
+    expect(deleted).toMatchObject({
+      action: "deviceDelete",
+      args: { force: true },
+    });
+
+    const recordStart = iosSimActionArgs([
+      "apple",
+      "record-start",
+      "--overlays",
+      "off",
+      "--label",
+      "signup",
+    ]);
+    expect(recordStart).toMatchObject({
+      action: "recordStart",
+      args: { overlays: false, label: "signup" },
+    });
+
+    const recordStop = iosSimActionArgs(["apple", "record-stop", "--discard"]);
+    expect(recordStop).toMatchObject({
+      action: "recordStop",
+      args: { discard: true },
+    });
+
+    /*
+     * regression: every record verb must give the runtime SOMETHING to place
+     * the caller by — a lane id, or the caller's root when there is no lane id.
+     *
+     * Recordings were the one capture path that sent neither, so a caller with
+     * no `ADE_LANE_ID` (every OpenCode agent, whose shared `opencode serve`
+     * cannot carry a per-chat environment) left `resolveRuntime` with nothing
+     * but its last-resort guess. Reproduced live before the fix: `record-start`
+     * run from lane 67f0a55d's worktree filed its recording under lane
+     * ab829725, the lane that owned the DEVICE.
+     *
+     * Asserted as "one or the other" rather than "always projectRoot", because
+     * a caller that named its lane does not need a path and
+     * `iosSimulatorRootArgs` deliberately omits it.
+     */
+    const placeable = (argv: string[]) => {
+      const keys = Object.keys(iosSimActionArgs(argv).args as Record<string, unknown>);
+      return keys.includes("laneId") || keys.includes("projectRoot");
+    };
+    for (const verb of ["record-start", "record-stop", "record-list"]) {
+      expect(placeable(["apple", verb]), verb).toBe(true);
+    }
+    expect(placeable(["apple", "record-delete", "--id", "r1"])).toBe(true);
+
+    const recordList = iosSimActionArgs(["apple", "record-list"]);
+    expect(recordList.action).toBe("recordList");
+
+    const recordDelete = iosSimActionArgs([
+      "apple",
+      "record-delete",
+      "--id",
+      "rec-1",
+    ]);
+    expect(recordDelete).toMatchObject({
+      action: "recordDelete",
+      args: { id: "rec-1" },
+    });
+
+    const frame = iosSimActionArgs(["apple", "frame", "--out", "shot.png"]);
+    expect(frame).toMatchObject({
+      action: "frame",
+      args: { outPath: "shot.png" },
+    });
+
+    const button = iosSimActionArgs(["apple", "button", "home"]);
+    expect(button).toMatchObject({
+      action: "pressButton",
+      args: { name: "home" },
+    });
+    const flaggedButton = iosSimActionArgs([
+      "apple",
+      "button",
+      "--name",
+      "volume-up",
+    ]);
+    expect(flaggedButton.args).toMatchObject({ name: "volume-up" });
+
+    const rotated = iosSimActionArgs(["apple", "rotate", "landscape-left"]);
+    expect(rotated).toMatchObject({
+      action: "rotate",
+      args: { orientation: "landscape-left" },
+    });
+
+    const aliasButton = iosSimActionArgs(["ios-sim", "button", "lock"]);
+    expect(aliasButton).toMatchObject({
+      action: "pressButton",
+      args: { name: "lock" },
+    });
+
+    expect(() => buildCliPlan(["apple", "button", "power"])).toThrow(
+      /Valid values: home, lock, volume-up, volume-down, siri, shake/,
+    );
+    expect(() => buildCliPlan(["apple", "rotate", "upside-down"])).toThrow(
+      /Valid values: portrait, portrait-upside-down, landscape-left, landscape-right/,
+    );
+
+    const aliasCreate = iosSimActionArgs([
+      "ios-sim",
+      "device-create",
+      "--from",
+      "iPhone 17",
+    ]);
+    expect(aliasCreate).toMatchObject({
+      action: "deviceCreate",
+      args: { from: "iPhone 17" },
+    });
+  });
+
+  it("prints one ios-sim deprecation line to stderr per process", async () => {
+    resetIosSimAliasDeprecationForTests();
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await runCli(["ios-sim", "--help"]);
+      await runCli(["ios-sim", "status", "--help"]);
+      await runCli(["apple", "status", "--help"]);
+      const lines = stderrWrite.mock.calls
+        .map((call) => String(call[0]))
+        .filter((text) => text.includes(IOS_SIM_ALIAS_DEPRECATION));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(IOS_SIM_ALIAS_DEPRECATION);
+    } finally {
+      stderrWrite.mockRestore();
+      resetIosSimAliasDeprecationForTests();
     }
   });
 
@@ -15202,14 +15533,14 @@ describe("ADE CLI", () => {
       // asked to open or close a DEVICE to run it sends them at the wrong
       // session entirely.
       const owned = "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A.";
-      expect(iosSimulatorErrorHint(owned, "open-device")).toContain("ade ios-sim open-device --force");
-      expect(iosSimulatorErrorHint(owned, "close-device")).toContain("ade ios-sim close-device --force");
+      expect(iosSimulatorErrorHint(owned, "open-device")).toContain("ade apple open-device --force");
+      expect(iosSimulatorErrorHint(owned, "close-device")).toContain("ade apple close-device --force");
       expect(iosSimulatorErrorHint(owned, "uninstall")).toContain("--chat-session");
       for (const sub of ["open-device", "close-device", "uninstall"]) {
         expect(iosSimulatorErrorHint(owned, sub)).not.toContain("shutdown --force");
       }
       // Everything else keeps the app-session advice.
-      expect(iosSimulatorErrorHint(owned, "screenshot")).toContain("ade ios-sim shutdown --force");
+      expect(iosSimulatorErrorHint(owned, "screenshot")).toContain("ade apple shutdown --force");
     });
 
     it("turns the new simulator error codes into one actionable line", () => {
@@ -15217,7 +15548,7 @@ describe("ADE CLI", () => {
         iosSimulatorErrorHint(
           "IOS_SIMULATOR_TARGET_ROOT_MISMATCH: launch target x is outside the build root /tmp/a.",
         ),
-      ).toContain("ade ios-sim apps");
+      ).toContain("ade apple apps");
       // The service message already carries the launch id; the hint adds only
       // the command, so it no longer re-extracts the id with a regex over
       // someone else's prose.
@@ -15225,7 +15556,7 @@ describe("ADE CLI", () => {
         iosSimulatorErrorHint(
           "IOS_SIMULATOR_LAUNCH_IN_PROGRESS: an iOS simulator launch (launch-7) is already running.",
         ),
-      ).toContain("ade ios-sim shutdown --force");
+      ).toContain("ade apple shutdown --force");
       expect(
         iosSimulatorErrorHint("IOS_SIMULATOR_NO_BUILDABLE_TARGET: none under /tmp/a."),
       ).toContain("--target-id");
@@ -15235,7 +15566,7 @@ describe("ADE CLI", () => {
         iosSimulatorErrorHint(
           "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.",
         ),
-      ).toContain("ade ios-sim shutdown --force");
+      ).toContain("ade apple shutdown --force");
       expect(
         iosSimulatorErrorHint("IOS_SIMULATOR_LANE_NOT_RESOLVED: no worktree resolved for lane lane-x."),
       ).toContain("--project-root");
@@ -15244,7 +15575,7 @@ describe("ADE CLI", () => {
 
     // A refused `claim` wanted to re-attribute a session, not tear one down, so
     // it must not be pointed at the hard reset: `shutdown --force` stops the
-    // owner's idb companions and clears the launch lock to do a job the
+    // owner's helper capture and clears the launch lock to do a job the
     // non-destructive bypass does without any of it.
     it("points a refused claim at the non-destructive bypass, not shutdown --force", () => {
       const owned =
@@ -15269,10 +15600,17 @@ describe("ADE CLI", () => {
       expect(
         iosSimulatorSubcommandFromArgv(["--project-root", "/tmp/root", "ios", "claim"]),
       ).toBe("claim");
-      // Aliases resolve to the canonical name the hint keys on.
-      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "stop"])).toBe("shutdown");
+      // Aliases resolve to the canonical name the hint keys on. `stop` is NOT
+      // one: it powers the device off (`deviceStop`), while `shutdown` and its
+      // aliases end the chat session alone.
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "stop"])).toBe("stop");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "teardown"])).toBe("shutdown");
       expect(iosSimulatorSubcommandFromArgv(["ios-sim", "open"])).toBe("launch");
       expect(iosSimulatorSubcommandFromArgv(["ios-sim"])).toBe("status");
+      expect(iosSimulatorSubcommandFromArgv(["apple", "device-create"])).toBe("device-create");
+      expect(iosSimulatorSubcommandFromArgv(["apple", "record-start"])).toBe("record-start");
+      expect(iosSimulatorSubcommandFromArgv(["apple", "press"])).toBe("button");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "orientation"])).toBe("rotate");
       expect(iosSimulatorSubcommandFromArgv(["lanes", "list"])).toBeNull();
     });
 

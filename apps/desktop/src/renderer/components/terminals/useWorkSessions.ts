@@ -245,7 +245,19 @@ export type WorkBoardModel = {
 
 export function buildWorkBoardModel(args: {
   runningFiltered: readonly TerminalSessionSummary[];
-  awaitingInputFiltered: readonly TerminalSessionSummary[];
+  /**
+   * Only rows whose phase is `needs_you` — a raised hand. NOT the list's whole
+   * `awaiting-input` bucket, which also holds `ready` and `idle`.
+   *
+   * This parameter used to take that bucket, and the board's amber "Needs you"
+   * column therefore claimed every finished and idle session was blocked on
+   * the user, while the same card's own status dot read emerald "Done". The
+   * split is spelled out in the two parameters so a caller cannot hand over
+   * the container by accident again.
+   */
+  needsYouFiltered: readonly TerminalSessionSummary[];
+  /** `ready`/`idle`: the agent finished and nothing is asked. Files under Done. */
+  restingFiltered: readonly TerminalSessionSummary[];
   endedFiltered: readonly TerminalSessionSummary[];
   settledFiltered: readonly TerminalSessionSummary[];
   snoozedFiltered: readonly TerminalSessionSummary[];
@@ -272,12 +284,13 @@ export function buildWorkBoardModel(args: {
 
   return {
     buckets: {
-      needs_you: [...args.awaitingInputFiltered],
+      needs_you: [...args.needsYouFiltered],
       working,
       waiting,
-      // Ended first, then settled: settled is the quieter tier, so it sinks —
-      // the same ordering the list's status grouping uses.
-      done: [...args.endedFiltered, ...args.settledFiltered],
+      // Loudest tier first. Resting rows are live sessions that just finished a
+      // turn, so they are the ones worth looking at; ended is a dead process;
+      // settled is the quietest, because the user already filed it.
+      done: [...args.restingFiltered, ...args.endedFiltered, ...args.settledFiltered],
     },
     waitingReasonBySessionId,
   };
@@ -1785,6 +1798,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const {
     runningFiltered,
     awaitingInputFiltered,
+    needsYouFiltered,
+    restingFiltered,
     endedFiltered,
     settledFiltered,
     snoozedFiltered,
@@ -1820,7 +1835,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     return {
       runningFiltered: running,
+      // The list's "Your move" section keeps both tiers: it is a container, and
+      // each card states its own phase. The board splits them, because its
+      // first column is a claim rather than a container.
       awaitingInputFiltered: [...loud, ...quiet],
+      needsYouFiltered: loud,
+      restingFiltered: quiet,
       endedFiltered: ended,
       settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
       snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
@@ -1840,16 +1860,18 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workBoardModel = useMemo(
     () => buildWorkBoardModel({
       runningFiltered,
-      awaitingInputFiltered,
+      needsYouFiltered,
+      restingFiltered,
       endedFiltered,
       settledFiltered,
       snoozedFiltered,
       laneWaitingReason: (laneId) => lanePrWaitingReason(boundMachineLanePrs(prsByLaneId, laneId)),
     }),
     [
-      awaitingInputFiltered,
       endedFiltered,
+      needsYouFiltered,
       prsByLaneId,
+      restingFiltered,
       runningFiltered,
       settledFiltered,
       snoozedFiltered,

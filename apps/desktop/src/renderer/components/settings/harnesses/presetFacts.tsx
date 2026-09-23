@@ -13,7 +13,7 @@ import { harnessModelFamily, harnessModelLabel, providerFamilyForSource } from "
  * The pieces a custom setup is described with, wherever it is listed.
  *
  * Settings and the model picker both have to say the same four things about a
- * preset — which agent runs it, which model it thinks with, which model its
+ * preset — which harness runs it, which model it thinks with, which model its
  * subagents think with, and where its intelligence comes from — and both had
  * been saying them as run-on strings ("Claude Code · claude-opus-4-1"). A
  * string cannot carry a logo, so neither surface could show whose model it
@@ -35,7 +35,13 @@ export function bodyLogoFamily(harness: HarnessPresetBody | string): string {
   return BODY_LOGO_FAMILY[harness as HarnessPresetBody] ?? String(harness);
 }
 
-/** The agent that runs a preset: its mark and its name, on one line. */
+/**
+ * The harness that runs a preset: its mark and its name, on one line.
+ *
+ * The export and its `data-preset-agent` hook keep the old word because they
+ * are code, not copy. A harness is not an agent, so every string this renders
+ * — and every label a caller puts beside it — says "harness".
+ */
 export function PresetAgent({
   harness,
   size = 14,
@@ -74,9 +80,17 @@ export function PresetModel({
   size = 13,
   roleWidth = 58,
   className,
+  catalogScopeKey,
 }: {
   role: string;
   modelId: string;
+  /**
+   * Which runtime catalog bucket the display name comes from. Settings reads
+   * the default one; the composer's picker may be pinned to a machine, and a
+   * runtime-only model resolved against the wrong bucket falls back to its raw
+   * slug.
+   */
+  catalogScopeKey?: string;
   /**
    * The family to wear when the registry has never seen this id — a custom
    * endpoint's model, or one added upstream since this build. It is the
@@ -90,7 +104,7 @@ export function PresetModel({
   className?: string;
 }) {
   const family = harnessModelFamily(modelId) ?? fallbackFamily ?? null;
-  const label = harnessModelLabel(modelId);
+  const label = harnessModelLabel(modelId, catalogScopeKey);
   return (
     <span
       data-preset-model={role.toLowerCase()}
@@ -129,16 +143,26 @@ export function PresetModels({
   preset,
   size = 13,
   roleWidth = 58,
+  catalogScopeKey,
 }: {
   preset: Pick<HarnessPreset, "model" | "subagentModel" | "source">;
   size?: number;
   roleWidth?: number;
+  /** See `PresetModel` — the bucket the display names resolve against. */
+  catalogScopeKey?: string;
 }) {
   const inherits = preset.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT;
   const fallbackFamily = providerFamilyForSource(preset.source);
   return (
     <span data-preset-models="" style={{ display: "flex", minWidth: 0, flexDirection: "column", gap: 3 }}>
-      <PresetModel role="Main" modelId={preset.model} fallbackFamily={fallbackFamily} size={size} roleWidth={roleWidth} />
+      <PresetModel
+        role="Main"
+        modelId={preset.model}
+        fallbackFamily={fallbackFamily}
+        size={size}
+        roleWidth={roleWidth}
+        catalogScopeKey={catalogScopeKey}
+      />
       {inherits ? (
         <span style={{ display: "flex", minWidth: 0, alignItems: "center", gap: 6 }}>
           <span style={{ width: roleWidth, flexShrink: 0, opacity: 0.6, fontSize: "0.9em" }}>subagents</span>
@@ -151,6 +175,7 @@ export function PresetModels({
           fallbackFamily={fallbackFamily}
           size={size}
           roleWidth={roleWidth}
+          catalogScopeKey={catalogScopeKey}
         />
       )}
     </span>

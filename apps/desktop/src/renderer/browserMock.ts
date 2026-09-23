@@ -102,6 +102,19 @@ import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "./
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
 
 const noop = () => () => {};
+/**
+ * The owner's machine as the Apple picker sees it: one iOS runtime, five
+ * devices, two booted. Used by the Vite-only preview so the page can be looked
+ * at in a browser instead of only in a built Electron app.
+ */
+const BROWSER_MOCK_SIMULATORS = [
+  { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.3", state: "Booted", isAvailable: true, family: "iphone", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" },
+  { udid: "e", name: "iPhone 17e", runtime: "iOS 26.3", state: "Shutdown", isAvailable: true, family: "iphone", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17e" },
+  { udid: "repro", name: "ADE Repro", runtime: "iOS 26.3", state: "Booted", isAvailable: true, family: "iphone", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro" },
+  { udid: "pad", name: "iPad Air 11-inch (M4)", runtime: "iOS 26.3", state: "Shutdown", isAvailable: true, family: "ipad", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M4" },
+  { udid: "pad13", name: "iPad Air 13-inch (M4)", runtime: "iOS 26.3", state: "Shutdown", isAvailable: true, family: "ipad", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4" },
+] as const;
+
 const resolved =
   <T>(v: T) =>
   async () =>
@@ -341,6 +354,7 @@ const BROWSER_MOCK_IOS_DEVICE_SETTINGS: IosSimulatorDeviceSettings = {
     "increase-contrast": null,
     "reduce-motion": null,
     "reduce-transparency": null,
+    "button-shapes": null,
     "bold-text": null,
     "invert-colors": null,
     grayscale: null,
@@ -4445,274 +4459,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       onEvent: noop,
     },
-    review: {
-      listLaunchContext: resolved({
-        defaultLaneId: MOCK_LANES[1]?.id ?? MOCK_LANES[0]?.id ?? null,
-        defaultBranchName: "main",
-        lanes: MOCK_LANES.map((lane) => ({
-          id: lane.id,
-          name: lane.name,
-          laneType: lane.laneType,
-          branchRef: lane.branchRef,
-          baseRef: lane.baseRef,
-          color: lane.color ?? null,
-        })),
-        recentCommitsByLane: Object.fromEntries(
-          MOCK_LANES.map((lane) => [
-            lane.id,
-            [
-              {
-                sha: "abc1234567890",
-                shortSha: "abc1234",
-                subject: `Recent work on ${lane.name}`,
-                authoredAt: now,
-                pushed: false,
-              },
-              {
-                sha: "def4567890123",
-                shortSha: "def4567",
-                subject: `Follow-up fix on ${lane.name}`,
-                authoredAt: yesterday,
-                pushed: true,
-              },
-            ],
-          ]),
-        ),
-        recommendedModelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
-      }),
-      listRuns: resolvedArg([
-        {
-          id: "review-run-1",
-          projectId: MOCK_PROJECT.id,
-          laneId: MOCK_LANES[1]?.id ?? "lane-auth",
-          target: {
-            mode: "lane_diff",
-            laneId: MOCK_LANES[1]?.id ?? "lane-auth",
-          },
-          config: {
-            compareAgainst: { kind: "default_branch" },
-            selectionMode: "full_diff",
-            dirtyOnly: false,
-            modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
-            reasoningEffort: "medium",
-            publishBehavior: "local_only",
-          },
-          targetLabel: "feature/auth-flow vs main",
-          compareTarget: {
-            kind: "default_branch",
-            label: "main",
-            ref: "main",
-            laneId: null,
-            branchRef: "main",
-          },
-          status: "completed",
-          summary: "Found two actionable risks in the auth flow changes.",
-          errorMessage: null,
-          findingCount: 2,
-          severitySummary: { critical: 0, high: 1, medium: 1, low: 0, info: 0 },
-          chatSessionId: "chat-review-1",
-          createdAt: yesterday,
-          startedAt: yesterday,
-          endedAt: now,
-          updatedAt: now,
-        },
-      ]),
-      getRunDetail: resolvedArg({
-        id: "review-run-1",
-        projectId: MOCK_PROJECT.id,
-        laneId: MOCK_LANES[1]?.id ?? "lane-auth",
-        target: { mode: "lane_diff", laneId: MOCK_LANES[1]?.id ?? "lane-auth" },
-        config: {
-          compareAgainst: { kind: "default_branch" },
-          selectionMode: "full_diff",
-          dirtyOnly: false,
-          modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
-          reasoningEffort: "medium",
-          publishBehavior: "local_only",
-        },
-        targetLabel: "feature/auth-flow vs main",
-        compareTarget: {
-          kind: "default_branch",
-          label: "main",
-          ref: "main",
-          laneId: null,
-          branchRef: "main",
-        },
-        status: "completed",
-        summary: "Found two actionable risks in the auth flow changes.",
-        errorMessage: null,
-        findingCount: 2,
-        severitySummary: { critical: 0, high: 1, medium: 1, low: 0, info: 0 },
-        chatSessionId: "chat-review-1",
-        createdAt: yesterday,
-        startedAt: yesterday,
-        endedAt: now,
-        updatedAt: now,
-        findings: [
-          {
-            id: "finding-1",
-            runId: "review-run-1",
-            title: "Missing rollback when PKCE token exchange fails",
-            severity: "high",
-            body: "The new auth path persists session state before the token exchange completes, which can leave the lane in a partially authenticated state after a failed callback.",
-            confidence: 0.83,
-            evidence: [
-              {
-                kind: "diff_hunk",
-                summary:
-                  "Session write happens before token exchange success is confirmed.",
-                filePath: "src/auth/oauth.ts",
-                line: 128,
-                quote: "saveSession(session);",
-                artifactId: null,
-              },
-            ],
-            filePath: "src/auth/oauth.ts",
-            line: 128,
-            anchorState: "anchored",
-            sourcePass: "single_pass",
-            publicationState: "local_only",
-          },
-          {
-            id: "finding-2",
-            runId: "review-run-1",
-            title: "Callback route still lacks regression coverage",
-            severity: "medium",
-            body: "The diff updates the callback branching logic but does not add coverage for the rejected-code path, so the new behavior can regress without detection.",
-            confidence: 0.68,
-            evidence: [],
-            filePath: "src/auth/oauth.test.ts",
-            line: null,
-            anchorState: "file_only",
-            sourcePass: "single_pass",
-            publicationState: "local_only",
-          },
-        ],
-        artifacts: [
-          {
-            id: "artifact-review-diff-1",
-            runId: "review-run-1",
-            artifactType: "diff_bundle",
-            title: "Diff bundle",
-            mimeType: "text/plain",
-            contentText:
-              "diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts\n@@ ...",
-            metadata: null,
-            createdAt: now,
-          },
-        ],
-        publications: [],
-        chatSession: {
-          sessionId: "chat-review-1",
-          laneId: MOCK_LANES[1]?.id ?? "lane-auth",
-          provider: "codex",
-          model: "GPT-5.4",
-          modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
-          title: "Review: feature/auth-flow vs main",
-          surface: "automation",
-          automationId: null,
-          automationRunId: null,
-          status: "idle",
-          startedAt: yesterday,
-          endedAt: now,
-          lastActivityAt: now,
-          lastOutputPreview:
-            "Found two actionable risks in the auth flow changes.",
-          summary: "Saved review transcript for local diff review.",
-        },
-      }),
-      startRun: resolvedArg({
-        id: "review-run-queued",
-        projectId: MOCK_PROJECT.id,
-        laneId: MOCK_LANES[1]?.id ?? "lane-auth",
-        target: { mode: "lane_diff", laneId: MOCK_LANES[1]?.id ?? "lane-auth" },
-        config: {
-          compareAgainst: { kind: "default_branch" },
-          selectionMode: "full_diff",
-          dirtyOnly: false,
-          modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
-          reasoningEffort: "medium",
-          publishBehavior: "local_only",
-        },
-        targetLabel: "feature/auth-flow review",
-        compareTarget: null,
-        status: "queued",
-        summary: null,
-        errorMessage: null,
-        findingCount: 0,
-        severitySummary: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
-        chatSessionId: null,
-        createdAt: now,
-        startedAt: now,
-        endedAt: null,
-        updatedAt: now,
-      }),
-      rerun: resolvedArg({
-        id: "review-run-rerun",
-        projectId: MOCK_PROJECT.id,
-        laneId: MOCK_LANES[1]?.id ?? "lane-auth",
-        target: { mode: "lane_diff", laneId: MOCK_LANES[1]?.id ?? "lane-auth" },
-        config: {
-          compareAgainst: { kind: "default_branch" },
-          selectionMode: "full_diff",
-          dirtyOnly: false,
-          modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
-          reasoningEffort: "medium",
-          publishBehavior: "local_only",
-        },
-        targetLabel: "feature/auth-flow review",
-        compareTarget: null,
-        status: "queued",
-        summary: null,
-        errorMessage: null,
-        findingCount: 0,
-        severitySummary: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
-        chatSessionId: null,
-        createdAt: now,
-        startedAt: now,
-        endedAt: null,
-        updatedAt: now,
-      }),
-      cancelRun: resolvedArg(null),
-      recordFeedback: resolvedArg({
-        id: "rfb_mock",
-        findingId: "mock-finding",
-        runId: "review-run-1",
-        kind: "acknowledge" as const,
-        reason: null,
-        note: null,
-        snoozeUntil: null,
-        createdAt: now,
-      }),
-      listSuppressions: resolvedArg([]),
-      deleteSuppression: resolvedArg(true),
-      qualityReport: resolved({
-        projectId: MOCK_PROJECT.id,
-        totalRuns: 3,
-        totalFindings: 14,
-        addressedCount: 6,
-        dismissedCount: 3,
-        snoozedCount: 1,
-        suppressedCount: 2,
-        publishedCount: 5,
-        noiseRate: 0.35,
-        recentFeedback: [],
-        byClass: [
-          { findingClass: "intent_drift" as const, total: 4, addressed: 2 },
-          {
-            findingClass: "incomplete_rollout" as const,
-            total: 5,
-            addressed: 3,
-          },
-          {
-            findingClass: "late_stage_regression" as const,
-            total: 2,
-            addressed: 1,
-          },
-        ],
-      }),
-      onEvent: noop,
-    },
     actions: {
       listRegistry: resolved([]),
     },
@@ -5560,14 +5306,57 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onEvent: () => () => {},
     },
     iosSimulator: {
+      /*
+       * Supported, with a device list, so the Apple picker RENDERS here.
+       *
+       * It used to report `supported: false` and carry no `deviceList`, so the
+       * pane stopped at "this host is not a Mac" and the picker could only be
+       * seen by building the Electron app. Two rounds of that page shipped
+       * looking wrong while its unit tests were green, because jsdom computes
+       * no styles and a class name is not a layout. This preview is the cheap
+       * way to look at it, and it is only useful if the page it is meant to
+       * show is reachable.
+       *
+       * The fixture is the owner's own machine as of the round-5 live test:
+       * five simulators on one runtime, two booted, one held by another lane.
+       */
       getStatus: resolved({
         platform: "darwin",
-        supported: false,
+        supported: true,
         tools: [],
         activeDevice: null,
         activeSession: null,
         deviceSession: null,
+        laneDevice: null,
+        helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
       }),
+      deviceList: resolvedArg({
+        installed: BROWSER_MOCK_SIMULATORS,
+        lane: null,
+        owners: [{
+          udid: "repro",
+          laneId: "lane-other",
+          laneName: "Repro fix",
+          origin: "attached",
+          mine: false,
+        }],
+        disk: {
+          totalBytes: 18 * 1024 ** 3,
+          devices: [
+            { udid: "pro", bytes: 5 * 1024 ** 3 },
+            { udid: "repro", bytes: 2 * 1024 ** 3 },
+            { udid: "pad", bytes: 3.2 * 1024 ** 3 },
+          ],
+          root: "/mock/devices",
+          measuredAt: "2026-09-22T00:00:00.000Z",
+        },
+      } as any),
+      deviceStart: resolvedArg({} as any),
+      deviceStop: resolvedArg(undefined as any),
+      deviceCreate: resolvedArg({} as any),
+      deviceAttach: resolvedArg({} as any),
+      deviceDelete: resolvedArg(undefined as any),
+      deviceDeleteInstalled: resolvedArg(undefined as any),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),
       launch: resolvedArg({} as any),
@@ -5619,19 +5408,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       startStream: resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
-      getSimulatorWindowState: resolvedArg({ visible: false } as any),
-      listSimulatorWindowSources: resolved({
-        sources: [],
-        windowState: null,
-        message: null,
-      }),
-      retainWindowParking: resolved(false),
-      releaseWindowParking: resolved(undefined),
-      openSystemSettings: resolved({ ok: false }),
-      revealSimulator: resolved({
-        ok: false,
-        message: "Browser preview has no iOS Simulator window.",
-      }),
       tap: resolved({ ok: true as const }),
       typeText: resolved({ ok: true as const }),
       drag: resolved({ ok: true as const }),
@@ -5675,6 +5451,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         pid: null,
         checkedAt: now,
       }),
+      getForegroundApp: resolvedArg(null),
       startEventLog: resolvedArg(BROWSER_MOCK_IOS_LOG_PAGE),
       stopEventLog: resolved(BROWSER_MOCK_IOS_LOG_PAGE),
       getEventLog: resolvedArg(BROWSER_MOCK_IOS_LOG_PAGE),
@@ -5871,6 +5648,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dailyLog: "09:12 — Asked for PR queue summary → 3 PRs ready, 1 blocked on CI.",
         dailyLogDate: now.slice(0, 10),
         updatedAt: now,
+        projectBrief: [
+          "Goal: Keep one CTO who already knows this project.",
+          "Done when: A new idea can be handed over without restating the repo.",
+          "Constraints: The CTO directs agents. It does not commit the repository.",
+          "Open loops: Account copy still uploads from the brain process.",
+        ].join("\n"),
+        projectItems: [
+          "- (pinned) Desktop releases ship from tagged commits on main.",
+          "- (active) The team prefers concise status updates with a next action.",
+          "- (active) Current focus is the mobile sync transport.",
+        ].join("\n"),
+        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
       updateMemory: async (arg: { memory?: string }) => ({
         memory: arg?.memory ?? "",
@@ -5878,6 +5667,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dailyLog: "",
         dailyLogDate: now.slice(0, 10),
         updatedAt: now,
+        projectBrief: [
+          "Goal: Keep one CTO who already knows this project.",
+          "Done when: A new idea can be handed over without restating the repo.",
+          "Constraints: The CTO directs agents. It does not commit the repository.",
+          "Open loops: Account copy still uploads from the brain process.",
+        ].join("\n"),
+        projectItems: [
+          "- (pinned) Desktop releases ship from tagged commits on main.",
+          "- (active) The team prefers concise status updates with a next action.",
+          "- (active) Current focus is the mobile sync transport.",
+        ].join("\n"),
+        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
       searchMemory: resolvedArg({ query: "", rows: [] }),
       ensureSession: resolvedArg({

@@ -107,6 +107,24 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("issue", "addComment")).toBe(true);
   });
 
+  it("exposes every iOS simulator action the preload routes as a runtime action", () => {
+    // The `ios_simulator` domain spreads `APPLE_AGENT_ACTIONS`, and the preload
+    // calls some of those through `callIosSimulatorActionOr` — a runtime action
+    // the daemon rejects if the name is missing here. `recordingsTotalBytes`
+    // was implemented and exposed but absent from the list, so the runtime path
+    // rejected it and the Diagnostics row silently fell back to a tree walk.
+    for (const action of [
+      "recordingsTotalBytes",
+      "startStream",
+      "stopStream",
+      "deviceStart",
+      "deviceCreate",
+    ]) {
+      expect(isAllowedAdeAction("ios_simulator", action), action).toBe(true);
+    }
+    expect(isAllowedAdeAction("ios_simulator", "definitelyNotAnAction")).toBe(false);
+  });
+
   it("exposes the session-scoped Linear link lane actions for CLI/automation reach", () => {
     expect(isAllowedAdeAction("lane", "attachLinearIssueToSession")).toBe(true);
     expect(isAllowedAdeAction("lane", "detachLinearIssueFromSession")).toBe(true);
@@ -203,6 +221,11 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(true);
     expect(isAllowedAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(true);
     expect(isAllowedAdeAction("ios_simulator", "renderCurrentPreview")).toBe(true);
+    expect(isAllowedAdeAction("ios_simulator", "pressButton")).toBe(true);
+    expect(isAllowedAdeAction("ios_simulator", "rotate")).toBe(true);
+    // The boot contract rides `apple.invoke` from the web client, which is
+    // gated by this list.
+    expect(isAllowedAdeAction("ios_simulator", "deviceStart")).toBe(true);
     expect(isCtoOnlyAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(false);
     expect(isCtoOnlyAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(false);
     expect(isCtoOnlyAdeAction("ios_simulator", "renderCurrentPreview")).toBe(false);
@@ -284,6 +307,7 @@ describe("isAllowedAdeAction", () => {
       "listClaudeOutputStyles", "listClaudePlugins", "listCodexPlugins", "listClaudeSessions",
       "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
       "listSubagents", "markCrossMachineHandoff", "modelCatalog", "resumeUsageLimitNow",
+      "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
       "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
       "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
@@ -587,7 +611,6 @@ const CTO_DOMAIN_COVERAGE: ReadonlyArray<{
   // other writer is the `ingest_computer_use_artifacts` RPC tool, which owns
   // the owner-claim and caller-root validation. See `registry.test.ts`.
   { domain: "computer_use_artifacts", why: "proof list and review", actions: ["listArtifacts", "readArtifactPreview", "updateArtifactReview"] },
-  { domain: "review", why: "launch and read code-review runs", actions: ["listLaunchContext", "startRun", "rerun", "cancelRun", "listRuns", "getRunDetail", "qualityReport"] },
   { domain: "search", why: "project-wide universal search", actions: ["query", "indexStatus"] },
   { domain: "usage", why: "token, cost, and rate-limit reads", actions: ["getAdeUsageStats", "getUsageSnapshot"] },
   { domain: "budget", why: "spend caps and cumulative usage reads", actions: ["getConfig", "getCumulativeUsage", "checkBudget"] },
@@ -629,7 +652,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
     // reason has to beat "automations.saveRule already carries the same power".
     for (const [domain, action] of [
       ["automation_planner", "saveDraft"],
-      ["review", "startRun"],
       ["search", "query"],
       ["ios_simulator", "listDevices"],
       ["app_control", "listTargets"],

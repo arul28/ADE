@@ -178,7 +178,7 @@ function useMeasuredWidth(): { ref: (node: HTMLDivElement | null) => void; width
  * Left edge is the grid button back to the picker; then one tab per OPEN tool,
  * left-aligned, the active one lit; then a `+` for another. There is no centred
  * title any more — the lit tab is the title, and a bar that also spelled the
- * name out was saying the same thing twice in 36px. A tool's one compact fact
+ * name out was saying the same thing twice in 32px. A tool's one compact fact
  * (the page you are on, the branch) lives in its tab's tooltip.
  *
  * Tools that are NOT open still report themselves: a running shell, a tab an
@@ -290,7 +290,9 @@ export function WorkToolHeader({
   const tabTooltip = (tool: WorkSidebarTab): string => {
     const definition = workToolDefinition(tool);
     if (!definition) return workToolLabel(tool);
-    if (tool === activeTool && contextLabel) return `${definition.label} · ${contextLabel}`;
+    if (tool === activeTool && contextLabel) return `${workToolLabel(tool)} · ${contextLabel}`;
+    const status = statuses[tool];
+    if (definition.tabTooltip && !status?.line) return definition.tabTooltip;
     const { tooltipLabel } = workToolSummary(
       definition,
       statuses[tool],
@@ -302,7 +304,7 @@ export function WorkToolHeader({
   return (
     <div
       ref={ref}
-      className="ade-pane-chrome ade-tool-pane-rule ade-tool-header flex min-h-[36px] shrink-0 items-center gap-1 px-2"
+      className="ade-pane-chrome ade-tool-pane-rule ade-tool-header flex shrink-0 items-center gap-1 px-2"
     >
       <PaneTooltip label="Back to tools" shortcut={backShortcut} side="bottom">
         <button
@@ -549,7 +551,7 @@ function WorkToolTab({
             className="shrink-0"
           />
           {showLabel ? (
-            <span className="min-w-0 truncate">{definition.label}</span>
+            <span className="min-w-0 truncate">{workToolLabel(tool)}</span>
           ) : null}
           {dotState !== "idle" && !active ? (
             <span
@@ -576,7 +578,7 @@ function WorkToolTab({
         // tabs themselves keep. The keyboard closes with Delete/Backspace on
         // the focused tab, or through the overflow menu.
         tabIndex={-1}
-        aria-label={`Close ${definition.label}`}
+        aria-label={`Close ${workToolLabel(tool)}`}
         data-tool-tab-close={tool}
         // The layout contract, named rather than left to be read back out of
         // the class string: `corner` is the 24px tab's top-right badge,

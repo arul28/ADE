@@ -9,6 +9,7 @@ import {
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
+import type { EventBufferDrainOptions } from "./eventBuffer";
 import {
   issueBuiltInBrowserActorCapability,
   resetBuiltInBrowserActorCapabilitiesForTest,
@@ -863,6 +864,16 @@ function createFakePathExecutable(dir: string, name: string): string {
   return executablePath;
 }
 
+
+/** Mocked drains apply the route's category filter the way the real buffer does. */
+function applyDrainFilter<T extends { events: Array<{ category: string }> }>(
+  options: EventBufferDrainOptions | undefined,
+  result: T,
+): T {
+  const filter = options?.filter as ((event: { category: string }) => boolean) | undefined;
+  return filter ? { ...result, events: result.events.filter(filter) } : result;
+}
+
 describe("adeRpcServer", () => {
   it("does not report a green rollup to agents when only third-party bots reported", async () => {
     // ADE-135: `summarizePrChecks` initialised `overall` to "passing" and was
@@ -1465,6 +1476,27 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.computerUseArtifactBrokerService.listArtifacts).toHaveBeenCalledTimes(2);
     expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
       artifactIds: [owned.id],
+    });
+
+    /*
+     * regression: a broken artifact that belongs to NOBODY must be prunable.
+     *
+     * The filter above asks "is this in one of MY owners' sets", and an
+     * ownerless row is in nobody's — so every scoped caller skipped it and
+     * only a project-wide one could clean it up. Twenty such rows sat in the
+     * owner's database for two months: files deleted long ago, invisible in
+     * every drawer, and immune to the tool whose job is removing exactly that.
+     * Both halves must hold — ownerless AND broken — so this can never reach
+     * another lane's proof.
+     */
+    fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts.mockClear();
+    fixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts.mockReturnValueOnce([
+      { artifactId: "orphan-1", ownerCount: 0 },
+      { artifactId: "someone-elses", ownerCount: 1 },
+    ] as never);
+    await callTool(handler, "prune_broken_computer_use_artifacts", {});
+    expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
+      artifactIds: ["orphan-1"],
     });
 
     const foreignRecover = await callTool(handler, "recover_computer_use_artifact", {
@@ -2158,6 +2190,95 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("infers the lane for a standalone caller when the brain's ceiling is cto, as a real brain's is", async () => {
+    // The helper above sets ADE_DEFAULT_ROLE to whatever role the test asks
+    // for, so every existing case runs against an "agent" ceiling. A real
+    // brain runs at "cto" — `ps -wwE` on the installed service and on a dev
+    // brain both say so — and this is the only dimension the fixture fakes.
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { callerId: "ade-cli:4242", role: "agent" } },
+      });
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        callerRoot: laneRoot,
+        inputs: [{ kind: "screenshot", title: "Proof", path: path.join(laneRoot, "proof.png") }],
+      });
+
+      expect(response.isError).toBeUndefined();
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owners: expect.arrayContaining([expect.objectContaining({ kind: "lane", id: "lane-1" })]),
+        }),
+      );
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
+  });
+
+  it("accepts the lane an unbound caller names while standing inside its worktree", async () => {
+    // An OpenCode agent's shell carries no chat session: one `opencode serve`
+    // is shared across chats, so it cannot hold a per-chat environment. Naming
+    // its lane used to be refused for not matching a session lane it could not
+    // have. Containment is the stronger claim — it is where the caller IS.
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+    const response = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      toolName: "proof attach",
+      callerRoot: laneRoot,
+      laneId: "lane-1",
+      inputs: [{ kind: "screenshot", title: "Named lane proof", path: path.join(laneRoot, "proof.png") }],
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owners: expect.arrayContaining([expect.objectContaining({ kind: "lane", id: "lane-1" })]),
+      }),
+    );
+  });
+
+  it("still refuses a lane an unbound caller names from outside its worktree", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-1"), { recursive: true });
+    const strayRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stray-named-lane-"));
+
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+    try {
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        callerRoot: strayRoot,
+        laneId: "lane-1",
+        inputs: [{ kind: "screenshot", title: "Stray proof", path: path.join(strayRoot, "proof.png") }],
+      });
+      expect(response.isError).toBe(true);
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(strayRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a relative caller root, which would resolve differently on each side", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -2773,8 +2894,8 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
-    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-8"]));
-    expect(createCall.startupCommand).toContain("claude-opus-4-8");
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
+    expect(createCall.startupCommand).toContain("claude-opus-5");
     expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-8");
   });
 
@@ -6042,53 +6163,6 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {
-    const fixture = createRuntime();
-    const startArgs = {
-      target: { mode: "lane_diff", laneId: "lane-1" },
-      config: {
-        compareAgainst: { kind: "default_branch" },
-        selectionMode: "full_diff",
-        dirtyOnly: false,
-        modelId: "openai/gpt-5.4",
-        reasoningEffort: "medium",
-        budgets: {
-          unlimited: true,
-          maxFiles: Number.MAX_SAFE_INTEGER,
-          maxDiffChars: Number.MAX_SAFE_INTEGER,
-          maxPromptChars: Number.MAX_SAFE_INTEGER,
-          maxFindings: Number.MAX_SAFE_INTEGER,
-          maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
-          maxPublishedFindings: Number.MAX_SAFE_INTEGER,
-        },
-        publishBehavior: "local_only",
-      },
-    };
-    const startRun = vi.fn(async (args: typeof startArgs) => ({
-      id: "review-run-1",
-      laneId: args.target.laneId,
-      config: args.config,
-      status: "queued",
-    }));
-    (fixture.runtime as any).reviewService = { startRun };
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const response = await callTool(handler, "run_ade_action", {
-      domain: "review",
-      action: "startRun",
-      args: startArgs,
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(startRun).toHaveBeenCalledWith(startArgs);
-    expect(startRun.mock.calls[0][0].config.budgets).toEqual(startArgs.config.budgets);
-    expect(response.structuredContent.result.config.budgets).toEqual(startArgs.config.budgets);
-    expect(response.structuredContent.result.config.budgets.unlimited).toBe(true);
-  });
-
-
-
   it("rejects run_ade_action when the action is not a callable on the domain service", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -6103,6 +6177,23 @@ describe("adeRpcServer", () => {
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
       "Action 'git.nonexistent_action' is not callable.",
+    );
+  });
+
+  it("rejects run_ade_action for the removed review domain without crashing", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "review",
+      action: "startRun",
+      args: { target: { mode: "lane_diff", laneId: "lane-1" } },
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "Domain 'review' is unavailable in this runtime.",
     );
   });
 
@@ -6939,7 +7030,7 @@ describe("adeRpcServer", () => {
   it("stream_events respects category filter", async () => {
     const fixture = createRuntime();
     // Return events with different categories
-    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number, _limit?: number, options?: EventBufferDrainOptions) => applyDrainFilter(options, {
       events: [
         { id: cursor + 1, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "step_started" } },
         { id: cursor + 2, timestamp: new Date().toISOString(), category: "runtime", payload: { type: "terminal_session_changed" } },
@@ -6965,7 +7056,7 @@ describe("adeRpcServer", () => {
 
   it("stream_events supports the PTY category", async () => {
     const fixture = createRuntime();
-    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number, _limit?: number, options?: EventBufferDrainOptions) => applyDrainFilter(options, {
       events: [
         { id: cursor + 1, timestamp: new Date().toISOString(), category: "runtime", payload: { type: "terminal_session_changed" } },
         { id: cursor + 2, timestamp: new Date().toISOString(), category: "pty", payload: { type: "pty_data", event: { sessionId: "session-1", data: "hi" } } },
@@ -6991,7 +7082,7 @@ describe("adeRpcServer", () => {
 
   it("stream_events returns runtime validation contract events when requested", async () => {
     const fixture = createRuntime();
-    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number, _limit?: number, options?: EventBufferDrainOptions) => applyDrainFilter(options, {
       events: [
         {
           id: cursor + 1,
@@ -7135,6 +7226,35 @@ describe("adeRpcServer", () => {
       }
       expect(caught).toBeInstanceOf(JsonRpcError);
       expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
+    });
+
+    it("regression: never owns proof by a synthetic <client>:<pid> caller id", () => {
+      // The shape of a real incident. An agent whose shell carried no chat
+      // session filed two screenshots; the only owner written was
+      // `chat_session: ade-cli:56056`, so no lane resolved and no drawer could
+      // scope to it. The images were on disk and reachable by nobody.
+      const session = makeSession();
+      session.identity.callerId = "ade-cli:56056";
+      session.identity.role = "agent";
+
+      const owners = resolveComputerUseOwners(session, { laneId: "lane-1" });
+
+      expect(owners).toEqual([
+        expect.objectContaining({ kind: "lane", id: "lane-1" }),
+      ]);
+      expect(owners.some((owner) => owner.id.includes(":"))).toBe(false);
+    });
+
+    it("still owns proof by a real chat session id that merely arrived as the caller id", () => {
+      const session = makeSession();
+      session.identity.callerId = "824b0410-b015-4aa5-82c9-125d5d7e6f15";
+      session.identity.role = "agent";
+
+      const owners = resolveComputerUseOwners(session, {});
+
+      expect(owners).toEqual([
+        expect.objectContaining({ kind: "chat_session", id: "824b0410-b015-4aa5-82c9-125d5d7e6f15" }),
+      ]);
     });
   });
 });

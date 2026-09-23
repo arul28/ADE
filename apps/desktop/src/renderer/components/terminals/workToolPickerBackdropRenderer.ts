@@ -58,7 +58,11 @@ function matches(query: string): boolean {
   }
 }
 
-export type BackdropRenderer = { dispose: () => void };
+export type BackdropRenderer = {
+  dispose: () => void;
+  /** Pause the 30 fps loop without dropping the context or the last frame. */
+  setPlaying: (playing: boolean) => void;
+};
 
 /**
  * Start the mesh on `canvas`, or refuse.
@@ -72,8 +76,11 @@ export function createBackdropRenderer(options: {
   canvas: HTMLCanvasElement;
   theme: ThemeId;
   onRefused: () => void;
+  /** When false, the last frame stays on the canvas and the loop does not run. */
+  playing?: boolean;
 }): BackdropRenderer | null {
   const { canvas, theme, onRefused } = options;
+  let playing = options.playing !== false;
 
   const pendingRelease = pendingContextReleases.get(canvas);
   if (pendingRelease !== undefined) window.clearTimeout(pendingRelease);
@@ -82,6 +89,7 @@ export function createBackdropRenderer(options: {
   let gl: WebGLRenderingContext | null = null;
   try {
     gl = canvas.getContext("webgl", {
+      alpha: true,
       antialias: false,
       depth: false,
       stencil: false,
@@ -264,8 +272,10 @@ export function createBackdropRenderer(options: {
   const frameInterval = () =>
     (chasingPointer() ? BACKDROP_FRAME_MS : BACKDROP_IDLE_FRAME_MS);
 
+  // `playing` is the caller's pause (a parked Work surface): the loop stops and
+  // the last frame stays on the canvas, exactly like every other gate here.
   const canAnimate = () =>
-    !reduceMotion && !lowPower && !disposed && visible && focused && inView;
+    playing && !reduceMotion && !lowPower && !disposed && visible && focused && inView;
 
   /**
    * Twenty seconds after the last sign of life, stop drawing and keep the frame.
@@ -534,9 +544,17 @@ export function createBackdropRenderer(options: {
   // that is blurred or a tab that is hidden at mount would otherwise show an
   // empty canvas over the pane until it was looked at.
   draw(0);
-  if (!reduceMotion) requestRender();
+  if (playing && !reduceMotion) requestRender();
 
   return {
+    setPlaying: (next: boolean) => {
+      if (playing === next) return;
+      playing = next;
+      // Coming back is a sign of life: restart the idle-freeze clock too, or a
+      // picker parked for longer than the freeze window would resume frozen.
+      if (playing) wake();
+      else stop();
+    },
     dispose: () => {
       disposed = true;
       stop();

@@ -8,12 +8,17 @@
 > exported file. The mark is a purple gear-and-wrench mark
 > (`renderer/components/shared/CustomToolMark.tsx`), never the ADE logo.
 
-A harness is a saved pairing of a **body** — the agent ADE runs — and a
-**brain** — where that agent gets its intelligence. It carries the model, the
-thinking level, the permission mode, what subagents run on, a name, an accent
-colour, and a logo. Presets live in Settings › Providers › Custom — its own
-section below the provider list — and appear as the first tab of every model
-picker.
+A harness preset pairs a **harness** — the program ADE runs — with a **model
+provider** — the account, key, or subscription that answers for it. It carries
+the model, the thinking level, what subagents run on, a name, an accent colour,
+and a logo.
+
+It does not carry a permission mode. Permission tiers belong to the harness and
+are chosen at launch, the same way every other provider does it, so a preset
+can never disagree with the composer.
+
+Presets live in Settings › Providers › Custom — its own section below the
+provider list — and appear as the first tab of every model picker.
 
 ## What a harness holds
 
@@ -21,11 +26,10 @@ picker.
 |---|---|
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
 | Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
-| Model | A model id from the registry, or free text when the source is a key pointing at a custom OpenAI-compatible endpoint. |
+| Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
 | Effort | The model's thinking tier, when it offers tiers. |
 | Subagents | A model id, or `Same as main`. |
 | Advanced (Claude only) | Per-built-in pins for Explore, Plan, and general-purpose. Each defaults to `Follows subagents`. |
-| Permission mode | The harness's own vocabulary — Claude's five modes, Codex's four presets, Droid's five levels, Cursor's machine-reported list, or the runtime's six-value set. |
 | Name, accent, logo | The identity a preset is recognised by. The logo is the ADE mark, a provider mark, an uploaded 256×256 PNG, or a generated one. |
 
 A preset never holds a credential. The `key` source stores the credential's id
@@ -44,26 +48,28 @@ half of each other's edits into one preset.
 
 The wizard is three steps.
 
-1. **Pick an agent.** Every harness is shown with its real provider mark. A
+1. **Pick a harness.** Every harness is shown with its real provider mark. A
    harness that is not installed or not signed in shows the reason and stays
    selectable — a preset is a saved intention, not a description of this
    computer.
-2. **Pick a brain.** Accounts list their email and plan; stored keys list their
-   label and masked tail; subscription rows carry a Sign in button. When the
-   host exposes no proxy sign-in, that button is disabled and reads
-   "Sign-in through ADE's proxy is not available yet on this host." ADE never
-   fakes the sign-in. Below the source list: the model (filtered to the chosen
-   source's provider family), the effort, the permission mode, the subagent
-   model, and a folded **Advanced** disclosure for Claude's built-in agents.
-   Pinning a built-in to a specific model shows the note that the agent now
-   runs on ADE's copy of Anthropic's prompt and stops tracking Claude Code.
+2. **Pick a model provider.** The list is split into two groups. **Your
+   accounts and keys** holds the provider sign-ins and the stored API keys;
+   accounts list their email and plan, keys list their label and masked tail.
+   **Through ADE's proxy** holds the subscription rows, each with a Sign in
+   button. When the host exposes no proxy sign-in, that button is disabled and
+   reads "Sign-in through ADE's proxy is not available yet on this host." ADE
+   never fakes the sign-in. A group with no rows shows no heading. Below the
+   list: the model, the effort, the subagent model, and a folded **Advanced**
+   disclosure for Claude's built-in agents. Pinning a built-in to a specific
+   model shows the note that the agent now runs on ADE's copy of Anthropic's
+   prompt and stops tracking Claude Code.
 3. **Name it.** Name, accent colour, and a logo tile — Default (the purple
    gear-and-wrench mark), provider logo,
    Upload (which opens a round crop with drag and zoom and writes a 256×256
    PNG), and Generate when the host exposes a generator. A live preview chip
    shows the result.
 
-The chosen body slides in and the brain card snaps onto it in the preset's
+The chosen harness slides in and the model card snaps onto it in the preset's
 accent. Both respect `prefers-reduced-motion`.
 
 ## Subscription sources
@@ -82,8 +88,8 @@ using its selected model and source until you edit or delete it.
 ## Managing them
 
 The list page lays its rows flat on the page — no table inside a box. Each row
-reads left to right: the preset's logo, its name, the agent that runs it with
-that agent's provider mark, and its models labelled by role (`main`,
+reads left to right: the preset's logo, its name, the harness that runs it with
+that harness's provider mark, and its models labelled by role (`main`,
 `subagents`) with each model's own mark. Each row carries Edit, Rename,
 Duplicate, Export, and Delete; Delete asks first. The toolbar holds exactly two
 buttons — **Add new** and **Import** — and the explanation of what a custom
@@ -104,11 +110,10 @@ it.
 Every model picker has a **Custom** rail entry above Favorites and Recents,
 marked with the purple gear-and-wrench mark at the same size as the provider logos beside it.
 The rows are drawn exactly like the provider model rows — mark, name, a chip
-naming the agent, one muted subtitle — and the caret expands each into a
-labelled panel: agent, source, models by role, built-in pins, and permission
-mode, each with the logo that says whose it is, so a one-click launch cannot
-quietly apply a permission mode you did not see. The search box filters presets
-by name, agent, and model. An empty list points at Settings › Providers ›
+naming the harness, one muted subtitle — and the caret expands each into a
+labelled panel: harness, source, models by role, and built-in pins, each with
+the logo that says whose it is, so a one-click launch shows everything it is
+about to apply. The search box filters presets by name, harness, and model. An empty list points at Settings › Providers ›
 Custom.
 
 ## Launching on a preset
@@ -182,9 +187,10 @@ Pinning Explore, Plan or general-purpose sends an SDK `agents` entry. The SDK
 has no "same agent, different model" overlay — an entry replaces the whole
 definition — so ADE supplies its own copy of Anthropic's prompt and the
 built-in's `disallowedTools` alongside the model. Those copies live in
-`shared/claudeBuiltinAgentPrompts.ts` with the CLI version they came from, and
-they stop tracking upstream the moment they are used. The wizard says so at the
-point of the choice.
+`shared/claudeBuiltinAgentPrompts.ts`, stamped with the CLI version they came
+from (`CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION`) and re-extracted from the
+pinned binary whenever the SDK pin moves; a pinned agent stops tracking upstream
+the moment it is used. The wizard says so at the point of the choice.
 
 ### The CLI gate
 
@@ -208,13 +214,43 @@ not list presets at all, so the choice cannot be made and then ignored.
 - `apps/desktop/src/main/services/chat/harnessPresetCredentialCatalog.ts` —
   resolves direct stored-key launches and OpenCode custom-provider credentials,
   decoding only safe ids and returning the model catalog used by the picker.
-- `apps/desktop/src/renderer/components/settings/harnesses/` — the list page,
-  the wizard, the logo cropper, and the readers for accounts, keys, harness
-  availability, model choices, and permission vocabularies.
+- `apps/desktop/src/renderer/components/settings/harnesses/` — the settings
+  surface:
+  - `HarnessesPage.tsx` — the list page and its row actions.
+  - `HarnessWizard.tsx` — the coordinator: draft state, validation, save, and
+    step 1 (pick a harness). The two later steps and the shared primitives were
+    lifted out of it, so no one file owns the whole wizard.
+  - `HarnessWizardStepModel.tsx` — step 2: the two-group source list (your
+    accounts and keys, then subscriptions through ADE's proxy) plus the model,
+    effort, subagent, and Advanced controls.
+  - `HarnessWizardStepIdentity.tsx` — step 3: name, accent, and logo.
+  - `wizardPrimitives.tsx` — the `Row`, `SectionLabel` and `FieldError`
+    primitives the steps share.
+  - `harnessSources.ts` — reads the provider accounts, the stored keys, and the
+    proxy subscriptions into the rows step 2 groups. The renderer-local type is
+    `HarnessModelSource`.
+  - `harnessAvailability.ts` — whether a harness is installed and signed in on
+    this computer, as a reason string rather than a disabled row.
+  - `harnessModels.ts` — pure: source → provider family, the model choices for a
+    source (a key's declared models, then the live catalog, then the static
+    registry), and whether the id must be typed instead of picked. It takes the
+    catalog as an argument; fetching it is the ModelPicker's job.
+  - `presetFacts.tsx`, `HarnessLogoCropper.tsx`, `useHarnessPresets.ts` — the
+    row facts, the round 256x256 crop, and the store binding.
+  - `harnessTestCatalog.ts` — the one typed catalog fixture the folder's tests
+    share.
 - `apps/desktop/src/renderer/components/shared/HarnessLogo.tsx` — the one place
   a preset's mark is drawn.
 - `apps/desktop/src/renderer/components/shared/ModelPicker/HarnessPresetList.tsx`
-  — the picker's Harnesses tab.
+  — the picker's Custom tab.
+- `apps/desktop/src/renderer/components/shared/ModelPicker/sharedCatalogFetch.ts`
+  — the one de-duplicated runtime-catalog fetch. The request-key format and the
+  bucket claim live here, and both the composer's picker and the wizard's model
+  select go through it, so there is no second hand-built copy of that
+  concurrency protocol to drift.
+- `apps/desktop/src/renderer/components/shared/ModelPicker/useRuntimeCatalogForFamily.ts`
+  — React state over the runtime catalog for one provider family, which is what
+  the wizard's model select consumes instead of the picker's loading ladder.
 - `apps/desktop/src/main/services/chat/harnessPresetLaunch.ts` — the resolver:
   one preset (or one stored key) in, one launch environment out.
 - `apps/desktop/src/main/services/chat/harnessPresetConfigHomes.ts` — the
@@ -247,7 +283,8 @@ not list presets at all, so the choice cannot be made and then ignored.
   present, default selection, per-provider settings, and the config home each
   account resolves to.
 - `apps/desktop/src/shared/claudeBuiltinAgentPrompts.ts` — ADE's copies of the
-  three built-in agent prompts, with the CLI version they were taken from.
+  three built-in agent prompts, stamped with the CLI version they were taken
+  from and re-extracted from the pinned binary when the SDK pin moves.
 - `apps/desktop/src/shared/harnessPresetCliGate.ts` — the locked CLI gate.
 - `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` — how an agent
   discovers and uses a preset.

@@ -190,7 +190,9 @@ break the connection or put the host in `limited` mode.
 usage-limit **Resume now** button unless the host advertises the action, so an
 older brain simply offers the states that re-arm through `chat.updateSession`,
 and an older phone that never calls it must not be flipped to `limited`
-against a newer host.
+against a newer host. `chat.continueUsageLimitOnAlternate` is optional for the
+same reason: the phone shows **Continue on** that account only when the host
+advertises it and the resume carries `alternateAccount`.
 
 ## Registry
 
@@ -433,6 +435,11 @@ never mint a second one. It answers `{ ok: true, turnId }` or, when the host
 declines to send, `{ ok: false, reason: "no_live_usage_limit" |
 "resume_in_flight", message }` — a refusal is an ordinary answer, not an error,
 and nothing is sent or mutated in either case.
+`chat.continueUsageLimitOnAlternate` takes `{ sessionId }` and is owner-only
+and non-queueable for the same reason. The account is the one already published
+on the live resume. It answers `{ ok: true, sessionId }` for the new chat, or
+`{ ok: false, reason: "no_live_usage_limit" | "no_alternate_account" |
+"handoff_failed", message }`.
 Create is owner-only (`viewerAllowed: false`), so paired controller devices can
 discover the capability but cannot invoke it. Pause, resume, and cancel are
 viewer-allowed recovery controls. All three are deliberately

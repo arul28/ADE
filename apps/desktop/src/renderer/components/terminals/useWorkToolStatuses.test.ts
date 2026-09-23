@@ -172,14 +172,36 @@ describe("work tool status lines", () => {
   });
 
   it("keeps the other tools to a fact each", () => {
-    expect(iosStatusLine(null).line).toBe("Not booted");
-    expect(iosStatusLine({ deviceName: "iPhone 17 Pro" } as never).line).toBe("iPhone 17 Pro");
+    // §9's card subtitle: the LANE's device and what it is doing, not the app
+    // session — a lane can own a booted simulator with nothing installed on it.
+    expect(iosStatusLine(null).line).toBe("No device");
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "running" })).toMatchObject({
+      line: "iPhone 17 Pro · Running",
+      live: true,
+    });
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "starting" })).toMatchObject({
+      line: "iPhone 17 Pro · Starting",
+      live: false,
+      attention: true,
+    });
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "off" })).toMatchObject({
+      line: "iPhone 17 Pro · Off",
+      live: false,
+    });
     expect(appControlStatusLine(null).line).toBe("No app");
     expect(appControlStatusLine({ label: "Zen", status: "running" } as never).line).toBe("Zen");
+    expect(appControlStatusLine({
+      label: "sh -lc 'ADE_PACKAGE_CHANNEL= npm run dev:desktop -- --socket /tmp/x.sock'",
+      status: "running",
+    } as never).line).toBe("Desktop app");
+    expect(appControlStatusLine({
+      label: "Update npm package metadata",
+      status: "running",
+    } as never).line).toBe("Update npm package metadata");
   });
 
   it("keeps the fixed lines inside the one-line budget", () => {
-    for (const line of ["No shells", "2 shells", "No tabs", "Unpublished", "3 unstaged · 1 staged", "Not booted", "No app"]) {
+    for (const line of ["No shells", "2 shells", "No tabs", "Unpublished", "3 unstaged · 1 staged", "Not booted", "No app", "Desktop app"]) {
       expect(line.length).toBeLessThanOrEqual(ONE_LINE_BUDGET);
     }
   });
@@ -347,7 +369,7 @@ describe("useWorkToolStatuses shell re-reads", () => {
     );
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-    expect(result.current.statuses.terminal?.line).toBe("No shells");
+    await waitFor(() => expect(result.current.statuses.terminal?.line).toBe("No shells"));
 
     // A panel mounts and reports a live shell; the daemon's list now has it too.
     shells = [{ title: "zsh", status: "running", active: true }];

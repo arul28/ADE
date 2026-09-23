@@ -718,6 +718,18 @@ export type SyncAccountDirectoryHealth = {
   reachableEndpointCount: number;
   lastLegDurations: SyncAccountDirectoryLegDurations;
   failingSinceMs: number | null;
+  /**
+   * When the account removed this machine (ISO), while the directory refuses
+   * it. The desktop names the date in its banner. Optional because brains
+   * built before this field never send it.
+   */
+  revokedAt?: string | null;
+  /**
+   * Epoch ms at which the automatic repair stopped trying for the current
+   * refusal. Cleared by the next successful publish. Optional for the same
+   * reason as `revokedAt`.
+   */
+  recoveryGaveUpAt?: number | null;
 };
 
 export function createSyncAccountDirectoryHealth(
@@ -2242,6 +2254,7 @@ export type SyncRemoteCommandAction =
   | "chat.listScheduledWork"
   | "chat.cancelScheduledWork"
   | "chat.resumeUsageLimitNow"
+  | "chat.continueUsageLimitOnAlternate"
   | "chat.setScheduledWorkPaused"
   | "chat.getTranscript"
   | "chat.getChatEventHistory"
@@ -2495,6 +2508,19 @@ export type SyncRemoteCommandAction =
   | "macDesktop.returnControl"
   | "macDesktop.renewLease"
   | "macDesktop.input"
+  // Apple device environment. `apple.status` and `apple.streamTicket` are
+  // viewer-allowed (the phone is view-only); everything that drives or
+  // provisions a device is controller-only, so a viewer role cannot tap.
+  | "apple.status"
+  | "apple.streamTicket"
+  | "apple.input"
+  | "apple.invoke"
+  | "apple.deviceList"
+  | "apple.deviceCreate"
+  | "apple.deviceAttach"
+  | "apple.recordList"
+  | "apple.recordStart"
+  | "apple.recordStop"
   | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {

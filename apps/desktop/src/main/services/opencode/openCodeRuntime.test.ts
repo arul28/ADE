@@ -703,6 +703,32 @@ describe("buildOpenCodeConfig provider injection", () => {
   });
 });
 
+describe("buildOpenCodeConfig bundled agent skills", () => {
+  it("hands ADE's skill roots to OpenCode's own skills.paths discovery", () => {
+    // OpenCode never reads ADE_AGENT_SKILLS_DIRS. Before this, its agents could
+    // only reach ADE's bundled skills by reading a path out of the prompt, and
+    // transcripts show them shelling out and glob-searching to find the files.
+    const config = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as never,
+      agentSkillRoots: ["/opt/ade/agent-skills", "/home/dev/.agents/skills"],
+    }) as Record<string, any>;
+
+    expect(config.skills).toEqual({
+      paths: ["/opt/ade/agent-skills", "/home/dev/.agents/skills"],
+    });
+  });
+
+  it("omits the key entirely when there is no root to advertise", () => {
+    const config = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as never,
+      agentSkillRoots: ["   "],
+    }) as Record<string, any>;
+
+    expect(config.skills).toBeUndefined();
+    expect("skills" in config).toBe(false);
+  });
+});
+
 describe("buildOpenCodeConfig user-owned keys", () => {
   const config = (): Record<string, any> =>
     buildOpenCodeConfig({ projectConfig: { ai: {} } as any }) as Record<string, any>;

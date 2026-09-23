@@ -33,8 +33,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (`pairedRuntimeRoutes.ts`), typed handshake rejections
   (`pairedRuntimeErrors.ts` — `PairedRuntimeHelloRejectedError` carries the
   host's structured `hello_error.code` and the rejecting host's identity, so
-  classification never pattern-matches the host's prose), paired bootstrap and
-  connection diagnostics;
+  classification never pattern-matches the host's prose;
+  `PairedRuntimeRpcOverBudgetError` marks an RPC channel the host closed with
+  `rpc_over_budget`, which `RemoteConnectionService` never counts as an
+  unreachable machine), paired bootstrap and connection diagnostics;
   plus the Advanced SSH transport (multi-route fallback, bounded connect/exec
   timeouts, strict host-key verification, normalized handshake errors) and
   runtime upload/bootstrap. The folder also owns the target registry, runtime
@@ -44,7 +46,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   optional-action fallbacks, event-stream gap/epoch propagation, route-pinned
   sensitive action dispatch, unknown-outcome errors for non-replayable actions
   that lose confirmation, and capability-gated handoff storage preflight),
-  connection service, and Bonjour + Tailscale discovery.
+  connection service (which shares one host read between identical concurrent
+  `streamEvents` calls, and stages pasted attachment bytes through
+  `uploadChatAttachmentBytes` and the private temp file of
+  `attachmentUploadClient.withTempAttachmentFile`), and Bonjour + Tailscale
+  discovery. See
+  [internal architecture](./internal-architecture.md) for the over-budget
+  close.
 - `apps/desktop/src/main/services/remoteRuntime/remoteSidecarCache.ts` — the
   release-asset fallback for the `ade-<target>` sidecar a target-only desktop
   package does not bundle: version-pinned download, `SHA256SUMS` verification,
@@ -908,7 +916,7 @@ user, port, key, and route information for fallback. A **remote project** is a
 path on that machine that has been registered with its ADE runtime (via
 `projects.add`). Opening a remote project does not copy local files or move a
 local lane by default. Normal project opening still expects Git to move code
-between clones; the explicit **Send to machine** flow adds a guarded clean-lane
+between clones; the explicit **Continue on another machine** flow adds a guarded clean-lane
 handoff that publishes the exact source commit, prepares or clones the
 destination project, creates or reuses the destination lane, and starts a new
 chat from a bounded portable capsule.

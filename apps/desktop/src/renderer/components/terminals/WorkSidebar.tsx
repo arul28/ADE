@@ -8,26 +8,16 @@ import {
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
-  AgentChatFileRef,
-  AppControlContextItem,
   GitCommitSummary,
-  IosElementContextItem,
   LaneSummary,
   OpenProjectBinding,
   TerminalSessionSummary,
-  TerminalToolType,
 } from "../../../shared/types";
-import { useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import {
-  formatAppControlContextForPrompt,
-  formatBuiltInBrowserContextForPrompt,
-  formatIosElementContextForPrompt,
-  normalizeBuiltInBrowserContextItem,
-} from "../../lib/visualContextFormatting";
-import {
-  dispatchWorkPtyContextInserted,
-  type WorkPtyContextInsertKind,
-} from "../../lib/workPtyContextEvents";
+  useWorkToolContextInsertion,
+  type WorkSidebarContextTarget,
+} from "./workToolContextInsertion";
 import { useLanesForPin } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
@@ -88,14 +78,12 @@ function escapeIsClaimedInside(target: Element): boolean {
   return value.length > 0;
 }
 
-export type WorkSidebarContextTarget =
-  | { kind: "chat"; sessionId: string }
-  | { kind: "draft"; draftTargetId: string; laneId: string; draftKind: WorkDraftKind }
-  | { kind: "pty"; sessionId: string; ptyId: string; toolType: TerminalToolType | null };
-
-const NO_CONTEXT_TARGET_ERROR = "Open a chat, draft, or agent CLI session in this lane before inserting tool context.";
-const BRACKETED_PASTE_START = "\x1b[200~";
-const BRACKETED_PASTE_END = "\x1b[201~";
+/**
+ * Re-exported so the many callers that import it from the pane keep working;
+ * it lives with the insertion hook now because the Apple column pane needs the
+ * same target without importing the sidebar.
+ */
+export type { WorkSidebarContextTarget };
 
 function shortLaneId(laneId: string): string {
   return laneId.length <= 8 ? laneId : `${laneId.slice(0, 4)}...${laneId.slice(-3)}`;
@@ -115,40 +103,6 @@ function laneMismatchMessage(
   const ownerLane = laneDisplayName(lanes, ownerLaneId);
   const activeLane = laneDisplayName(lanes, activeLaneId);
   return `This ${toolName} view is claimed by ${ownerLane}, not ${activeLane}. You can still view, inspect, and attach context here. Claim it from ${activeLane} to move ownership.`;
-}
-
-function dispatchAgentChatEvent<T>(
-  eventName: string,
-  target: Extract<WorkSidebarContextTarget, { kind: "chat" | "draft" }>,
-  key: string,
-  value: T,
-): void {
-  const targetDetail = target.kind === "chat"
-    ? { sessionId: target.sessionId }
-    : {
-        draftTargetId: target.draftTargetId,
-        laneId: target.laneId,
-        draftKind: target.draftKind,
-      };
-  window.dispatchEvent(new CustomEvent(eventName, {
-    detail: {
-      ...targetDetail,
-      [key]: value,
-    },
-  }));
-}
-
-function bracketedPaste(text: string): string {
-  return `${BRACKETED_PASTE_START}${text.trimEnd()}\n${BRACKETED_PASTE_END}`;
-}
-
-function formatAttachmentForPty(attachment: AgentChatFileRef): string {
-  return [
-    "ADE visual attachment saved by the Work sidebar.",
-    `Path: ${attachment.path}`,
-    `Type: ${attachment.type}`,
-    "",
-  ].join("\n");
 }
 
 function hideBuiltInBrowserView(projectRoot: string | null): void {
@@ -317,7 +271,6 @@ export function WorkSidebar({
   const {
     statuses,
     loading: statusesLoading,
-    iosSession,
     appControlSession,
   } = useWorkToolStatuses({
     enabled: active,
@@ -335,9 +288,18 @@ export function WorkSidebar({
     if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage(workToolLabel("app-control"), appControlSession.laneId, laneId, scopedLanes);
     }
-    if (effectiveTool === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
-      return laneMismatchMessage(workToolLabel("ios"), iosSession.laneId, laneId, scopedLanes);
-    }
+    /*
+     * Apple Development has NO pane-level claim, deliberately.
+     *
+     * The banner was written when one simulator session was the pane, so
+     * another lane holding it made the whole view second-hand. That is no
+     * longer true: a lane owns a DEVICE, one runtime install serves any number
+     * of them, and the picker states per device whether it is available, this
+     * lane's, or in use elsewhere and by whom. A banner over the top then says
+     * the pane is claimed while the page below offers four free devices, which
+     * is the opposite of what is true — and it taught an agent to stop and ask
+     * for a device instead of creating its own.
+     */
     return null;
   }
   // Lane attribution only. "This session cannot receive inserted context" is
@@ -363,105 +325,14 @@ export function WorkSidebar({
     if (!effectiveTool && maximized) setMaximized(false);
   }, [effectiveTool, maximized, setMaximized]);
 
-  const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
-  dispatchTargetRef.current = { contextTarget, contextDisabledReason };
+  const {
+    addAttachment,
+    addIosContext,
+    addAppControlContext,
+    addBuiltInBrowserContext,
+    insertDraft,
+  } = useWorkToolContextInsertion({ contextTarget, contextDisabledReason, runtimePin });
 
-  const insertIntoPty = useCallback((
-    target: Extract<WorkSidebarContextTarget, { kind: "pty" }>,
-    text: string,
-    kind: WorkPtyContextInsertKind,
-  ) => {
-    const payload = text.trimEnd();
-    if (!payload) return;
-    void window.ade.terminal.write({
-      terminalId: target.sessionId,
-      ptyId: target.ptyId,
-      data: bracketedPaste(payload),
-    }, runtimePin)
-      .then(() => {
-        dispatchWorkPtyContextInserted({
-          sessionId: target.sessionId,
-          ptyId: target.ptyId,
-          toolType: target.toolType,
-          kind,
-        });
-      })
-      .catch((error: unknown) => {
-        console.error("[WorkSidebar] Failed to insert context into PTY", {
-          sessionId: target.sessionId,
-          toolType: target.toolType,
-          error,
-        });
-      });
-  }, [runtimePin]);
-
-  const withContextTarget = useCallback((
-    fallbackError: string,
-    action: (target: WorkSidebarContextTarget) => void,
-  ) => {
-    const { contextTarget: target, contextDisabledReason: targetReason } = dispatchTargetRef.current;
-    if (!target || targetReason) {
-      throw new Error(targetReason ?? fallbackError);
-    }
-    action(target);
-  }, []);
-
-  const insertContext = useCallback(<T,>(
-    eventName: string,
-    key: string,
-    value: T,
-    kind: WorkPtyContextInsertKind,
-    formatForPty: (value: T) => string | null,
-  ) => {
-    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat" || target.kind === "draft") {
-        dispatchAgentChatEvent(eventName, target, key, value);
-        return;
-      }
-      const text = formatForPty(value);
-      if (text) insertIntoPty(target, text, kind);
-    });
-  }, [insertIntoPty, withContextTarget]);
-
-  const addAttachment = useCallback((attachment: AgentChatFileRef) => {
-    insertContext(
-      "ade:agent-chat:add-attachment",
-      "attachment",
-      attachment,
-      "attachment",
-      formatAttachmentForPty,
-    );
-  }, [insertContext]);
-  const addIosContext = useCallback((item: IosElementContextItem) => {
-    insertContext(
-      "ade:agent-chat:add-ios-context",
-      "item",
-      item,
-      "ios",
-      (value) => formatIosElementContextForPrompt([value]),
-    );
-  }, [insertContext]);
-  const addAppControlContext = useCallback((item: AppControlContextItem) => {
-    insertContext(
-      "ade:agent-chat:add-app-control-context",
-      "item",
-      item,
-      "app-control",
-      (value) => formatAppControlContextForPrompt([value]),
-    );
-  }, [insertContext]);
-  const addBuiltInBrowserContext = useCallback((item: unknown) => {
-    insertContext(
-      "ade:agent-chat:add-builtin-browser-context",
-      "item",
-      item,
-      "browser",
-      (value) => {
-        const browserItem = normalizeBuiltInBrowserContextItem(value);
-        return browserItem ? formatBuiltInBrowserContextForPrompt([browserItem]) : null;
-      },
-    );
-  }, [insertContext]);
   // Resuming from here is the same call the Work row's Resume makes; the pane
   // owns it because the pane is where you notice the session is gone.
   const [resumingSession, setResumingSession] = useState(false);
@@ -483,16 +354,6 @@ export function WorkSidebar({
       })
       .finally(() => setResumingSession(false));
   }, [activeSession, resumingSession, runtimePin]);
-
-  const insertDraft = useCallback((text: string) => {
-    withContextTarget("Open a chat, draft, or agent CLI session in this lane before inserting draft text.", (target) => {
-      if (target.kind === "chat" || target.kind === "draft") {
-        dispatchAgentChatEvent("ade:agent-chat:insert-draft", target, "text", text);
-        return;
-      }
-      insertIntoPty(target, text, "draft");
-    });
-  }, [insertIntoPty, withContextTarget]);
 
   const selectFile = useCallback((path: string, mode: "staged" | "unstaged") => {
     setSelectedPath(path);
@@ -588,8 +449,10 @@ export function WorkSidebar({
   // `TerminalsPage` directly, not through `routeProps`), so all four ways of
   // leaving — switching tools, closing the pane, leaving the work route, and
   // leaving the project tab — unmount the panel before anything hides it. That
-  // is why no panel is ever mounted inside an `inert` subtree today, and it is
-  // the invariant a CSS hide here would quietly break.
+  // is why no tool panel is ever mounted inside an `inert` subtree today, and
+  // it is the invariant a CSS hide of a panel would quietly break. The picker
+  // keep-alive is not a panel: it has no WebContentsView, so it may be inert
+  // while a tool is on screen.
   const ToolPanel = active && effectiveTool ? WORK_TOOL_COMPONENTS[effectiveTool] : null;
   const content = ToolPanel ? <ToolPanel {...toolProps} /> : null;
 
@@ -821,29 +684,43 @@ export function WorkSidebar({
           synchronously (`selectTool`), so the native view is never composited
           over the incoming tool during the overlap. */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
+        {/* The picker stays mounted so its mesh does not recompile on every
+            return from a tool. Hidden and paused while a tool is on screen —
+            the loop stops, the last frame stays, opening Tools is a CSS show. */}
+        <div
+          className={
+            effectiveTool
+              ? "pointer-events-none absolute inset-0 min-h-0 opacity-0"
+              : "absolute inset-0 min-h-0 opacity-100"
+          }
+          aria-hidden={effectiveTool ? true : undefined}
+          {...(effectiveTool ? ({ inert: "" } as { inert: string }) : {})}
+        >
+          <WorkToolPicker
+            activeTool={tool}
+            context={toolContext}
+            statuses={statuses}
+            loading={statusesLoading}
+            onPick={selectTool}
+            playing={!effectiveTool}
+          />
+        </div>
         <AnimatePresence initial={false}>
-          <motion.div
-            key={effectiveTool ?? "picker"}
-            role={effectiveTool ? "tabpanel" : undefined}
-            // The id its tab points at with `aria-controls`.
-            id={effectiveTool ? workToolPanelId(effectiveTool) : undefined}
-            aria-label={effectiveTool ? workToolLabel(effectiveTool) : undefined}
-            className="absolute inset-0 min-h-0"
-            initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: tabSwitch ? 0 : -4, pointerEvents: "none" }}
-            transition={transition}
-          >
-            {effectiveTool ? content : (
-              <WorkToolPicker
-                activeTool={tool}
-                context={toolContext}
-                statuses={statuses}
-                loading={statusesLoading}
-                onPick={selectTool}
-              />
-            )}
-          </motion.div>
+          {effectiveTool ? (
+            <motion.div
+              key={effectiveTool}
+              role="tabpanel"
+              id={workToolPanelId(effectiveTool)}
+              aria-label={workToolLabel(effectiveTool)}
+              className="absolute inset-0 z-[1] min-h-0"
+              initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: tabSwitch ? 0 : -4, pointerEvents: "none" }}
+              transition={transition}
+            >
+              {content}
+            </motion.div>
+          ) : null}
         </AnimatePresence>
       </div>
     </aside>

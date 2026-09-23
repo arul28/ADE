@@ -16,6 +16,7 @@ import type {
 import {
   accountMachineConnectionState,
   accountMachineDisplayName,
+  accountMachineRowLabel,
 } from "../../../shared/accountDirectory";
 import type { MachinePresence } from "../../../shared/types/power";
 import {
@@ -237,7 +238,9 @@ export function AccountMachineRow({
                   </button>
                 </form>
               ) : (
-                <span style={nameStyle}>{displayName}</span>
+                <span style={nameStyle} title={machine.adeHome ?? undefined}>
+                  {accountMachineRowLabel(machine) ?? displayName}
+                </span>
               )}
               {/* The same mark a connected saved row wears, for the same
                   reason: the status line below says only the power. */}

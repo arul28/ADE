@@ -128,6 +128,7 @@ import { getModelById } from "../../../shared/modelRegistry";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
+  maxBase64EncodedLength,
 } from "../../../shared/chatAttachmentLimits";
 import {
   projectAttachmentsDir,
@@ -484,7 +485,7 @@ function normalizeAgentChatParallelLaunchState(
 
 
 async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: string; filename?: string }): Promise<{ path: string }> {
-  const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
+  const maxEncodedLength = maxBase64EncodedLength(MAX_TEMP_ATTACHMENT_BYTES);
   if (typeof arg.data !== "string") {
     throw new Error("Temporary attachment data is required.");
   }
@@ -952,6 +953,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     service.resumeUsageLimitNow = (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.resumeUsageLimitNow");
       return agentChatService.resumeUsageLimitNow({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+      });
+    };
+  }
+  if (typeof base.continueUsageLimitOnAlternate === "function") {
+    service.continueUsageLimitOnAlternate = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.continueUsageLimitOnAlternate");
+      return agentChatService.continueUsageLimitOnAlternate({
         sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
       });
     };
@@ -3430,7 +3439,6 @@ export function getAdeActionDomainServices(
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
-    review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),

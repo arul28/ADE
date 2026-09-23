@@ -55,6 +55,7 @@ export type {
   WorkLiveCardSeenByTool,
   WorkLiveScreenTool,
 };
+export { isWorkLivePictureInPictureSupported, workLiveIosStreamRequestUrl } from "./workLiveIosPictureInPicture";
 
 /**
  * Compile-time proof that every previewable tool id is a real sidebar tab id.
@@ -201,7 +202,7 @@ export type WorkLiveSource = {
   caption: string | null;
   /** A login handoff or equivalent "needs you" state, or null. */
   handoff: WorkLiveHandoff;
-  /** Truthy while the tool is recording; only the browser can be. */
+  /** Truthy while the tool is recording. Browser tabs and Apple devices can be. */
   recording: unknown;
   /** The current session identity, for the "×" rule. */
   sessionKey: string | null;
@@ -250,6 +251,9 @@ export type WorkLiveSourceState = {
     chatSessionId?: string | null;
     appName?: string | null;
     deviceName?: string | null;
+    deviceUdid?: string | null;
+    /** Active recording from `status({laneId})` (or the record list). */
+    recording?: unknown;
     handoff?: unknown;
   } | null;
   /**
@@ -365,10 +369,29 @@ export const WORK_LIVE_SOURCES: Record<
     ownerLabel: iosSession?.chatSessionId ? AGENT_OWNER_LABEL : null,
     caption: iosSession?.appName ?? iosSession?.deviceName ?? null,
     handoff: detectWorkLiveHandoff(iosSession),
-    recording: null,
+    recording: iosSession?.recording ?? null,
     sessionKey: iosSession?.id ?? null,
   }),
 };
+
+/** One Apple device the card can picture. */
+export type WorkLiveIosDevice = {
+  udid: string;
+  laneId: string;
+  name: string;
+  appName: string | null;
+  chatSessionId: string | null;
+  /** Truthy while this device is recording; sourced from `status` / record list. */
+  recording: unknown;
+  lastActivityAt: number;
+};
+
+/** Caption for one Apple device card: foreground app, else the device name. */
+export function workLiveIosCaption(device: Pick<WorkLiveIosDevice, "appName" | "name">): string | null {
+  const appName = device.appName?.trim() || null;
+  const deviceName = device.name.trim() || null;
+  return appName ?? deviceName;
+}
 
 export function workLiveSource(
   tool: WorkLiveScreenTool,

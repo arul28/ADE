@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 import { pathKey } from "../shared/pathCompare";
-import { CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
+import { CURSOR_SDK_KILL_ESCALATION_MS, CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
 import { terminateChildProcessTree } from "../shared/utils";
+import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkErrorDetail,
@@ -96,6 +97,8 @@ type CursorSdkPoolEntry = {
   socketPath: string;
   cleanupStateRoot: boolean;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /** The `local.dirs` this worker was launched with; see `sameSkillDirs`. */
+  agentSkillDirs: string[];
 };
 
 const pools = new Map<string, CursorSdkPoolEntry>();
@@ -103,21 +106,20 @@ const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 /** Poisoned/released workers still shutting down, keyed by pool key. */
 const departingWorkers = new Map<string, Promise<void>>();
 const STALE_INIT_RETRY_LIMIT = 2;
+
+/** Order-sensitive compare of the workspace dirs a worker was launched with. */
+function sameSkillDirs(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
 /**
  * How long the worker gets to answer the IPC `dispose` request before the pool
  * kills its process tree. It has to cover cancelling an in-flight run and
  * closing the SDK agent, and on Windows it is the only orderly path there is.
  */
 const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
-/**
- * Gap between SIGTERM and SIGKILL once the dispose grace expires.
- *
- * Named here rather than left to `terminateChildProcessTree`'s default, because
- * the replacement wait below has to be derived from it: two independent numbers
- * would drift, and the drift is only observable as a failed turn an hour into a
- * session.
- */
-const CURSOR_SDK_KILL_ESCALATION_MS = 1_500;
 /**
  * Cap how long a replacement waits for the previous worker of the same pool key.
  *
@@ -526,15 +528,28 @@ export async function acquireCursorSdkConnection(args: {
   sessionId: string;
   policy: CursorSdkPermissionPolicy;
   mcpServers?: Record<string, unknown>;
+  /**
+   * Extra Cursor workspace roots carrying ADE's bundled agent skills. The
+   * caller materializes them (see `prepareCursorAgentSkillShim`); the pool only
+   * forwards them, and `ADE_AGENT_SKILLS_DIRS` stays on the worker env as the
+   * fallback for a session that gets none.
+   */
+  agentSkillDirs?: string[];
   cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const existing = pools.get(args.poolKey);
     if (existing && isCursorSdkPooledAlive(existing.pooled)) {
-      clearCursorSdkIdleTimer(existing);
-      existing.ref += 1;
-      return { pooled: existing.pooled, generation: existing.generation };
+      // A live worker cannot pick up a different `local.dirs` without a
+      // restart. Reuse only when the skill roots it was launched with still
+      // match; otherwise replace it so the new roots are not silently ignored.
+      if (sameSkillDirs(existing.agentSkillDirs, args.agentSkillDirs)) {
+        clearCursorSdkIdleTimer(existing);
+        existing.ref += 1;
+        return { pooled: existing.pooled, generation: existing.generation };
+      }
+      disposeCursorSdkPoolEntry(args.poolKey, existing);
     }
     if (existing) disposeCursorSdkPoolEntry(args.poolKey, existing);
     await waitForDepartingCursorSdkWorker(args.poolKey);
@@ -578,9 +593,13 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   fs.mkdirSync(paths.stateRoot, { recursive: true });
   ensurePrivateSocketPath(paths.socketPath);
 
+  // The owner pid rides in argv so the orphan sweep
+  // (`cursorSdkWorkerOrphans.ts`) can read it from a process listing on every
+  // platform.
+  //
   // fork() forwards its options to spawn(), which supports windowsHide, but
   // the installed @types/node ForkOptions declaration omits that property.
-  const child = fork(workerPath, [], {
+  const child = fork(workerPath, [cursorSdkOwnerPidArg(process.pid)], {
     cwd: args.workspacePath,
     env: buildCursorSdkWorkerEnv({
       baseEnv: args.baseEnv,
@@ -923,6 +942,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     agentName: args.agentName ?? null,
     policy: args.policy,
     ...(args.mcpServers ? { mcpServers: args.mcpServers } : {}),
+    ...(args.agentSkillDirs?.length ? { agentSkillDirs: [...args.agentSkillDirs] } : {}),
   };
   let result: { agentId: string };
   try {
@@ -961,6 +981,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     socketPath: paths.socketPath,
     cleanupStateRoot: args.cleanupStateRoot === true,
     idleTimer: null,
+    agentSkillDirs: [...(args.agentSkillDirs ?? [])],
   });
   return pooled;
 }
@@ -1441,4 +1462,29 @@ export async function runCursorSdkLocalPrompt(args: {
       }
     }
   });
+}
+
+/**
+ * Release every pooled worker, the shared one-shot workers included.
+ *
+ * The one-shot workers (`cloud-oneshot:`, `local-oneshot:`) belong to no chat
+ * session, so no session teardown ever releases them. Brain shutdown calls
+ * this. It waits for the workers to exit, capped by the replace wait, which
+ * covers the whole dispose-then-kill ladder.
+ */
+export async function disposeAllCursorSdkConnections(): Promise<void> {
+  for (const [poolKey, entry] of [...pools.entries()]) {
+    disposeCursorSdkPoolEntry(poolKey, entry);
+  }
+  const departing = [...departingWorkers.values()];
+  if (!departing.length) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  await Promise.race([
+    Promise.allSettled(departing),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, CURSOR_SDK_REPLACE_WAIT_MS);
+      timer.unref();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
 }

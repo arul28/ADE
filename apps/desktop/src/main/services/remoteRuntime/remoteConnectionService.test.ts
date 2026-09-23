@@ -27,8 +27,10 @@ import {
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import {
   PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeRpcOverBudgetError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
+  PairedRuntimeSupersededError,
 } from "./pairedRuntimeErrors";
 
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
@@ -287,6 +289,42 @@ describe("RemoteConnectionService", () => {
         "ws://studio.local:8787/",
       ],
     );
+  });
+
+  it("regression: stays off a machine another client took, until Connect", async () => {
+    // Two ADEs sharing this computer's pairing each reconnected the moment the
+    // host closed them with "Superseded by a newer connection", and took the
+    // MacBook from each other every few seconds (2026-09-23).
+    const remote = target("studio", 1);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...remote, ...patch })),
+    } as unknown as RemoteTargetRegistry;
+    let evicted: ((targetId: string, error: Error) => void) | null = null;
+    const pool = {
+      connect: vi.fn(async () => connectResult(remote)),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn((listener: (targetId: string, error: Error) => void) => {
+        evicted = listener;
+        return () => {};
+      }),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(remote.id, { explicit: true });
+
+    evicted!(remote.id, new Error("Remote ADE service connection closed.", { cause: new PairedRuntimeSupersededError() }));
+
+    const status = service.snapshot().connections[0]!;
+    expect(status.state).toBe("error");
+    expect(status.lastError).toBe("Another ADE on this computer is using the connection to studio. Connect to use it here.");
+    await expect(service.connect(remote.id)).rejects.toThrow(/manually disconnected/);
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    // Nothing was written to the saved machine: the hold lives in memory only.
+    expect(registry.update).not.toHaveBeenCalledWith(remote.id, expect.objectContaining({ manuallyDisconnectedAt: expect.any(Number) }));
+
+    await service.connect(remote.id, { explicit: true });
+    expect(pool.connect).toHaveBeenCalledTimes(2);
   });
 
   it("stores structured connect errors with bounded detail and legacy text", async () => {
@@ -1363,6 +1401,46 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 
+  // The probe's ping shares the socket with every event pump. A host that
+  // refused one oversized reply answered, so the probe must not disconnect it.
+  it("keeps a machine connected when its latency probe hits an over-budget channel close", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      callMachineForTarget: vi.fn(async () => {
+        throw new Error(
+          "Remote ADE service connection failed: Runtime RPC channel fell behind the sync connection.",
+          { cause: new PairedRuntimeRpcOverBudgetError("Runtime RPC channel fell behind the sync connection.") },
+        );
+      }),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool, {
+      pingTimeoutMs: 5_000,
+    });
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    service.probeSavedConnections();
+    await vi.waitFor(() => {
+      expect(pool.callMachineForTarget).toHaveBeenCalledTimes(1);
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pool.disconnect).not.toHaveBeenCalled();
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
+  });
+
   it("does not flag the remote unreachable when adding a project fails with a host-side error", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
@@ -1436,6 +1514,88 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).toMatch(
       /connection closed/i,
     );
+  });
+
+  it("shares one host read between pumps that ask for the same event window at once", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const pendingReads: Array<() => void> = [];
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      disconnect: vi.fn(),
+      streamEventsForTarget: vi.fn(async (_target: RemoteRuntimeTarget, _projectId: string, request: { cursor?: number }) => {
+        await new Promise<void>((resolve) => pendingReads.push(resolve));
+        return { events: [], nextCursor: request.cursor ?? 0, hasMore: false };
+      }),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    const first = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200 });
+    const second = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200 });
+    const otherCategory = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200, category: "pty" });
+    await vi.waitFor(() => expect(pendingReads).toHaveLength(2));
+    for (const resolve of pendingReads.splice(0)) resolve();
+    await expect(Promise.all([first, second, otherCategory])).resolves.toHaveLength(3);
+    expect(pool.streamEventsForTarget).toHaveBeenCalledTimes(2);
+
+    // The shared read is gone once it settles; the next poll reads again.
+    const later = service.streamEvents(previouslyConnected.id, "project-1", { cursor: 7, limit: 200 });
+    await vi.waitFor(() => expect(pendingReads).toHaveLength(1));
+    pendingReads.splice(0)[0]!();
+    await later;
+    expect(pool.streamEventsForTarget).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * About eight event pumps poll one host. When one reply passed the host's
+   * send budget, the host closed that RPC channel, and each failed poll turned
+   * the dot red while the next success turned it green again. The host was
+   * alive the whole time.
+   */
+  it("keeps the connection green when the host closes one RPC channel for an oversized reply", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    let evicted: ((targetId: string, error: Error) => void) | null = null;
+    const overBudget = () => new Error(
+      "Remote ADE service connection failed: Runtime RPC channel fell behind the sync connection.",
+      { cause: new PairedRuntimeRpcOverBudgetError("Runtime RPC channel fell behind the sync connection.") },
+    );
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      streamEventsForTarget: vi.fn(async () => {
+        throw overBudget();
+      }),
+      onEntryEvicted: vi.fn((listener: (targetId: string, error: Error) => void) => {
+        evicted = listener;
+        return () => {};
+      }),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    evicted!(previouslyConnected.id, overBudget());
+    await expect(
+      service.streamEvents(previouslyConnected.id, "project-1", { cursor: 0, limit: 200 }),
+    ).rejects.toThrow(/fell behind/i);
+
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 });
 
@@ -1565,6 +1725,93 @@ describe("uploadChatAttachment", () => {
     expect(uploads.pendingCount()).toBe(0);
     await expect(fs.promises.readdir(projectAttachmentsDir(projectRoot)))
       .resolves.toHaveLength(1);
+  });
+
+  /** A real upload route plus a service whose ticket leg runs the real registry. */
+  async function startPasteUploadHost(): Promise<{
+    projectRoot: string;
+    service: RemoteConnectionService;
+    remote: RemoteRuntimeTarget;
+    callActionForTarget: ReturnType<typeof vi.fn>;
+  }> {
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-paste-project-"));
+    tempDirs.push(projectRoot);
+    const uploads = createAttachmentUploadRegistry();
+    const server = http.createServer((request, response) => {
+      if (uploads.handleRequest(request, response)) return;
+      response.writeHead(426);
+      response.end();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const runtime = {
+      projectRoot,
+      agentChatService: {},
+      syncHostService: {
+        issueAttachmentUploadTicket: (args: { projectRoot: string; filename: string; deviceId?: string | null }) =>
+          uploads.issue(args),
+      },
+    };
+    const remote = target("paired-host", Date.now());
+    const callActionForTarget = vi.fn(
+      async (
+        _target: RemoteRuntimeTarget,
+        _projectId: string,
+        request: { domain: string; action: string; args?: Record<string, unknown> },
+      ) => dispatchRunAdeAction(runtime, request),
+    );
+    const service = new RemoteConnectionService({
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => (id === remote.id ? remote : null)),
+      update: vi.fn(),
+    } as unknown as RemoteTargetRegistry, {
+      onEntryEvicted: vi.fn(() => () => {}),
+      getAttachmentUploadRoute: vi.fn(async () => ({
+        url: `http://127.0.0.1:${port}/ade-attachments/upload`,
+        maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+      })),
+      callActionForTarget,
+    } as unknown as RemoteConnectionPool);
+    return { projectRoot, service, remote, callActionForTarget };
+  }
+
+  it("streams pasted bytes, which have no file, through a temp file on the same route", async () => {
+    // A terminal or composer paste holds bytes in memory. They go to a temp
+    // file and through the same two-leg upload a picked file takes, so a paste
+    // to a paired machine never rides one runtime command.
+    const { projectRoot, service, remote } = await startPasteUploadHost();
+    const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
+
+    const staged = await service.uploadChatAttachmentBytes({
+      targetId: remote.id,
+      projectId: "project-1",
+      data: png.toString("base64"),
+      filename: "clipboard-image.png",
+      maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+    });
+
+    expect(path.dirname(staged.path)).toBe(projectAttachmentsDir(projectRoot));
+    expect(path.extname(staged.path)).toBe(".png");
+    await expect(fs.promises.readFile(staged.path)).resolves.toEqual(png);
+  });
+
+  it("refuses pasted bytes over the machine's advertised limit before minting a ticket", async () => {
+    // The host knows its own route limit, so the smaller of it and the product
+    // cap wins, and the refusal names the real limit.
+    const { projectRoot, service, remote, callActionForTarget } = await startPasteUploadHost();
+    const data = Buffer.alloc(2048, 1).toString("base64");
+
+    await expect(service.uploadChatAttachmentBytes({
+      targetId: remote.id,
+      projectId: "project-1",
+      data,
+      filename: "clipboard-image.png",
+      maxBytes: 1024,
+    })).rejects.toThrow('File "clipboard-image.png" is too large (2.0 KB). Maximum allowed size is 1.0 KB.');
+    expect(callActionForTarget).not.toHaveBeenCalled();
+    await expect(fs.promises.readdir(projectAttachmentsDir(projectRoot))).rejects.toThrow();
   });
 
   it("reports the machine cannot accept uploads when it is not hosting sync", async () => {

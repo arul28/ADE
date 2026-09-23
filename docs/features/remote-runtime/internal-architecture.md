@@ -218,6 +218,22 @@ advertises `features.rpcChannel`/`features.portForward` as `false`. The host als
 caps concurrent channels per peer (32 RPC channels, 64 forwards) so an
 authenticated peer cannot exhaust file descriptors or memory.
 
+**An oversized reply closes one channel, not the connection.** `rpc_data` is a
+required send, so the host checks the socket before it writes a reply and
+between each 256 KiB chunk. When the unsent bytes plus the next write reach
+12 MiB (`RPC_CHANNEL_BACKPRESSURE_BYTES`), it closes only that RPC channel. The
+`rpc_close` carries `code: "rpc_over_budget"`, and the host logs
+`sync_paired.rpc_channel_over_budget` with the method (for example
+`ade/actions/call stream_events`), the reply size, and the buffered bytes. The
+desktop turns that close into `PairedRuntimeRpcOverBudgetError`. Hosts from
+before the code send only the reason "Runtime RPC channel fell behind the sync
+connection.", and the desktop reads that exact sentence the same way.
+`RemoteConnectionService` does not mark the machine unreachable for this error
+and starts no reconnect backoff: the host answered, and the next call opens a
+new channel. Event drains have a 1 MiB byte budget, and identical concurrent
+`streamEvents` reads from the desktop's event pumps share one host read, so a
+normal event stream stays far under the limit.
+
 **Relay trust boundary.** The sync WebSocket can reach the host over a direct
 LAN/tailnet route or through the cloud tunnel-relay. The relay is a plaintext
 byte pipe: TLS terminates *at* the relay and there is no end-to-end encryption

@@ -505,9 +505,8 @@ describe("CrossMachineHandoffModal", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
     expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
     expect(screen.getByText(/Sent: the full conversation history/i)).toBeTruthy();
-    expect(screen.getByText(/history is sent exactly as recorded — anything pasted into this conversation is included/i)).toBeTruthy();
     expect(screen.getByText("ADE removed secret-shaped values from your note.")).toBeTruthy();
-    expect(screen.getByTestId("insecure-consent-review").textContent).toBe(
+    expect(screen.getByTestId("insecure-route-notice").textContent).toBe(
       "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded.",
     );
 
@@ -523,7 +522,6 @@ describe("CrossMachineHandoffModal", () => {
     );
 
     // Send payload path is unchanged: only capsule + fingerprint travel.
-    fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: /send chat/i }));
     expect(await screen.findByText("Handoff complete")).toBeTruthy();
     expect(callAction).toHaveBeenNthCalledWith(

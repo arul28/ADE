@@ -31,6 +31,8 @@ struct WorkUsageLimitResumeModel: Equatable {
   let providerDetail: String?
   /// The turn that hit the limit, so the transcript footer can be anchored to it.
   let turnId: String?
+  /// Label of another signed-in account that still has room, when the host published one.
+  let alternateAccountLabel: String?
   /// True when this was reconstructed from `usageLimitParkedUntil` because the
   /// host predates `usageLimitResume`. Never set when the host sends the row.
   let isLegacyFallback: Bool
@@ -43,6 +45,7 @@ struct WorkUsageLimitResumeModel: Equatable {
     attempts: Int = 0,
     providerDetail: String? = nil,
     turnId: String? = nil,
+    alternateAccountLabel: String? = nil,
     isLegacyFallback: Bool = false
   ) {
     self.state = state
@@ -52,6 +55,7 @@ struct WorkUsageLimitResumeModel: Equatable {
     self.attempts = attempts
     self.providerDetail = providerDetail
     self.turnId = turnId
+    self.alternateAccountLabel = alternateAccountLabel
     self.isLegacyFallback = isLegacyFallback
   }
 
@@ -92,6 +96,10 @@ func workUsageLimitResumeModel(
         ? nil
         : resume.providerDetail,
       turnId: resume.turnId,
+      alternateAccountLabel: {
+        let label = resume.alternateAccount?.label.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return label.isEmpty ? nil : label
+      }(),
       isLegacyFallback: false
     )
   }

@@ -14924,6 +14924,24 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// `chat.continueUsageLimitOnAlternate` — start the interrupted task on
+  /// another signed-in account that still has room. The result reuses the
+  /// resume-now decoder: success is `ok == true`, and a refusal carries the
+  /// host's sentence. The new chat id is not needed to dismiss the sheet.
+  @discardableResult
+  func continueUsageLimitOnAlternate(sessionId: String) async throws -> AgentChatResumeUsageLimitNowResult {
+    let action = chatActionName("chat.continueUsageLimitOnAlternate", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: action,
+      payload: AgentChatSessionIdRequest(sessionId: sessionId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatResumeUsageLimitNowResult.self
+    )
+  }
+
   func archiveChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
@@ -15260,6 +15278,89 @@ final class SyncService: ObservableObject {
         ]
       )
     }
+  }
+
+  // MARK: - Apple device (view only)
+
+  /// Whether the connected Mac can describe this lane's Apple device at all.
+  ///
+  /// Feature-detected rather than assumed: `apple.*` is an optional action set,
+  /// so a Mac that predates the Apple device environment simply omits it and
+  /// the phone's Simulator card says "update the host" instead of putting an
+  /// unknown command on the wire behind a poll.
+  var supportsAppleDeviceStatus: Bool {
+    supportsRemoteAction("apple.status")
+  }
+
+  /// Whether a stream ticket can be minted. Detected apart from the status read
+  /// because a host can know about its device without being able to forward
+  /// video to a remote viewer — in that case the card still shows the device
+  /// and its last still, and only the live view is withheld.
+  var supportsAppleDeviceStream: Bool {
+    supportsRemoteAction("apple.streamTicket")
+  }
+
+  /// Both Apple reads share the Work tools timeout for the same reason: they
+  /// run on a timer behind a card the user may not be looking at, so a slow
+  /// cellular round trip must be dropped and retried, never escalated into a
+  /// socket teardown.
+  private func requireAppleAction(_ action: String) throws {
+    guard supportsRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: appleDeviceHostUnsupportedMessage,
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+  }
+
+  /// The lane's device, app, stream, recording and owner, as one snapshot.
+  ///
+  /// `disconnectOnTimeout: false` for the same reason `fetchWorkToolsLaneState`
+  /// sets it: this is a poll behind a card, and a read-only card must not be
+  /// able to drop the user's whole sync connection.
+  func fetchAppleDeviceStatus(laneId: String) async throws -> AppleDeviceStatus {
+    try requireAppleAction("apple.status")
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return try decode(
+      try await sendCommand(
+        action: "apple.status",
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+      ),
+      as: AppleDeviceStatus.self
+    )
+  }
+
+  /// Mints a short-lived ticket for the binary video socket.
+  ///
+  /// The host picks the URL for the transport this client is actually on —
+  /// direct to the brain's listener, or dialed through the tunnel relay — so
+  /// the phone never constructs one from a guess about its own route. Video
+  /// never rides this JSON envelope; only the address of the pipe does.
+  func requestAppleStreamTicket(laneId: String) async throws -> AppleStreamTicket {
+    try requireAppleAction("apple.streamTicket")
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return try decode(
+      try await sendCommand(
+        action: "apple.streamTicket",
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+      ),
+      as: AppleStreamTicket.self
+    )
+  }
+
+  /// The port to resolve a relative ticket URL against. Only used when the host
+  /// hands back a path rather than a whole URL; an absolute URL always wins,
+  /// because it is the only one that knows about the relay.
+  var appleStreamFallbackPort: Int {
+    activeHostProfile?.port ?? 4599
   }
 
   func createPullRequest(

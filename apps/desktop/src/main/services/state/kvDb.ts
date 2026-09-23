@@ -15,7 +15,6 @@ import {
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
   pruneRowsInBatches,
-  REVIEW_ARTIFACT_RETENTION_DAYS,
   pruneIngressEventRowsForProject,
   type DbMaintenanceApi,
   type DbMaintenanceResult,
@@ -36,12 +35,34 @@ const RETIRED_EXECUTION_TABLES = [
   "stack_buttons",
 ] as const;
 
+/**
+ * The retired AI review schema. These tables were CRR-synced before the
+ * feature was removed, so upgraded databases must drop them (locally, without
+ * replicating tombstones) and inbound changesets naming them from an older
+ * peer must be ignored rather than rejected as unknown.
+ *
+ * Listed child-first: cr-sqlite strips foreign keys when it converts a table,
+ * but a database that never completed CRR conversion still has them, and
+ * SQLite refuses to drop a parent row-referenced by a surviving child.
+ */
+const RETIRED_REVIEW_TABLES = [
+  "review_finding_feedback",
+  "review_candidate_findings",
+  "review_reviewer_runs",
+  "review_run_artifacts",
+  "review_run_publications",
+  "review_findings",
+  "review_runs",
+  "review_suppressions",
+] as const;
+
 /** CRDT tables removed from the schema; inbound tombstones are ignored. */
 const SYNC_RETIRED_TABLES = new Set([
   "unified_memories",
   "unified_memories_fts",
   "queue_landing_state",
   ...RETIRED_EXECUTION_TABLES,
+  ...RETIRED_REVIEW_TABLES,
 ]);
 
 function isRetiredIncomingSyncTable(tableName: string): boolean {
@@ -870,6 +891,10 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "github_pr_stacks",
   "github_pr_stack_entries",
   "github_webhook_deliveries",
+  // A lane's cloned simulator lives in ONE Mac's CoreSimulator device set, so
+  // its udid means nothing on another machine. Replicating it would make a
+  // second machine (or a phone) believe the lane owns a device it cannot see.
+  "lane_apple_devices",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
@@ -1335,21 +1360,53 @@ function dropLegacyUnifiedMemoriesSchema(db: DatabaseSyncType, logger?: Logger):
  * tool type so an older peer cannot reintroduce those rows later.
  */
 function dropRetiredExecutionSchema(db: DatabaseSyncType, logger?: Logger): void {
-  const presentTables = RETIRED_EXECUTION_TABLES.filter((tableName) =>
+  const presentTables = existingRetiredTables(db, RETIRED_EXECUTION_TABLES);
+  if (presentTables.length === 0) return;
+
+  const retiredSessionCount = purgeRetiredTerminalSessions(db);
+  dropRetiredTables(db, RETIRED_EXECUTION_TABLES, "retired-execution-schema", logger);
+
+  logger?.info("db.retired_execution_schema_cleaned", {
+    tables: presentTables,
+    sessionsRemoved: retiredSessionCount,
+  });
+}
+
+/**
+ * Remove the retired AI review schema from upgraded databases. The previous
+ * release created these CRR tables, so a database upgraded across this change
+ * still holds them (and their changesets) until this pass runs.
+ */
+function dropRetiredReviewSchema(db: DatabaseSyncType, logger?: Logger): void {
+  const presentTables = dropRetiredTables(db, RETIRED_REVIEW_TABLES, "retired-review-schema", logger);
+  if (presentTables.length === 0) return;
+  logger?.info("db.retired_review_schema_cleaned", { tables: presentTables });
+}
+
+function existingRetiredTables(db: DatabaseSyncType, tableNames: readonly string[]): string[] {
+  return tableNames.filter((tableName) =>
     rawHasTable(db, tableName)
     || rawHasTable(db, `${tableName}__crsql_clock`)
     || rawHasTable(db, `${tableName}__crsql_pks`),
   );
-  if (presentTables.length === 0) return;
+}
 
-  const retiredSessionCount = purgeRetiredTerminalSessions(db);
+/** Strip CRR metadata, then drop each retired table and its shadow tables. */
+function dropRetiredTables(
+  db: DatabaseSyncType,
+  tableNames: readonly string[],
+  changeTag: string,
+  logger?: Logger,
+): string[] {
+  const presentTables = existingRetiredTables(db, tableNames);
+  if (presentTables.length === 0) return presentTables;
 
-  for (const tableName of RETIRED_EXECUTION_TABLES) {
+  for (const tableName of tableNames) {
     if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
       runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
     }
     if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
-      deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, "retired-execution-schema");
+      deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, changeTag);
     }
     if (rawHasTable(db, tableName)) {
       try {
@@ -1364,10 +1421,7 @@ function dropRetiredExecutionSchema(db: DatabaseSyncType, logger?: Logger): void
     runStatement(db, `drop table if exists ${quoteIdentifier(tableName)}`);
   }
 
-  logger?.info("db.retired_execution_schema_cleaned", {
-    tables: presentTables,
-    sessionsRemoved: retiredSessionCount,
-  });
+  return presentTables;
 }
 
 function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
@@ -2269,6 +2323,33 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_lane_state_snapshots_updated_at on lane_state_snapshots(updated_at)");
+
+  /**
+   * The one Apple simulator a lane owns.
+   *
+   * `lane_id` is the primary key because the model is one device per lane —
+   * and deliberately the ONLY unique index on the table: cr-sqlite refuses a
+   * CRR with "unique indices besides the primary key", and a second index on
+   * `udid` (tempting, since two lanes must not share a clone) would be exactly
+   * that. The registry enforces the udid rule in code instead.
+   *
+   * Excluded from CRR below (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`): a simulator
+   * udid names a device inside ONE Mac's CoreSimulator device set, so
+   * replicating the row to a second machine or a phone would tell it a lane
+   * owns a device that does not exist there.
+   */
+  db.run(`
+    create table if not exists lane_apple_devices (
+      lane_id text primary key,
+      udid text not null,
+      name text not null,
+      origin text not null default 'clone',
+      family text not null default 'iphone',
+      runtime text not null default '',
+      created_at text not null,
+      template_udid text
+    )
+  `);
 
   db.run(`
     create table if not exists terminal_sessions (
@@ -3764,201 +3845,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   db.run("create index if not exists idx_budget_usage_records_week on budget_usage_records(week_key)");
   db.run("create index if not exists idx_budget_usage_records_provider_week on budget_usage_records(provider, week_key)");
 
-  // Local review history for Review tab runs.
-  db.run(`
-    create table if not exists review_runs (
-      id text primary key,
-      project_id text not null,
-      lane_id text not null,
-      target_json text not null,
-      config_json text not null,
-      target_label text not null,
-      compare_target_json text,
-      status text not null,
-      summary text,
-      error_message text,
-      finding_count integer not null default 0,
-      severity_summary_json text,
-      chat_session_id text,
-      created_at text not null,
-      started_at text not null,
-      ended_at text,
-      updated_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_review_runs_project_created on review_runs(project_id, created_at desc)");
-  db.run("create index if not exists idx_review_runs_lane_created on review_runs(lane_id, created_at desc)");
-  db.run("create index if not exists idx_review_runs_project_status on review_runs(project_id, status)");
-  // PR-target review runs post an "ADE review underway" issue comment on kickoff
-  // (from MAIN, so it survives renderer reloads) and edit it in place on every
-  // terminal path. These additive columns persist that comment id + PR id so the
-  // edit can happen later. Guarded by safeAddColumn so existing DBs upgrade in place.
-  safeAddColumn(db, "alter table review_runs add column underway_comment_id text");
-  safeAddColumn(db, "alter table review_runs add column underway_pr_id text");
-  // Repo coordinates of the underway comment, so it can be finalized even if the
-  // PR row is deleted (unmapped) while the review is still running.
-  safeAddColumn(db, "alter table review_runs add column underway_repo_owner text");
-  safeAddColumn(db, "alter table review_runs add column underway_repo_name text");
-
-  db.run(`
-    create table if not exists review_findings (
-      id text primary key,
-      run_id text not null,
-      title text not null,
-      severity text not null,
-      finding_class text,
-      body text not null,
-      confidence real not null default 0.5,
-      evidence_json text,
-      file_path text,
-      line integer,
-      anchor_state text not null,
-      source_pass text not null,
-      publication_state text not null,
-      originating_passes_json text,
-      adjudication_json text,
-      foreign key(run_id) references review_runs(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_review_findings_run on review_findings(run_id)");
-  db.run("create index if not exists idx_review_findings_run_file on review_findings(run_id, file_path, line)");
-
-  db.run(`
-    create table if not exists review_run_publications (
-      id text primary key,
-      run_id text not null,
-      destination_json text not null,
-      review_event text not null,
-      status text not null,
-      review_url text,
-      remote_review_id text,
-      summary_body text not null,
-      inline_comments_json text not null default '[]',
-      summary_finding_ids_json text not null default '[]',
-      error_message text,
-      created_at text not null,
-      updated_at text not null,
-      completed_at text,
-      foreign key(run_id) references review_runs(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_review_run_publications_run on review_run_publications(run_id, created_at)");
-
-  db.run(`
-    create table if not exists review_run_artifacts (
-      id text primary key,
-      run_id text not null,
-      artifact_type text not null,
-      title text not null,
-      mime_type text not null,
-      content_text text,
-      metadata_json text,
-      created_at text not null,
-      foreign key(run_id) references review_runs(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_review_run_artifacts_run on review_run_artifacts(run_id, created_at)");
-
-  db.run(`
-    create table if not exists review_reviewer_runs (
-      id text primary key,
-      run_id text not null,
-      reviewer_key text not null,
-      label text not null,
-      focus text not null,
-      status text not null,
-      chat_session_id text,
-      prompt_artifact_id text,
-      output_artifact_id text,
-      findings_artifact_id text,
-      candidate_count integer not null default 0,
-      kept_count integer not null default 0,
-      summary text,
-      error_message text,
-      started_at text,
-      ended_at text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(run_id) references review_runs(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_review_reviewer_runs_run on review_reviewer_runs(run_id, created_at)");
-  db.run("create index if not exists idx_review_reviewer_runs_run_key on review_reviewer_runs(run_id, reviewer_key)");
-
-  db.run(`
-    create table if not exists review_candidate_findings (
-      id text primary key,
-      run_id text not null,
-      reviewer_run_id text not null,
-      reviewer_key text not null,
-      title text not null,
-      severity text not null,
-      finding_class text,
-      body text not null,
-      confidence real not null default 0.5,
-      evidence_json text,
-      file_path text,
-      line integer,
-      anchor_state text not null,
-      evidence_score real not null default 0,
-      low_signal integer not null default 0,
-      score real not null default 0,
-      created_at text not null,
-      foreign key(run_id) references review_runs(id) on delete cascade,
-      foreign key(reviewer_run_id) references review_reviewer_runs(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_review_candidate_findings_run on review_candidate_findings(run_id)");
-  db.run("create index if not exists idx_review_candidate_findings_reviewer on review_candidate_findings(reviewer_run_id)");
-  safeAddColumn(db, "alter table review_findings add column finding_class text");
-  safeAddColumn(db, "alter table review_findings add column originating_passes_json text");
-  safeAddColumn(db, "alter table review_findings add column adjudication_json text");
-  safeAddColumn(db, "alter table review_findings add column diff_context_json text");
-  safeAddColumn(db, "alter table review_findings add column suppression_match_json text");
-
-  // Per-finding feedback — powers the learning loop.
-  db.run(`
-    create table if not exists review_finding_feedback (
-      id text primary key,
-      finding_id text not null,
-      run_id text not null,
-      project_id text not null,
-      kind text not null,
-      reason text,
-      note text,
-      snooze_until text,
-      created_at text not null,
-      foreign key(finding_id) references review_findings(id) on delete cascade
-    )
-  `);
-  db.run("create index if not exists idx_review_feedback_finding on review_finding_feedback(finding_id)");
-  db.run("create index if not exists idx_review_feedback_project_created on review_finding_feedback(project_id, created_at desc)");
-
-  // Durable suppressions — Greptile-style learned filter.
-  db.run(`
-    create table if not exists review_suppressions (
-      id text primary key,
-      project_id text not null,
-      scope text not null,
-      repo_key text,
-      path_pattern text,
-      title text not null,
-      title_norm text not null,
-      finding_class text,
-      severity text,
-      reason text,
-      note text,
-      source_finding_id text,
-      hit_count integer not null default 0,
-      created_at text not null,
-      last_matched_at text
-    )
-  `);
-  db.run("create index if not exists idx_review_suppressions_project on review_suppressions(project_id, created_at desc)");
-  db.run("create index if not exists idx_review_suppressions_repo on review_suppressions(project_id, repo_key)");
-
   // Machine-local cleanup debt for lane delete residual directories. Absolute
   // worktree paths are local machine state and must not replicate to phones or
   // peer desktops.
@@ -4257,6 +4143,11 @@ export async function openKvDb(
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
+    try {
+      dropRetiredReviewSchema(db, logger);
+    } catch (error) {
+      if (!isReadonlyDatabaseError(error)) throw error;
+    }
 
     // Clear any orphaned rebuild staging table before the retrofit passes issue
     // their bare `CREATE TABLE __ade_crr_repair_<name>`. A surviving orphan
@@ -4491,18 +4382,6 @@ export async function openKvDb(
           project.project_id,
         );
       }
-      return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
-    }),
-    pruneReviewArtifacts: () => runMaintenanceSafely("pruneReviewArtifacts", () => {
-      if (!rawHasTable(db, "review_run_artifacts")) return unsupportedMaintenanceResult();
-      const cutoff = new Date(
-        Date.now() - REVIEW_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
-      ).toISOString();
-      const itemsAffected = runStatement(
-        db,
-        "delete from review_run_artifacts where created_at < ?",
-        [cutoff],
-      ).changes;
       return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
     }),
     prunePrSnapshots: () => runMaintenanceSafely("prunePrSnapshots", () => {

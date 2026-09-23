@@ -333,7 +333,6 @@ session (Haiku 4.5 / GPT-5.6 Luna / Composer 2.5), then that session's
 model, then a deterministic slug. OpenCode, Droid, Pi, and ACP skip the
 cheap helper and use the session model. Manual Graph PR create is
 title plus optional markdown — ADE does not draft the description.
-Review start still requires an explicit `modelId`.
 Live chat compaction stays on
 the chat's own provider. Session intelligence
 (`sessionIntelligence.titles.enabled`) is not a gate: naming always
@@ -443,6 +442,14 @@ built-in), `executor`, `contextSources`,
 `guardrails`, `outputs`, `verification`. Triggers cover session end,
 git events, file changes, lane lifecycle, Linear webhooks, GitHub
 webhooks, and schedules.
+
+`coerceAutomationGuardrails` keeps `confidenceThreshold`, `maxFindings`,
+`reserveBudget`, and `activeHours`; there is no duration or dollar
+guardrail, so legacy `maxDurationMin` / `budgetUsd` keys are dropped on
+load. Optional agent limits (`stopAfterMin`, `stopWhenIdleMin`) are read
+from `execution.session` and from `agent-session` actions through
+`normalizeAutomationAgentLimits` (`shared/automationLimits.ts`); see
+[automations guardrails](../automations/guardrails.md#agent-limits-opt-in).
 
 ## Linear sync
 

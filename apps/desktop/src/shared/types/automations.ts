@@ -5,6 +5,7 @@
 import type {
   AutomationAction,
   AutomationActionType,
+  AutomationAgentLimits,
   AutomationContextSource,
   AutomationExecution,
   AutomationExecutor,
@@ -351,7 +352,7 @@ export type AutomationDraftAction =
       /** @deprecated Use fastMode. */
       codexFastMode?: boolean;
       permissionConfig?: AiPermissionSettings;
-    })
+    } & AutomationAgentLimits)
   | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig })
   | (AutomationDraftActionBase & {
       type: "handoff";

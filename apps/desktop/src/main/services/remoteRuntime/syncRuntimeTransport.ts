@@ -5,9 +5,13 @@ import {
   sign,
 } from "node:crypto";
 import { WebSocket, type RawData } from "ws";
-import type {
-  DesktopPairedMachineCredentials,
-  PairedRuntimeHelloOkPayload,
+import {
+  PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
+  PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON,
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
+  type DesktopPairedMachineCredentials,
+  type PairedRuntimeHelloOkPayload,
 } from "../../../shared/types/pairedRuntime";
 import type {
   SyncEnvelope,
@@ -31,10 +35,11 @@ import {
   wsDataToText,
   type ParsedSyncEnvelope,
 } from "../sync/syncProtocol";
-import type { RuntimeRpcTransport } from "./runtimeRpcClient";
+import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 import {
   PairedRuntimeHelloRejectedError,
   PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeRpcOverBudgetError,
 } from "./pairedRuntimeErrors";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -45,10 +50,36 @@ export type SyncEnvelopeConnection = {
   send(type: SyncEnvelope["type"], payload: unknown, requestId?: string | null): void;
   onEnvelope(callback: (envelope: ParsedSyncEnvelope) => void): () => void;
   onError(callback: (error: Error) => void): () => void;
-  onClose(callback: () => void): () => void;
+  onClose(callback: (info?: SyncConnectionCloseInfo) => void): () => void;
   bufferedAmount(): number;
   close(code?: number, reason?: string): void;
 };
+
+/** The WebSocket close frame, as the peer (or this side) sent it. */
+export type SyncConnectionCloseInfo = {
+  code: number | null;
+  reason: string | null;
+  /** True when this computer asked for the close. */
+  local: boolean;
+};
+
+/** The host's "a newer connection from this device replaced you" close. */
+export function isSupersededClose(info: SyncConnectionCloseInfo | null | undefined): boolean {
+  return Boolean(
+    info
+    && !info.local
+    && info.code === PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE
+    && info.reason === PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
+  );
+}
+
+/** "closed by the other machine (1006)" and the like, for an error message. */
+export function describeSyncConnectionClose(info: SyncConnectionCloseInfo | null | undefined): string | null {
+  if (!info) return null;
+  const who = info.local ? "closed by this computer" : "closed by the other machine or the network";
+  const code = info.code != null ? ` (${info.code}${info.reason ? `: ${info.reason}` : ""})` : info.reason ? ` (${info.reason})` : "";
+  return `${who}${code}`;
+}
 
 export type AuthenticatedSyncConnection = SyncEnvelopeConnection & {
   readonly hello: PairedRuntimeHelloOkPayload;
@@ -170,20 +201,29 @@ function createConnection(
 ): SyncEnvelopeConnection {
   const envelopeCallbacks = new Set<(envelope: ParsedSyncEnvelope) => void>();
   const errorCallbacks = new Set<(error: Error) => void>();
-  const closeCallbacks = new Set<() => void>();
+  const closeCallbacks = new Set<(info?: SyncConnectionCloseInfo) => void>();
   const chunkAssembler = createSyncEnvelopeChunkAssembler();
   let closeEmitted = false;
+  let closeInfo: SyncConnectionCloseInfo | null = null;
+  // Set before `ws.close` so the close event that follows is attributed to
+  // this computer rather than to the peer.
+  let localClose: { code: number; reason: string } | null = null;
 
   const emitError = (error: unknown): void => {
     emitCallbacks(errorCallbacks, asError(error));
   };
-  const emitClose = (): void => {
+  const emitClose = (code?: number | null, reason?: string | null): void => {
     if (closeEmitted) return;
     closeEmitted = true;
+    closeInfo = {
+      code: code ?? localClose?.code ?? null,
+      reason: (reason && reason.trim()) || localClose?.reason || null,
+      local: localClose != null,
+    };
     chunkAssembler.reset();
     for (const callback of [...closeCallbacks]) {
       try {
-        callback();
+        callback(closeInfo);
       } catch {
         // Continue notifying the remaining consumers.
       }
@@ -217,7 +257,7 @@ function createConnection(
 
   ws.on("message", (data: RawData) => acceptText(wsDataToText(data)));
   ws.on("error", emitError);
-  ws.on("close", emitClose);
+  ws.on("close", (code: number, reason: Buffer) => emitClose(code, reason?.toString("utf8") ?? null));
 
   return {
     endpoint,
@@ -237,7 +277,7 @@ function createConnection(
     },
     onClose(callback) {
       if (closeEmitted) {
-        queueMicrotask(callback);
+        queueMicrotask(() => callback(closeInfo ?? undefined));
         return () => {};
       }
       closeCallbacks.add(callback);
@@ -245,6 +285,7 @@ function createConnection(
     },
     bufferedAmount: () => ws.bufferedAmount,
     close(code = 1000, reason = "Sync connection closed.") {
+      localClose ??= { code, reason };
       if (ws.readyState === WebSocket.CLOSED) {
         emitClose();
         return;
@@ -514,6 +555,11 @@ export async function openPairedSyncConnection(
   }
 }
 
+/** The host refused one reply as too large for its send budget. */
+function isRpcOverBudgetClose(code: unknown, reason: string): boolean {
+  return code === PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE || reason === PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON;
+}
+
 export async function openSyncRuntimeTransport(
   options: OpenSyncRuntimeTransportOptions,
 ): Promise<SyncRuntimeTransport> {
@@ -528,19 +574,27 @@ export async function openSyncRuntimeTransport(
   const id = channelId(options.channelId);
   const dataCallbacks = new Set<(chunk: Buffer) => void>();
   const errorCallbacks = new Set<(error: Error) => void>();
-  const closeCallbacks = new Set<() => void>();
+  const closeCallbacks = new Set<(info?: RuntimeRpcTransportCloseInfo) => void>();
   let closed = false;
   let closeNotified = false;
+  let closeDetail: string | null = null;
   let removeEnvelope = () => {};
   let removeError = () => {};
   let removeClose = () => {};
 
-  const notifyClose = (): void => {
+  let closeSuperseded = false;
+  const closeInfoForCallbacks = (): RuntimeRpcTransportCloseInfo | undefined =>
+    closeDetail || closeSuperseded
+      ? { ...(closeDetail ? { detail: closeDetail } : {}), ...(closeSuperseded ? { superseded: true } : {}) }
+      : undefined;
+  const notifyClose = (detail?: string | null, superseded = false): void => {
     if (closeNotified) return;
     closeNotified = true;
+    closeDetail = detail ?? null;
+    closeSuperseded = superseded;
     for (const callback of [...closeCallbacks]) {
       try {
-        callback();
+        callback(closeInfoForCallbacks());
       } catch {
         // Continue notifying the remaining transport consumers.
       }
@@ -569,13 +623,19 @@ export async function openSyncRuntimeTransport(
       channelId?: unknown;
       data?: unknown;
       reason?: unknown;
+      code?: unknown;
     };
     if (payload.channelId !== id) return;
     if (envelope.type === "rpc_close") {
       const reason = typeof payload.reason === "string" && payload.reason.trim()
         ? payload.reason.trim()
         : "Runtime RPC channel closed.";
-      fail(new Error(reason), true);
+      fail(
+        isRpcOverBudgetClose(payload.code, reason)
+          ? new PairedRuntimeRpcOverBudgetError(reason)
+          : new Error(reason),
+        true,
+      );
       return;
     }
     const bytes = decodeStrictBase64(payload.data);
@@ -587,11 +647,11 @@ export async function openSyncRuntimeTransport(
     emitCallbacks(dataCallbacks, bytes);
   });
   removeError = connection.onError((error) => fail(error, true));
-  removeClose = connection.onClose(() => {
+  removeClose = connection.onClose((info) => {
     if (closed) return;
     closed = true;
     cleanup();
-    notifyClose();
+    notifyClose(describeSyncConnectionClose(info), isSupersededClose(info));
   });
 
   const transport: SyncRuntimeTransport = {
@@ -604,7 +664,7 @@ export async function openSyncRuntimeTransport(
       errorCallbacks.add(callback);
     },
     onClose(callback) {
-      if (closeNotified) queueMicrotask(callback);
+      if (closeNotified) queueMicrotask(() => callback(closeInfoForCallbacks()));
       else closeCallbacks.add(callback);
     },
     write(data) {
@@ -630,7 +690,7 @@ export async function openSyncRuntimeTransport(
       }
       cleanup();
       connection.close(1000, "Desktop RPC client closed.");
-      notifyClose();
+      notifyClose("closed by this computer (Desktop RPC client closed.)");
     },
   };
 

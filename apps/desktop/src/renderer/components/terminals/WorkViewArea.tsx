@@ -41,6 +41,7 @@ import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
 import { WorkStartSurface } from "./WorkStartSurface";
+import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { useChatPrPaneOpen } from "../chat/useChatPrPaneOpen";
@@ -1230,6 +1231,7 @@ export function WorkViewArea({
   resolveSessionRuntimePin?: (session: TerminalSessionSummary) => OpenProjectBinding | null;
 }) {
   const { menu: laneContextMenuPortal } = useWorkLaneContextMenu();
+  const theme = useAppStore((s) => s.theme);
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -1327,11 +1329,12 @@ export function WorkViewArea({
         />
       </SingleSessionGridDropZone>
     ) : (
-      <div className="flex h-full flex-col">
+      <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
+        <WorkToolPickerBackdrop theme={theme} playing={pageActive} />
         <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
           <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
         </div>
-        <div className="min-h-0 flex-1">
+        <div className="relative z-10 min-h-0 flex-1">
           <WorkStartSurface
             draftKind={draftKind}
             draftLaneId={draftLaneId}
@@ -1355,7 +1358,7 @@ export function WorkViewArea({
     );
 
   const tabBody = (
-    <div className="relative min-h-0 flex-1" style={{ background: "var(--chat-canvas-bg)" }}>
+    <div className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
       <AnimatePresence initial={false}>
         <motion.div
           key={workAreaMode}

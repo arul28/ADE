@@ -156,6 +156,11 @@ describe("accountSettingsSync (renderer)", () => {
       "chatChromeTint",
       "chatShellGeometry",
       "harnessPresets",
+      "apple.realisticBody",
+      "apple.recordingOverlays.tapRings",
+      "apple.recordingOverlays.keyBadges",
+      "apple.remoteBitrateKbpsCap",
+      "apple.recordingsWarnBytes",
     ]);
     // The screen-specific auto-size lock is deliberately machine-local.
     expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).not.toContain(

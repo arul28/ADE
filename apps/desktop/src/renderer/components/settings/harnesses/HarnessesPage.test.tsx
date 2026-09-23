@@ -23,7 +23,6 @@ function preset(overrides: Partial<HarnessPreset> = {}): HarnessPreset {
     model: "anthropic/claude-opus-5",
     subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: {},
-    permissionMode: "default",
     accentColor: "#d97757",
     logo: { kind: "ade" },
     createdAt: "2026-09-01T00:00:00.000Z",
@@ -131,7 +130,7 @@ describe("HarnessesPage", () => {
     const help = screen.getByRole("button", { name: "What is this?" });
     expect(screen.queryByRole("tooltip")).toBeNull();
     fireEvent.mouseEnter(help);
-    expect(screen.getByRole("tooltip").textContent).toContain("saved together");
+    expect(screen.getByRole("tooltip").textContent).toContain("combines a harness and a model");
   });
 
   it("renames a setup in place, without walking the wizard", () => {

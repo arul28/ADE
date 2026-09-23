@@ -1,11 +1,39 @@
 import { randomUUID } from "node:crypto";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleDeviceAttachArgs,
+  AppleDeviceStartArgs,
+  AppleDeviceStatePhase,
+  AppleDeviceStopArgs,
+  AppleDeviceStopResult,
+  AppleDeviceCreateArgs,
+  AppleDeviceDeleteArgs,
+  AppleDeviceDeleteInstalledArgs,
+  AppleDeviceListArgs,
+  AppleDeviceListResult,
+  AppleDeviceOrientation,
+  AppleFrameArgs,
+  AppleFrameResult,
+  AppleHardwareButtonName,
+  ApplePressButtonArgs,
+  ApplePressButtonResult,
+  AppleRotateArgs,
+  AppleRotateFrame,
+  AppleRotateResult,
+  AppleScrollArgs,
+  AppleScrollDirection,
+  AppleScrollResult,
+  AppleHelperToolInfo,
+  AppleInstalledSimulator,
+  AppleLaneDevice,
+  AppleRecordDeleteArgs,
+  AppleRecordListArgs,
+  AppleRecordStartArgs,
+  AppleRecordStopArgs,
   IosElementContextItem,
   IosInspectableElement,
   IosInspectableFrame,
@@ -53,6 +81,7 @@ import type {
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorAppLifecycleArgs,
+  IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
   IosSimulatorDeviceArgs,
@@ -71,6 +100,8 @@ import type {
   IosSimulatorStartEventLogArgs,
   IosSimulatorStopEventLogArgs,
   IosSimulatorStatus,
+  IosSimulatorStatusArgs,
+  IosSimulatorStatusRecording,
   IosSimulatorStatusStream,
   IosSimulatorStatusBarArgs,
   IosSimulatorTapElementArgs,
@@ -78,6 +109,15 @@ import type {
   IosSimulatorWaitForElementArgs,
 } from "../../../shared/types";
 import {
+  APPLE_AGENT_ACTIONS,
+  APPLE_BUTTON_UNSUPPORTED_CODE,
+  APPLE_DEVICE_ORIENTATIONS,
+  APPLE_ROTATE_NOT_ADOPTED_CODE,
+  APPLE_ROTATE_SEND_FAILED_CODE,
+  APPLE_ROTATE_UNMEASURABLE_CODE,
+  APPLE_SCROLL_DIRECTIONS,
+  APPLE_HARDWARE_BUTTONS,
+  APPLE_STREAM_NOT_RUNNING_CODE,
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
@@ -92,7 +132,22 @@ import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
-import { createIosVideoStreamServer, type IosVideoStreamServer } from "./iosVideoStreamServer";
+import { AppleDeviceExistsError, appleDeviceFamily, createLaneDeviceRegistry, type LaneDeviceStore } from "./laneDeviceRegistry";
+import {
+  createSimHelperClient,
+  resolveSimHelperExecutablePath,
+  SimHelperError,
+  type SimHelperClient,
+  type SimHelperTransport,
+} from "./simHelperClient";
+import {
+  createSimRecordingService,
+  readArtifactId,
+  type AppleInputSource,
+  type SimRecording,
+  type SimRecordingService,
+  type SimRecordingServiceDeps,
+} from "./recording/simRecordingService";
 
 const execFile = promisify(execFileCallback);
 
@@ -102,7 +157,6 @@ const ADE_IOS_SCHEME = "ADE";
 const ADE_IOS_INSPECTOR_SNAPSHOT_PATH = path.join("Documents", "ade-inspector-elements.json");
 const IOS_APPLICATION_PRODUCT_TYPE = "com.apple.product-type.application";
 const XCODE_MCP_DOCS_URL = "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode";
-const COMPANION_IDLE_STOP_MS = 30_000;
 const TOOL_STATUS_CACHE_MS = 10_000;
 const STATUS_THROTTLE_MS = 500;
 const DEVICE_LIST_THROTTLE_MS = 500;
@@ -110,57 +164,125 @@ const SIMCTL_BOOTSTATUS_TIMEOUT_MS = 90_000;
 const SIMCTL_INSTALL_TIMEOUT_MS = 180_000;
 // A swipe with no duration reads as a flick and does not scroll or drag.
 const DEFAULT_SWIPE_DURATION_MS = 180;
+/**
+ * How far apart a drag's `move` events are.
+ *
+ * idb took a duration and did its own stepping; the helper's gesture IS the
+ * move events, so the cadence lives here. 16ms is one display frame: coarser
+ * reads as a flick to UIKit's velocity tracker, finer just costs round trips.
+ */
+const DRAG_STEP_MS = 16;
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
+const INSTALL_HINT_SIM_HELPER = "Rebuild the vendored simulator helper: run `npm run build:sim-helper` in apps/desktop.";
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
-const INSTALL_HINT_IDB = "Install Facebook idb: brew tap facebook/fb && brew install idb-companion && pipx install fb-idb.";
-const INSTALL_HINT_IDB_COMPANION = "Install idb_companion: brew tap facebook/fb && brew install idb-companion.";
 const XCODE_MCP_SESSION_ID = "906026e2-d248-4770-8654-032d0e1fbb54";
 const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
 const MACOS_ONLY_MESSAGE = "iOS Simulator control is only available on macOS.";
 const SCREENSHOT_CACHE_SEGMENTS = [".ade", "cache", "ios-simulator", "screenshots"] as const;
 const SCREENSHOT_KEEP_COUNT = 20;
-/**
- * idb_companion processes ADE started, recorded across restarts so a crashed
- * ADE can still stop its own leftovers without touching companions started by
- * the user, XcodeBuildMCP, or Maestro.
- *
- * The filename carries the OS username because `os.tmpdir()` is world-writable
- * and shared between accounts on a multi-user Mac: one shared file let user B's
- * ADE read user A's pids, and a hostile local user could seed it with arbitrary
- * pids to be SIGKILLed. Per-user naming plus the 0o600 mode on write closes
- * both. (An ADE-owned state dir would be better still, but nothing on this
- * service's args or imports reaches one.)
- */
-const IDB_COMPANION_REGISTRY_OWNER = ((): string => {
-  try {
-    return os.userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_") || "unknown";
-  } catch {
-    // userInfo throws when the uid has no passwd entry (some containers).
-    return "unknown";
-  }
-})();
-
-export const IDB_COMPANION_REGISTRY_PATH = path.join(
-  os.tmpdir(),
-  `ade-ios-simulator-idb-companions-${IDB_COMPANION_REGISTRY_OWNER}.json`,
-);
+/** Where a `frame` grab lands when the caller named no path. */
+const FRAME_CACHE_SEGMENTS = [".ade", "cache", "ios-simulator", "frames"] as const;
 
 /**
- * The live ledger path. Production always uses IDB_COMPANION_REGISTRY_PATH;
- * only `__testSetIosSimulatorCompanionRegistryPath` moves it, because that one
- * file is shared with the developer's running ADE app and brain daemon and a
- * test that wrote or deleted it erased the live processes' companion records.
+ * Helper `orientation` values. These match `HIDInjector`'s
+ * UIInterfaceOrientation constants (landscape-right=3, landscape-left=4),
+ * not UIDeviceOrientation, which swaps the two landscapes.
  */
-let idbCompanionRegistryPath: string = IDB_COMPANION_REGISTRY_PATH;
+const HELPER_ORIENTATION_VALUE: Record<AppleDeviceOrientation, number> = {
+  portrait: 1,
+  "portrait-upside-down": 2,
+  "landscape-right": 3,
+  "landscape-left": 4,
+};
 
-/** Test-only: point the companion ledger at a scratch file. Returns a restore. */
-export function __testSetIosSimulatorCompanionRegistryPath(nextPath: string): () => void {
-  const previous = idbCompanionRegistryPath;
-  idbCompanionRegistryPath = nextPath;
-  return () => {
-    idbCompanionRegistryPath = previous;
-  };
+function isAppleHardwareButtonName(value: string): value is AppleHardwareButtonName {
+  return (APPLE_HARDWARE_BUTTONS as readonly string[]).includes(value);
 }
+
+function isAppleDeviceOrientation(value: string): value is AppleDeviceOrientation {
+  return (APPLE_DEVICE_ORIENTATIONS as readonly string[]).includes(value);
+}
+
+/**
+ * Portrait and upside-down are one axis; the two landscapes are the other.
+ *
+ * The axis is all the framebuffer can tell you, because a 180-degree turn
+ * inside one axis produces exactly the same pixel geometry. Naming that limit
+ * here keeps `rotate` from pretending otherwise.
+ */
+function appleOrientationAxis(orientation: AppleDeviceOrientation): "portrait" | "landscape" {
+  return orientation === "landscape-left" || orientation === "landscape-right" ? "landscape" : "portrait";
+}
+
+function frameAxis(frame: AppleRotateFrame): "portrait" | "landscape" | null {
+  if (frame.width <= 0 || frame.height <= 0) return null;
+  if (frame.width === frame.height) return null;
+  return frame.width > frame.height ? "landscape" : "portrait";
+}
+
+/** How long to let iOS finish a rotation before calling it refused. */
+const APPLE_ROTATE_SETTLE_TIMEOUT_MS = 3_000;
+
+/**
+ * The framebuffer's pixel size, read from the device rather than from ADE.
+ *
+ * `simctl io screenshot` is the reading, not `simctl io enumerate`: enumerate
+ * reports the display's NATIVE surface and does not move with the interface
+ * (measured 2026-09-21 on a device sitting in landscape — screenshot said
+ * 2622x1206, enumerate still said 1206x2622). The screenshot round-trip costs
+ * about 390ms, which is the price of an answer that is true.
+ *
+ * Returns null when the reading cannot be taken at all, so a caller can say
+ * "do not know" instead of guessing.
+ */
+async function readSimulatorFramebufferGeometry(deviceUdid: string): Promise<AppleRotateFrame | null> {
+  const probePath = path.join(
+    os.tmpdir(),
+    `ade-orientation-probe-${randomUUID().slice(0, 8)}.png`,
+  );
+  try {
+    await run("xcrun", ["simctl", "io", deviceUdid, "screenshot", "--type=png", probePath], {
+      timeoutMs: 15_000,
+    });
+    const buffer = await fs.promises.readFile(probePath);
+    const dimensions = pngDimensions(buffer);
+    if (!dimensions?.width || !dimensions.height) return null;
+    return { width: dimensions.width, height: dimensions.height };
+  } catch {
+    return null;
+  } finally {
+    // A probe is not an artifact. Leaving multi-megabyte PNGs in the temp dir
+    // once per rotate is how a machine that is already short on disk runs out.
+    await fs.promises.rm(probePath, { force: true }).catch(() => {});
+  }
+}
+
+function isAppleScrollDirection(value: string): value is AppleScrollDirection {
+  return (APPLE_SCROLL_DIRECTIONS as readonly string[]).includes(value);
+}
+
+/**
+ * One screenful, near enough, in device pixels.
+ *
+ * The helper's gain maps a wheel notch (~120) to a full-screen drag, so a
+ * default of five notches is "keep going until I see something new" — the
+ * amount an agent means when it asks to scroll and says nothing else. It
+ * re-anchors past the bezel, so overshooting costs nothing.
+ */
+const APPLE_SCROLL_DEFAULT_AMOUNT = 600;
+
+/**
+ * Viewport direction to the helper's content-movement delta.
+ *
+ * Inverted on purpose: the finger moves opposite to the content, so revealing
+ * what is BELOW (`down`) moves the content UP, which is a negative deltaY.
+ */
+const APPLE_SCROLL_DELTAS: Record<AppleScrollDirection, (amount: number) => { deltaX: number; deltaY: number }> = {
+  down: (amount) => ({ deltaX: 0, deltaY: -amount }),
+  up: (amount) => ({ deltaX: 0, deltaY: amount }),
+  right: (amount) => ({ deltaX: -amount, deltaY: 0 }),
+  left: (amount) => ({ deltaX: amount, deltaY: 0 }),
+};
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
@@ -274,6 +396,37 @@ type CreateIosSimulatorServiceArgs = {
    * had not written.
    */
   resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
+  /**
+   * The reverse: which lane's worktree contains this path.
+   *
+   * Synchronous, because `resolveRuntime` is. Without it a caller that names
+   * no lane — every OpenCode agent, whose shell has no `ADE_LANE_ID` — is
+   * resolved by guessing which lane is busy, and its captures land in a
+   * stranger's proof drawer.
+   */
+  resolveLaneIdForPath?: ((absolutePath: string) => string | null) | null;
+  /** Human name for a lane, used to name its cloned simulator. */
+  resolveLaneName?: ((laneId: string) => string | null) | null;
+  /**
+   * The lanes DB, for the `lane_apple_devices` table.
+   *
+   * Optional because the CLI's chat-only runtime has no database; the registry
+   * then keeps lane devices in memory for the life of the process rather than
+   * refusing to create one.
+   */
+  laneDeviceStore?: LaneDeviceStore | null;
+  /** Unit 2C's recording service. Defaults to the inert stub. */
+  recordingService?: SimRecordingService | null;
+  /**
+   * The halves of the recording service that live OUTSIDE this service.
+   *
+   * The helper transport is private to this file, so only this file can build
+   * a recording service that can actually record. The proof-drawer broker, the
+   * overlay settings, and the theme accent all live in `main.ts` / the CLI
+   * bootstrap. Passing them in is what makes the constructed instance the wired
+   * one, rather than a second, inert service shadowing it.
+   */
+  recordingDeps?: Pick<SimRecordingServiceDeps, "artifactFiler" | "readOverlaySetting" | "accentColor" | "fps">;
 };
 
 type RootScope = {
@@ -288,6 +441,7 @@ type SimctlListDevicesJson = {
     state?: string;
     isAvailable?: boolean;
     availabilityError?: string;
+    deviceTypeIdentifier?: string;
   }>>;
 };
 
@@ -475,6 +629,24 @@ let run: RunCommand = defaultRunCommand;
 let spawnProcess: SpawnProcess = spawn;
 let commandExistsProbe: CommandExistsProbe = commandExists;
 
+/**
+ * The helper-client factory, swappable for tests.
+ *
+ * A seam rather than an injected dep on `CreateIosSimulatorServiceArgs`: both
+ * production hosts construct the service the same way and neither should have
+ * to know the helper exists. The tests hand back a fake transport instead of
+ * forking a Swift binary that needs a real simulator.
+ */
+let simHelperFactory: typeof createSimHelperClient = createSimHelperClient;
+
+export function __testSetIosSimulatorHelperFactory(factory: typeof createSimHelperClient): () => void {
+  const previous = simHelperFactory;
+  simHelperFactory = factory;
+  return () => {
+    simHelperFactory = previous;
+  };
+}
+
 export function __testSetIosSimulatorProcessHooks(hooks: {
   run?: RunCommand;
   spawn?: SpawnProcess;
@@ -496,9 +668,9 @@ export function shouldOpenSimulatorAppForLaunch(keepSimulatorInBackground?: bool
 }
 
 /**
- * Keeps a caller's scale or quality ratio inside what `idb` accepts.
+ * Keeps a caller's scale or quality ratio inside what the helper accepts.
  *
- * `idb video-stream` takes both as a fraction between 0 and 1 and rejects
+ * `capture-start` takes `scale` as a fraction between 0 and 1 and refuses
  * anything else, so an out-of-range value is treated as "not asked for" rather
  * than passed through to fail the whole stream.
  */
@@ -511,11 +683,23 @@ export function clampStreamRatio(value: number | null | undefined): number | nul
 }
 
 /**
+ * The encoder bitrate a caller asked for, in kbps, or null to leave the helper
+ * at its default. Bounds match the helper protocol so a bad value is refused
+ * here rather than as an NDJSON parse failure after the device has booted.
+ */
+export function clampStreamBitrateKbps(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const kbps = Number(value);
+  if (!Number.isFinite(kbps)) return null;
+  return Math.max(100, Math.min(20_000, Math.round(kbps)));
+}
+
+/**
  * The frame rate the stream asks the encoder for.
  *
  * `Math.round(NaN)` is NaN and every clamp around it keeps it, so a caller that
- * passed NaN or infinity used to reach `idb` as `--fps NaN`. The stream then
- * reported itself running and only failed when a viewer connected.
+ * passed NaN or infinity used to reach the encoder as `fps: NaN`. The stream
+ * then reported itself running and only failed when a viewer connected.
  */
 export function clampStreamFps(value: number | null | undefined): number {
   const fps = Number(value ?? 60);
@@ -523,12 +707,8 @@ export function clampStreamFps(value: number | null | undefined): number {
   return Math.max(1, Math.min(60, Math.round(fps)));
 }
 
-export function resolveIosSimulatorStreamBackend(
-  requestedBackend: "auto" | IosSimulatorStreamBackend,
-): IosSimulatorStreamBackend {
-  if (requestedBackend !== "auto") return requestedBackend;
-  return "simulator-window-capture";
-}
+/** There is one backend now; the name is kept so a status read still says which. */
+export const IOS_SIMULATOR_STREAM_BACKEND: IosSimulatorStreamBackend = "helper-h264";
 
 function encodeMcpMessage(message: JsonRpcMessage): Buffer {
   return Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
@@ -708,147 +888,6 @@ function objectFromMcpResult(result: unknown): Record<string, unknown> {
     // Some Xcode tools return human-readable text; regex readers handle that.
   }
   return { message: text };
-}
-
-type IdbCompanionRegistryEntry = {
-  udid: string | null;
-  startedAt: string;
-  /**
-   * The ADE process that started this companion. The startup sweep only reaps
-   * entries whose owner is gone: several ADE processes (the app, the brain
-   * daemon, a dev instance) share one registry file, and the old owner-less
-   * sweep meant every new process SIGKILLed the live companions of every other
-   * one, dropping their taps and typing mid-session.
-   */
-  ownerPid?: number | null;
-};
-
-type IdbCompanionRegistry = Record<string, IdbCompanionRegistryEntry>;
-
-function readIdbCompanionRegistry(): IdbCompanionRegistry {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(idbCompanionRegistryPath, "utf8")) as unknown;
-    if (!isRecord(parsed)) return {};
-    const registry: IdbCompanionRegistry = {};
-    for (const [pid, entry] of Object.entries(parsed)) {
-      if (!isRecord(entry)) continue;
-      registry[pid] = {
-        udid: typeof entry.udid === "string" ? entry.udid : null,
-        startedAt: typeof entry.startedAt === "string" ? entry.startedAt : nowIso(),
-        ownerPid: typeof entry.ownerPid === "number" && Number.isFinite(entry.ownerPid) ? entry.ownerPid : null,
-      };
-    }
-    return registry;
-  } catch {
-    return {};
-  }
-}
-
-function writeIdbCompanionRegistry(registry: IdbCompanionRegistry): void {
-  // Write-then-rename: a plain writeFileSync leaves a truncated file behind if
-  // ADE is killed mid-write, and the next startup then parses nothing and
-  // forgets every companion it owns. The temp file carries the pid so two ADE
-  // processes racing here never share one.
-  const tempPath = `${idbCompanionRegistryPath}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(tempPath, JSON.stringify(registry), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(tempPath, idbCompanionRegistryPath);
-  } catch {
-    // The registry is an optimisation for cross-restart cleanup, never a
-    // correctness requirement.
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {
-      // Nothing to clean up.
-    }
-  }
-}
-
-/** True while the process exists and this user may signal it. */
-function processIsAlive(pid: number | null | undefined): boolean {
-  if (typeof pid !== "number" || !Number.isFinite(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the pid exists but belongs to another user — still alive.
-    return (error as NodeJS.ErrnoException)?.code === "EPERM";
-  }
-}
-
-/**
- * Companions from the registry whose owning ADE process is gone. Entries with
- * no recorded owner predate this field and are treated as orphans, which is the
- * old behaviour and the safe reading for a file written by a since-dead build.
- */
-function readLeakedIdbCompanionPids(): number[] {
-  return Object.entries(readIdbCompanionRegistry())
-    .filter(([, entry]) => !processIsAlive(entry.ownerPid))
-    .map(([pid]) => Number(pid))
-    .filter((pid) => Number.isFinite(pid) && pid > 0);
-}
-
-function recordIdbCompanionPid(pid: number, udid: string | null): void {
-  if (!Number.isFinite(pid) || pid <= 0) return;
-  const registry = readIdbCompanionRegistry();
-  registry[String(pid)] = { udid, startedAt: nowIso(), ownerPid: process.pid };
-  writeIdbCompanionRegistry(registry);
-}
-
-function forgetIdbCompanionPids(pids: number[]): void {
-  if (!pids.length) return;
-  const registry = readIdbCompanionRegistry();
-  let changed = false;
-  for (const pid of pids) {
-    if (registry[String(pid)]) {
-      delete registry[String(pid)];
-      changed = true;
-    }
-  }
-  if (changed) writeIdbCompanionRegistry(registry);
-}
-
-/**
- * Stops only idb_companion processes ADE itself started. A machine-wide sweep
- * would also kill the companions the user, XcodeBuildMCP, or Maestro own.
- * The pid is re-checked against `ps` so a recycled pid is never killed.
- */
-async function stopTrackedIdbCompanions(pids: number[]): Promise<number> {
-  const candidates = Array.from(new Set(pids.filter((pid) => Number.isFinite(pid) && pid > 0)));
-  if (process.platform !== "darwin" || !candidates.length) return 0;
-  let stdout = "";
-  try {
-    ({ stdout } = await run("ps", ["-o", "pid=,command=", "-p", candidates.join(",")], { timeoutMs: 5_000 }));
-  } catch {
-    forgetIdbCompanionPids(candidates);
-    return 0;
-  }
-  const stoppedPids: number[] = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(\d+)\s+(.+)$/.exec(line);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    if (!candidates.includes(pid) || !/\bidb_companion\b/.test(match[2] ?? "")) continue;
-    try {
-      process.kill(pid, "SIGTERM");
-      stoppedPids.push(pid);
-    } catch {
-      // Best effort cleanup; a process may exit between ps and kill.
-    }
-  }
-  if (stoppedPids.length) {
-    await delay(250);
-    for (const pid of stoppedPids) {
-      try {
-        process.kill(pid, 0);
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // Already stopped.
-      }
-    }
-  }
-  forgetIdbCompanionPids(candidates);
-  return stoppedPids.length;
 }
 
 async function readPlistValue(plistPath: string, key: string): Promise<string | null> {
@@ -1409,52 +1448,11 @@ function screenPacket(snapshot: IosScreenSnapshot): Record<string, unknown> {
   };
 }
 
-async function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      server.close(() => resolve(port));
-    });
-  });
-}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitForTcpPort(host: string, port: number, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const connected = await new Promise<boolean>((resolve) => {
-      const socket = net.createConnection({ host, port });
-      let settled = false;
-      const finish = (ok: boolean) => {
-        if (settled) return;
-        settled = true;
-        socket.removeAllListeners();
-        socket.on("error", () => {});
-        socket.destroy();
-        resolve(ok);
-      };
-      const timer = setTimeout(() => finish(false), 250);
-      timer.unref?.();
-      socket.once("connect", () => {
-        clearTimeout(timer);
-        finish(true);
-      });
-      socket.once("error", () => {
-        clearTimeout(timer);
-        finish(false);
-      });
-    });
-    if (connected) return;
-    await delay(50);
-  }
-  throw new Error(`Timed out waiting for ${host}:${port}.`);
-}
 
 function normalizeLaunchMode(mode: unknown): "snapshot" | "live" {
   if (mode == null) return "snapshot";
@@ -2080,55 +2078,31 @@ function assertTargetIdWithinRoot(targetIdValue: string, projectRoot: string): v
 export type IosSimulatorService = ReturnType<typeof createIosSimulatorService>;
 
 export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
-  let activeSession: IosSimulatorSession | null = null;
   let lastSelectedItem: IosElementContextItem | null = null;
-  let companionProcess: ChildProcess | null = null;
-  let companionDeviceUdid: string | null = null;
-  let companionAddress: string | null = null;
-  let companionReadyPromise: Promise<string> | null = null;
-  let companionIdleTimer: NodeJS.Timeout | null = null;
-  let streamRequestContext: Pick<IosSimulatorStreamStatus, "requestedBackend" | "fallbackReason" | "degradationReason"> = {
-    requestedBackend: null,
-    fallbackReason: null,
-    degradationReason: null,
-  };
   let controlQueue: Promise<void> = Promise.resolve();
-  let activeLaunchId: string | null = null;
   /**
    * Who asked for each in-flight launch. `launch-progress` events broadcast
    * project-wide, so without an owner stamp a second drawer renders another
    * chat's stepper over its own live view — and, because that foreign launch
    * never emits a terminal step this drawer recognises, the overlay sticks.
    * Keyed by launch id rather than held in one variable because `shutdown
-   * --force` clears `activeLaunchId` out from under a still-running launch,
-   * which would otherwise leave its remaining steps unattributed. Entries are
-   * removed in `launch`'s own `finally`.
+   * --force` clears the lane's `activeLaunchId` out from under a still-running
+   * launch, which would otherwise leave its remaining steps unattributed.
+   * Entries are removed in `launch`'s own `finally`.
    */
   const launchOwners = new Map<string, { chatSessionId: string | null; laneId: string | null }>();
-  const trackedCompanionPids = new Set<number>();
-  const toolBinaryPaths = new Map<string, string>();
   const activeBuildDataPaths = new Map<string, number>();
   let disposed = false;
   let xcodeMcpBridge: XcodeMcpBridge | null = null;
   const toolAvailabilityCache = new Map<string, { available: boolean; checkedAt: number }>();
   let simulatorAppCache: { path: string | null; checkedAt: number } | null = null;
-  let cachedStatus: { value: IosSimulatorStatus; computedAt: number; inflight: Promise<IosSimulatorStatus> | null } = {
-    value: {
-      platform: process.platform,
-      supported: false,
-      tools: [],
-      activeDevice: null,
-      activeSession: null,
-    },
-    computedAt: 0,
-    inflight: null,
-  };
   let cachedDevices: { value: IosSimulatorDevice[]; computedAt: number; inflight: Promise<IosSimulatorDevice[]> | null } = {
     value: [],
     computedAt: 0,
     inflight: null,
   };
-  let streamStatus: IosSimulatorStreamStatus = {
+
+  const emptyStreamStatus = (): IosSimulatorStreamStatus => ({
     deviceUdid: null,
     running: false,
     backend: null,
@@ -2145,147 +2119,454 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     latencyP95Ms: null,
     helperPid: null,
     inputBackend: null,
+  });
+
+  /**
+   * Everything a single lane owns.
+   *
+   * One simulator per lane is the locked model, so the app session, the device
+   * session (and with it the log process), the live stream and the launch lock
+   * are all per-lane state. They used to be one set of variables for the whole
+   * project, which is why a second lane's `launch` reported
+   * IOS_SIMULATOR_LAUNCH_IN_PROGRESS against a launch it had nothing to do with
+   * and why `stream-stop` on one lane killed another lane's picture.
+   *
+   * The empty-string key is the un-laned bucket: a CLI call that names no lane,
+   * and the projectless chats that have none to name. It behaves exactly like a
+   * lane, so nothing has to special-case "no lane" beyond resolving the key.
+   */
+  type LaneRuntime = {
+    key: string;
+    laneId: string | null;
+    activeSession: IosSimulatorSession | null;
+    activeLaunchId: string | null;
+    streamStatus: IosSimulatorStreamStatus;
+    streamRequestContext: Pick<IosSimulatorStreamStatus, "requestedBackend" | "fallbackReason" | "degradationReason">;
+    hub: IosDeviceHub | null;
+    cachedStatus: { value: IosSimulatorStatus; computedAt: number; inflight: Promise<IosSimulatorStatus> | null };
+    /**
+     * Serialises `deviceStart` against `deviceStop` for this lane.
+     *
+     * Bringing a device up is boot → bootstatus → capture, several seconds
+     * long; powering it off is one `simctl shutdown`. Without a queue the two
+     * interleave, and the interleaving that matters is the one round 5 §S1
+     * names: the tab's close powers the device off while a start that was
+     * already in flight — a retry, a second viewer, the pane's own effect
+     * re-running — boots it straight back and the user watches the simulator
+     * they just closed come back to life.
+     */
+    deviceLifecycleQueue: Promise<unknown>;
   };
 
-  // One sweep at construction, for companions a previous ADE process left
-  // behind — only those whose owning process is gone, so a second ADE (or the
-  // brain daemon alongside the app) never kills a live companion out from under
-  // the process still using it. It never runs on the status path: that path is
-  // hit every ~500ms while the drawer is open.
-  const leakedCompanionPids = readLeakedIdbCompanionPids();
-  if (leakedCompanionPids.length) {
-    void stopTrackedIdbCompanions(leakedCompanionPids).then((stopped) => {
-      if (stopped > 0) {
-        args.logger.info("ios_simulator.cleaned_leaked_idb_companions", { stopped });
+  const runtimes = new Map<string, LaneRuntime>();
+
+  const laneKey = (laneId?: string | null): string => laneId?.trim() ?? "";
+
+  const createRuntime = (key: string): LaneRuntime => ({
+    key,
+    laneId: key || null,
+    activeSession: null,
+    activeLaunchId: null,
+    streamStatus: emptyStreamStatus(),
+    streamRequestContext: { requestedBackend: null, fallbackReason: null, degradationReason: null },
+    hub: null,
+    deviceLifecycleQueue: Promise.resolve(),
+    cachedStatus: {
+      value: {
+        platform: process.platform,
+        supported: false,
+        tools: [],
+        activeDevice: null,
+        activeSession: null,
+      },
+      computedAt: 0,
+      inflight: null,
+    },
+  });
+
+  const runtimeForKey = (key: string): LaneRuntime => {
+    const existing = runtimes.get(key);
+    if (existing) return existing;
+    const created = createRuntime(key);
+    runtimes.set(key, created);
+    return created;
+  };
+
+  /**
+   * Which lane a call belongs to.
+   *
+   * An explicit lane always wins. Failing that the CALLING CHAT decides: a chat
+   * that launched on lane B and then ran a bare `tap` means lane B, and the old
+   * project-wide state made that accidentally true. Only when neither says
+   * anything does the un-laned bucket answer — which is also what a fresh
+   * process with no sessions at all returns.
+   */
+  /**
+   * Any OTHER lane's live session holding this simulator.
+   *
+   * `resolveRuntime` gives a caller its own lane's bucket, which is the right
+   * scope for almost everything — and exactly the wrong scope for an ownership
+   * question, because the simulator is one device shared by the machine. A
+   * caller naming a different lane used to slip past the guard entirely.
+   */
+  const findActiveSessionForDevice = (
+    deviceUdid: string,
+    except: LaneRuntime,
+  ): IosSimulatorSession | null => {
+    for (const candidate of runtimes.values()) {
+      if (candidate === except) continue;
+      const session = candidate.activeSession;
+      if (session?.deviceUdid === deviceUdid) return session;
+    }
+    // An app session only. A hub DEVICE session (`open-device` with no launch)
+    // is a weaker claim and a different type, and the hole that was actually
+    // demonstrated was a `launch` naming another lane — which always sets an
+    // app session. Widening this to device sessions needs the error to accept
+    // both shapes, which is a change to its public `currentSession`, so it is
+    // deliberately not bundled in with a security fix.
+    return null;
+  };
+
+  const resolveLaneIdForPath = args.resolveLaneIdForPath ?? null;
+
+  const resolveRuntime = (
+    scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
+  ): LaneRuntime => {
+    const explicit = laneKey(scope.laneId);
+    if (explicit) return runtimeForKey(explicit);
+    const chatSessionId = scope.chatSessionId?.trim();
+    if (chatSessionId) {
+      for (const runtime of runtimes.values()) {
+        if (runtime.activeSession?.chatSessionId === chatSessionId) return runtime;
+        if (runtime.hub?.getDeviceSession()?.chatSessionId === chatSessionId) return runtime;
       }
-    }).catch((error) => {
-      args.logger.debug("ios_simulator.leaked_idb_companion_cleanup_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
+    }
+    /*
+     * The lane the caller is STANDING IN, before any guess about what is busy.
+     *
+     * `ade apple` sends the caller's workspace as `projectRoot` when it has no
+     * lane id to send — which is always, for an agent whose shell carries no
+     * `ADE_LANE_ID`: a shared `opencode serve` cannot hold a per-chat
+     * environment, so every OpenCode agent is in that position. The service
+     * used the path for the BUILD root and then resolved the lane by the
+     * fallback below, so a capture taken by lane A was filed against lane B
+     * because B happened to be the one lane with something running. That is a
+     * cross-lane leak of an agent's own proof, and it is fixed by using the
+     * answer the caller already gave.
+     */
+    const callerPath = scope.projectRoot?.trim();
+    if (callerPath && resolveLaneIdForPath) {
+      const laneFromPath = laneKey(resolveLaneIdForPath(callerPath));
+      if (laneFromPath) return runtimeForKey(laneFromPath);
+    }
+    // Neither said anything, and exactly one lane is running something: that is
+    // what the caller means. This is what keeps the cooperative ownership rule
+    // intact across the move to per-lane state — an anonymous `shutdown` still
+    // reaches the one running session and is still REFUSED by its owner guard,
+    // rather than quietly succeeding against an empty bucket and telling the
+    // caller nothing was running.
+    const occupied = [...runtimes.values()].filter((runtime) => (
+      runtime.activeSession || runtime.streamStatus.running || runtime.hub?.getDeviceSession()
+    ));
+    if (occupied.length === 1) return occupied[0];
+    return runtimeForKey("");
+  };
+
+  /**
+   * Move a runtime into a different lane's bucket.
+   *
+   * `claim --lane X` on a session that started un-laned is the case this
+   * exists for. The whole record moves — session, stream, hub, launch lock —
+   * because they all describe the same simulator; splitting them across two
+   * keys is how a lane ends up owning a session whose stream it cannot stop.
+   */
+  const retargetRuntime = (runtime: LaneRuntime, laneId: string): LaneRuntime => {
+    const nextKey = laneKey(laneId);
+    if (nextKey === runtime.key) return runtime;
+    const occupant = runtimes.get(nextKey);
+    // A lane that already has its own session keeps it: silently overwriting it
+    // would evict a running chat with no error anyone could read.
+    if (occupant && (occupant.activeSession || occupant.streamStatus.running)) return runtime;
+    runtimes.delete(runtime.key);
+    runtime.key = nextKey;
+    runtime.laneId = nextKey || null;
+    runtimes.set(nextKey, runtime);
+    return runtime;
+  };
 
   const emit = (payload: IosSimulatorEventPayload) => {
     args.onEvent?.(payload);
   };
 
   /**
-   * The device half of the surface: device sessions, device settings, the
-   * event log, semantic actions and proof bundles.
+   * The device half of the surface, one per lane: device sessions, device
+   * settings, the event log, semantic actions and proof bundles.
    *
    * Every dependency is a lambda rather than a direct reference. The functions
    * it needs are declared below this line, and the module-level `run` and
    * `spawnProcess` are swapped by the test hooks, so capturing either one by
    * value here would freeze the wrong implementation.
+   *
+   * One hub PER LANE, because a hub owns a device session and a `log stream`
+   * child. Sharing one across lanes meant lane B's `log-start` replaced lane
+   * A's running log and lane A's `close-device` shut down lane B's simulator.
    */
-  let deviceHub: IosDeviceHub | null = null;
-  const hub = (): IosDeviceHub => {
-    if (!deviceHub) {
-      deviceHub = createIosDeviceHub({
+  const hub = (runtime: LaneRuntime): IosDeviceHub => {
+    if (!runtime.hub) {
+      runtime.hub = createIosDeviceHub({
         run: (file, commandArgs, options) => run(file, commandArgs, options),
         spawnLogStream: (deviceUdid, predicate) => spawnLogStreamProcess(deviceUdid, predicate),
         openSimulatorApp: () => {
           spawnProcess("open", ["-g", "-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
         },
-        resolveDevice: (deviceUdid) => resolveDevice(deviceUdid),
-        resolveControlDeviceUdid: (deviceUdid) => resolveControlDeviceUdid(deviceUdid),
-        getScreenSnapshot: (snapshotArgs) => getScreenSnapshot(snapshotArgs),
-        screenshot: (shotArgs) => screenshot(shotArgs),
-        tap: (tapArgs) => tap(tapArgs),
-        typeText: (textArgs) => typeText(textArgs),
-        resolveBuildRoot: (scope) => resolveScopedRootForSession(scope),
-        getAppSessionOwner: () => activeSession?.chatSessionId ?? null,
-        getAppSessionDeviceUdid: () => activeSession?.deviceUdid ?? null,
+        resolveDevice: (deviceUdid) => resolveDevice(deviceUdid, runtime),
+        resolveControlDeviceUdid: (deviceUdid) => resolveControlDeviceUdid(deviceUdid, runtime),
+        getScreenSnapshot: (snapshotArgs) => getScreenSnapshot({ ...snapshotArgs, laneId: snapshotArgs.laneId ?? runtime.laneId }),
+        // `proof: false`: this dep serves `captureProofBundle`, whose `screen.png`
+        // is already the artifact. Filing it again would put two rows in the
+        // drawer for one capture.
+        screenshot: (shotArgs) => screenshot({ ...shotArgs, laneId: shotArgs.laneId ?? runtime.laneId, proof: false }),
+        tap: (tapArgs) => tap({ ...tapArgs, laneId: runtime.laneId }),
+        typeText: (textArgs) => typeText({ ...textArgs, laneId: runtime.laneId }),
+        resolveBuildRoot: (scope) => resolveScopedRootForSession(scope, runtime),
+        getAppSessionOwner: () => runtime.activeSession?.chatSessionId ?? null,
+        getAppSessionDeviceUdid: () => runtime.activeSession?.deviceUdid ?? null,
         emit,
         logger: args.logger,
       });
     }
-    return deviceHub;
+    return runtime.hub;
   };
 
-  let videoServer: IosVideoStreamServer | null = null;
+  /* ───────────────────────── vendored Swift helper ───────────────────────── */
+
+  const helperBinaryPath = resolveSimHelperExecutablePath();
+  let helperClient: SimHelperClient | null = null;
+  const helperEventListeners = new Set<(event: { type: string } & Record<string, unknown>) => void>();
 
   /**
-   * Runs `idb video-stream` and exposes it as line-free byte events.
+   * The one helper process, lazily started.
    *
-   * `idb` hands back Annex-B H.264 on stdout, encoded in hardware by
-   * `idb_companion`. A quiet iPhone screen costs about half a megabit per
-   * second, so the whole live view fits comfortably inside one SSH channel.
+   * ONE process drives every simulator on this Mac — that is the whole reason
+   * the protocol carries a `udid` on each command and echoes an `id` on each
+   * reply. Starting one per lane would multiply the CoreSimulator handles for
+   * no benefit and make a crash in one lane take out none of the others'
+   * capture sessions anyway, because they are already separate sockets.
    */
-  const startVideoEncoder = async (options: {
-    deviceUdid: string;
-    fps: number;
-    scaleFactor: number | null;
-    compressionQuality: number | null;
-  }) => {
-    if (!cachedCommandExists("idb")) {
-      throw new Error(`idb is required for the host-encoded live view. ${INSTALL_HINT_IDB}`);
-    }
-    const [idbBinary, companion] = await Promise.all([
-      resolveToolBinary("idb"),
-      ensureCompanion(options.deviceUdid),
-    ]);
-    const argv = [
-      "--companion",
-      companion,
-      "video-stream",
-      "--udid",
-      options.deviceUdid,
-      "--format",
-      "h264",
-      "--fps",
-      String(options.fps),
-    ];
-    if (options.scaleFactor != null) argv.push("--scale-factor", String(options.scaleFactor));
-    if (options.compressionQuality != null) {
-      argv.push("--compression-quality", String(options.compressionQuality));
-    }
-    // `detached` makes the child its own process-group leader, which is the only
-    // thing that makes the group signal in `signalChildProcessTree` land on the
-    // helpers `idb` forks. It is deliberately not `unref`ed: ADE keeps the
-    // handle and kills the group itself.
-    const child = spawnProcess(idbBinary, argv, { stdio: ["ignore", "pipe", "pipe"], detached: true });
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-4000);
-    });
-    return {
-      pid: typeof child.pid === "number" ? child.pid : null,
-      onData: (handler: (chunk: Uint8Array) => void) => {
-        child.stdout?.on("data", (chunk: Buffer) => handler(new Uint8Array(chunk)));
-      },
-      onError: (handler: (error: Error) => void) => {
-        child.on("error", handler);
-      },
-      onExit: (handler: (code: number | null, signal: string | null) => void) => {
-        child.on("exit", (code, signal) => {
-          if (stderr.trim()) {
-            args.logger.debug("ios_simulator.video_encoder_stderr", { stderr: stderr.trim().slice(-500) });
-          }
-          handler(code ?? null, signal ?? null);
-        });
-      },
-      kill: () => {
-        // `idb` forks a helper that holds the encode session, so signalling only
-        // the leader leaves the encoder running with nobody holding its handle.
-        void signalChildProcessTree(child, "SIGINT");
-      },
-    };
-  };
-
-  /** The host encoder's own counters, when that backend is the running one. */
-  const liveStreamMetrics = () => (
-    streamStatus.backend === "idb-h264" && videoServer ? videoServer.metrics() : null
-  );
-
-  const ensureVideoServer = (): IosVideoStreamServer => {
-    if (!videoServer) {
-      videoServer = createIosVideoStreamServer({
-        startEncoder: startVideoEncoder,
+  const helper = (): SimHelperClient => {
+    if (!helperClient) {
+      helperClient = simHelperFactory({
+        binaryPath: helperBinaryPath,
         logger: args.logger,
       });
+      helperClient.onEvent((event) => {
+        for (const listener of [...helperEventListeners]) {
+          try {
+            listener(event);
+          } catch {
+            // A subscriber's failure must not stop the others from hearing it.
+          }
+        }
+        handleHelperEvent(event);
+      });
     }
-    return videoServer;
+    return helperClient;
+  };
+
+  /**
+   * Handed to unit 2C's recording service, which needs to send `record-*`
+   * commands and hear `record-*` events on the same process ADE already drives.
+   */
+  const helperTransport: SimHelperTransport = {
+    send: (command) => helper().send(command),
+    onEvent: (listener) => {
+      // Touch the client so a subscriber alone is enough to bring the helper
+      // up: 2C subscribes before any input happens.
+      helper();
+      helperEventListeners.add(listener);
+      return () => {
+        helperEventListeners.delete(listener);
+      };
+    },
+    get binaryPath() {
+      return helperBinaryPath;
+    },
+  };
+
+  /** Lane runtimes keyed by the udid they are streaming, for helper events. */
+  const runtimeStreamingUdid = (udid: string): LaneRuntime | null => {
+    for (const runtime of runtimes.values()) {
+      if (runtime.streamStatus.running && runtime.streamStatus.deviceUdid === udid) return runtime;
+    }
+    return null;
+  };
+
+  const handleHelperEvent = (event: { type: string } & Record<string, unknown>): void => {
+    if (event.type !== "capture-stopped") return;
+    const udid = typeof event.udid === "string" ? event.udid : null;
+    if (!udid) return;
+    const runtime = runtimeStreamingUdid(udid);
+    if (!runtime) return;
+    const reason = typeof event.reason === "string" ? event.reason : null;
+    // "requested" is ADE's own capture-stop echoing back; `stopStream` has
+    // already published the stopped status and emitting again would make the
+    // drawer flash an error on a clean stop.
+    if (reason === "requested") return;
+    const status = setStreamStopped(runtime, reason || "The simulator capture stopped.");
+    emit({ type: "stream-error", status });
+  };
+
+  /* ───────────────────────── per-lane devices ───────────────────────── */
+
+  const listInstalledSimulators = async (): Promise<AppleInstalledSimulator[]> => {
+    if (process.platform !== "darwin" || !cachedCommandExists("xcrun")) return [];
+    const { stdout } = await run("xcrun", ["simctl", "list", "devices", "available", "--json"], { timeoutMs: 30_000 });
+    const parsed = JSON.parse(stdout) as SimctlListDevicesJson;
+    const devices: AppleInstalledSimulator[] = [];
+    for (const [runtime, runtimeDevices] of Object.entries(parsed.devices ?? {})) {
+      for (const device of runtimeDevices ?? []) {
+        if (!device.udid || !device.name) continue;
+        if (device.isAvailable === false || device.availabilityError) continue;
+        const deviceTypeIdentifier = typeof device.deviceTypeIdentifier === "string" ? device.deviceTypeIdentifier : null;
+        devices.push({
+          udid: device.udid,
+          name: device.name,
+          runtime: normalizeRuntimeName(runtime),
+          state: device.state ?? "Unknown",
+          isAvailable: true,
+          family: appleDeviceFamily({ deviceTypeIdentifier, name: device.name }),
+          deviceTypeIdentifier,
+        });
+      }
+    }
+    return devices;
+  };
+
+  const laneDevices = createLaneDeviceRegistry({
+    run: (command, commandArgs, options) => run(command, commandArgs, options),
+    listInstalledSimulators,
+    resolveLaneName: args.resolveLaneName ?? null,
+    store: args.laneDeviceStore ?? null,
+    logger: args.logger,
+    /**
+     * A lane is losing its device to another lane's takeover.
+     *
+     * What is released: the lane's live stream, its chat session claim, and
+     * its hub device session. What is NOT: the simulator's power. A takeover
+     * hands the running device over as it stands — the lane taking it is about
+     * to stream the same udid, and powering it off just to boot it again would
+     * cost the user the device's state for nothing.
+     *
+     * Deferred by design (this runs long after construction), and never
+     * allowed to fail the move: the registry logs a rejection and re-keys the
+     * binding anyway, because a stream that will not stop must not leave one
+     * simulator owned by two lanes.
+     */
+    releaseLaneDevice: async (device) => {
+      // The old lane's recording ends with its hold on the device. Left
+      // running, it would record the new lane's work under the old lane, and
+      // the new lane's `record-start` would be refused.
+      await stopDeviceRecording(device.udid, "released");
+      const runtime = runtimes.get(laneKey(device.laneId));
+      if (!runtime) return;
+      await shutdown({ laneId: runtime.laneId, ignoreOwnership: true }).catch((error: unknown) => {
+        args.logger.debug("apple.takeover_shutdown_failed", {
+          laneId: device.laneId,
+          udid: device.udid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { released: false, previousSession: null };
+      });
+      if (runtime.hub?.getDeviceSession()?.deviceUdid === device.udid) {
+        await runtime.hub.closeDevice({
+          deviceUdid: device.udid,
+          chatSessionId: null,
+          ignoreOwnership: true,
+          // The new owner is about to drive this device. Powering it off here
+          // would be a takeover that hands over a dead simulator.
+          shutdownDevice: false,
+        }).catch((error: unknown) => {
+          args.logger.debug("apple.takeover_close_device_failed", {
+            laneId: device.laneId,
+            udid: device.udid,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      invalidateStatus(runtime);
+      // `released`, not `stopped`: the device is still running, it is just not
+      // this lane's any more, and this lane has to re-list to find that out.
+      emit({ type: "apple.device.state", laneId: device.laneId, udid: device.udid, phase: "released" });
+      args.logger.info("apple.lane_device_released_for_takeover", {
+        laneId: device.laneId,
+        udid: device.udid,
+      });
+    },
+  });
+
+  /**
+   * The recording half. Unit 2C owns the implementation; this service only
+   * calls `noteInput` from every injected-input path and `pinActiveOrLatest`
+   * from `proof-bundle`, per the auto-record contract.
+   */
+  const recordings: SimRecordingService = args.recordingService ?? createSimRecordingService({
+    ...args.recordingDeps,
+    transport: helperTransport,
+    projectRoot: args.projectRoot,
+    logger: args.logger,
+    // The proof caption says "Simulator recording · ADE Repro · 0:23", and the
+    // recorder only ever knows the udid. The lane registry is already the
+    // place that maps one to the other.
+    resolveDeviceName: (udid: string) => {
+      for (const runtime of runtimes.values()) {
+        const device = laneDevices.get(runtime.key);
+        if (device?.udid === udid) return device.name;
+      }
+      return null;
+    },
+  });
+
+  /**
+   * Announce an injected input to the recording service.
+   *
+   * Never awaited on the input path and never allowed to throw: auto-recording
+   * is verification sugar, and a tap that failed because a recording could not
+   * start would be a strictly worse product than a tap with no recording.
+   */
+  const noteInput = (
+    runtime: LaneRuntime,
+    input: {
+      udid: string;
+      kind: "tap" | "type" | "drag" | "select" | "open-url";
+      x?: number;
+      y?: number;
+      text?: string;
+      /**
+       * Who drove the device. `user` never starts a recording (round 3, A2).
+       *
+       * Absent means `agent`: every caller that is NOT the desktop pane — the
+       * CLI, an agent's `ios_simulator.tap`, a semantic action — is producing
+       * verification evidence, and the preload stamps `source: "user"` on the
+       * pane's calls precisely so this default stays safe.
+       */
+      source?: AppleInputSource;
+    },
+  ): void => {
+    void Promise.resolve(recordings.noteInput({
+      laneId: runtime.key,
+      udid: input.udid,
+      chatSessionId: runtime.activeSession?.chatSessionId ?? null,
+      kind: input.kind,
+      x: input.x,
+      y: input.y,
+      text: input.text,
+      source: input.source ?? "agent",
+    })).catch((error: unknown) => {
+      args.logger.debug("apple.note_input_failed", {
+        laneId: runtime.key || null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   /** Spawns `log stream` on a device and turns its stdout into whole lines. */
@@ -2364,34 +2645,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
-   * Detection asks a login shell (`command -v`), execution used to inherit the
-   * process PATH — so a daemon whose PATH lacked /opt/homebrew/bin reported
-   * "idb available" and then failed every tap with ENOENT. Spawns use the
-   * absolute path this returns instead.
+   * What this machine can actually do to a simulator.
+   *
+   * One capability question now, not two: the vendored helper provides touch,
+   * typing, drag AND the accessibility tree, so there is no longer a state
+   * where an agent can tap but not read the screen. Inspect stays true without
+   * the helper because the screenshot and the ADEInspector element file only
+   * need `xcrun`.
    */
-  const resolveToolBinary = async (command: string): Promise<string> => {
-    const cached = toolBinaryPaths.get(command);
-    if (cached) return cached;
-    let resolved = command;
-    try {
-      const { stdout } = await run("sh", ["-lc", `command -v ${command}`], { timeoutMs: 5_000 });
-      const first = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-      if (first && path.isAbsolute(first)) resolved = first;
-    } catch {
-      // Fall back to a PATH lookup at spawn time.
-    }
-    toolBinaryPaths.set(command, resolved);
-    return resolved;
-  };
-
   const currentCapabilities = (): IosSimulatorCapabilities => {
-    const canControl = cachedCommandExists("idb") && cachedCommandExists("idb_companion");
+    const canControl = process.platform === "darwin" && fs.existsSync(helperBinaryPath);
     return {
       canTap: canControl,
       canType: canControl,
       canDrag: canControl,
-      // Snapshots still work without idb: the screenshot and the ADEInspector
-      // element file only need xcrun. idb only adds the accessibility layer.
       canInspect: canControl || cachedCommandExists("xcrun"),
     };
   };
@@ -2415,6 +2682,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       SIMCTL_BOOTSTATUS_TIMEOUT_MS,
       `Simulator ${device.name} did not become ready within ${Math.round(SIMCTL_BOOTSTATUS_TIMEOUT_MS / 1000)}s. CoreSimulator may be stuck; shut down that simulator and launch again.`,
     );
+
+  /**
+   * Boot a shut-down simulator and wait until CoreSimulator says it is ready.
+   *
+   * Idempotent: a device that is already booted skips `simctl boot` (and the
+   * "current state: Booted" refusal `simctl` answers with when two callers
+   * race) and only waits on `bootstatus`, which returns at once for a booted
+   * device. `startStream` and `deviceStart` both go through here so the
+   * helper's `capture-start` never meets a device that is off — that was the
+   * "Device not booted" the phone and the web tab used to see.
+   */
+  const ensureDeviceBooted = async (device: IosSimulatorDevice): Promise<void> => {
+    if (device.state !== "Booted") {
+      await run("xcrun", ["simctl", "boot", device.udid]).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/Unable to boot device in current state|current state: Booted|already booted/i.test(message)) throw error;
+      });
+    }
+    await waitForSimulatorBootStatus(device);
+  };
 
   const installAppOnSimulator = (device: IosSimulatorDevice, appBundle: string) =>
     runSimctlWithTimeout(
@@ -2454,22 +2741,52 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * every `appearance`, `location` or `log` call fall through to "the first
    * booted iPhone", which is another device as soon as two are up.
    */
-  const resolveControlDeviceUdid = async (deviceUdid?: string | null): Promise<string> => {
+  const resolveControlDeviceUdid = async (deviceUdid: string | null | undefined, runtime: LaneRuntime): Promise<string> => {
     const udid = deviceUdid?.trim()
-      || activeSession?.deviceUdid
-      || deviceHub?.getDeviceSession()?.deviceUdid
-      || streamStatus.deviceUdid;
+      || runtime.activeSession?.deviceUdid
+      || runtime.hub?.getDeviceSession()?.deviceUdid
+      || runtime.streamStatus.deviceUdid
+      // The lane's own device, even when nothing has claimed it yet: a lane
+      // that ran `device-create` and then `tap` means that device, and falling
+      // through to "the first booted iPhone" would drive another lane's screen.
+      || laneDevices.get(runtime.key)?.udid;
     if (udid) return udid;
-    return (await resolveDevice(null)).udid;
+    return (await resolveDevice(null, runtime)).udid;
   };
+
+  /**
+   * How long one queued control may hold the input queue.
+   *
+   * The queue is serial on purpose — two overlapping taps on one digitizer is
+   * not a gesture — but serial means one wedged command is every later tap's
+   * problem. The helper's own request timeout is 30s, which is LONGER than the
+   * desktop's 25s action timeout, so before this a single stuck `touch`
+   * produced a caller that had already given up and a queue that kept every
+   * subsequent tap waiting behind it: the storm of identical
+   * `ade/actions/call` timeouts in the round-2 log. A control that has not
+   * answered in eight seconds is not going to; the caller hears that, and the
+   * queue moves on.
+   */
+  const CONTROL_TIMEOUT_MS = 8_000;
 
   const enqueueControl = async <T>(action: string, runControl: () => Promise<T>): Promise<T> => {
     const queuedAt = Date.now();
     const task = controlQueue.then(async () => {
       const startedAt = Date.now();
       const queuedMs = startedAt - queuedAt;
+      let expiry: ReturnType<typeof setTimeout> | null = null;
       try {
-        const result = await runControl();
+        const result = await Promise.race([
+          runControl(),
+          new Promise<never>((_resolve, reject) => {
+            expiry = setTimeout(() => {
+              reject(new Error(
+                `The simulator did not accept ${action} within ${Math.round(CONTROL_TIMEOUT_MS / 1000)}s.`,
+              ));
+            }, CONTROL_TIMEOUT_MS);
+            (expiry as unknown as { unref?: () => void }).unref?.();
+          }),
+        ]);
         args.logger.debug("ios_simulator.control_completed", {
           action,
           queuedMs,
@@ -2484,6 +2801,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
+      } finally {
+        if (expiry) clearTimeout(expiry);
       }
     });
     controlQueue = task.then(() => undefined, () => undefined);
@@ -2576,18 +2895,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * root. Either caller field present means the caller has said which tree they
    * mean, and the session is ignored entirely.
    */
-  const resolveScopedRootForSession = async (scope: RootScope = {}): Promise<string> => {
+  const resolveScopedRootForSession = async (scope: RootScope = {}, runtime?: LaneRuntime): Promise<string> => {
     const callerScoped = Boolean(scope.projectRoot?.trim() || scope.laneId?.trim());
     if (callerScoped) return resolveScopedRoot(scope);
+    const session = (runtime ?? resolveRuntime({})).activeSession;
     return resolveScopedRoot({
-      projectRoot: activeSession?.projectRoot,
-      laneId: activeSession?.laneId,
+      projectRoot: session?.projectRoot,
+      laneId: session?.laneId,
     });
   };
 
-  const setStreamStopped = (error: string | null = null): IosSimulatorStreamStatus => {
-    streamStatus = {
-      ...streamStatus,
+  const setStreamStopped = (runtime: LaneRuntime, error: string | null = null): IosSimulatorStreamStatus => {
+    runtime.streamStatus = {
+      ...runtime.streamStatus,
       running: false,
       backend: null,
       requestedBackend: null,
@@ -2605,137 +2925,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       helperPid: null,
       inputBackend: null,
     };
-    return streamStatus;
-  };
-
-  const stopChild = (child: ChildProcess | null) => {
-    if (!child) return;
-    child.removeAllListeners();
-    child.stdout?.removeAllListeners();
-    child.stderr?.removeAllListeners();
-    child.stdin?.removeAllListeners();
-    if (child.exitCode == null && child.signalCode == null) {
-      child.kill("SIGTERM");
-      const killTimer = setTimeout(() => {
-        if (child.exitCode == null && child.signalCode == null) child.kill("SIGKILL");
-      }, 2_000);
-      killTimer.unref?.();
-    }
-  };
-
-  const forgetCompanionPid = (child: ChildProcess | null) => {
-    const pid = child?.pid;
-    if (typeof pid !== "number") return;
-    trackedCompanionPids.delete(pid);
-    forgetIdbCompanionPids([pid]);
-  };
-
-  const stopCompanion = () => {
-    if (companionIdleTimer) {
-      clearTimeout(companionIdleTimer);
-      companionIdleTimer = null;
-    }
-    forgetCompanionPid(companionProcess);
-    stopChild(companionProcess);
-    companionProcess = null;
-    companionDeviceUdid = null;
-    companionAddress = null;
-    companionReadyPromise = null;
-  };
-
-  const scheduleCompanionIdleStop = () => {
-    if (streamStatus.running) return;
-    if (companionIdleTimer) clearTimeout(companionIdleTimer);
-    companionIdleTimer = setTimeout(() => {
-      if (!streamStatus.running) stopCompanion();
-    }, COMPANION_IDLE_STOP_MS);
-    companionIdleTimer.unref?.();
-  };
-
-  const ensureCompanion = async (deviceUdid: string): Promise<string> => {
-    if (disposed) {
-      throw new Error("iOS simulator service has been disposed.");
-    }
-    if (companionIdleTimer) {
-      clearTimeout(companionIdleTimer);
-      companionIdleTimer = null;
-    }
-    if (companionProcess && companionDeviceUdid === deviceUdid && companionAddress) {
-      return companionReadyPromise ?? companionAddress;
-    }
-    if (!cachedCommandExists("idb_companion")) {
-      throw new Error(`idb_companion is required for simulator accessibility and input. ${INSTALL_HINT_IDB_COMPANION}`);
-    }
-    const companionBinary = await resolveToolBinary("idb_companion");
-    if (disposed) {
-      throw new Error("iOS simulator service has been disposed.");
-    }
-    stopCompanion();
-    const port = await getFreePort();
-    if (disposed) {
-      throw new Error("iOS simulator service has been disposed.");
-    }
-    const address = `127.0.0.1:${port}`;
-    let stderr = "";
-    const process = spawnProcess(companionBinary, [
-      "--udid",
-      deviceUdid,
-      "--grpc-port",
-      String(port),
-      "--log-level",
-      "info",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    companionProcess = process;
-    companionDeviceUdid = deviceUdid;
-    companionAddress = address;
-    if (typeof process.pid === "number") {
-      trackedCompanionPids.add(process.pid);
-      recordIdbCompanionPid(process.pid, deviceUdid);
-    }
-    process.stderr?.on("data", (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-4000);
-    });
-    process.stdout?.on("data", (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString()}`.slice(-4000);
-    });
-    // Always attach an `error` listener so spawn failures (e.g. ENOENT when
-    // idb_companion is not installed on CI) surface as a normal stream-error
-    // instead of becoming an unhandled exception that fails the test runner.
-    process.once("error", (error) => {
-      forgetCompanionPid(process);
-      if (companionProcess !== process) return;
-      companionProcess = null;
-      companionDeviceUdid = null;
-      companionAddress = null;
-      companionReadyPromise = null;
-      const detail = error instanceof Error ? error.message : String(error);
-      args.logger.debug("ios_simulator.idb_companion_spawn_failed", { deviceUdid, error: detail });
-      if (streamStatus.running) {
-        const status = setStreamStopped(stderr.trim() || detail);
-        emit({ type: "stream-error", status });
-      }
-    });
-    process.once("exit", (code) => {
-      forgetCompanionPid(process);
-      if (companionProcess !== process) return;
-      companionProcess = null;
-      companionDeviceUdid = null;
-      companionAddress = null;
-      companionReadyPromise = null;
-      if (streamStatus.running) {
-        const status = setStreamStopped(stderr.trim() || `idb_companion exited with code ${code ?? "unknown"}.`);
-        emit({ type: "stream-error", status });
-      }
-    });
-    companionReadyPromise = waitForTcpPort("127.0.0.1", port, 2_500).then(() => {
-      if (companionProcess !== process || process.exitCode !== null) {
-        throw new Error(stderr.trim() || "idb_companion failed to start.");
-      }
-      return address;
-    }).finally(() => {
-      if (companionProcess === process) companionReadyPromise = null;
-    });
-    return companionReadyPromise;
+    return runtime.streamStatus;
   };
 
   const computeListDevices = async (): Promise<IosSimulatorDevice[]> => {
@@ -2897,7 +3087,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const [projectTargets, builtTargets, installedTargets] = await Promise.all([
       listProjectLaunchTargets(projectRoot),
       listBuiltLaunchTargets(projectRoot),
-      listInstalledLaunchTargets(targetArgs.deviceUdid ?? activeSession?.deviceUdid),
+      listInstalledLaunchTargets(targetArgs.deviceUdid ?? resolveRuntime(targetArgs).activeSession?.deviceUdid),
     ]);
     const byKey = new Map<string, IosSimulatorLaunchTarget>();
     const priority = { project: 0, built: 1, installed: 2 } satisfies Record<IosSimulatorLaunchTarget["kind"], number>;
@@ -2913,12 +3103,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const resolveDevice = async (deviceUdid?: string | null): Promise<IosSimulatorDevice> => {
+  /**
+   * Which simulator a call means.
+   *
+   * A lane that owns a device always means that device, and it is checked
+   * before the "newest booted iPhone" ranking below: with two lanes running,
+   * the ranking is a coin flip that silently drives the wrong screen.
+   */
+  const resolveDevice = async (deviceUdid?: string | null, runtime?: LaneRuntime): Promise<IosSimulatorDevice> => {
     const devices = await listDevices();
     if (deviceUdid) {
       const exact = devices.find((device) => device.udid === deviceUdid);
       if (exact) return exact;
       throw new Error(`Simulator device ${deviceUdid} is not available.`);
+    }
+    const laneDevice = runtime ? laneDevices.get(runtime.key) : null;
+    if (laneDevice) {
+      const owned = devices.find((device) => device.udid === laneDevice.udid);
+      if (owned) return owned;
+      throw new Error(`Lane ${runtime?.key ?? ""} owns simulator ${laneDevice.name} (${laneDevice.udid}), which is no longer available. Run device-delete and create one again.`);
     }
     const ranked = [...devices].sort((a, b) => {
       if (a.state === "Booted" && b.state !== "Booted") return -1;
@@ -2966,8 +3169,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const isDarwin = process.platform === "darwin";
     const xcrunAvailable = isDarwin && cachedCommandExists("xcrun");
     const xcodebuildAvailable = isDarwin && cachedCommandExists("xcodebuild");
-    const idbAvailable = isDarwin && cachedCommandExists("idb");
-    const idbCompanionAvailable = isDarwin && cachedCommandExists("idb_companion");
+    const helperInfo = helperToolInfo();
     const simulatorAppPath = findSimulatorApp();
     return [
       {
@@ -3001,22 +3203,32 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         installHint: isDarwin ? INSTALL_HINT_XCODE : "iOS Simulator control requires macOS.",
       },
       {
-        name: "idb",
-        available: idbAvailable,
-        detail: idbAvailable
-          ? "Available for accessibility reads and pointer/text control."
-          : "Optional. Required for accessibility reads and pointer/text control.",
-        installHint: INSTALL_HINT_IDB,
-      },
-      {
-        name: "idb_companion",
-        available: idbCompanionAvailable,
-        detail: idbCompanionAvailable
-          ? "Available for idb simulator connections."
-          : "Optional. Required for idb control.",
-        installHint: INSTALL_HINT_IDB_COMPANION,
+        name: "helper",
+        available: helperInfo.present,
+        detail: helperInfo.present
+          ? `Vendored simulator helper at ${helperInfo.path}${helperInfo.version == null ? "" : ` (protocol ${helperInfo.version})`}. Provides the live view, touch, typing, and the accessibility tree.`
+          : isDarwin
+            ? `The vendored simulator helper is missing at ${helperInfo.path}.`
+            : "The vendored simulator helper only runs on macOS.",
+        installHint: isDarwin ? INSTALL_HINT_SIM_HELPER : "Apple device control requires macOS.",
       },
     ];
+  };
+
+  /** What `status.tools` and `status.helper` say about the vendored helper. */
+  const helperToolInfo = (): AppleHelperToolInfo => {
+    if (process.platform !== "darwin") {
+      return { present: false, path: helperBinaryPath, version: null };
+    }
+    // `helperClient` is read rather than created: `getStatus` runs every ~500ms
+    // while the column is open, and a status poll must not be what starts a
+    // subprocess.
+    const client = helperClient;
+    return {
+      present: client ? client.exists() : fs.existsSync(helperBinaryPath),
+      path: helperBinaryPath,
+      version: client?.protocolVersion() ?? null,
+    };
   };
 
   /**
@@ -3030,32 +3242,50 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * whole job is answering "what is going on right now" must not report a
    * stream that started a second ago as stopped.
    */
-  const currentStatusStream = (): IosSimulatorStatusStream => {
-    const metrics = liveStreamMetrics();
+  const currentStatusStream = (runtime: LaneRuntime): IosSimulatorStatusStream => ({
+    running: runtime.streamStatus.running,
+    backend: runtime.streamStatus.backend,
+    deviceUdid: runtime.streamStatus.deviceUdid,
+    fps: runtime.streamStatus.fps,
+    bitrateKbps: runtime.streamStatus.bitrateKbps ?? null,
+    lastError: runtime.streamStatus.lastError,
+  });
+
+  /**
+   * The lane's live recording, redacted to what a status reader needs.
+   *
+   * The path and the byte count are deliberately absent: status is polled into
+   * transcripts and onto a phone, and the file is `record-list`'s to describe.
+   */
+  const currentStatusRecording = (runtime: LaneRuntime): IosSimulatorStatusRecording | null => {
+    if (!runtime.key) return null;
+    const record = recordings.active({ laneId: runtime.key });
+    if (!record) return null;
     return {
-      running: streamStatus.running,
-      backend: streamStatus.backend,
-      deviceUdid: streamStatus.deviceUdid,
-      fps: metrics?.fps ?? streamStatus.fps,
-      bitrateKbps: metrics?.bitrateKbps ?? streamStatus.bitrateKbps ?? null,
-      lastError: metrics?.lastError ?? streamStatus.lastError,
+      id: record.id,
+      startedAt: record.startedAt,
+      mode: record.mode,
+      chatSessionId: record.chatSessionId,
     };
   };
 
-  const computeStatus = async (): Promise<IosSimulatorStatus> => {
+  const computeStatus = async (runtime: LaneRuntime): Promise<IosSimulatorStatus> => {
     const isDarwin = process.platform === "darwin";
     const tools = buildToolStatuses();
     const devices = isDarwin ? await listDevices().catch(() => []) : [];
     // An open device session names the device as surely as an app session does,
     // and it comes second only because an app session is the more specific
-    // claim. Without it, opening a device and watching it fell back to "the
-    // first booted iPhone", which is a different device as soon as two are up.
-    const deviceSession = hub().getDeviceSession();
-    const activeDevice = activeSession
-      ? devices.find((device) => device.udid === activeSession?.deviceUdid) ?? null
+    // claim. The lane's own device comes next: a lane that created one and has
+    // not launched anything still has a device to render.
+    const deviceSession = hub(runtime).getDeviceSession();
+    const laneDevice = laneDevices.get(runtime.key);
+    const activeDevice = runtime.activeSession
+      ? devices.find((device) => device.udid === runtime.activeSession?.deviceUdid) ?? null
       : deviceSession
         ? devices.find((device) => device.udid === deviceSession.deviceUdid) ?? null
-        : devices.find((device) => device.state === "Booted" && /iphone/i.test(device.name)) ?? null;
+        : laneDevice
+          ? devices.find((device) => device.udid === laneDevice.udid) ?? null
+          : devices.find((device) => device.state === "Booted" && /iphone/i.test(device.name)) ?? null;
     const xcrunAvailable = tools.find((tool) => tool.name === "xcrun")?.available ?? false;
     const xcodebuildAvailable = tools.find((tool) => tool.name === "xcodebuild")?.available ?? false;
     return {
@@ -3063,39 +3293,55 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       supported: isDarwin && xcrunAvailable && xcodebuildAvailable,
       tools,
       activeDevice,
-      activeSession,
+      activeSession: runtime.activeSession,
       deviceSession,
+      laneDevice: laneDevice ?? null,
+      laneId: runtime.laneId,
+      helper: helperToolInfo(),
       // The same redaction rule as `getStreamStatus`: the shape, never the
       // address or the token.
-      stream: currentStatusStream(),
+      stream: currentStatusStream(runtime),
+      recording: currentStatusRecording(runtime),
+      // Round 5 §S4: an agent that has just landed in a lane learns what it may
+      // do with the device from the call it already makes, instead of reading
+      // source or guessing verb names. Same list the action allowlist spreads.
+      capabilities: APPLE_AGENT_ACTIONS,
     };
   };
 
-  const getStatus = async (): Promise<IosSimulatorStatus> => {
+  const getStatus = async (statusArgs: IosSimulatorStatusArgs = {}): Promise<IosSimulatorStatus> => {
+    const runtime = resolveRuntime(statusArgs);
     const nowMs = Date.now();
-    if (cachedStatus.inflight) return cachedStatus.inflight;
-    if (nowMs - cachedStatus.computedAt < STATUS_THROTTLE_MS && cachedStatus.computedAt !== 0) {
+    if (runtime.cachedStatus.inflight) return runtime.cachedStatus.inflight;
+    if (nowMs - runtime.cachedStatus.computedAt < STATUS_THROTTLE_MS && runtime.cachedStatus.computedAt !== 0) {
       return {
-        ...cachedStatus.value,
-        activeSession,
+        ...runtime.cachedStatus.value,
+        activeSession: runtime.activeSession,
         // Both of these are in-memory reads, so the throttle exists to spare
         // the `simctl` device list, not these. Serving them from the cache
         // would report a session or a stream that changed since it was built.
-        deviceSession: hub().getDeviceSession(),
-        stream: currentStatusStream(),
+        deviceSession: hub(runtime).getDeviceSession(),
+        laneDevice: laneDevices.get(runtime.key),
+        stream: currentStatusStream(runtime),
+        recording: currentStatusRecording(runtime),
       };
     }
-    const inflight = computeStatus()
+    const inflight = computeStatus(runtime)
       .then((value) => {
-        cachedStatus = { value, computedAt: Date.now(), inflight: null };
+        runtime.cachedStatus = { value, computedAt: Date.now(), inflight: null };
         return value;
       })
       .catch((error) => {
-        cachedStatus = { ...cachedStatus, inflight: null };
+        runtime.cachedStatus = { ...runtime.cachedStatus, inflight: null };
         throw error;
       });
-    cachedStatus = { ...cachedStatus, inflight };
+    runtime.cachedStatus = { ...runtime.cachedStatus, inflight };
     return inflight;
+  };
+
+  /** Invalidate a lane's cached status after a state change. */
+  const invalidateStatus = (runtime: LaneRuntime): void => {
+    runtime.cachedStatus = { ...runtime.cachedStatus, computedAt: 0 };
   };
 
   const isXcodeRunning = async (): Promise<boolean> => {
@@ -3752,9 +3998,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const attachToChatSession = (
     chatSessionId: string | null,
     callerChatSessionId: string | null = chatSessionId,
-    options: { takeOver?: boolean } = {},
+    options: { takeOver?: boolean; laneId?: string | null } = {},
   ): IosSimulatorSession | null => {
-    if (!activeSession) return null;
+    const runtime = resolveRuntime({
+      laneId: options.laneId,
+      chatSessionId: callerChatSessionId ?? chatSessionId,
+    });
+    if (!runtime.activeSession) return null;
     // The caller's own chat id arrives as callerChatSessionId: for attach calls
     // it is the same as the new chatSessionId, for detach calls (chatSessionId
     // === null) it identifies the chat requesting the detach. Detach is covered
@@ -3781,25 +4031,30 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       && chatSessionId === callerChatSessionId;
     if (
       !takeOver
-      && activeSession.chatSessionId
+      && runtime.activeSession.chatSessionId
       && callerChatSessionId
-      && activeSession.chatSessionId !== callerChatSessionId
+      && runtime.activeSession.chatSessionId !== callerChatSessionId
     ) {
-      throw new IosSimulatorOwnedBySessionError(activeSession);
+      throw new IosSimulatorOwnedBySessionError(runtime.activeSession);
     }
-    if (activeSession.chatSessionId === chatSessionId) return activeSession;
-    activeSession = { ...activeSession, chatSessionId, claimedAt: nowIso() };
-    emit({ type: "session-updated", session: activeSession });
-    return activeSession;
+    if (runtime.activeSession.chatSessionId === chatSessionId) return runtime.activeSession;
+    runtime.activeSession = { ...runtime.activeSession, chatSessionId, claimedAt: nowIso() };
+    emit({ type: "session-updated", session: runtime.activeSession });
+    return runtime.activeSession;
   };
 
   const claim = async (claimArgs: IosSimulatorClaimArgs = {}): Promise<IosSimulatorStatus> => {
-    if (!activeSession) return getStatus();
     const laneId = cleanClaimId(claimArgs.laneId);
     const chatSessionId = cleanClaimId(claimArgs.chatSessionId);
-    if (!laneId && !chatSessionId) return getStatus();
+    // Resolved by CHAT first, deliberately: claim's whole job is to tag a
+    // running session with a lane, and looking the runtime up by the lane the
+    // caller is about to set would find an empty one every time.
+    const byChat = resolveRuntime({ chatSessionId });
+    const runtime = byChat.activeSession || !laneId ? byChat : resolveRuntime({ laneId });
+    if (!runtime.activeSession) return getStatus({ laneId, chatSessionId });
+    if (!laneId && !chatSessionId) return getStatus({ laneId: runtime.laneId, chatSessionId });
     // The same cooperative single-owner rule `launch` and `shutdown` enforce.
-    // Claim overwrites `activeSession.chatSessionId` outright, so without this
+    // Claim overwrites `runtime.activeSession.chatSessionId` outright, so without this
     // it was the cheapest eviction of all: a foreign chat ran
     // `ade ios-sim claim --lane <anything>` (the CLI defaults the chat id to its
     // own $ADE_CHAT_SESSION_ID), became the owner, and a plain `shutdown` was
@@ -3809,56 +4064,63 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // own, only re-attributes the lane and leaves the owning chat in place, so
     // an agent tagging a running session with its lane is unaffected.
     if (
-      activeSession.chatSessionId
+      runtime.activeSession.chatSessionId
       && chatSessionId
-      && chatSessionId !== activeSession.chatSessionId
+      && chatSessionId !== runtime.activeSession.chatSessionId
       && !claimArgs.force
       && !claimArgs.ignoreOwnership
     ) {
-      throw new IosSimulatorOwnedBySessionError(activeSession);
+      throw new IosSimulatorOwnedBySessionError(runtime.activeSession);
     }
-    const nextLaneId = laneId || activeSession.laneId;
-    const nextChatSessionId = chatSessionId || activeSession.chatSessionId;
-    const changed = nextLaneId !== activeSession.laneId
-      || nextChatSessionId !== activeSession.chatSessionId;
-    activeSession = {
-      ...activeSession,
+    const nextLaneId = laneId || runtime.activeSession.laneId;
+    // A claim that names a lane MOVES the session into that lane's bucket, so
+    // every later lane-scoped call finds it. Without this the session stayed in
+    // the un-laned bucket and `status --lane X` reported nothing while the very
+    // session it claimed was running.
+    const rekeyed = laneId && laneKey(laneId) !== runtime.key ? retargetRuntime(runtime, laneId) : runtime;
+    const nextChatSessionId = chatSessionId || runtime.activeSession.chatSessionId;
+    const changed = nextLaneId !== runtime.activeSession.laneId
+      || nextChatSessionId !== runtime.activeSession.chatSessionId;
+    rekeyed.activeSession = {
+      ...runtime.activeSession,
       laneId: nextLaneId,
       chatSessionId: nextChatSessionId,
-      claimedAt: changed ? nowIso() : activeSession.claimedAt,
+      claimedAt: changed ? nowIso() : runtime.activeSession.claimedAt,
     };
-    emit({ type: "session-updated", session: activeSession });
-    return getStatus();
+    invalidateStatus(rekeyed);
+    emit({ type: "session-updated", session: rekeyed.activeSession });
+    return getStatus({ laneId: rekeyed.laneId, chatSessionId: nextChatSessionId });
   };
 
   const launch = async (launchArgs: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorLaunchResult> => {
     assertDarwin();
+    const runtime = resolveRuntime(launchArgs);
     if (!cachedCommandExists("xcrun") || !cachedCommandExists("xcodebuild")) {
       throw new Error("Xcode command line tools are required for iOS Simulator control. Install Xcode and run xcode-select --install.");
     }
     // Two overlapping launches share one DerivedData directory and the last one
-    // to finish wins `activeSession`, so the caller is told about an app the
+    // to finish wins `runtime.activeSession`, so the caller is told about an app the
     // other launch installed. Reject the second launch instead.
-    if (activeLaunchId) throw new IosSimulatorLaunchInProgressError(activeLaunchId);
+    if (runtime.activeLaunchId) throw new IosSimulatorLaunchInProgressError(runtime.activeLaunchId);
     const incomingChatSessionId = launchArgs.chatSessionId ?? null;
     // A launch that names no chat session may not evict one that does: an
     // agent's anonymous CLI launch would otherwise silently take the simulator
     // away from the chat the user is watching.
     if (
-      activeSession
-      && activeSession.chatSessionId
-      && activeSession.chatSessionId !== incomingChatSessionId
+      runtime.activeSession
+      && runtime.activeSession.chatSessionId
+      && runtime.activeSession.chatSessionId !== incomingChatSessionId
       && !launchArgs.force
     ) {
-      throw new IosSimulatorOwnedBySessionError(activeSession);
+      throw new IosSimulatorOwnedBySessionError(runtime.activeSession);
     }
     const needsForceTakeover = Boolean(
-      activeSession
+      runtime.activeSession
       && launchArgs.force
-      && (!incomingChatSessionId || activeSession.chatSessionId !== incomingChatSessionId),
+      && (!incomingChatSessionId || runtime.activeSession.chatSessionId !== incomingChatSessionId),
     );
     const launchId = randomUUID();
-    activeLaunchId = launchId;
+    runtime.activeLaunchId = launchId;
     // Stamped before the first step emits, so every event this launch produces
     // carries its owner and other drawers can drop it.
     launchOwners.set(launchId, {
@@ -3909,13 +4171,33 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         if (disposed) {
           throw new Error("iOS simulator service has been disposed.");
         }
-        if (activeLaunchId !== null && activeLaunchId !== launchId) {
+        if (runtime.activeLaunchId !== null && runtime.activeLaunchId !== launchId) {
           throw new Error("This iOS simulator launch was superseded before it finished.");
         }
-        activeLaunchId = launchId;
+        runtime.activeLaunchId = launchId;
       }
       emitLaunchProgress(launchId, "resolve-device", "running", "Finding installed simulator device...");
       const device = preflightDevice ?? await resolveDevice(launchArgs.deviceUdid);
+      /*
+       * Ownership belongs to the DEVICE, not to a lane's bucket.
+       *
+       * The guard at the top of this function reads `runtime.activeSession`,
+       * and a runtime is per lane. So a launch that merely NAMED a different
+       * lane landed in an empty bucket, found no owner, and went on to drive
+       * the very simulator another chat was holding — the app's pid changed
+       * under it. A test agent found this by trying it; the refusal it got for
+       * `shutdown` and `claim` never fired for `launch`.
+       *
+       * Checked here rather than at the top because this is the first point
+       * where the target device is known, and still before anything boots,
+       * builds or installs.
+       */
+      if (!launchArgs.force) {
+        const deviceOwner = findActiveSessionForDevice(device.udid, runtime);
+        if (deviceOwner && deviceOwner.chatSessionId && deviceOwner.chatSessionId !== incomingChatSessionId) {
+          throw new IosSimulatorOwnedBySessionError(deviceOwner);
+        }
+      }
       emitLaunchProgress(launchId, "resolve-device", "complete", `${device.name} selected.`, device.runtime, { deviceUdid: device.udid });
 
       currentStep = "boot-simulator";
@@ -4019,10 +4301,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       };
       // A launch that was superseded (force takeover, dispose) must not publish
       // its session over the newer one.
-      if (activeLaunchId !== launchId) {
+      if (runtime.activeLaunchId !== launchId) {
         throw new Error("This iOS simulator launch was superseded before it finished.");
       }
-      activeSession = session;
+      runtime.activeSession = session;
       const childEnv: NodeJS.ProcessEnv = {
         ...process.env,
         ...Object.fromEntries(
@@ -4072,13 +4354,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         error instanceof Error ? error.message : String(error),
         null,
       );
-      if (activeSession && activeLaunchId === launchId) {
-        activeSession = null;
+      if (runtime.activeSession && runtime.activeLaunchId === launchId) {
+        runtime.activeSession = null;
         emit({ type: "session-updated", session: null });
       }
       throw error;
     } finally {
-      if (activeLaunchId === launchId) activeLaunchId = null;
+      if (runtime.activeLaunchId === launchId) runtime.activeLaunchId = null;
       // After the catch above has emitted this launch's last (failed) step.
       launchOwners.delete(launchId);
     }
@@ -4106,8 +4388,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   // The scope fields are omitted so a fresh literal cannot smuggle a scope past
   // the resolved root. Omit is structural, so an existing args object still
   // type-checks here; the root always arrives out of band from the caller.
-  const captureScreenshot = async (arg: Omit<IosSimulatorScreenshotArgs, "projectRoot" | "laneId">, root: string): Promise<IosSimulatorScreenshot> => {
-    const device = await resolveDevice(arg.deviceUdid ?? activeSession?.deviceUdid);
+  const captureScreenshot = async (
+    arg: Omit<IosSimulatorScreenshotArgs, "projectRoot" | "laneId">,
+    root: string,
+    runtime: LaneRuntime,
+  ): Promise<IosSimulatorScreenshot> => {
+    const device = await resolveDevice(arg.deviceUdid ?? runtime.activeSession?.deviceUdid, runtime);
     const requestedOutPath = arg.outPath?.trim();
     // Agents need a file they can read; the data URL alone forces them to
     // shuttle megabytes of base64 through the transcript.
@@ -4154,33 +4440,128 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
-  const screenshot = async (arg: IosSimulatorScreenshotArgs = {}): Promise<IosSimulatorScreenshot> => {
-    assertDarwin();
-    return captureScreenshot(
-      arg,
-      await resolveScopedRootForSession({ projectRoot: arg.projectRoot, laneId: arg.laneId }),
-    );
+  /** The lane device's name for a udid, for captions. Falls back to the udid. */
+  const deviceLabelForUdid = (udid: string): string => {
+    for (const runtime of runtimes.values()) {
+      const device = laneDevices.get(runtime.key);
+      if (device?.udid === udid) return device.name;
+    }
+    return udid.slice(0, 8);
   };
 
-  const getAppContainerPath = async (deviceUdid?: string | null): Promise<{ device: IosSimulatorDevice; containerPath: string }> => {
-    if (!activeSession) {
+  /**
+   * File a captured still in the proof drawer, and never fail the capture.
+   *
+   * Round 5 §S3: a recording has filed itself since round 3, but a screenshot
+   * had to be promoted by a second command — `ade apple proof`, which wraps
+   * `screenshot` in an `ingest_computer_use_artifacts` step. Agents took the
+   * still and skipped the promotion, and the rail's Screenshot button never
+   * promoted anything at all: it wrote a PNG into a cache directory under the
+   * build root and told nobody. A screenshot nobody can see is not evidence.
+   *
+   * Returns the artifact id or null. Null is not an error the caller should
+   * hear about: the PNG on disk is the result that was asked for, and a drawer
+   * that refused the row must not turn a good capture into a thrown call.
+   */
+  const fileScreenshotAsProof = (
+    shot: IosSimulatorScreenshot,
+    arg: IosSimulatorScreenshotArgs,
+    runtime: LaneRuntime,
+  ): string | null => {
+    const filer = args.recordingDeps?.artifactFiler;
+    if (!filer) return null;
+    const chatSessionId = arg.chatSessionId?.trim()
+      || runtime.activeSession?.chatSessionId
+      || null;
+    const caption = arg.caption?.trim()
+      || `Simulator screenshot · ${deviceLabelForUdid(shot.deviceUdid)}`;
+    /*
+     * Own it by LANE as well as by chat, and by the lane alone when no chat
+     * drove the capture.
+     *
+     * The broker links an artifact to its owners and derives the lane from
+     * them. With a chat owner only, a capture taken by the CLI — where there is
+     * no chat session — arrived with an EMPTY owner list, so it belonged to
+     * nobody: `ade proof list` returned it under no scope, project-wide
+     * included, while `screenshot` still handed back a real artifact id. It
+     * looked filed and was unreachable. `ade proof attach` never had the bug
+     * because it claims both owners.
+     */
+    const owners: Array<{ kind: "chat_session" | "lane"; id: string }> = [
+      ...(chatSessionId ? [{ kind: "chat_session" as const, id: chatSessionId }] : []),
+      ...(runtime.key ? [{ kind: "lane" as const, id: runtime.key }] : []),
+    ];
+    try {
+      const result = filer.ingest({
+        backend: { name: "apple-device", style: "local_fallback", toolName: "apple_screenshot" },
+        ...(owners.length ? { owners } : {}),
+        ...(args.projectRoot ? { callerRoot: args.projectRoot } : {}),
+        inputs: [
+          {
+            kind: "screenshot",
+            title: caption,
+            description: `Screen of the lane's Apple device at ${shot.capturedAt}.`,
+            path: shot.filePath,
+            mimeType: "image/png",
+            metadata: {
+              laneId: runtime.key || null,
+              udid: shot.deviceUdid,
+              width: shot.width,
+              height: shot.height,
+              capturedAt: shot.capturedAt,
+            },
+          },
+        ],
+      });
+      return readArtifactId(result);
+    } catch (error) {
+      args.logger.debug("apple.screenshot_proof_file_failed", {
+        udid: shot.deviceUdid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const screenshot = async (arg: IosSimulatorScreenshotArgs = {}): Promise<IosSimulatorScreenshot> => {
+    assertDarwin();
+    const runtime = resolveRuntime(arg);
+    const shot = await captureScreenshot(
+      arg,
+      await resolveScopedRootForSession({ projectRoot: arg.projectRoot, laneId: arg.laneId }, runtime),
+      runtime,
+    );
+    // Default ON. `proof: false` is for the internal callers that already
+    // produce their own artifact — the proof bundle's `screen.png` and the
+    // inspector hit-test still — which would otherwise file a second, duplicate
+    // row for the same pixels.
+    if (arg.proof === false) return shot;
+    return { ...shot, proofArtifactId: fileScreenshotAsProof(shot, arg, runtime) };
+  };
+
+  const getAppContainerPath = async (
+    deviceUdid: string | null | undefined,
+    runtime: LaneRuntime,
+  ): Promise<{ device: IosSimulatorDevice; containerPath: string }> => {
+    const session = runtime.activeSession;
+    if (!session) {
       throw new Error("Launch an iOS app before reading inspector context.");
     }
-    const device = await resolveDevice(deviceUdid ?? activeSession?.deviceUdid);
-    const { stdout } = await run("xcrun", ["simctl", "get_app_container", device.udid, activeSession.bundleId, "data"], { timeoutMs: 20_000 });
+    const device = await resolveDevice(deviceUdid ?? session.deviceUdid, runtime);
+    const { stdout } = await run("xcrun", ["simctl", "get_app_container", device.udid, session.bundleId, "data"], { timeoutMs: 20_000 });
     const containerPath = stdout.trim();
     if (!containerPath) {
-      throw new Error(`${activeSession.appName ?? activeSession.bundleId} data container was not found. Launch the app in the simulator first.`);
+      throw new Error(`${session.appName ?? session.bundleId} data container was not found. Launch the app in the simulator first.`);
     }
     return { device, containerPath };
   };
 
-  const readInspectorSnapshot = async (arg: { deviceUdid?: string | null } = {}): Promise<IosInspectorSnapshot | null> => {
+  const readInspectorSnapshot = async (arg: { deviceUdid?: string | null; laneId?: string | null; chatSessionId?: string | null } = {}): Promise<IosInspectorSnapshot | null> => {
     // Exposed straight over IPC as `getInspectorSnapshot`, and it was the one
     // reachable method without this guard: off darwin it reported "Launch an
     // iOS app before reading inspector context" instead of the truth.
     assertDarwin();
-    const { device, containerPath } = await getAppContainerPath(arg.deviceUdid);
+    const { device, containerPath } = await getAppContainerPath(arg.deviceUdid, resolveRuntime(arg));
     const snapshotPath = path.join(containerPath, ADE_IOS_INSPECTOR_SNAPSHOT_PATH);
     let data: string;
     try {
@@ -4227,27 +4608,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
   };
 
+  /**
+   * The device's accessibility tree, straight from the helper.
+   *
+   * The helper returns exactly the JSON `idb ui describe-all --nested` used to
+   * return — a flat one-element array whose root carries `frame`, `type`,
+   * `AXLabel`, `AXValue`, `AXUniqueId` and `children` — which is why
+   * `collectAccessibilityElements` below is untouched and why `snapshot`,
+   * `tap-element`, `fill-element`, `wait-for-element`, `assert-visible` and
+   * `select` all keep working across the engine swap.
+   *
+   * The frames are in DEVICE POINTS, as they were from idb. Everything
+   * downstream (`scaleAccessibilityElementsToScreenshot`) already infers the
+   * scale from the screenshot, so nothing here converts.
+   */
   const readAccessibilityElements = async (deviceUdid: string): Promise<IosScreenElement[]> => {
-    if (!cachedCommandExists("idb")) {
-      throw new Error(`idb is not installed. ${INSTALL_HINT_IDB}`);
+    const payload = await helper().send({ type: "ax-describe", udid: deviceUdid });
+    const tree = payload.tree;
+    if (typeof tree !== "string" || !tree.trim()) {
+      throw new Error("The simulator helper returned no accessibility tree. Is an app in the foreground?");
     }
-    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
-    try {
-      const { stdout } = await run(idbBinary, [
-        "--companion",
-        companion,
-        "ui",
-        "describe-all",
-        "--json",
-        "--nested",
-        "--udid",
-        deviceUdid,
-      ], { timeoutMs: 20_000 });
-      const parsed = JSON.parse(stdout) as unknown;
-      return collectAccessibilityElements(parsed);
-    } finally {
-      scheduleCompanionIdleStop();
-    }
+    return collectAccessibilityElements(JSON.parse(tree) as unknown);
   };
 
   /**
@@ -4260,12 +4641,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   // Scope fields omitted for the same reason as captureScreenshot: the caller
   // resolved the root and passes it in.
-  const captureScreenSnapshot = async (snapshotArgs: Omit<IosScreenSnapshotArgs, "projectRoot" | "laneId">, projectRoot: string): Promise<IosScreenSnapshot> => {
+  const captureScreenSnapshot = async (
+    snapshotArgs: Omit<IosScreenSnapshotArgs, "projectRoot" | "laneId">,
+    projectRoot: string,
+    runtime: LaneRuntime,
+  ): Promise<IosScreenSnapshot> => {
     const hitX = snapshotArgs.x == null ? null : normalizeCoordinate(snapshotArgs.x, "x");
     const hitY = snapshotArgs.y == null ? null : normalizeCoordinate(snapshotArgs.y, "y");
     const shot = await captureScreenshot(
-      { deviceUdid: snapshotArgs.deviceUdid ?? activeSession?.deviceUdid },
+      { deviceUdid: snapshotArgs.deviceUdid ?? runtime.activeSession?.deviceUdid },
       projectRoot,
+      runtime,
     );
     const providers: IosScreenSnapshot["providers"] = [
       {
@@ -4278,7 +4664,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     let inspectorSnapshot: IosInspectorSnapshot | null = null;
     let inspectorElements: IosScreenElement[] = [];
     try {
-      inspectorSnapshot = await readInspectorSnapshot({ deviceUdid: shot.deviceUdid });
+      inspectorSnapshot = await readInspectorSnapshot({ deviceUdid: shot.deviceUdid, laneId: runtime.laneId });
       inspectorElements = (inspectorSnapshot?.elements ?? []).map(inspectorElementToScreenElement);
       providers.push({
         source: "ade-inspector",
@@ -4354,25 +4740,28 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   const getScreenSnapshot = async (snapshotArgs: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> => {
     assertDarwin();
+    const runtime = resolveRuntime(snapshotArgs);
     return captureScreenSnapshot(
       snapshotArgs,
       await resolveScopedRootForSession({
         projectRoot: snapshotArgs.projectRoot,
         laneId: snapshotArgs.laneId,
-      }),
+      }, runtime),
+      runtime,
     );
   };
 
   /**
    * `resolvedProjectRoot` is the tree to match source against, already run
    * through the lane ladder by the caller. It is not a raw caller-supplied
-   * projectRoot: the old `?? activeSession?.projectRoot ?? args.projectRoot`
+   * projectRoot: the old `?? runtime.activeSession?.projectRoot ?? args.projectRoot`
    * tail never resolved lanes, so a lane-scoped inspect matched the primary
    * checkout's sources against the lane's running app.
    */
   const contextItemFromScreenElement = (
     element: IosScreenElement,
     snapshot: IosScreenSnapshot,
+    runtime: LaneRuntime,
     screenshotDataUrl?: string | null,
     resolvedProjectRoot?: string | null,
   ): IosElementContextItem => {
@@ -4435,7 +4824,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         selectedElement: compactScreenElement(element),
         nearbyElements: nearbyScreenElements(snapshot, element),
         deviceUdid: snapshot.deviceUdid,
-        chatSessionId: activeSession?.chatSessionId ?? null,
+        chatSessionId: runtime.activeSession?.chatSessionId ?? null,
         label: element.label,
         value: element.value,
         role: element.role,
@@ -4452,6 +4841,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const coordinateFallbackItem = (
     point: { x: number; y: number },
     deviceUdid: string,
+    runtime: LaneRuntime,
     screenshotDataUrl?: string | null,
   ): IosElementContextItem => ({
     kind: "ios_element",
@@ -4463,7 +4853,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     metadata: {
       iosInspectPacketVersion: 1,
       deviceUdid,
-      chatSessionId: activeSession?.chatSessionId ?? null,
+      chatSessionId: runtime.activeSession?.chatSessionId ?? null,
       sourceConfidence: "none",
       selectedElement: {
         source: "coordinate",
@@ -4478,6 +4868,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const inspectPoint = async (point: IosSimulatorInspectPointArgs): Promise<IosSimulatorInspectResult> => {
     assertDarwin();
+    const runtime = resolveRuntime(point);
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
     // Resolve the lane ladder once and hand the resolved tree to both the
@@ -4487,13 +4878,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       projectRoot: point.projectRoot ?? null,
       laneId: point.laneId ?? null,
     });
-    const screenSnapshot = await captureScreenSnapshot({ deviceUdid: point.deviceUdid, x, y }, sourceRoot);
+    const screenSnapshot = await captureScreenSnapshot({ deviceUdid: point.deviceUdid, x, y }, sourceRoot, runtime);
     // Inspecting exists to show the user what was hit, so reveal the drawer
     // whichever host answered — including a miss, where the empty result is
     // itself the thing to show.
     requestDrawerOpen("inspectPoint", "inspect", {
-      chatSessionId: activeSession?.chatSessionId,
-      laneId: point.laneId ?? activeSession?.laneId,
+      chatSessionId: runtime.activeSession?.chatSessionId,
+      laneId: point.laneId ?? runtime.activeSession?.laneId,
     });
     const element = screenSnapshot.hitElement;
     if (!element) {
@@ -4505,7 +4896,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       };
     }
     return {
-      item: contextItemFromScreenElement(element, screenSnapshot, point.includeScreenshot ? screenSnapshot.screenshot.dataUrl : null, sourceRoot),
+      item: contextItemFromScreenElement(element, screenSnapshot, runtime, point.includeScreenshot ? screenSnapshot.screenshot.dataUrl : null, sourceRoot),
       source: element.source,
       snapshot: screenSnapshot.inspectorSnapshot,
       screenSnapshot,
@@ -4513,94 +4904,94 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
-   * The window-capture backend counts nothing service-side, because the
-   * renderer owns those frames. The host-encoded backend does own them, so its
-   * numbers are read back here instead of being reported as null.
+   * The live view, as a status read reports it.
+   *
+   * The address and the token are the stream's only authorisation, and
+   * `getStreamStatus` is on the action allowlist with no ownership guard — so
+   * `ade actions run ios_simulator.getStreamStatus --json` prints whatever this
+   * returns into a durable agent transcript. The shape is useful there; the
+   * secret is not. Only `startStream` — the call that mints it — hands it out.
    */
-  const getStreamStatus = (): IosSimulatorStreamStatus => {
-    if (streamStatus.backend !== "idb-h264" || !videoServer) return streamStatus;
-    const metrics = videoServer.metrics();
+  const getStreamStatus = (streamArgs: { laneId?: string | null; chatSessionId?: string | null } = {}): IosSimulatorStreamStatus => {
+    const runtime = resolveRuntime(streamArgs);
+    const status = runtime.streamStatus;
+    if (!status.transport) return { ...status, streamUrl: null };
     return {
-      ...streamStatus,
-      fps: metrics.fps,
-      frameCount: metrics.frames,
-      bitrateKbps: metrics.bitrateKbps,
-      lastFrameAt: metrics.lastFrameAtMs ? new Date(metrics.lastFrameAtMs).toISOString() : streamStatus.lastFrameAt,
-      lastError: metrics.lastError ?? streamStatus.lastError,
-      // `streamUrl` carries the same token in its query string, so redacting
-      // only `transport` would have left the secret in the field right next to
-      // it. Both go.
+      ...status,
+      // `streamUrl` would carry the same address, so redacting only the
+      // transport would leave it in the field right next to it. Both go.
       streamUrl: null,
-      // `getStreamStatus` is on the action allowlist with no ownership guard, so
-      // `ade actions run ios_simulator.getStreamStatus --json` prints whatever
-      // it returns into a durable agent transcript. The shape is useful there;
-      // the token is the stream's only authorization and must not be. Only
-      // `startStream` — the call that mints it — hands it out.
-      transport: streamStatus.transport
-        ? {
-          ...streamStatus.transport,
-          url: null,
-          token: null,
-          codec: metrics.codec,
-          width: metrics.width,
-          height: metrics.height,
-        }
-        : streamStatus.transport,
+      transport: { ...status.transport, url: null, token: null },
     };
   };
 
-  const stopStream = async (): Promise<IosSimulatorStreamStatus> => {
-    videoServer?.stop();
-    stopCompanion();
-    const next = setStreamStopped(null);
+  /** Ask the helper to stop capturing, tolerating a helper that is already gone. */
+  const stopCapture = async (runtime: LaneRuntime): Promise<void> => {
+    const udid = runtime.streamStatus.deviceUdid;
+    if (!udid || !helperClient) return;
+    await helperClient.send({ type: "capture-stop", udid }).catch((error: unknown) => {
+      args.logger.debug("apple.capture_stop_failed", {
+        udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+    });
+  };
+
+  const stopStream = async (streamArgs: { laneId?: string | null; chatSessionId?: string | null } = {}): Promise<IosSimulatorStreamStatus> => {
+    const runtime = resolveRuntime(streamArgs);
+    // A stopped stream has no local viewer. Cleared for every stop — the
+    // renderer's own, the relay's, and the internal one that swaps devices —
+    // so the flag cannot outlive the capture it described.
+    if (runtime.laneId) localViewerLanes.delete(runtime.laneId);
+    await stopCapture(runtime);
+    const next = setStreamStopped(runtime, null);
     emit({ type: "stream-stopped", status: next });
     return next;
   };
 
   const shutdown = async (shutdownArgs: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> => {
+    const runtime = resolveRuntime(shutdownArgs);
     // Same single-owner rule as `launch` above, checked before any teardown so
-    // a refused shutdown leaves the stream and companion of the owning chat
-    // untouched. Without it, `ade ios-sim shutdown` — a step in every chat's
-    // own instructions — silently evicted whichever other chat was mid-verify.
+    // a refused shutdown leaves the stream of the owning chat untouched.
+    // Without it, `ade apple shutdown` — a step in every chat's own
+    // instructions — silently evicted whichever other chat was mid-verify.
     //
     // Cooperative, not enforced: it separates callers that say who they are, so
     // one chat cannot end another's session by accident. `force` (which also
-    // hard-resets the launch lock and companions) and `ignoreOwnership` (which
-    // does not) both step around it deliberately, and so does any caller that
-    // names the owner's own id — `getStatus` hands that id to anyone who asks.
+    // hard-resets the launch lock) and `ignoreOwnership` (which does not) both
+    // step around it deliberately, and so does any caller that names the
+    // owner's own id — `getStatus` hands that id to anyone who asks.
     const incomingChatSessionId = shutdownArgs.chatSessionId ?? null;
     if (
-      activeSession
-      && activeSession.chatSessionId
-      && activeSession.chatSessionId !== incomingChatSessionId
+      runtime.activeSession
+      && runtime.activeSession.chatSessionId
+      && runtime.activeSession.chatSessionId !== incomingChatSessionId
       && !shutdownArgs.force
       && !shutdownArgs.ignoreOwnership
     ) {
-      throw new IosSimulatorOwnedBySessionError(activeSession);
+      throw new IosSimulatorOwnedBySessionError(runtime.activeSession);
     }
-    const previousSession = activeSession;
+    const previousSession = runtime.activeSession;
     try {
-      await stopStream();
+      await stopStream({ laneId: runtime.laneId });
     } catch (error) {
       args.logger.debug("ios_simulator.stop_stream_during_shutdown_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    stopCompanion();
     if (shutdownArgs.force) {
-      await stopTrackedIdbCompanions([...trackedCompanionPids]).catch(() => 0);
-      trackedCompanionPids.clear();
       // Force is the documented escape hatch for a wedged launch, so it has to
       // release the launch lock too. Without this an in-flight launch that
       // never returns left `activeLaunchId` set forever and every subsequent
       // launch failed IOS_SIMULATOR_LAUNCH_IN_PROGRESS — the one error the
       // user was told force would clear. The supersede guard inside `launch`
       // stops the abandoned launch from publishing its session afterwards.
-      activeLaunchId = null;
+      runtime.activeLaunchId = null;
     }
-    const released = activeSession !== null;
-    activeSession = null;
-    cachedStatus = { ...cachedStatus, computedAt: 0 };
+    const released = runtime.activeSession !== null;
+    runtime.activeSession = null;
+    invalidateStatus(runtime);
     if (released || previousSession) {
       emit({ type: "session-updated", session: null });
       emit({ type: "session-released", previousSession });
@@ -4612,90 +5003,222 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * Called when the owning chat ends or is deleted. Without it the simulator
    * stays locked to a chat that no longer exists and every later launch fails
    * the ownership check.
+   *
+   * Sweeps EVERY lane, not just the chat's own: one chat can hold an app
+   * session on one lane and a device session on another, and a per-lane release
+   * would leave the second one claimed forever.
    */
   const releaseIfOwnedBy = async (chatSessionId: string | null | undefined): Promise<IosSimulatorShutdownResult> => {
-    const owner = activeSession?.chatSessionId ?? null;
     const trimmed = chatSessionId?.trim() || null;
-    // A chat can hold a device session without holding an app session, so the
-    // device half is released on its own terms. Without this a closed chat left
-    // its simulator claimed and no other chat could open one.
-    if (trimmed) {
-      await hub().releaseDeviceIfOwnedBy(trimmed).catch((error: unknown) => {
-        args.logger.debug("ios_simulator.device_release_failed", {
-          chatSessionId: trimmed,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    if (!trimmed) return { released: false, previousSession: null };
+    // A chat's turn ending also ends the recordings it started automatically.
+    await recordings.onTurnEnded(trimmed).catch((error: unknown) => {
+      args.logger.debug("apple.recording_turn_end_failed", {
+        chatSessionId: trimmed,
+        error: error instanceof Error ? error.message : String(error),
       });
+    });
+    let result: IosSimulatorShutdownResult = { released: false, previousSession: null };
+    for (const runtime of [...runtimes.values()]) {
+      // A chat can hold a device session without holding an app session, so the
+      // device half is released on its own terms. Without this a closed chat
+      // left its simulator claimed and no other chat could open one.
+      if (runtime.hub) {
+        await runtime.hub.releaseDeviceIfOwnedBy(trimmed).catch((error: unknown) => {
+          args.logger.debug("ios_simulator.device_release_failed", {
+            chatSessionId: trimmed,
+            laneId: runtime.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      if (runtime.activeSession?.chatSessionId !== trimmed) continue;
+      args.logger.info("ios_simulator.released_with_chat_session", { chatSessionId: trimmed, laneId: runtime.laneId });
+      // Identify as the owner: shutdown now refuses an anonymous non-force call.
+      const released = await shutdown({ chatSessionId: trimmed, laneId: runtime.laneId, force: false });
+      if (released.released) result = released;
     }
-    if (!owner || !trimmed || owner !== trimmed) {
-      return { released: false, previousSession: null };
-    }
-    args.logger.info("ios_simulator.released_with_chat_session", { chatSessionId: trimmed });
-    // Identify as the owner: shutdown now refuses an anonymous non-force call.
-    return shutdown({ chatSessionId: owner, force: false });
+    return result;
   };
 
-  const startedStreamStatus = (
-    device: IosSimulatorDevice,
-    targetFps: number,
-  ): IosSimulatorStreamStatus => ({
-    deviceUdid: device.udid,
-    running: true,
-    backend: "simulator-window-capture",
-    requestedBackend: streamRequestContext.requestedBackend ?? null,
-    fallbackReason: null,
-    degradationReason: null,
-    // fps and frameCount stay null: the renderer captures the Simulator.app
-    // window, so the service has no frames to count. streamUrl stays null for
-    // the same reason — this backend has no URL to hand out.
-    fps: null,
-    targetFps,
-    frameCount: null,
-    startedAt: nowIso(),
-    lastFrameAt: null,
-    lastError: null,
-    error: null,
-    streamUrl: null,
-    averageLatencyMs: null,
-    latencyP50Ms: null,
-    latencyP95Ms: null,
-    helperPid: null,
-    inputBackend: null,
-  });
+  /* ───────────────────────── live view ───────────────────────── */
 
-  const startWindowCaptureStream = async (device: IosSimulatorDevice, fps: number): Promise<IosSimulatorStreamStatus> => {
-    if (process.platform !== "darwin") {
-      throw new Error("Simulator window streaming is only available on macOS.");
+  /**
+   * Lanes a renderer on this machine is watching.
+   *
+   * The relay asks `hasLocalViewer` before it stops a capture for its last
+   * remote viewer, so a web tab closing cannot black out the desktop column
+   * that joined the same stream. Tracked here rather than in a main-process
+   * registry because the runtime-action path — the one the desktop renderer
+   * actually uses with a project open — never reaches the IPC handler that used
+   * to populate one. Cleared on any stop: a stream that is gone has no viewer.
+   */
+  const localViewerLanes = new Set<string>();
+  const markLocalViewer = (laneId: string | null | undefined): void => {
+    const lane = typeof laneId === "string" ? laneId.trim() : "";
+    if (lane) localViewerLanes.add(lane);
+  };
+  const hasLocalViewer = (laneId: string | null | undefined): boolean => {
+    const lane = typeof laneId === "string" ? laneId.trim() : "";
+    return lane ? localViewerLanes.has(lane) : false;
+  };
+
+  /**
+   * Encodes the device screen on the machine that owns it and serves it over
+   * loopback.
+   *
+   * There is one backend now. The old `simulator-window-capture` path had the
+   * renderer mirror the real Simulator.app window, which forced a Screen
+   * Recording grant, a visible window on this Mac, and a bezel in the picture —
+   * and could not work at all when the simulator was on a remote Mac. The
+   * helper reads the simulator's own framebuffer, so the canvas IS the device
+   * screen and the desktop reads the URL below directly when the machine is
+   * this one and through an SSH port forward when it is not.
+   */
+  const startStream = async (streamArgs: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
+    // Ahead of resolveDevice: on Windows/Linux the device lookup fails first
+    // and reported "No available iOS Simulator devices were found", which reads
+    // as a fixable setup problem rather than the platform being unsupported.
+    assertDarwin();
+    const runtime = resolveRuntime(streamArgs);
+    const device = await resolveDevice(streamArgs.deviceUdid ?? runtime.activeSession?.deviceUdid, runtime);
+    const requestedFps = clampStreamFps(streamArgs.fps);
+    const scale = clampStreamRatio(streamArgs.scaleFactor) ?? 1;
+    const bitrateKbps = clampStreamBitrateKbps(streamArgs.bitrateKbps);
+    if (
+      runtime.streamStatus.running
+      && runtime.streamStatus.deviceUdid === device.udid
+      && runtime.streamStatus.targetFps === requestedFps
+      // A running capture is reusable only if it already honors the requested
+      // cap. `null` means the caller asked for no cap, which must not downgrade
+      // a capped stream a remote viewer already started; a non-null cap that
+      // differs restarts so the encoder actually picks it up.
+      && (bitrateKbps == null || (runtime.streamStatus.bitrateKbps ?? null) === bitrateKbps)
+    ) {
+      // Already running for this device: a renderer joining an existing capture
+      // still counts as a local viewer.
+      if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
+      return runtime.streamStatus;
     }
-    const requestedFps = Math.max(1, Math.min(60, Math.round(fps)));
-    if (!Number.isFinite(requestedFps)) {
-      throw new Error("fps must be a number between 1 and 60.");
+    // A capture already running on this lane for another device has to go
+    // first: the helper keys captures by udid and would leave the old one
+    // streaming to a reader nobody is holding.
+    if (runtime.streamStatus.running) await stopStream({ laneId: runtime.laneId });
+    // The helper reads the framebuffer of a BOOTED device and refuses one that
+    // is off. Booting here, rather than leaving it to the caller, is what keeps
+    // a remote viewer's `apple.streamTicket` from failing on a lane whose device
+    // was shut down from Xcode or by a reboot.
+    await ensureDeviceBooted(device);
+    if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
+    const payload = await helper().send({
+      type: "capture-start",
+      udid: device.udid,
+      fps: requestedFps,
+      scale,
+      // Only when a caller asked for one: omitting it keeps the helper's own
+      // default, which is what a local viewer wants.
+      ...(bitrateKbps != null ? { bitrateKbps } : {}),
+    });
+    const url = typeof payload.url === "string" ? payload.url : null;
+    const token = typeof payload.token === "string" ? payload.token : null;
+    if (!url || !token) {
+      throw new Error("The simulator helper started a capture but reported no stream address.");
     }
-    if (streamStatus.running && streamStatus.deviceUdid === device.udid && streamStatus.backend === "simulator-window-capture") {
-      return streamStatus;
-    }
-    await stopStream();
-    spawnProcess("open", ["-g", "-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
-    streamRequestContext = {
-      requestedBackend: streamRequestContext.requestedBackend ?? "simulator-window-capture",
+    const port = Number(new URL(url).port) || 0;
+    const pixelWidth = typeof payload.pixelWidth === "number" ? payload.pixelWidth : null;
+    const pixelHeight = typeof payload.pixelHeight === "number" ? payload.pixelHeight : null;
+    // The helper answers with both, and both matter: pixels size the decoded
+    // frame, points are the unit every input call takes.
+    const pointWidth = typeof payload.pointWidth === "number" ? payload.pointWidth : null;
+    const pointHeight = typeof payload.pointHeight === "number" ? payload.pointHeight : null;
+    runtime.streamRequestContext = {
+      requestedBackend: IOS_SIMULATOR_STREAM_BACKEND,
       fallbackReason: null,
       degradationReason: null,
     };
-    streamStatus = startedStreamStatus(device, requestedFps);
-    emit({ type: "stream-started", status: streamStatus });
-    if (cachedCommandExists("idb") && cachedCommandExists("idb_companion")) {
-      void ensureCompanion(device.udid).then(() => {
-        if (!streamStatus.running || streamStatus.deviceUdid !== device.udid) {
-          scheduleCompanionIdleStop();
-        }
-      }).catch((error) => {
-        args.logger.debug("ios_simulator.control_prewarm_failed", {
-          deviceUdid: device.udid,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+    runtime.streamStatus = {
+      deviceUdid: device.udid,
+      running: true,
+      backend: IOS_SIMULATOR_STREAM_BACKEND,
+      requestedBackend: IOS_SIMULATOR_STREAM_BACKEND,
+      fallbackReason: null,
+      degradationReason: null,
+      fps: null,
+      targetFps: requestedFps,
+      // The requested cap, remembered so a later `startStream` can tell whether
+      // the running capture already honors it.
+      bitrateKbps,
+      frameCount: null,
+      startedAt: nowIso(),
+      lastFrameAt: null,
+      lastError: null,
+      error: null,
+      streamUrl: url,
+      averageLatencyMs: null,
+      latencyP50Ms: null,
+      latencyP95Ms: null,
+      helperPid: helperClient?.pid() ?? null,
+      inputBackend: "helper",
+      transport: {
+        url,
+        port,
+        token,
+        // The helper announces the codec inside the stream's own config record
+        // rather than on the control channel, so the reader learns it from the
+        // first record — the same place it always did.
+        codec: null,
+        width: pixelWidth,
+        height: pixelHeight,
+        pointWidth,
+        pointHeight,
+      },
+    };
+    emit({ type: "stream-started", status: runtime.streamStatus });
+    return runtime.streamStatus;
+  };
+
+  /**
+   * One decoded frame from the running stream, written as a PNG.
+   *
+   * Cheaper than `screenshot`, which round-trips `simctl` and re-encodes the
+   * whole framebuffer. It needs a running stream because that is what proves
+   * the device is producing pixels at all; `screenshot` does not.
+   */
+  const frame = async (frameArgs: AppleFrameArgs = {}): Promise<AppleFrameResult> => {
+    assertDarwin();
+    const runtime = resolveRuntime(frameArgs);
+    if (!runtime.streamStatus.running) {
+      throw new Error(`${APPLE_STREAM_NOT_RUNNING_CODE}: no live view is running${runtime.laneId ? ` on lane ${runtime.laneId}` : ""}. Start one with stream-start, or use screenshot, which needs no stream.`);
     }
-    return streamStatus;
+    const deviceUdid = runtime.streamStatus.deviceUdid
+      ?? await resolveControlDeviceUdid(frameArgs.deviceUdid, runtime);
+    const root = await resolveScopedRootForSession({ laneId: frameArgs.laneId }, runtime);
+    const requestedOutPath = frameArgs.outPath?.trim();
+    const cacheDirectory = path.join(root, ...FRAME_CACHE_SEGMENTS);
+    const filePath = requestedOutPath
+      ? path.resolve(root, requestedOutPath)
+      : path.join(cacheDirectory, `frame-${nowIso().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.png`);
+    // The same containment rule as `screenshot`: `outPath` reaches here from an
+    // agent's tool call, so an absolute path or a `../..` tail would otherwise
+    // let a frame grab write anywhere the ADE process can.
+    if (!isPathInside(filePath, root)) {
+      throw new IosSimulatorOutPathOutsideRootError(filePath, root);
+    }
+    if (fs.existsSync(root)) {
+      try {
+        resolvePathWithinRoot(root, filePath, { allowMissing: true });
+      } catch (error) {
+        if (isPathEscapeError(error)) throw new IosSimulatorOutPathOutsideRootError(filePath, root);
+        throw error;
+      }
+    }
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    const payload = await helper().send({ type: "screenshot", udid: deviceUdid, path: filePath });
+    return {
+      filePath: typeof payload.path === "string" ? payload.path : filePath,
+      width: typeof payload.width === "number" ? payload.width : 0,
+      height: typeof payload.height === "number" ? payload.height : 0,
+    };
   };
 
   /**
@@ -4706,160 +5229,297 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * the one sentence that says why, which reads as a broken install rather
    * than an unsupported platform.
    */
-  const darwinHub = (): IosDeviceHub => {
+  const darwinHub = (scope: { laneId?: string | null; chatSessionId?: string | null } = {}): IosDeviceHub => {
     assertDarwin();
-    return hub();
+    return hub(resolveRuntime(scope));
+  };
+
+  /* ───────────────────────── input ───────────────────────── */
+
+  /**
+   * A tap, as the helper wants it: a begin and an end at the same point.
+   *
+   * The helper's wire unit is DEVICE POINTS (`Protocol.swift`'s `DevicePoint`,
+   * normalised to a 0..1 fraction in `DeviceMetrics` on the far side), which is
+   * the same unit idb's `ui tap` took — so no call site had to change its
+   * coordinates when the engine did.
+   */
+  const helperTap = async (deviceUdid: string, x: number, y: number): Promise<void> => {
+    const client = helper();
+    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x, y });
+    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x, y });
+  };
+
+  const helperType = async (deviceUdid: string, text: string): Promise<void> => {
+    await helper().send({ type: "type", udid: deviceUdid, text });
   };
 
   /**
-   * Encodes the device screen on this machine and serves it over loopback.
+   * A drag, as a begin / moves / end sequence.
    *
-   * The window-capture backend has the renderer capture the real Simulator.app
-   * window, so it only works when the simulator and the ADE window are on the
-   * same Mac. This backend moves the encode to the machine that owns the
-   * simulator. The desktop reads the URL below directly when that machine is
-   * this one, and through an SSH port forward when it is not.
+   * idb issued an instantaneous swipe without `--duration` and iOS read that as
+   * a flick rather than a drag, so a scroll or a slider drag did nothing. The
+   * helper has no duration argument at all — the gesture IS the move events —
+   * so the duration is spent here, as evenly spaced steps. The default is the
+   * same 180ms every caller used to get.
    */
-  const startH264Stream = async (
-    device: IosSimulatorDevice,
-    fps: number,
-    scaleFactor: number | null,
-    compressionQuality: number | null,
-  ): Promise<IosSimulatorStreamStatus> => {
-    if (!cachedCommandExists("idb") || !cachedCommandExists("idb_companion")) {
-      throw new Error(`The host-encoded live view needs idb and idb_companion. ${INSTALL_HINT_IDB}`);
+  const helperSwipe = async (
+    deviceUdid: string,
+    input: { startX: number; startY: number; endX: number; endY: number; durationMs?: number | null },
+  ): Promise<void> => {
+    const durationMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
+    if (!Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
+    const client = helper();
+    const steps = Math.max(2, Math.min(60, Math.round(Math.max(durationMs, 1) / DRAG_STEP_MS)));
+    const stepDelayMs = Math.max(0, Math.round(durationMs / steps));
+    await client.send({ type: "touch", udid: deviceUdid, phase: "begin", x: input.startX, y: input.startY });
+    for (let step = 1; step < steps; step += 1) {
+      const progress = step / steps;
+      await client.send({
+        type: "touch",
+        udid: deviceUdid,
+        phase: "move",
+        x: input.startX + ((input.endX - input.startX) * progress),
+        y: input.startY + ((input.endY - input.startY) * progress),
+      });
+      if (stepDelayMs > 0) await delay(stepDelayMs);
     }
-    await stopStream();
-    const server = ensureVideoServer();
-    const transport = await server.start({
-      deviceUdid: device.udid,
-      fps,
-      scaleFactor,
-      compressionQuality,
-    });
-    streamStatus = {
-      ...startedStreamStatus(device, fps),
-      backend: "idb-h264",
-      streamUrl: transport.url,
-      transport,
-      inputBackend: "idb",
-    };
-    emit({ type: "stream-started", status: streamStatus });
-    return streamStatus;
+    await client.send({ type: "touch", udid: deviceUdid, phase: "end", x: input.endX, y: input.endY });
   };
 
-  const startStream = async (streamArgs: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
-    // Ahead of resolveDevice: on Windows/Linux the device lookup fails first
-    // and reported "No available iOS Simulator devices were found", which reads
-    // as a fixable setup problem rather than the platform being unsupported.
+  const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
     assertDarwin();
-    const device = await resolveDevice(streamArgs.deviceUdid ?? activeSession?.deviceUdid);
-    const rawBackend = streamArgs.backend ?? "simulator-window-capture";
-    if (rawBackend !== "auto" && rawBackend !== "simulator-window-capture" && rawBackend !== "idb-h264") {
-      throw new Error("stream backend must be `auto`, `simulator-window-capture` or `idb-h264`.");
-    }
-    const requestedBackend = resolveIosSimulatorStreamBackend(rawBackend);
-    const requestedFps = clampStreamFps(streamArgs.fps);
-    streamRequestContext = {
-      requestedBackend,
-      fallbackReason: null,
-      degradationReason: null,
-    };
-    if (requestedBackend === "idb-h264") {
-      return startH264Stream(
-        device,
-        requestedFps,
-        clampStreamRatio(streamArgs.scaleFactor),
-        clampStreamRatio(streamArgs.compressionQuality),
-      );
-    }
-    return startWindowCaptureStream(device, requestedFps);
-  };
-
-  const runIdbTap = async (deviceUdid: string, x: number, y: number): Promise<void> => {
-    if (!cachedCommandExists("idb")) {
-      throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
-    }
-    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
-    try {
-      await run(idbBinary, ["--companion", companion, "ui", "tap", String(Math.round(x)), String(Math.round(y)), "--udid", deviceUdid], { timeoutMs: 20_000 });
-    } finally {
-      scheduleCompanionIdleStop();
-    }
-  };
-
-  const runIdbText = async (deviceUdid: string, text: string): Promise<void> => {
-    if (!cachedCommandExists("idb")) {
-      throw new Error(`idb is required for text input. ${INSTALL_HINT_IDB}`);
-    }
-    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
-    try {
-      await run(idbBinary, ["--companion", companion, "ui", "text", text, "--udid", deviceUdid], { timeoutMs: 20_000 });
-    } finally {
-      scheduleCompanionIdleStop();
-    }
-  };
-
-  const runIdbSwipe = async (deviceUdid: string, input: { startX: number; startY: number; endX: number; endY: number; durationMs?: number | null; delta?: number | null }): Promise<void> => {
-    if (!cachedCommandExists("idb")) {
-      throw new Error(`idb is required for pointer control. ${INSTALL_HINT_IDB}`);
-    }
-    const [idbBinary, companion] = await Promise.all([resolveToolBinary("idb"), ensureCompanion(deviceUdid)]);
-    const idbArgs = [
-      "--companion",
-      companion,
-      "ui",
-      "swipe",
-      String(Math.round(input.startX)),
-      String(Math.round(input.startY)),
-      String(Math.round(input.endX)),
-      String(Math.round(input.endY)),
-      "--udid",
-      deviceUdid,
-    ];
-    // idb issues an instantaneous swipe without --duration, and iOS reads that
-    // as a flick rather than a drag, so a scroll or a slider drag does nothing.
-    // The drawer always sent 180ms; agents calling the CLI got no default and
-    // hit the silent no-op, so the default lives here for every caller.
-    const swipeDurationMs = input.durationMs ?? DEFAULT_SWIPE_DURATION_MS;
-    if (!Number.isFinite(swipeDurationMs)) throw new Error("durationMs must be a number.");
-    idbArgs.push("--duration", String(Math.max(0.01, swipeDurationMs / 1000)));
-    if (input.delta != null) {
-      if (!Number.isFinite(input.delta) || input.delta <= 0) throw new Error("delta must be a positive number.");
-      idbArgs.push("--delta", String(input.delta));
-    }
-    try {
-      await run(idbBinary, idbArgs, { timeoutMs: 20_000 });
-    } finally {
-      scheduleCompanionIdleStop();
-    }
-  };
-
-  const tap = async (point: { deviceUdid?: string | null; x: number; y: number }): Promise<{ ok: true }> => {
-    assertDarwin();
-    const deviceUdid = await resolveControlDeviceUdid(point.deviceUdid);
+    const runtime = resolveRuntime(point);
+    const deviceUdid = await resolveControlDeviceUdid(point.deviceUdid, runtime);
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
     return enqueueControl("tap", async () => {
-      await runIdbTap(deviceUdid, x, y);
-      streamStatus = { ...streamStatus, inputBackend: "idb" };
+      await helperTap(deviceUdid, x, y);
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
       return { ok: true };
     });
   };
 
-  const typeText = async (input: { deviceUdid?: string | null; text: string }): Promise<{ ok: true }> => {
+  /**
+   * A hardware button press through the helper's `button` command.
+   *
+   * Same ownership ladder as `tap` (`resolveRuntime` → `resolveControlDeviceUdid`
+   * → `enqueueControl`). Not overlay input, so this does not call `noteInput`.
+   *
+   * `shake` is in the public union so the column can name it, but it is not a
+   * helper button and this Xcode's `simctl` has no shake verb — refused with
+   * `APPLE_BUTTON_UNSUPPORTED`.
+   */
+  const pressButton = async (buttonArgs: ApplePressButtonArgs): Promise<ApplePressButtonResult> => {
     assertDarwin();
-    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid);
+    const rawName = typeof buttonArgs.name === "string" ? buttonArgs.name.trim() : "";
+    if (!isAppleHardwareButtonName(rawName)) {
+      throw new Error(
+        `${APPLE_BUTTON_UNSUPPORTED_CODE}: '${buttonArgs.name}' is not a hardware button ADE can press. Valid names: ${APPLE_HARDWARE_BUTTONS.join(", ")}.`,
+      );
+    }
+    const runtime = resolveRuntime(buttonArgs);
+    const deviceUdid = await resolveControlDeviceUdid(buttonArgs.deviceUdid, runtime);
+    return enqueueControl("pressButton", async () => {
+      switch (rawName) {
+        case "home":
+        case "lock":
+        case "volume-up":
+        case "volume-down":
+        case "siri":
+          try {
+            await helper().send({ type: "button", udid: deviceUdid, name: rawName });
+          } catch (error) {
+            if (error instanceof SimHelperError && error.code === "unsupported-button") {
+              throw new Error(`${APPLE_BUTTON_UNSUPPORTED_CODE}: ${error.message}`);
+            }
+            throw error;
+          }
+          runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+          return { ok: true };
+        case "shake":
+          throw new Error(
+            `${APPLE_BUTTON_UNSUPPORTED_CODE}: shake is not a helper button, and this Xcode's simctl has no shake command.`,
+          );
+        default: {
+          const unexpected: never = rawName;
+          throw new Error(`${APPLE_BUTTON_UNSUPPORTED_CODE}: '${unexpected}' is not a hardware button ADE can press.`);
+        }
+      }
+    });
+  };
+
+  /**
+   * Set the device orientation, and then go and look.
+   *
+   * The helper's `orientation` command answers `true` when its GSEvent reached
+   * `PurpleWorkspacePort` with `KERN_SUCCESS` — a statement about a mach
+   * message, not about iOS. Measured on 2026-09-21, on a machine with no
+   * `Simulator.app` installed anywhere:
+   *
+   * - the send always succeeds and the DEVICE orientation really does change;
+   * - whether the SCREEN turns is the foreground app's decision. SpringBoard
+   *   and Settings on an iPhone are portrait-only, so four landscape rotates
+   *   reported success and left the framebuffer at 1179x2556; Safari, launched
+   *   afterwards onto the already-turned device, came up at 2556x1179;
+   * - `portrait-upside-down` is refused the same way on an iPhone.
+   *
+   * So `applied` is decided by the framebuffer: read it, send, then wait for it
+   * to land on the requested axis. A rotation nobody can see is reported as
+   * `applied: false` with a reason, because the alternative is a viewer that
+   * draws an upright screen on its side.
+   */
+  const rotate = async (rotateArgs: AppleRotateArgs): Promise<AppleRotateResult> => {
+    assertDarwin();
+    const rawOrientation = typeof rotateArgs.orientation === "string" ? rotateArgs.orientation.trim() : "";
+    if (!isAppleDeviceOrientation(rawOrientation)) {
+      throw new Error(
+        `orientation must be ${APPLE_DEVICE_ORIENTATIONS.join(", ")}.`,
+      );
+    }
+    const runtime = resolveRuntime(rotateArgs);
+    const deviceUdid = await resolveControlDeviceUdid(rotateArgs.deviceUdid, runtime);
+    const value = HELPER_ORIENTATION_VALUE[rawOrientation];
+    const wantedAxis = appleOrientationAxis(rawOrientation);
+    return enqueueControl("rotate", async () => {
+      const frameBefore = await readSimulatorFramebufferGeometry(deviceUdid);
+      const payload = await helper().send({ type: "orientation", udid: deviceUdid, value });
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      if (payload.applied !== true) {
+        return {
+          applied: false,
+          orientation: rawOrientation,
+          verification: "send-failed",
+          reason: APPLE_ROTATE_SEND_FAILED_CODE,
+          detail: "The simulator helper could not deliver the orientation event to this device.",
+          frameBefore,
+          frameAfter: null,
+        };
+      }
+      const axisBefore = frameBefore ? frameAxis(frameBefore) : null;
+      if (!axisBefore) {
+        // No reading means no claim. The event went out and may well have been
+        // taken; saying `applied: true` on that basis is the bug this replaced.
+        return {
+          applied: false,
+          orientation: rawOrientation,
+          verification: "unmeasurable",
+          reason: APPLE_ROTATE_UNMEASURABLE_CODE,
+          detail: "The orientation event was sent, but this device's screen could not be read, so nothing is confirmed.",
+          frameBefore,
+          frameAfter: null,
+        };
+      }
+      if (axisBefore === wantedAxis) {
+        return {
+          applied: true,
+          orientation: rawOrientation,
+          verification: "already-on-axis",
+          reason: null,
+          detail: `The screen is ${wantedAxis}. A turn within ${wantedAxis} leaves the same pixel size, so the exact side is not confirmed.`,
+          frameBefore,
+          frameAfter: frameBefore,
+        };
+      }
+      const deadline = Date.now() + APPLE_ROTATE_SETTLE_TIMEOUT_MS;
+      let frameAfter = frameBefore;
+      for (;;) {
+        const reading = await readSimulatorFramebufferGeometry(deviceUdid);
+        if (reading) {
+          frameAfter = reading;
+          if (frameAxis(reading) === wantedAxis) {
+            return {
+              applied: true,
+              orientation: rawOrientation,
+              verification: "rotated",
+              reason: null,
+              detail: null,
+              frameBefore,
+              frameAfter,
+            };
+          }
+        }
+        if (Date.now() >= deadline) break;
+        // A reading that failed outright costs nothing, so pace the loop
+        // rather than spinning through the whole budget in one tick.
+        await delay(150);
+      }
+      return {
+        applied: false,
+        orientation: rawOrientation,
+        verification: "not-adopted",
+        reason: APPLE_ROTATE_NOT_ADOPTED_CODE,
+        detail: `The device turned to ${rawOrientation}, and the app on screen stayed ${axisBefore}. iOS only rotates the screen for an app that supports that orientation — the Home Screen and Settings are portrait-only on an iPhone, and no iPhone supports portrait upside down.`,
+        frameBefore,
+        frameAfter,
+      };
+    });
+  };
+
+  /**
+   * Scroll, through the helper's own gesture rather than a bounded drag.
+   *
+   * The helper turns the delta into a touch drag on the digitizer and
+   * re-anchors the finger when it nears an edge, so a scroll longer than the
+   * screen keeps going. `drag` cannot do that: one stroke, bounded by the
+   * bezel. This is why `scroll` is its own verb and not sugar over `drag`.
+   *
+   * The direction is the VIEWPORT's, so `down` reveals what is below. The
+   * helper speaks in content movement, where that is a negative delta — the
+   * flip lives here so no caller carries both models.
+   */
+  const scroll = async (scrollArgs: AppleScrollArgs): Promise<AppleScrollResult> => {
+    assertDarwin();
+    const direction = typeof scrollArgs.direction === "string" ? scrollArgs.direction.trim() : "";
+    if (!isAppleScrollDirection(direction)) {
+      throw new Error(`direction must be ${APPLE_SCROLL_DIRECTIONS.join(", ")}.`);
+    }
+    const amount = scrollArgs.amount ?? APPLE_SCROLL_DEFAULT_AMOUNT;
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("amount must be a positive number of device pixels.");
+    const hasAnchorX = scrollArgs.anchorX != null;
+    const hasAnchorY = scrollArgs.anchorY != null;
+    // Half an anchor is a caller bug, not a request for the centre — the same
+    // rule the helper's own parser enforces, stated here so the error names the
+    // argument rather than arriving as a helper protocol failure.
+    if (hasAnchorX !== hasAnchorY) throw new Error("anchorX and anchorY must be given together.");
+    const anchor = hasAnchorX
+      ? {
+        anchorX: normalizeCoordinate(scrollArgs.anchorX, "anchorX"),
+        anchorY: normalizeCoordinate(scrollArgs.anchorY, "anchorY"),
+      }
+      : null;
+    const { deltaX, deltaY } = APPLE_SCROLL_DELTAS[direction](amount);
+    const runtime = resolveRuntime(scrollArgs);
+    const deviceUdid = await resolveControlDeviceUdid(scrollArgs.deviceUdid, runtime);
+    return enqueueControl("scroll", async () => {
+      await helper().send({ type: "scroll", udid: deviceUdid, deltaX, deltaY, ...(anchor ?? {}) });
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      // A scroll IS injected input under the auto-record contract: it changes
+      // what is on screen, and a video that skips it shows a jump cut. The
+      // source is carried through so a person scrolling the pane does not look
+      // like an agent and start a recording.
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source });
+      return { ok: true as const, direction, deltaX, deltaY };
+    });
+  };
+
+  const typeText = async (input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
+    assertDarwin();
+    const runtime = resolveRuntime(input);
+    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
     return enqueueControl("text", async () => {
-      await runIdbText(deviceUdid, input.text);
-      streamStatus = { ...streamStatus, inputBackend: "idb" };
+      await helperType(deviceUdid, input.text);
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text, source: input.source });
       return { ok: true };
     });
   };
 
   const drag = async (input: IosSimulatorDragArgs): Promise<{ ok: true }> => {
     assertDarwin();
-    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid);
+    const runtime = resolveRuntime(input);
+    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
     const startX = normalizeCoordinate(input.startX, "startX");
     const startY = normalizeCoordinate(input.startY, "startY");
     const endX = normalizeCoordinate(input.endX, "endX");
@@ -4868,22 +5528,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const deltaValue = input.delta;
     return enqueueControl("drag", async () => {
       if (durationMs != null && !Number.isFinite(durationMs)) throw new Error("durationMs must be a number.");
+      // `delta` was idb's step size and the helper owns its own stepping now.
+      // Still validated rather than ignored: a caller passing a nonsense delta
+      // has a bug, and silently accepting it hides it.
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
-      await runIdbSwipe(deviceUdid, {
-        startX,
-        startY,
-        endX,
-        endY,
-        durationMs,
-        delta: deltaValue,
-      });
-      streamStatus = { ...streamStatus, inputBackend: "idb" };
+      await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs });
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
       return { ok: true };
     });
   };
 
   const selectPoint = async (point: IosSimulatorPoint): Promise<IosSimulatorSelectResult> => {
     assertDarwin();
+    const runtime = resolveRuntime(point);
     const x = normalizeCoordinate(point.x, "x");
     const y = normalizeCoordinate(point.y, "y");
     // Same lane ladder as inspectPoint: resolve once, then match source
@@ -4891,24 +5549,436 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const sourceRoot = await resolveScopedRootForSession({
       projectRoot: point.projectRoot ?? null,
       laneId: point.laneId ?? null,
-    });
+    }, runtime);
     const screenSnapshot = await captureScreenSnapshot(
-      { deviceUdid: point.deviceUdid ?? activeSession?.deviceUdid, x, y },
+      { deviceUdid: point.deviceUdid ?? runtime.activeSession?.deviceUdid, x, y },
       sourceRoot,
+      runtime,
     );
     const element = screenSnapshot.hitElement;
     const item = element
-      ? contextItemFromScreenElement(element, screenSnapshot, screenSnapshot.screenshot.dataUrl, sourceRoot)
-      : coordinateFallbackItem({ x, y }, screenSnapshot.deviceUdid, screenSnapshot.screenshot.dataUrl);
+      ? contextItemFromScreenElement(element, screenSnapshot, runtime, screenSnapshot.screenshot.dataUrl, sourceRoot)
+      : coordinateFallbackItem({ x, y }, screenSnapshot.deviceUdid, runtime, screenSnapshot.screenshot.dataUrl);
     lastSelectedItem = item;
+    noteInput(runtime, { udid: screenSnapshot.deviceUdid, kind: "select", x, y });
     // Selecting exists to show the user what they picked, so reveal the drawer
     // whichever host answered.
     requestDrawerOpen("selectPoint", "inspect", {
-      chatSessionId: activeSession?.chatSessionId,
-      laneId: point.laneId ?? activeSession?.laneId,
+      chatSessionId: runtime.activeSession?.chatSessionId,
+      laneId: point.laneId ?? runtime.activeSession?.laneId,
     });
     emit({ type: "selection", item });
     return { item, source: element?.source ?? "coordinate-fallback" };
+  };
+
+  /* ───────────────────────── per-lane devices ───────────────────────── */
+
+  /**
+   * The lane whose device a `device-*` call is about.
+   *
+   * Unlike every other verb this one REFUSES to fall back to the un-laned
+   * bucket when a chat names no lane and owns no session: a device created
+   * against `""` belongs to no lane, so nothing would ever delete it on
+   * archive. Saying so is better than leaking a simulator per chat.
+   */
+  const requireLaneScope = (
+    scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null },
+  ): LaneRuntime => {
+    const runtime = resolveRuntime(scope);
+    if (!runtime.key) {
+      throw new Error("Apple devices belong to a lane. Pass --lane, or run this from a chat that is on one.");
+    }
+    return runtime;
+  };
+
+  const deviceCreate = async (deviceArgs: AppleDeviceCreateArgs = {}): Promise<AppleLaneDevice> => {
+    assertDarwin();
+    const runtime = requireLaneScope(deviceArgs);
+    const device = await laneDevices.deviceCreate({
+      laneId: runtime.key,
+      from: deviceArgs.from,
+      name: deviceArgs.name,
+    });
+    invalidateStatus(runtime);
+    return device;
+  };
+
+  const deviceAttach = async (deviceArgs: AppleDeviceAttachArgs): Promise<AppleLaneDevice> => {
+    assertDarwin();
+    const runtime = requireLaneScope(deviceArgs);
+    const device = await laneDevices.deviceAttach({ laneId: runtime.key, simulator: deviceArgs.simulator });
+    invalidateStatus(runtime);
+    return device;
+  };
+
+  /**
+   * The picker's one click: attach or create if the lane owns nothing, boot,
+   * wait for `bootstatus`, open the live view.
+   *
+   * `deviceAttach` and `deviceCreate` keep their no-boot semantics for the CLI
+   * — an agent provisioning a device is not asking for video — so the boot
+   * lives here and in `startStream`, not in the registry. Progress goes out as
+   * `apple.device.state` events so the loading card can advance its two
+   * segments; the `failed` phase carries the message and the error is still
+   * thrown, because the caller's promise is the contract and the event is only
+   * the narration.
+   */
+  /**
+   * Run one device-lifecycle step for a lane, with nothing else running.
+   *
+   * Rejections do not poison the queue: the chain is advanced with a settled
+   * promise and the caller gets the original rejection, so a failed boot never
+   * wedges every later stop behind it.
+   */
+  const serializeDeviceLifecycle = <T>(runtime: LaneRuntime, step: () => Promise<T>): Promise<T> => {
+    const next = runtime.deviceLifecycleQueue.then(step, step);
+    runtime.deviceLifecycleQueue = next.then(() => undefined, () => undefined);
+    return next;
+  };
+
+  const deviceStart = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<IosSimulatorStreamStatus> => {
+    // Both guards ahead of the queue, in the order they were in before it:
+    // "this is not a Mac" and "this call names no lane" are answers this
+    // service can give without waiting behind another lane's boot.
+    assertDarwin();
+    const runtime = requireLaneScope(deviceArgs);
+    return serializeDeviceLifecycle(runtime, () => deviceStartStep(deviceArgs));
+  };
+
+  const deviceStartStep = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<IosSimulatorStreamStatus> => {
+    const runtime = requireLaneScope(deviceArgs);
+    const laneId = runtime.key;
+    const requestedUdid = deviceArgs.udid?.trim() || null;
+    const sourceUdid = deviceArgs.create?.sourceUdid?.trim() || null;
+    let laneDevice = laneDevices.get(laneId);
+    if (!laneDevice) {
+      if (sourceUdid) {
+        laneDevice = await laneDevices.deviceCreate({ laneId, from: sourceUdid });
+      } else if (requestedUdid) {
+        laneDevice = await laneDevices.deviceAttach({ laneId, simulator: requestedUdid });
+      } else {
+        throw new Error("The lane has no Apple device yet. Pass a simulator udid to attach, or create: { sourceUdid } to clone one.");
+      }
+      invalidateStatus(runtime);
+    } else if (requestedUdid && requestedUdid !== laneDevice.udid) {
+      throw new AppleDeviceExistsError(laneDevice);
+    }
+    const udid = laneDevice.udid;
+    const phase = (next: AppleDeviceStatePhase, detail?: string) => {
+      emit({ type: "apple.device.state", laneId, udid, phase: next, ...(detail ? { detail } : {}) });
+    };
+    try {
+      phase("starting");
+      const device = await resolveDevice(udid, runtime);
+      await ensureDeviceBooted(device);
+      invalidateStatus(runtime);
+      phase("booted");
+      const status = await startStream({ laneId, chatSessionId: deviceArgs.chatSessionId ?? null, deviceUdid: udid });
+      phase("streaming");
+      return status;
+    } catch (error) {
+      phase("failed", error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  };
+
+  /**
+   * The lane's simulator, powered OFF — `deviceStart`'s actual opposite.
+   *
+   * Round 4 wired "Close and shut down" to `shutdown`, which is the verb for
+   * ending a chat's SESSION: it drops the ownership claim and stops the
+   * stream, and the simulator keeps running. The tools card kept reading
+   * "ADE Repro · Running", reopening the tab found the device still booted,
+   * and the dialog the user had just answered had done nothing they could see.
+   * There was no power-off verb anywhere in the service to wire it to — the
+   * only `simctl shutdown` in ADE lives in the device hub's
+   * `releaseTrackedDevice`, which is reachable only through `closeDevice` and
+   * only when a hub device session exists, and the pane's `deviceStart` path
+   * never opens one. This is that verb.
+   *
+   * Three things, in this order, and all three matter:
+   *
+   * 1. `shutdown` first, which stops the stream and releases the claim — and
+   *    carries the cooperative single-owner guard, so `deviceStop` refuses to
+   *    power off a device another chat is driving unless told to.
+   * 2. The hub's device session, forgotten WITHOUT its own shutdown. It has
+   *    its own `simctl shutdown` behind `bootedByAde`, and two shutdowns
+   *    racing on one udid is how `simctl` starts reporting states nobody asked
+   *    about. The power-off below is unconditional instead, because the user
+   *    asked for it by name — "did ADE boot this?" is the right question for
+   *    cleanup and the wrong one for an explicit request.
+   * 3. `simctl shutdown`, tolerating a device that was already off.
+   *
+   * The lane device stays REGISTERED. Powering a device off says nothing about
+   * which device the lane uses, so the pane's next visit reads
+   * "{name} is off. [Start]" rather than dropping back to the picker.
+   * `deviceDelete` is the verb that un-registers.
+   *
+   * Queued against `deviceStart` (see `serializeDeviceLifecycle`) so a start
+   * already in flight cannot boot the device back up behind the stop.
+   */
+  const deviceStop = async (stopArgs: AppleDeviceStopArgs = {}): Promise<AppleDeviceStopResult> => {
+    assertDarwin();
+    const runtime = resolveRuntime(stopArgs);
+    return serializeDeviceLifecycle(runtime, () => deviceStopStep(stopArgs, runtime));
+  };
+
+  const deviceStopStep = async (
+    stopArgs: AppleDeviceStopArgs,
+    runtime: LaneRuntime,
+  ): Promise<AppleDeviceStopResult> => {
+    const laneDevice = runtime.key ? laneDevices.get(runtime.key) : null;
+    // Widest-to-narrowest, the same precedence `resolveControlDeviceUdid`
+    // uses, minus its final "whatever iPhone is booted" fallback: powering off
+    // a simulator this lane never claimed is not a reasonable reading of
+    // "stop my device".
+    const udid = stopArgs.udid?.trim()
+      || laneDevice?.udid
+      || runtime.activeSession?.deviceUdid
+      || runtime.hub?.getDeviceSession()?.deviceUdid
+      || runtime.streamStatus.deviceUdid
+      || null;
+    if (!udid) {
+      return { udid: null, poweredOff: false, previousState: null, released: false, stillRegistered: false };
+    }
+    const released = await shutdown({
+      laneId: runtime.laneId,
+      chatSessionId: stopArgs.chatSessionId ?? null,
+      force: stopArgs.force ?? null,
+      ignoreOwnership: stopArgs.ignoreOwnership ?? null,
+    });
+    if (runtime.hub?.getDeviceSession()?.deviceUdid === udid) {
+      await runtime.hub.closeDevice({
+        deviceUdid: udid,
+        chatSessionId: stopArgs.chatSessionId ?? null,
+        ignoreOwnership: true,
+        // The power-off below is this function's job, not the hub's.
+        shutdownDevice: false,
+      }).catch((error: unknown) => {
+        args.logger.debug("apple.device_stop_close_device_failed", {
+          udid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    const previousState = await resolveDevice(udid, runtime)
+      .then((device) => device.state)
+      .catch(() => null);
+    await stopDeviceRecording(udid, "device-off");
+    let poweredOff = false;
+    await run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 })
+      .then(() => {
+        poweredOff = true;
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        // Already off is the result the caller wanted, not a failure. Anything
+        // else is: a stop that silently did nothing is exactly the bug this
+        // verb exists to fix, so it is not swallowed.
+        if (!/current state: Shutdown|Unable to shutdown device in current state|not booted|Invalid device state/i.test(message)) {
+          throw error;
+        }
+      });
+    invalidateStatus(runtime);
+    if (runtime.key) {
+      emit({ type: "apple.device.state", laneId: runtime.key, udid, phase: "stopped" });
+    }
+    args.logger.info("apple.device_stopped", {
+      laneId: runtime.key || null,
+      udid,
+      poweredOff,
+      previousState,
+    });
+    return {
+      udid,
+      poweredOff,
+      previousState,
+      released: released.released,
+      stillRegistered: Boolean(laneDevice),
+    };
+  };
+
+  const deviceList = async (deviceArgs: AppleDeviceListArgs = {}): Promise<AppleDeviceListResult> => {
+    // No `assertDarwin`: a Windows caller asking what is installed should get
+    // an empty list and the lane's (absent) device, not an exception.
+    const runtime = resolveRuntime(deviceArgs);
+    return laneDevices.deviceList({
+      installed: deviceArgs.installed,
+      laneId: runtime.key || null,
+      // Opt-in: the picker paints its list from the cheap call and asks for the
+      // numbers afterwards, so a `du` over a 20 GB device store never sits in
+      // front of the first frame of the page.
+      disk: deviceArgs.disk,
+    });
+  };
+
+  /**
+   * Remove an installed simulator by udid — the picker's per-device menu.
+   *
+   * No `requireLaneScope`: the target is named outright and the registry's own
+   * guard is the one that matters (it refuses any device a lane holds). Asking
+   * for a lane scope here would only say which lane is doing the tidying.
+   */
+  const deviceDeleteInstalled = async (deviceArgs: AppleDeviceDeleteInstalledArgs): Promise<void> => {
+    assertDarwin();
+    if (deviceArgs?.confirmedByUser !== true) {
+      /*
+       * Name the way through, like every other refusal here does.
+       *
+       * This used to say only "needs confirmedByUser: true", an internal
+       * argument name with no next step — a test agent read it, could not act
+       * on it, and filed it as a tooling gap. Deleting a simulator is not
+       * recoverable, so the confirmation stays; what changes is that the
+       * message says where a human gives it and what to pass if you are not
+       * one.
+       */
+      throw new Error(
+        "Deleting a simulator needs the owner's confirmation. Use the Apple Development picker's ⋯ menu on the device, which asks twice and names its size. From the CLI or an action, pass confirmedByUser: true only when a human has said yes to this device by name.",
+      );
+    }
+    const runtime = resolveRuntime(deviceArgs);
+    await laneDevices.deviceDeleteInstalled({ udid: deviceArgs.udid });
+    invalidateStatus(runtime);
+  };
+
+  const deviceDelete = async (deviceArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
+    const runtime = requireLaneScope(deviceArgs);
+    // Whatever was driving it stops first: deleting a simulator out from under
+    // a running stream leaves the reader waiting on bytes that never come.
+    await shutdown({ laneId: runtime.laneId, chatSessionId: deviceArgs.chatSessionId, ignoreOwnership: true })
+      .catch(() => ({ released: false, previousSession: null }));
+    const deletedUdid = laneDevices.get(runtime.key)?.udid;
+    if (deletedUdid) await stopDeviceRecording(deletedUdid, "device-off");
+    await laneDevices.deviceDelete({ laneId: runtime.key, force: deviceArgs.force });
+    invalidateStatus(runtime);
+  };
+
+  /**
+   * The lane's device, created on first ask.
+   *
+   * `launch` and `open-device` call this: a lane gets no device until it is
+   * asked for, and the ask is what creates it. An un-laned caller keeps the old
+   * behaviour of driving whatever simulator `resolveDevice` picks, because
+   * there is no lane to own a clone.
+   */
+  const ensureLaneDevice = async (runtime: LaneRuntime): Promise<AppleLaneDevice | null> => {
+    if (!runtime.key) return null;
+    const existing = laneDevices.get(runtime.key);
+    if (existing) return existing;
+    const created = await laneDevices.ensure({ laneId: runtime.key });
+    invalidateStatus(runtime);
+    return created;
+  };
+
+  /* ───────────────────────── recording ───────────────────────── */
+
+  /**
+   * Stop the recording on a device before the device goes away.
+   *
+   * The helper keeps one recording slot per device, and nothing on the device
+   * side ends it: a recording outlives a power-off, and afterwards every
+   * `record-start` on that device is refused. Never allowed to fail the caller —
+   * the power-off, delete or takeover the user asked for still happens.
+   */
+  const stopDeviceRecording = async (udid: string, reason: "device-off" | "released"): Promise<void> => {
+    await recordings.stopDevice({ udid, reason }).catch((error: unknown) => {
+      args.logger.warn("apple.recording_device_stop_failed", {
+        udid,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const recordStart = async (recordArgs: AppleRecordStartArgs = {}): Promise<SimRecording> => {
+    assertDarwin();
+    const runtime = requireLaneScope(recordArgs);
+    const udid = await resolveControlDeviceUdid(null, runtime);
+    return recordings.start({
+      laneId: runtime.key,
+      udid,
+      chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
+      overlays: recordArgs.overlays ?? undefined,
+      label: recordArgs.label ?? undefined,
+    });
+  };
+
+  const recordStop = async (recordArgs: AppleRecordStopArgs = {}): Promise<SimRecording | null> => {
+    const runtime = requireLaneScope(recordArgs);
+    return recordings.stop({
+      laneId: runtime.key,
+      keep: recordArgs.keep ?? undefined,
+      discard: recordArgs.discard ?? undefined,
+      chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
+      // Resolved without a boot or a fallback to another lane's device: the
+      // helper is asked about THIS lane's device only.
+      udid: laneDevices.get(runtime.key)?.udid
+        || runtime.activeSession?.deviceUdid
+        || runtime.hub?.getDeviceSession()?.deviceUdid
+        || runtime.streamStatus.deviceUdid
+        || null,
+    });
+  };
+
+  const recordList = async (recordArgs: AppleRecordListArgs = {}): Promise<SimRecording[]> => {
+    const runtime = requireLaneScope(recordArgs);
+    return recordings.list({ laneId: runtime.key });
+  };
+
+  /**
+   * Bytes of recordings on disk, for the Diagnostics warning row.
+   *
+   * Lane-optional on purpose: the Settings row is project-wide, and it asked
+   * this question by walking `.ade/artifacts/apple-recordings/` through the
+   * files API — a recursive tree listing to add up numbers the recorder already
+   * has in its sidecars. Warn-only either way; this is just the cheap answer.
+   *
+   * No `requireLaneScope`: a lane-less caller wants the project total, and a
+   * Settings pane that had to name a lane to read a project number would be
+   * asking the wrong question.
+   */
+  const recordingsTotalBytes = async (
+    recordArgs: { laneId?: string | null } = {},
+  ): Promise<number> => {
+    const laneId = typeof recordArgs.laneId === "string" ? recordArgs.laneId.trim() : "";
+    return recordings.totalBytes(laneId ? { laneId } : undefined);
+  };
+
+  const recordDelete = async (recordArgs: AppleRecordDeleteArgs): Promise<void> => {
+    const runtime = requireLaneScope(recordArgs);
+    return recordings.remove({
+      laneId: runtime.key,
+      id: recordArgs.id,
+      chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
+      force: recordArgs.force ?? undefined,
+      allowProof: recordArgs.allowProof ?? undefined,
+    });
+  };
+
+  /**
+   * Lane archive / delete. Called from `laneService`'s delete cascade next to
+   * `removeLaneArtifactFiles`.
+   *
+   * Deletes the CLONE and never an attached device, and takes the recordings
+   * directory with it. `force` here means "detach an attached device too",
+   * which is what a lane that no longer exists needs.
+   */
+  const releaseLane = async (laneId: string): Promise<void> => {
+    const key = laneId.trim();
+    if (!key) return;
+    const runtime = runtimes.get(key);
+    if (runtime) {
+      await shutdown({ laneId: key, force: true }).catch(() => ({ released: false, previousSession: null }));
+      runtime.hub?.dispose();
+      runtime.hub = null;
+      runtimes.delete(key);
+    }
+    await laneDevices.deviceDelete({ laneId: key, force: true }).catch((error: unknown) => {
+      args.logger.warn("apple.lane_device_release_failed", {
+        laneId: key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   return {
@@ -4934,61 +6004,184 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     startStream,
     stopStream,
     getStreamStatus,
+    /** Is a renderer on this machine still watching this lane's stream? */
+    hasLocalViewer,
+    frame,
     tap,
+    pressButton,
+    rotate,
     typeText,
     drag,
     swipe: drag,
+    /** The helper's re-anchoring scroll gesture, by viewport direction. */
+    scroll,
     selectPoint,
 
+    /* Per-lane devices: one simulator per lane, created on first ask. */
+    deviceCreate,
+    deviceAttach,
+    /** Attach-or-create, boot, `bootstatus`, then `startStream`. The picker's one click. */
+    deviceStart,
+    /** Power the lane's simulator off and leave it registered. Not `shutdown`. */
+    deviceStop,
+    deviceList,
+    deviceDelete,
+    deviceDeleteInstalled,
+    /** Lane archive/delete hook. Deletes a clone, only detaches an attached device. */
+    releaseLane,
+
+    /* Recording (unit 2C owns the implementation). */
+    recordStart,
+    recordStop,
+    recordList,
+    recordDelete,
+    recordingsTotalBytes,
+
     /* Device hub: a booted simulator with no app of its own. */
-    openDevice: async (deviceArgs: IosSimulatorOpenDeviceArgs = {}) => darwinHub().openDevice(deviceArgs),
-    closeDevice: async (deviceArgs: IosSimulatorCloseDeviceArgs = {}) => darwinHub().closeDevice(deviceArgs),
-    getDeviceSession: async () => darwinHub().getDeviceSession(),
+    openDevice: async (deviceArgs: IosSimulatorOpenDeviceArgs = {}) => {
+      const runtime = resolveRuntime(deviceArgs);
+      // First ask creates the lane's device. Without this an `open-device` on a
+      // fresh lane opened whatever simulator was booted — usually another
+      // lane's — which is the exact collision per-lane devices exist to stop.
+      const laneDevice = deviceArgs.deviceUdid ? null : await ensureLaneDevice(runtime);
+      return darwinHub(deviceArgs).openDevice({
+        ...deviceArgs,
+        deviceUdid: deviceArgs.deviceUdid ?? laneDevice?.udid ?? null,
+      });
+    },
+    closeDevice: async (deviceArgs: IosSimulatorCloseDeviceArgs = {}) => darwinHub(deviceArgs).closeDevice(deviceArgs),
+    getDeviceSession: async (scope: { laneId?: string | null; chatSessionId?: string | null } = {}) => darwinHub(scope).getDeviceSession(),
 
     /* Device hub: typed device state, in place of a human clicking Settings. */
-    getDeviceSettings: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub().getDeviceSettings(toolArgs),
-    setAppearance: async (toolArgs: IosSimulatorSetAppearanceArgs) => darwinHub().setAppearance(toolArgs),
-    setContentSize: async (toolArgs: IosSimulatorSetContentSizeArgs) => darwinHub().setContentSize(toolArgs),
-    setAccessibilityOption: async (toolArgs: IosSimulatorSetAccessibilityArgs) => darwinHub().setAccessibilityOption(toolArgs),
-    setLocation: async (toolArgs: IosSimulatorSetLocationArgs) => darwinHub().setLocation(toolArgs),
-    clearLocation: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub().clearLocation(toolArgs),
-    setPermission: async (toolArgs: IosSimulatorSetPermissionArgs) => darwinHub().setPermission(toolArgs),
-    sendPushNotification: async (toolArgs: IosSimulatorPushArgs) => darwinHub().sendPushNotification(toolArgs),
-    openUrl: async (toolArgs: IosSimulatorOpenUrlArgs) => darwinHub().openUrl(toolArgs),
-    relaunchApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub().relaunchApp(toolArgs),
-    terminateApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub().terminateApp(toolArgs),
-    uninstallApp: async (toolArgs: IosSimulatorUninstallAppArgs) => darwinHub().uninstallApp(toolArgs),
-    setStatusBar: async (toolArgs: IosSimulatorStatusBarArgs) => darwinHub().setStatusBar(toolArgs),
-    clearStatusBar: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub().clearStatusBar(toolArgs),
-    getAppState: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub().getAppState(toolArgs),
+    getDeviceSettings: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub(toolArgs).getDeviceSettings(toolArgs),
+    setAppearance: async (toolArgs: IosSimulatorSetAppearanceArgs) => darwinHub(toolArgs).setAppearance(toolArgs),
+    setContentSize: async (toolArgs: IosSimulatorSetContentSizeArgs) => darwinHub(toolArgs).setContentSize(toolArgs),
+    setAccessibilityOption: async (toolArgs: IosSimulatorSetAccessibilityArgs) => darwinHub(toolArgs).setAccessibilityOption(toolArgs),
+    setLocation: async (toolArgs: IosSimulatorSetLocationArgs) => darwinHub(toolArgs).setLocation(toolArgs),
+    clearLocation: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub(toolArgs).clearLocation(toolArgs),
+    setPermission: async (toolArgs: IosSimulatorSetPermissionArgs) => darwinHub(toolArgs).setPermission(toolArgs),
+    sendPushNotification: async (toolArgs: IosSimulatorPushArgs) => darwinHub(toolArgs).sendPushNotification(toolArgs),
+    openUrl: async (toolArgs: IosSimulatorOpenUrlArgs) => {
+      const runtime = resolveRuntime(toolArgs);
+      const result = await darwinHub(toolArgs).openUrl(toolArgs);
+      // `open-url` is an injected input under the auto-record contract: it is
+      // how an agent drives a deeplink, and the video has to show it.
+      const udid = await resolveControlDeviceUdid(toolArgs.deviceUdid, runtime).catch(() => null);
+      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url });
+      return result;
+    },
+    relaunchApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
+    terminateApp: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).terminateApp(toolArgs),
+    uninstallApp: async (toolArgs: IosSimulatorUninstallAppArgs) => darwinHub(toolArgs).uninstallApp(toolArgs),
+    setStatusBar: async (toolArgs: IosSimulatorStatusBarArgs) => darwinHub(toolArgs).setStatusBar(toolArgs),
+    clearStatusBar: async (toolArgs: IosSimulatorDeviceArgs = {}) => darwinHub(toolArgs).clearStatusBar(toolArgs),
+    getAppState: async (toolArgs: IosSimulatorAppLifecycleArgs) => darwinHub(toolArgs).getAppState(toolArgs),
+    /**
+     * The app in front of the simulator, from the helper's accessibility
+     * bridge rather than from what ADE last launched. SpringBoard alone, or a
+     * device that has not finished booting, reads as `null`, not as an error:
+     * the drawer asks every couple of seconds and an empty home screen is a
+     * normal answer.
+     */
+    getForegroundApp: async (
+      arg: { deviceUdid?: string | null; laneId?: string | null; chatSessionId?: string | null } = {},
+    ): Promise<IosSimulatorForegroundApp> => {
+      assertDarwin();
+      const udid = await resolveControlDeviceUdid(arg.deviceUdid, resolveRuntime(arg));
+      let payload: Record<string, unknown>;
+      try {
+        payload = await helper().send({ type: "ax-frontmost", udid });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/frontmost application|not booted/i.test(message)) return null;
+        throw error;
+      }
+      const app = payload.app;
+      if (!app || typeof app !== "object") return null;
+      const bundleId = (app as { bundleId?: unknown }).bundleId;
+      if (typeof bundleId !== "string" || !bundleId || bundleId === "com.apple.springboard") return null;
+      const pid = (app as { pid?: unknown }).pid;
+      return { bundleId, pid: typeof pid === "number" && pid > 0 ? pid : null, checkedAt: nowIso() };
+    },
 
     /* Device hub: the app's own log, interleaved with what ADE did. */
-    startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub().startEventLog(logArgs),
-    stopEventLog: async (logArgs: IosSimulatorStopEventLogArgs = {}) => darwinHub().stopEventLog(logArgs),
-    getEventLog: async (logArgs: IosSimulatorEventLogArgs = {}) => darwinHub().getEventLog(logArgs),
+    startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub(logArgs).startEventLog(logArgs),
+    stopEventLog: async (logArgs: IosSimulatorStopEventLogArgs = {}) => darwinHub(logArgs).stopEventLog(logArgs),
+    getEventLog: async (logArgs: IosSimulatorEventLogArgs = {}) => darwinHub(logArgs).getEventLog(logArgs),
 
     /* Device hub: name an element instead of guessing a pixel. */
-    findElement: async (elementArgs: IosSimulatorFindElementArgs) => darwinHub().findElement(elementArgs),
-    tapElement: async (elementArgs: IosSimulatorTapElementArgs) => darwinHub().tapElement(elementArgs),
-    fillElement: async (elementArgs: IosSimulatorFillElementArgs) => darwinHub().fillElement(elementArgs),
-    waitForElement: async (elementArgs: IosSimulatorWaitForElementArgs) => darwinHub().waitForElement(elementArgs),
-    assertVisible: async (elementArgs: IosSimulatorAssertVisibleArgs) => darwinHub().assertVisible(elementArgs),
+    findElement: async (elementArgs: IosSimulatorFindElementArgs) => darwinHub(elementArgs).findElement(elementArgs),
+    tapElement: async (elementArgs: IosSimulatorTapElementArgs) => darwinHub(elementArgs).tapElement(elementArgs),
+    fillElement: async (elementArgs: IosSimulatorFillElementArgs) => darwinHub(elementArgs).fillElement(elementArgs),
+    waitForElement: async (elementArgs: IosSimulatorWaitForElementArgs) => darwinHub(elementArgs).waitForElement(elementArgs),
+    assertVisible: async (elementArgs: IosSimulatorAssertVisibleArgs) => darwinHub(elementArgs).assertVisible(elementArgs),
 
     /* Device hub: a screenshot a reviewer can believe. */
-    captureProofBundle: async (proofArgs: IosSimulatorProofBundleArgs = {}) => darwinHub().captureProofBundle(proofArgs),
+    captureProofBundle: async (proofArgs: IosSimulatorProofBundleArgs = {}) => {
+      const runtime = resolveRuntime(proofArgs);
+      const bundle = await darwinHub(proofArgs).captureProofBundle(proofArgs);
+      // Per the auto-record contract: proof-bundle pins the active recording,
+      // or this chat's most recent one, and pinning is what makes it
+      // undeletable by any agent.
+      if (runtime.key) {
+        await recordings.pinActiveOrLatest({
+          laneId: runtime.key,
+          chatSessionId: proofArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
+        }).catch((error: unknown) => {
+          args.logger.debug("apple.proof_pin_failed", {
+            laneId: runtime.key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      /*
+       * File the bundle's own screen as the artifact.
+       *
+       * `ade apple proof-bundle` is documented as a proof verb — the skill
+       * lists it beside `screenshot` under "proof is automatic" — and it filed
+       * NOTHING. It wrote a directory and returned. An agent that ran it and
+       * reported proof was wrong, and the only reason that was ever noticed is
+       * that one went on to `proof attach` the screenshot by hand.
+       *
+       * The inner screenshot still runs with `proof: false`, so this is the
+       * one row for the capture rather than a second one. The bundle's other
+       * halves — elements, log, metadata — travel as metadata on it, because
+       * the drawer shows a picture and a reviewer opening it wants the path to
+       * the rest.
+       */
+      const proofArtifactId = fileScreenshotAsProof(
+        {
+          deviceUdid: bundle.deviceUdid,
+          filePath: bundle.screenshotPath,
+          capturedAt: bundle.capturedAt,
+          width: bundle.width,
+          height: bundle.height,
+        } as IosSimulatorScreenshot,
+        {
+          ...proofArgs,
+          ...(bundle.caption ? { caption: bundle.caption } : {}),
+        },
+        runtime,
+      );
+      return { ...bundle, proofArtifactId };
+    },
 
     getLastSelectedItem: () => lastSelectedItem,
     isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
-      videoServer?.dispose();
-      videoServer = null;
-      deviceHub?.dispose();
-      deviceHub = null;
-      stopCompanion();
-      setStreamStopped(null);
-      activeSession = null;
-      activeLaunchId = null;
+      for (const runtime of runtimes.values()) {
+        runtime.hub?.dispose();
+        runtime.hub = null;
+        setStreamStopped(runtime, null);
+        runtime.activeSession = null;
+        runtime.activeLaunchId = null;
+      }
+      runtimes.clear();
+      recordings.dispose();
+      helperEventListeners.clear();
+      helperClient?.dispose();
+      helperClient = null;
       launchOwners.clear();
       activeBuildDataPaths.clear();
       toolAvailabilityCache.clear();

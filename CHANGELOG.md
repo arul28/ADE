@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Providers
+
+- Claude Opus 5.5 (`claude-opus-5-5`) is the generic Opus model, with medium effort and Fast mode. Opus 5 stays selectable. Opus 4.8 is removed from the picker and its saved ids resolve to Opus 5.
+- Claude Agent SDK 0.3.280.
+
+## [1.2.77] - 2026-09-22
+
+### Usage
+
+- Every signed-in account gets its own limits row in the top bar and Limits popover, with a thin ring header mark; a limited chat can continue on another account with room (#1281).
+
+### Providers
+
+- Claude Agent SDK 0.3.278 with suppressed session-wide allow rules, plan-mode tool gating, stdin plugin delivery, and startup-failure reasons (#1274).
+- Bundled skills are delivered natively to Cursor, Qwen, and OpenCode; dead skill roots dropped; Claude skill listing deduplicated and budgeted (#1279).
+
+### Work
+
+- Chat handoff surfaces redesigned and moved into the session menu; auto-handoff rules pinned to the chat's machine (#1277).
+- CTO project memory persists outside the chat and the git repo; brief shown as fields (#1280).
+- Board Needs-you column no longer conflates ready and idle sessions (#1279).
+
+### Removed
+
+- Review tab and AI review engine removed end to end; synced review tables retired on desktop and iOS (#1278).
+
+## [1.2.76] - 2026-09-21
+
+### Work
+
+- Same-lane subagent chats nest under their parent in the by-lane Work list; nested CLI lineage survives iOS hydration (#1275).
+- Work tools, chat send/history, and session clicks stay pinned to the session machine across project-tab switches; remote Browser opens are held until the pane mounts (#1269).
+- New-chat usage pane matches the shelf submenu chrome; parked Work mesh pauses when Work is inactive (#1273).
+
+### Providers
+
+- Droid SDK 0.9.1 on desktop and the CLI, with serialized session lifecycle and fork re-open recovery (#1272).
+- Codex runtime 0.155.1.
+- Custom wizard lists real models from the live runtime catalog and drops its permission mode (#1271).
+
+### Fixes
+
+- GitHub search and REST list walks are capped to protect the hourly quota; issue polls drain oldest-first (#1270).
+- Delivered steers no longer reappear as queued on iOS; mobile retries and transcript state preserved (#1268).
+- Packaged CLI inlines `string-width` and gates packaged module resolution at build time (#1266).
+
 ## [1.2.75] - 2026-09-20
 
 ### Providers and accounts
@@ -2003,6 +2049,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.74...HEAD
+[1.2.77]: https://github.com/arul28/ADE/compare/v1.2.76...v1.2.77
+[1.2.76]: https://github.com/arul28/ADE/compare/v1.2.75...v1.2.76
 [1.2.75]: https://github.com/arul28/ADE/compare/v1.2.74...v1.2.75
 [1.2.74]: https://github.com/arul28/ADE/compare/v1.2.73...v1.2.74
 [1.2.73]: https://github.com/arul28/ADE/compare/v1.2.72...v1.2.73

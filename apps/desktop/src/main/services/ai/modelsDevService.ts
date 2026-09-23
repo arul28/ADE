@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { enrichModelRegistry } from "../../../shared/modelRegistry";
+import { MODELS_DEV_API_URL, pickModelsDevEntries } from "./modelsDevCatalog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,7 +70,7 @@ type ModelsDevApiResponse = {
 // Constants
 // ---------------------------------------------------------------------------
 
-const API_URL = "https://models.dev/api.json";
+const API_URL = MODELS_DEV_API_URL;
 const FETCH_TIMEOUT_MS = 10_000;
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const CACHE_DIR = join(homedir(), ".ade");
@@ -153,26 +154,18 @@ function parseApiResponse(data: ModelsDevApiResponse): Map<string, ModelsDevMode
     result.set(modelId, parsed);
   };
 
+  // Legacy schema: provider -> array of models
   for (const [, providerModels] of Object.entries(data)) {
-    // Legacy schema: provider -> array of models
-    if (Array.isArray(providerModels)) {
-      for (const entry of providerModels as ModelsDevApiEntry[]) {
-        parseEntry(entry);
-      }
-      continue;
+    if (!Array.isArray(providerModels)) continue;
+    for (const entry of providerModels as ModelsDevApiEntry[]) {
+      parseEntry(entry);
     }
+  }
 
-    // Current schema: provider -> { id, name, models: { modelKey: entry } }
-    if (providerModels && typeof providerModels === "object" && !Array.isArray(providerModels)) {
-      const envelope = providerModels as ModelsDevProviderEnvelope;
-      const models = envelope.models;
-      if (!models || typeof models !== "object" || Array.isArray(models)) continue;
-
-      for (const [modelKey, rawModel] of Object.entries(models)) {
-        if (!rawModel || typeof rawModel !== "object" || Array.isArray(rawModel)) continue;
-        parseEntry(rawModel as ModelsDevApiEntry, modelKey);
-      }
-    }
+  // Current schema: provider -> { id, name, models: { modelKey: entry } }.
+  // A model listed by many resellers resolves to its vendor's own row.
+  for (const [bareId, { entry }] of pickModelsDevEntries(data)) {
+    parseEntry({ ...(entry as ModelsDevApiEntry), id: bareId });
   }
 
   return result;

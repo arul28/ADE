@@ -4,7 +4,8 @@
  *
  * This is the same contract `drawerLayout.ts` held for the lane drawer, and it
  * exists for the same reason: the pane's rows are variable height (a session
- * card is always three lines, matching the desktop SessionCard),
+ * card is three lines, matching the desktop SessionCard, except a nested
+ * subagent which is one indented line with no blank above),
  * so a click can only be resolved by replaying the exact placement the renderer
  * used. Render from `layout.placements`, hit-test against `layout.placements`,
  * and the two cannot drift.
@@ -15,6 +16,7 @@
  *   row 2 ..              placed rows, in `WorkListModel.rows` order:
  *                           lane-header  1 line (+1 blank above, except first)
  *                           session      3 lines + 1 blank above (except first)
+ *                           nested       1 line, no blank above
  *                           shelf        1 line (+1 blank above)
  *
  * Pure: no React, no terminal, no clock.
@@ -58,16 +60,20 @@ export type WorkListLayout = {
 /**
  * Lines one entry costs.
  *
- * A session card is always three lines — the desktop SessionCard is a fixed
+ * A session card is three lines — the desktop SessionCard is a fixed
  * 4.875rem block (where/status, title, preview+provider) and the TUI matches
  * that anatomy even when a field is empty, so hit-testing cannot drift.
+ * Nested same-lane subagents are the one exception: one indented line,
+ * glued under the parent, because the TUI has no collapse drawer.
  */
 export function workListRowHeight(row: WorkListRow): number {
-  return row.kind === "session" ? 3 : 1;
+  if (row.kind === "session") return row.nested ? 1 : 3;
+  return 1;
 }
 
 /** Blank line above an entry so cards in a lane are not glued together. */
-export function workListRowMarginTop(_row: WorkListRow, isFirst: boolean): number {
+export function workListRowMarginTop(row: WorkListRow, isFirst: boolean): number {
+  if (!isFirst && row.kind === "session" && row.nested) return 0;
   return isFirst ? 0 : 1;
 }
 

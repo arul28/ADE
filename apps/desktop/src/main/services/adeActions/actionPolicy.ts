@@ -3,6 +3,7 @@ import {
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
+import { APPLE_AGENT_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // or mutate this private composer state through `ade actions`.
   chat: { only: ["listPromptStashes", "createPromptStash", "deletePromptStash"] },
   // ── Domain-coverage decisions (deliberately NOT added here) ──
-  // The CTO gained curated tools over automation planning, review runs, search,
+  // The CTO gained curated tools over automation planning, search,
   // usage/budget reads, project config reads, iOS-simulator / app-control /
   // browser reads. None of those became CTO-only, and
   // each omission is a decision, not an oversight:
@@ -185,8 +186,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   //     Gating the planner while the rule writer stays open protects nothing and
   //     would break `ade-action` automation steps, which are filtered through
   //     `isAutomationAllowedAdeAction` and therefore cannot call CTO-only actions.
-  //   • review.* — running a review on your own lane is ordinary agent work, and
-  //     a review run mutates nothing outside its own tables.
   //   • ios_simulator / app_control / built_in_browser — device control IS how
   //     agents verify UI work; these are already their normal surface.
   //   • search.query / indexStatus — reads over an index agents already build.
@@ -632,6 +631,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setParallelLaunchState",
     "cancelScheduledWork",
     "resumeUsageLimitNow",
+    "continueUsageLimitOnAlternate",
     "setScheduledWorkPaused",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -880,7 +880,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "recoverArtifact",
     "updateArtifactReview",
   ],
-  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint", "openDevice", "closeDevice", "getDeviceSession", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation", "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp", "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "startEventLog", "stopEventLog", "getEventLog", "findElement", "tapElement", "fillElement", "waitForElement", "assertVisible", "captureProofBundle"],
+  // ONE list, in `shared/types/iosSimulator.ts`, spread here rather than
+  // retyped: `getStatus().capabilities` reports it to agents and `apple.invoke`
+  // gates the phone/web client on it, and three hand-kept copies is how an
+  // action ships reachable on one surface and unnamed on the other two.
+  ios_simulator: [...APPLE_AGENT_ACTIONS],
   /*
    * Mac Desktop: one private macOS screen per lane.
    *
@@ -964,18 +968,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "linearIngressSetup",
     "linearIngressTeardown",
     "linearIngressPollNow",
-  ],
-  review: [
-    "cancelRun",
-    "deleteSuppression",
-    "getRunDetail",
-    "listLaunchContext",
-    "listRuns",
-    "listSuppressions",
-    "qualityReport",
-    "recordFeedback",
-    "rerun",
-    "startRun",
   ],
   issue: [
     "addComment",

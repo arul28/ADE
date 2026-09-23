@@ -113,9 +113,6 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
 struct WorkRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
-  /// Machine presence for the offline banner. Injected on the root content in
-  /// `ContentView`, the same place the bell above this list reads it from.
-  @EnvironmentObject private var activityDrawer: ActivityDrawerModel
   /// App-level dictation singleton. Re-injected into pushed composer
   /// destinations below since `navigationDestination` builds outside the view
   /// tree and does not inherit environment objects.
@@ -477,17 +474,6 @@ struct WorkRootScreen: View {
     scheduleSessionPresentationRebuild()
   }
 
-  /// Machines that own work in this project and are no longer reachable. The
-  /// connected host is online by definition, so anything here is a second Mac
-  /// whose lanes reached this list through the account feed.
-  var offlineMachineBanners: [WorkOfflineMachineBanner] {
-    workOfflineMachineBanners(
-      scopes: activityDrawer.offlineScopes,
-      activeProjectId: syncService.activeProjectId,
-      laneIds: Set(lanes.map(\.id))
-    )
-  }
-
   var isWorkRootActive: Bool {
     isTabActive && path.isEmpty
   }
@@ -592,19 +578,6 @@ struct WorkRootScreen: View {
               action: { Task { await reload(refreshRemote: true) } }
             )
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-          }
-
-          // Above the list, not per row: every row below belongs to the same
-          // project, so one banner explains the whole outage instead of
-          // repeating itself down the column.
-          ForEach(offlineMachineBanners) { banner in
-            ActivityOfflineMachineBanner(
-              machineName: banner.machineName,
-              lastSeenLabel: banner.lastSeenLabel
-            )
-            .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 6, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
@@ -1151,33 +1124,41 @@ struct WorkRootScreen: View {
     .listRowBackground(Color.clear)
     .listRowSeparator(.hidden)
 
-    if let childGroup = sessionPresentation.childGroupsByParentId[session.id] {
-      WorkChildShellSection(
-        group: childGroup,
-        collapsed: collapsedSectionIds.contains(childGroup.collapsedSectionId),
+    nestedChildDrawer(
+      groups: sessionPresentation.nestedGroupsByParentId[session.id] ?? [],
+      railColor: railColor
+    )
+  }
+
+  /// Subagent drawer then shell drawer. Nested subagents sit under a parent
+  /// that already names the lane, so they drop lane identity; shells keep the
+  /// previous compact default.
+  @ViewBuilder
+  private func nestedChildDrawer(
+    groups: [WorkSessionChildGroup],
+    railColor: Color?
+  ) -> some View {
+    ForEach(groups) { group in
+      WorkNestedSessionSection(
+        group: group,
+        collapsed: collapsedSectionIds.contains(group.collapsedSectionId),
         onToggle: {
           withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            toggleCollapsed(childGroup.collapsedSectionId)
+            toggleCollapsed(group.collapsedSectionId)
           }
         }
       ) {
-        ForEach(childGroup.children) { child in
+        ForEach(group.children) { child in
           sessionListRow(
             child,
             compact: true,
-            // A child shell sits under its parent row, which already carries the
-            // lane identity — but this matches the previous default and is
-            // stated explicitly so the factory has no implicit callers.
-            showsLaneIdentity: true,
+            showsLaneIdentity: group.kind == .shells,
+            nestedSubagent: group.kind == .subagents,
             transitionNamespace: nil
           )
           .id(child.id)
         }
       }
-      // The nested shells sit at a fixed 30pt from the list margin whether or not
-      // a lane rail is present: the rail already consumes 9pt of that indent, so
-      // adding the old flat 30 on top of it would push nested shells a second
-      // step right and break the parent/child read.
       .padding(.leading, Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter))
       .padding(.bottom, 6)
       .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
@@ -1187,12 +1168,12 @@ struct WorkRootScreen: View {
     }
   }
 
-  /// One argument list, two callers (the top-level session row and the child
-  /// shell loop). `WorkSessionListRow` takes ~35 arguments, nearly all of them
+  /// One argument list, two callers (the top-level session row and the nested
+  /// child loop). `WorkSessionListRow` takes ~35 arguments, nearly all of them
   /// threaded straight off `self`; when they were spelled out at both call
   /// sites every new callback had to be added twice, and one of the two was
-  /// eventually going to be missed. Only the three arguments that genuinely
-  /// differ between the callers are parameters here.
+  /// eventually going to be missed. Only the arguments that genuinely differ
+  /// between the callers are parameters here.
   ///
   /// List-cell concerns (`.id`, `.listRowInsets`, `.listRowBackground`,
   /// `.listRowSeparator`, the lane accent rail, vertical padding) stay at the
@@ -1201,6 +1182,7 @@ struct WorkRootScreen: View {
     _ session: TerminalSessionSummary,
     compact: Bool,
     showsLaneIdentity: Bool,
+    nestedSubagent: Bool = false,
     transitionNamespace: Namespace.ID?
   ) -> WorkSessionListRow {
     WorkSessionListRow(
@@ -1214,6 +1196,7 @@ struct WorkRootScreen: View {
       isArchived: archivedSessionIds.contains(session.id),
       transitionNamespace: transitionNamespace,
       compact: compact,
+      nestedSubagent: nestedSubagent,
       showsLaneIdentity: showsLaneIdentity,
       isLaneDeleting: syncService.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,

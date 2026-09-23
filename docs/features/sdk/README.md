@@ -52,7 +52,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `apps/desktop/src/shared/pathContainment.ts` | `pathIsWithinRoot` / `pathsEqual` — the one containment rule, its platform case-fold, and the base a relative target resolves against. Used by the permission policy and by the CLI's personal-chat cwd guard. |
 | `apps/desktop/src/shared/providers.ts` | `ShippedProvider` — the one closed provider union the three per-provider tables are keyed by. |
 | `apps/desktop/src/main/services/chat/personalSession.ts` | What a personal chat is (`isPersonalSession`), where it runs (`resolvePersonalHostCwd`), and what its provider is told (`PERSONAL_CHAT_SYSTEM_PROMPT`, `resolvePersonalSystemPrompt`). |
-| `apps/desktop/src/main/services/chat/claudeToolGate.ts` | What ADE knows about one Claude tool call before deciding: name normalization, the read-only built-in set, the paths a call names, and the pre-policy prompting heuristic. |
+| `apps/desktop/src/main/services/chat/claudeToolGate.ts` | What ADE knows about one Claude tool call before deciding: name normalization, the read-only built-in set, the paths a call names, the pre-policy prompting heuristic, and `claudeToolAllowedInPlanMode` / `CLAUDE_PLAN_MODE_ALLOWED_TOOLS` — the literal plan-mode allowlist the `canUseTool` fence reads. |
 | `apps/desktop/src/main/services/chat/codexApprovalContainment.ts` | Which Codex approvals ADE answers itself, and the containment root each is checked against. The only place a host `sandboxRoot` takes effect on Codex. |
 | `apps/desktop/src/shared/providerRemediation.ts` | `PROVIDER_REMEDIATION` — one table of install command, login command, docs URL and display name per provider, with win32 spellings. Read by the Settings CLI cards, the model picker's empty states, the CLI agent registry, and `providers.status`; none of the four keeps its own copy. |
 | `apps/desktop/src/main/services/ai/providerStatusProbe.ts` | The `providers.status` probe: per-provider orchestration, 60 s cache, shared in-flight probe, 8 s overall budget. |
@@ -360,7 +360,8 @@ success without the user ever seeing the question.
 
 ### What `fallback: "deny"` does on Claude
 
-Measured against Agent SDK 0.3.258: `allowedTools` and `disallowedTools` are
+Measured against Agent SDK 0.3.258 and not re-measured against a later pin:
+`allowedTools` and `disallowedTools` are
 enforced, because the CLI removes a denied tool from the model's catalog. But
 `canUseTool` did not fire on any permission mode tried, so the prompt path
 cannot be relied on to enforce anything.
@@ -447,7 +448,14 @@ Two ways out. Answer it with the `approve` action
 (`{ sessionId, itemId, decision, responseText? }`, decision one of `accept`,
 `accept_for_session`, `decline`, `cancel`), or call `interrupt()`, which aborts
 the turn without answering. `accept_for_session` records the tool in the
-session's approval overrides, so the same tool does not ask again.
+session's approval overrides, so the same tool does not ask again — unless the
+ask's own metadata suppresses the always-allow rule (`suppressAlwaysAllowRule`),
+in which case the host downgrades the answer to a one-shot accept, persists
+nothing, and does not let an override from an earlier ask answer the ask. A
+client that renders the approval's options as chips may send `accept` with the
+chosen option value in `answers` — or, for a typed note, in `responseText`; for
+a Claude approval the host then reads the request's own option value as the
+decision, so a Deny chip declines rather than allowing.
 
 `fallback: "deny"` is the option for a host that renders no card at all. Nothing
 ever prompts. On Claude the call returns a denial to the model. On Codex the
@@ -668,7 +676,8 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
   `permissionPolicy.ts` exists to replace, and the read-only exemption in the
   Claude gate is a literal name-set membership test for the same reason.
 - Never rely on `canUseTool` to enforce a Claude policy. It did not fire on any
-  permission mode measured against Agent SDK 0.3.258. Enforcement that matters
+  permission mode measured against Agent SDK 0.3.258, and that has not been
+  re-measured against a later pin. Enforcement that matters
   goes in `allowedTools` / `disallowedTools` and `allowManagedMcpServersOnly`,
   which the CLI applies itself; the gate stays wired as a second line only.
 - Never assign over `opts.managedSettings.allowedMcpServers`. ADE's own managed

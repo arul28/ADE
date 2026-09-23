@@ -320,6 +320,15 @@ export function getSharedAccountAuthService(args: {
       env: args.env,
     }),
     getMachineKey: () => readMachineKey(secretsDir),
+    // Loaded lazily: both modules are large, and only a sign-in needs them.
+    getMachineName: async () => {
+      const [{ resolveDeviceDisplayNameSettled }, { publishedMachineName }] = await Promise.all([
+        import("../sync/deviceRegistryService"),
+        import("./accountMachinePublisherService"),
+      ]);
+      const env = args.env ?? process.env;
+      return publishedMachineName(await resolveDeviceDisplayNameSettled(), env.ADE_PACKAGE_CHANNEL);
+    },
     getRefreshBroker: () => sharedRefreshBroker,
     env: args.env ?? process.env,
     logger: args.logger,

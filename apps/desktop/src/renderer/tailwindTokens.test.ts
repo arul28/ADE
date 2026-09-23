@@ -87,12 +87,18 @@ describe("tailwind token wiring", () => {
       for (const literal of source.matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`/g)) {
         const text = literal[1] ?? literal[2] ?? literal[3] ?? "";
         if (!/\b(?:bg|text|border|ring)-/.test(text)) continue;
-        // A React `key` is not a class string. ChatSubagentsPanel spells one
-        // `key="bg-command-details"`, which reads as a dead class and is not.
-        if (/\bkey=$/.test(source.slice(Math.max(0, literal.index - 5), literal.index))) continue;
+        // A React `key`, an `id` or a `data-*` value is not a class string.
+        // ChatSubagentsPanel spells `key="bg-command-details"`, which reads as
+        // a dead class and is not.
+        if (/\b(?:key|id|data-[a-z-]+)=$/.test(source.slice(Math.max(0, literal.index - 40), literal.index))) continue;
         // Opacity modifiers escape as `\/` in the output; the plain class is
         // the reliable signal and catches the same authoring mistake.
-        for (const match of text.matchAll(/(?:^|\s)((?:[a-z-]+:)*(?:bg|text|border|ring)-[a-z][a-z0-9-]*)(?=\s|$)/g)) {
+        for (const match of text.matchAll(/(?:^|\s)((?:[a-z-]+:)*(?:bg|text|border|ring)-[a-z][a-z0-9-]*)(\/\d+)?(?=\s|$)/g)) {
+          // A class used ONLY with an opacity modifier (`bg-info/10`) would be
+          // invisible without the optional group, because the modifier breaks
+          // the end-of-class lookahead. TimelineEntry spells exactly that:
+          // `text-info bg-info/10 border-info/20`. Drop the modifier and check
+          // the base utility, which is what has to exist for either to paint.
           const cls = match[1]!.replace(/^(?:[a-z-]+:)*/, "");
           const name = cls.replace(/^(?:bg|text|border|ring)-/, "");
           if (!ours(name)) continue;

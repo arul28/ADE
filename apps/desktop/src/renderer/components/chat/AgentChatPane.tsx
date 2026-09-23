@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { showToast } from "../app/toast/toastStore";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowsLeftRight, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -57,6 +58,7 @@ import {
   type CursorCloudOpenChatResult,
   type OpenProjectBinding,
   type TerminalSessionDetail,
+  type AutomationRuleSummary,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
@@ -108,6 +110,7 @@ import {
   MODEL_REGISTRY,
   decodeOpenCodeRegistryId,
   getLocalModelIdTail,
+  getAppDefaultModelDescriptor,
   getLocalProviderDefaultEndpoint,
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -215,6 +218,8 @@ import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
+import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
+import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
@@ -238,6 +243,7 @@ import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
+import { AutoHandoffModal, loadAutoHandoffRulesForSession } from "../terminals/AutoHandoffModal";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrPaneOpen } from "./useChatPrPaneOpen";
 import {
@@ -267,6 +273,11 @@ import {
 } from "../../lib/chatMachineRouting";
 import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
+import {
+  subscribeChatHandoff,
+  takeChatHandoff,
+  type ChatHandoffIntent,
+} from "../../lib/chatHandoffIntent";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
 import {
@@ -393,9 +404,42 @@ function handoffProviderDisplayName(provider: string | null | undefined): string
   return providerDisplayLabel(provider, "this provider");
 }
 
+/** The three landing cards: the two bridge destinations plus the auto editor. */
+type HandoffTone = ChatHandoffIntent | "auto";
+
+/** Per-destination chrome for the handoff landing cards, keyed by tone. */
+const HANDOFF_CARD_TONE_CLASS: Record<
+  HandoffTone,
+  { border: string; wash: string; hover: string; plate: string }
+> = {
+  remote: {
+    border: "border-sky-300/18",
+    wash: "bg-[linear-gradient(150deg,rgba(56,189,248,0.10),rgba(255,255,255,0.014)_62%)]",
+    hover: "hover:border-sky-300/34 hover:bg-[linear-gradient(150deg,rgba(56,189,248,0.17),rgba(255,255,255,0.02)_62%)]",
+    plate: "border-sky-300/24 bg-sky-400/12 text-sky-100",
+  },
+  local: {
+    border: "border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)]",
+    wash: "bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_13%,transparent),rgba(255,255,255,0.014)_62%)]",
+    hover:
+      "hover:border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] hover:bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_20%,transparent),rgba(255,255,255,0.02)_62%)]",
+    plate:
+      "border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_15%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_84%,white)]",
+  },
+  auto: {
+    border: "border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)]",
+    wash: "bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_12%,transparent),rgba(255,255,255,0.014)_62%)]",
+    hover:
+      "hover:border-[color:color-mix(in_srgb,var(--color-accent)_38%,transparent)] hover:bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_19%,transparent),rgba(255,255,255,0.02)_62%)]",
+    plate:
+      "border-[color:color-mix(in_srgb,var(--color-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent",
+  },
+};
+
 /**
- * One of the two landing cards on the handoff tab (remote / local). Rich icon
- * plate + a single line of copy; the parent owns the disabled/gated states.
+ * One of the three landing cards on the handoff tab (remote / local / auto).
+ * Rich icon plate + a single line of copy; the parent owns the
+ * disabled/gated states.
  */
 function HandoffMenuCard({
   tone,
@@ -406,7 +450,7 @@ function HandoffMenuCard({
   disabled,
   onClick,
 }: {
-  tone: "remote" | "local";
+  tone: HandoffTone;
   icon: Icon;
   title: string;
   description: string;
@@ -414,21 +458,7 @@ function HandoffMenuCard({
   disabled?: boolean;
   onClick?: () => void;
 }) {
-  const toneCls = tone === "remote"
-    ? {
-        border: "border-sky-300/18",
-        wash: "bg-[linear-gradient(150deg,rgba(56,189,248,0.10),rgba(255,255,255,0.014)_62%)]",
-        hover: "hover:border-sky-300/34 hover:bg-[linear-gradient(150deg,rgba(56,189,248,0.17),rgba(255,255,255,0.02)_62%)]",
-        plate: "border-sky-300/24 bg-sky-400/12 text-sky-100",
-      }
-    : {
-        border: "border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)]",
-        wash: "bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_13%,transparent),rgba(255,255,255,0.014)_62%)]",
-        hover:
-          "hover:border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] hover:bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_20%,transparent),rgba(255,255,255,0.02)_62%)]",
-        plate:
-          "border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_15%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_84%,white)]",
-      };
+  const toneCls = HANDOFF_CARD_TONE_CLASS[tone];
   return (
     <button
       type="button"
@@ -1986,6 +2016,15 @@ function readLastUsedModelId(): string | null {
     // ignore
   }
   return migrateOldPrefs();
+}
+
+/** Last-used model, then the app-wide default, then whatever is listed first. */
+function pickFallbackChatModelId(selectableModelIds: readonly string[]): string {
+  const preferred = readLastUsedModelId();
+  if (preferred && selectableModelIds.includes(preferred)) return preferred;
+  const appDefault = getAppDefaultModelDescriptor()?.id;
+  if (appDefault && selectableModelIds.includes(appDefault)) return appDefault;
+  return selectableModelIds[0]!;
 }
 
 function writeLastUsedModelId(modelId: string) {
@@ -3758,6 +3797,14 @@ export function AgentChatPane({
   const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
   );
+  // The handoff router reads the drawer's open/tab state to decide whether it
+  // can apply a destination directly or must hand it to the tab's one-shot open
+  // effect. It reads them through latest-value refs so the intent subscription
+  // does not tear down and re-arm on every drawer open/close/tab change.
+  const chatActionsOpenRef = useRef(chatActionsOpen);
+  chatActionsOpenRef.current = chatActionsOpen;
+  const chatActionsTabRef = useRef(chatActionsTab);
+  chatActionsTabRef.current = chatActionsTab;
   const openProofDrawer = useCallback(() => {
     setChatActionsTab("proof");
     setChatActionsOpen(true);
@@ -3772,7 +3819,10 @@ export function AgentChatPane({
   // An agent launching the simulator used to force this drawer open, closing
   // whatever the user had on screen. It now only offers: a chip appears while a
   // simulator session is live and the drawer is closed.
-  const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{ deviceName: string | null } | null>(null);
+  const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{
+    deviceName: string | null;
+    deviceUdid: string | null;
+  } | null>(null);
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
   // Subagent drill-in: when set, the chat surface renders the named subagent's
   // transcript instead of the parent stream and the composer is disabled.
@@ -3934,8 +3984,25 @@ export function AgentChatPane({
   );
   const [handoffNote, setHandoffNote] = useState("");
   const pendingHandoffPrefillRef = useRef<{ note: string } | null>(null);
-  // Two-view handoff tab: the landing menu (remote vs local) and the local
-  // handoff surface (fork | brief). Both reset each time the tab is opened.
+  // A destination named while the drawer is closed (or on another tab): the
+  // one-shot open effect owns `handoffView`, so it consumes this instead of
+  // racing a direct write that the effect would overwrite back to the menu.
+  const pendingHandoffDestinationRef = useRef<ChatHandoffIntent | null>(null);
+
+  /**
+   * Brings the Chat actions drawer to the Handoff tab. Every handoff entry
+   * shares this prelude so the destination views are always mounted where they
+   * render and no other side panel is left open over them.
+   */
+  const openHandoffTab = useCallback(() => {
+    setIosSimulatorOpen(false);
+    setAppControlOpen(false);
+    setCursorCloudPaneOpen(false);
+    setChatActionsTab("handoff");
+    setChatActionsOpen(true);
+  }, []);
+  // Two-view handoff tab: the landing menu (remote / local / auto) and the
+  // local handoff surface (fork | brief). Both reset each time the tab opens.
   const [handoffView, setHandoffView] = useState<"menu" | "local">("menu");
   const [handoffLocalMode, setHandoffLocalMode] = useState<"fork" | "brief">("fork");
   // Brief handoffs may target a different lane (or a freshly created one); fork
@@ -3945,6 +4012,21 @@ export function AgentChatPane({
   // longer preselects one; defaulted to the source session model on tab open.
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
+  // Auto handoff opened from the Handoff tab (and reachable from the session
+  // context menu, which hosts its own copy). Rules are loaded BEFORE the modal
+  // opens so it prefills from whatever this chat already has armed — the editor
+  // reads `existingRules` once, at mount.
+  const [autoHandoffOpen, setAutoHandoffOpen] = useState(false);
+  // Tagged with the chat the rules belong to: a session switch is not
+  // synchronous with the reset effect, so the modal must never render another
+  // chat's rules even for one frame.
+  const [autoHandoffRules, setAutoHandoffRules] = useState<{ sessionId: string; rules: AutomationRuleSummary[]; binding: OpenProjectBinding | null } | null>(null);
+  // Token for the in-flight rules read; a later open or a session switch
+  // invalidates an older response so it cannot prefill the wrong chat.
+  const autoHandoffRequestRef = useRef(0);
+  // `handoffTurnGate` is derived far below in the render; the handoff router is
+  // declared above it, so it reads the gate through this latest-value ref.
+  const handoffTurnGateRef = useRef(false);
   const [parallelChatMode, setParallelChatMode] = useState(false);
   const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
   const [parallelConfiguringIndex, setParallelConfiguringIndex] = useState<number | null>(null);
@@ -4808,11 +4890,7 @@ export function AgentChatPane({
         setHandoffLocalMode("fork");
         return;
       }
-      setIosSimulatorOpen(false);
-      setAppControlOpen(false);
-      setCursorCloudPaneOpen(false);
-      setChatActionsTab("handoff");
-      setChatActionsOpen(true);
+      openHandoffTab();
     };
     const isLocalForkDetail = (detail: {
       actionId?: string;
@@ -4872,7 +4950,107 @@ export function AgentChatPane({
       window.removeEventListener("ade:chat:card-action", handler);
       window.removeEventListener("ade:chat:open-info", handler);
     };
-  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots]);
+  }, [chatActionsOpen, chatActionsTab, openHandoffTab, selectedSessionId, selectedSubagentSnapshots]);
+
+  /**
+   * Routes "where should this chat go" to the matching destination view. One
+   * switch for both the Handoff tab's own cards and any surface that can only
+   * name a destination. The pane's gates live here, not at each caller: a
+   * running turn or a chat that already lives on another machine is refused for
+   * the menu exactly as the cards refuse it.
+   */
+  const openHandoffDestination = useCallback((intent: ChatHandoffIntent) => {
+    if (handoffTurnGateRef.current) return;
+    if (intent === "remote") {
+      if (isRemoteChat) return;
+      setCrossMachineHandoffOpen(true);
+      return;
+    }
+    // The Handoff tab's one-shot open effect resets `handoffView` to the landing
+    // menu. When the drawer is not already on that tab — the normal context-menu
+    // case — hand the effect the destination through the pending ref instead of
+    // racing it; apply directly only when the tab is already showing.
+    if (chatActionsOpenRef.current && chatActionsTabRef.current === "handoff") {
+      setHandoffView("local");
+      setHandoffLocalMode("fork");
+      return;
+    }
+    pendingHandoffDestinationRef.current = "local";
+  }, [isRemoteChat]);
+
+  /**
+   * Opens the Auto handoff rule editor for the selected chat, prefilled from the
+   * rules this chat already owns. The rules are read BEFORE the modal opens: the
+   * editor seeds its form from `existingRules` at mount, so opening first would
+   * always show defaults from the tab path.
+   */
+  const openAutoHandoff = useCallback(async () => {
+    const sessionId = selectedSessionId;
+    const requestId = ++autoHandoffRequestRef.current;
+    // Freeze the machine for this read. The chat's pin can re-resolve while the
+    // read is in flight; seeding the editor from one machine's rules while it
+    // saved through another would overwrite the other machine's rules, so the
+    // read and the modal are both bound to the pin captured here.
+    const pin = chatRuntimePinRef.current;
+    const rules = sessionId
+      ? await loadAutoHandoffRulesForSession(sessionId, pin)
+      : null;
+    if (autoHandoffRequestRef.current !== requestId) return;
+    if ((chatRuntimePinRef.current?.key ?? null) !== (pin?.key ?? null)) return;
+    if (!sessionId) return;
+    // A failed read is not "no rules": opening the editor on defaults would let
+    // Save delete conditions the read never saw. Keep it closed and say so.
+    if (rules === null) {
+      showToast({
+        id: `auto-handoff-read:${sessionId}`,
+        title: "Couldn't load auto handoff",
+        message: "The rules for this chat didn't load. Try again in a moment.",
+      });
+      return;
+    }
+    openHandoffTab();
+    setAutoHandoffRules({ sessionId, rules, binding: pin });
+    setAutoHandoffOpen(true);
+  }, [openHandoffTab, selectedSessionId]);
+
+  /**
+   * Routes a Handoff intent from a surface that can only name a destination —
+   * currently the session context menu — into this pane's own Handoff tab.
+   */
+  const applyChatHandoffIntent = useCallback((intent: ChatHandoffIntent) => {
+    openHandoffTab();
+    openHandoffDestination(intent);
+  }, [openHandoffDestination, openHandoffTab]);
+
+  // Rules are scoped to one chat, so a session change drops any auto-handoff
+  // state the previous chat left behind — a form seeded from another chat's
+  // rules would delete them on save. Bumping the request token also discards an
+  // in-flight rules read for the chat we just left.
+  useEffect(() => {
+    autoHandoffRequestRef.current += 1;
+    pendingHandoffDestinationRef.current = null;
+    setAutoHandoffOpen(false);
+    setAutoHandoffRules(null);
+  }, [selectedSessionId]);
+
+  // Handoff intents queued by the session context menu. The menu can run before
+  // this pane renders for the target chat, so it both notifies live listeners
+  // and leaves a queue entry this effect drains on the matching session.
+  useEffect(() => {
+    // Only the active surface may drain the one-slot intent queue. Hidden grid
+    // tiles and retained panes stay mounted with the same session id, so an
+    // ungated subscriber would consume the intent off-screen and the visible
+    // chat would never open handoff.
+    if (!selectedSessionId || !isTileActive) return undefined;
+    const unsubscribe = subscribeChatHandoff((targetSessionId) => {
+      if (targetSessionId !== selectedSessionId) return;
+      const intent = takeChatHandoff(targetSessionId);
+      if (intent) applyChatHandoffIntent(intent);
+    });
+    const queued = takeChatHandoff(selectedSessionId);
+    if (queued) applyChatHandoffIntent(queued);
+    return unsubscribe;
+  }, [applyChatHandoffIntent, isTileActive, selectedSessionId]);
 
   // Cheap probe for the subagents panel: does this agent actually have a
   // pullable transcript? It runs the EXACT same fetch the takeover view uses
@@ -7217,10 +7395,7 @@ export function AgentChatPane({
       // a same-provider alternative, a persisted curated row is stale and
       // must not survive into a fresh draft.
       if (currentModelDesc && !hasLiveAcpAlternative) return;
-      const preferred = readLastUsedModelId();
-      const nextModelId = preferred && selectableModelIds.includes(preferred)
-        ? preferred
-        : selectableModelIds[0]!;
+      const nextModelId = pickFallbackChatModelId(selectableModelIds);
       if (nextModelId !== modelId) setModelId(nextModelId);
       return;
     }
@@ -7231,12 +7406,7 @@ export function AgentChatPane({
       setModelId(selectedSessionModelId);
       return;
     }
-    const preferred = readLastUsedModelId();
-    if (preferred && selectableModelIds.includes(preferred)) {
-      setModelId(preferred);
-    } else {
-      setModelId(selectableModelIds[0]!);
-    }
+    setModelId(pickFallbackChatModelId(selectableModelIds));
   }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
 
   useEffect(() => {
@@ -7310,7 +7480,10 @@ export function AgentChatPane({
       if (event.type === "session-started") {
         if (!addressesThisPane(event.session.chatSessionId, event.session.laneId)) return;
         setIosSimulatorAvailable(true);
-        setIosSimulatorSessionChip({ deviceName: event.session.deviceName });
+        setIosSimulatorSessionChip({
+          deviceName: event.session.deviceName,
+          deviceUdid: event.session.deviceUdid,
+        });
         return;
       }
       if (event.type === "session-released") {
@@ -7363,7 +7536,10 @@ export function AgentChatPane({
       if (!session) return;
       if (!iosSimulatorAddressesThisPane(session.chatSessionId, session.laneId)) return;
       setIosSimulatorAvailable(true);
-      setIosSimulatorSessionChip({ deviceName: session.deviceName });
+      setIosSimulatorSessionChip({
+        deviceName: session.deviceName,
+        deviceUdid: session.deviceUdid ?? null,
+      });
     }).catch(() => {});
     return () => {
       cancelled = true;
@@ -7419,11 +7595,14 @@ export function AgentChatPane({
       setHandoffCursorConfigValues({ ...cursorConfigValues });
       const prefill = pendingHandoffPrefillRef.current;
       pendingHandoffPrefillRef.current = null;
+      const destination = pendingHandoffDestinationRef.current;
+      pendingHandoffDestinationRef.current = null;
       setHandoffNote(prefill?.note ?? "");
       // Land on the menu each open; skip straight to local fork when a quota
-      // card asked for that form. Default the local mode to fork when the
-      // source provider can fork, else brief. Seed lane + remote model.
-      setHandoffView(prefill ? "local" : "menu");
+      // card or a context-menu intent asked for that form. Default the local
+      // mode to fork when the source provider can fork, else brief. Seed lane +
+      // remote model.
+      setHandoffView(prefill || destination === "local" ? "local" : "menu");
       setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
       setRemoteHandoffModelId(
@@ -12461,6 +12640,7 @@ export function AgentChatPane({
   }, [draftLaunchTargetId, showDraftLaunchControls]);
 
   const handoffTurnGate = turnActive || selectedSessionAwaitingInput;
+  handoffTurnGateRef.current = handoffTurnGate;
   const handoffSourceProviderLabel = handoffProviderDisplayName(selectedSession?.provider);
   const handoffForkCopy = useMemo(() => (handoffForkReplaysTranscript
     ? {
@@ -12785,11 +12965,11 @@ export function AgentChatPane({
     <div data-testid="handoff-menu" className="min-h-0 flex-1 overflow-auto p-4">
       <div className="mb-3 space-y-0.5">
         <div className="font-sans text-[12px] font-semibold text-fg/82">Hand off this chat</div>
-        <div className="text-[11px] leading-4 text-fg/50">Continue the work somewhere new — another machine, or a fresh chat here.</div>
+        <div className="text-[11px] leading-4 text-fg/50">Continue the work somewhere new — another machine, a fresh chat here, or automatically when this one stops.</div>
       </div>
-      <div className="relative">
+      <div className="space-y-2.5">
         <div
-          className={cn("space-y-2.5", handoffTurnGate && "pointer-events-none select-none opacity-40")}
+          className={cn("relative space-y-2.5", handoffTurnGate && "pointer-events-none select-none opacity-40")}
           aria-disabled={handoffTurnGate || undefined}
         >
           <HandoffMenuCard
@@ -12801,7 +12981,7 @@ export function AgentChatPane({
             footnote={isRemoteChat
               ? `This chat runs on ${chatMachineName}. Open that machine's project to start a cross-machine handoff.`
               : null}
-            onClick={() => setCrossMachineHandoffOpen(true)}
+            onClick={() => openHandoffDestination("remote")}
           />
           <HandoffMenuCard
             tone="local"
@@ -12809,19 +12989,26 @@ export function AgentChatPane({
             title="Hand off locally"
             description="Start a new chat from this one — fork the thread or send a brief."
             disabled={handoffTurnGate}
-            onClick={() => {
-              setHandoffLocalMode("fork");
-              setHandoffView("local");
-            }}
+            onClick={() => openHandoffDestination("local")}
           />
-        </div>
-        {handoffTurnGate ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-3">
-            <div className="pointer-events-auto max-w-[220px] rounded-lg border border-amber-300/22 bg-[color:color-mix(in_srgb,#f59e0b_16%,#11131a)] px-3 py-2 text-center text-[10.5px] font-medium leading-4 text-amber-100/90 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.7)]">
-              A turn is running — wait for it to finish before handing off.
+          {handoffTurnGate ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-3">
+              <div className="pointer-events-auto max-w-[220px] rounded-lg border border-amber-300/22 bg-[color:color-mix(in_srgb,#f59e0b_16%,#11131a)] px-3 py-2 text-center text-[10.5px] font-medium leading-4 text-amber-100/90 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.7)]">
+                A turn is running — wait for it to finish before handing off.
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
+        {/* Auto handoff is a rule editor, not a move: arming "continue when this
+            stops" is most useful while the turn is still running, so it stays
+            available while the two live-handoff cards are gated. */}
+        <HandoffMenuCard
+          tone="auto"
+          icon={ArrowsLeftRight}
+          title="Auto handoff"
+          description="If this chat hits a limit, fails, or ends — continue it automatically."
+          onClick={() => { void openAutoHandoff(); }}
+        />
       </div>
     </div>
   );
@@ -13119,25 +13306,29 @@ export function AgentChatPane({
         />
       ) : null}
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
-        <button
-          type="button"
-          onClick={() => {
+        <IosSimulatorRunningPill
+          deviceName={iosSimulatorSessionChip.deviceName}
+          onOpen={() => {
             setAppControlOpen(false);
             setCursorCloudPaneOpen(false);
             setIosSimulatorOpen(true);
           }}
-          className={cn(
-            "inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
-            "border-cyan-300/20 bg-cyan-400/[0.06] text-cyan-100/75 hover:border-cyan-200/32 hover:text-cyan-50",
-          )}
-          title={iosSimulatorSessionChip.deviceName
-            ? `Simulator running on ${iosSimulatorSessionChip.deviceName}`
-            : "Simulator running"}
-        >
-          <DeviceMobile size={11} weight="fill" aria-hidden className="shrink-0" />
-          <span className="min-w-0 truncate">Simulator running</span>
-          <span className="shrink-0 text-cyan-200/55">Open</span>
-        </button>
+          onFloat={() => {
+            // §7: Float opens the mini player, which owns native PiP in its
+            // own hover bar. The auto-appearing corner card it used to ask is
+            // gone, so asking it would have been a button that did nothing.
+            if (!iosSimulatorSessionChip.deviceUdid) return;
+            openAppleMiniPlayer({
+              laneId: selectedSession?.laneId ?? laneId ?? null,
+              chatSessionId: selectedSessionId,
+              deviceUdid: iosSimulatorSessionChip.deviceUdid,
+              deviceName: iosSimulatorSessionChip.deviceName ?? "Simulator",
+              deviceRuntime: null,
+              family: "iphone",
+              runtimePin: composerRuntimePin,
+            });
+          }}
+        />
       ) : null}
       {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
@@ -14335,6 +14526,7 @@ export function AgentChatPane({
         chromeTint={chatChromeTint}
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
+        canvasFill={embedDraft ? "transparent" : undefined}
         header={compactShell || hideSurfaceHeader ? undefined : shellHeader}
         footer={isEmptyState || appPanelOpen
           ? undefined
@@ -14719,6 +14911,7 @@ export function AgentChatPane({
               ) : (
                 <motion.div
                   key="empty-state"
+                  data-chat-empty-state=""
                   initial={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2, ease: "easeIn" } }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
@@ -14729,11 +14922,9 @@ export function AgentChatPane({
                   >
                     <div className={cn(
                       "flex min-h-0 flex-1 items-center justify-center overflow-hidden",
-                      // The optical lift lives in the padding rather than a negative margin on the
-                      // column, so `max-h-full` below can cap the column without clipping its top.
-                      // 136px = the previous pb-24 (96px) + the removed -mt-10 lift (40px), which
-                      // keeps the resting position pixel-identical whenever there is room to spare.
-                      appPanelOpen ? "px-3" : "px-6 pb-[136px]",
+                      // Optical lift: 100px keeps the stack slightly below the
+                      // old 136px rest, so the prompt and usage sit a little lower.
+                      appPanelOpen ? "px-3" : "px-6 pb-[100px]",
                     )}>
                       <div className={cn(
                         "flex max-h-full w-full flex-col items-center gap-3 text-center",
@@ -14750,12 +14941,6 @@ export function AgentChatPane({
                           style={{ aspectRatio: "560 / 300" }}
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
-                          {/* `h-auto` + `max-h-full` left the image at its
-                              natural height once the box shrank, so a short
-                              window cropped the wordmark against the column's
-                              `overflow-hidden` instead of scaling it. Filling
-                              the box and letterboxing inside it with
-                              `object-contain` keeps the shrink proportional. */}
                           <img
                             src="./logo.png"
                             alt="ADE"
@@ -14763,11 +14948,6 @@ export function AgentChatPane({
                           />
                         </motion.div>
 
-                        {/* Only a non-default mode earns a line here. The wordmark
-                            above already says which app this is, so a generic
-                            "Start a new conversation" was a caption on a thing
-                            that needs no caption — and a whole band of vertical
-                            space spent saying nothing the user did not know. */}
                         {/* Inline composer for empty state (only when sim drawer closed) */}
                         {!appPanelOpen ? (
                           <div data-chat-composer-wrapper className="relative z-10 w-full shrink-0">
@@ -14917,7 +15097,9 @@ export function AgentChatPane({
                             exit={{ opacity: 0, y: 6 }}
                             transition={{ duration: 0.28, ease: "easeOut" }}
                           >
-                            <WorkActivityModule />
+                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="">
+                              <WorkActivityModule />
+                            </div>
                           </motion.div>
                         ) : null}
 
@@ -14984,6 +15166,31 @@ export function AgentChatPane({
           onFinished={() => {
             setHandoffNote("");
             void refreshSessions({ force: true }).catch(() => undefined);
+          }}
+        />
+      ) : null}
+      {autoHandoffOpen && selectedSession ? (
+        <AutoHandoffModal
+          key={selectedSession.sessionId}
+          session={{
+            id: selectedSession.sessionId,
+            title: selectedSession.title ?? "This chat",
+            laneId: selectedSession.laneId,
+            modelId: selectedSession.modelId ?? selectedSession.model,
+          }}
+          binding={
+            autoHandoffRules?.sessionId === selectedSession.sessionId
+              ? autoHandoffRules.binding
+              : chatRuntimePin
+          }
+          existingRules={
+            autoHandoffRules?.sessionId === selectedSession.sessionId
+              ? autoHandoffRules.rules
+              : []
+          }
+          onClose={() => {
+            setAutoHandoffOpen(false);
+            setAutoHandoffRules(null);
           }}
         />
       ) : null}

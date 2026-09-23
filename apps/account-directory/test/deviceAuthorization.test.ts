@@ -3,6 +3,7 @@ import { handleRequest } from "../src/directory";
 import worker from "../src/index";
 import {
   deviceConfirmationRequest,
+  signInUrlFrom,
   ISSUER,
   makeEnv,
   mintToken,
@@ -54,8 +55,14 @@ describe("device authorization bridge", () => {
       env,
       { now: () => now },
     );
-    expect(approval.status).toBe(302);
-    const clerkAuthorizeUrl = new URL(approval.headers.get("location")!);
+    // A page that opens Clerk, not a 302: browsers apply `form-action 'self'`
+    // to redirects after a form POST, and Chromium blocked the old 302.
+    expect(approval.status).toBe(200);
+    expect(approval.headers.get("location")).toBeNull();
+    expect(approval.headers.get("content-security-policy")).toContain("form-action 'self';");
+    const approvalHtml = await approval.clone().text();
+    expect(approvalHtml).toContain('<meta http-equiv="refresh" content="0;url=');
+    const clerkAuthorizeUrl = await signInUrlFrom(approval);
     expect(clerkAuthorizeUrl.origin + clerkAuthorizeUrl.pathname).toBe(`${ISSUER}/oauth/authorize`);
     expect(clerkAuthorizeUrl.searchParams.get("client_id")).toBe(OAUTH_CLIENT_ID);
     expect(clerkAuthorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
@@ -153,6 +160,55 @@ describe("device authorization bridge", () => {
     expect(env.DB.deviceRows[0]?.status).toBe("consumed");
   });
 
+  it("regression: calls the runtime fetch with the global scope as its receiver", async () => {
+    // Production, 2026-09-22: every "Confirm it's you" ended as "Sign-in
+    // failed", with "OAuth token exchange failed." in the row. The default
+    // `fetchImpl` was the bare global `fetch`, called as a method of the
+    // options object, and workerd throws "Illegal invocation" for a `fetch`
+    // whose `this` is anything but the global scope. Every other test injects
+    // a fake, which never checks its receiver.
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+    const approval = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code)),
+      env,
+      { now: () => now },
+    );
+    const state = (await signInUrlFrom(approval)).searchParams.get("state")!;
+    const receivers: unknown[] = [];
+    vi.stubGlobal("fetch", function workerdFetch(this: unknown) {
+      receivers.push(this);
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Illegal invocation: function called with incorrect `this` reference.");
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        access_token: "approved-access-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+    });
+    try {
+      const callback = await handleRequest(
+        new Request(`https://directory.test/device/callback?code=clerk-code&state=${encodeURIComponent(state)}`),
+        env,
+        { now: () => now },
+      );
+      expect(receivers).toHaveLength(1);
+      expect(await callback.text()).toContain("You're signed in");
+      expect(env.DB.deviceRows[0]?.status).toBe("approved");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("claims concurrent duplicate callbacks before the one-time OAuth exchange", async () => {
     const env = makeEnv();
     const now = Date.parse("2026-07-14T12:00:00.000Z");
@@ -169,7 +225,7 @@ describe("device authorization bridge", () => {
       env,
       { now: () => now },
     );
-    const state = new URL(approval.headers.get("location")!).searchParams.get("state")!;
+    const state = (await signInUrlFrom(approval)).searchParams.get("state")!;
     const callbackUrl = `https://directory.test/device/callback?code=one-time-code&state=${encodeURIComponent(state)}`;
     env.DB.synchronizeOAuthStateReads(2);
 
@@ -240,8 +296,120 @@ describe("device authorization bridge", () => {
       { now: () => now },
     );
 
-    expect(confirmed.status).toBe(302);
+    expect((await signInUrlFrom(confirmed)).pathname).toBe("/oauth/authorize");
     expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
+  });
+
+  /**
+   * The same bug after the absent-Origin fix: the page was served with
+   * `referrer-policy: no-referrer`, so the browser sent the text `null` as the
+   * `Origin` of its own form POST. `"null"` is not empty, so the direct
+   * comparison still ran and still refused every confirmation.
+   */
+  it("confirms a same-origin submission whose browser sent Origin: null", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+
+    const preview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
+    expect(preview.headers.get("referrer-policy")).toBe("same-origin");
+
+    const crossSiteNull = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "null", "sec-fetch-site": "cross-site" }),
+      env,
+      { now: () => now },
+    );
+    expect(crossSiteNull.status).toBe(403);
+    const nullNoHint = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "null" }),
+      env,
+      { now: () => now },
+    );
+    expect(nullNoHint.status).toBe(403);
+
+    const confirmed = await handleRequest(
+      deviceConfirmationRequest(String(device.user_code), { origin: "null", "sec-fetch-site": "same-origin" }),
+      env,
+      { now: () => now },
+    );
+
+    expect((await signInUrlFrom(confirmed)).pathname).toBe("/oauth/authorize");
+    expect(env.DB.deviceRows[0]).toMatchObject({ code_verifier: expect.any(String) });
+  });
+
+  /**
+   * The page said "ADE on your computer", so a person with two installs on one
+   * Mac could not tell which one asked. The client now sends the name. It is
+   * the client's claim, so the page shows it as one and tells the reader to
+   * stop if they did not start this.
+   */
+  it("names the computer that asked, as a claim, and cleans the name", async () => {
+    const env = makeEnv();
+    const now = Date.parse("2026-07-14T12:00:00.000Z");
+    const created = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes",
+        machine_name: "  MacBook Pro · Alpha\n<script>x</script>  ",
+      }),
+      env,
+      { now: () => now },
+    );
+    const device = await created.json() as Record<string, unknown>;
+    expect(env.DB.deviceRows[0]?.machine_name).toBe("MacBook Pro · Alpha <script>x</script>");
+
+    const preview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
+    const html = await preview.text();
+    expect(html).toContain("A computer named <strong>MacBook Pro · Alpha &lt;script&gt;x&lt;/script&gt;</strong> asked to sign in to ADE.");
+    expect(html).toContain("Continue only if you started this on that computer.");
+    expect(html).not.toContain("<script>x");
+
+    const long = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes-two",
+        machine_name: "x".repeat(500),
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(long.status).toBe(200);
+    expect(env.DB.deviceRows[1]?.machine_name).toHaveLength(80);
+
+    const unnamed = await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes-three",
+      }),
+      env,
+      { now: () => now },
+    );
+    const unnamedDevice = await unnamed.json() as Record<string, unknown>;
+    const unnamedPreview = await handleRequest(new Request(String(unnamedDevice.verification_uri_complete)), env, { now: () => now });
+    expect(await unnamedPreview.text()).toContain("ADE on your computer asked to sign in.");
+    // Format characters go: a right-to-left override could make the name read
+    // as another computer.
+    await handleRequest(
+      request("POST", "/device/code", undefined, {
+        device_secret: "daemon-device-secret-with-at-least-32-bytes-four",
+        machine_name: "Mac\u202Eorp kooBcaM\u200B",
+      }),
+      env,
+      { now: () => now },
+    );
+    expect(env.DB.deviceRows[3]?.machine_name).toBe("Mac orp kooBcaM");
+
+    // A code that can no longer be confirmed shows no client-chosen name.
+    env.DB.deviceRows[0]!.status = "consumed";
+    const deadPreview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
+    const deadHtml = await deadPreview.text();
+    expect(deadHtml).not.toContain("A computer named");
+    expect(deadHtml).toContain("ADE on your computer asked to sign in.");
+
   });
 
   it("keeps verification-link GET previews read-only until explicit confirmation", async () => {
@@ -309,7 +477,7 @@ describe("device authorization bridge", () => {
       env,
       { now: () => now },
     );
-    expect(confirmed.status).toBe(302);
+    expect((await signInUrlFrom(confirmed)).pathname).toBe("/oauth/authorize");
     expect(env.DB.deviceRows[0]).toMatchObject({
       status: "pending",
       code_verifier: expect.any(String),

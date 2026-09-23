@@ -7,8 +7,11 @@ import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
-import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { WorkSidebar } from "./WorkSidebar";
+import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { cn } from "../ui/cn";
+import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
+import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -47,6 +50,7 @@ import {
   isPtyContextInsertableToolType,
 } from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
+import { openChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import {
   getSessionMetadataGenerating,
@@ -120,6 +124,8 @@ type SessionMutationOptions<T> = {
  * it at mousedown instead of carrying one.
  */
 const WORK_SIDEBAR_PANE_ATTR = "data-work-sidebar-pane";
+
+/** The Apple column's pane, found the same way and for the same reason. */
 
 function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
   window.dispatchEvent(new Event(
@@ -365,6 +371,31 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // drag Lanes/PRs/Files onto a click that was only meant to focus the chat.
       machineRouter.rememberSessionPin(session, binding);
       handleSelectSession(session.id, event, visibleSessionIds, binding);
+    },
+    [handleSelectSession, machineRouter],
+  );
+
+  /**
+   * Opens the selected chat's Handoff surface from the session context menu.
+   * The intent is queued before the selection so `AgentChatPane` can pick it up
+   * whether it was already showing this chat or mounts a render later; selecting
+   * the row also dives out of the board, which is where a handoff has room to
+   * render.
+   */
+  const handleOpenChatHandoff = useCallback(
+    (
+      session: TerminalSessionSummary,
+      intent: ChatHandoffIntent,
+      binding?: OpenProjectBinding | null,
+    ) => {
+      // The menu carries the row's complete binding. Re-remember it before the
+      // selection so a cross-machine slice reload between menu-open and select
+      // cannot drop the entry and fall back to the tab's bound machine.
+      if (binding) machineRouter.rememberSessionPin(session, binding);
+      openChatHandoff(session.id, intent);
+      // Pass the row's binding through: selecting a foreign-machine chat must
+      // clear its woke marker on that machine, exactly like a plain row click.
+      handleSelectSession(session.id, undefined, undefined, binding);
     },
     [handleSelectSession, machineRouter],
   );
@@ -1077,6 +1108,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (!workSidebarVisible) setWorkToolsMaximized(false);
   }, [workSidebarVisible]);
+
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
   const {
@@ -1091,6 +1123,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     // tool with the right owner.
     contextTarget?.kind === "chat" ? contextTarget.sessionId : null,
   );
+
+  /**
+   * The floating device asks to come back into the pane. The pane IS the Apple
+   * tool, so "open in pane" is exactly "open the Apple tool" — there is no
+   * column to restore and no width to remember.
+   */
+  const openAppleTool = useCallback(() => {
+    setWorkSidebarTool("ios");
+  }, [setWorkSidebarTool]);
+
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1501,6 +1543,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               runtimePin={activeWorkSessionRuntimePin}
               onPick={setWorkSidebarTool}
             />
+            {/*
+              §7's floating device. It lives over the chat column rather than
+              in a pane of its own, because "float over chat" is the whole
+              point of it — and it is opened by the rail, never by ADE.
+            */}
+            <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} />
+            {/*
+              §B3's "Shut down {device}?" — mounted beside the player because
+              they are the same story: one asks before the tab close powers the
+              device off, the other catches it when the pane merely closes. It
+              renders nothing until something asks.
+            */}
+            <AppleShutdownConfirmHost />
           </div>
           {/* Resize handle stays a row-level sibling so its width math is correct. */}
           {workSidebarVisible && !workToolsMaximized ? (
@@ -1593,6 +1648,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workToolsMaximized,
       workViewArea,
       activeLaneDeleteProgress,
+      openAppleTool,
     ],
   );
 
@@ -1783,6 +1839,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onSettle={handleSettleSession}
+        onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session) => {
           void (async () => {
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;

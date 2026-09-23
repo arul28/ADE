@@ -116,6 +116,10 @@ import {
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
+import {
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
+} from "../../../../desktop/src/shared/types/pairedRuntime";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
 import {
@@ -253,6 +257,7 @@ import {
   type MacDesktopSyncStream,
   type MacDesktopSyncStreamSink,
 } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
@@ -299,6 +304,7 @@ import {
   type AttachmentUploadRegistry,
   type AttachmentUploadTicket,
 } from "./attachmentUploadService";
+import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 export { selectChangesetBatchChunk } from "./changesetPump";
@@ -1179,6 +1185,9 @@ type SyncHostServiceArgs = {
    * share one instance. When absent, the fallback path creates its own.
    */
   macDesktopSyncStream?: MacDesktopSyncStream | null;
+  appleDeviceService?: AppleDeviceRemoteService | null;
+  appleStreamRelay?: AppleStreamTicketIssuer | null;
+  getAppleRemoteBitrateKbpsCap?: () => number | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
@@ -2343,6 +2352,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
     macDesktopSyncStream,
+    appleDeviceService: args.appleDeviceService,
+    appleStreamRelay: args.appleStreamRelay,
+    getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     projectConfigService: args.projectConfigService,
@@ -3756,6 +3768,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   server?.on("connection", (ws, request) => {
+    // The Apple device video pipe rides its own socket on this same listener
+    // (`/apple/stream/<ticket>`). It is not a sync peer: it never says hello,
+    // carries no JSON envelope, and must not occupy a peer slot.
+    if (tryRouteAppleStreamSocket(ws, request)) return;
     registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null, "direct");
   });
 
@@ -4724,7 +4740,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.pairedDeviceId = null;
       peer.pairingRecord = null;
       try {
-        peer.ws.close(4000, "Superseded by a newer connection for this device");
+        peer.ws.close(PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE, PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON);
       } catch {
         // ignore close failures
       }

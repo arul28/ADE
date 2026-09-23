@@ -15,6 +15,7 @@ import {
 } from "./automationService";
 import { openKvDb } from "../state/kvDb";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
+import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
 import {
   INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
@@ -915,8 +916,11 @@ describe("automationService integration", () => {
         modelId: "openai/gpt-5.6-luna",
         reasoningEffort: "xhigh",
       }));
+      // No limits on the rule means no clock on the turn, like a chat started by hand.
       expect(agentChatService.runSessionTurn).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "release-chat",
+        timeoutMs: null,
+        idleTimeoutMs: null,
       }));
 
       rule = normalizeRuntimeRule({
@@ -1513,7 +1517,7 @@ describe("automationService integration", () => {
       executor: { mode: "automation-bot", targetId: null },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -1565,6 +1569,127 @@ describe("automationService integration", () => {
     }
   });
 
+  describe("agent turns that do not finish", () => {
+    const baseRule = {
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      toolPalette: [] as const,
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: "auto:test",
+    };
+
+    const createHarness = (rule: Record<string, unknown>, runSessionTurn: (...args: any[]) => Promise<unknown>) => {
+      const { db } = createInMemoryAdeDb();
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-unfinished-"));
+      const service = createAutomationService({
+        db: db as any,
+        logger: createLogger(),
+        projectId: "proj",
+        projectRoot,
+        laneService: {
+          list: async () => [{ id: "lane-primary", laneType: "primary" }],
+          getLaneWorktreePath: () => projectRoot,
+          getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot }),
+        } as any,
+        projectConfigService: {
+          get: () => ({
+            trust: { sharedHash: "", localHash: "" },
+            effective: { automations: [rule], providerMode: "guest" },
+          }),
+        } as any,
+        agentChatService: {
+          createSession: vi.fn(async () => ({ id: "session-unfinished" })),
+          runSessionTurn: vi.fn(runSessionTurn),
+        } as any,
+      });
+      const actionStatuses = (runId: string) => db.all<{ status: string }>(
+        "select status from automation_action_results where run_id = ? order by action_index",
+        [runId],
+      ).map((row) => row.status);
+      return { db, service, projectRoot, actionStatuses };
+    };
+
+    const chainRule = (id: string) => {
+      const actions = [
+        { type: "agent-session" as const, prompt: "Ship the release", retry: 2 },
+        { type: "run-command" as const, command: "echo next", timeoutMs: 10_000 },
+      ];
+      return { ...baseRule, id, name: id, execution: { kind: "built-in" as const, builtIn: { actions } }, actions };
+    };
+
+    it("fails a chained agent step whose turn was stopped, skips the rest, and never retries it", async () => {
+      const runSessionTurn = vi.fn(async () => ({ outputText: "partial work", status: "interrupted", errorMessage: null }));
+      const { service, projectRoot, actionStatuses } = createHarness(chainRule("stopped-chain"), runSessionTurn);
+      try {
+        const run = await service.triggerManually({ id: "stopped-chain" });
+        expect(run.status).toBe("failed");
+        expect(run.errorMessage).toMatch(/stopped before it finished/);
+        // A deliberate stop must not start a fresh agent, even with retry: 2.
+        expect(runSessionTurn).toHaveBeenCalledTimes(1);
+        // Only the agent step recorded a result: the command after it never ran.
+        expect(actionStatuses(run.id)).toEqual(["failed"]);
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("does not retry a chained agent step whose chat went away, but retries a provider failure", async () => {
+      const abandoned = vi.fn(async () => {
+        throw new SessionTurnAbandonedError("The chat session ended before the turn finished.");
+      });
+      const gone = createHarness(chainRule("abandoned-chain"), abandoned);
+      const providerFailed = vi.fn(async () => ({ outputText: "", status: "failed", errorMessage: "Overloaded" }));
+      const flaky = createHarness(chainRule("provider-failed-chain"), providerFailed);
+      try {
+        const goneRun = await gone.service.triggerManually({ id: "abandoned-chain" });
+        expect(goneRun.status).toBe("failed");
+        expect(goneRun.errorMessage).toMatch(/ended before the turn finished/);
+        expect(abandoned).toHaveBeenCalledTimes(1);
+
+        const flakyRun = await flaky.service.triggerManually({ id: "provider-failed-chain" });
+        expect(flakyRun.status).toBe("failed");
+        expect(flakyRun.errorMessage).toBe("Overloaded");
+        // retry: 2 means three attempts for a failure a retry might fix.
+        expect(providerFailed).toHaveBeenCalledTimes(3);
+      } finally {
+        fs.rmSync(gone.projectRoot, { recursive: true, force: true });
+        fs.rmSync(flaky.projectRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("records a stopped single-agent run as failed with the reason", async () => {
+      const rule = {
+        ...baseRule,
+        id: "stopped-solo",
+        name: "Stopped solo",
+        execution: { kind: "agent-session" as const },
+        prompt: "Ship the release",
+      };
+      const runSessionTurn = vi.fn(async () => ({ outputText: "half done", status: "interrupted", errorMessage: null }));
+      const { db, service, projectRoot } = createHarness(rule, runSessionTurn);
+      try {
+        await expect(service.triggerManually({ id: "stopped-solo" })).rejects.toThrow(/stopped before it finished/);
+        const row = db.get<{ status: string; error_message: string | null; chat_session_id: string | null }>(
+          "select status, error_message, chat_session_id from automation_runs where automation_id = ?",
+          ["stopped-solo"],
+        );
+        expect(row?.status).toBe("failed");
+        expect(row?.error_message).toMatch(/stopped before it finished/);
+        // The chat stays linked so the user can open what the agent did.
+        expect(row?.chat_session_id).toBe("session-unfinished");
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("creates a lane from a GitHub issue before launching a configured agent step", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
@@ -1593,7 +1718,7 @@ describe("automationService integration", () => {
       permissionConfig: { providers: { opencode: "edit" } },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -1612,6 +1737,10 @@ describe("automationService integration", () => {
               sessionTitle: "Fix issue",
               modelConfig: { modelId: "opencode/openai/gpt-5.4", thinkingLevel: "high" as const },
               permissionConfig: { providers: { opencode: "full-auto" as const } },
+              // A legacy step time limit must not cap an agent step.
+              timeoutMs: 15_000,
+              stopAfterMin: 90,
+              stopWhenIdleMin: 30,
             },
           ],
         },
@@ -1678,6 +1807,8 @@ describe("automationService integration", () => {
       expect(runSessionTurn).toHaveBeenCalledWith(expect.objectContaining({
         text: "Fix Fix checkout",
         reasoningEffort: "high",
+        timeoutMs: 90 * 60_000,
+        idleTimeoutMs: 30 * 60_000,
       }));
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -1960,7 +2091,7 @@ describe("automationService integration", () => {
       executor: { mode: "automation-bot", targetId: null },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -2027,7 +2158,7 @@ describe("automationService integration", () => {
       permissionConfig: { providers: { codex: "default" as const } },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -2098,7 +2229,7 @@ describe("automationService integration", () => {
       executor: { mode: "automation-bot", targetId: null },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -2175,7 +2306,7 @@ describe("automationService integration", () => {
       executor: { mode: "automation-bot", targetId: null },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -2312,7 +2443,7 @@ describe("automationService integration", () => {
       permissionConfig: { providers: { codex: "default" as const, opencode: "edit" as const } },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -2396,7 +2527,7 @@ describe("automationService integration", () => {
       executor: { mode: "automation-bot", targetId: null },
       toolPalette: [] as const,
       contextSources: [],
-      guardrails: { maxDurationMin: 5 },
+      guardrails: {},
       outputs: { disposition: "comment-only" as const, createArtifact: true },
       verification: { verifyBeforePublish: false, mode: "intervention" as const },
       billingCode: "auto:test",
@@ -2467,7 +2598,7 @@ describe("automationService integration", () => {
         executor: { mode: "automation-bot" as const },
         toolPalette: ["repo"] as const,
         contextSources: [],
-        guardrails: { maxDurationMin: 5 },
+        guardrails: {},
         outputs: { disposition: "comment-only" as const, createArtifact: true },
         verification: { verifyBeforePublish: false, mode: "intervention" as const },
         billingCode: `auto:${args.id}`,
@@ -2727,7 +2858,7 @@ describe("automationService integration", () => {
         executor: { mode: "automation-bot", targetId: null },
         toolPalette: [] as const,
         contextSources: [],
-        guardrails: { maxDurationMin: 5 },
+        guardrails: {},
         outputs: { disposition: "comment-only" as const, createArtifact: true },
         verification: { verifyBeforePublish: false, mode: "intervention" as const },
         billingCode: "auto:test",
@@ -3178,10 +3309,8 @@ describe("automation ingress storage bounds", () => {
 
   it("runs startup retention even when no legacy ingress payloads remain", () => {
     const { db, raw } = createInMemoryAdeDb();
-    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
     raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
     const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
-    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
     const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
     raw.run(
       `insert into automation_ingress_events(
@@ -3190,13 +3319,11 @@ describe("automation ingress storage bounds", () => {
       ) values ('stale-ingress', 'proj', 'github-relay', 'stale-ingress', '[]', 'github.issue_opened', 'ignored', null, ?)`,
       [oldIngress],
     );
-    raw.run("insert into review_run_artifacts values ('stale-review', ?)", [oldReview]);
     raw.run("insert into pull_request_snapshots values ('stale-pr', ?)", [oldSnapshot]);
 
     const service = createIngressService(db);
     try {
       expect(mapExecRows(raw.exec("select id from automation_ingress_events"))).toEqual([]);
-      expect(mapExecRows(raw.exec("select id from review_run_artifacts"))).toEqual([]);
       expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots"))).toEqual([]);
     } finally {
       service.dispose();
@@ -3205,12 +3332,10 @@ describe("automation ingress storage bounds", () => {
 
   it("reclaims legacy payloads and local caches once, in bounded chunks", () => {
     const { db, raw } = createInMemoryAdeDb();
-    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
     raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
 
     const recent = new Date().toISOString();
     const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
-    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
     const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
     raw.run("begin");
     const insert = raw.prepare(`
@@ -3230,7 +3355,6 @@ describe("automation ingress storage bounds", () => {
     }
     insert.free();
     raw.run("commit");
-    raw.run("insert into review_run_artifacts values ('old-review', ?), ('new-review', ?)", [oldReview, recent]);
     raw.run("insert into pull_request_snapshots values ('old-pr', ?), ('new-pr', ?)", [oldSnapshot, recent]);
 
     const info = vi.fn();
@@ -3245,7 +3369,6 @@ describe("automation ingress storage bounds", () => {
       expect(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where project_id = 'proj'",
       ))[0]?.count).toBe(2_003);
-      expect(mapExecRows(raw.exec("select id from review_run_artifacts order by id"))).toEqual([{ id: "new-review" }]);
       expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots order by pr_id"))).toEqual([{ pr_id: "new-pr" }]);
       expect(info).toHaveBeenCalledWith("automations.ingress_payload_reclaim", {
         rowsCleared: 2_205,

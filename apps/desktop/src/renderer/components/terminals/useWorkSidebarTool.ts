@@ -10,6 +10,7 @@ import {
   type WorkSidebarTab,
 } from "../../state/appStore";
 import { closeWorkToolForReal } from "./closeWorkToolForReal";
+import { confirmAppleToolClose } from "../apple/AppleShutdownConfirm";
 
 /**
  * The scope key is the store's own — `laneWorkViewScopeKey`. Re-exported under
@@ -196,15 +197,34 @@ export function useWorkSidebarTool(
 
   const closeTool = useCallback(
     (target: WorkSidebarTab) => {
-      // Closing a tab closes the tool behind it. Dispatched before the strip
-      // write, and never awaited: the tab leaves the strip even if the runtime
-      // refuses or is unreachable (see `closeWorkToolForReal`).
-      closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin });
-      const current = latestStrip.current;
-      const next = closeWorkToolTab(current.openTools, current.tool, target);
-      write({
-        workSidebarTool: next.activeTool,
-        workSidebarOpenTools: next.openTools,
+      const drop = () => {
+        // A4: closing a tab closes the tool behind it. Dispatched before the
+        // strip write, and never awaited — the tab leaves the strip even if the
+        // runtime refuses or is unreachable (see `closeWorkToolForReal`).
+        closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin });
+        const current = latestStrip.current;
+        const next = closeWorkToolTab(current.openTools, current.tool, target);
+        write({
+          workSidebarTool: next.activeTool,
+          workSidebarOpenTools: next.openTools,
+        });
+      };
+      /*
+       * Round 4 §B3: closing the Apple tab POWERS THE DEVICE OFF, so it asks
+       * first — but only when there is something to power off.
+       *
+       * The gate is here rather than inside `closeWorkToolForReal` because
+       * Cancel has to keep the TAB as well as the device: the strip write below
+       * is what removes the tab, and a confirmation that ran after it would be
+       * asking about a tab that had already gone. Every other tool closes on
+       * the spot, with no await and no dialog.
+       */
+      if (target !== "ios") {
+        drop();
+        return;
+      }
+      void confirmAppleToolClose({ laneId, runtimePin }).then((confirmed) => {
+        if (confirmed) drop();
       });
     },
     [chatSessionId, laneId, runtimePin, write],

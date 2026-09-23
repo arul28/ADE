@@ -1,5 +1,30 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
 import type {
+  AppleDeviceAttachArgs,
+  AppleDeviceStartArgs,
+  AppleDeviceStopArgs,
+  AppleDeviceStopResult,
+  AppleScrollArgs,
+  AppleScrollResult,
+  AppleDeviceCreateArgs,
+  AppleDeviceDeleteArgs,
+  AppleDeviceDeleteInstalledArgs,
+  AppleDeviceListArgs,
+  AppleDeviceListResult,
+  AppleFrameArgs,
+  AppleFrameResult,
+  ApplePressButtonArgs,
+  ApplePressButtonResult,
+  AppleRotateArgs,
+  AppleRotateResult,
+  AppleLaneDevice,
+  AppleRecordDeleteArgs,
+  AppleRecordListArgs,
+  AppleRecordStartArgs,
+  AppleRecordStopArgs,
+} from "../shared/types/iosSimulator";
+import type { SimRecording } from "../main/services/ios/recording/simRecordingService";
+import type {
   AppOpenSystemSettingsPaneResult,
   SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
@@ -239,6 +264,8 @@ import type {
   AgentChatCancelScheduledWorkArgs,
   AgentChatResumeUsageLimitNowArgs,
   AgentChatResumeUsageLimitNowResult,
+  AgentChatContinueUsageLimitOnAlternateArgs,
+  AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
@@ -300,12 +327,6 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
-  ReviewEventPayload,
-  ReviewLaunchContext,
-  ReviewListRunsArgs,
-  ReviewRun,
-  ReviewRunDetail,
-  ReviewStartRunArgs,
   AdeActionRegistryEntry,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
@@ -728,7 +749,6 @@ import type {
   IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
-  IosSimulatorPrivacyPane,
   IosSimulatorScreenshot,
   IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
@@ -740,6 +760,7 @@ import type {
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
   IosSimulatorAppState,
+  IosSimulatorForegroundApp,
   IosSimulatorAssertVisibleArgs,
   IosSimulatorCloseDeviceArgs,
   IosSimulatorCloseDeviceResult,
@@ -767,9 +788,6 @@ import type {
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
   IosSimulatorWaitForElementArgs,
-  IosSimulatorWindowCaptureSessionHint,
-  IosSimulatorWindowSourcesResult,
-  IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlDriversResult,
@@ -1486,13 +1504,14 @@ declare global {
         complete: () => Promise<OnboardingStatus>;
       };
       automations: {
-        list: () => Promise<AutomationRuleSummary[]>;
+        list: (pin?: OpenProjectBinding | null) => Promise<AutomationRuleSummary[]>;
         toggle: (args: {
           id: string;
           enabled: boolean;
         }) => Promise<AutomationRuleSummary[]>;
         deleteRule: (
           args: AutomationDeleteRuleRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationRuleSummary[]>;
         triggerManually: (
           args: AutomationManualTriggerRequest,
@@ -1519,6 +1538,7 @@ declare global {
         ) => Promise<AutomationValidateDraftResult>;
         saveDraft: (
           req: AutomationSaveDraftRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationSaveDraftResult>;
         simulate: (
           req: AutomationSimulateRequest,
@@ -1532,25 +1552,6 @@ declare global {
           pollNow: () => Promise<AutomationLinearIngressStatus>;
         };
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
-      };
-      review: {
-        listLaunchContext: () => Promise<ReviewLaunchContext>;
-        listRuns: (args?: ReviewListRunsArgs) => Promise<ReviewRun[]>;
-        getRunDetail: (runId: string) => Promise<ReviewRunDetail | null>;
-        startRun: (args: ReviewStartRunArgs) => Promise<ReviewRun>;
-        rerun: (runId: string) => Promise<ReviewRun>;
-        cancelRun: (runId: string) => Promise<ReviewRun | null>;
-        recordFeedback: (
-          args: import("../shared/types").ReviewRecordFeedbackArgs,
-        ) => Promise<import("../shared/types").ReviewFeedbackRecord>;
-        listSuppressions: (
-          args?: import("../shared/types").ReviewListSuppressionsArgs,
-        ) => Promise<import("../shared/types").ReviewSuppression[]>;
-        deleteSuppression: (suppressionId: string) => Promise<boolean>;
-        qualityReport: () => Promise<
-          import("../shared/types").ReviewQualityReport
-        >;
-        onEvent: (cb: (ev: ReviewEventPayload) => void) => () => void;
       };
       actions: {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
@@ -2097,6 +2098,10 @@ declare global {
           args: AgentChatResumeUsageLimitNowArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatResumeUsageLimitNowResult>;
+        continueUsageLimitOnAlternate: (
+          args: AgentChatContinueUsageLimitOnAlternateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatContinueUsageLimitOnAlternateResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
           pin?: OpenProjectBinding | null,
@@ -2422,33 +2427,108 @@ declare global {
         ) => Promise<IosSimulatorStreamStatus>;
         stopStream: (
           pin?: OpenProjectBinding | null,
+          args?: { laneId?: string | null; chatSessionId?: string | null },
         ) => Promise<IosSimulatorStreamStatus>;
         getStreamStatus: (
           pin?: OpenProjectBinding | null,
+          args?: { laneId?: string | null; chatSessionId?: string | null },
         ) => Promise<IosSimulatorStreamStatus>;
-        getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
-        listSimulatorWindowSources: (opts?: {
-          session?: IosSimulatorWindowCaptureSessionHint | null;
-        }) => Promise<IosSimulatorWindowSourcesResult>;
+        deviceCreate: (
+          args?: AppleDeviceCreateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleLaneDevice>;
+        deviceAttach: (
+          args: AppleDeviceAttachArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleLaneDevice>;
         /**
-         * Registers one capture surface as depending on the parking claim.
-         * Resolves whether the host counted the holder — it refuses one from a
-         * window that does not own the claim — so only a `true` may be paired
-         * with a later release. Never throws; a failure resolves `false`.
+         * Attach (or create, with `create.sourceUdid`) if the lane owns no
+         * device, boot it if it is off, wait for `bootstatus`, then start the
+         * live view. Progress arrives on `onEvent` as `apple.device.state`.
          */
-        retainWindowParking: () => Promise<boolean>;
-        /** Drops one holder of the window-parking follow. Never throws. */
-        releaseWindowParking: () => Promise<void>;
-        openSystemSettings: (args: {
-          pane: IosSimulatorPrivacyPane;
-        }) => Promise<{ ok: boolean }>;
-        revealSimulator: () => Promise<{ ok: boolean; message: string | null }>;
+        deviceStart: (
+          args?: AppleDeviceStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorStreamStatus>;
+        /**
+         * Power the lane's simulator OFF, leaving it registered.
+         *
+         * `deviceStart`'s opposite. NOT `shutdown`, which ends this chat's
+         * session and leaves the device booted (round 5 §S1).
+         */
+        deviceStop: (
+          args?: AppleDeviceStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDeviceStopResult>;
+        /**
+         * What this Mac has, what this lane owns, and who holds the rest.
+         *
+         * `owners` carries every lane's binding with the owning lane's display
+         * name, so the picker can partition the installed list into mine /
+         * free / in use elsewhere instead of offering Open on a device another
+         * lane is mid-test in. `disk` is measured only when `args.disk` asks
+         * for it — the picker calls twice, cheap first.
+         */
+        deviceList: (
+          args?: AppleDeviceListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDeviceListResult>;
+        deviceDelete: (
+          args?: AppleDeviceDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        deviceDeleteInstalled: (
+          args: AppleDeviceDeleteInstalledArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        frame: (
+          args?: AppleFrameArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleFrameResult>;
+        recordStart: (
+          args?: AppleRecordStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SimRecording>;
+        recordStop: (
+          args?: AppleRecordStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SimRecording | null>;
+        recordList: (
+          args?: AppleRecordListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<SimRecording[]>;
+        recordDelete: (
+          args: AppleRecordDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        /**
+         * Bytes of Apple recordings on disk. Lane-optional: the Diagnostics
+         * row is project-wide, and the recorder already knows the answer from
+         * its own sidecars.
+         */
+        recordingsTotalBytes: (
+          args?: { laneId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<number>;
         // No projectRoot: tapping drives the booted device, and the service
         // never resolves a build root for it.
         tap: (
           args: { deviceUdid?: string | null; x: number; y: number },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        pressButton: (
+          args: ApplePressButtonArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ApplePressButtonResult>;
+        rotate: (
+          args: AppleRotateArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleRotateResult>;
+        /** The helper's re-anchoring scroll gesture, by viewport direction. */
+        scroll: (
+          args: AppleScrollArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleScrollResult>;
         typeText: (
           args: { deviceUdid?: string | null; text: string },
           pin?: OpenProjectBinding | null,
@@ -2544,6 +2624,10 @@ declare global {
           args: IosSimulatorAppLifecycleArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorAppState>;
+        getForegroundApp: (
+          args?: { deviceUdid?: string | null; laneId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorForegroundApp>;
         startEventLog: (
           args: IosSimulatorStartEventLogArgs,
           pin?: OpenProjectBinding | null,

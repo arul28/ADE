@@ -192,7 +192,8 @@ Common shapes:
 - **Phone will not pair** → `ade brain pin generate` (or `ade brain pin set 123456`), and
   `ade sync web --open` for the web client link. A PIN that reads as correct but is refused is
   usually a machine that is not published: check `ade machines list --text`.
-- **This machine was removed from the account** → `ade machines reconnect`.
+- **This machine was removed from the account** → `ade machines reconnect`. It can open a browser
+  step ("Confirm it's you") that the user must complete, so ask first.
 
 ### 3.6 Credential store lockout
 

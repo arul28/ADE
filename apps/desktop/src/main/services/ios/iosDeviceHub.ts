@@ -1012,6 +1012,11 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         logPath,
         caption: args.caption ?? null,
         capturedAt: shot.capturedAt,
+        // Carried so the service can file `screen.png` as the drawer row
+        // without taking a second screenshot to learn the device and size.
+        deviceUdid: shot.deviceUdid,
+        width: shot.width,
+        height: shot.height,
       };
     },
 

@@ -106,7 +106,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "stats", label: "Usage", description: "Spend, limits, and pacing across your providers and machines.", group: "account" },
 
   // ── Preferences ────────────────────────────────────────────────────────
-  { id: "appearance", label: "Appearance", description: "Theme and terminal text.", group: "preferences" },
+  { id: "appearance", label: "Appearance", description: "Theme, terminal text, and Apple Development.", group: "preferences" },
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "preferences" },
   // No description. The page is a list of named providers with their status —
   // a sentence restating that above it is the caption the owner called out.
@@ -385,6 +385,56 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "browser",
     group: "Terminal",
   },
+  {
+    id: "appearance.apple-realistic-body",
+    label: "Realistic body",
+    keywords: ["apple", "simulator", "ios", "3d", "body", "mesh", "apple.realisticBody"],
+    tab: "appearance",
+    anchor: "apple-realistic-body",
+    scope: "account",
+    web: "browser",
+    group: "Apple Development",
+  },
+  {
+    id: "appearance.apple-tap-rings",
+    label: "Tap rings in recordings",
+    keywords: ["apple", "simulator", "ios", "recording", "overlay", "tap", "apple.recordingOverlays.tapRings"],
+    tab: "appearance",
+    anchor: "apple-tap-rings",
+    scope: "account",
+    web: "browser",
+    group: "Apple Development",
+  },
+  {
+    id: "appearance.apple-typed-badges",
+    label: "Typed text in recordings",
+    keywords: ["apple", "simulator", "ios", "recording", "overlay", "badge", "keyboard", "apple.recordingOverlays.keyBadges"],
+    tab: "appearance",
+    anchor: "apple-typed-badges",
+    scope: "account",
+    web: "browser",
+    group: "Apple Development",
+  },
+  {
+    id: "appearance.apple-remote-bitrate",
+    label: "Remote viewer bitrate cap",
+    keywords: ["apple", "simulator", "ios", "stream", "bitrate", "kbit", "remote", "apple.remoteBitrateKbpsCap"],
+    tab: "appearance",
+    anchor: "apple-remote-bitrate",
+    scope: "account",
+    web: "browser",
+    group: "Apple Development",
+  },
+  {
+    id: "appearance.apple-recordings-warn",
+    label: "Recordings storage warning",
+    keywords: ["apple", "simulator", "ios", "recording", "storage", "disk", "warn", "apple.recordingsWarnBytes"],
+    tab: "appearance",
+    anchor: "apple-recordings-warn",
+    scope: "account",
+    web: "browser",
+    group: "Apple Development",
+  },
 
   // ── Agents & Models ──────────────────────────────────────────────────────
   {
@@ -526,7 +576,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     label: "Custom",
     // "harness"/"harnesses" stay as keywords: the label is Custom now, but
     // that is the word in the docs, the CLI flags and every older screenshot.
-    keywords: ["custom", "harness", "harnesses", "preset", "body", "brain", "profile", "combination", "subagent", "launch", "logo"],
+    // "body"/"brain" were internal shorthand that leaked into the wizard copy
+    // and have been removed from it; searching for them should not teach a
+    // vocabulary the product no longer speaks.
+    keywords: ["custom", "harness", "harnesses", "preset", "model", "account", "profile", "combination", "subagent", "launch", "logo"],
     tab: "agents",
     anchor: "ai-harnesses",
     scope: "account",

@@ -188,6 +188,9 @@ function tableDomains(table: string): readonly InvalidationDomain[] {
   if (normalized.startsWith("automation_")) return [];
   if (normalized.startsWith("linear_")) return [];
   if (normalized.startsWith("worker_agent")) return [];
+  // Retired CRR families. This bundle deploys independently of the host, so a
+  // host still on the previous release can send these tables even though
+  // nothing in ADE renders them; the safe answer is "no surface cares".
   if (normalized.startsWith("review_")) return [];
   if (normalized.startsWith("pack")) return [];
   return UNCLASSIFIED_TABLE_DOMAINS;

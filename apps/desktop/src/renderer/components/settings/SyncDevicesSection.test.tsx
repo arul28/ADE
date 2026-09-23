@@ -15,6 +15,7 @@ import {
   resetLocalSyncStatusReaderForTests,
 } from "../../lib/localSyncStatusReader";
 import { parsePairingQrUrl } from "../../../shared/pairingQr";
+import { readThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type {
   SyncDeviceRuntimeState,
@@ -29,6 +30,7 @@ import {
   type SyncConnections,
 } from "./SyncDevicesSection";
 import { accountDirectorySummary } from "./accountDirectorySummary";
+import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 
 vi.mock("qrcode.react", () => ({
   QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
@@ -166,6 +168,11 @@ function openPairing() {
   fireEvent.click(screen.getByRole("button", { name: /^Manual pairing code/ }));
 }
 
+// The reconnect flow is one per window, so it outlives each test's render.
+afterEach(() => {
+  resetReconnectFlowForTests();
+});
+
 describe("ThisMacCard", () => {
   afterEach(() => {
     cleanup();
@@ -225,6 +232,43 @@ describe("ThisMacCard", () => {
     const pencil = screen.getByRole("button", { name: "Rename Studio" });
     expect((pencil as HTMLButtonElement).disabled).toBe(true);
     expect(pencil.getAttribute("title")).toBe("Sign in to rename this computer");
+  });
+
+  // The summary line and the Reconnect button read the refusal once, with one
+  // guard, so the line can never say "removed" beside no button.
+  it("names a refusal only where it also offers the button", () => {
+    (globalThis.window as any).ade = { account: { repairMachinePairing: vi.fn() } };
+    const refusedStatus = () => {
+      const status = makeStatus();
+      status.routeHealth.accountDirectory = {
+        ...status.routeHealth.accountDirectory,
+        state: "http_error",
+        lastHttpStatus: 403,
+        lastHttpReason: "machine_revoked",
+        reachableEndpointCount: 0,
+      };
+      return status;
+    };
+
+    render(<ThisMacCard sync={makeSync({ status: refusedStatus() })} sessionState="active" />);
+    expect(screen.getByText("This computer was removed from your account")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
+    cleanup();
+
+    render(<ThisMacCard sync={makeSync({ status: refusedStatus() })} sessionState="signed_out" />);
+    expect(screen.queryByText(/removed from your account/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect this computer" })).toBeNull();
+    cleanup();
+
+    // A remote-bound pane shows another machine's snapshot.
+    render(
+      <ThisMacCard
+        sync={makeSync({ status: refusedStatus(), isRemoteBound: true, boundMachineName: "Studio" })}
+        sessionState="active"
+      />,
+    );
+    expect(screen.queryByText(/removed from your account/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect this computer" })).toBeNull();
   });
 
   it("surfaces when desktop sign-in and brain publication disagree", () => {
@@ -821,7 +865,7 @@ describe("useSyncConnections local scoping", () => {
 describe("accountDirectorySummary", () => {
   it("keeps an unreadable session distinct from signed out", () => {
     const status = { pairingPinConfigured: true } as SyncRoleSnapshot;
-    expect(accountDirectorySummary(status, "unreadable")).toEqual({
+    expect(accountDirectorySummary(status, "unreadable", null)).toEqual({
       label: "Your session is still there — open your account to fix it",
       healthy: false,
     });
@@ -830,13 +874,13 @@ describe("accountDirectorySummary", () => {
   it("uses one signed-out line whether a pairing code is set or not", () => {
     const status = { pairingPinConfigured: false } as SyncRoleSnapshot;
 
-    expect(accountDirectorySummary(status, "signed_out")).toEqual({
+    expect(accountDirectorySummary(status, "signed_out", null)).toEqual({
       label: "Not signed in — you can still connect to other machines manually",
       healthy: false,
     });
 
     status.pairingPinConfigured = true;
-    expect(accountDirectorySummary(status, "signed_out")).toEqual({
+    expect(accountDirectorySummary(status, "signed_out", null)).toEqual({
       label: "Not signed in — you can still connect to other machines manually",
       healthy: false,
     });
@@ -853,6 +897,7 @@ describe("accountDirectorySummary", () => {
         },
       } as SyncRoleSnapshot,
       "active",
+      null,
     );
 
   it("never leaks the publisher's internal skipReason into user copy", () => {
@@ -903,27 +948,55 @@ describe("accountDirectorySummary", () => {
   });
 
   it("names an answered refusal instead of claiming the directory is unreachable", () => {
-    const summaryForRefusal = (lastHttpReason: string) =>
-      accountDirectorySummary(
-        {
-          routeHealth: {
-            accountDirectory: {
-              state: "http_error",
-              skipReason: null,
-              reachableEndpointCount: 0,
-              lastHttpStatus: 403,
-              lastHttpReason,
-            },
+    const summaryForRefusal = (lastHttpReason: string) => {
+      const status = {
+        routeHealth: {
+          accountDirectory: {
+            state: "http_error",
+            skipReason: null,
+            reachableEndpointCount: 0,
+            lastHttpStatus: 403,
+            lastHttpReason,
           },
-        } as SyncRoleSnapshot,
+        },
+      } as SyncRoleSnapshot;
+      return accountDirectorySummary(
+        status,
         "active",
+        readThisMachineRefusal(status.routeHealth?.accountDirectory),
       );
+    };
 
     expect(summaryForRefusal("machine_revoked").label).toBe(
-      "Signed in — this computer was removed from your ADE account",
+      "This computer was removed from your account",
     );
     expect(summaryForRefusal("pairing_authentication_required").label).toBe(
-      "Signed in — sign in again to reconnect this computer",
+      "This computer needs you to confirm it's you before it can rejoin your account",
+    );
+  });
+
+  it("names a refusal instead of calling it a retry, and only for this computer", () => {
+    const status = {
+      routeHealth: {
+        accountDirectory: {
+          state: "http_error",
+          skipReason: null,
+          reachableEndpointCount: 0,
+          lastHttpStatus: 403,
+          lastHttpReason: "machine_revoked",
+          revokedAt: null,
+        },
+      },
+    } as unknown as SyncRoleSnapshot;
+    const refusal = readThisMachineRefusal(status.routeHealth?.accountDirectory);
+    expect(refusal).not.toBeNull();
+    expect(accountDirectorySummary(status, "active", refusal).label).toBe(
+      "This computer was removed from your account",
+    );
+    // A remote-bound pane shows another machine's snapshot, so its caller
+    // passes no refusal.
+    expect(accountDirectorySummary(status, "active", null).label).toBe(
+      "Signed in — can't reach your ADE account right now, retrying",
     );
   });
 

@@ -19,6 +19,7 @@
 import {
   accountMachineConnectionState,
   accountMachineDisplayName,
+  accountMachineRowLabel,
 } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { RecentProjectSummary } from "../../../shared/types";
@@ -135,6 +136,14 @@ function webMachineStatusLabel(status: WebMachineStatus): string {
       return _exhaustive;
     }
   }
+}
+
+/**
+ * The name a roster row shows: the directory's "name · install" label when the
+ * account knows the machine, else the name this browser saved for it.
+ */
+export function webMachineRowLabel(machine: WebMachineEntry): string {
+  return (machine.accountMachine && accountMachineRowLabel(machine.accountMachine)) || machine.name;
 }
 
 /**

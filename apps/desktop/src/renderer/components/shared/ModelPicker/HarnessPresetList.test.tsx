@@ -38,7 +38,6 @@ function preset(overrides: Partial<HarnessPreset> = {}): HarnessPreset {
     model: "anthropic/claude-opus-5",
     subagentModel: HARNESS_PRESET_SUBAGENT_INHERIT,
     agentOverrides: {},
-    permissionMode: "plan",
     accentColor: "#d97757",
     logo: { kind: "ade" },
     createdAt: "2026-09-01T00:00:00.000Z",
@@ -128,7 +127,9 @@ describe("model picker custom tab", () => {
     expect(details.textContent).toContain("Claude Code account");
     expect(details.textContent).toContain("Claude Haiku 4.5");
     expect(details.textContent).toContain("Explore: Claude Haiku 4.5");
-    expect(details.textContent).toContain("Plan mode");
+    // No permission tier here: the tier belongs to the harness and is chosen
+    // at launch, so the saved setup never states one.
+    expect(details.textContent).not.toContain("Plan mode");
     // Labelled and logo-carrying, not a plain-text dump: each model line names
     // the role it plays and carries the mark of whose model it is.
     expect(details.querySelector('[data-preset-agent="claude"]')).toBeTruthy();
@@ -234,7 +235,7 @@ describe("model picker custom tab", () => {
     const empty = document.querySelector("[data-harness-preset-empty]") as HTMLElement;
     const order = Array.from(empty.children).map((node) => node.textContent);
     expect(order.indexOf("Add a custom setup"))
-      .toBeLessThan(order.findIndex((text) => text?.startsWith("Save an agent")));
+      .toBeLessThan(order.findIndex((text) => text?.startsWith("A custom provider")));
 
     fireEvent.click(cta);
     expect(onOpenHarnessSettings).toHaveBeenCalledTimes(1);

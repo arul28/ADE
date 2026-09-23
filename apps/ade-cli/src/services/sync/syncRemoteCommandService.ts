@@ -256,6 +256,11 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import type { MacDesktopSyncStream, MacDesktopSyncStreamSink } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import {
+  createAppleRemoteCommandHandlers,
+  type AppleDeviceRemoteService,
+  type AppleStreamTicketIssuer,
+} from "./appleRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -416,6 +421,16 @@ type SyncRemoteCommandServiceArgs = {
    * that built no Mac Desktop service — register no stream methods.
    */
   macDesktopSyncStream?: MacDesktopSyncStream | null;
+  /**
+   * The Apple device environment. Absent on Windows/Linux and on a chat-only
+   * runtime, in which case `apple.*` is simply not registered and the phone /
+   * web client feature-detect its absence instead of seeing every call fail.
+   */
+  appleDeviceService?: AppleDeviceRemoteService | null;
+  /** Brain-side video forwarder; mints the per-viewer stream tickets. */
+  appleStreamRelay?: AppleStreamTicketIssuer | null;
+  /** `apple.remoteBitrateKbpsCap` from account settings. */
+  getAppleRemoteBitrateKbpsCap?: () => number | null;
   /**
    * Deterministic stamp of the sync host's in-memory lane presence
    * (`devicesOpen`). The host decorates lane list/detail payloads with
@@ -4822,6 +4837,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").resumeUsageLimitNow({
       sessionId: requireString(payload.sessionId, "chat.resumeUsageLimitNow requires sessionId."),
     }));
+  // Owner-only for the same reason: it starts a turn on another account.
+  register("chat.continueUsageLimitOnAlternate", { viewerAllowed: false, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").continueUsageLimitOnAlternate({
+      sessionId: requireString(payload.sessionId, "chat.continueUsageLimitOnAlternate requires sessionId."),
+    }));
   register("chat.setScheduledWorkPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
     const paused = asOptionalBoolean(payload.paused);
     if (paused === undefined) throw new Error("chat.setScheduledWorkPaused requires paused.");
@@ -5630,6 +5650,31 @@ function registerMacDesktopRemoteCommands({
       macDesktopSyncStream.unsubscribe(
         requireString(payload.subscriptionId, "macDesktop.streamUnsubscribe requires subscriptionId."),
       ));
+  }
+}
+
+/**
+ * Apple device environment for remote surfaces.
+ *
+ * Project-scoped like `workTools.*` — a lane only exists inside a project — and
+ * registered only when this runtime actually built a simulator service, so a
+ * Windows brain or a chat-only runtime advertises no `apple.*` action at all
+ * rather than a namespace whose every call throws.
+ */
+function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const service = args.appleDeviceService;
+  if (!service) return;
+  const entries = createAppleRemoteCommandHandlers({
+    service,
+    streamRelay: args.appleStreamRelay ?? null,
+    remoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+    resolveChatTitle: args.agentChatService
+      ? async (chatSessionId) =>
+        (await args.agentChatService?.getSessionSummary(chatSessionId))?.title ?? null
+      : undefined,
+  });
+  for (const entry of entries) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
   }
 }
 
@@ -6663,6 +6708,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
+  registerAppleRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });

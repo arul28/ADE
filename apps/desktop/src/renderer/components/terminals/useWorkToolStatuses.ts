@@ -27,6 +27,11 @@ import {
   getWorkTerminalShellCount,
   subscribeWorkTerminalShells,
 } from "./workTerminalShells";
+import { appleToolCardSubtitle } from "../apple/appleDeviceState";
+import {
+  useAppleLaneDeviceCard,
+  type AppleLaneDeviceCard,
+} from "../apple/useAppleLaneDeviceCard";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
 import type { WorkToolAvailability, WorkToolDefinition } from "./workTools";
 
@@ -260,12 +265,20 @@ function relativeCommitAge(iso: string | null | undefined): string | null {
   return relativeWhen(iso);
 }
 
-export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStatus {
-  if (!session) return statusLine("Not booted", false);
-  // The dot already says "booted"; the words are for the device name, which is
-  // the part that is long ("iPhone 17 Pro Max") and the part you asked for.
-  const device = session.deviceName?.trim() || "Simulator";
-  return statusLine(device, true);
+/**
+ * §9's card subtitle: `No device` | `{name} · Starting` | `{name} · Running` |
+ * `{name} · Off`.
+ *
+ * The LANE's device, not the app session: a lane can own a booted simulator
+ * with nothing installed on it, and "Not booted" over a running iPhone was the
+ * card lying about the one thing it is for. The dot follows the same fact —
+ * green only while the device is actually up.
+ */
+export function iosStatusLine(device: AppleLaneDeviceCard | null): WorkToolStatus {
+  if (!device) return statusLine(appleToolCardSubtitle(null), false);
+  return statusLine(appleToolCardSubtitle(device), device.state === "running", {
+    attention: device.state === "starting",
+  });
 }
 
 /**
@@ -282,7 +295,7 @@ export function iosStatusLine(session: IosSimulatorSession | null): WorkToolStat
  */
 export function appControlStatusLine(session: AppControlSession | null): WorkToolStatus {
   if (!session) return statusLine("No app", false);
-  const label = session.label?.trim() || "App";
+  const label = appControlCardLabel(session);
   const attached = isAppControlSessionAttached(session);
   // Terminal states are the tool's idle: the session is a record of something
   // that finished, not something to point at.
@@ -293,6 +306,32 @@ export function appControlStatusLine(session: AppControlSession | null): WorkToo
     errored: session.status === "failed",
     attention: !attached && !settled && session.status !== "failed",
   });
+}
+
+/**
+ * The picker card gets one short name, never the launch argv.
+ *
+ * `app-control launch --command "sh -lc '…'"` stores that whole string as
+ * `session.label` when the caller omits `--label`. Dumping it on the card is
+ * how a 512px tools page ends up reading `sh -lc 'ADE_PACKAGE_CHANNEL…`.
+ */
+export function appControlCardLabel(session: Pick<AppControlSession, "label" | "command">): string {
+  const raw = session.label?.trim() || session.command?.trim() || "";
+  if (!raw) return "App";
+  if (!looksLikeLaunchCommand(raw)) return raw;
+  const npmScript = raw.match(/\bnpm run(?:\s+--prefix\s+\S+)?\s+(\S+)/)?.[1];
+  if (npmScript === "dev" || npmScript === "dev:desktop" || /dev:desktop/.test(raw)) {
+    return "Desktop app";
+  }
+  if (npmScript) return npmScript;
+  return "Desktop app";
+}
+
+function looksLikeLaunchCommand(text: string): boolean {
+  return /(?:^|[\s'"=])(?:sh|bash|zsh|cmd(?:\.exe)?|powershell)\b/i.test(text)
+    || /\bADE_[A-Z0-9_]+=/.test(text)
+    || /\bnpm(?:\s+run|\s+start|\s+--prefix)\b/.test(text)
+    || /\s-{1,2}[\w-]+/.test(text) && text.length > 40;
 }
 
 /**
@@ -429,6 +468,18 @@ export function useWorkToolStatuses(args: {
   });
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
+  /*
+    The lane's Apple device, for the card's one line. Polled here rather than
+    added to the feed provider because it is a lanes-DB read keyed by LANE, and
+    the feeds are keyed by machine — different lifetimes, and the card is the
+    only reader.
+  */
+  const appleDevice = useAppleLaneDeviceCard({
+    laneId,
+    runtimePin,
+    enabled: enabled && !offline,
+  });
+
   useEffect(() => {
     if (!enabled || offline || !canBrowser) setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);
   }, [canBrowser, enabled, offline]);
@@ -515,7 +566,7 @@ export function useWorkToolStatuses(args: {
       : browserStatusLine(browserStatus, laneId, workToolBrowserErrorCount(browserErrors, browserStatus)),
     git: gitStatusLine(lane),
     files: filesStatusLine(lane),
-    ios: offline ? IDLE : iosStatusLine(iosSession),
+    ios: offline ? IDLE : iosStatusLine(appleDevice),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
     // No `offline ? IDLE` arm: an unreachable machine leaves the last known
     // answer standing rather than claiming the lane has no screen, and the
@@ -524,9 +575,9 @@ export function useWorkToolStatuses(args: {
   }), [
     appControlSession,
     macDesktopStatus,
+    appleDevice,
     browserErrors,
     browserStatus,
-    iosSession,
     lane,
     laneId,
     offline,

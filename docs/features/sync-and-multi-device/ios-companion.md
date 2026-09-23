@@ -263,8 +263,8 @@ and they open exactly as they always have.
 > a DEBUG-only SwiftUI inspector that publishes per-frame element
 > metadata (component id, source file/line, accessibility identifier,
 > point/pixel frames) to the running app's data container so the
-> desktop iOS Simulator drawer can convert taps into source-anchored
-> chat context. See [`features/ios-simulator/inspector.md`](../ios-simulator/inspector.md).
+> desktop Apple Development tool can convert taps into source-anchored
+> chat context. See [`features/apple-device/inspector.md`](../apple-device/inspector.md).
 
 ```
 apps/ios/
@@ -337,7 +337,9 @@ apps/ios/
 │   │   │                              # precise account-not-found fallback and
 │   │   │                              # matching attempt verification
 │   │   ├── AccountDirectory.swift   # account machine directory list/rename +
-│   │   │                            # Attention relay clients
+│   │   │                            # install labels (channel/adeHome →
+│   │   │                            # installLabel/rowLabel) + Attention relay
+│   │   │                            # clients
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
 │   │   │                            # identity, and SSH credential storage
@@ -433,7 +435,10 @@ apps/ios/
 │   │   ├── ActivityRowPresentation.swift # pure item → label/tone/glyph/elapsed
 │   │   │                            # mapper; the iOS mirror of desktop
 │   │   │                            #   sessionStatusPresentation.ts +
-│   │   │                            #   activityPresentation.ts. No SwiftUI —
+│   │   │                            #   activityPresentation.ts. Owns
+│   │   │                            #   activityStatusShoutsLabel (Needs you /
+│   │   │                            #   Failed only — same as desktop
+│   │   │                            #   sessionStatusShoutsLabel). No SwiftUI —
 │   │   │                            #   tones are tokens. Compiles into the
 │   │   │                            #   widget extension, so iOS 17 only.
 │   │   ├── ActivityWidgetPresentation.swift # tone → colour binding and the
@@ -531,13 +536,21 @@ apps/ios/
 │   │   │                            # WorkSessionRowCard (the row card itself:
 │   │   │                            #   WorkSessionRow, its leaf views, the
 │   │   │                            #   render signature, and the preview-line
-│   │   │                            #   helpers),
+│   │   │                            #   helpers; nested-subagent compact puts
+│   │   │                            #   identicon + title leading and the
+│   │   │                            #   provider mark on the trailing edge),
 │   │   │                            # WorkSessionCanonicalState (Swift mirror of
 │   │   │                            #   the shared derivation +
 │   │   │                            #   workSessionRowPresentation),
+│   │   │                            # WorkSpawnNesting (Swift mirror of
+│   │   │                            #   sessionSpawnNesting.ts: same-lane
+│   │   │                            #   subagent drawers, quiet-parent pull-up,
+│   │   │                            #   grandchild flatten,
+│   │   │                            #   chat-subagents:<parentId>),
 │   │   │                            # WorkSessionGrouping (by-lane/status/time
 │   │   │                            #   groups, quiet-zone shelves,
-│   │   │                            #   WorkViewStateStore),
+│   │   │                            #   WorkViewStateStore; nested drawers
+│   │   │                            #   come from WorkSpawnNesting),
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   launcher + per-project interface
 │   │   │                            #   preference shared with Hub; pinned
@@ -1094,6 +1107,20 @@ instead of copying the hostname into it. `AccountService` updates the in-memory
 directory record after the authenticated PATCH, so the machine rows, connection
 header, and Hub pill refresh without reconnecting.
 
+A record can also say which ADE install it is. `AccountMachine` decodes the
+optional `channel` (`AccountMachineInstallChannel`: stable, beta, alpha) and
+`adeHome` (for example `~/.ade-alpha`, at most 120 characters). An unknown
+channel or a bad home drops only the install label, never the machine.
+`installLabel` is "ADE Alpha", or the ADE home when there is no channel.
+`rowLabel` follows the desktop's `accountMachineRowLabel`: the display name
+plus the install ("MacBook Pro · ADE Alpha"), with the host's own " · Alpha"
+suffix removed so it does not show twice. A custom name is kept as typed. Two
+installs on one Mac share a hostname, and this label is what tells them apart.
+The account connections list, the Hub quick-connect rows, and the Settings
+connection rows show `rowLabel`. Rename fields and name matching keep
+`displayName`. `MachineRowView` truncates its title in the middle, so the
+install at the end stays visible.
+
 Primary machine rows state only facts they can prove:
 
 - a machine that **announced** it was going to sleep, recently enough to still
@@ -1321,6 +1348,11 @@ Bootstrap flow on first launch:
    `Application Support/ADE/secrets/sync-site-id`.
 6. Replace the legacy disposable iOS cache DB if it is detected at
    the old path.
+
+Tables ADE has retired — the execution-process tables and the removed
+AI review schema — are dropped before CRR discovery, and incoming
+changesets that still name them are ignored, so a peer on an older
+build cannot recreate them.
 
 **Every column desktop can write must exist here.** Replicated tables are
 column-additive on the desktop side (`safeAddColumn` in `kvDb.ts`), and a
@@ -2229,7 +2261,9 @@ every surface while it is still waiting.
 Row vocabulary is derived once, in `Shared/ActivityRowPresentation.swift` — a
 pure item-to-label/tone/glyph/elapsed mapper with no SwiftUI in it — and the
 tone-to-colour binding plus the lock-screen ranking live beside it in
-`Shared/ActivityWidgetPresentation.swift`. Both compile into the widget
+`Shared/ActivityWidgetPresentation.swift`. `activityStatusShoutsLabel` is the
+nested-compact filter (Needs you or a red Failed tone), matching desktop
+`sessionStatusShoutsLabel`. Those two presentation files compile into the widget
 extension as well as the app, which is what keeps the lock screen from
 describing a session in words and colours the app does not use; it also means
 both files are pinned to the extension's iOS 17 deployment target.
@@ -2803,7 +2837,11 @@ The iOS pieces:
   / by-status / by-time groups, and `WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, `WorkRootComponents.swift`, and
   `WorkSessionRowCard.swift` render the chips and menus and dispatch snooze /
-  wake / settle / keep-active. By-lane
+  wake / settle / keep-active. Nested same-lane `spawnKind == .subagent`
+  drawers (then the existing shells drawer) come from
+  `WorkSpawnNesting.swift`, the Swift mirror of
+  `apps/desktop/src/shared/sessionSpawnNesting.ts`. Collapse ids are
+  `chat-subagents:<parentId>` vs `chat:<parentId>`. By-lane
   groups whose full unfiltered roster is quiet use a thin collapsed header and
   an inverted `lane-open:<laneId>` expansion marker; expanding renders compact
   rows, and active work removes the marker so the next quiet spell collapses.
@@ -2825,15 +2863,18 @@ The iOS pieces:
   making notification routing a permanent preference change.
 - `apps/ios/ADETests/WorkSessionCanonicalStateTests.swift` covers the derivation,
   the row status vocabulary, and scoped view-state parity;
-  `WorkSessionGroupingTests.swift` covers the grouping, quiet lanes, and the
+  `WorkSessionGroupingTests.swift` covers the grouping, quiet lanes, nested
+  subagent drawers (same-lane nest, peers stay top-level, quiet-parent pull-up,
+  usage-limit resume is not a Failed drawer), and the
   quiet-zone shelves; `PendingSessionSettleStatesTests.swift` covers the settle
   overlay — what each intent paints, which host row satisfies it, token-scoped
   failure, and the staleness backstop.
 
 Two invariants govern changes here. The Swift derivation must stay
-behaviourally identical to `apps/desktop/src/shared/sessionCanonicalState.ts` —
-it is a mirror, not a variant, and the canonical-state tests exist to catch
-drift. And any new `terminal_sessions` column must be added to **both** iOS
+behaviourally identical to `apps/desktop/src/shared/sessionCanonicalState.ts`
+and `sessionSpawnNesting.ts` — they are mirrors, not variants, and the
+canonical-state plus grouping tests exist to catch drift. And any new
+`terminal_sessions` column must be added to **both** iOS
 schema halves, `DatabaseBootstrap.sql` and `Database.swift`'s `ensureColumn`
 migrations: bootstrapping only the SQL leaves upgraded phones failing changeset
 apply, which surfaces as a phone-side error rather than anything visible on
@@ -2850,13 +2891,23 @@ Background, border and shadow mean selection and press, nothing else
 the body by provider made every Claude row amber, which is the hue that is
 supposed to mean *your move*, so the "Needs you" badge stopped registering.
 
-`WorkSessionRowCard.swift` renders three lines:
+`WorkSessionRowCard.swift` renders three lines on a full card:
 
 1. The "where" cluster — pin, mute, the lane chip, lane git state (dirty /
    ahead / behind), and a floor of model-or-timestamp — with a single
    right-anchored **status slot**. One slot, one status.
 2. Title plus the lane's PR badge (`WorkLanePrIndicator` / `LanePrTag`).
 3. An italic preview line plus the provider mark.
+
+A nested same-lane subagent is a compact one-line card: identicon, title, then
+the provider mark on the trailing edge (same seat as a full card), and
+shout-only status words (Needs you / Failed). The **N subagents** drawer
+starts expanded; collapse is `chat-subagents:<parentId>`. A Failed child
+paints the drawer header as the red word **Failed** (Failed wins over a
+needs-you pip). Peers stay top-level. Grandchildren flatten into the root
+parent's one drawer. A quiet parent (snoozed or settled) pulls not-done
+children up; done children stay nested. Cross-lane children stay top-level
+with the lineage chip. Demote un-nests.
 
 Non-prominent rows recede to 70% opacity, which is how the few rows that want a
 human stand out with no banner anywhere on screen. Settled resolves to a nil
@@ -2910,12 +2961,15 @@ Known limits, all deliberate:
   gesture of every Work row. The routing already exists if it is ever converted
   (`SyncService.requestedPrNavigation` /
   `requestedLinearIssueNavigation`).
-- iOS `TerminalSessionSummary` carries no `orchestrationParentSessionId`,
-  `spawnKind`, `parentIdentityKey`, `branchRef`, `currentTurnStartedAt`, `nextWakeAt`, or
-  `lastActivityAt`, so desktop's lineage chip, branch chip, machine tower glyph,
-  grid indicator, and `nextWakeAt`-driven "Waiting" status have no iOS
-  equivalent, and the elapsed ticker anchors on activity time rather than turn
-  start.
+- iOS `TerminalSessionSummary` now decodes `orchestrationParentSessionId` and
+  `spawnKind`, so the by-lane Work list nests same-lane subagent chats under
+  the parent the way desktop does (`WorkSpawnNesting.swift`). Nested compact
+  rows put the identicon and title on the leading edge and the provider mark
+  on the trailing edge. It still omits `branchRef`,
+  `currentTurnStartedAt`, `nextWakeAt`, and `lastActivityAt`, so desktop's
+  branch chip, machine tower glyph, grid indicator, and `nextWakeAt`-driven
+  "Waiting" status have no iOS equivalent, and the elapsed ticker anchors on
+  activity time rather than turn start. `parentIdentityKey` is present.
 - Against a host that predates `dismissPendingInput` on the bulk action, the
   flag is ignored: the settle reports success and the row stays "Needs you".
 
@@ -2923,22 +2977,22 @@ Known limits, all deliberate:
 
 The desktop's Work tools pane cannot run on a phone — the browser is a
 `WebContentsView`, App Control is a CDP socket to a local process, and the
-iOS panel is a capture stream — so the phone gets a **read-only mirror**
-and no controls at all. A button that could not do anything would be a
-lie.
+iOS panel is a capture stream — so the phone gets a **read-only mirror**;
+the one button it offers opens a view-only stream, never remote control.
 
 `WorkToolsRow.swift` sits above a chat transcript as a one-line
 disclosure: "Tools · Browser active · 3 tabs ›". It hides itself entirely
 when the brain does not advertise `workTools.getLaneState`
 (`SyncService.supportsWorkToolsState`) or when there is nothing to say —
 an empty "Tools ›" that opens onto "nothing here" is worse than no row.
-Tapping it opens `WorkToolsSheet.swift`: three cards in the order people
+Tapping it opens `WorkToolsSheet.swift`: four cards in the order people
 ask about them — what the desktop has open now, with the last frame it
-captured; the browser's tabs; App Control's session — plus pull to
-refresh. Tool display names track the desktop catalogue, so `ios` reads
-**Simulator** (the icon is a phone and the availability rule already says
-macOS; the platform word was carrying nothing), and there is no `pr` tool
-name because the Work tools pane no longer has one.
+captured; the lane's Apple device, a view-only live stream when the host
+advertises `apple.status`; the browser's tabs; App Control's session —
+plus pull to refresh. Tool display names track the desktop catalogue, so
+`ios` reads **Apple** (the icon is a phone and the availability rule
+already says macOS; the platform word was carrying nothing), and there is
+no `pr` tool name because the Work tools pane no longer has one.
 
 Refresh is a poll, not a subscription: the brain has no generic
 named-event channel to the phone (its push surface is cr-sqlite
@@ -4174,10 +4228,10 @@ the stats and shows update guidance.
   (`WorkModelCatalog.swift`, mirroring desktop's
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
-  together; the Claude picker order mirrors desktop (Fable 5.1, Opus 5,
-  Sonnet 5, Haiku 4.5, Opus 4.8) and legacy Sonnet 4.6 /
-  Fable 5 / Opus 4.7 selections normalize forward instead of appearing as
-  rows, while the generic `opus` alias resolves to Opus 5. The OpenAI picker
+  together; the Claude picker order mirrors desktop (Fable 5.1, Opus 5.5,
+  Sonnet 5, Haiku 4.5, Opus 5) and legacy Sonnet 4.6 /
+  Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
+  appearing as rows, while the generic `opus` alias resolves to Opus 5.5. The OpenAI picker
   always promotes GPT-6 Astra, then GPT-5.6 Sol, Terra, Luna in that
   order even when a host returns another order; Astra is the fallback default
   and GPT-5.5 remains below them. The phone prefers host-advertised reasoning

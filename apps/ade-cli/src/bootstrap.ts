@@ -86,6 +86,7 @@ import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../de
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
+import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
 import { createCtoVoiceRuntimeService } from "../../desktop/src/main/services/cto/ctoVoiceRuntimeService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -115,10 +116,10 @@ import { createFeedbackReporterService } from "../../desktop/src/main/services/f
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
-  getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
+import { adePromptAgentSkillRoots } from "../../desktop/src/main/services/skills/agentSkillRuntimeService";
 import {
   attachSharedUsageTrackingScope,
   createUsageTrackingService,
@@ -144,11 +145,11 @@ import {
   captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
+  captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
-import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
 import {
@@ -188,6 +189,15 @@ import { createPushRegistrationStore } from "./services/push/pushRegistrationSto
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
 import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
+import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
+import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
+import { ACCOUNT_SCOPE_ALL } from "../../desktop/src/shared/accountSettingsScope";
+import {
+  APPLE_DEVICE_SETTING_KEYS,
+  DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
+  clampAppleRemoteBitrateKbps,
+} from "../../desktop/src/shared/appleDeviceSettings";
+import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
@@ -391,7 +401,6 @@ export type AdeRuntime = {
   storageInsightsService?: ReturnType<typeof createStorageInsightsService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
-  reviewService?: ReturnType<typeof createReviewService> | null;
   searchService?: SearchService | null;
   externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
@@ -633,7 +642,7 @@ export function createHeadlessAdeCliAgentEnv(
     next[ADE_AGENT_SKILLS_DIRS_ENV],
     inferredSkillRoots.catalogRoot,
   );
-  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({
+  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(adePromptAgentSkillRoots({
     env: next,
     cwd: options.cwd ?? process.cwd(),
   }));
@@ -1225,6 +1234,13 @@ export async function createAdeRuntime(args: {
       projectConfigService,
       projectRoot,
       enableDynamicModelMetadata: false,
+      // A long-lived agent runtime (the machine brain) keeps the model
+      // directory current; one-shot CLI commands and embedded guests stay
+      // offline and use the bundled/disk copy.
+      modelManifest: {
+        adeVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+        fetchRemote: resolvedArgs.chatRuntime === "agent" && !embeddedRuntime,
+      },
     });
 
     const conflictService = createConflictService({
@@ -1380,6 +1396,9 @@ export async function createAdeRuntime(args: {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
+      account: accountSettingsStore
+        ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
+        : null,
     });
     const ctoStateService = createCtoStateService({
       db,
@@ -1429,9 +1448,80 @@ export async function createAdeRuntime(args: {
             return null;
           }
         },
+        /*
+         * The reverse map, and it matters MORE here than in the desktop.
+         *
+         * Agent `ade apple` calls arrive at the brain, and an agent whose shell
+         * carries no `ADE_LANE_ID` — every OpenCode agent, since one shared
+         * `opencode serve` cannot hold a per-chat environment — names no lane.
+         * Without this the service falls back to "whichever single lane is
+         * running something", and one agent's screenshot was filed against an
+         * unrelated lane. The desktop got this dep first and the brain did not,
+         * which is exactly why the live check still failed after the fix.
+         */
+        resolveLaneIdForPath: (absolutePath: string): string | null => {
+          try {
+            return laneService.getLaneIdForPath(absolutePath);
+          } catch {
+            return null;
+          }
+        },
+        // The lanes DB backs `lane_apple_devices`; without it a lane device is
+        // remembered only for the life of the process.
+        laneDeviceStore: db,
+        // The recording halves that live outside the simulator service: the
+        // proof-drawer broker that files a pinned recording, and the overlay
+        // switches from account settings. Without these the constructed
+        // recorder writes video nobody can find and draws overlays the user
+        // switched off.
+        recordingDeps: {
+          artifactFiler: computerUseArtifactBrokerService,
+          readOverlaySetting: (key) => {
+            const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
+            return typeof value === "boolean" ? value : undefined;
+          },
+          // ADE's own accent, mirrored in `shared/themeTokens.ts` and guarded
+          // by a test against `renderer/index.css`. The recorder ran on its
+          // own hardcoded blue before this, so every tap ring in every proof
+          // video was a colour that appears nowhere in the product.
+          accentColor: () => ADE_ACCENT_COLOR,
+        },
         onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
       });
     teardown.push(() => iosSimulatorService?.dispose());
+    /**
+     * Brain-side video forwarder for remote viewers.
+     *
+     * Only the brain can read the helper's loopback body, so this is the one
+     * hop between a phone / web tab / Windows desktop and the device screen.
+     * It registers itself with the sync listener's socket router rather than
+     * being threaded through the listener constructors: the listener is
+     * machine-wide and outlives project switches, while this is per-project.
+     */
+    const appleRemoteBitrateKbpsCap = (): number | null => {
+      try {
+        const value = accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, APPLE_DEVICE_SETTING_KEYS.remoteBitrateKbpsCap);
+        return typeof value === "number" && Number.isFinite(value)
+          ? clampAppleRemoteBitrateKbps(value)
+          : DEFAULT_APPLE_REMOTE_BITRATE_KBPS;
+      } catch {
+        return DEFAULT_APPLE_REMOTE_BITRATE_KBPS;
+      }
+    };
+    const appleStreamRelay = iosSimulatorService
+      ? createAppleStreamRelayForService({
+        service: iosSimulatorService,
+        remoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
+        logger,
+      })
+      : null;
+    if (appleStreamRelay) {
+      const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
+      teardown.push(() => {
+        detachAppleStreamRoute();
+        appleStreamRelay.dispose();
+      });
+    }
     // Late-bound chat session lookup. agentChatService is created after
     // appControlService below, so we capture a holder that the resolveLaneId
     // closure reads at call time. The chat session store lives in agentChatService
@@ -1698,6 +1788,11 @@ export async function createAdeRuntime(args: {
           projectId,
           event,
         }),
+        onClaudePluginsIgnored: (event) => captureClaudePluginsIgnoredAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
+        }),
         onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -1770,23 +1865,6 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
     }
-    const reviewService = agentChatService
-      ? createReviewService({
-        db,
-        logger,
-        projectId,
-        projectRoot,
-        projectDefaultBranch: baseRef,
-        laneService,
-        gitService,
-        agentChatService,
-        sessionService,
-        sessionDeltaService,
-        testService,
-        prService: headlessLinearServices.prService,
-        onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
-      })
-      : null;
     // Automations are unattended work the machine's own ADE schedules and owns.
     // An embedded runtime runs inside somebody else's process on somebody
     // else's lifecycle, so it must not start rules, fire ingress dispatches, or
@@ -2402,6 +2480,9 @@ export async function createAdeRuntime(args: {
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
         macDesktopService,
+        appleDeviceService: iosSimulatorService,
+        appleStreamRelay,
+        getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
         sharedSyncListener: syncRuntimeOptions.sharedSyncListener ?? null,
         hostStartupEnabled: syncRuntimeOptions.hostStartupEnabled ?? true,
         hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,
@@ -2561,7 +2642,6 @@ export async function createAdeRuntime(args: {
       laneWorktreeLockService,
       ptyService,
       testService,
-      reviewService,
       searchService,
       externalSessionsService,
       aiIntegrationService,

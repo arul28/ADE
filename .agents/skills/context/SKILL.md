@@ -43,6 +43,32 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
 ## Step 2 — Baseline (always read)
 
 - `AGENTS.md` — how to run/build/test, working norms, gotchas, the dev loop.
+- **Run the dev app one way only:** `npm run dev:desktop` from the lane worktree
+  (add `--project-root <path>` to open a different project). It shares `~/.ade`,
+  starts its brain with `--no-sync`, respects chat runtime ownership, never
+  touches the installed brain service, and prints a dev isolation report first.
+  Never hand-start `ade serve`, never set a fresh `ADE_HOME`, never copy secrets.
+- **Start it DETACHED, with its own socket.** The command runs in the foreground
+  for as long as the app is open, so running it normally holds your turn open
+  and the window dies with the turn. Background it, give the lane its own
+  socket, and wait for the report:
+
+  ```bash
+  node scripts/dev-detached.mjs /tmp/ade-dev-<lane>.log \
+    npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
+  until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 2; done
+  cat /tmp/ade-dev-<lane>.log
+  ```
+
+  A plain `&` is not enough: it survives the shell exiting but not a SIGTERM to
+  the process group, which is how a turn is torn down. The script puts the app
+  in its own session, so `electron exited (code=143)` mid-run stops happening.
+
+  The default socket is shared, and two dev brains on one socket restart each
+  other. If the report says `sync : ON`, stop: a dev brain holding the
+  machine-wide sync lease drops the installed brain's tunnel and kills the
+  agents under it.
+  Details: `docs/development/local-development.md`.
 - `docs/README.md` — the internal-docs navigation map.
 - `docs/PRD.md` — what ADE is, who it's for, the feature index.
 - `docs/ARCHITECTURE.md` — read the **section** relevant to the touched area
@@ -190,8 +216,14 @@ open the relevant one only when a task needs it.
   `ade help <command>` and `ade actions list --text`, not memory.
   → `ade-cli-control-plane`.
 - **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
-- **App / browser / iOS-sim control** → `ade-app-control`,
-  `ade-browser`, `ade-ios-simulator`.
+- **App / browser / Apple-device control** → `ade-app-control`,
+  `ade-browser`, `ade-apple` (old name `ade-ios-simulator` still resolves).
+  Read `ade-apple` before you touch `xcodebuild`, `xcrun` or `simctl` by hand.
+  Running an iOS app on a simulator, seeing a SwiftUI change, driving a screen,
+  or capturing proof of one is `ade apple`, and `ade apple launch` resolves,
+  builds, installs and starts a target in a single call. A screenshot taken
+  with `simctl` and attached afterwards loses the owner that makes it visible
+  in the drawer.
 - **Linear** (no API key needed; routed through ADE) → `ade-linear`.
 - **Proof & computer-use** (screenshots, video, traces → proof drawer) →
   `ade-proof-artifacts`. **Deeplinks** → `ade-deeplinks`.

@@ -47,6 +47,18 @@ import {
 import { ensureCursorSdkUserHook } from "./cursorSdkHooks";
 import { loadCursorSdk } from "../ai/cursorSdkLoader";
 import { buildCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
+import {
+  CURSOR_SDK_OWNER_POLL_MS,
+  createCursorSdkWorkerExit,
+  cursorSdkOwnerStillOwns,
+  ignoreCursorSdkWorkerPipeErrors,
+  readCursorSdkOwnerPid,
+  sendToCursorSdkParent,
+} from "./cursorSdkWorkerGuards";
+import {
+  processIsAlive,
+  startParentDeathWatchdog,
+} from "../../../../../ade-cli/src/services/runtime/parentDeathWatchdog";
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
@@ -94,9 +106,7 @@ function asCursorSdkRunStoreLike(store: unknown): CursorSdkRunStoreLike | null {
 }
 
 function post(message: CursorSdkWorkerResponse): void {
-  if (process.send) {
-    process.send(message);
-  }
+  sendToCursorSdkParent(process, message);
 }
 
 function errorMessage(error: unknown): string {
@@ -253,6 +263,14 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     ...(local.disallowedTools !== undefined ? { disallowedTools: local.disallowedTools as AgentOptions["disallowedTools"] } : {}),
     local: {
       cwd: init.laneRoot,
+      // Cursor merges `dirs` with `cwd` (cwd first, duplicates dropped) and
+      // scans `<dir>/.agents/skills/<name>/SKILL.md` in each one. This is how
+      // ADE's bundled skills reach a Cursor chat through Cursor's own
+      // discovery instead of a prompt pointer. The main process only sets it
+      // when the session is allowed to have them and the shim materialized:
+      // `settingSources` without `project` (orchestration leads) turns
+      // `includeProjectExtensibility` off and these roots would load nothing.
+      ...(init.agentSkillDirs?.length ? { dirs: [...init.agentSkillDirs] } : {}),
       settingSources: cursorSdkSettingSources(init.policy),
       // ADE never requests Cursor-native sandbox, including agent inherit of
       // ~/.cursor/sandbox.json. ADE hook denials remain the permission guard.
@@ -395,6 +413,9 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
     laneRoot: init.laneRoot,
     projectRoot: init.projectRoot,
     userHomeDir: init.userHomeDir,
+    // The shim root sits outside the lane, so without this the model would be
+    // shown ADE's skill paths and then denied when it read one.
+    ...(init.agentSkillDirs?.length ? { agentSkillDirs: init.agentSkillDirs } : {}),
   });
   if (localDecision === "allow") {
     socket.end(`${JSON.stringify(allowCursorHook())}\n`);
@@ -1223,28 +1244,44 @@ function reportRequestFailure(requestId: string, error: unknown): void {
   post({ type: "response", requestId, ok: false, ...classifyWorkerError(error) });
 }
 
+// Every exit trigger goes through here. See cursorSdkWorkerGuards.ts for why
+// each path needs a timer deadline and not only `dispose().finally(exit)`.
+const exitWorker = createCursorSdkWorkerExit({
+  dispose,
+  exit: (code) => process.exit(code),
+});
+
 function scheduleExitAfterUnhandled(): void {
   if (unhandledExitScheduled) return;
   unhandledExitScheduled = true;
-  setTimeout(() => {
-    void dispose().finally(() => process.exit(1));
-  }, 20).unref();
+  setTimeout(() => exitWorker(1), 20).unref();
 }
 
 function handleUnhandledWorkerError(error: unknown, origin: "unhandledRejection" | "uncaughtException"): void {
-  post({
-    type: "log",
-    level: "warn",
-    message: "Cursor SDK worker caught an unhandled SDK failure.",
-    detail: { origin, error: errorMessage(error) },
-  });
-  const activeRequest = Array.from(activeRequests.entries())
-    .reverse()
-    .find(([, type]) => type !== "hook_response" && type !== "dispose");
-  if (activeRequest) {
-    reportRequestFailure(activeRequest[0], error);
+  // Not re-entrant. The first failure already reports and schedules the exit,
+  // and a failure raised while handling one must not start the loop again.
+  if (unhandledExitScheduled) return;
+  if (!process.connected) {
+    // The parent is gone, so there is nobody to report to.
+    scheduleExitAfterUnhandled();
+    return;
   }
-  scheduleExitAfterUnhandled();
+  try {
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK worker caught an unhandled SDK failure.",
+      detail: { origin, error: errorMessage(error) },
+    });
+    const activeRequest = Array.from(activeRequests.entries())
+      .reverse()
+      .find(([, type]) => type !== "hook_response" && type !== "dispose");
+    if (activeRequest) {
+      reportRequestFailure(activeRequest[0], error);
+    }
+  } finally {
+    scheduleExitAfterUnhandled();
+  }
 }
 
 process.on("message", (raw: unknown) => {
@@ -1278,14 +1315,28 @@ process.on("uncaughtException", (error) => {
   handleUnhandledWorkerError(error, "uncaughtException");
 });
 
+ignoreCursorSdkWorkerPipeErrors(process, [process.stdout, process.stderr]);
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => {
-    void dispose().finally(() => process.exit(0));
-  });
+  process.on(signal, () => exitWorker(0));
 }
 
-process.on("disconnect", () => {
-  void dispose().finally(() => process.exit(0));
+process.on("disconnect", () => exitWorker(0));
+
+// Second guard for the `disconnect` event: poll the owner too. The pool puts
+// the owner pid in argv; a worker started some other way falls back to the
+// parent it booted under.
+const ownerPid = readCursorSdkOwnerPid(process.argv) ?? process.ppid;
+startParentDeathWatchdog({
+  parentPid: ownerPid,
+  intervalMs: CURSOR_SDK_OWNER_POLL_MS,
+  isAlive: (pid) => cursorSdkOwnerStillOwns({
+    ownerPid: pid,
+    proc: process,
+    platform: process.platform,
+    isAlive: processIsAlive,
+  }),
+  onParentGone: () => exitWorker(0),
 });
 
 post({

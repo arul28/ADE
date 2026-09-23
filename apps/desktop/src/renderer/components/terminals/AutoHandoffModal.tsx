@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowsLeftRight, CaretDown, CaretRight, X } from "@phosphor-icons/react";
+import { ArrowsLeftRight, CaretDown, CaretRight, Flag, Timer, WarningCircle, X, type Icon } from "@phosphor-icons/react";
 import type {
   AutomationAction,
   AutomationRule,
@@ -14,13 +14,14 @@ import type {
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useAppStore } from "../../state/appStore";
+import { useLanesForPin } from "../../state/crossMachineLanes";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { cn } from "../ui/cn";
 import { getFocusableElements } from "../ui/dialogFocus";
 import { LaneCombobox, type LaneComboboxLane } from "./LaneCombobox";
-import { saveAutoHandoffRules } from "./sessionLifecycleActions";
+import { automationRulesReadable, listAutomationRules, saveAutoHandoffRules } from "./sessionLifecycleActions";
 
 /**
  * "Auto handoff" — the chat-menu front door to the automation platform.
@@ -44,6 +45,8 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
   /** Rule-name fragment; this one is read on its own in the Automations list. */
   ruleLabel: string;
   hint: string;
+  /** Chip glyph; the sentence reads as marks plus words, not a wall of text. */
+  icon: Icon;
 }> = [
   {
     key: "limit",
@@ -51,6 +54,7 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
     label: "usage limit",
     ruleLabel: "usage limit",
     hint: "The provider's usage window closed mid-chat.",
+    icon: Timer,
   },
   {
     key: "failure",
@@ -58,6 +62,7 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
     label: "API failure",
     ruleLabel: "API failure",
     hint: "The provider or the runtime failed the turn.",
+    icon: WarningCircle,
   },
   {
     key: "ended",
@@ -65,6 +70,7 @@ export const AUTO_HANDOFF_CONDITIONS: ReadonlyArray<{
     label: "chat ends",
     ruleLabel: "chat ends",
     hint: "The chat ended without opening a PR.",
+    icon: Flag,
   },
 ];
 
@@ -162,6 +168,25 @@ export function selectAutoHandoffRulesForSession(
 ): AutomationRuleSummary[] {
   if (!rules?.length || !sessionId) return [];
   return rules.filter((rule) => rule.scope?.sessionId === sessionId && handoffActionOf(rule) != null);
+}
+
+/**
+ * The rules a chat's Auto handoff editor should open with, or `null` when the
+ * read failed or the automations surface is unavailable. One canonical read so
+ * the session menu and the Handoff tab cannot disagree about what is scoped to
+ * a chat. `null` is deliberately distinct from `[]`: the editor deletes
+ * conditions by their deterministic ids, so a failed read must keep the editor
+ * closed rather than present defaults that would delete rules it never saw.
+ * `pin` targets the chat's own machine for a chat that is not this tab's.
+ */
+export async function loadAutoHandoffRulesForSession(
+  sessionId: string,
+  pin?: OpenProjectBinding | null,
+): Promise<AutomationRuleSummary[] | null> {
+  if (!sessionId || !automationRulesReadable()) return null;
+  const rules = await listAutomationRules(pin);
+  if (rules === null) return null;
+  return selectAutoHandoffRulesForSession(rules, sessionId);
 }
 
 /** Rebuilds the form from the rules already saved for this chat. */
@@ -356,15 +381,35 @@ function FocusTrapDialog({
 }
 
 export type AutoHandoffModalProps = {
-  session: TerminalSessionSummary;
+  /**
+   * Minimal shape the editor needs. Deliberately not `TerminalSessionSummary`:
+   * the Handoff tab in `AgentChatPane` has an `AgentChatSession`, and both carry
+   * the same identity fields — widening here beats inventing a fake terminal row.
+   */
+  session: AutoHandoffSession;
   binding?: OpenProjectBinding | null;
   /** Rules already scoped to this chat, read by the menu before it opened. */
   existingRules: readonly AutomationRuleSummary[];
   onClose: () => void;
 };
 
+/** Identity the Auto handoff editor reads off a chat. */
+export type AutoHandoffSession = {
+  id: string;
+  title: string;
+  laneId?: string | null;
+  modelId?: string | null;
+};
+
 export function AutoHandoffModal({ session, binding = null, existingRules, onClose }: AutoHandoffModalProps) {
-  const storeLanes = useAppStore((state) => state.lanes) as LaneSummary[] | undefined;
+  const projectLanes = useAppStore((state) => state.lanes) as LaneSummary[] | undefined;
+  // A chat that lives on another machine must offer THAT machine's lanes: the
+  // rule is saved there, so a lane id only this tab knows would not resolve.
+  // `useLanesForPin` joins by binding key across live/retained/cached slices and
+  // returns an empty list for an unread pinned machine — never `state.lanes`,
+  // whose ids are not globally unique and could name a different lane.
+  const pinnedLanes = useLanesForPin(binding);
+  const storeLanes = useMemo(() => pinnedLanes ?? projectLanes, [pinnedLanes, projectLanes]);
   const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -388,7 +433,9 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
     let cancelled = false;
     void (async () => {
       try {
-        const status = await window.ade?.ai?.getStatus?.();
+        // Probe the chat's own machine: a model offered here but not there
+        // would be saved into a rule the remote runtime cannot execute.
+        const status = await window.ade?.ai?.getStatus?.({}, binding ?? null);
         if (cancelled) return;
         // Every provider is a legal handoff target. Live-redirect support is a
         // CTO constraint, not a handoff one, so the list is never narrowed here.
@@ -398,11 +445,19 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [binding]);
 
   useEffect(() => {
     if (form.targetModelId) return;
-    const preferred = availableModelIds.find((id) => id !== session.modelId) ?? availableModelIds[0];
+    // A legacy summary may carry only the provider-facing short token while the
+    // catalog lists canonical ids, so an exact match is not enough: exclude a
+    // catalog id that ends with the session token too, or the default target
+    // would be the very model that just hit its limit.
+    const sessionModel = session.modelId?.trim() || null;
+    const isSessionModel = (id: string) =>
+      sessionModel != null
+      && (id === sessionModel || id.endsWith(`/${sessionModel}`) || id.endsWith(`:${sessionModel}`));
+    const preferred = availableModelIds.find((id) => !isSessionModel(id)) ?? availableModelIds[0];
     if (preferred) setForm((current) => (current.targetModelId ? current : { ...current, targetModelId: preferred }));
   }, [availableModelIds, form.targetModelId, session.modelId]);
 
@@ -450,10 +505,10 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
       scope,
     });
     setSaving(true);
-    const ok = await saveAutoHandoffRules({ drafts, staleRuleIds: stale, sessionId: session.id });
+    const ok = await saveAutoHandoffRules({ drafts, staleRuleIds: stale, sessionId: session.id, pin: binding });
     setSaving(false);
     if (ok) onClose();
-  }, [existingRules, form, onClose, saving, session]);
+  }, [binding, existingRules, form, onClose, saving, session]);
 
   const body = (
     <div
@@ -466,7 +521,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
         onClose={onClose}
         onSubmit={() => { void save(true); }}
       >
-        <header className="flex items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
+        <header className="flex items-start justify-between gap-4 border-b border-border/60 bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_13%,transparent),transparent_78%)] px-5 py-4">
           <div className="flex min-w-0 items-start gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent">
               <ArrowsLeftRight size={18} weight="duotone" />
@@ -492,7 +547,7 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
 
         <div className="min-h-0 overflow-y-auto px-5 py-4">
           {/* The sentence. One card, read left to right, not a form grid. */}
-          <div className="rounded-xl border border-border/60 bg-[color:color-mix(in_srgb,var(--color-fg)_3%,transparent)] px-4 py-3.5">
+          <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)] bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_8%,transparent),color-mix(in_srgb,var(--color-fg)_3%,transparent)_62%)] px-4 py-3.5">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px] leading-6 text-fg/70">
               <span>When</span>
               {AUTO_HANDOFF_CONDITIONS.map((condition, index) => {
@@ -507,12 +562,18 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
                     title={condition.hint}
                     onClick={() => setCondition(condition.key, !active)}
                     className={cn(
-                      "inline-flex h-7 items-center rounded-md border px-2.5 font-sans text-[11.5px] font-medium transition-colors",
+                      "inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11.5px] font-medium transition-colors",
                       active
                         ? "border-[color:color-mix(in_srgb,var(--color-accent)_46%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg"
                         : "border-border/60 text-muted-fg hover:border-border hover:text-fg/80",
                     )}
                   >
+                    <condition.icon
+                      size={12}
+                      weight="bold"
+                      aria-hidden
+                      className={cn("shrink-0", active ? "text-accent" : "text-muted-fg/70")}
+                    />
                     {condition.label}
                   </button>
                 );

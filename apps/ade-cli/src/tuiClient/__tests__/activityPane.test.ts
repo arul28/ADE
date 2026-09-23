@@ -17,7 +17,9 @@ import {
   buildActivityPaneModel,
   groupForItem,
   loadActivitySnapshot,
+  reconnectOutcomeNotice,
 } from "../activityPane";
+import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../services/account/accountMachinePublisherService";
 import stateGroupCases from "../../../../desktop/src/shared/attention/activityStateGroup.cases.json";
 
 function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
@@ -493,5 +495,33 @@ describe("account-wide Activity pane", () => {
     expect(accountSessionLabel("signed_out")).toContain("ade login");
     expect(accountSessionLabel("expired")).toContain("ade login");
     expect(accountSessionLabel("unreadable")).not.toContain("ade login");
+  });
+
+  it("asks a signed-in person to confirm it's them, never to sign in again", () => {
+    const refusal = {
+      repaired: false,
+      state: "http_error",
+      reason: PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+    };
+    for (const result of [{ ...refusal, reasonCode: "pairing_authentication_required" }, refusal]) {
+      const notice = reconnectOutcomeNotice(result);
+      expect(notice.kind).toBe("error");
+      expect(notice.message).toContain("Confirm it's you in your browser");
+      expect(notice.message).toContain("ade machines reconnect");
+      expect(notice.message).not.toMatch(/sign in/i);
+    }
+    // A present code decides: a removal is not talked into a browser step.
+    const revoked = reconnectOutcomeNotice({ ...refusal, reasonCode: "machine_revoked" });
+    expect(revoked.message).toBe(
+      `Couldn't reconnect this computer: ${PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE} It's still disconnected from your account.`,
+    );
+    // The same words the desktop's Reconnect button and `ade machines reconnect` use.
+    expect(reconnectOutcomeNotice({ repaired: true, wasRevoked: true, pushRestored: true, state: "registered" })).toEqual({
+      kind: "success",
+      message: "This computer is back on your account. Activity and alerts are delivering again.",
+    });
+    // Back on the account but not delivering yet is unfinished, not a success.
+    expect(reconnectOutcomeNotice({ repaired: true, wasRevoked: true, pushRestored: false, state: "registered" }).kind)
+      .toBe("info");
   });
 });

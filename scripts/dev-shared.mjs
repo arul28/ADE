@@ -605,6 +605,86 @@ function openDevRuntimeLogFd(logPath) {
   }
 }
 
+/** Where the installed brain keeps its state, and the only root a dev app shares. */
+export function defaultAdeHome() {
+  return path.join(os.homedir(), ".ade");
+}
+
+/** The state root this launch will actually use, and whether it is the default. */
+export function resolveDevAdeHome() {
+  const fromEnv = process.env.ADE_HOME?.trim();
+  const fallback = defaultAdeHome();
+  const home = fromEnv || fallback;
+  return { home, isDefault: path.resolve(home) === path.resolve(fallback), fromEnv: Boolean(fromEnv) };
+}
+
+/**
+ * One glance at what this dev launch touches and what it leaves alone. Printed
+ * before the window opens so a reader (or an agent) never has to guess whether
+ * the installed brain is at risk.
+ *
+ * The state-root line used to say "(shared with the installed brain)"
+ * unconditionally. On 2026-09-22 a relaunch inherited
+ * `ADE_HOME=~/.ade-alpha` from the shell that ran it, and the report said the
+ * alpha root was shared with the installed brain — which is the opposite of
+ * true. The PROJECT database follows the project root, so the data is the
+ * same; what moves is the machine state — account and credentials, the runtime
+ * directory, the machine heartbeat, the socket directory. A dev app on the
+ * wrong home therefore looks completely normal, which is why the line now
+ * states which of the two roots it is rather than asserting a sharing.
+ */
+export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime = false } = {}) {
+  const { home, isDefault } = resolveDevAdeHome();
+  const requested = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
+  // Reusing or attaching to a brain does not change the flags it was started
+  // with. Saying "sync off" in that case is how a still-syncing process gets
+  // reported as isolated.
+  const sync = ownsRuntime
+    ? requested
+    : `${requested} requested; this launch left the process already on the socket alone`;
+  const homeNote = isDefault
+    ? "(shared with the installed brain)"
+    : "(ADE_HOME override — NOT the installed brain's machine state: different account, runtime dir and heartbeat)";
+  process.stdout.write([
+    "[ade] dev isolation report",
+    `[ade]   state root : ${home} ${homeNote}`,
+    `[ade]   dev socket : ${socketPath}`,
+    `[ade]   sync       : ${sync}`,
+    `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
+    "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
+    "",
+  ].join("\n"));
+}
+
+/**
+ * Stop a dev launch that inherited somebody else's state root.
+ *
+ * `ADE_HOME` is almost never set on purpose for a dev app: the point of the
+ * dev app is to drive the machine state the installed brain already has. An
+ * inherited one — an alpha shell, a packaged-build shell — produces an app on
+ * a different account and runtime directory, which is how one dev brain came
+ * to publish the machine heartbeat under the wrong pid. It starts cleanly and
+ * says nothing, so it is a refusal rather than a warning.
+ *
+ * `ADE_DEV_ALLOW_ALT_HOME=1` opts in for the case where a different root IS
+ * the point.
+ */
+export function assertDevAdeHome() {
+  const { home, isDefault } = resolveDevAdeHome();
+  if (isDefault || process.env.ADE_DEV_ALLOW_ALT_HOME === "1") return;
+  throw new Error(
+    [
+      `ADE_HOME is set to ${home}, which is not the installed brain's state root (${defaultAdeHome()}).`,
+      "A dev app on a different root starts cleanly and then carries a different account,",
+      "runtime directory and machine heartbeat, so this is refused rather than warned about.",
+      "",
+      "  unset ADE_HOME && npm run dev:desktop -- --socket <path>",
+      "",
+      "Set ADE_DEV_ALLOW_ALT_HOME=1 if the other root really is what you want.",
+    ].join("\n"),
+  );
+}
+
 export async function ensureRuntime(socketPath, projectRoot = null) {
   try {
     const info = await getRuntimeInfo(socketPath);
@@ -628,7 +708,12 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
   process.stdout.write(
     `[ade] starting dev runtime at ${socketPath}${logFd === null ? "" : ` (log: ${logPath})`}\n`,
   );
-  const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath], {
+  // A dev brain shares ~/.ade with the installed brain and must never compete
+  // for the machine-wide sync host lease: on 2026-09-21 one did, the installed
+  // brain lost its tunnel, and the agents under it died. ADE_DEV_RUNTIME_SYNC=1
+  // opts a dev brain in on purpose.
+  const syncArgs = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? [] : ["--no-sync"];
+  const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath, ...syncArgs], {
     cwd: repoRoot,
     env: detachedDevRuntimeEnv(socketPath, projectRoot),
     detached: true,

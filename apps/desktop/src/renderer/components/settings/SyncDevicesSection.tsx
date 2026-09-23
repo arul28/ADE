@@ -35,6 +35,10 @@ import {
 } from "../../../shared/runtimeErrors";
 import { openExternalUrl } from "../../lib/openExternal";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
+import { isWebClientMode } from "../../lib/webClientMode";
+import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
+import { readThisMachineRefusal } from "../../../shared/accountMachineRefusal";
+import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { BrainRepairButton } from "./BrainRepairButton";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
@@ -234,6 +238,10 @@ export function ThisMacCard({
   // Forced: a repair is a user action, so it must not wait out the degraded
   // read's backoff window.
   const repair = useBrainRepair(() => { void sync.refresh({ force: true }); });
+  // The Account page's Reconnect, so a refused computer is fixed from here too.
+  const reconnect = useReconnectThisComputer({
+    onSettled: () => { void sync.refresh({ force: true }); },
+  });
 
   const { saveRuntimeName } = sync;
   // The runtime name is what this card renders, so it is written first and the
@@ -289,12 +297,21 @@ export function ThisMacCard({
   // the reader nothing they could act on, and a missing pairing code is a
   // normal state now that the account is the primary way to connect.
   const problem = connectionProblem(status, host);
-  const directorySummary = accountDirectorySummary(status, sessionState);
+  // Only the local machine's own snapshot can be refused. A remote-bound pane
+  // shows another machine, and this computer's button cannot fix that one.
+  // Read once, so the summary line and the button always agree.
+  const refusal = accountSignedIn && !isRemoteBound && !isWebClientMode()
+    ? readThisMachineRefusal(status.routeHealth?.accountDirectory)
+    : null;
+  const directorySummary = accountDirectorySummary(status, sessionState, refusal);
   // A brain-side unreadable account session is the one directory failure a
   // restart clears — same test RemoteTargetList runs on its publish health.
   // Repair stays available on a cold unreadable read even when signedIn is false.
   const showRepair = isBrainAccountSessionFailure(status.routeHealth?.accountDirectory?.state)
     && repair.available;
+  const reconnectAction = refusal && reconnect.available
+    ? reconnect.view({ label: describeThisComputerRefusal(refusal).action })
+    : null;
 
     return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
@@ -358,6 +375,20 @@ export function ThisMacCard({
                 </span>
               ) : null}
               {!hideDirectorySummary && showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
+              {/*
+                Settings only. In the Connections popover the status slot
+                (`ThisComputerStatus`) owns this computer's one button.
+              */}
+              {!hideDirectorySummary && reconnectAction ? (
+                <button
+                  type="button"
+                  disabled={reconnectAction.disabled}
+                  onClick={reconnectAction.onClick}
+                  style={outlineButton({ height: 24, padding: "0 9px", fontSize: 11 })}
+                >
+                  {reconnectAction.label}
+                </button>
+              ) : null}
             </div>
             {statusSlot}
             {!hideDirectorySummary && directorySummary.detail ? (
@@ -374,6 +405,9 @@ export function ThisMacCard({
               >
                 {directorySummary.detail}
               </div>
+            ) : null}
+            {!hideDirectorySummary && reconnectAction?.detail ? (
+              <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>{reconnectAction.detail}</div>
             ) : null}
             {problem ? (
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>

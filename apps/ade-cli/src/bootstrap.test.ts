@@ -696,4 +696,74 @@ describe("createEventBuffer", () => {
       }),
     ]);
   });
+
+  /**
+   * The drain is one RPC reply. With only a count cap, 200 full-list PR events
+   * made an 11.5 MB reply, and a remote desktop's RPC channel closed on every
+   * poll.
+   */
+  it("stops a drain at its byte budget and always returns at least one event", () => {
+    const buffer = createEventBuffer(100, { maxBytes: 1024 * 1024, maxEventBytes: 64 * 1024, drainMaxBytes: 25_000 });
+    const tiny = createEventBuffer(100, { maxBytes: 1024 * 1024, maxEventBytes: 64 * 1024, drainMaxBytes: 100 });
+    for (let i = 0; i < 10; i++) {
+      const event = { timestamp: "2026-09-22T18:53:02Z", category: "runtime" as const, payload: { data: "x".repeat(10_000), i } };
+      buffer.push(event);
+      tiny.push(event);
+    }
+
+    const first = buffer.drain(0, 200);
+    expect(first.events.map((event) => event.id)).toEqual([1, 2]);
+    expect(first.nextCursor).toBe(2);
+    expect(first.hasMore).toBe(true);
+
+    const oneOversized = tiny.drain(first.nextCursor, 200);
+    expect(oneOversized.events.map((event) => event.id)).toEqual([3]);
+    expect(oneOversized.hasMore).toBe(true);
+
+    let cursor = oneOversized.nextCursor;
+    const seen = [3];
+    for (let guard = 0; guard < 10; guard++) {
+      const batch = buffer.drain(cursor, 200);
+      seen.push(...batch.events.map((event) => event.id));
+      cursor = batch.nextCursor;
+      if (!batch.hasMore) break;
+    }
+    expect(seen).toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("caps a default drain at one mebibyte", () => {
+    const buffer = createEventBuffer(1000, { maxBytes: 64 * 1024 * 1024 });
+    for (let i = 0; i < 60; i++) {
+      buffer.push({ timestamp: "2026-09-22T18:53:02Z", category: "runtime", payload: { data: "x".repeat(225_000), i } });
+    }
+
+    const result = buffer.drain(0, 200);
+    const bytes = Buffer.byteLength(JSON.stringify(result.events), "utf8");
+    expect(bytes).toBeLessThanOrEqual(1024 * 1024);
+    expect(result.events.length).toBeGreaterThan(0);
+    expect(result.hasMore).toBe(true);
+  });
+
+  it("filters a drain, moves the cursor past skipped events, and never skips a match past the limit", () => {
+    const buffer = createEventBuffer();
+    for (let i = 1; i <= 6; i++) {
+      buffer.push({ timestamp: "2026-03-01T00:00:00Z", category: i % 2 === 0 ? "pty" : "runtime", payload: { i } });
+    }
+    const filter = (event: BufferedEvent) => event.category === "pty";
+
+    const first = buffer.drain(0, 2, { filter, maxScan: 20 });
+    expect(first.events.map((event) => event.id)).toEqual([2, 4]);
+    expect(first.nextCursor).toBe(4);
+    expect(first.hasMore).toBe(true);
+
+    const second = buffer.drain(first.nextCursor, 2, { filter, maxScan: 20 });
+    expect(second.events.map((event) => event.id)).toEqual([6]);
+    expect(second.nextCursor).toBe(6);
+    expect(second.hasMore).toBe(false);
+
+    const scanCapped = buffer.drain(0, 1, { filter: (event) => event.category === "orchestrator", maxScan: 3 });
+    expect(scanCapped.events).toEqual([]);
+    expect(scanCapped.nextCursor).toBe(3);
+    expect(scanCapped.hasMore).toBe(true);
+  });
 });

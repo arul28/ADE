@@ -1,7 +1,9 @@
+import { getModelById } from "./modelRegistry";
+
 export type ClaudeCliModelAlias =
   | "claude-fable-5-1"
+  | "claude-opus-5-5"
   | "claude-opus-5"
-  | "claude-opus-4-8"
   | "claude-sonnet-5"
   | "claude-haiku-4-5";
 
@@ -17,34 +19,39 @@ export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelA
   "claude-fable-5": "claude-fable-5-1",
   "anthropic/claude-fable-5": "claude-fable-5-1",
   "anthropic/claude-fable-5-api": "claude-fable-5-1",
-  opus: "claude-opus-5",
+  opus: "claude-opus-5-5",
+  "opus-5.5": "claude-opus-5-5",
+  "opus-5-5": "claude-opus-5-5",
+  "claude-opus-5-5": "claude-opus-5-5",
+  "anthropic/claude-opus-5-5": "claude-opus-5-5",
+  "anthropic/claude-opus-5-5-api": "claude-opus-5-5",
   "opus-5": "claude-opus-5",
   "opus-5.0": "claude-opus-5",
   "opus-5-0": "claude-opus-5",
   "claude-opus-5": "claude-opus-5",
   "anthropic/claude-opus-5": "claude-opus-5",
   "anthropic/claude-opus-5-api": "claude-opus-5",
-  "opus-4.8": "claude-opus-4-8",
-  "opus-4-8": "claude-opus-4-8",
-  "opus-4.8-1m": "claude-opus-4-8",
-  "opus-4.8[1m]": "claude-opus-4-8",
-  "opus-4-8-1m": "claude-opus-4-8",
-  "claude-opus-4-8": "claude-opus-4-8",
-  "claude-opus-4-8-1m": "claude-opus-4-8",
-  "claude-opus-4-8[1m]": "claude-opus-4-8",
-  "anthropic/claude-opus-4-8": "claude-opus-4-8",
-  "anthropic/claude-opus-4-8-1m": "claude-opus-4-8",
-  "anthropic/claude-opus-4-8-api": "claude-opus-4-8",
-  "opus-4-7": "claude-opus-4-8",
-  "claude-opus-4-7": "claude-opus-4-8",
-  "anthropic/claude-opus-4-7": "claude-opus-4-8",
-  "anthropic/claude-opus-4-7-api": "claude-opus-4-8",
-  "opus[1m]": "claude-opus-4-8",
-  "opus-1m": "claude-opus-4-8",
-  "opus-4-7-1m": "claude-opus-4-8",
-  "claude-opus-4-7[1m]": "claude-opus-4-8",
-  "claude-opus-4-7-1m": "claude-opus-4-8",
-  "anthropic/claude-opus-4-7-1m": "claude-opus-4-8",
+  "opus-4.8": "claude-opus-5",
+  "opus-4-8": "claude-opus-5",
+  "opus-4.8-1m": "claude-opus-5",
+  "opus-4.8[1m]": "claude-opus-5",
+  "opus-4-8-1m": "claude-opus-5",
+  "claude-opus-4-8": "claude-opus-5",
+  "claude-opus-4-8-1m": "claude-opus-5",
+  "claude-opus-4-8[1m]": "claude-opus-5",
+  "anthropic/claude-opus-4-8": "claude-opus-5",
+  "anthropic/claude-opus-4-8-1m": "claude-opus-5",
+  "anthropic/claude-opus-4-8-api": "claude-opus-5",
+  "opus-4-7": "claude-opus-5",
+  "claude-opus-4-7": "claude-opus-5",
+  "anthropic/claude-opus-4-7": "claude-opus-5",
+  "anthropic/claude-opus-4-7-api": "claude-opus-5",
+  "opus[1m]": "claude-opus-5",
+  "opus-1m": "claude-opus-5",
+  "opus-4-7-1m": "claude-opus-5",
+  "claude-opus-4-7[1m]": "claude-opus-5",
+  "claude-opus-4-7-1m": "claude-opus-5",
+  "anthropic/claude-opus-4-7-1m": "claude-opus-5",
   sonnet: "claude-sonnet-5",
   "sonnet-5": "claude-sonnet-5",
   "claude-sonnet-5": "claude-sonnet-5",
@@ -76,10 +83,23 @@ export function resolveClaudeCliModelAlias(
   const mapped = CLAUDE_CLI_MODEL_ALIAS_MAP[normalized];
   if (mapped) return mapped;
 
+  // Anything the registry knows — including models the model manifest added
+  // after this build shipped — resolves to its own wire id instead of being
+  // snapped to the nearest family below.
+  const known = getModelById(raw);
+  if (known?.providerRoute === "claude-cli") return known.providerModelId;
+
   if (normalized.includes("fable")) return "claude-fable-5-1";
   if (normalized.includes("sonnet")) return "claude-sonnet-5";
+  if (
+    normalized.includes("opus-5-5")
+    || normalized.includes("opus-5.5")
+    || normalized.includes("opus 5.5")
+  ) {
+    return "claude-opus-5-5";
+  }
   if (normalized.includes("opus-5") || normalized.includes("opus 5")) return "claude-opus-5";
-  if (normalized.includes("opus")) return "claude-opus-4-8";
+  if (normalized.includes("opus")) return "claude-opus-5";
   if (normalized.includes("haiku")) return "claude-haiku-4-5";
 
   // Preserve custom IDs for forward compatibility.

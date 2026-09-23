@@ -78,6 +78,36 @@ enum AccountMachineSleepState: String, Codable, Equatable, Hashable, Sendable {
   case asleep
 }
 
+/// Which ADE build a machine row belongs to. Tracks `AppPackageChannel` in
+/// `apps/desktop/src/shared/packageChannel.ts`. A custom ADE home has none.
+enum AccountMachineInstallChannel: String, Codable, Equatable, Hashable, Sendable {
+  case stable
+  case beta
+  case alpha
+
+  /// "ADE", "ADE Beta" or "ADE Alpha", as `appPackageChannelDisplayName`.
+  var displayName: String {
+    switch self {
+    case .stable: return "ADE"
+    case .beta: return "ADE Beta"
+    case .alpha: return "ADE Alpha"
+    }
+  }
+
+  /// The suffix a host adds to the name it publishes, as
+  /// `packageChannelNameSuffix`: " · Beta", " · Alpha", or "" for stable.
+  var nameSuffix: String {
+    switch self {
+    case .stable: return ""
+    case .beta: return " · Beta"
+    case .alpha: return " · Alpha"
+    }
+  }
+}
+
+/// The longest ADE home a row shows, as `MAX_ADE_HOME_DISPLAY_CHARS`.
+let accountMachineMaxAdeHomeChars = 120
+
 /// One machine returned by `GET /account/machines`. Field names and types track
 /// the Worker's `MachineRecord` plus the computed `online` flag it appends to
 /// the list response. Timestamps are epoch-milliseconds (the Worker stores
@@ -87,6 +117,12 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   let deviceId: String?
   let name: String?
   let customName: String?
+  /// The ADE install this row belongs to. Two installs on one Mac share a
+  /// hostname, so the row shows it beside the name. Absent from a directory
+  /// that does not store it yet.
+  let channel: AccountMachineInstallChannel?
+  /// The install's ADE home as `~/.ade-alpha`, when the directory returns it.
+  let adeHome: String?
   let platform: String?
   let deviceType: String?
   /// Stable machine identity key advertised by the directory. Newer records
@@ -113,6 +149,13 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
     deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
     name = try container.decodeIfPresent(String.self, forKey: .name)
     customName = try container.decodeIfPresent(String.self, forKey: .customName)
+    // Tolerant for the same reason as power below: an unknown channel or a
+    // malformed home drops the install label, never the machine.
+    let rawChannel = (try? container.decodeIfPresent(String.self, forKey: .channel)) ?? nil
+    channel = rawChannel.flatMap(AccountMachineInstallChannel.init(rawValue:))
+    let rawAdeHome = ((try? container.decodeIfPresent(String.self, forKey: .adeHome)) ?? nil)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    adeHome = rawAdeHome.flatMap { !$0.isEmpty && $0.count <= accountMachineMaxAdeHomeChars ? $0 : nil }
     platform = try container.decodeIfPresent(String.self, forKey: .platform)
     deviceType = try container.decodeIfPresent(String.self, forKey: .deviceType)
     pubkey = try container.decodeIfPresent(String.self, forKey: .pubkey)
@@ -131,7 +174,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case machineKey, deviceId, name, customName, platform, deviceType, pubkey, reachableEndpoints
+    case machineKey, deviceId, name, customName, channel, adeHome, platform, deviceType, pubkey, reachableEndpoints
     case power, sleepState, sleepStateAt, inventory, lastSeenAt, createdAt, online
   }
 
@@ -148,6 +191,33 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
       return platform.capitalized
     }
     return "ADE machine"
+  }
+
+  /// Which ADE install the row is, as "ADE Alpha", or the ADE home when the
+  /// install has no channel. Nil when the directory did not say. Tracks
+  /// `accountMachineInstallLabel` on the desktop.
+  var installLabel: String? {
+    if let channel { return channel.displayName }
+    return adeHome
+  }
+
+  /// The name a machine row shows: the display name plus the install, as
+  /// "MacBook Pro · ADE Alpha". Tracks `accountMachineRowLabel` on the desktop.
+  ///
+  /// Hosts already add " · Alpha" to the name they publish. The row removes
+  /// that suffix when the install label replaces it, so it never reads
+  /// "MacBook Pro · Alpha · ADE Alpha". A custom name is kept as typed.
+  /// Rename fields and name matching keep using `displayName`.
+  var rowLabel: String {
+    guard let installLabel else { return displayName }
+    let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let custom, !custom.isEmpty { return "\(custom) · \(installLabel)" }
+    let reported = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let suffix = channel?.nameSuffix ?? ""
+    let base = !suffix.isEmpty && reported.hasSuffix(suffix)
+      ? String(reported.dropLast(suffix.count))
+      : reported
+    return base.isEmpty ? installLabel : "\(base) · \(installLabel)"
   }
 
   /// The endpoint we'd prefer to connect through: a direct LAN route first, then

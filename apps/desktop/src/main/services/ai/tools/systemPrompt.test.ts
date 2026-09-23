@@ -297,6 +297,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
     expect(result).toContain("ADE capabilities ship as Agent Skills");
+    expect(result).toContain("ade-apple");
     expect(result).toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
     expect(result).not.toContain("ade-orchestrator");
@@ -306,10 +307,27 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("## Task");
   });
 
-  it("uses the active cwd when describing ADE skill roots", () => {
+  it("names only skill roots that exist, and says so when none does", () => {
+    // `/repo/.ade/worktrees/chat-lane` is not a real directory, so the roots
+    // derived from it are not real either. Naming them told the agent to read
+    // paths it could not open — and because the list is capped, a dead root
+    // also pushed a live one out. A caller that supplies explicit roots keeps
+    // full control; this covers the default resolver.
     const result = buildCodingAgentSystemPrompt({ cwd: "/repo/.ade/worktrees/chat-lane" });
 
-    expect(result).toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
+    expect(result).not.toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
+    expect(result).not.toContain("/repo/.ade/worktrees/chat-lane/resources/agent-skills");
+    expect(result).toContain("ADE capabilities ship as Agent Skills");
+  });
+
+  it("names an explicitly supplied skill root verbatim", () => {
+    const result = buildCodingAgentSystemPrompt({
+      cwd: "/repo/.ade/worktrees/chat-lane",
+      adeSkillRoots: ["/opt/ade/agent-skills"],
+    });
+
+    expect(result).toContain("/opt/ade/agent-skills");
+    expect(result).toContain("Agent skill root");
   });
 });
 

@@ -4,7 +4,9 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { AccountPage, SignInCard, describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./AccountPage";
+import { AccountPage, SignInCard, describeThisComputerMissing } from "./AccountPage";
+import { reconnectNeedsFreshSignIn } from "../../../shared/reconnectOutcome";
+import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
 import type { AdeAccountMachine, AdeAccountMachineRemovalResult, AdeAccountStatus } from "../../../shared/types";
@@ -70,6 +72,11 @@ function machine(overrides: Partial<AdeAccountMachine>): AdeAccountMachine {
     ...overrides,
   };
 }
+
+// The reconnect flow is one per window, so it outlives each test's render.
+afterEach(() => {
+  resetReconnectFlowForTests();
+});
 
 describe("AccountPage signed-out card", () => {
   const originalAde = window.ade;
@@ -598,6 +605,42 @@ describe("AccountPage signed-in", () => {
     await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
   });
 
+  it("warns before removing a computer that was active minutes ago", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({ machineKey: "alpha-key", deviceId: "alpha-dev", name: "MacBook Pro · Alpha", channel: "alpha", adeHome: "~/.ade-alpha", online: true, lastSeenAt: Date.now() - 2 * 60_000 }),
+        machine({ machineKey: "this-key", deviceId: "this-dev", name: "MacBook Pro", channel: "stable", online: true }),
+      ],
+    });
+    renderPage();
+    // Two installs on one Mac: the rows say which is which.
+    await screen.findByText("MacBook Pro · ADE Alpha");
+    expect(screen.getByText("MacBook Pro · ADE")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Options for MacBook Pro · Alpha/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Remove from account/ }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/Remove MacBook Pro · ADE Alpha from your account\?/)).toBeTruthy();
+    expect(dialog.textContent).toContain(
+      "It was active 2 minutes ago. Removing it disconnects it from your account until someone confirms it on that computer.",
+    );
+    expect(dialog.textContent).toContain("This install uses ~/.ade-alpha.");
+    expect(dialog.textContent).not.toMatch(/signing in/i);
+  });
+
+  it("does not warn about a computer last seen long ago", async () => {
+    renderPage();
+    await screen.findByText("Studio");
+
+    fireEvent.click(screen.getByRole("button", { name: /Options for Studio/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Remove from account/ }));
+
+    expect(screen.getByRole("dialog").textContent).not.toMatch(/It was active/);
+  });
+
   it("keeps the removal confirmation open while removal is in flight", async () => {
     let resolveRemoval!: (result: AdeAccountMachineRemovalResult) => void;
     removeMachine.mockImplementationOnce(
@@ -821,22 +864,21 @@ describe("AccountPage signed-in", () => {
       message: null,
       machines: [],
     });
-    (window.ade.app as unknown as { getInfo: unknown }).getInfo = vi.fn(async () => ({
-      appVersion: "1.2.75",
-      packageChannel: "stable",
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-          lastHttpStatus: 403,
-          lastHttpReason: "machine_revoked",
+    (window.ade as unknown as { sync: unknown }).sync = {
+      getLocalStatus: vi.fn(async () => ({
+        routeHealth: {
+          accountDirectory: {
+            state: "http_error",
+            lastHttpStatus: 403,
+            lastHttpReason: "machine_revoked",
+          },
         },
-      },
-    }));
+      })),
+      onEvent: vi.fn(() => () => {}),
+    };
     renderPage();
 
-    expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    expect(await screen.findByText("This computer was removed from your account")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
   });
 
@@ -947,6 +989,29 @@ describe("AccountPage signed-in", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy(),
     );
+  });
+
+  // The shell banner hides on this page and points at this card, so a list that
+  // still has a row for this computer must not hide the refusal.
+  it("shows the refusal and Reconnect even when the list still has this computer's row", async () => {
+    (window.ade as unknown as { sync: unknown }).sync = {
+      getLocalStatus: vi.fn(async () => ({
+        routeHealth: {
+          accountDirectory: {
+            state: "http_error",
+            lastHttpStatus: 403,
+            lastHttpReason: "machine_revoked",
+            revokedAt: "2026-08-14T09:30:00.000Z",
+          },
+        },
+      })),
+      onEvent: vi.fn(() => () => {}),
+    };
+    renderPage();
+    await screen.findByText("MacBook Pro");
+    const removedOn = new Date("2026-08-14T09:30:00.000Z").toLocaleDateString(undefined, { day: "numeric", month: "long" });
+    expect(await screen.findByText(`This computer was removed from your account on ${removedOn}`)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
   });
 
   it("keeps reconnect reachable from this computer's menu when detection cannot fire", async () => {
@@ -1118,12 +1183,12 @@ describe("AccountPage signed-in", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
 
+    // The same words and the same Cancel as the shell banner and the
+    // Connections pane, in place of the row's body.
     expect(
-      await screen.findByText("Open the ADE sign-in page and enter this code."),
+      await screen.findByText("Confirm it's you in your browser. If the page asks for a code, enter WDJB-MJHT."),
     ).toBeTruthy();
-    expect(screen.getByText("Code WDJB-MJHT")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Sign in again" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getAllByRole("button", { name: "Cancel" })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(cancelled?.()).toBe(true);
@@ -1134,6 +1199,47 @@ describe("AccountPage signed-in", () => {
     );
     // A cancelled sign-in states nothing; the banner already says what is wrong.
     expect(screen.queryByText(/back on your account/)).toBeNull();
+  });
+
+  it("shows the sign-in link with Copy link when the browser could not be opened", async () => {
+    machinesWithoutThisComputer();
+    const writeClipboardText = vi.fn(async () => {});
+    (window.ade.app as unknown as { writeClipboardText: unknown }).writeClipboardText = writeClipboardText;
+    repairMachinePairing.mockResolvedValue(REAUTHENTICATION_REFUSAL);
+    let finish!: () => void;
+    runAccountDeviceLogin.mockImplementation(async (options?: {
+      onPrompt?: (prompt: {
+        userCode: string;
+        verificationUri: string;
+        verificationUriComplete: string | null;
+        browserOpened: boolean;
+      }) => void;
+    }) => {
+      options?.onPrompt?.({
+        userCode: "WDJB-MJHT",
+        verificationUri: "https://directory.test/device",
+        verificationUriComplete: "https://directory.test/device?user_code=WDJB-MJHT",
+        browserOpened: false,
+      });
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return { status: "cancelled" as const };
+    });
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
+
+    expect(await screen.findByText("https://directory.test/device?user_code=WDJB-MJHT")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(writeClipboardText).toHaveBeenCalledWith("https://directory.test/device?user_code=WDJB-MJHT");
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeTruthy();
+
+    finish();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy(),
+    );
   });
 
   it("says the sign-in landed but the reconnect did not, when the directory still omits it", async () => {
@@ -1150,7 +1256,7 @@ describe("AccountPage signed-in", () => {
 
     expect(
       await screen.findByText(
-        "You're signed in, but this computer still isn't on your account. Try reconnecting it again.",
+        "You confirmed it's you, but this computer still isn't on your account. Try Reconnect this computer again.",
       ),
     ).toBeTruthy();
   });
@@ -1214,6 +1320,33 @@ describe("describeThisComputerMissing", () => {
     expect(describeThisComputerMissing("expired").body).toMatch(/sign-in expired/);
     expect(describeThisComputerMissing("expired").body).toMatch(/Repair restarts ADE's background service/);
     expect(describeThisComputerMissing("expired").body).not.toMatch(/It was removed/);
+    // This person IS signed out, and Reconnect fails without a session, so the
+    // sign-in comes first here, and only here.
+    expect(describeThisComputerMissing("expired").body).toMatch(/Sign in again, then choose Reconnect this computer/);
+  });
+
+  it("never tells a signed-in person to sign in again", () => {
+    expect(describeThisComputerMissing("active").body).not.toMatch(/Sign in again/i);
+    expect(describeThisComputerMissing("unreadable").body).not.toMatch(/Sign in again/i);
+  });
+
+  it("states the removal and its date only when the directory said so", () => {
+    const refusal = {
+      code: "machine_revoked" as const,
+      revokedAt: "2026-08-14T09:30:00.000Z",
+      recoveryGaveUpAt: null,
+    };
+    const removedOn = new Date(refusal.revokedAt).toLocaleDateString(undefined, { day: "numeric", month: "long" });
+    const copy = describeThisComputerMissing("active", refusal);
+    expect(copy.title).toBe(`This computer was removed from your account on ${removedOn}`);
+    expect(copy.body).not.toMatch(/Sign in again/i);
+
+    const confirm = describeThisComputerMissing("active", { ...refusal, code: "pairing_authentication_required" });
+    expect(confirm.title).toBe("This computer needs you to confirm it's you before it can rejoin your account");
+    expect(confirm.body).not.toMatch(/Sign in again/i);
+
+    // No refusal on record: absence alone is still not proof of removal.
+    expect(describeThisComputerMissing("active", null).title).toBe("This computer isn't on your account");
   });
 
   it("points an unreadable session at Repair rather than removal", () => {

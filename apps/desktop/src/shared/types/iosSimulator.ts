@@ -7,7 +7,7 @@ export type IosSimulatorDevice = {
 };
 
 export type IosSimulatorToolStatus = {
-  name: "xcrun" | "xcodebuild" | "simulator_window" | "idb" | "idb_companion";
+  name: "xcrun" | "xcodebuild" | "simulator_window" | "helper";
   available: boolean;
   detail: string;
   installHint: string;
@@ -30,6 +30,8 @@ export const IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE = "IOS_SIMULATOR_LANE_NOT_RESO
 export const IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE = "IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT" as const;
 
 export type IosSimulatorShutdownArgs = {
+  /** Which lane's session to end. Omitted resolves from the calling chat. */
+  laneId?: string | null;
   /**
    * Who is asking. Shutdown enforces the same single-owner rule as `launch`:
    * a caller that is not the owning chat — including an anonymous caller that
@@ -85,6 +87,161 @@ export type IosSimulatorStatus = {
    * address or its token: that is `startStream`'s to hand out.
    */
   stream?: IosSimulatorStatusStream | null;
+  /**
+   * The device this lane owns, and how ADE got it.
+   *
+   * Distinct from `activeDevice`, which is whichever simulator the current
+   * session happens to drive. A lane can own a device that is powered off and
+   * driving nothing, and the column has to render that state.
+   */
+  laneDevice?: AppleLaneDevice | null;
+  /** Which lane this status was computed for. Null for an un-laned caller. */
+  laneId?: string | null;
+  /** The vendored Swift helper. Replaces the old `idb` / `idb_companion` pair. */
+  helper?: AppleHelperToolInfo | null;
+  /**
+   * The recording running on this lane's device right now, or null.
+   *
+   * Here so one `getStatus` answers "is something already recording?" — an
+   * agent that starts a second one converts the auto recording to manual and
+   * then owns the stop, which it cannot decide without knowing this.
+   */
+  recording?: IosSimulatorStatusRecording | null;
+  /**
+   * Every action this service will accept from an agent (§S2).
+   *
+   * Carried on status so an agent in a lane can learn what it may do with the
+   * device from the tool it already calls, instead of reading source or
+   * guessing verb names. Same names on `ade apple`, on the action bus, and
+   * through `apple.invoke`.
+   */
+  capabilities?: readonly string[];
+};
+
+export type IosSimulatorStatusArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+};
+
+/**
+ * Every `ios_simulator` action an agent may call, in capability order.
+ *
+ * ONE list, read by three surfaces that used to keep three (round 5 §S2):
+ * `ADE_ACTION_ALLOWLIST.ios_simulator` spreads it, `getStatus().capabilities`
+ * reports it so an agent can discover the surface without reading source, and
+ * `apple.invoke` gates the phone/web client on the same names. A capability
+ * added to one of those and not the others is how `deviceStart` shipped
+ * reachable from the desktop and unnamed everywhere else.
+ *
+ * The names are the SERVICE method names, which is also what `ade apple`
+ * forwards for any subcommand it does not spell out. Add here first.
+ */
+export const APPLE_AGENT_ACTIONS = [
+  /* Discovery. `getStatus` is the one-shot answer: platform, helper, lane
+     device, stream, recording, and this list. */
+  "getStatus",
+  "listDevices",
+  "listLaunchTargets",
+  "claim",
+  "attachToChatSession",
+
+  /* The lane's device: find it, make one, bring it up, put it away. */
+  "deviceList",
+  "deviceCreate",
+  "deviceAttach",
+  "deviceStart",
+  "deviceStop",
+  "deviceDelete",
+  "deviceDeleteInstalled",
+
+  /* Video. */
+  "startStream",
+  "stopStream",
+  "getStreamStatus",
+  "frame",
+
+  /* The app. */
+  "launch",
+  "relaunchApp",
+  "terminateApp",
+  "uninstallApp",
+  "getAppState",
+  "getForegroundApp",
+  "openUrl",
+
+  /* Input. `drag` with a duration is the scroll: a drag with no duration reads
+     as a flick and scrolls nothing. */
+  "tap",
+  "typeText",
+  "drag",
+  "swipe",
+  "scroll",
+  "pressButton",
+  "rotate",
+  "selectPoint",
+
+  /* Reading the screen by name rather than by pixel. */
+  "getScreenSnapshot",
+  "getInspectorSnapshot",
+  "inspectPoint",
+  "findElement",
+  "tapElement",
+  "fillElement",
+  "waitForElement",
+  "assertVisible",
+
+  /* Device state, in place of a human in Settings. */
+  "getDeviceSettings",
+  "setAppearance",
+  "setContentSize",
+  "setAccessibilityOption",
+  "setLocation",
+  "clearLocation",
+  "setPermission",
+  "sendPushNotification",
+  "setStatusBar",
+  "clearStatusBar",
+
+  /* The app's own log. */
+  "startEventLog",
+  "stopEventLog",
+  "getEventLog",
+
+  /* Evidence. Screenshots and recordings file themselves (§S3). */
+  "screenshot",
+  "captureProofBundle",
+  "recordStart",
+  "recordStop",
+  "recordList",
+  "recordDelete",
+  "recordingsTotalBytes",
+
+  /* SwiftUI previews. */
+  "getPreviewCapability",
+  "listPreviewTargets",
+  "resolvePreviewMatch",
+  "ensurePreviewWorkspace",
+  "renderCurrentPreview",
+  "renderPreview",
+  "openPreviewWorkspace",
+
+  /* Sessions. `shutdown` ends THIS CHAT'S claim; `deviceStop` powers the
+     simulator off. They are different verbs and always have been. */
+  "shutdown",
+  "openDevice",
+  "closeDevice",
+  "getDeviceSession",
+] as const;
+
+export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
+
+/** The live recording, as `getStatus` reports it. */
+export type IosSimulatorStatusRecording = {
+  id: string;
+  startedAt: string;
+  mode: "auto" | "manual";
+  /** The chat that owns it, so a second chat knows not to stop it. */
+  chatSessionId: string | null;
 };
 
 /** The redacted live-view summary carried on `IosSimulatorStatus`. */
@@ -92,7 +249,7 @@ export type IosSimulatorStatusStream = {
   running: boolean;
   backend: IosSimulatorStreamBackend | null;
   deviceUdid: string | null;
-  /** Measured by host-encoded backends only; null for window capture. */
+  /** Measured by the helper's own encoder. */
   fps: number | null;
   bitrateKbps: number | null;
   lastError: string | null;
@@ -231,6 +388,20 @@ export type IosSimulatorScreenshotArgs = {
   laneId?: string | null;
   /** Where to write the PNG. Relative paths resolve against the build root. */
   outPath?: string | null;
+  chatSessionId?: string | null;
+  /**
+   * File the PNG in the proof drawer. Default ON (round 5 §S3).
+   *
+   * A screenshot nobody can see is not evidence. Recordings have filed
+   * themselves since round 3; a still had to be promoted by a second command
+   * (`ade apple proof`) that agents forgot and the rail's Screenshot button
+   * never ran at all — it wrote a PNG into a cache directory and told nobody.
+   * Internal callers that already produce their own artifact — the proof
+   * bundle's `screen.png`, the inspector's hit-test still — pass `false`.
+   */
+  proof?: boolean | null;
+  /** Caption for the drawer row. Defaults to device + timestamp. */
+  caption?: string | null;
 };
 
 export type IosSimulatorScreenshot = {
@@ -241,6 +412,14 @@ export type IosSimulatorScreenshot = {
   width: number | null;
   height: number | null;
   capturedAt: string;
+  /**
+   * The proof-drawer row this screenshot was filed as, when it was filed.
+   *
+   * `null` means it was not filed (opted out, no drawer wired, or the drawer
+   * refused it). Never a reason to fail the capture: the PNG on disk is the
+   * result the caller asked for.
+   */
+  proofArtifactId?: string | null;
 };
 
 export type IosSimulatorStreamStatus = {
@@ -251,9 +430,9 @@ export type IosSimulatorStreamStatus = {
   fallbackReason?: string | null;
   degradationReason?: string | null;
   /**
-   * Measured frame rate. The service never measures frames — the renderer owns
-   * the Simulator.app window capture — so this stays null service-side instead
-   * of reporting a number nobody counted.
+   * Measured frame rate. The service never counts frames — the viewer that
+   * decodes them does — so this stays null service-side instead of reporting a
+   * number nobody counted.
    */
   fps: number | null;
   targetFps: number | null;
@@ -272,51 +451,38 @@ export type IosSimulatorStreamStatus = {
   latencyP50Ms?: number | null;
   latencyP95Ms?: number | null;
   helperPid?: number | null;
-  inputBackend?: "idb" | null;
-  /** Set by host-encoded backends only. Null for window capture. */
+  inputBackend?: "helper" | null;
+  /** Where a viewer connects, and with what token. Minted by `startStream`. */
   transport?: IosSimulatorStreamTransport | null;
-  /** Measured by host-encoded backends only. */
+  /** Measured by the helper's encoder. */
   bitrateKbps?: number | null;
 };
 
 /**
- * `simulator-window-capture` is the renderer capturing the real Simulator.app
- * window on this Mac. It is the cheapest path that exists — Chromium hands the
- * compositor's own frames to a `<video>` element with no encode and no copy —
- * and it stays the default whenever the simulator is local.
+ * There is ONE backend now.
  *
- * `idb-h264` encodes on the machine that owns the simulator and serves access
- * units over loopback HTTP. It costs an encode and a decode, but it is the only
- * path that works when that machine is not this one, and it needs no Screen
- * Recording grant and no visible Simulator window.
+ * `helper-h264` is the vendored Swift helper (`native/ADESimHelper`) capturing
+ * the simulator's own framebuffer, encoding H.264 on the machine that owns the
+ * device, and serving access units over loopback HTTP. It replaced both of the
+ * old names: `simulator-window-capture` (the renderer mirroring a real
+ * Simulator.app window, which forced a Screen Recording grant, a visible
+ * window, and a bezel in the picture) and `idb-h264` (which needed idb and
+ * idb_companion installed). Keeping the field rather than deleting it means a
+ * status reader still says WHICH engine produced the pixels; it just has one
+ * answer.
  */
-export type IosSimulatorStreamBackend = "simulator-window-capture" | "idb-h264";
+export type IosSimulatorStreamBackend = "helper-h264";
 
-export type IosSimulatorWindowSource = {
-  id: string;
-  name: string;
-  thumbnailDataUrl: string | null;
-};
-
-export type IosSimulatorWindowIssue =
-  | "not-running"
-  | "hidden"
-  | "minimized"
-  | "no-window"
-  | "screen-recording-permission"
-  | "automation-denied"
-  | "unknown";
-
-/**
- * Live-view capture of the real Simulator window depends on two macOS privacy
- * grants that the app cannot see through `simctl`: Screen Recording (or
- * `desktopCapturer` hands back black thumbnails) and Automation/System Events
- * (or every window query and park silently no-ops). Both used to surface as
- * `issue: "unknown"` with a null message, so the drawer showed a blank live
- * view and named no blocker — hence the two dedicated `IosSimulatorWindowIssue`
- * members above, which the overlay turns into an "Open Settings" affordance.
+/*
+ * The window-capture types lived here: `IosSimulatorWindowSource`,
+ * `IosSimulatorWindowIssue`, `IosSimulatorWindowState`,
+ * `IosSimulatorWindowCaptureSessionHint`, `IosSimulatorWindowSourcesResult`
+ * and `IosSimulatorPrivacyPane`. Every one of them described a picture of
+ * Simulator.app — a window id, whether that window was hidden or minimized,
+ * and which macOS privacy grant was missing before the renderer could mirror
+ * it. The helper reads the framebuffer directly, so there is no window, no
+ * grant, and nothing left to describe.
  */
-export type IosSimulatorPrivacyPane = "screen-recording" | "automation";
 
 export type IosSimulatorPermissionStatus =
   | "not-determined"
@@ -324,34 +490,6 @@ export type IosSimulatorPermissionStatus =
   | "denied"
   | "restricted"
   | "unknown";
-
-export type IosSimulatorWindowState = {
-  appRunning: boolean;
-  visible: boolean | null;
-  windowCount: number | null;
-  minimizedWindowCount: number | null;
-  capturable: boolean | null;
-  issue: IosSimulatorWindowIssue | null;
-  message: string | null;
-};
-
-/**
- * The window-parking path runs in Electron main, whose own iOS simulator
- * service never sees a launch that the brain daemon owns — its `activeSession`
- * is always null. Callers that already hold the runtime session pass it here so
- * parking keys off the session that actually exists.
- */
-export type IosSimulatorWindowCaptureSessionHint = {
-  deviceUdid: string;
-  deviceName: string | null;
-};
-
-export type IosSimulatorWindowSourcesResult = {
-  sources: IosSimulatorWindowSource[];
-  windowState: IosSimulatorWindowState | null;
-  /** Short, actionable blocker text. Null when `sources` is non-empty. */
-  message: string | null;
-};
 
 export type IosSimulatorPreviewWindow = {
   tabIdentifier: string;
@@ -476,12 +614,28 @@ export type IosSimulatorOpenPreviewWorkspaceArgs = {
 
 export type IosSimulatorStartStreamArgs = {
   deviceUdid?: string | null;
+  laneId?: string | null;
+  chatSessionId?: string | null;
   fps?: number | null;
-  backend?: "auto" | IosSimulatorStreamBackend | null;
-  /** `idb-h264` only. 0.1 to 1. Lower sends fewer pixels over the wire. */
+  /** 0.1 to 1. Lower sends fewer pixels over the wire. */
   scaleFactor?: number | null;
-  /** `idb-h264` only. 0.1 to 1. Lower spends fewer bits per pixel. */
+  /**
+   * 0.1 to 1. Lower spends fewer bits per pixel.
+   *
+   * Carried for callers that still pass it; the helper's encoder takes a
+   * bitrate rather than a quality ratio, so it is advisory.
+   */
   compressionQuality?: number | null;
+  /** Caps the encoder's bitrate. Defaults to the `apple.remoteBitrateKbpsCap` setting. */
+  bitrateKbps?: number | null;
+  /**
+   * Set by the desktop preload when a renderer on this machine is the caller.
+   *
+   * The relay consults it before stopping a capture for its last remote viewer:
+   * a web tab can start the capture that the desktop column then joins, and
+   * without this the tab closing would black out the column.
+   */
+  localViewer?: boolean;
 };
 
 export type IosSimulatorFrame = {
@@ -540,6 +694,8 @@ export type IosSimulatorPoint = {
 };
 
 export type IosSimulatorDragArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
   deviceUdid?: string | null;
   startX: number;
   startY: number;
@@ -547,7 +703,19 @@ export type IosSimulatorDragArgs = {
   endY: number;
   durationMs?: number | null;
   delta?: number | null;
+  source?: AppleInputSource;
 };
+
+/**
+ * Who drove the device on an injected-input call.
+ *
+ * `user` is the desktop pane, the mini player, and the phone/web viewers — a
+ * person looking at the screen. Anything else is an agent, and only an agent's
+ * input starts an automatic recording (round 3, A2). The preload stamps this
+ * on every call the renderer makes; nothing else sets it, so the default is
+ * the safe one.
+ */
+export type AppleInputSource = "user" | "agent";
 
 export type IosInspectableFrame = {
   x: number;
@@ -685,25 +853,58 @@ export type IosSimulatorEventPayload =
   | { type: "stream-error"; status: IosSimulatorStreamStatus }
   | { type: "device-session-started"; deviceSession: IosSimulatorDeviceSession }
   | { type: "device-session-released"; previousDeviceSession: IosSimulatorDeviceSession | null }
-  | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings };
+  | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings }
+  | AppleDeviceStateEvent;
+
+/**
+ * Where `deviceStart` is in bringing a lane's device up.
+ *
+ * `starting` is emitted once the device is known (attached or created) and
+ * before `simctl boot`; `booted` once `bootstatus` returns; `streaming` once
+ * the helper capture is open; `failed` on any error, with `detail` carrying
+ * the message. The loading card advances its two segments on these.
+ *
+ * `stopped` is `deviceStop`'s: the simulator is powered off and the lane still
+ * owns it, so the pane swaps to "{name} is off. [Start]" without re-listing.
+ *
+ * `released` is the opposite pair: the simulator keeps running and the lane no
+ * longer OWNS it, because another lane took it over. It is deliberately not
+ * `stopped` — nothing was powered off, and a pane told "off" would offer Start
+ * on a device that is not its own any more. The lane that lost it must
+ * re-list, which is the one phase that means "your binding changed".
+ */
+export type AppleDeviceStatePhase =
+  | "starting"
+  | "booted"
+  | "streaming"
+  | "failed"
+  | "stopped"
+  | "released";
+
+export type AppleDeviceStateEvent = {
+  type: "apple.device.state";
+  laneId: string;
+  udid: string;
+  phase: AppleDeviceStatePhase;
+  detail?: string;
+};
 
 /* ------------------------------------------------------------------------- *
  * Device hub: device sessions, host-encoded video, device tools, semantic
  * actions, and the event log.
  *
- * The window-capture backend only works when the Simulator runs on the same
- * Mac as the ADE window, because the renderer captures the Simulator.app
- * window itself. A chat pinned to a remote Mac therefore had a live view it
- * could never show. The `idb-h264` backend moves the encode to the machine
- * that owns the simulator and hands the desktop a loopback URL instead of a
- * window id, so a Mac bound to another Mac watches the same session the agent
+ * The old window-capture backend only worked when the Simulator ran on the
+ * same Mac as the ADE window, because the renderer captured the Simulator.app
+ * window itself, so a chat pinned to a remote Mac had a live view it could
+ * never show. The helper encodes on the machine that owns the simulator and
+ * hands every viewer a loopback URL instead of a window id, so a Mac bound to
+ * another Mac — and a phone, and a web tab — watch the same session the agent
  * drives.
  *
- * The Work tools pane still offers the iOS tool on macOS only
- * (`supportsIosSimulator: isMacPlatform()`), so a Windows or Linux desktop
- * cannot open this drawer even against a remote Mac. The transport does not
- * care which desktop reads it; the gate is the renderer's, and moving it is a
- * behaviour change this branch did not make.
+ * The Work tools pane offers the Apple tool when the bound runtime reports
+ * `supported: true` (`iosSimulator.getStatus()`), not when the viewer's OS is
+ * macOS. A Windows desktop pinned to a remote Mac can open the column; a
+ * Linux runtime cannot.
  * ------------------------------------------------------------------------- */
 
 /**
@@ -794,8 +995,20 @@ export type IosSimulatorStreamTransport = {
   token: string | null;
   /** WebCodecs codec string built from the stream's own SPS, e.g. `avc1.640032`. */
   codec: string | null;
+  /** Frame size in PIXELS — what the decoder produces. */
   width: number | null;
   height: number | null;
+  /**
+   * Screen size in POINTS — what every input call takes.
+   *
+   * Both are needed and they are not the same number: a 3× phone decodes at
+   * 1179×2556 and is 393×852 points. A viewer that laid its frame out in
+   * pixels and then sent pointer coordinates straight to `tap` was sending
+   * three times the intended position, which is why taps in round 2 landed
+   * nowhere and the pane looked unresponsive.
+   */
+  pointWidth: number | null;
+  pointHeight: number | null;
 };
 
 export type IosSimulatorAppearance = "light" | "dark";
@@ -828,6 +1041,7 @@ export const IOS_SIMULATOR_ACCESSIBILITY_OPTIONS = [
   "increase-contrast",
   "reduce-motion",
   "reduce-transparency",
+  "button-shapes",
   "bold-text",
   "invert-colors",
   "grayscale",
@@ -883,6 +1097,13 @@ export type IosSimulatorDeviceSettings = {
 
 export type IosSimulatorDeviceArgs = {
   deviceUdid?: string | null;
+  /**
+   * Which lane's device session answers. Omitted resolves from the calling
+   * chat, then from the single un-laned session, exactly as the build root
+   * ladder resolves a project root.
+   */
+  laneId?: string | null;
+  chatSessionId?: string | null;
 };
 
 export type IosSimulatorSetAppearanceArgs = IosSimulatorDeviceArgs & {
@@ -947,6 +1168,16 @@ export type IosSimulatorAppState = {
   pid: number | null;
   checkedAt: string;
 };
+
+/**
+ * The app in front of the simulator right now, read through the helper's
+ * accessibility bridge. `null` when nothing but SpringBoard is up.
+ */
+export type IosSimulatorForegroundApp = {
+  bundleId: string;
+  pid: number | null;
+  checkedAt: string;
+} | null;
 
 /**
  * One row of the device hub's event log.
@@ -1077,6 +1308,7 @@ export type IosSimulatorProofBundleArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
   laneId?: string | null;
+  chatSessionId?: string | null;
   /** Directory to write into. Relative paths resolve against the build root. */
   outDir?: string | null;
   caption?: string | null;
@@ -1092,4 +1324,496 @@ export type IosSimulatorProofBundle = {
   logPath: string | null;
   caption: string | null;
   capturedAt: string;
+  /** The device the bundle was taken from, carried so the drawer row can name it. */
+  deviceUdid: string;
+  width: number | null;
+  height: number | null;
+  /**
+   * The proof-drawer row for `screen.png`, or null when no filer is attached.
+   *
+   * `proof-bundle` is a proof verb and filed nothing at all until this existed:
+   * it wrote the directory and returned, so a reviewer had no row to open and
+   * an agent reporting "proof filed" was wrong.
+   */
+  proofArtifactId?: string | null;
+};
+
+/* ───────────────────────── Apple device environment ───────────────────────── */
+
+/** A lane may not delete a simulator it merely attached. */
+export const APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE = "APPLE_DEVICE_ATTACHED_NOT_DELETABLE" as const;
+/** The lane already owns a device; delete it before creating another. */
+export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
+/**
+ * A lane holds this simulator, so it is not the picker's to delete.
+ *
+ * Deleting a device out from under another lane would take its live view away
+ * with no warning on that lane's screen. The lane that owns it gives it up
+ * through `deviceDelete`, which stops its stream first.
+ */
+export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
+/**
+ * The chosen clone template is running, and `simctl` cannot clone a booted
+ * device (error 405, "Unable to clone device in current state: Booted").
+ */
+export const APPLE_TEMPLATE_BOOTED_CODE = "APPLE_TEMPLATE_BOOTED" as const;
+/** No simulator runtime is installed, and ADE never downloads one. */
+export const APPLE_NO_INSTALLED_SIMULATORS_CODE = "APPLE_NO_INSTALLED_SIMULATORS" as const;
+/** The vendored Swift helper is missing, not running, or not answering. */
+export const APPLE_HELPER_UNAVAILABLE_CODE = "APPLE_HELPER_UNAVAILABLE" as const;
+/** `frame` needs a running stream; `screenshot` does not. */
+export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const;
+/** A recording marked `proof` cannot be deleted by an agent. */
+export const APPLE_RECORDING_PINNED_CODE = "APPLE_RECORDING_PINNED" as const;
+/** Another lane's recording holds this device; the message names the lane. */
+export const APPLE_DEVICE_ALREADY_RECORDING_CODE = "APPLE_DEVICE_ALREADY_RECORDING" as const;
+/**
+ * A hardware button this helper (and this Xcode's `simctl`) cannot press.
+ *
+ * `shake` is the current case: it is not a helper `button` name, and `simctl`
+ * has no shake verb. Other unknown names use the same code so callers can
+ * branch once.
+ */
+export const APPLE_BUTTON_UNSUPPORTED_CODE = "APPLE_BUTTON_UNSUPPORTED" as const;
+
+export type AppleLaneDeviceFamily = "iphone" | "ipad" | "watch";
+
+/** A simulator this Mac actually has. Never a runtime that could be downloaded. */
+export type AppleInstalledSimulator = {
+  udid: string;
+  name: string;
+  runtime: string;
+  state: string;
+  isAvailable: boolean;
+  family: AppleLaneDeviceFamily;
+  deviceTypeIdentifier: string | null;
+};
+
+/**
+ * The one device a lane owns.
+ *
+ * `origin` is the whole reason this record exists rather than a bare udid:
+ * `clone` is ADE's to delete on lane archive, `attached` is the user's and is
+ * only ever detached.
+ */
+export type AppleLaneDevice = {
+  laneId: string;
+  udid: string;
+  name: string;
+  origin: "clone" | "attached";
+  family: AppleLaneDeviceFamily;
+  runtime: string;
+  createdAt: string;
+  templateUdid: string | null;
+};
+
+export type AppleDeviceCreateArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** udid or name of an installed simulator to clone. Defaults per the spec. */
+  from?: string | null;
+  name?: string | null;
+};
+
+export type AppleDeviceAttachArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** udid or name of an installed simulator to bind without cloning. */
+  simulator: string;
+};
+
+export type AppleDeviceListArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  installed?: boolean | null;
+  /**
+   * Also measure what CoreSimulator's device store costs on disk.
+   *
+   * OFF by default and asked for separately, because it is the one expensive
+   * part of this call: measuring means walking the device directories, and the
+   * picker must paint its list before it knows the numbers. The renderer makes
+   * a second, disk-only call after the first paint.
+   */
+  disk?: boolean | null;
+};
+
+/**
+ * `deviceStart`: attach (or create) if the lane has no device, boot it if it
+ * is shut down, wait for `bootstatus`, then open the live view — one call for
+ * the picker's Start/Open/Create actions and for `ade apple start`.
+ *
+ * `udid` names an installed simulator to attach when the lane owns nothing.
+ * `create.sourceUdid` clones that simulator for the lane instead. Neither is
+ * consulted when the lane already owns a device: that device is started.
+ */
+export type AppleDeviceStartArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  udid?: string | null;
+  create?: { sourceUdid: string } | null;
+};
+
+/**
+ * Which lane holds a given simulator, by name.
+ *
+ * `deviceList` used to answer only "what is installed" and "what does MY lane
+ * own", which left the picker unable to tell a free device from one another
+ * lane is driving. It offered Open on a simulator lane B was mid-test in, and
+ * an agent that could not see the difference stopped to ask a human for
+ * permission instead of creating its own device. `laneName` is the display
+ * name and not the id on purpose: "in use by lane dca9f144" names nothing a
+ * person recognises.
+ */
+export type AppleSimulatorOwner = {
+  udid: string;
+  laneId: string;
+  /** The lane's display name, or null when the lane row is gone or unnamed. */
+  laneName: string | null;
+  origin: "clone" | "attached";
+  /** True when the owning lane is the lane this list was computed for. */
+  mine: boolean;
+};
+
+/** One device data directory's cost on disk. */
+export type AppleSimulatorDiskUsage = {
+  udid: string;
+  bytes: number;
+};
+
+/**
+ * What the simulators on this Mac cost on disk.
+ *
+ * Measured only when `deviceList` is asked for it. One `du` pass over
+ * CoreSimulator's device store answers both halves — the per-device rows and
+ * the store's own total — so the picker never pays for two walks.
+ */
+export type AppleDeviceDiskUsage = {
+  /** Every byte under the device store, including devices no lane owns. */
+  totalBytes: number;
+  /** Bytes per device directory. A device with no directory yet is absent. */
+  devices: AppleSimulatorDiskUsage[];
+  /** The directory that was measured, so a surprising number is checkable. */
+  root: string;
+  measuredAt: string;
+};
+
+export type AppleDeviceListResult = {
+  installed: AppleInstalledSimulator[];
+  lane: AppleLaneDevice | null;
+  /**
+   * Every lane binding this project knows about, mine flagged.
+   *
+   * Complete rather than filtered: the picker's three groups (mine, free, in
+   * use elsewhere) are a partition of the installed list against this array,
+   * and a payload that carried only the caller's lane could not express the
+   * third group at all.
+   */
+  owners: AppleSimulatorOwner[];
+  /** Which lane this list was computed for. Null for an un-laned caller. */
+  laneId: string | null;
+  /** Present only when `disk` was asked for. */
+  disk?: AppleDeviceDiskUsage | null;
+};
+
+export type AppleDeviceDeleteArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  force?: boolean | null;
+};
+
+/**
+ * `deviceDeleteInstalled`: remove one simulator the owner picked from the list.
+ *
+ * Not the same verb as `deviceDelete`, which means "this lane gives up its own
+ * device". This one is housekeeping — usually disk — and it refuses any
+ * simulator a lane holds with `APPLE_DEVICE_OWNED_BY_LANE`.
+ */
+export type AppleDeviceDeleteInstalledArgs = {
+  udid: string;
+  /**
+   * The owner said yes to THIS device, by name, in a confirmation.
+   *
+   * Required, and deliberately not defaulted. Deleting a simulator is not
+   * recoverable, the owner's standing rule is that nothing deletes one without
+   * their approval, and this verb is reachable by any agent because ADE keeps
+   * one action list per domain. A caller that has to write the claim out
+   * cannot arrive here by drifting through a default.
+   */
+  confirmedByUser: true;
+  laneId?: string | null;
+  projectRoot?: string | null;
+};
+
+/**
+ * `deviceStop`: power the lane's simulator OFF and leave it registered.
+ *
+ * The opposite of `deviceStart`, and deliberately not `shutdown`. `shutdown`
+ * ends the chat's *session* — it releases the ownership claim and stops the
+ * stream, and the simulator keeps running. Round 4 wired "Close and shut down"
+ * to it, so the tools card still read "ADE Repro · Running" the moment the tab
+ * closed and the device came straight back. This is the verb that runs
+ * `simctl shutdown`.
+ *
+ * The lane device stays in the registry: powering a device off says nothing
+ * about which device the lane uses, so the pane's next visit offers Start
+ * rather than the picker. `deviceDelete` is the verb that un-registers.
+ */
+export type AppleDeviceStopArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** Power off this simulator instead of the lane's. Rarely needed. */
+  udid?: string | null;
+  /** Release a session another chat owns as well. */
+  force?: boolean | null;
+  /**
+   * Stop for whoever is running, without claiming to be them.
+   *
+   * The Work pane's close path: it is lane-scoped, it drives whatever session
+   * its lane is running, and it must not impersonate the owner to do it.
+   */
+  ignoreOwnership?: boolean | null;
+};
+
+export type AppleDeviceStopResult = {
+  /** The simulator that was asked to power off, or null when the lane owns none. */
+  udid: string | null;
+  /** `simctl shutdown` reported the device off. False when it was already off. */
+  poweredOff: boolean;
+  /** The device state before the call, as `simctl` reported it. */
+  previousState: string | null;
+  /** A chat session claim was released as part of this. */
+  released: boolean;
+  /** The lane still owns this device. Always true unless the lane owned none. */
+  stillRegistered: boolean;
+};
+
+/**
+ * Which way the VIEWPORT travels, the way a reader means it.
+ *
+ * `down` reveals what is below, like a page-down — which on a touch screen is
+ * a finger swiping UP. The sign flip lives in the service so no caller has to
+ * hold both models in its head; the helper's own `scroll` speaks in content
+ * movement, and `ade apple scroll down` has to mean what a person says.
+ */
+export const APPLE_SCROLL_DIRECTIONS = ["up", "down", "left", "right"] as const;
+export type AppleScrollDirection = (typeof APPLE_SCROLL_DIRECTIONS)[number];
+
+/**
+ * `scroll`: the helper's own scroll gesture, which nothing in ADE could reach.
+ *
+ * The vendored helper has had a `scroll` command since it was vendored — it
+ * turns the delta into a touch drag on the digitizer and RE-ANCHORS when the
+ * finger nears an edge, so a scroll longer than the screen keeps going instead
+ * of stopping at the bezel. Nothing in TypeScript ever sent it: the pane's
+ * wheel handler and every agent fell back to `drag`, which is one finger
+ * stroke bounded by the screen. Round 5 §S2 exposes it under its own name.
+ */
+export type AppleScrollArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  direction: AppleScrollDirection;
+  /** How far, in device pixels. Defaults to roughly one screen. */
+  amount?: number | null;
+  /**
+   * Where the finger lands, in device POINTS. Both or neither.
+   *
+   * iOS hit-tests the scroll view under the touch, so an anchor is how a
+   * caller scrolls a bottom sheet rather than the map behind it. Omitted means
+   * the centre of the screen.
+   */
+  anchorX?: number | null;
+  anchorY?: number | null;
+  /**
+   * Whether the gesture came from a person at this window or from an agent.
+   * The preload stamps `"user"` on the pane's wheel handler; without it a
+   * human scroll would look like agent input and start an auto-recording.
+   */
+  source?: AppleInputSource;
+};
+
+export type AppleScrollResult = {
+  ok: true;
+  direction: AppleScrollDirection;
+  /** What the helper was told, in its own content-movement convention. */
+  deltaX: number;
+  deltaY: number;
+};
+
+export type AppleFrameArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  outPath?: string | null;
+};
+
+export type AppleFrameResult = {
+  filePath: string;
+  width: number;
+  height: number;
+};
+
+/** Hardware buttons `pressButton` accepts. `shake` is named here so the column can call it; the service refuses it with `APPLE_BUTTON_UNSUPPORTED`. */
+export const APPLE_HARDWARE_BUTTONS = [
+  "home",
+  "lock",
+  "volume-up",
+  "volume-down",
+  "siri",
+  "shake",
+] as const;
+export type AppleHardwareButtonName = (typeof APPLE_HARDWARE_BUTTONS)[number];
+
+export type ApplePressButtonArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  name: AppleHardwareButtonName;
+};
+
+export type ApplePressButtonResult = {
+  ok: true;
+};
+
+/**
+ * Values the helper's `orientation` command understands.
+ *
+ * These are UIInterfaceOrientation numbers, which is what `HIDInjector`
+ * sends: portrait=1, portrait-upside-down=2, landscape-right=3,
+ * landscape-left=4. (UIDeviceOrientation swaps the two landscapes.)
+ */
+export const APPLE_DEVICE_ORIENTATIONS = [
+  "portrait",
+  "portrait-upside-down",
+  "landscape-left",
+  "landscape-right",
+] as const;
+export type AppleDeviceOrientation = (typeof APPLE_DEVICE_ORIENTATIONS)[number];
+
+export type AppleRotateArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  orientation: AppleDeviceOrientation;
+};
+
+/**
+ * How `rotate` knows what it is telling you.
+ *
+ * `rotate` used to answer `applied: true` the instant the helper's GSEvent
+ * left the host, which says only that a mach message was sent. Measured on
+ * 2026-09-21 against a machine with no `Simulator.app` on it at all: the
+ * simulator accepts that event anyway and the DEVICE orientation really does
+ * change. What refuses is the foreground app. SpringBoard and Settings on an
+ * iPhone are portrait-only, so the framebuffer stayed 1179x2556 through four
+ * landscape rotates that all reported success — and then Safari, launched on
+ * the same device with the device already turned, came up at 2556x1179 on its
+ * first frame.
+ *
+ * So the send is never the answer. The framebuffer is.
+ */
+export const APPLE_ROTATE_VERIFICATIONS = [
+  /** The framebuffer turned onto the requested axis. Proof that it moved. */
+  "rotated",
+  /**
+   * The framebuffer was already on the requested axis. A 180-degree flip
+   * inside one axis (`portrait` <-> `portrait-upside-down`, or one landscape
+   * to the other) leaves the geometry identical, so that part is not
+   * observable from pixels and is deliberately not claimed.
+   */
+  "already-on-axis",
+  /** The event was sent and accepted, and the screen never turned. */
+  "not-adopted",
+  /** The helper could not send the event at all. */
+  "send-failed",
+  /** The framebuffer could not be read, so nothing is claimed either way. */
+  "unmeasurable",
+] as const;
+export type AppleRotateVerification = (typeof APPLE_ROTATE_VERIFICATIONS)[number];
+
+/** The device took the orientation; the app on screen kept its own. */
+export const APPLE_ROTATE_NOT_ADOPTED_CODE = "APPLE_ROTATE_NOT_ADOPTED";
+/** The helper never got the event onto the device. */
+export const APPLE_ROTATE_SEND_FAILED_CODE = "APPLE_ROTATE_SEND_FAILED";
+/** No framebuffer reading, so no claim. */
+export const APPLE_ROTATE_UNMEASURABLE_CODE = "APPLE_ROTATE_UNMEASURABLE";
+
+/** Framebuffer pixels, which is the only orientation reading iOS gives back. */
+export type AppleRotateFrame = {
+  width: number;
+  height: number;
+};
+
+export type AppleRotateResult = {
+  /**
+   * True only when the framebuffer was **observed** showing the requested
+   * axis. A send that iOS ignored reports `false`, not `true`.
+   */
+  applied: boolean;
+  /** The orientation that was asked for. */
+  orientation: AppleDeviceOrientation;
+  /** Which of the five outcomes above this was. */
+  verification: AppleRotateVerification;
+  /** A machine-readable code. Present exactly when `applied` is false. */
+  reason: string | null;
+  /** One sentence, for a rail or a CLI line to show as-is. */
+  detail: string | null;
+  /** Framebuffer pixels read before the request, and after the wait. */
+  frameBefore: AppleRotateFrame | null;
+  frameAfter: AppleRotateFrame | null;
+};
+
+export type AppleRecordStartArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /**
+   * The caller's workspace, so a caller with no lane id is placed by the
+   * worktree it stands in — the same field the screenshot verbs send.
+   *
+   * Recordings were the one capture path that did not carry it, so an unbound
+   * caller's recording filed against whichever lane owned the DEVICE.
+   */
+  projectRoot?: string | null;
+  overlays?: boolean | null;
+  label?: string | null;
+};
+
+export type AppleRecordStopArgs = {
+  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
+  projectRoot?: string | null;
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  keep?: boolean | null;
+  discard?: boolean | null;
+};
+
+export type AppleRecordListArgs = {
+  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
+  projectRoot?: string | null;
+  laneId?: string | null;
+  chatSessionId?: string | null;
+};
+
+export type AppleRecordDeleteArgs = {
+  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
+  projectRoot?: string | null;
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  id: string;
+  force?: boolean | null;
+  /**
+   * The user pressed Delete in the drawer.
+   *
+   * Every stopped recording is proof now, so this is what separates "the
+   * person who owns this Mac asked" from "an agent tried to delete the
+   * evidence" — which is still refused with `APPLE_RECORDING_PINNED`.
+   */
+  allowProof?: boolean | null;
+};
+
+/** What `status.tools` reports for the vendored helper. */
+export type AppleHelperToolInfo = {
+  present: boolean;
+  path: string;
+  version: number | null;
 };

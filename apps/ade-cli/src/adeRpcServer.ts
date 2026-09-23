@@ -43,9 +43,9 @@ import {
 } from "../../desktop/src/shared/codedError";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
-  getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
+import { adePromptAgentSkillRoots } from "../../desktop/src/main/services/skills/agentSkillRuntimeService";
 import { isActionablePrIssueComment } from "../../desktop/src/shared/prIssueResolution";
 import {
   type ComputerUseBackendStyle,
@@ -84,7 +84,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import {
@@ -207,10 +207,7 @@ type SessionState = {
 };
 
 function isUserClientSession(session: SessionState): boolean {
-  return !session.identity.runId
-    && !session.identity.stepId
-    && !session.identity.attemptId
-    && !session.identity.chatSessionId;
+  return !callerIdentityIsAgent(session.identity);
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -1784,6 +1781,18 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
   return provider !== "shell";
 }
 
+/**
+ * `ade-cli:5504`, `ade-code:912` — an id `buildInitializeParams` invents from
+ * the client name and its own pid when the caller's environment names no chat
+ * session and no attempt.
+ *
+ * It identifies a PROCESS. It is a usable caller id and a valid `ade-cli`
+ * signature, and it must never become an owner of anything durable.
+ */
+function isSyntheticCliCallerId(callerId: string): boolean {
+  return /^[a-z][a-z0-9-]*:\d+$/.test(callerId);
+}
+
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
   const owners: ComputerUseArtifactOwner[] = [];
   const add = (
@@ -1841,7 +1850,18 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
     if (looksLikeStandaloneChat) {
       const implicitChatSessionId =
         asOptionalTrimmedString(session.identity.callerId) ?? asOptionalTrimmedString(session.identity.attemptId);
-      if (implicitChatSessionId && implicitChatSessionId !== "unknown") {
+      // A synthetic id is NOT a chat. `buildInitializeParams` mints
+      // `<client>:<pid>` when the caller has no session in its environment, and
+      // filing proof under it produced a record owned by a process id: no lane
+      // resolved from it, no drawer could ever scope to it, and the artifact
+      // belonged to nobody. That is how an agent's before/after screenshots
+      // became unreachable while every command reported success. A caller with
+      // no chat is served by the lane owner instead, which `laneId` carries.
+      if (
+        implicitChatSessionId
+        && implicitChatSessionId !== "unknown"
+        && !isSyntheticCliCallerId(implicitChatSessionId)
+      ) {
         add("chat_session", implicitChatSessionId);
       }
     }
@@ -2157,6 +2177,54 @@ function describeCallerRootSource(raw: unknown): string {
   return value.replace(/[\r\n]+/g, " ").slice(0, 80);
 }
 
+/**
+ * The lane whose worktree CONTAINS the caller's root, for a caller that has no
+ * chat session to be placed by.
+ *
+ * Shared by the two proof-filing doors — `ingest_computer_use_artifacts` and
+ * the `screenshot_environment` / `record_environment` proof path — because
+ * they were not sharing it, and the second one therefore filed every capture
+ * from an unbound caller with no owner at all. 36 `proof attach` records and
+ * seven captures on the owner's machine ended up reachable by nobody.
+ */
+async function inferUnboundCallerLaneId(
+  runtime: AdeRuntime,
+  session: SessionState,
+  callerRoot: string | null,
+): Promise<{ laneId: string; root: string } | null> {
+  if (!callerRoot || !isUnboundAdeCliCaller(session)) return null;
+  const lanes = await runtime.laneService
+    .list({ includeArchived: false, includeStatus: false })
+    .catch((error: unknown) => {
+      runtime.logger.warn("computer_use.ingest_lane_list_failed", {
+        callerRoot,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    });
+  const match = lanes
+    .flatMap((lane) => {
+      const roots = [lane.worktreePath, lane.attachedRootPath]
+        .map((root) => asOptionalTrimmedString(root))
+        .filter((root): root is string => Boolean(root))
+        .map((root) => canonicalAuthorizationPath(root));
+      return roots
+        .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
+        .map((root) => ({ laneId: lane.id, root }));
+    })
+    .sort((left, right) => right.root.length - left.root.length)[0] ?? null;
+  if (!match) {
+    // The one line that was missing while an agent's proof went nowhere: the
+    // ingest refused, nothing was logged, and the CLI reported a generic
+    // "requires an authorized lane worktree".
+    runtime.logger.warn("computer_use.ingest_lane_not_inferred", {
+      callerRoot,
+      lanesConsidered: lanes.length,
+    });
+  }
+  return match;
+}
+
 async function resolveAuthorizedComputerUseIngestRoot(
   runtime: AdeRuntime,
   session: SessionState,
@@ -2169,28 +2237,37 @@ async function resolveAuthorizedComputerUseIngestRoot(
   if (callerRoot && !path.isAbsolute(callerRoot)) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
   }
-  if (!projectWideAuthorized && requestedLaneId && requestedLaneId !== sessionLaneId) {
+  /*
+   * Place the caller by the worktree it is standing in, BEFORE judging any lane
+   * it named.
+   *
+   * This used to run only when no lane was requested, and the guard below
+   * compared a requested lane against the caller's chat-session lane. An agent
+   * whose shell carries no chat session — every OpenCode agent, because one
+   * `opencode serve` is shared across chats and so cannot carry a per-chat
+   * environment — therefore had two ways to fail and no way to succeed: name
+   * its lane and be told the lane does not match a session it has not got, or
+   * name nothing and depend entirely on this inference.
+   *
+   * Containment is the stronger check anyway. An environment variable is a
+   * claim; standing inside the lane's worktree is a fact.
+   */
+  const inferredLane = sessionLaneId
+    ? null
+    : await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null);
+  if (
+    !projectWideAuthorized
+    && requestedLaneId
+    && requestedLaneId !== sessionLaneId
+    && requestedLaneId !== inferredLane?.laneId
+  ) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "laneId must match the caller's authorized chat-session lane",
+      "laneId must be the caller's chat-session lane, or the lane whose worktree contains its callerRoot: "
+      + `asked for ${requestedLaneId}, session lane is ${sessionLaneId ?? "none"}`
+      + `, callerRoot resolves to ${inferredLane?.laneId ?? "no lane"}`,
     );
   }
-  const inferredLane = !requestedLaneId
-    && !sessionLaneId
-    && callerRoot
-    && isUnboundAdeCliCaller(session)
-    ? (await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []))
-        .flatMap((lane) => {
-          const roots = [lane.worktreePath, lane.attachedRootPath]
-            .map((root) => asOptionalTrimmedString(root))
-            .filter((root): root is string => Boolean(root))
-            .map((root) => canonicalAuthorizationPath(root));
-          return roots
-            .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
-            .map((root) => ({ laneId: lane.id, root }));
-        })
-        .sort((left, right) => right.root.length - left.root.length)[0] ?? null
-    : null;
   const authorizedLaneId = requestedLaneId ?? sessionLaneId ?? inferredLane?.laneId ?? null;
   const authorizedRoot = authorizedLaneId
     ? inferredLane?.root ?? resolveLaneWorktreePath(runtime, authorizedLaneId)
@@ -2369,7 +2446,7 @@ async function defaultPrTitleForLane(runtime: AdeRuntime, laneId: string, baseBr
 }
 
 function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefined): string {
-  return buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath ?? undefined }));
+  return buildAdeCliInlineGuidance(adePromptAgentSkillRoots({ cwd: laneWorktreePath ?? undefined }));
 }
 
 function resolveRunContextLaneId(_runtime: AdeRuntime, _callerCtx: CallerContext): string | null {
@@ -2747,6 +2824,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   // aim it at its OWN row; without this entry a bound agent could force any
   // usage-limited chat on the machine to burn its retry.
   "resumeUsageLimitNow",
+  // Continuing on another account spends a turn on a different login. A
+  // session-bound agent may only aim it at its own row.
+  "continueUsageLimitOnAlternate",
   "requestSessionAttention",
   "setSessionStatusNote",
   // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a
@@ -3544,15 +3624,31 @@ function resolveEnvCallerContext(): CallerContext {
 function resolveCallerContext(session?: SessionState): CallerContext {
   const envContext = resolveEnvCallerContext();
   if (!session) return envContext;
+  const callerId = asOptionalTrimmedString(session.identity.callerId);
+  /*
+   * Second door on the same rule as `parseInitializeIdentity`.
+   *
+   * A session whose caller id is a synthetic `<client>:<pid>` has told us it
+   * has no identity of its own, so the BRAIN's environment must not fill the
+   * gap — a dev brain started from an agent shell carries that shell's
+   * `ADE_CHAT_SESSION_ID`, and merging it here made `isUnboundAdeCliCaller`
+   * answer false for a caller that is plainly unbound. That silently disabled
+   * every lane inference downstream, so the capture was filed with no owner
+   * instead of being placed by the worktree the caller was standing in.
+   */
+  const inheritEnvIdentity = !(callerId && isSyntheticCliCallerId(callerId));
+  const envIdentity: CallerContext = inheritEnvIdentity
+    ? envContext
+    : { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null };
   return {
-    callerId: asOptionalTrimmedString(session.identity.callerId),
+    callerId,
     role: session.identity.role ?? envContext.role,
-    chatSessionId: session.identity.chatSessionId ?? envContext.chatSessionId,
+    chatSessionId: session.identity.chatSessionId ?? envIdentity.chatSessionId,
     standaloneChatSession: session.identity.standaloneChatSession,
-    runId: session.identity.runId ?? envContext.runId,
-    stepId: session.identity.stepId ?? envContext.stepId,
-    attemptId: session.identity.attemptId ?? envContext.attemptId,
-    ownerId: session.identity.ownerId ?? envContext.ownerId,
+    runId: session.identity.runId ?? envIdentity.runId,
+    stepId: session.identity.stepId ?? envIdentity.stepId,
+    attemptId: session.identity.attemptId ?? envIdentity.attemptId,
+    ownerId: session.identity.ownerId ?? envIdentity.ownerId,
   };
 }
 
@@ -3613,15 +3709,35 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const envContext = resolveEnvCallerContext();
   const requestedRole = normalizeAdeRuntimeRole(identity.role);
   const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
-  const resolvedChatSessionId = envContext.chatSessionId ?? requestedChatSessionId;
+  /*
+   * A client that says "I am a process" is NOT the brain's own chat.
+   *
+   * The environment identity exists for the in-process and `--stdio` runtimes,
+   * where the caller and the env are the same program. A long-lived socket
+   * daemon serving other processes must not lend its own identity out — the
+   * browser-actor rule below is the same rule, already written down.
+   *
+   * It was reachable and it leaked: a dev brain started from an agent shell
+   * inherits that shell's `ADE_CHAT_SESSION_ID`, so every unbound caller —
+   * every OpenCode agent, whose shell has no ADE identity of its own — was
+   * stamped as THAT chat and its proof filed into that chat's drawer. A
+   * synthetic `<client>:<pid>` caller id is the client stating it has no
+   * identity, which is exactly when the brain's own must not be substituted.
+   */
+  const callerIdClaim = asOptionalTrimmedString(identity.callerId);
+  const clientDisclaimsIdentity = Boolean(callerIdClaim && isSyntheticCliCallerId(callerIdClaim));
+  const inheritableEnvContext: CallerContext = clientDisclaimsIdentity
+    ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
+    : envContext;
+  const resolvedChatSessionId = inheritableEnvContext.chatSessionId ?? requestedChatSessionId;
   const validRole = resolveSessionBoundRole({
     defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
     requestedRole,
     chatSessionId: resolvedChatSessionId,
   });
-  const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
-  const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
-  const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
+  const resolvedRunId = inheritableEnvContext.runId ?? asOptionalTrimmedString(identity.runId);
+  const resolvedStepId = inheritableEnvContext.stepId ?? asOptionalTrimmedString(identity.stepId);
+  const resolvedAttemptId = inheritableEnvContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
   // Browser actor capabilities belong to the connecting CLI process. The
   // long-lived runtime daemon must never lend an inherited token to another
   // client, even if it was accidentally launched from an agent-owned shell.
@@ -3633,14 +3749,14 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     && !resolvedAttemptId;
 
   return {
-    callerId: asOptionalTrimmedString(identity.callerId) ?? resolvedChatSessionId ?? envContext.attemptId ?? "unknown",
+    callerId: callerIdClaim ?? resolvedChatSessionId ?? inheritableEnvContext.attemptId ?? "unknown",
     role: validRole,
     chatSessionId: resolvedChatSessionId,
     standaloneChatSession,
     runId: resolvedRunId,
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
-    ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
+    ownerId: asOptionalTrimmedString(identity.ownerId) ?? inheritableEnvContext.ownerId,
     browserActorToken,
   };
 }
@@ -3886,7 +4002,7 @@ async function runTool(args: {
     }
     return capabilities;
   };
-  const ingestLocalComputerUseArtifact = (args: {
+  const ingestLocalComputerUseArtifact = async (args: {
     sessionState: SessionState;
     toolName: string;
     title: string;
@@ -3920,6 +4036,24 @@ async function runTool(args: {
       };
     }
     validateComputerUseOwnerClaims(runtime, args.sessionState, args.toolArgs);
+    /*
+     * `ade proof capture` and `ade proof record` file through HERE, and this
+     * door had no lane inference of its own — so a caller with no chat session
+     * produced an artifact with an EMPTY owner list. Stored, listed by its own
+     * unscoped author, reachable by no drawer. Seven such records exist on the
+     * owner's machine.
+     *
+     * Same rule as the ingest door: the lane whose worktree contains the
+     * caller's root. A lane the caller NAMES is not trusted here, because this
+     * path has no `resolveAuthorizedComputerUseIngestRoot` to validate it
+     * against — `validateComputerUseOwnerClaims` above is what governs a named
+     * owner, and it already refuses one the session cannot claim.
+     */
+    const inferredLaneId = (await inferUnboundCallerLaneId(
+      runtime,
+      args.sessionState,
+      asOptionalTrimmedString(args.toolArgs.callerRoot),
+    ))?.laneId ?? null;
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "screencapture",
@@ -3935,7 +4069,10 @@ async function runTool(args: {
           metadata: args.metadata,
         },
       ],
-      owners: resolveComputerUseOwners(args.sessionState, args.toolArgs),
+      owners: resolveComputerUseOwners(args.sessionState, {
+        ...args.toolArgs,
+        ...(inferredLaneId ? { laneId: inferredLaneId } : {}),
+      }),
     });
     return {
       proof: true,
@@ -5158,7 +5295,7 @@ async function runTool(args: {
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
     runLocalCommand("screencapture", commandArgs);
-    return ingestLocalComputerUseArtifact({
+    return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,
@@ -5188,7 +5325,7 @@ async function runTool(args: {
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
     runLocalCommand("screencapture", commandArgs);
-    return ingestLocalComputerUseArtifact({
+    return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,
@@ -5381,8 +5518,22 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Broken-proof pruning requires an authenticated owner scope.");
     }
     const authorizedArtifactIds = listAuthorizedProofArtifactIds(runtime, authorizedOwners);
+    /*
+     * Broken AND ownerless is garbage no scoped caller could otherwise reach.
+     *
+     * The filter below asks "is this artifact in one of MY owners' sets". An
+     * artifact with no owner links is in nobody's set, so every scoped caller
+     * skipped it and only a project-wide one could ever clean it up. Twenty
+     * such rows sat in the owner's database for two months — records whose
+     * files were deleted long ago, invisible in every drawer, and immune to
+     * the tool whose whole job is removing exactly that.
+     *
+     * Letting a scoped caller take them is safe because both halves must hold:
+     * ownerless means it is in no lane's and no chat's drawer, and broken
+     * means its file is already gone. Neither alone qualifies.
+     */
     const artifactIds = runtime.computerUseArtifactBrokerService.listBrokenArtifacts({ limit: 2000 })
-      .filter((entry) => authorizedArtifactIds.has(entry.artifactId))
+      .filter((entry) => authorizedArtifactIds.has(entry.artifactId) || entry.ownerCount === 0)
       .map((entry) => entry.artifactId);
     return artifactIds.length
       ? runtime.computerUseArtifactBrokerService.deleteArtifacts({ artifactIds })
@@ -6013,7 +6164,7 @@ async function runTool(args: {
     // command remains a display/resume preview only; the actual launch uses
     // command/args/env so it works on Windows without POSIX inline assignment.
     const workerEnv: Record<string, string> = {};
-    const skillRootsEnv = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+    const skillRootsEnv = joinAdeAgentSkillRoots(adePromptAgentSkillRoots({ cwd: laneWorktreePath }));
     if (skillRootsEnv) workerEnv[ADE_AGENT_SKILLS_DIRS_ENV] = skillRootsEnv;
     const envPrefixParts: string[] = [];
     const addWorkerEnv = (key: string, value: string | null | undefined) => {
@@ -6077,17 +6228,18 @@ async function runTool(args: {
       );
     }
     if (category) {
-      // When filtering by category, drain a larger batch and filter client-side.
-      // Use the last *drained* event's ID (not last *filtered*) as nextCursor
-      // to advance past non-matching events and avoid infinite polling loops.
-      const batchSize = Math.min(1000, limit * 10);
-      const result = runtime.eventBuffer.drain(cursor, batchSize);
-      const filtered = result.events.filter((e) => e.category === category);
-      const sliced = filtered.slice(0, limit);
+      // The drain looks at up to ten times `limit` events and returns only this
+      // category. Its cursor moves past the events it skipped, so polling
+      // cannot stall, and it stops at the last event it returned, so a match
+      // past `limit` is not skipped.
+      const result = runtime.eventBuffer.drain(cursor, limit, {
+        filter: (e) => e.category === category,
+        maxScan: limit * 10
+      });
       return {
-        events: sliced,
+        events: result.events,
         nextCursor: result.nextCursor,
-        hasMore: filtered.length > limit || result.hasMore,
+        hasMore: result.hasMore,
         eventEpoch: result.eventEpoch,
         gap: result.gap === true,
         oldestCursor: result.oldestCursor ?? null

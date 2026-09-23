@@ -17,6 +17,7 @@ import type {
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { RemoteTargetList } from "./RemoteTargetList";
+import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 
 const remoteRuntimeMock = {
   listTargets: vi.fn(),
@@ -160,6 +161,11 @@ function openAddMode(label: "Find nearby computers" | "Add over SSH"): void {
   fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
   fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
 }
+
+// The reconnect flow is one per window, so it outlives each test's render.
+afterEach(() => {
+  resetReconnectFlowForTests();
+});
 
 describe("RemoteTargetList", () => {
   afterEach(() => {

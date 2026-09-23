@@ -69,7 +69,7 @@ Name a built-in in `deniedTools` to override the exemption, or use `fallback: "d
 
 ### What `fallback: "deny"` does on Claude
 
-Measured against Agent SDK 0.3.258: `allowedTools` and `disallowedTools` are enforced, because the CLI removes a denied tool from the model's catalog. The `canUseTool` callback, however, did not fire on any permission mode tried, so the prompt path cannot be relied on to enforce anything.
+Measured against Agent SDK 0.3.258, and not re-measured against a later pin: `allowedTools` and `disallowedTools` are enforced, because the CLI removes a denied tool from the model's catalog. The `canUseTool` callback, however, did not fire on any permission mode tried, so the prompt path cannot be relied on to enforce anything.
 
 A deny fallback is therefore expressed in what the thread is given, not in what it is asked:
 
@@ -157,6 +157,8 @@ await thread.approve(itemId, "reject", "not this time");
 ```
 
 `approve()` resolves once the runtime accepts the decision, **not** once the tool has run — the same asymmetry `send()` has.
+
+On Claude, an ask can carry a flag saying the session-wide rule an `accept_always` would write is broader than the ask itself. `accept_always` is still a valid answer, but the runtime treats it as a one-shot `accept`: nothing is persisted, an earlier `accept_always` does not settle that ask, and the ask's option list omits the session-wide choice.
 
 It throws `approval_not_found` when the item is not pending: a stop, a teardown, or an earlier call already settled it. The engine settles unknown items silently, so without that check a second click on Allow would look like it worked.
 

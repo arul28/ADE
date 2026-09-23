@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expectNoJargon } from "../../../test/jargonGuard";
 import { StorageSection } from "./StorageSection";
+import { readAppleRecordingsTotalBytes } from "./appleRecordingsFootprint";
 import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
@@ -19,6 +20,10 @@ import type {
   LaneReclaimRisk,
   ProjectConfigCandidate,
 } from "../../../shared/types";
+
+vi.mock("./appleRecordingsFootprint", () => ({
+  readAppleRecordingsTotalBytes: vi.fn(async () => 0),
+}));
 
 const originalAde = (globalThis.window as any)?.ade;
 
@@ -320,6 +325,7 @@ describe("StorageSection", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.mocked(readAppleRecordingsTotalBytes).mockResolvedValue(0);
     if (originalAde === undefined) delete (globalThis.window as any).ade;
     else (globalThis.window as any).ade = originalAde;
   });
@@ -685,5 +691,17 @@ describe("StorageSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: /clean up safely/i }));
     await screen.findByRole("dialog");
     expectNoJargon(container.textContent ?? "");
+  });
+
+  it("warns in diagnostics when Apple recordings exceed the warning size, without a delete action", async () => {
+    vi.mocked(readAppleRecordingsTotalBytes).mockResolvedValue(6 * 1024 ** 3);
+    installAdeMock({ withExtras: true });
+    render(<StorageSection />);
+
+    expect(await screen.findByText("Apple recordings")).toBeTruthy();
+    expect(screen.getByText(/over the 5\.0 GB warning size/)).toBeTruthy();
+    const card = screen.getByText("Apple recordings").closest("section");
+    expect(card).toBeTruthy();
+    expect(within(card as HTMLElement).queryByRole("button")).toBeNull();
   });
 });

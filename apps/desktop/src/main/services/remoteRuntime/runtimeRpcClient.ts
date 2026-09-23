@@ -1,9 +1,18 @@
+import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
 export type RuntimeRpcTransportCloseInfo = {
   exitCode?: number | null;
   signal?: string | null;
   stderr?: string | null;
+  /**
+   * Who closed a socket transport, and why: the WebSocket close code and
+   * reason, or that this computer closed it. Without it every paired close read
+   * "connection closed", and a flapping connection could not be diagnosed.
+   */
+  detail?: string | null;
+  /** The host replaced this connection with a newer one from the same device. */
+  superseded?: boolean;
 };
 
 export type RuntimeRpcTransport = JsonRpcTransport & {
@@ -13,6 +22,8 @@ export type RuntimeRpcTransport = JsonRpcTransport & {
 
 type PendingRequest = {
   method: string;
+  /** `method`, plus the action it carries. What a timeout must name. */
+  label: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -33,6 +44,29 @@ function formatRpcErrorData(data: unknown): string {
   if (data && typeof data === "object") return JSON.stringify(data);
   if (typeof data === "string" && data.trim()) return data.trim();
   return "";
+}
+
+/**
+ * What a pending call is called, for humans.
+ *
+ * Every runtime action in the product travels as the same JSON-RPC method,
+ * `ade/actions/call`, so a bare method name in a timeout says only "something
+ * on the runtime hung" — which is exactly what the Apple pane's input bug
+ * looked like in the desktop log: dozens of identical lines naming no action.
+ * The domain and action are already in the envelope; naming them costs nothing
+ * and turns that log line into a diagnosis.
+ */
+export function describeRuntimeRpcCall(
+  method: string,
+  params?: Record<string, unknown>,
+): string {
+  const envelope = params?.arguments;
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return method;
+  const record = envelope as Record<string, unknown>;
+  const domain = typeof record.domain === "string" ? record.domain.trim() : "";
+  const action = typeof record.action === "string" ? record.action.trim() : "";
+  if (!domain && !action) return method;
+  return `${method} ${domain || "?"}.${action || "?"}`;
 }
 
 function normalizeRuntimeRpcTimeoutMs(value: number): number {
@@ -65,19 +99,25 @@ export class RuntimeRpcClient {
   ) {
     this.transport.onData((chunk) => this.onData(chunk.toString("utf8")));
     this.transport.onError?.((error) => {
-      this.failConnection(new Error(`Remote ADE service connection failed: ${error.message}`));
+      // `cause` keeps the transport's typed error, so a caller can tell an
+      // over-budget channel close from a lost machine.
+      this.failConnection(new Error(`Remote ADE service connection failed: ${error.message}`, { cause: error }));
     });
     this.transport.onClose?.((info) => {
       const details = [
         info?.exitCode != null ? `exit code ${info.exitCode}` : null,
         info?.signal ? `signal ${info.signal}` : null,
         info?.stderr?.trim() ? `stderr: ${summarizeRemoteRuntimeStderr(info.stderr)}` : null,
+        info?.detail?.trim() ? info.detail.trim() : null,
       ].filter((value): value is string => value != null);
-      this.failConnection(new Error(
-        details.length > 0
-          ? `Remote ADE service connection closed (${details.join(", ")}).`
-          : "Remote ADE service connection closed.",
-      ));
+      const message = details.length > 0
+        ? `Remote ADE service connection closed (${details.join(", ")}).`
+        : "Remote ADE service connection closed.";
+      this.failConnection(
+        info?.superseded
+          ? new Error(message, { cause: new PairedRuntimeSupersededError() })
+          : new Error(message),
+      );
     });
   }
 
@@ -123,15 +163,16 @@ export class RuntimeRpcClient {
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
+    const label = describeRuntimeRpcCall(method, params);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.takePending(id);
         if (!pending) return;
         pending.reject(
-          new Error(`Remote ADE service timed out waiting for method ${pending.method} (${timeoutMs}ms).`),
+          new Error(`Remote ADE service timed out waiting for method ${pending.label} (${timeoutMs}ms).`),
         );
       }, timeoutMs);
-      this.pending.set(id, { method, resolve, reject, timer });
+      this.pending.set(id, { method, label, resolve, reject, timer });
       try {
         this.transport.write(`${JSON.stringify(payload)}\n`);
       } catch (error) {

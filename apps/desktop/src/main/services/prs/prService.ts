@@ -135,10 +135,6 @@ import type {
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
   ReactToPrCommentArgs,
-  ReviewFinding,
-  ReviewPublication,
-  ReviewPublicationDestination,
-  ReviewPublicationInlineComment,
 } from "../../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
@@ -331,6 +327,10 @@ const PR_ACTION_RUNS_LIMIT = 12;
  */
 const PR_ACTION_RUN_JOBS_LIMIT = PR_ACTION_RUNS_LIMIT;
 const PR_TERMINAL_ACTION_RUN_JOBS_LIMIT = 6;
+/** Quiet time that ends a webhook burst and sends one `prs-updated`. */
+const PRS_UPDATED_COALESCE_MS = 500;
+/** The longest a burst may hold the event back, so a steady stream still updates. */
+const PRS_UPDATED_COALESCE_MAX_WAIT_MS = 2_000;
 
 function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
   const chunks: T[][] = [];
@@ -860,64 +860,6 @@ function createEmptyIntegrationResolutionState(integrationLaneId: string, update
     laneChangeStatus: "unknown",
     updatedAt,
   };
-}
-
-function buildPublishedReviewCommentBody(finding: ReviewFinding): string {
-  const sections = [
-    `[${finding.severity.toUpperCase()}] ${finding.title}`,
-    "",
-    finding.body,
-    "",
-    `Confidence: ${Math.round(finding.confidence * 100)}%`,
-  ];
-  const quote = finding.evidence.find((entry) => typeof entry.quote === "string" && entry.quote.trim().length > 0)?.quote?.trim() ?? null;
-  if (quote) {
-    sections.push("", "```", quote.slice(0, 1_200), "```");
-  }
-  return sections.join("\n");
-}
-
-function formatPublishedFindingLocation(finding: ReviewFinding): string {
-  if (finding.filePath && finding.line != null) return `${finding.filePath}:${finding.line}`;
-  if (finding.filePath) return finding.filePath;
-  return "general";
-}
-
-export function buildPublishedReviewSummaryBody(args: {
-  targetLabel: string;
-  summary: string | null;
-  inlineFindings: ReviewFinding[];
-  summaryFindings: ReviewFinding[];
-}): string {
-  const lines = [
-    "## ADE review",
-    "",
-    `Target: ${args.targetLabel}`,
-    "",
-    args.summary?.trim() || (args.inlineFindings.length + args.summaryFindings.length > 0
-      ? `ADE found ${args.inlineFindings.length + args.summaryFindings.length} actionable finding(s).`
-      : "ADE found no actionable findings."),
-  ];
-
-  if (args.inlineFindings.length > 0) {
-    lines.push("", `Anchored inline comments posted: ${args.inlineFindings.length}.`);
-  }
-
-  if (args.summaryFindings.length > 0) {
-    lines.push("", "### Findings kept in the summary");
-    for (const finding of args.summaryFindings) {
-      lines.push(
-        `- [${finding.severity}] ${finding.title} (${formatPublishedFindingLocation(finding)})`,
-        `  ${finding.body}`,
-      );
-    }
-  }
-
-  if (args.inlineFindings.length === 0 && args.summaryFindings.length === 0) {
-    lines.push("", "No actionable findings.");
-  }
-
-  return lines.join("\n").trim();
 }
 
 async function readIntegrationLaneSnapshot(worktreePath: string): Promise<IntegrationLaneSnapshot | null> {
@@ -10617,12 +10559,57 @@ export function createPrService({
     );
   };
 
+  let coalescedPrsUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
+  let coalescedPrsUpdatedSinceMs: number | null = null;
+
   const emitPrsUpdated = (): void => {
+    // This event carries the full list, so it supersedes one that is waiting.
+    if (coalescedPrsUpdatedTimer) {
+      clearTimeout(coalescedPrsUpdatedTimer);
+      coalescedPrsUpdatedTimer = null;
+    }
+    coalescedPrsUpdatedSinceMs = null;
     emitPrEvent?.({
       type: "prs-updated",
       polledAt: nowIso(),
       prs: withGithubStackMemberships(listRows().map(rowToSummary)),
     });
+  };
+
+  /**
+   * One `prs-updated` for a burst of webhooks, not one for each delivery.
+   *
+   * The event carries the whole PR list (about 225 KB for 194 PRs), and a CI
+   * run delivers dozens of `check_run` webhooks in a few seconds. One event
+   * for each delivery put megabytes on the runtime event stream, and a remote
+   * desktop that drained it lost its RPC channel again and again. The event is
+   * also a refresh signal (the chat PR pane reloads checks on it), so the
+   * burst still ends in one event; it is not dropped by a fingerprint.
+   *
+   * Each delivery restarts the 500 ms quiet window, so a burst ends in one
+   * event after it goes quiet. A stream that never goes quiet still sends one
+   * every 2 s, with the list as it is then.
+   */
+  const scheduleCoalescedPrsUpdated = (): void => {
+    const nowMs = Date.now();
+    if (coalescedPrsUpdatedTimer) clearTimeout(coalescedPrsUpdatedTimer);
+    coalescedPrsUpdatedSinceMs ??= nowMs;
+    const delayMs = Math.max(
+      0,
+      Math.min(PRS_UPDATED_COALESCE_MS, coalescedPrsUpdatedSinceMs + PRS_UPDATED_COALESCE_MAX_WAIT_MS - nowMs),
+    );
+    coalescedPrsUpdatedTimer = setTimeout(() => {
+      coalescedPrsUpdatedTimer = null;
+      // A timer callback, so a throw here is an uncaught exception, which
+      // exits the brain. The project runtime can close its database inside
+      // the window (a repair, a removal, a sync-host move).
+      try {
+        emitPrsUpdated();
+      } catch (error) {
+        logger.warn("prs.coalesced_update_failed", { error: getErrorMessage(error) });
+      }
+    }, delayMs);
+    coalescedPrsUpdatedTimer.unref?.();
   };
 
   const findWebhookRelatedPrIds = (refs: Array<{ repoOwner: string; repoName: string; githubPrNumber: number }>): string[] => {
@@ -10882,7 +10869,7 @@ export function createPrService({
         }
         linkedPrIds = [...new Set(linkedPrIds)];
         invalidateGithubSnapshotCache();
-        emitPrsUpdated();
+        scheduleCoalescedPrsUpdated();
         db.run(
           `
             update github_webhook_deliveries
@@ -10920,7 +10907,7 @@ export function createPrService({
 
       const refs = webhookPrRefsFromPayload(eventName, payload);
       linkedPrIds = findWebhookRelatedPrIds(refs);
-      if (linkedPrIds.length > 0) emitPrsUpdated();
+      if (linkedPrIds.length > 0) scheduleCoalescedPrsUpdated();
       const firstRef = refs[0] ?? null;
       const processed = refs.length > 0;
       const reason = processed ? "invalidated_related_prs" : "unsupported_event";
@@ -12766,128 +12753,6 @@ export function createPrService({
 
     async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
       return await submitReviewRequest(args);
-    },
-
-    async publishReviewPublication(args: {
-      runId: string;
-      destination: ReviewPublicationDestination;
-      targetLabel: string;
-      summary: string | null;
-      findings: ReviewFinding[];
-      changedFiles: Array<{ filePath: string; diffPositionsByLine: Record<number, number> }>;
-    }): Promise<ReviewPublication> {
-      if (args.destination.kind !== "github_pr_review") {
-        throw new Error(`Unsupported review publication destination: ${args.destination.kind}`);
-      }
-
-      const snapshot = await getReviewSnapshot(args.destination.prId);
-      const requestedAt = nowIso();
-      const changedFilesByPath = new Map(
-        args.changedFiles.map((file) => [file.filePath, file.diffPositionsByLine] as const),
-      );
-      const inlineFindings: ReviewFinding[] = [];
-      const summaryFindings: ReviewFinding[] = [];
-      const inlineComments: ReviewPublicationInlineComment[] = [];
-
-      for (const finding of args.findings) {
-        const linePositions = finding.filePath ? changedFilesByPath.get(finding.filePath) : null;
-        const diffPosition = finding.line != null && linePositions
-          ? Number(linePositions[finding.line] ?? NaN)
-          : Number.NaN;
-
-        if (
-          finding.anchorState === "anchored"
-          && finding.filePath
-          && finding.line != null
-          && Number.isFinite(diffPosition)
-          && diffPosition > 0
-        ) {
-          inlineFindings.push(finding);
-          inlineComments.push({
-            findingId: finding.id,
-            path: finding.filePath,
-            line: finding.line,
-            position: diffPosition,
-            body: buildPublishedReviewCommentBody(finding),
-          });
-          continue;
-        }
-        summaryFindings.push(finding);
-      }
-
-      const summaryBody = buildPublishedReviewSummaryBody({
-        targetLabel: args.targetLabel,
-        summary: args.summary,
-        inlineFindings,
-        summaryFindings,
-      });
-
-      // The canonical top-level "## ADE review" summary is the edited issue
-      // comment posted/maintained by the review service (reviewService's
-      // underway comment). To avoid two competing top-level summaries on the PR,
-      // the published *review* carries the inline anchored findings only and a
-      // brief deferral note for its body. The full summaryBody is still persisted
-      // on the returned publication record for local history. Summary-only
-      // findings (which have no inline anchor) are appended here so they are not
-      // lost — they live in the top-level comment, but we keep a compact note in
-      // the review body too when there's no top-level comment to rely on.
-      const reviewBody = inlineComments.length > 0
-        ? "ADE review — see the top-level **## ADE review** comment for the full summary. Inline findings are attached below."
-        : summaryBody;
-
-      try {
-        const result = await submitReviewRequest(
-          {
-            prId: args.destination.prId,
-            event: "COMMENT",
-            body: reviewBody,
-            comments: inlineComments.map((comment) => ({
-              path: comment.path,
-              position: comment.position,
-              body: comment.body,
-            })),
-          },
-          {
-            commitSha: snapshot.headSha,
-          },
-        );
-
-        const completedAt = nowIso();
-        return {
-          id: randomUUID(),
-          runId: args.runId,
-          destination: args.destination,
-          reviewEvent: "COMMENT",
-          status: "published",
-          reviewUrl: result.htmlUrl,
-          remoteReviewId: result.id || result.nodeId,
-          summaryBody,
-          inlineComments,
-          summaryFindingIds: summaryFindings.map((finding) => finding.id),
-          errorMessage: null,
-          createdAt: requestedAt,
-          updatedAt: completedAt,
-          completedAt,
-        };
-      } catch (error) {
-        const completedAt = nowIso();
-        return {
-          id: randomUUID(),
-          runId: args.runId,
-          destination: args.destination,
-          reviewEvent: "COMMENT",
-          status: "failed",
-          reviewUrl: null,
-          remoteReviewId: null,
-          summaryBody,
-          inlineComments,
-          summaryFindingIds: summaryFindings.map((finding) => finding.id),
-          errorMessage: getErrorMessage(error),
-          createdAt: requestedAt,
-          updatedAt: completedAt,
-          completedAt,
-        };
-      }
     },
 
     async closePr(args: ClosePrArgs): Promise<void> {

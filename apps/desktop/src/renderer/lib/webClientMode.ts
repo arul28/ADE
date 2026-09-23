@@ -34,9 +34,8 @@ export function isCssZoomedBrowserSurface(): boolean {
 /**
  * The tab routes the web client surfaces, and the gate `TabNav` reads.
  *
- * Review and Automations stay off the list: neither has a `review.*` or
- * `automations.*` action registered host-side, so both would render a live-looking
- * surface whose writes go nowhere. Every route here has to stay reachable through
+ * Automations stays off the list: it has no `automations.*` action registered
+ * host-side, so it would render a live-looking surface whose writes go nowhere. Every route here has to stay reachable through
  * the web shell's `APP_ROUTE_ROOTS` — the CommandPalette can navigate to any of
  * them regardless of what the nav shows.
  */

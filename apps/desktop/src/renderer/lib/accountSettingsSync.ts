@@ -132,6 +132,41 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
   pref("harnessPresets", (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
+  pref(
+    "apple.realisticBody",
+    (state) => state.appleDevice.realisticBody,
+    (state, value) => {
+      if (typeof value === "boolean") state.setAppleDevicePreferences({ realisticBody: value });
+    },
+  ),
+  pref(
+    "apple.recordingOverlays.tapRings",
+    (state) => state.appleDevice.recordingTapRings,
+    (state, value) => {
+      if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingTapRings: value });
+    },
+  ),
+  pref(
+    "apple.recordingOverlays.keyBadges",
+    (state) => state.appleDevice.recordingKeyBadges,
+    (state, value) => {
+      if (typeof value === "boolean") state.setAppleDevicePreferences({ recordingKeyBadges: value });
+    },
+  ),
+  pref(
+    "apple.remoteBitrateKbpsCap",
+    (state) => state.appleDevice.remoteBitrateKbpsCap,
+    (state, value) => {
+      if (typeof value === "number") state.setAppleDevicePreferences({ remoteBitrateKbpsCap: value });
+    },
+  ),
+  pref(
+    "apple.recordingsWarnBytes",
+    (state) => state.appleDevice.recordingsWarnBytes,
+    (state, value) => {
+      if (typeof value === "number") state.setAppleDevicePreferences({ recordingsWarnBytes: value });
+    },
+  ),
 ] as const;
 
 export type AccountSettingsApi = {

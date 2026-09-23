@@ -22,6 +22,7 @@ import { computeHeatmapLayout, fillMissingDays, weekAlignment } from "./Activity
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageLimitsBand } from "./UsageLimitsBand";
 import { providerColor } from "./providerColors";
+import { useAppStore } from "../../state/appStore";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import {
   bucketActivityIntensity,
@@ -730,6 +731,45 @@ describe("usage components", () => {
       expect(screen.queryByRole("dialog", { name: "Weekly details" })).toBeNull();
     });
 
+    it("keeps the details panel open while the pointer moves onto its link", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      snapshot.accounts = [
+        {
+          id: "codex:dev@example.com",
+          provider: "codex",
+          email: "dev@example.com",
+          plan: "ChatGPT Pro",
+          machines: [{ label: "studio", checkedAt: "2026-05-08T07:00:00.000Z" }],
+          url: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+        },
+      ];
+      snapshot.windows = snapshot.windows.map((window) =>
+        window.provider === "codex" ? { ...window, accountId: "codex:dev@example.com" } : window,
+      );
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
+
+      render(<MountedBand />);
+
+      const meter = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
+      fireEvent.mouseEnter(meter.parentElement!);
+      const popover = screen.getByRole("dialog", { name: "Weekly details" });
+      expect(popover.className).toContain("z-[90]");
+
+      fireEvent.mouseLeave(meter.parentElement!, { relatedTarget: document.body });
+      expect(screen.getByRole("dialog", { name: "Weekly details" })).toBeTruthy();
+
+      fireEvent.mouseEnter(popover);
+      fireEvent.click(within(popover).getByRole("button", { name: /Open limits/ }));
+      expect(window.ade.app.openExternal).toHaveBeenCalledWith(
+        "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      );
+      expect(screen.getByRole("dialog", { name: "Weekly details" })).toBeTruthy();
+
+      fireEvent.mouseLeave(popover);
+      expect(screen.queryByRole("dialog", { name: "Weekly details" })).toBeNull();
+    });
+
     it("renders weekly and monthly windows as separate meters", async () => {
       const snapshot = makeQuotaPanelSnapshot();
       snapshot.windows = [
@@ -873,12 +913,11 @@ describe("usage components", () => {
     });
 
     /**
-     * The band is rendered onto the popover's bare surface, so the card is the
-     * only thing giving the provider stack — and the empty state — an edge of
-     * their own. Nothing pinned these classes, so a cleanup pass dropped them
-     * and shipped green: the stack floated on the popover background.
+     * Providers used to be rounded colour boxes stacked on the popover. The
+     * popover is already a card, so each provider is a logo, a hairline, and
+     * the accounts. The empty state is still the one card on that surface.
      */
-    it("gives each provider its own box in its own colour, and the empty state a card", async () => {
+    it("separates providers with a logo and a divider, and keeps a card for the empty state", async () => {
       const snapshot = makeQuotaPanelSnapshot();
       snapshot.extraUsage = [{
         provider: "claude",
@@ -892,12 +931,10 @@ describe("usage components", () => {
       vi.mocked(window.ade.usage.noteDemand).mockResolvedValue(snapshot);
 
       const { unmount } = render(<MountedBand />);
-      // One rounded, clipped box per provider. `overflow-hidden` is the fix for
-      // the tinted header and the bar fills painting through the radius.
-      const box = (await screen.findAllByText("Codex"))[0].closest(".rounded-lg");
-      expect(box).toBeTruthy();
-      expect(box?.className).toContain("overflow-hidden");
-      expect(box?.className).toContain("border");
+      const section = (await screen.findAllByText("Codex"))[0].closest("[data-provider-limits]");
+      expect(section?.getAttribute("data-provider-limits")).toBe("codex");
+      expect(section?.className).not.toContain("rounded");
+      expect(section?.querySelector("[data-provider-divider]")).toBeTruthy();
       // The extra-usage card is already padded; the grid holding it must not
       // add a second inset inside the popover's own padding.
       const extraGrid = screen.getByText("$12.50").closest(".grid");
@@ -1171,6 +1208,7 @@ describe("usage components", () => {
 
   describe("HeaderUsageControl", () => {
     beforeEach(() => {
+      useAppStore.setState({ theme: "dark" });
       vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeEmptySnapshot());
       vi.mocked(window.ade.usage.refresh).mockResolvedValue(makeHeaderUsageSnapshot());
       vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
@@ -1190,9 +1228,22 @@ describe("usage components", () => {
         expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
       });
 
-      expect(await screen.findByText("81% left")).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /Codex wk 81% left, 5h 91% left/ })).toBeTruthy();
+      const ring = document.querySelector('[data-usage-provider="codex"]');
+      expect(ring?.getAttribute("data-usage-left")).toBe("81");
+      expect(ring?.getAttribute("data-usage-unshaded")).toBe("19");
+      expect(ring?.querySelector("[data-ring-unshaded]")?.getAttribute("transform")).toContain("rotate(-90");
+      const darkStroke = ring?.querySelector("[data-ring-unshaded]")?.getAttribute("stroke") ?? "";
+      expect(darkStroke).toContain("8%, white");
+      act(() => {
+        useAppStore.setState({ theme: "light" });
+      });
+      const lightStroke = document.querySelector('[data-usage-provider="codex"] [data-ring-unshaded]')?.getAttribute("stroke") ?? "";
+      expect(lightStroke).toContain("14%");
+      expect(lightStroke).not.toContain("8%, white");
+      expect(screen.queryByText("81% left")).toBeNull();
+      expect(screen.queryByText("wk")).toBeNull();
       expect(screen.queryByText("9%")).toBeNull();
-      expect(screen.getByRole("button", { name: /Codex wk 81% left, 5h 91% left/ })).toBeTruthy();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
 
@@ -1241,6 +1292,33 @@ describe("usage components", () => {
       expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeTruthy();
     });
 
+    it("adds a chip for each authed extra provider and keeps an unauthed one off the bar", async () => {
+      const snapshot = makeHeaderUsageSnapshot();
+      snapshot.windows.push({
+        provider: "cursor",
+        windowType: "monthly",
+        percentUsed: 40,
+        resetsAt: "2099-10-01T00:00:00.000Z",
+        resetsInMs: 86_400_000,
+      });
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
+        makeAiStatus({
+          claude: makeProviderConnection("claude", { runtimeDetected: false, authAvailable: false }),
+          codex: makeProviderConnection("codex", { authAvailable: true, usageAvailable: true }),
+          copilot: makeProviderConnection("copilot", { authAvailable: true }),
+          cursor: makeProviderConnection("cursor", { authAvailable: true, runtimeDetected: true }),
+        }),
+      );
+
+      render(<HeaderUsageControl />);
+
+      const button = await screen.findByRole("button", { name: /Cursor mo 60% left/ });
+      expect(button.getAttribute("aria-label")).toContain("Copilot wk");
+      expect(button.getAttribute("aria-label")).not.toContain("Grok");
+      expect(button.getAttribute("aria-label")).not.toContain("OpenCode");
+    });
+
     it("applies pushed usage updates without forcing a refresh", async () => {
       let onUpdate: ((snapshot: UsageSnapshot) => void) | null = null;
       vi.mocked(window.ade.usage.onUpdate).mockImplementation((cb) => {
@@ -1258,7 +1336,8 @@ describe("usage components", () => {
         onUpdate?.(makeHeaderUsageSnapshot());
       });
 
-      expect(screen.getByText("81% left")).toBeTruthy();
+      expect(document.querySelector('[data-usage-provider="codex"]')?.getAttribute("data-usage-left")).toBe("81");
+      expect(screen.queryByText("81% left")).toBeNull();
       expect(screen.queryByText("9%")).toBeNull();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
     });
@@ -1343,7 +1422,8 @@ describe("usage components", () => {
         onBindingChanged?.(null);
       });
 
-      expect(await screen.findByText("58% left")).toBeTruthy();
+      expect(await screen.findByRole("button", { name: /Codex wk 58% left, 5h 58% left/ })).toBeTruthy();
+      expect(document.querySelector('[data-usage-provider="codex"]')?.getAttribute("data-usage-left")).toBe("58");
       expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(2);
       expect(screen.queryByRole("button", { name: /Claude wk/ })).toBeNull();
     });

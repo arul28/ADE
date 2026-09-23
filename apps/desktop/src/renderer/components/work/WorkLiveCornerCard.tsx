@@ -12,7 +12,6 @@ import type {
   BuiltInBrowserActionTraceEntry,
   BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
-  IosSimulatorEventPayload,
   MacDesktopEventPayload,
   OpenProjectBinding,
 } from "../../../shared/types";
@@ -51,10 +50,6 @@ import {
   useNativeToolFeedHandlers,
   useNativeToolFeeds,
 } from "../terminals/NativeToolFeedsContext";
-import {
-  acquireIosSimulatorPreviewStream,
-  type IosSimulatorPreviewLease,
-} from "./iosSimulatorPreviewStream";
 import {
   clampWorkLiveCardRect,
   commitWorkLiveScrubFrame,
@@ -96,11 +91,16 @@ import {
  * frames and remounts can never bring a closed card back.
  *
  * Three things keep it from being a battery tax. It subscribes to feeds that
- * already exist (App Control's screencast, the browser's new refcounted preview
- * stream, the simulator's shared window capture) rather than opening its own;
- * it paints frames straight onto an `<img>`/`<video>` ref inside one rAF, so a
- * 12fps feed causes zero React renders; and it stops every feed the instant it
- * stops being shown.
+ * already exist (App Control's screencast, the browser's refcounted preview
+ * stream, the lane's last Mac Desktop frame) rather than opening its own; it
+ * paints frames straight onto an `<img>` ref inside one rAF, so a 12fps feed
+ * causes zero React renders; and it stops every feed the instant it stops
+ * being shown.
+ *
+ * The Apple device is not one of its sources. A simulator floats in its own
+ * player (`AppleDeviceMiniPlayer`), which the device rail OPENS — a device only
+ * floats because somebody asked it to — so there is nothing for this card to
+ * surface on its own.
  *
  * The chrome follows t3's mini-player: nothing but an 8px status dot at rest,
  * and a 32px blurred pill — icon, name, last action, ✕ — that takes its place
@@ -337,7 +337,6 @@ export function WorkLiveCornerCard({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const scrubImageRef = useRef<HTMLImageElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   /**
    * Callback refs, not object refs.
    *
@@ -355,10 +354,6 @@ export function WorkLiveCornerCard({
   const setScrubImageRef = useCallback((node: HTMLImageElement | null) => {
     if (node) scrubImageRef.current = node;
     else if (scrubImageRef.current && !scrubImageRef.current.isConnected) scrubImageRef.current = null;
-  }, []);
-  const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
-    if (node) videoRef.current = node;
-    else if (videoRef.current && !videoRef.current.isConnected) videoRef.current = null;
   }, []);
   /** Latest frame not yet painted; drained by one rAF so 12fps costs one paint. */
   const pendingFrameRef = useRef<string | null>(null);
@@ -516,10 +511,6 @@ export function WorkLiveCornerCard({
     }
   }, [bump, paintFrame]);
 
-  const onIosEvent = useCallback((event: IosSimulatorEventPayload) => {
-    if (event.type === "session-started" || event.type === "session-updated") bump("ios");
-  }, [bump]);
-
   // The page's one subscription set, shared with the Work tools pane: the
   // capability gate, the web-client boundary check, the offline guard and the
   // teardown all live in `NativeToolFeedsProvider`. The card contributes
@@ -530,7 +521,6 @@ export function WorkLiveCornerCard({
     appControlSession,
     browserViewRoot,
     canBrowser,
-    canIos,
     canAppControl,
     context: toolContext,
   } = useNativeToolFeeds();
@@ -556,8 +546,7 @@ export function WorkLiveCornerCard({
     onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,
-    onIosEvent,
-  }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled, onIosEvent]));
+  }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled]));
 
   /**
    * A session that was already running when this card mounted counts too.
@@ -574,14 +563,6 @@ export function WorkLiveCornerCard({
     seenAppControlSessionRef.current = key;
     bump("app-control");
   }, [appControlSession?.id, bump]);
-
-  const seenIosSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    const key = iosSession?.id ?? null;
-    if (!key || key === seenIosSessionRef.current) return;
-    seenIosSessionRef.current = key;
-    bump("ios");
-  }, [bump, iosSession?.id]);
 
   /**
    * A new desktop frame is both the activity signal and the picture.
@@ -730,15 +711,10 @@ export function WorkLiveCornerCard({
       sessionKey: sources["app-control"].sessionKey,
       showWhenUnowned: isWorkLiveCardSeen(seen, "app-control", sources["app-control"].sessionKey),
     },
-    {
-      tool: "ios",
-      lastActivityAt: activityAt.ios,
-      available: canIos,
-      live: sources.ios.live,
-      ownerChatSessionId: iosSession?.chatSessionId ?? null,
-      sessionKey: sources.ios.sessionKey,
-      showWhenUnowned: isWorkLiveCardSeen(seen, "ios", sources.ios.sessionKey),
-    },
+    /*
+      The Apple device is deliberately absent: it floats in its own player,
+      which the device rail opens (see the note on the component).
+    */
     {
       tool: "mac-desktop",
       lastActivityAt: activityAt["mac-desktop"],
@@ -758,9 +734,7 @@ export function WorkLiveCornerCard({
     appControlSession?.chatSessionId,
     canAppControl,
     canBrowser,
-    canIos,
     chatSessionId,
-    iosSession?.chatSessionId,
     laneId,
     macDesktopAuthorized,
     macDesktopSessionKey,
@@ -1043,37 +1017,6 @@ export function WorkLiveCornerCard({
     };
   }, [baseCardSize.width, browserViewRoot, previewTabId, visible]);
 
-  const iosDeviceUdid = tool === "ios" ? iosSession?.deviceUdid ?? null : null;
-  const iosDeviceName = iosSession?.deviceName ?? null;
-  useEffect(() => {
-    if (!visible || !iosDeviceUdid) return undefined;
-    let lease: IosSimulatorPreviewLease | null = null;
-    let cancelled = false;
-    // Captured here rather than read in the cleanup: by teardown time the ref
-    // may already point at the next tool's element (or nothing), and detaching
-    // a stream from the wrong node leaves this one playing into a black card.
-    const video = videoRef.current;
-    void acquireIosSimulatorPreviewStream({ udid: iosDeviceUdid, name: iosDeviceName })
-      .then((next) => {
-        if (!next) return;
-        if (cancelled) {
-          next.release();
-          return;
-        }
-        lease = next;
-        const target = videoRef.current ?? video;
-        if (target) {
-          target.srcObject = next.stream;
-          void target.play().catch(() => {});
-        }
-      });
-    return () => {
-      cancelled = true;
-      if (video) video.srcObject = null;
-      lease?.release();
-    };
-  }, [iosDeviceName, iosDeviceUdid, visible]);
-
   // Switching source tools must not leave the previous tool's last frame or
   // aspect on screen under the new tool's name.
   useEffect(() => {
@@ -1309,34 +1252,19 @@ export function WorkLiveCornerCard({
                 "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--color-accent)]",
               )}
             >
-              {tool === "ios" ? (
-                <video
-                  ref={setVideoRef}
-                  muted
-                  playsInline
-                  onLoadedMetadata={(event) => {
-                    const video = event.currentTarget;
-                    if (video.videoWidth > 0 && video.videoHeight > 0) {
-                      setSourceAspect(video.videoWidth / video.videoHeight);
-                    }
-                  }}
-                  className="h-full w-full object-contain"
-                />
-              ) : (
-                <img
-                  ref={setImageRef}
-                  alt=""
-                  src={BLANK_FRAME}
-                  onLoad={(event) => {
-                    const image = event.currentTarget;
-                    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-                      setSourceAspect(image.naturalWidth / image.naturalHeight);
-                    }
-                  }}
-                  className="h-full w-full"
-                  style={{ objectFit }}
-                />
-              )}
+              <img
+                ref={setImageRef}
+                alt=""
+                src={BLANK_FRAME}
+                onLoad={(event) => {
+                  const image = event.currentTarget;
+                  if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+                    setSourceAspect(image.naturalWidth / image.naturalHeight);
+                  }
+                }}
+                className="h-full w-full"
+                style={{ objectFit }}
+              />
               <img
                 ref={setScrubImageRef}
                 alt=""

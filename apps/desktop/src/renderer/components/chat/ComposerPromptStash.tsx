@@ -25,6 +25,7 @@ import {
   type PromptStashEntry,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
 const STASH_SNIPPET_MAX_CHARS = 110;
@@ -184,12 +185,7 @@ function StashImageThumbnail({
     setSrc(directUrl);
     setFailed(false);
     if (directUrl || attachment.type !== "image") return () => { cancelled = true; };
-    const readImage = window.ade?.agentChat?.getImageDataUrl;
-    if (!readImage) {
-      setFailed(true);
-      return () => { cancelled = true; };
-    }
-    void readImage(attachment.path, capturedBinding)
+    void readAttachmentImageDataUrl(attachment.path, capturedBinding)
       .then(({ dataUrl }) => {
         if (!cancelled) setSrc(dataUrl);
       })
@@ -434,20 +430,7 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
           storedAttachments.push(attachment);
           continue;
         }
-        let dataUrl: string;
-        try {
-          dataUrl = (await window.ade.agentChat.getImageDataUrl(
-            attachment.path,
-            operationBinding,
-          )).dataUrl;
-        } catch (runtimeReadError) {
-          // A remote owner identifies a path on another machine. Never
-          // reinterpret that path on the desktop running the renderer.
-          if (operationBinding?.kind !== "local") throw runtimeReadError;
-          const localRead = window.ade?.app?.getImageDataUrl;
-          if (!localRead) throw runtimeReadError;
-          dataUrl = (await localRead(attachment.path)).dataUrl;
-        }
+        const { dataUrl } = await readAttachmentImageDataUrl(attachment.path, operationBinding);
         const saved = await window.ade.agentChat.saveTempAttachment({
           data: base64FromDataUrl(dataUrl),
           filename: attachmentName(attachment.path),

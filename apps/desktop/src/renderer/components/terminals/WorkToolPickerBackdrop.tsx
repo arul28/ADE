@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ThemeId } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { createBackdropRenderer } from "./workToolPickerBackdropRenderer";
+import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerBackdropRenderer";
 
 export {
   BACKDROP_FRAME_MS,
@@ -39,6 +39,11 @@ export type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader
  *    with only a software rasteriser behind it — it is a static CSS gradient
  *    and no canvas at all.
  *
+ * The static gradient is always painted first. Opening the pane must not wait
+ * on a shader compile: CSS is the first frame, the canvas covers it once WebGL
+ * has drawn, and `playing={false}` pauses the loop without dropping the last
+ * frame so coming back to the picker is instant.
+ *
  * This file is only the React shell: the shader, palettes and size policy live
  * in `workToolPickerBackdropShader.ts`, and the GL context, the rAF loop and
  * every listener that gates it live in `workToolPickerBackdropRenderer.ts`.
@@ -46,11 +51,17 @@ export type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader
 export function WorkToolPickerBackdrop({
   theme,
   className,
+  playing = true,
 }: {
   theme: ThemeId;
   className?: string;
+  /** False keeps the last frame and stops the 30 fps loop. */
+  playing?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rendererRef = useRef<BackdropRenderer | null>(null);
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
   // Optimistic: the canvas mounts, and only a refused context downgrades the
   // page to the static gradient. Probing first would mean creating and throwing
   // away a context on every mount just to learn what the renderer finds out.
@@ -74,30 +85,37 @@ export function WorkToolPickerBackdrop({
     const renderer = createBackdropRenderer({
       canvas,
       theme,
+      playing: playingRef.current,
       onRefused: () => setWebglRefused(true),
     });
-    return renderer?.dispose;
+    rendererRef.current = renderer;
+    return () => {
+      renderer?.dispose();
+      if (rendererRef.current === renderer) rendererRef.current = null;
+    };
   }, [theme, webglRefused, motionEpoch]);
 
-  // No WebGL — a software-rendered mesh would be the most expensive thing in
-  // the window, so the page keeps the same violet corner light as flat CSS.
-  if (webglRefused) {
-    return (
-      <div
-        aria-hidden="true"
-        data-backdrop="static"
-        className={cn("ade-tool-picker-static", className)}
-      />
-    );
-  }
+  useEffect(() => {
+    rendererRef.current?.setPlaying(playing);
+  }, [playing]);
 
+  // CSS is the first paint. A refused GPU drops the canvas so the compositor
+  // is not carrying an empty layer; the same gradient stays on this box.
   return (
-    <canvas
-      ref={canvasRef}
+    <div
       aria-hidden="true"
-      data-backdrop="shader"
-      className={className}
-      style={{ display: "block", width: "100%", height: "100%" }}
-    />
+      data-backdrop={webglRefused ? "static" : "shader"}
+      className={cn("ade-tool-picker-backdrop", className)}
+    >
+      <div className="ade-tool-picker-static absolute inset-0" />
+      {webglRefused ? null : (
+        <canvas
+          ref={canvasRef}
+          data-backdrop-canvas=""
+          className="absolute inset-0"
+          style={{ display: "block", width: "100%", height: "100%" }}
+        />
+      )}
+    </div>
   );
 }

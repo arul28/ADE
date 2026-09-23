@@ -83,6 +83,7 @@ import {
   captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
+  captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
 import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
@@ -156,6 +157,8 @@ import { createAppCommandSender } from "./appCommandDispatch";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
+import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOrphans";
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
@@ -309,7 +312,6 @@ import { createCursorCloudIngressService } from "./services/automations/cursorCl
 import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
-import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
 import {
@@ -363,6 +365,10 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
+import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
+import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
+import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
+import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
@@ -3508,6 +3514,7 @@ app.whenReady().then(async () => {
       logger,
       projectConfigService,
       projectRoot,
+      modelManifest: { adeVersion: app.getVersion(), fetchRemote: true },
     });
 
     const onboardingService = createOnboardingService({
@@ -4087,7 +4094,6 @@ app.whenReady().then(async () => {
       // later in this same bootstrap, and the CTO's tool map is only built when
       // a CTO session actually runs.
       getAutomationPlannerService: () => automationPlannerService,
-      getReviewService: () => reviewService,
       getUsageService: () => usageTrackingService,
       getBudgetService: () => budgetCapService,
       // Names and metadata only. `projectSecretService.get`/`exportEnv` are
@@ -4127,6 +4133,11 @@ app.whenReady().then(async () => {
         event,
       }),
       onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
+      }),
+      onClaudePluginsIgnored: (event) => captureClaudePluginsIgnoredAnalytics({
         analytics: productAnalyticsService,
         projectId,
         event,
@@ -4312,21 +4323,6 @@ app.whenReady().then(async () => {
           emitProjectEvent(projectRoot, IPC.automationsEvent, event),
       });
     }
-    const reviewService = createReviewService({
-      db,
-      logger,
-      projectId,
-      projectRoot,
-      projectDefaultBranch: baseRef,
-      laneService,
-      gitService,
-      agentChatService,
-      sessionService,
-      sessionDeltaService,
-      testService,
-      prService,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
-    });
     // Constructed even when automations are unavailable (packaged builds):
     // the relay poll feeds prService.ingestGithubWebhook for PR freshness,
     // while automation rule dispatch stays gated on automationService.
@@ -4635,8 +4631,49 @@ app.whenReady().then(async () => {
           return null;
         }
       },
+      // The reverse, so a caller that names no lane is placed by the worktree
+      // it is standing in rather than by whichever lane happens to be busy.
+      resolveLaneIdForPath: (absolutePath: string): string | null => {
+        try {
+          return laneService.getLaneIdForPath(absolutePath);
+        } catch {
+          return null;
+        }
+      },
+      // The lanes DB backs `lane_apple_devices`; without it a lane device is
+      // remembered only for the life of the process.
+      laneDeviceStore: db,
+      // The recording halves that live outside the simulator service. Overlay
+      // switches are account-synced and reach the main process only through
+      // the renderer today, so the recorder's own defaults (both ON) stand
+      // until a main-process reader exists; the proof-drawer broker is real.
+      recordingDeps: { artifactFiler: computerUseArtifactBrokerService },
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
+    });
+    /**
+     * Brain-side video forwarder for this embedded host.
+     *
+     * The daemon brain wires the same relay from `bootstrap.ts`; this is the
+     * desktop-embedded sync host, which serves the same `apple.*` commands to a
+     * phone or a web tab when the desktop is the one hosting. Without an
+     * account settings store here the remote cap is the shipped default.
+     */
+    const appleStreamRelay = createAppleStreamRelayForService({
+      service: iosSimulatorService,
+      remoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
+      // This host has a renderer, so the last phone or web viewer leaving must
+      // not stop a capture the Apple column is still showing. Ask both the
+      // main-process registry (direct IPC starts) and the service's own tracker
+      // (runtime-action starts, which never reach the IPC handler).
+      hasLocalViewer: (laneId) =>
+        hasAppleLocalViewer(laneId) || (iosSimulatorService.hasLocalViewer?.(laneId) ?? false),
+      logger,
+    });
+    const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
+    app.on("will-quit", () => {
+      detachAppleStreamRoute();
+      appleStreamRelay.dispose();
     });
     agentChatService.registerChatSessionEndedListener((sessionId) => {
       void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
@@ -4826,6 +4863,9 @@ app.whenReady().then(async () => {
       rebaseSuggestionService,
       autoRebaseService,
       computerUseArtifactBrokerService,
+      appleDeviceService: iosSimulatorService,
+      appleStreamRelay,
+      getAppleRemoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       agentChatService,
       cursorCloudFleetService,
       ctoStateService,
@@ -5553,7 +5593,6 @@ app.whenReady().then(async () => {
       macDesktopService,
       appControlService,
       prSummaryService,
-      reviewService,
       searchService,
       externalSessionsService,
       jobEngine,
@@ -5766,7 +5805,6 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       prSummaryService: null,
-      reviewService: null,
       jobEngine: null,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService: null,
@@ -6046,11 +6084,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.automationService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.reviewService?.dispose?.();
     } catch {
       // ignore
     }
@@ -7125,6 +7158,10 @@ app.whenReady().then(async () => {
     }
 
     shutdownOpenCodeServersBestEffort();
+    // Chat disposal above leaves the shared Cursor one-shot workers, which
+    // belong to no session. The IPC dispose goes out now; the workers also
+    // exit on their own once this process is gone.
+    void disposeAllCursorSdkConnections().catch(() => {});
     terminateLoginImportWorkersBestEffort();
   };
 
@@ -7603,6 +7640,13 @@ app.whenReady().then(async () => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  // Cursor SDK workers a dead brain or a crashed main left behind. Only
+  // workers whose owner is dead are touched.
+  void recoverCursorSdkWorkerOrphans({ logger: getActiveContext().logger }).catch((error: unknown) => {
+    getActiveContext().logger.warn("agent_chat.cursor_sdk_worker_orphan_sweep_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
     getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
       error: error instanceof Error ? error.message : String(error),

@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
@@ -92,6 +94,10 @@ import {
   resolveAppliedAutoLaneBranchFragment,
 } from "../../../shared/laneNameFallback";
 
+import { releaseLaneAppleDevice } from "../ios/laneDeviceRegistry";
+
+/** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
+const execFileAsync = promisify(execFileCallback);
 type LaneRow = {
   id: string;
   project_id: string;
@@ -2868,6 +2874,20 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
+    // The lane's Apple simulator binding follows the keeper too. `lane_id` is
+    // the table's primary key, so keep the keeper's binding when it already has
+    // one and only adopt the duplicate's otherwise. Without this the duplicate's
+    // row is dropped by the cleanup below and the keeper forgets its simulator,
+    // so a later lane delete never releases the clone.
+    const keeperHasAppleDevice = db.get<{ one: number }>(
+      "select 1 as one from lane_apple_devices where lane_id = ? limit 1",
+      [keeperId],
+    );
+    if (keeperHasAppleDevice) {
+      db.run("delete from lane_apple_devices where lane_id = ?", [duplicateId]);
+    } else {
+      db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    }
     // Everything else lane-scoped on the duplicate cascades away. The duplicate
     // is a create/recover race artifact, not a lane the user made, and its
     // sessions now belong to the keeper — so its tombstone preserves whatever
@@ -3983,14 +4003,6 @@ export function createLaneService({
       detachedAt: new Date().toISOString(),
     });
     db.run("delete from pr_auto_link_ignores where lane_id = ? and project_id = ?", [laneId, projectId]);
-
-    db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_finding_feedback where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_candidate_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_reviewer_runs where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-    db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
 
     db.run("delete from file_directory_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
     db.run("delete from file_content_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
@@ -7666,6 +7678,28 @@ export function createLaneService({
             throw error;
           }
           const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
+          // The lane's Apple device and its recordings go with it. Not awaited:
+          // `simctl delete` can take tens of seconds on a large device set and
+          // the lane row is already gone, so blocking the delete on it would
+          // only make the progress UI look wedged. It deletes a CLONE and only
+          // detaches an attached device — ADE never deletes a simulator it did
+          // not create.
+          void releaseLaneAppleDevice({
+            laneId,
+            projectRoot,
+            store: db,
+            run: async (command, commandArgs, options) => {
+              const result = await execFileAsync(command, commandArgs, {
+                timeout: options?.timeoutMs ?? 30_000,
+                // No console window on Windows, and no argv shell parsing on any
+                // platform — the simctl arguments are literal.
+                windowsHide: true,
+              });
+              return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
+            },
+            removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),
+            logger,
+          });
           if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
           return removedProofFiles === laneArtifactFiles.length
             ? { detail: `${removedProofFiles} proof file(s) removed` }
@@ -7763,6 +7797,39 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       return row.worktree_path;
+    },
+
+    /**
+     * Which lane's worktree contains this path — the reverse of
+     * `getLaneWorktreePath`, and synchronous because its callers are.
+     *
+     * A caller that names no lane is not necessarily anonymous: an agent
+     * standing inside a lane worktree has said which lane it means, and the
+     * longest containing worktree is the answer. Longest wins because a lane
+     * can be nested inside another lane's tree.
+     *
+     * This exists because guessing was worse. An `ade apple` call from a shell
+     * with no `ADE_LANE_ID` — every OpenCode agent has one, since a shared
+     * `opencode serve` cannot carry a per-chat environment — used to fall back
+     * to "whichever single lane is running something", and filed one agent's
+     * screenshot into an unrelated lane's proof drawer.
+     */
+    getLaneIdForPath(absolutePath: string): string | null {
+      const candidate = normAbs(absolutePath);
+      if (!candidate) return null;
+      const rows = db.all<Pick<LaneRow, "id" | "worktree_path">>(
+        "select id, worktree_path from lanes where project_id = ? and archived_at is null",
+        [projectId],
+      );
+      let best: { id: string; length: number } | null = null;
+      for (const row of rows) {
+        const root = normAbs(row.worktree_path ?? "");
+        if (!root) continue;
+        const contained = candidate === root || candidate.startsWith(`${root}${path.sep}`);
+        if (!contained) continue;
+        if (!best || root.length > best.length) best = { id: row.id, length: root.length };
+      }
+      return best?.id ?? null;
     },
 
     getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType; linearIssue: LaneLinearIssue | null } {

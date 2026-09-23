@@ -123,6 +123,9 @@
 		E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000050 /* WorkChatAttachmentTray.swift */; };
 		E1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */; };
 		E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */; };
+		E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB01 /* AppleDeviceStream.swift */; };
+		E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB02 /* AppleDeviceViewer.swift */; };
+		E1000000000000000000AB03 /* AppleDeviceCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB03 /* AppleDeviceCard.swift */; };
 		E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */; };
 		E10000000000000000000052 /* LaneDeeplinkHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000052 /* LaneDeeplinkHelpers.swift */; };
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
@@ -151,6 +154,7 @@
 		E10000000000000000000F0A /* WorkCardExpansion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0A /* WorkCardExpansion.swift */; };
 		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
+		E1000000000000000000003D /* WorkSpawnNesting.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003D /* WorkSpawnNesting.swift */; };
 		E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F01 /* WorkLaneOrder.swift */; };
 		H10000000000000000000001 /* CtoRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000010 /* CtoRootScreen.swift */; };
 		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
@@ -217,6 +221,7 @@
 		FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */; };
 		FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */; };
 		FB000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */; };
+		FB000000000000000000AB01 /* AppleDeviceStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000AB01 /* AppleDeviceStreamTests.swift */; };
 		FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */; };
 		FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
@@ -462,6 +467,9 @@
 		D10000000000000000000050 /* WorkChatAttachmentTray.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentTray.swift; path = ADE/Views/Work/WorkChatAttachmentTray.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerAttachmentStaging.swift; path = ADE/Views/Work/WorkComposerAttachmentStaging.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentPreviewSheets.swift; path = ADE/Views/Work/WorkChatAttachmentPreviewSheets.swift; sourceTree = "<group>"; };
+		D1000000000000000000AB01 /* AppleDeviceStream.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceStream.swift; path = ADE/Views/Work/AppleDeviceStream.swift; sourceTree = "<group>"; };
+		D1000000000000000000AB02 /* AppleDeviceViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewer.swift; path = ADE/Views/Work/AppleDeviceViewer.swift; sourceTree = "<group>"; };
+		D1000000000000000000AB03 /* AppleDeviceCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceCard.swift; path = ADE/Views/Work/AppleDeviceCard.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkQueuedSteerDetailSheet.swift; path = ADE/Views/Work/WorkQueuedSteerDetailSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000052 /* LaneDeeplinkHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDeeplinkHelpers.swift; path = ADE/Views/Lanes/LaneDeeplinkHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
@@ -512,6 +520,7 @@
 		D10000000000000000000049 /* TerminalSessionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TerminalSessionScreen.swift; path = ADE/Views/Work/TerminalSessionScreen.swift; sourceTree = "<group>"; };
 		D1000000000000000000004A /* SwiftTermSessionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SwiftTermSessionView.swift; path = ADE/Views/Work/SwiftTermSessionView.swift; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
+		D1000000000000000000003D /* WorkSpawnNesting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSpawnNesting.swift; path = ADE/Views/Work/WorkSpawnNesting.swift; sourceTree = "<group>"; };
 		D10000000000000000000F01 /* WorkLaneOrder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneOrder.swift; path = ADE/Views/Work/WorkLaneOrder.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
@@ -705,6 +714,7 @@
 		C5A00000000000000000000E /* SSHBootstrapTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapTests.swift; path = ADETests/SSHBootstrapTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkAssistantRenderingTests.swift; path = ADETests/WorkAssistantRenderingTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerDraftAttachmentTests.swift; path = ADETests/WorkComposerDraftAttachmentTests.swift; sourceTree = "<group>"; };
+		FA000000000000000000AB01 /* AppleDeviceStreamTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceStreamTests.swift; path = ADETests/AppleDeviceStreamTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCardExpansionTests.swift; path = ADETests/WorkCardExpansionTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -1009,6 +1019,7 @@
 				D10000000000000000000049 /* TerminalSessionScreen.swift */,
 				D1000000000000000000004A /* SwiftTermSessionView.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
+				D1000000000000000000003D /* WorkSpawnNesting.swift */,
 				D10000000000000000000F01 /* WorkLaneOrder.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
@@ -1018,6 +1029,9 @@
 				D10000000000000000000050 /* WorkChatAttachmentTray.swift */,
 				D1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift */,
 				D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */,
+				D1000000000000000000AB01 /* AppleDeviceStream.swift */,
+				D1000000000000000000AB02 /* AppleDeviceViewer.swift */,
+				D1000000000000000000AB03 /* AppleDeviceCard.swift */,
 				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
 				D10000000000000000000F03 /* WorkPromptStash.swift */,
@@ -1300,6 +1314,7 @@
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
 				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
 				FA000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift */,
+				FA000000000000000000AB01 /* AppleDeviceStreamTests.swift */,
 				FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */,
 				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
@@ -1809,6 +1824,7 @@
 				E10000000000000000000049 /* TerminalSessionScreen.swift in Sources */,
 				E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */,
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
+				E1000000000000000000003D /* WorkSpawnNesting.swift in Sources */,
 				E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
@@ -1818,6 +1834,9 @@
 				E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */,
 				E1000000000000000000AA01 /* WorkComposerAttachmentStaging.swift in Sources */,
 				E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */,
+				E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */,
+				E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */,
+				E1000000000000000000AB03 /* AppleDeviceCard.swift in Sources */,
 				E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
@@ -1903,6 +1922,7 @@
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
 				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,
 				FB000000000000000000AA03 /* WorkComposerDraftAttachmentTests.swift in Sources */,
+				FB000000000000000000AB01 /* AppleDeviceStreamTests.swift in Sources */,
 				FB000000000000000000C2D0 /* WorkCardExpansionTests.swift in Sources */,
 				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,

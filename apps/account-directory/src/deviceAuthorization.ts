@@ -1,4 +1,5 @@
 import { isLoopbackHostname } from "./trustedOrigin";
+import { boundedDisplayText } from "./displayText";
 
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
@@ -9,6 +10,7 @@ const APPROVAL_RATE_LIMIT_MAX_ATTEMPTS = 10;
 const DEVICE_AUTHORIZATION_RETENTION_MS = 60 * 60_000;
 const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const MAX_MACHINE_KEY_CHARS = 128;
+const MAX_MACHINE_NAME_CHARS = 80;
 
 export interface DeviceAuthorizationEnv {
   DB: D1Database;
@@ -44,10 +46,11 @@ type DeviceAuthorizationRow = {
   /** Machine this login was started from, or null for a non-machine login. */
   machine_key: string | null;
   /**
-   * Optional display name for `machine_key`. Not populated by every writer, so
-   * the confirmation page treats an absent value as "your computer".
+   * Display name the client sent for the computer that started this sign-in.
+   * Older clients send none, so the confirmation page treats null as "your
+   * computer".
    */
-  machine_name?: string | null;
+  machine_name: string | null;
   status: "pending" | "approved" | "consumed" | "expired" | "error";
   code_verifier: string | null;
   oauth_state_hash: string | null;
@@ -82,19 +85,12 @@ function html(value: string, status = 200): Response {
       "cache-control": "no-store",
       "content-security-policy": "default-src 'none'; form-action 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       "content-type": "text/html; charset=utf-8",
-      "referrer-policy": "no-referrer",
+      // Not `no-referrer`: under that policy a browser sends the text `null`
+      // as the `Origin` of this page's own form POST, and the confirmation
+      // check needs the real origin. `same-origin` still sends nothing to
+      // another site.
+      "referrer-policy": "same-origin",
       "x-content-type-options": "nosniff",
-    },
-  });
-}
-
-function redirect(location: string): Response {
-  return new Response(null, {
-    status: 302,
-    headers: {
-      "cache-control": "no-store",
-      location,
-      "referrer-policy": "no-referrer",
     },
   });
 }
@@ -164,12 +160,12 @@ function encodeQuery(entries: Array<[string, string]>): string {
   return entries.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
 }
 
-function page(args: { title: string; body: string; status?: number }): Response {
+function page(args: { title: string; body: string; status?: number; head?: string }): Response {
   return html(`<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1">${args.head ?? ""}
     <title>${args.title}</title>
     <style>
       :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
@@ -180,6 +176,7 @@ function page(args: { title: string; body: string; status?: number }): Response 
       label { display: block; margin: 1.5rem 0 .5rem; font-weight: 600; }
       input { box-sizing: border-box; width: 100%; padding: .8rem; border: 1px solid #4d5058; border-radius: .5rem; background: #101114; color: inherit; font: inherit; letter-spacing: .12em; text-transform: uppercase; }
       button { width: 100%; margin-top: 1rem; padding: .8rem; border: 0; border-radius: .5rem; background: #f5f5f5; color: #101114; font: inherit; font-weight: 700; cursor: pointer; }
+      a { color: #f5f5f5; }
     </style>
   </head>
   <body><main>${args.body}</main></body>
@@ -209,11 +206,18 @@ function approvalForm(userCode = ""): Response {
  * field; the only action is Continue.
  */
 function confirmationPage(userCode: string, machineName: string | null): Response {
-  const who = machineName?.trim() || "your computer";
+  // The name comes from the client that started the sign-in, so it is shown
+  // as what that computer says it is, with a line that tells the reader to
+  // stop if they did not start this.
+  const name = machineName?.trim();
+  const who = name
+    ? `<p>A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to ADE.</p>
+      <p>Continue only if you started this on that computer.</p>`
+    : "<p>ADE on your computer asked to sign in.</p>";
   return page({
     title: "Confirm this sign-in",
     body: `<h1>Confirm this sign-in</h1>
-      <p>ADE on ${escapeHtml(who)} asked to sign in.</p>
+      ${who}
       <div style="margin:1.5rem 0 .5rem;font-weight:600">Device code</div>
       <p style="margin:0 0 1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.4rem;letter-spacing:.18em;color:#f5f5f5">${escapeHtml(userCode)}</p>
       <form method="post" action="/device">
@@ -224,16 +228,22 @@ function confirmationPage(userCode: string, machineName: string | null): Respons
 }
 
 /**
- * The page a browser link carries the code with it. `user_code` present means
- * `verification_uri_complete`; absent means the CLI path, where the reader has
- * to type the code.
+ * The answer to a confirmed POST: a page that opens the Clerk sign-in.
+ *
+ * Not a 302. Browsers apply the page's `form-action 'self'` to every redirect
+ * that follows a form POST, and Clerk's authorize URL redirects on through
+ * more hosts. A 302 there was blocked in Chromium, and Continue left the
+ * person on the same page. A meta refresh starts a new navigation, which
+ * `form-action` does not cover, and the link is there if it does not fire.
  */
-function approvalFormForQuery(rawUserCode: string | null, machineName: string | null): Response {
-  if (rawUserCode) {
-    const userCode = normalizeUserCode(rawUserCode);
-    if (userCode) return confirmationPage(userCode, machineName);
-  }
-  return approvalForm();
+function continueToSignIn(authorizeUrl: string): Response {
+  const href = escapeHtml(authorizeUrl);
+  return page({
+    title: "Opening sign-in",
+    head: `\n    <meta http-equiv="refresh" content="0;url=${href}">`,
+    body: `<h1>Opening sign-in</h1>
+      <p>If nothing happens, <a href="${href}">open the sign-in page</a>.</p>`,
+  });
 }
 
 function escapeHtml(value: string): string {
@@ -351,6 +361,8 @@ async function handleDeviceCode(
     return json({ error: "invalid_request", error_description: "machine_key is too long" }, { status: 400 });
   }
 
+  const machineName = boundedDisplayText(body?.machine_name, MAX_MACHINE_NAME_CHARS);
+
   const now = options.now();
   if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
     return json(
@@ -368,8 +380,8 @@ async function handleDeviceCode(
       await env.DB.prepare(`
         insert into device_authorizations (
           device_code, user_code, device_secret_hash, status, poll_interval_seconds,
-          created_at, expires_at, machine_key
-        ) values (?, ?, ?, 'pending', ?, ?, ?, ?)
+          created_at, expires_at, machine_key, machine_name
+        ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
       `).bind(
         deviceCode,
         userCode,
@@ -378,6 +390,7 @@ async function handleDeviceCode(
         now,
         expiresAt,
         machineKey,
+        machineName,
       ).run();
       break;
     } catch (error) {
@@ -400,24 +413,25 @@ async function handleDeviceCode(
 /**
  * Is this confirmation a same-origin submission of our own form?
  *
- * `Origin` alone answered this, and it was wrong for real people: a browser
- * may omit `Origin` entirely on a same-origin form POST, so a legitimate
- * confirmation arrived with none and `null !== url.origin` refused it. What
- * the person saw was a page headed "Confirmation required" telling them to
- * open the ADE sign-in page — which is the page they were already on, with
- * nothing on it to click. The sign-in could never complete.
+ * `Origin` alone answered this, and it refused real people. A browser sends
+ * the text `null` as the `Origin` of a form POST from a page whose referrer
+ * policy is `no-referrer`, which this page used to have. Some browsers also
+ * omit `Origin` on a same-origin form POST. Either way the person saw
+ * "Confirmation required" on the page they were already on, and the sign-in
+ * could never complete.
  *
- * `Sec-Fetch-Site` answers the same question when `Origin` is absent. The
- * browser attaches it and a page cannot set it, which is why this worker
- * already trusts it in `diagnostics.ts`.
+ * When `Origin` is absent or `null`, `Sec-Fetch-Site` answers the same
+ * question. The browser attaches it and a page cannot set it, which is why
+ * this worker already trusts it in `diagnostics.ts`. A sandboxed frame or
+ * another site also sends `Origin: null`, but its `Sec-Fetch-Site` is never
+ * `same-origin`.
  *
- * A request with neither header is still refused. A cross-site POST is exactly
- * what this check exists to stop, and nothing here weakens that: an `Origin`
- * that is present and wrong fails, as it did before.
+ * A request with neither signal is still refused, and an `Origin` that is
+ * present and wrong still fails.
  */
 function isSameOriginConfirmation(request: Request, url: URL): boolean {
-  const origin = request.headers.get("origin");
-  if (origin) return origin === url.origin;
+  const origin = request.headers.get("origin")?.trim();
+  if (origin && origin !== "null") return origin === url.origin;
   return request.headers.get("sec-fetch-site")?.trim().toLowerCase() === "same-origin";
 }
 
@@ -428,17 +442,13 @@ async function handleDeviceApproval(
 ): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET") {
-    const rawUserCode = url.searchParams.get("user_code");
-    if (!rawUserCode) return approvalForm();
-    // A read-only preview may look up the name the machine bound to this code.
-    // The record does not carry one today, so the page falls back to "your
-    // computer"; naming it works the moment the field is populated.
-    const previewCode = normalizeUserCode(rawUserCode);
-    const row = previewCode ? await findByUserCode(env, previewCode) : null;
-    const machineName = typeof row?.machine_name === "string" && row.machine_name.trim()
-      ? row.machine_name
-      : null;
-    return approvalFormForQuery(rawUserCode, machineName);
+    const userCode = normalizeUserCode(url.searchParams.get("user_code") ?? "");
+    if (!userCode) return approvalForm();
+    // A read-only preview. It names the computer only while the code can
+    // still be confirmed: a dead code shows no client-chosen name.
+    const row = await findByUserCode(env, userCode);
+    const live = row?.status === "pending" && row.expires_at > options.now();
+    return confirmationPage(userCode, live ? row.machine_name : null);
   }
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
   if (!isSameOriginConfirmation(request, url)) {
@@ -510,7 +520,7 @@ async function handleDeviceApproval(
     ["state", oauthState],
     ["scope", "openid profile email offline_access"],
   ])}`;
-  return redirect(authorizeUrl);
+  return continueToSignIn(authorizeUrl);
 }
 
 async function handleDeviceCallback(
@@ -731,7 +741,12 @@ export async function handleDeviceAuthorizationRequest(
 ): Promise<Response | null> {
   const pathname = new URL(request.url).pathname;
   const resolved = {
-    fetchImpl: options.fetchImpl ?? fetch,
+    // Wrapped, never stored bare: the callback calls this as
+    // `options.fetchImpl(...)`, and the Workers runtime refuses a `fetch`
+    // whose `this` is not the global scope ("Illegal invocation"). Stored bare,
+    // every token exchange threw, and every "Confirm it's you" ended as
+    // "Sign-in failed" with "OAuth token exchange failed." in the row.
+    fetchImpl: options.fetchImpl ?? ((input, init) => fetch(input, init)),
     now: options.now ?? Date.now,
     randomBytes: options.randomBytes ?? defaultRandomBytes,
     mintPairingGrant: options.mintPairingGrant,

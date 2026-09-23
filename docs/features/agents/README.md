@@ -11,7 +11,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, daily/onboarding state, the single immutable doctrine, and system-prompt preview. |
 | `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, fact tags, the worker-discovery queue, per-lane sections, search, injection sections). |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `saveMemory` / `searchMemory` / `readMemory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
-| `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 13 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
+| `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 11 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
 | `apps/desktop/src/main/services/chat/ctoTurnContext.ts`, `codexCtoToolDeferral.ts` | The pure turn-context helpers and the Codex pack-deferral predicate, split out of `agentChatService` so they are testable without the provider graph. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves the user's Pi installation — CLI path, SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
@@ -104,21 +104,69 @@ ADE keeps one canonical bundled skill tree at
 `Resources/agent-skills`). It does not install those skills into
 `~/.claude/skills`, `~/.agents/skills`, `~/.cursor/skills`,
 `~/.factory/skills`, or `~/.config/opencode/skills`; doing so leaks
-ADE-specific capabilities into unrelated harness sessions.
+ADE-specific capabilities into unrelated harness sessions. An ADE-owned private
+directory that ADE hands to one session explicitly is not an install and is
+allowed — the rule is about provider-global homes the user's own `claude`,
+`cursor`, or `opencode` would pick up on its own.
 
 Each ADE-launched session receives the canonical root through
 `ADE_AGENT_SKILLS_DIRS` and the compact skill catalog in
 `buildAdeBootstrapGuidance`. Provider-native integrations are session-scoped:
 
 - Codex app-server receives `skills/extraRoots/set` and uses
-  `perCwdExtraUserRoots` when listing skills.
+  `perCwdExtraUserRoots` when listing skills. The result is logged: a runtime
+  too old for the method loses every bundled skill, and that must not look
+  like success.
 - Claude Agent SDK loads the bundled root as a local plugin through its
-  `.claude-plugin/plugin.json`; tracked Claude CLI launches receive the same
-  validated root through `--plugin-dir`.
-- OpenCode's currently shipped config schema, Cursor, and Droid do not expose
-  an arbitrary standalone skill-root option ADE can safely set, so they use
-  the catalog plus the provider-independent
+  `.claude-plugin/plugin.json`; tracked Claude CLI launches and background
+  `claude --bg` launches receive the same validated root through
+  `--plugin-dir`.
+- OpenCode receives the roots through its own `skills.paths` config key, which
+  ADE sets inside `OPENCODE_CONFIG_CONTENT`. No file is written into the
+  user's OpenCode config home.
+- Pi has its native discovery replaced outright: ADE passes `noSkills: true`
+  plus `additionalSkillPaths`, so a Pi session sees exactly ADE's catalog.
+- Qwen Code receives the roots through its own `skills.directories` settings
+  key. ADE writes an ADE-owned system-defaults JSON under the project's
+  `.ade/cache/qwen-skill-defaults/` and names it with
+  `QWEN_CODE_SYSTEM_DEFAULTS_PATH`, so nothing is written into `~/.qwen`. That
+  tier is the lowest-precedence one and the key merges as a union, so ADE's
+  roots add to the user's rather than replacing them, and a bundled skill can
+  never displace a same-named skill the user already has. ADE layers its file
+  on top of whatever the machine's own system-defaults file held, so an
+  administrator-installed one is not hidden by the redirect.
+- Cursor SDK chats get the catalog through Cursor's own discovery. Cursor scans
+  `<workspace root>/.agents/skills/<name>/SKILL.md` for every root in
+  `LocalAgentOptions.dirs`, so ADE copies the bundled skills into an ADE-owned
+  shim keyed per lane at `<ADE_HOME>/agent-skill-shims/cursor/<lane-key>` and
+  passes only that root as an extra `dirs` entry (`cursorAgentSkillShim.ts`).
+  Real copies, not symlinks:
+  Cursor's walker follows a symlink and then drops any skill whose `realpath`
+  escapes the roots it was given, so a link into the app bundle would require
+  handing Cursor the whole resources directory as a workspace root — and
+  Windows cannot create symlinks without extra privileges anyway. The copy is
+  content-hashed against a stamp at the shim root, so an unchanged bundle does
+  not rewrite the tree. The root is keyed per lane so two concurrent chats
+  cannot rebuild a tree the other is using — a rebuild deletes and re-copies,
+  which on Windows throws against an open handle. The shim root is also the one
+  read-only exception ADE's Cursor lane path guard makes outside the lane, so a
+  model that follows a listed skill path is not denied a file ADE just
+  advertised. Personal chats and orchestration leads are skipped: a lead runs on
+  `settingSources: ["user","team","mdm"]`, which turns Cursor's project
+  extensibility off, so `dirs` skills would not load. Every outcome, including
+  every skip reason, is logged as `agent_chat.skill_delivery` — the one
+  skill-delivery telemetry point, in `skillDelivery.ts` — with mechanism
+  `cursor-workspace-dirs`; a failed materialization falls back to
+  `ADE_AGENT_SKILLS_DIRS` plus the catalog rather than failing the launch.
+- Droid and the remaining ACP providers (Kimi, Grok, Copilot) have no
+  extra-skill-root option ADE can set without writing a provider config home,
+  so they use the catalog plus the provider-independent
   `ade skill list --text` / `ade skill show <name> --text` activation path.
+
+Every root ADE advertises is checked against the disk first
+(`adePromptAgentSkillRoots`). The prompt-facing list is capped, so an
+advertised root that does not exist takes a slot from one that does and sends
+the agent to a path it cannot open.
 
 The same CLI activation path is available to every provider and remains the
 compatibility fallback for older runtime versions. On startup, ADE performs a
@@ -256,6 +304,9 @@ create`, stores it in a secret manager, and exposes it to the machine brain as
 `ADE_ACCOUNT_TOKEN`. The envelope includes the public OAuth refresh context, so
 the consuming host needs no local Clerk configuration. The token never enters
 project files or operational logs, and account actions remain CTO-only.
+`account.deleteMachine` goes further: it refuses every agent, the CTO included,
+so an agent asks the user to remove a machine on the Account page or with
+`ade machines remove --confirm REMOVE` in their own terminal.
 
 ## Identity shape
 

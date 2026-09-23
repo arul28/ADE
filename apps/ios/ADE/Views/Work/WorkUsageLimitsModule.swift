@@ -80,6 +80,11 @@ struct WorkUsageQuotaCompact: View {
                 windows: snapshot.windows.filter { $0.provider == provider },
                 accounts: accounts
               ),
+              accountsWithoutWindows: adeUsageAccountsMissingWindows(
+                provider: provider,
+                windows: snapshot.windows.filter { $0.provider == provider },
+                accounts: accounts
+              ),
               status: snapshot.providerStatus?[provider],
               spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
               resetCredits: resetCreditAccounts(in: snapshot, provider: provider),
@@ -131,6 +136,8 @@ private struct WorkUsageQuotaDetail: Identifiable {
 private struct WorkUsageQuotaProviderCard: View {
   let provider: String
   let cards: [ADEUsageLimitCard]
+  /// Signed-in accounts that have not reported a window yet.
+  let accountsWithoutWindows: [ADEUsageAccountView]
   let status: MobileUsageProviderStatus?
   let spendControlReached: Bool
   /// Accounts on this provider with a credit banked. Empty renders nothing.
@@ -179,13 +186,18 @@ private struct WorkUsageQuotaProviderCard: View {
         }
       }
 
-      if cards.isEmpty {
+      if cards.isEmpty && accountsWithoutWindows.isEmpty {
         Text(status?.state == "ok" ? "Waiting for the next reading." : "No limits reported yet.")
           .font(ADEUsageType.microFont())
           .foregroundStyle(ADEColor.textMuted)
       } else {
         ForEach(cards) { card in
           WorkUsageQuotaWindowRow(card: card, onSelect: onSelect)
+        }
+        ForEach(accountsWithoutWindows) { account in
+          Text("\(adeUsageAccountTitle(account)) · No usage yet")
+            .font(ADEUsageType.microFont())
+            .foregroundStyle(ADEColor.textMuted)
         }
       }
 

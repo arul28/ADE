@@ -96,6 +96,9 @@ apps/desktop/resources/native/ade-capture-helper
 apps/desktop/resources/native/ade-capture-helper.exe
 apps/desktop/native/ADECaptureHelper/.build/
 apps/desktop/native/ADECaptureHelper/.build-*/
+apps/desktop/resources/native/ade-sim-helper
+apps/desktop/native/ADESimHelper/.build/
+apps/desktop/native/ADESimHelper/.build-*/
 # Large whisper.cpp binary + ~140 MB ggml model are materialized at build time,
 # never committed (see scripts/materialize-whisper-resources.mjs). Keep the dir +
 # its README/.gitkeep tracked; ignore the heavy binaries/model.

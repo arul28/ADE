@@ -17,9 +17,16 @@ export type RuntimePublishHealth = {
   lastLegDurations: SyncAccountDirectoryLegDurations;
   lastSuccessAt: number | null;
   skipReason: string | null;
-  /** Present on current runtimes; absent (and null) on older ones. */
-  lastHttpStatus?: number | null;
-  lastHttpReason?: string | null;
+  /**
+   * The directory's refusal of this machine, when the brain sent it: the HTTP
+   * status and machine-readable reason, the removal time, and when the
+   * automatic repair stopped. Left out otherwise, so older brains parse the
+   * same as before.
+   */
+  lastHttpStatus?: number;
+  lastHttpReason?: string;
+  revokedAt?: string;
+  recoveryGaveUpAt?: number;
 };
 
 export type RuntimeLastWedge = {
@@ -62,11 +69,14 @@ export function parseRuntimePublishHealth(raw: unknown): RuntimePublishHealth | 
         ? Math.max(0, raw.lastSuccessAt)
         : null,
     skipReason: asTrimmedString(raw.skipReason),
-    lastHttpStatus:
-      typeof raw.lastHttpStatus === "number" && Number.isInteger(raw.lastHttpStatus)
-        ? raw.lastHttpStatus
-        : null,
-    lastHttpReason: asTrimmedString(raw.lastHttpReason),
+    ...(typeof raw.lastHttpStatus === "number" && Number.isFinite(raw.lastHttpStatus)
+      ? { lastHttpStatus: raw.lastHttpStatus }
+      : {}),
+    ...(asTrimmedString(raw.lastHttpReason) ? { lastHttpReason: asTrimmedString(raw.lastHttpReason)! } : {}),
+    ...(asTrimmedString(raw.revokedAt) ? { revokedAt: asTrimmedString(raw.revokedAt)! } : {}),
+    ...(typeof raw.recoveryGaveUpAt === "number" && Number.isFinite(raw.recoveryGaveUpAt)
+      ? { recoveryGaveUpAt: raw.recoveryGaveUpAt }
+      : {}),
   };
 }
 

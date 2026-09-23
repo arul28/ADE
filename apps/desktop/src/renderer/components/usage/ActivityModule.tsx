@@ -1009,9 +1009,8 @@ export function WorkActivityModule() {
     persistActivityPatch({ preset: next });
   }, []);
 
-  // max-w bounds the module to the composer's column; the card itself is sized
-  // to its own content inside that. mt- settles it further from the composer so
-  // it reads as an ambient footer rather than a second panel stacked on it.
+  // Width is the launch-shelf slot the parent gives this module. The card still
+  // sizes to its heatmap inside that cap.
   return (
     <ActivityModule
       stats={stats}
@@ -1019,7 +1018,7 @@ export function WorkActivityModule() {
       variant="compact"
       preset={preset}
       onPresetChange={changePreset}
-      className="mt-5 w-full max-w-[820px]"
+      className="mt-11 w-full"
     />
   );
 }
