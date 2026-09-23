@@ -95,6 +95,34 @@ class FakeSdkChild extends EventEmitter {
   }
 }
 
+class GatedInitSdkChild extends FakeSdkChild {
+  private markInitSent!: () => void;
+  readonly initSent = new Promise<void>((resolve) => {
+    this.markInitSent = resolve;
+  });
+  initRequest: { requestId: string; payload?: unknown } | null = null;
+
+  override send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
+    if (message.type === "init" && message.requestId) {
+      this.sent.push(message);
+      this.initRequest = { requestId: message.requestId, payload: message.payload };
+      this.markInitSent();
+      return true;
+    }
+    return super.send(message);
+  }
+
+  completeInit(): void {
+    if (!this.initRequest) throw new Error("Cursor init was not sent.");
+    this.emit("message", {
+      type: "response",
+      requestId: this.initRequest.requestId,
+      ok: true,
+      result: { agentId: "agent-1" },
+    });
+  }
+}
+
 class DelayedExitChild extends FakeSdkChild {
   override send(message: { type?: string; requestId?: string }): boolean {
     if (message.type === "init" && message.requestId) {
@@ -863,6 +891,69 @@ describe("Cursor SDK pool paths", () => {
     expect(child.disposeCount).toBe(1);
   });
 
+  it("rejects a shared initialization with different skill roots without interrupting its owner", async () => {
+    const firstChild = new GatedInitSdkChild();
+    const secondChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+    const poolKey = `test-skill-roots:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const firstPending = acquireCursorSdkConnection({ ...args, agentSkillDirs: ["/skills/first"] });
+    await firstChild.initSent;
+    const secondPending = acquireCursorSdkConnection({ ...args, agentSkillDirs: ["/skills/second"] });
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(firstChild.initRequest?.payload).toMatchObject({ agentSkillDirs: ["/skills/first"] });
+
+    firstChild.completeInit();
+    const first = await firstPending;
+    expect(first.pooled.process).toBe(firstChild);
+    await expect(secondPending).rejects.toThrow("active with different launch capabilities");
+    expect(firstChild.disposeCount).toBe(0);
+
+    releaseCursorSdkConnection(poolKey, first.generation);
+    const second = await acquireCursorSdkConnection({ ...args, agentSkillDirs: ["/skills/second"] });
+
+    expect(second.pooled.process).toBe(secondChild);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(secondChild.sent.find((message) => (message as { type?: string }).type === "init"))
+      .toMatchObject({ payload: { agentSkillDirs: ["/skills/second"] } });
+    expect(firstChild.disposeCount).toBe(1);
+    releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
+  it("starts a new worker with requested skill roots after the leased worker exits unexpectedly", async () => {
+    const firstChild = new FakeSdkChild();
+    const secondChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
+    const poolKey = `test-skill-roots-exit:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection({ ...args, agentSkillDirs: ["/skills/first"] });
+    firstChild.finishExit(1, null);
+    const second = await acquireCursorSdkConnection({ ...args, agentSkillDirs: ["/skills/second"] });
+
+    expect(second.pooled.process).toBe(secondChild);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(secondChild.sent.find((message) => (message as { type?: string }).type === "init"))
+      .toMatchObject({ payload: { agentSkillDirs: ["/skills/second"] } });
+    releaseCursorSdkConnection(poolKey, first.generation);
+    releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
   it("replaces a live worker when its authorized ADE runtime socket changes", async () => {
     const firstChild = new FakeSdkChild();
     const secondChild = new FakeSdkChild();
@@ -879,6 +970,15 @@ describe("Cursor SDK pool paths", () => {
     };
 
     const first = await acquireCursorSdkConnection(args);
+    const secondPending = acquireCursorSdkConnection({
+      ...args,
+      activityRuntimeSocketPath: "/runtime/beta.sock",
+    });
+    await expect(secondPending).rejects.toThrow("active with different launch capabilities");
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(firstChild.disposeCount).toBe(0);
+
+    releaseCursorSdkConnection(poolKey, first.generation);
     const second = await acquireCursorSdkConnection({
       ...args,
       activityRuntimeSocketPath: "/runtime/beta.sock",

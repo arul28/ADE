@@ -5103,6 +5103,9 @@ describe("ADE CLI", () => {
       expect(help.text).toContain("ade chat note");
       expect(help.text).toContain("ade chat activity testing");
       expect(help.text).toContain("planning | implementing | testing | reviewing | debugging | monitoring");
+      expect(help.text).toContain(
+        "Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.",
+      );
       expect(help.text).toContain("ade chat ask");
       expect(help.text).toContain("ade chat generate-names");
       expect(help.text).toContain("ade chat demote");

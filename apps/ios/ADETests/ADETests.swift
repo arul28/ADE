@@ -28368,6 +28368,7 @@ final class RosterDeltaTests: XCTestCase {
   }
 
   func testRosterLifecyclePayloadBuildsSettledAndAttentionCanonicalStates() throws {
+    let now = ISO8601DateFormatter().date(from: "2026-07-23T10:05:00Z")!
     let settledData = Data("""
       {
         "id": "chat-settled",
@@ -28384,14 +28385,15 @@ final class RosterDeltaTests: XCTestCase {
 
     XCTAssertEqual(settledSession.settledAt, "2026-07-23T10:00:00.000Z")
     XCTAssertEqual(settledSession.statusNote, "Shipped the lifecycle mirror")
-    XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil).phase, .settled)
+    XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil, now: now).phase, .settled)
     XCTAssertEqual(
       workSessionGroups(
         organization: .byStatus,
         sessions: [settledSession],
         chatSummaries: [:],
         archivedSessionIds: [],
-        orderedLanes: []
+        orderedLanes: [],
+        now: now
       ).map(\.id),
       [workSettledSectionId]
     )
@@ -28399,9 +28401,9 @@ final class RosterDeltaTests: XCTestCase {
     var activeSettledSession = settledSession
     activeSettledSession.status = "running"
     activeSettledSession.runtimeState = "running"
-    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil).phase, .running)
+    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil, now: now).phase, .running)
     activeSettledSession.runtimeState = "idle"
-    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil).phase, .settled)
+    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil, now: now).phase, .settled)
 
     let attentionData = Data("""
       {
@@ -28421,7 +28423,7 @@ final class RosterDeltaTests: XCTestCase {
 
     XCTAssertEqual(attentionSession.attentionMessage, "Choose the release target")
     XCTAssertEqual(attentionSession.lastTurnFailedAt, "2026-07-23T09:30:00.000Z")
-    XCTAssertEqual(workCanonicalSessionState(session: attentionSession, summary: nil).phase, .needsYou)
+    XCTAssertEqual(workCanonicalSessionState(session: attentionSession, summary: nil, now: now).phase, .needsYou)
   }
 
   func testRosterCleanExitAndLegacyPayloadRemainCompatible() throws {

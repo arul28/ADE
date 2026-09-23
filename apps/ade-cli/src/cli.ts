@@ -2908,7 +2908,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat activity testing                      Report a fixed activity label for this turn; use clear to remove it
-                                                    Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Defaults to the tracked terminal, then the caller; accepts --session <id>.
+                                                    Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a

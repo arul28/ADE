@@ -564,7 +564,7 @@ export async function acquireCursorSdkConnection(args: {
     if (existing && isCursorSdkPooledAlive(existing.pooled)) {
       // A live worker cannot pick up different skill roots or an ADE runtime
       // socket without a restart. Reuse only when both launch capabilities
-      // still match; otherwise replace it rather than silently target stale state.
+      // still match; never replace a worker while one of its callers holds a lease.
       const activityRuntimeSocketPath = args.activityRuntimeSocketPath?.trim() || null;
       if (
         sameSkillDirs(existing.agentSkillDirs, args.agentSkillDirs)
@@ -574,7 +574,11 @@ export async function acquireCursorSdkConnection(args: {
         existing.ref += 1;
         return { pooled: existing.pooled, generation: existing.generation };
       }
-      disposeCursorSdkPoolEntry(args.poolKey, existing);
+      if (existing.ref > 0) {
+        throw new Error(
+          "Cursor SDK worker is active with different launch capabilities. Release its current lease before changing skill roots or activity scope.",
+        );
+      }
     }
     if (existing) disposeCursorSdkPoolEntry(args.poolKey, existing);
     await waitForDepartingCursorSdkWorker(args.poolKey);
@@ -592,8 +596,7 @@ export async function acquireCursorSdkConnection(args: {
     const pooled = await init;
     const entry = pools.get(args.poolKey);
     const live = entry?.pooled === pooled
-      && isCursorSdkPooledAlive(pooled)
-      && activityRuntimeSocketKey(entry.activityRuntimeSocketPath) === activityRuntimeSocketKey(args.activityRuntimeSocketPath);
+      && isCursorSdkPooledAlive(pooled);
     if (!entry || !live) {
       if (initOwner) {
         throw new Error("Cursor SDK worker was disposed during initialization.");
@@ -602,6 +605,14 @@ export async function acquireCursorSdkConnection(args: {
         throw new Error("Cursor SDK worker initialization did not settle after retries.");
       }
       continue;
+    }
+    if (
+      !sameSkillDirs(entry.agentSkillDirs, args.agentSkillDirs)
+      || activityRuntimeSocketKey(entry.activityRuntimeSocketPath) !== activityRuntimeSocketKey(args.activityRuntimeSocketPath)
+    ) {
+      throw new Error(
+        "Cursor SDK worker is active with different launch capabilities. Release its current lease before changing skill roots or activity scope.",
+      );
     }
     if (!initOwner) entry.ref += 1;
     return { pooled: entry.pooled, generation: entry.generation };
