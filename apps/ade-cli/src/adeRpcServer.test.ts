@@ -5510,6 +5510,39 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledWith({ udid: "SIM-1" });
   });
 
+  it("regression: refuses user-only verbs to a CLI process with no chat, and never lists them to it", async () => {
+    const fixture = createRuntime();
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    const deviceDelete = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled, deviceDelete };
+
+    // An agent's shell with no chat identity runs `ade` as `ade-cli:<pid>`.
+    const shell = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(shell, { callerId: "ade-cli:4242", role: "cto" });
+    const refused = await callTool(shell, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(deviceDeleteInstalled).not.toHaveBeenCalled();
+    const listed = await callTool(shell, "list_ade_actions", { domain: "ios_simulator" });
+    const names = (listed.structuredContent?.actions ?? listed.actions ?? []).map((entry: any) => entry.action);
+    expect(names).toContain("deviceDelete");
+    expect(names).not.toContain("deviceDeleteInstalled");
+
+    // The desktop's runtime connection is also a process id, and is the device picker.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "ade-desktop-local:77", role: "cto" });
+    const deleted = await callTool(desktop, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(deleted?.isError).toBeUndefined();
+    expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
+  });
+
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {
     // `isUserClientSession` and `resolveChatSessionLaneId` are not complements:
     // an orchestration step identified only by `runId`, or a chat whose session

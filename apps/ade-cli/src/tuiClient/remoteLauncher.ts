@@ -64,7 +64,7 @@ import {
   withTimeout,
   type RemoteLaunchBudget,
 } from "./remoteLaunchBudget";
-import { syntheticCallerId } from "../lib/syntheticCallerId";
+import { syntheticCallerId } from "../../../desktop/src/shared/syntheticCallerId";
 
 export {
   assertRelayAccountUnchanged,

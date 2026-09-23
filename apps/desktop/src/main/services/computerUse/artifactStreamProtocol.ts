@@ -173,7 +173,7 @@ export function resolveContainedArtifactFile(args: {
 }
 
 /** A file, or one inclusive byte span of it, as a web stream for a `Response`. */
-export function fileWebStream(filePath: string, start?: number, end?: number): ReadableStream<Uint8Array> {
+function fileWebStream(filePath: string, start?: number, end?: number): ReadableStream<Uint8Array> {
   const fileStream = fs.createReadStream(filePath, start === undefined ? {} : { start, end });
   return new ReadableStream<Uint8Array>({
     start(controller) {

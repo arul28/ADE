@@ -8,10 +8,6 @@ import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { readRecord } from "./chatTranscriptRows";
 import { readPendingInputOption, readPendingInputRequest } from "../../../shared/pendingInputRequest";
 
-// One reader for the renderer and the chat service; kept exported here for
-// the callers that import it from this module.
-export { readPendingInputRequest };
-
 export type DerivedPendingInput = {
   sessionId: string;
   itemId: string;

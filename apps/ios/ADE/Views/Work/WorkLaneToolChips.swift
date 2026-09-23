@@ -8,24 +8,32 @@ import SwiftUI
 enum WorkToolChipKind: Equatable {
   /// The lane's Apple device, while it is up. Opens `AppleDeviceViewer`.
   /// `family` is the status's raw family, for the glyph.
-  case simulator(family: String?)
+  case simulator(name: String, family: String?)
   /// The desktop browser's tabs. Opens `WorkToolsSheet`. `agentUsing`: a chat
   /// in this lane is driving the browser right now.
   case browser(tabCount: Int, agentUsing: Bool)
   /// What App Control is attached to. Opens `WorkToolsSheet`.
-  case appControl
+  case appControl(appName: String)
 }
 
 struct WorkToolChip: Equatable, Identifiable {
   let kind: WorkToolChipKind
-  let label: String
+
+  /// The chip's full name, derived from `kind` so the two cannot drift.
+  var label: String {
+    switch kind {
+    case .simulator(let name, _): return name
+    case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
+    case .appControl(let appName): return appName
+    }
+  }
 
   /// The text on the chip. The simulator chip already shows the device icon,
   /// so it drops the family word: "iPhone 16 Pro" shows as "16 Pro". VoiceOver
   /// still reads the full `label`.
   var displayLabel: String {
-    guard case .simulator = kind else { return label }
-    return appleDeviceChipModelName(label)
+    guard case .simulator(let name, _) = kind else { return label }
+    return appleDeviceChipModelName(name)
   }
 
   var id: String {
@@ -49,19 +57,16 @@ struct WorkToolChip: Equatable, Identifiable {
 func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   if let name = appleDeviceRunningName(appleDevice) {
-    chips.append(WorkToolChip(kind: .simulator(family: appleDevice?.device?.family), label: name))
+    chips.append(WorkToolChip(kind: .simulator(name: name, family: appleDevice?.device?.family)))
   }
   let tabCount = state?.browser?.tabs.count ?? 0
   let agentUsingBrowser = workToolsAgentIsUsingBrowser(state)
   if tabCount > 0 || agentUsingBrowser {
-    chips.append(WorkToolChip(
-      kind: .browser(tabCount: tabCount, agentUsing: agentUsingBrowser),
-      label: workBrowserChipLabel(tabCount: tabCount)
-    ))
+    chips.append(WorkToolChip(kind: .browser(tabCount: tabCount, agentUsing: agentUsingBrowser)))
   }
   if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
      !appName.isEmpty {
-    chips.append(WorkToolChip(kind: .appControl, label: appName))
+    chips.append(WorkToolChip(kind: .appControl(appName: appName)))
   }
   return chips
 }
@@ -287,7 +292,7 @@ struct WorkLaneToolChipView: View {
 
   private var symbol: String {
     switch chip.kind {
-    case .simulator(let family): return appleDeviceFamilySymbol(family)
+    case .simulator(_, let family): return appleDeviceFamilySymbol(family)
     case .browser: return "globe"
     case .appControl: return "macwindow"
     }

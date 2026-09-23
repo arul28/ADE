@@ -7665,7 +7665,7 @@ app.whenReady().then(async () => {
     void (async () => {
       const handledByOwner = await dispatchOwnerAwareNavigation(request, {
         getLocalMachineKey: () =>
-          attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "",
+          ipcBridge?.getLocalMachineIdentity().machineKey ?? "",
         resolveLocalProjectRoot: (projectId, projectRoot) =>
           resolveLocalProjectRoot(projectId, projectRoot, {
             candidates: () => [
@@ -7695,22 +7695,22 @@ app.whenReady().then(async () => {
         },
         findRemote: (accountMachineKey, projectId, projectRoot) =>
           matchingRemoteProjectWindow(
-            attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null,
+            ipcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null,
             { projectId, rootPath: projectRoot },
           ),
         openRemote: async (accountMachineKey, projectId, projectRoot) => {
           // Never the focused window: a deeplink is a side errand, and rebinding
           // the window the user is working in throws away their project context.
           const win = await acquireRemoteAttentionHostWindow();
-          if (!win || win.isDestroyed() || !attentionIpcBridge) {
+          if (!win || win.isDestroyed() || !ipcBridge) {
             throw new Error("No ADE window is available for the owning machine.");
           }
-          const binding = await attentionIpcBridge.openAttentionProject({
+          const binding = await ipcBridge.openAttentionProject({
             machineKey: accountMachineKey,
             projectId,
             rootPath: projectRoot,
             machineName:
-              attentionIpcBridge.resolveTargetNameForMachineKey(accountMachineKey),
+              ipcBridge.resolveTargetNameForMachineKey(accountMachineKey),
             windowId: win.id,
           });
           return matchingRemoteProjectWindow(binding.targetId, {
@@ -7996,7 +7996,7 @@ app.whenReady().then(async () => {
 
   let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
   const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
-  let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
+  let ipcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
   accountAuthServiceForOwnerId = attentionAccountAuthService;
   const attentionRelayClient = createPushRelayClient({
@@ -8139,9 +8139,9 @@ app.whenReady().then(async () => {
   ): Promise<void> => {
     if (options.activateApp) activateAppForAttentionNotch();
     const accountMachineKey = item.machine.accountMachineKey?.trim() ?? "";
-    const localMachineKey = attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "";
+    const localMachineKey = ipcBridge?.getLocalMachineIdentity().machineKey ?? "";
     const targetId = accountMachineKey
-      ? attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null
+      ? ipcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null
       : null;
     const requiresRemoteMachine = Boolean(
       accountMachineKey
@@ -8161,10 +8161,10 @@ app.whenReady().then(async () => {
       // No window is showing this remote project yet, so give it one of its
       // own — a reusable empty window if there is one, otherwise a new window.
       const win = await acquireRemoteAttentionHostWindow();
-      if (!win || win.isDestroyed() || !attentionIpcBridge) {
+      if (!win || win.isDestroyed() || !ipcBridge) {
         throw new Error("ADE could not open the remote Activity destination.");
       }
-      const binding = await attentionIpcBridge.openAttentionProject({
+      const binding = await ipcBridge.openAttentionProject({
         machineKey: accountMachineKey,
         projectId: item.project.projectId,
         // The item's uuid is not an id this runtime knows; its root path is.
@@ -8460,7 +8460,7 @@ app.whenReady().then(async () => {
     analytics: productAnalyticsService,
   });
 
-  attentionIpcBridge = registerIpc({
+  ipcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
       if (!ctx.autoUpdateService) {
@@ -8586,7 +8586,7 @@ app.whenReady().then(async () => {
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
-  remoteArtifactRangeReader = attentionIpcBridge.readRemoteArtifactRange;
+  remoteArtifactRangeReader = ipcBridge.readRemoteArtifactRange;
 
   // Explicit project launches still bind a project before the renderer boots;
   // normal launches stay on the welcome/recent-project surface.

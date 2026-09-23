@@ -14949,6 +14949,16 @@ final class SyncService: ObservableObject {
   /// `performFileRequest`'s error code when the machine is not reachable.
   static let fileRequestOfflineErrorCode = 16
 
+  /// A slice reply the phone could not decode.
+  nonisolated private static func artifactUndecodableError() -> NSError {
+    NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an artifact payload that could not be decoded."])
+  }
+
+  /// A downloaded artifact the phone could not write to disk.
+  nonisolated private static func artifactSaveError() -> NSError {
+    NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "Could not save the artifact on this phone."])
+  }
+
   /// One slice read, with the fields read straight off the reply: decoding the
   /// whole reply through `Codable` would re-encode a 2.8 MB string on the main
   /// actor for every slice.
@@ -14960,7 +14970,7 @@ final class SyncService: ObservableObject {
     guard let range = raw as? [String: Any],
           let totalSize = (range["totalSize"] as? NSNumber)?.intValue,
           let rangeEnd = (range["rangeEnd"] as? NSNumber)?.intValue else {
-      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an artifact payload that could not be decoded."])
+      throw Self.artifactUndecodableError()
     }
     return (range["content"] as? String ?? "", totalSize, rangeEnd, range["eof"] as? Bool ?? (rangeEnd >= totalSize))
   }
@@ -14991,7 +15001,7 @@ final class SyncService: ObservableObject {
     let partial = destination.deletingLastPathComponent()
       .appendingPathComponent("\(destination.lastPathComponent).partial-\(UUID().uuidString)")
     guard FileManager.default.createFile(atPath: partial.path, contents: nil) else {
-      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "Could not save the artifact on this phone."])
+      throw Self.artifactSaveError()
     }
     var completed = false
     defer {
@@ -15013,7 +15023,7 @@ final class SyncService: ObservableObject {
     }
     // rename(2) replaces an existing file atomically.
     guard rename(partial.path, destination.path) == 0 else {
-      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "Could not save the artifact on this phone."])
+      throw Self.artifactSaveError()
     }
     completed = true
   }
@@ -15021,7 +15031,7 @@ final class SyncService: ObservableObject {
   /// Decodes one base64 slice and appends it to `url`. Returns the byte count.
   nonisolated private static func appendBase64Slice(_ base64: String, to url: URL) throws -> Int {
     guard let data = Data(base64Encoded: base64) else {
-      throw NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "The machine returned an artifact payload that could not be decoded."])
+      throw Self.artifactUndecodableError()
     }
     guard !data.isEmpty else { return 0 }
     let handle = try FileHandle(forWritingTo: url)

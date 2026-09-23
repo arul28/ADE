@@ -13,3 +13,8 @@ export function syntheticCallerId(clientName: string, pid: number = process.pid)
 export function isSyntheticCallerId(id: string | null | undefined): boolean {
   return Boolean(id && /^[a-z][a-z0-9-]*:\d+$/.test(id));
 }
+
+/** The client name in a synthetic caller id (`ade-cli` for `ade-cli:5504`), else null. */
+export function syntheticCallerClient(id: string | null | undefined): string | null {
+  return id && isSyntheticCallerId(id) ? id.slice(0, id.lastIndexOf(":")) : null;
+}

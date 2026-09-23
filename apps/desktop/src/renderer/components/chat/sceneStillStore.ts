@@ -3,7 +3,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { SceneStillRecord } from "../../../shared/chatScene";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { SCENE_STILL_METADATA_KIND } from "../../../shared/types";
-import { localArtifactStreamUrl } from "../../../shared/artifactStreamUrl";
+import { artifactImageSrc } from "../../../shared/artifactStreamUrl";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
@@ -262,11 +262,7 @@ export function sceneStillSrc(
   dataUrl?: string | null,
 ): string | null {
   if (dataUrl) return dataUrl;
-  const uri = record?.uri?.trim();
-  if (!uri) return null;
-  if (/^ade-artifact:\/\//i.test(uri)) return uri;
-  // No project root: an absolute path or a web URL answers null.
-  return localArtifactStreamUrl(uri, null);
+  return artifactImageSrc(record?.uri);
 }
 
 /**

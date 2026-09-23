@@ -24,7 +24,7 @@ import {
 import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
 import type { WorkToolShowRequest } from "../../../shared/types/workToolShow";
 import {
-  receiveWorkToolShowRequest,
+  answerWorkToolShowRequest,
   resetWorkToolShowRequestsForTests,
 } from "../../lib/workToolShowRequests";
 import {
@@ -653,7 +653,7 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -674,7 +674,7 @@ describe("TerminalsPage chat session activation", () => {
   it("keeps the split layout in list mode", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -696,7 +696,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -722,7 +722,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -737,7 +737,7 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board", workSidebarWidthPct: 42 };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -751,7 +751,7 @@ describe("TerminalsPage chat session activation", () => {
   it("tracks background-created chats without stealing Work focus", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -770,7 +770,7 @@ describe("TerminalsPage chat session activation", () => {
   it("opens foreground-created chats in the active Work tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -794,7 +794,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -842,7 +842,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     render(<TerminalsPage />);
     await screen.findByTestId("session-list-pane");
@@ -917,7 +917,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     const rendered = render(<TerminalsPage />);
     await screen.findByTestId("session-list-pane");
@@ -982,7 +982,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     render(<TerminalsPage />);
     await screen.findByTestId("session-list-pane");
@@ -1009,7 +1009,7 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.projectBinding = activeBinding;
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -1021,7 +1021,7 @@ describe("TerminalsPage chat session activation", () => {
   it("opens a foreign CLI session in place even when that checkout is not an open tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     render(<TerminalsPage />);
     await screen.findByTestId("session-list-pane");
@@ -1055,7 +1055,7 @@ describe("TerminalsPage chat session activation", () => {
   it("opens This computer's shell in place from a remote-bound tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     render(<TerminalsPage />);
     await screen.findByTestId("session-list-pane");
@@ -1083,7 +1083,7 @@ describe("TerminalsPage chat session activation", () => {
   it("focuses chats selected through the Work select-session event", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -1109,7 +1109,7 @@ describe("TerminalsPage chat session activation", () => {
     ];
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -1158,7 +1158,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -1176,7 +1176,7 @@ describe("TerminalsPage chat session activation", () => {
   it("pins a foreign select-session event in place without rebinding the tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     const binding: OpenProjectBinding = {
       kind: "remote",
@@ -1335,6 +1335,7 @@ describe("TerminalsPage chat session activation", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
+        iosSimulator: { onEvent: vi.fn(() => vi.fn()) },
         workTools: { onShowRequest: vi.fn(() => vi.fn()), acknowledgeShow: vi.fn() },
         builtInBrowser: {
           onEvent,
@@ -1409,6 +1410,7 @@ describe("TerminalsPage chat session activation", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
+        iosSimulator: { onEvent: vi.fn(() => vi.fn()) },
         builtInBrowser: {
           onEvent: vi.fn(() => vi.fn()),
           onRemoteRequest,
@@ -1480,6 +1482,7 @@ describe("TerminalsPage chat session activation", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
+        iosSimulator: { onEvent: vi.fn(() => vi.fn()) },
         workTools: { onShowRequest: vi.fn(() => vi.fn()), acknowledgeShow: vi.fn() },
         builtInBrowser: {
           onEvent: vi.fn(() => vi.fn()),
@@ -1516,7 +1519,7 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.projectRoot = "/repo-one";
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     const { rerender } = render(<TerminalsPage />);
@@ -1552,7 +1555,7 @@ describe("TerminalsPage chat session activation", () => {
   it("targets the visible Work draft when no saved session is active", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     workMocks.currentWork = {
       ...workMocks.baseWork,
@@ -1580,7 +1583,7 @@ describe("TerminalsPage chat session activation", () => {
   it("targets active chat sessions and running agent CLI sessions", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     const chatSession = workMocks.makeTerminalSession("chat-1", "lane-primary", "codex-chat");
     workMocks.currentWork = {
@@ -1627,7 +1630,7 @@ describe("TerminalsPage chat session activation", () => {
   it("hands the floating device no surface on the new-chat screen, even with a lane in the composer", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     workMocks.currentWork = {
       ...workMocks.baseWork,
@@ -1663,7 +1666,7 @@ describe("TerminalsPage chat session activation", () => {
     const renderWithChatInFront = async (overrides: Record<string, unknown> = {}) => {
       Object.defineProperty(window, "ade", {
         configurable: true,
-        value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+        value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
       });
       workMocks.projectRoot = "/repo";
       const chatSession = workMocks.makeTerminalSession("chat-1", "lane-background", "codex-chat");
@@ -1692,13 +1695,13 @@ describe("TerminalsPage chat session activation", () => {
     it("opens the Apple tool or the browser for the chat in front", async () => {
       paneMountsWhatIsWritten();
       await renderWithChatInFront();
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toBe("shown");
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
         "/repo",
         "lane-background",
         { workSidebarTool: "ios", workSidebarOpenTools: ["ios"] },
       );
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toBe("shown");
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser" }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
         "/repo",
         "lane-background",
@@ -1717,8 +1720,8 @@ describe("TerminalsPage chat session activation", () => {
       setDocumentVisibleForTests(true);
       await renderWithChatInFront();
       let answer: string | null = "pending";
-      const pending = receiveWorkToolShowRequest(showRequest({ surface: "apple" }))
-        .then((status) => { answer = status; });
+      const pending = answerWorkToolShowRequest(showRequest({ surface: "apple" }))
+        .then((reply) => { answer = reply?.status ?? null; });
       await waitFor(() => expect(workMocks.fns.setLaneWorkViewState).toHaveBeenCalledWith(
         "/repo",
         "lane-background",
@@ -1739,7 +1742,7 @@ describe("TerminalsPage chat session activation", () => {
       setDocumentVisibleForTests(false);
       await renderWithChatInFront();
       mountTool("ios", "lane-background");
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toBe("held");
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toMatchObject({ status: "held" });
     }, 10_000);
 
     /* Regression (A2-3 / D3): the hidden window's show opened the tool, so it
@@ -1748,7 +1751,7 @@ describe("TerminalsPage chat session activation", () => {
       workMocks.fns.setLaneWorkViewState.mockImplementation(() => undefined);
       setDocumentVisibleForTests(false);
       await renderWithChatInFront();
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toBe("held");
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple" }))).resolves.toMatchObject({ status: "held" });
       workMocks.fns.setLaneWorkViewState.mockClear();
       cleanup();
       render(<TerminalsPage />);
@@ -1769,7 +1772,7 @@ describe("TerminalsPage chat session activation", () => {
         sessions: [workMocks.makeTerminalSession("chat-1", "", "codex-chat")],
         visibleSessions: [workMocks.makeTerminalSession("chat-1", "", "codex-chat")],
       });
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "apple", laneId: null }))).resolves.toBe("shown");
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "apple", laneId: null }))).resolves.toEqual({ status: "shown" });
       expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
         "/repo",
         "lane-primary",
@@ -1777,16 +1780,50 @@ describe("TerminalsPage chat session activation", () => {
       );
     });
 
+    /* E8: one lane rule. A lane-less chat's browser waits on the pane's lane
+     * too, and its floating device checks the same lane the Apple tool uses. */
+    it("answers a lane-less chat's browser in the pane's lane", async () => {
+      paneMountsWhatIsWritten();
+      await renderWithChatInFront({
+        sessions: [workMocks.makeTerminalSession("chat-1", "", "codex-chat")],
+        visibleSessions: [workMocks.makeTerminalSession("chat-1", "", "codex-chat")],
+      });
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "browser", laneId: null })))
+        .resolves.toEqual({ status: "shown" });
+      expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+        "/repo",
+        "lane-primary",
+        expect.objectContaining({ workSidebarTool: "browser" }),
+      );
+    });
+
+    it("answers a lane-less chat's floating device from the pane's lane, and never floats one", async () => {
+      setDocumentVisibleForTests(true);
+      await renderWithChatInFront({
+        sessions: [workMocks.makeTerminalSession("chat-1", "", "codex-chat")],
+        visibleSessions: [workMocks.makeTerminalSession("chat-1", "", "codex-chat")],
+      });
+      // No Apple tool on screen: the player sits only over a chat of its own lane.
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "floating-apple", laneId: null })))
+        .resolves.toMatchObject({ status: "held" });
+      expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
+      // The Apple tool is on screen in the pane's lane: that is the device.
+      mountTool("ios", "lane-primary");
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "floating-apple", laneId: null })))
+        .resolves.toEqual({ status: "shown" });
+      expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
+    });
+
     it("holds a request for a chat that is not in front without touching this pane", async () => {
       await renderWithChatInFront();
       workMocks.fns.setLaneWorkViewState.mockClear();
-      await expect(receiveWorkToolShowRequest(showRequest({ chatSessionId: "chat-other" }))).resolves.toBe("held");
+      await expect(answerWorkToolShowRequest(showRequest({ chatSessionId: "chat-other" }))).resolves.toMatchObject({ status: "held" });
       expect(workMocks.fns.setLaneWorkViewState).not.toHaveBeenCalled();
     });
 
     it("floats the device for an agent driving the chat in front", async () => {
       await renderWithChatInFront();
-      await receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true }));
+      await answerWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true }));
       expect(floatMocks.floatAppleMiniPlayerForChat).toHaveBeenCalledWith({
         laneId: "lane-background",
         chatSessionId: "chat-1",
@@ -1797,7 +1834,7 @@ describe("TerminalsPage chat session activation", () => {
 
     it("floats nothing for another chat's agent, and nothing on the new-chat screen", async () => {
       await renderWithChatInFront();
-      await expect(receiveWorkToolShowRequest(
+      await expect(answerWorkToolShowRequest(
         showRequest({ surface: "floating-apple", auto: true, chatSessionId: "chat-other", laneId: "lane-other" }),
       )).resolves.toBeNull();
       expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
@@ -1811,7 +1848,7 @@ describe("TerminalsPage chat session activation", () => {
       };
       render(<TerminalsPage />);
       await screen.findByTestId("work-view-area");
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
         .resolves.toBeNull();
       expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
     });
@@ -1822,12 +1859,12 @@ describe("TerminalsPage chat session activation", () => {
       };
       await renderWithChatInFront({ workSidebarOpen: true });
       // Opening: written, not yet mounted.
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
         .resolves.toBeNull();
       setDocumentVisibleForTests(true);
       mountTool("ios", "lane-background");
-      await expect(receiveWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
-        .resolves.toBe("shown");
+      await expect(answerWorkToolShowRequest(showRequest({ surface: "floating-apple", auto: true })))
+        .resolves.toEqual({ status: "shown" });
       expect(floatMocks.floatAppleMiniPlayerForChat).not.toHaveBeenCalled();
     });
 
@@ -1874,7 +1911,7 @@ describe("TerminalsPage chat session activation", () => {
   it("hands the floating device the lane and machine of the session in front", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     const bound: OpenProjectBinding = {
       kind: "local",
@@ -1937,7 +1974,10 @@ describe("TerminalsPage chat session activation", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
-        workTools: { onShowRequest: vi.fn(() => vi.fn()), acknowledgeShow: vi.fn() }, builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+        workTools: { onShowRequest: vi.fn(() => vi.fn()), acknowledgeShow: vi.fn() },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        iosSimulator: { onEvent: vi.fn(() => vi.fn()) },
+      },
     });
 
     render(<TerminalsPage />);
@@ -1980,7 +2020,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     const rendered = render(<TerminalsPage />);
     await waitFor(() => expect(setGridSets).toHaveBeenCalled());
@@ -2045,7 +2085,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
     const rendered = render(<TerminalsPage />);
     await waitFor(() => expect(setGridSets).toHaveBeenCalled());
@@ -2126,7 +2166,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     const rendered = render(<TerminalsPage />);
@@ -2721,7 +2761,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -2756,7 +2796,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);
@@ -2792,7 +2832,7 @@ describe("TerminalsPage chat session activation", () => {
     };
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
 
     render(<TerminalsPage />);

@@ -3,7 +3,7 @@ import path from "node:path";
 import { AccountRefreshUnavailableError, type AccountRefreshBroker } from "./accountAuthService";
 import { createAccountRefreshBroker } from "./accountRefreshBroker";
 import { setSharedAccountRefreshBroker } from "./sharedAccountAuthService";
-import { syntheticCallerId } from "../../lib/syntheticCallerId";
+import { syntheticCallerId } from "../../../../desktop/src/shared/syntheticCallerId";
 
 /**
  * The slice of a JSON-RPC client this broker needs. Deliberately structural so

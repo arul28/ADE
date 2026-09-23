@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { effectiveRuntimeBinding, workRuntimeScopeKey } from "../../lib/chatMachineRouting";
+import { effectiveRuntimeBinding, laneOnMachineKey, workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { useAppStore } from "../../state/appStore";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
@@ -9,10 +9,12 @@ import {
 } from "../chat/chatCompanionUiState";
 import {
   acquireAppleStreamLease,
+  appleStreamLaneLeaseCount,
   appleStreamLeaseCount,
   appleStreamLeaseKey,
   appleStreamViewerForLane,
   releaseAppleStreamLease,
+  type AppleStreamLeaseKey,
 } from "./appleStreamLease";
 import { laneDeviceBooted } from "./appleDeviceState";
 
@@ -78,6 +80,11 @@ export function appleMiniPlayerBelongsToSurface(
     === workRuntimeScopeKey(surface.runtimePin, surface.boundBinding);
 }
 
+/** The machine this window is bound to, which a null pin means. */
+function boundBinding(): OpenProjectBinding | null {
+  return useAppStore.getState().projectBinding;
+}
+
 let current: AppleMiniPlayerTarget | null = null;
 let listeners = new Set<() => void>();
 /**
@@ -140,7 +147,7 @@ export function openAppleMiniPlayer(target: AppleMiniPlayerTarget): void {
   // while the window was on a MacBook project).
   current = {
     ...target,
-    runtimePin: effectiveRuntimeBinding(target.runtimePin, useAppStore.getState().projectBinding),
+    runtimePin: effectiveRuntimeBinding(target.runtimePin, boundBinding()),
   };
   emit();
 }
@@ -187,7 +194,7 @@ export function retakeAppleMiniPlayer(udid?: string): void {
   if (!closingForReal) {
     const key = appleStreamLeaseKey({
       pin: current.runtimePin,
-      bound: useAppStore.getState().projectBinding,
+      bound: boundBinding(),
       laneId: current.laneId,
       deviceUdid: current.deviceUdid,
     });
@@ -237,7 +244,7 @@ export type AppleMiniPlayerLaneRef = {
 
 function laneDeviceKey(where: AppleMiniPlayerLaneRef): string | null {
   if (!where.laneId) return null;
-  return `${workRuntimeScopeKey(where.runtimePin, useAppStore.getState().projectBinding)}::${where.laneId}`;
+  return laneOnMachineKey(where.runtimePin, boundBinding(), where.laneId);
 }
 
 /** The panel's cache write. A null device forgets the lane. */
@@ -324,7 +331,7 @@ export const APPLE_STREAM_HANDOVER_HOLD_MS = 6_000;
  * short-circuits an identical device+fps request) instead of making a new one.
  */
 let handoverHold: {
-  key: string;
+  key: AppleStreamLeaseKey;
   epoch: number;
   timer: number;
   scope: { laneId: string | null; chatSessionId: string | null };
@@ -337,7 +344,9 @@ function dropHandoverHold(stopIfLast: boolean): void {
   handoverHold = null;
   window.clearTimeout(hold.timer);
   const { last } = releaseAppleStreamLease(hold.key, hold.epoch);
-  if (!last || !stopIfLast) return;
+  // The stop is lane-scoped: a viewer on another device of the lane (the
+  // player moved on while the hold was live) must keep its capture.
+  if (!last || !stopIfLast || appleStreamLaneLeaseCount(hold.key) > 0) return;
   // Nobody took the picture up: the hold was the only thing keeping the helper
   // encoding, so it owes the stop the pane's own release would have made.
   void window.ade?.iosSimulator?.stopStream?.(hold.pin, hold.scope).catch(() => {});
@@ -349,7 +358,7 @@ export function releaseAppleMiniPlayerHandoverHold(): void {
 }
 
 function takeHandoverHold(args: {
-  key: string;
+  key: AppleStreamLeaseKey;
   laneId: string | null;
   chatSessionId: string | null;
   runtimePin: OpenProjectBinding | null;
@@ -398,7 +407,7 @@ export function handoffAppleMiniPlayer(args: {
   if (!laneId || current) return false;
   const viewer = appleStreamViewerForLane(
     laneId,
-    workRuntimeScopeKey(args.runtimePin, useAppStore.getState().projectBinding),
+    workRuntimeScopeKey(args.runtimePin, boundBinding()),
   );
   if (!viewer) return false;
   if (previewSuppressed(args.chatSessionId, viewer.deviceUdid)) return false;
@@ -504,7 +513,7 @@ export async function floatAppleMiniPlayerForChat(args: {
   const floatingHere = () => Boolean(current && appleMiniPlayerBelongsToSurface(current, {
     laneId,
     runtimePin: args.runtimePin,
-    boundBinding: useAppStore.getState().projectBinding,
+    boundBinding: boundBinding(),
   }));
   if (current) {
     if (floatingHere()) return true;

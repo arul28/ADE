@@ -33,7 +33,7 @@ import {
   resolveRemoteTargetForLaunch,
 } from "./remoteLauncher";
 import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
-import { syntheticCallerId } from "../lib/syntheticCallerId";
+import { syntheticCallerId } from "../../../desktop/src/shared/syntheticCallerId";
 
 export const LOCAL_MACHINE_KEY = "__local__";
 

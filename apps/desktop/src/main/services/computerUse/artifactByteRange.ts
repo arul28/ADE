@@ -2,7 +2,7 @@ import fs from "node:fs";
 
 import { ARTIFACT_RANGE_READ_MAX_BYTES } from "../../../shared/artifactStreamUrl";
 
-export type FileRange = {
+export type ArtifactByteRange = {
   totalSize: number;
   /** Where the bytes start. The file's size when the offset is at or past the end. */
   rangeStart: number;
@@ -13,13 +13,17 @@ export type FileRange = {
 };
 
 /**
- * One bounded slice of a file, for a proof read one chunk at a time.
+ * One bounded slice of a proof file, for a proof read one chunk at a time.
  *
  * The caller has already checked the path is one it may serve. A missing
  * offset starts at 0, a missing length reads the cap, and any length is cut
  * to {@link ARTIFACT_RANGE_READ_MAX_BYTES}.
  */
-export async function readFileRange(absolutePath: string, offset?: number, length?: number): Promise<FileRange> {
+export async function readArtifactByteRange(
+  absolutePath: string,
+  offset?: number,
+  length?: number,
+): Promise<ArtifactByteRange> {
   const handle = await fs.promises.open(absolutePath, "r").catch(() => {
     throw new Error("Artifact file does not exist.");
   });

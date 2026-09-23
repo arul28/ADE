@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { APPLE_RECORDINGS_RELATIVE_DIR } from "../../../../shared/appleDeviceSettings";
 import type { SimRecording } from "./simRecordingService";
 
 /**
@@ -9,12 +10,31 @@ import type { SimRecording } from "./simRecordingService";
  * this layout goes through here.
  */
 export function appleRecordingsRoot(projectRoot: string): string {
-  return path.join(projectRoot, ".ade", "artifacts", "apple-recordings");
+  return path.join(projectRoot, ...APPLE_RECORDINGS_RELATIVE_DIR.split("/"));
 }
 
 /** The directory a lane's recordings live in. Lane delete removes it whole. */
 export function appleRecordingsDirectory(projectRoot: string, laneId: string): string {
   return path.join(appleRecordingsRoot(projectRoot), laneId);
+}
+
+/** A recording's `.mp4`. */
+export function appleRecordingMoviePath(projectRoot: string, laneId: string, id: string): string {
+  return path.join(appleRecordingsDirectory(projectRoot, laneId), `${id}.mp4`);
+}
+
+/** A recording's `.json` sidecar. */
+export function appleRecordingSidecarPath(projectRoot: string, laneId: string, id: string): string {
+  return path.join(appleRecordingsDirectory(projectRoot, laneId), `${id}.json`);
+}
+
+/** The lanes that have a recordings directory. */
+export function listAppleRecordingLaneIds(projectRoot: string): string[] {
+  try {
+    return fs.readdirSync(appleRecordingsRoot(projectRoot));
+  } catch {
+    return [];
+  }
 }
 
 export type AppleRecordingFile = {
@@ -28,16 +48,9 @@ export type AppleRecordingFile = {
 
 /** Every recording movie on disk, with or without a sidecar. */
 export function listAppleRecordingFiles(projectRoot: string): AppleRecordingFile[] {
-  const root = appleRecordingsRoot(projectRoot);
-  let laneIds: string[];
-  try {
-    laneIds = fs.readdirSync(root);
-  } catch {
-    return [];
-  }
   const out: AppleRecordingFile[] = [];
-  for (const laneId of laneIds) {
-    const laneDir = path.join(root, laneId);
+  for (const laneId of listAppleRecordingLaneIds(projectRoot)) {
+    const laneDir = appleRecordingsDirectory(projectRoot, laneId);
     let names: string[];
     try {
       names = fs.readdirSync(laneDir);
@@ -51,7 +64,7 @@ export function listAppleRecordingFiles(projectRoot: string): AppleRecordingFile
         laneId,
         id,
         filePath: path.join(laneDir, name),
-        sidecarPath: path.join(laneDir, `${id}.json`),
+        sidecarPath: appleRecordingSidecarPath(projectRoot, laneId, id),
       });
     }
   }

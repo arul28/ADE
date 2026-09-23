@@ -79,6 +79,20 @@ describe("workToolShowRequests", () => {
     );
   });
 
+  it("regression: a later held answer that opened the tool keeps `opened`", async () => {
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "apple", chatSessionId: "chat-1" });
+    const requestId = emitted[0]!.requestId;
+    service.acknowledgeShow({ requestId, status: "held", desktopLabel: "Studio" });
+    service.acknowledgeShow({ requestId, status: "held", desktopLabel: "MacBook", opened: true });
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(pending).resolves.toMatchObject({
+      status: "held",
+      desktopLabel: "MacBook",
+      message: expect.stringMatching(/^Opened the Apple device/),
+    });
+  });
+
   it("refuses an unknown surface and a request with no chat", async () => {
     const { service, emitted } = setup();
     await expect(service.show({ surface: "terminal", chatSessionId: "chat-1" })).rejects.toThrow(/needs a surface/);

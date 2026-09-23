@@ -88,7 +88,7 @@ export function partitionApplePickerDevices(input: ApplePickerPartitionInput): A
 }
 
 /** Udids another lane holds. */
-export function appleUdidsHeldElsewhere(
+function appleUdidsHeldElsewhere(
   owners: readonly AppleSimulatorOwner[] | null | undefined,
 ): Set<string> {
   return new Set((owners ?? []).filter((owner) => !owner.mine).map((owner) => owner.udid));

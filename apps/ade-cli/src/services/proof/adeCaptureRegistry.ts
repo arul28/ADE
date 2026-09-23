@@ -1,29 +1,17 @@
-import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
+import { hashFile } from "../../../../desktop/src/main/services/computerUse/proofFingerprint";
 import { pathKey } from "../../../../desktop/src/main/services/shared/pathCompare";
 
 /** Where ADE-made bytes came from, as the proof drawer labels them. */
 export type AdeCaptureSource = "ade-capture" | "ade-recorder";
 
+/** A remembered capture: who made it, and the hash its bytes had then. */
+export type AdeCaptureMatch = { source: AdeCaptureSource; sha256: string };
+
 const DEFAULT_TTL_MS = 15 * 60_000;
 const DEFAULT_MAX_ENTRIES = 256;
 
 type Entry = { sha256: string; bytes: number; source: AdeCaptureSource; expiresAt: number };
-
-async function hashFile(filePath: string): Promise<{ sha256: string; bytes: number } | null> {
-  try {
-    const hash = createHash("sha256");
-    let bytes = 0;
-    for await (const chunk of fs.createReadStream(filePath)) {
-      hash.update(chunk as Buffer);
-      bytes += (chunk as Buffer).length;
-    }
-    return { sha256: hash.digest("hex"), bytes };
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Files that ADE's own capture actions wrote, by path and content hash.
@@ -34,8 +22,12 @@ async function hashFile(filePath: string): Promise<{ sha256: string; bytes: numb
  */
 export type AdeCaptureRegistry = {
   remember(filePath: string, source: AdeCaptureSource): Promise<void>;
-  /** The source of a remembered file whose bytes are unchanged, else null. */
-  match(filePath: string): Promise<AdeCaptureSource | null>;
+  /**
+   * The capture behind a remembered file whose bytes are unchanged, else null.
+   * One-shot: the entry is forgotten once looked up, so a second filing of the
+   * same capture is an attach.
+   */
+  match(filePath: string): Promise<AdeCaptureMatch | null>;
 };
 
 export function createAdeCaptureRegistry(options: {
@@ -74,13 +66,15 @@ export function createAdeCaptureRegistry(options: {
     async match(filePath) {
       prune();
       if (!path.isAbsolute(filePath)) return null;
-      const entry = entries.get(pathKey(filePath));
+      const key = pathKey(filePath);
+      const entry = entries.get(key);
       if (!entry) return null;
+      entries.delete(key);
       const fingerprint = await hashFile(filePath);
       if (!fingerprint || fingerprint.sha256 !== entry.sha256 || fingerprint.bytes !== entry.bytes) {
         return null;
       }
-      return entry.source;
+      return { source: entry.source, sha256: entry.sha256 };
     },
   };
 }

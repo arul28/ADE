@@ -1,5 +1,7 @@
 import os from "node:os";
 import path from "node:path";
+import { appleRecordingsDirectory } from "./recording/appleRecordingsStore";
+import { bareSimulatorPowerOff } from "./simulatorPower";
 
 import type {
   AppleDeviceDiskUsage,
@@ -100,6 +102,13 @@ export type LaneDeviceStore = {
 
 export type LaneDeviceRegistryDeps = {
   run: RunCommand;
+  /**
+   * Power a device off before `simctl delete`, which on a booted device leaves
+   * CoreSimulator holding the data directory and reports success having
+   * removed nothing. The host's `simulatorPower`, so the recording, the helper
+   * session and the device list hear it. May throw; the delete goes ahead.
+   */
+  powerOffDevice: (udid: string) => Promise<unknown>;
   /** Every installed, available simulator on this Mac. */
   listInstalledSimulators: () => Promise<AppleInstalledSimulator[]>;
   /** Human name for a lane, used in the clone's name. Null falls back to the id. */
@@ -749,16 +758,12 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       deps.logger.info("apple.lane_device_detached", { laneId, udid: device.udid });
       return;
     }
-    // Shut down first: `simctl delete` on a booted device leaves CoreSimulator
-    // holding the data directory and the delete reports success having removed
-    // nothing.
-    await deps.run("xcrun", ["simctl", "shutdown", device.udid], { timeoutMs: 60_000 }).catch((error: unknown) => {
+    await deps.powerOffDevice(device.udid).catch((error: unknown) => {
       deps.logger.debug("apple.lane_device_shutdown_failed", {
         laneId,
         udid: device.udid,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { stdout: "", stderr: "" };
     });
     try {
       await deps.run("xcrun", ["simctl", "delete", device.udid], { timeoutMs: 120_000 });
@@ -792,15 +797,11 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     if (!udid) throw new Error("A simulator udid is required.");
     const holder = readAll().find((device) => device.udid === udid);
     if (holder) throw new AppleDeviceOwnedByLaneError(holder);
-    // Same order as `remove`: `simctl delete` on a booted device leaves
-    // CoreSimulator holding the data directory and reports success having
-    // removed nothing.
-    await deps.run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 }).catch((error: unknown) => {
+    await deps.powerOffDevice(udid).catch((error: unknown) => {
       deps.logger.debug("apple.installed_device_shutdown_failed", {
         udid,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { stdout: "", stderr: "" };
     });
     await deps.run("xcrun", ["simctl", "delete", udid], { timeoutMs: 120_000 });
     deps.logger.info("apple.installed_device_deleted", { udid });
@@ -896,10 +897,8 @@ export async function releaseLaneAppleDevice(input: {
   if (row) {
     const device = rowToDevice(row);
     if (device.origin === "clone" && process.platform === "darwin") {
-      // Shut down first: `simctl delete` on a booted device leaves
-      // CoreSimulator holding the data directory and reports success having
-      // removed nothing.
-      await input.run("xcrun", ["simctl", "shutdown", device.udid], { timeoutMs: 60_000 }).catch(() => ({ stdout: "", stderr: "" }));
+      // Powered off first, as `remove` does, through the same power path.
+      await bareSimulatorPowerOff(input.run)(device.udid).catch(() => false);
       try {
         await input.run("xcrun", ["simctl", "delete", device.udid], { timeoutMs: 120_000 });
         result.deletedUdid = device.udid;
@@ -923,7 +922,7 @@ export async function releaseLaneAppleDevice(input: {
     }
   }
 
-  const recordingsDir = [input.projectRoot, ".ade", "artifacts", "apple-recordings", laneId].join("/");
+  const recordingsDir = appleRecordingsDirectory(input.projectRoot, laneId);
   try {
     await input.removeDirectory(recordingsDir);
     result.removedRecordings = true;

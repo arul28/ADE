@@ -134,3 +134,17 @@ export function proofRecordedBeforeRequestLine(provenance: ProofProvenance, loca
     ? `Recorded at ${formatProofClock(provenance.mediaCreatedAt, locale)}, before this request.`
     : "Recorded before this request.";
 }
+
+/** Owner kinds some proof drawer lists by: lane, chat, automation run, PR and issue. */
+const DRAWER_OWNER_KINDS: ReadonlySet<string> = new Set([
+  "lane",
+  "chat_session",
+  "automation_run",
+  "github_pr",
+  "linear_issue",
+]);
+
+/** Whether a proof with these owners shows in any drawer. One with none is filed nowhere. */
+export function hasDrawerOwner(owners: ReadonlyArray<{ kind: string | null | undefined }>): boolean {
+  return owners.some((owner) => Boolean(owner.kind && DRAWER_OWNER_KINDS.has(owner.kind)));
+}

@@ -3,19 +3,18 @@ import type { IosSimulatorDevice } from "../../../shared/types/iosSimulator";
 /**
  * The one place ADE turns a simulator on or off.
  *
- * A power change has side effects that every path must repeat, and they were
- * placed by hand at six call sites (`ensureDeviceBooted`, `launch`,
- * `deviceStop`, `deviceDelete`, and the device hub's open and close):
+ * A power change has side effects every path must repeat:
  *
  * - The helper's per-device session is bound to one boot. A session that
- *   outlives the boot answers every tap `ok` and moves nothing (proven live on
- *   2026-09-23), so it is reset after a boot and before a power-off.
+ *   outlives the boot answers every tap `ok` and moves nothing, so it is reset
+ *   after a boot and before a power-off.
  * - A recording outlives a power-off and then blocks every later
  *   `record-start` on the device, so it is stopped first.
  * - The cached `simctl list` still reports the old state, so it is dropped.
  *
- * The hub ran its own `simctl boot` and `shutdown` and never dropped the
- * cache. A new boot path that calls these gets all three.
+ * The Apple service builds one with all three. The lane-delete cascade runs
+ * outside that service, with none of them, and uses
+ * {@link bareSimulatorPowerOff}.
  */
 
 type RunCommand = (
@@ -107,4 +106,19 @@ export function createSimulatorPower(deps: SimulatorPowerDeps): SimulatorPower {
   };
 
   return { bootDevice, powerOffDevice };
+}
+
+/**
+ * Power-off for a host with no helper, recorder or device list: the lane-delete
+ * cascade. Same `simctl shutdown` and the same already-off tolerance.
+ */
+export function bareSimulatorPowerOff(run: RunCommand): (udid: string) => Promise<boolean> {
+  const power = createSimulatorPower({
+    run,
+    waitForBootStatus: async () => {},
+    invalidateDeviceList: () => {},
+    resetHelperDevice: async () => {},
+    stopDeviceRecording: async () => {},
+  });
+  return (udid) => power.powerOffDevice(udid, "delete");
 }

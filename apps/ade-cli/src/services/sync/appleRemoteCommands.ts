@@ -194,6 +194,7 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
   // session (`open-device`); an owner that only read `activeSession` reported a
   // device-session claim as unclaimed, which let any remote caller drive it.
   const ownerSessionId = asString(activeSession?.chatSessionId) ?? asString(deviceSession?.chatSessionId);
+  const laneUdid = asString(laneDevice?.udid);
   return {
     laneId,
     unavailable: source.supported === false
@@ -233,7 +234,7 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
         mode: recording.mode === "manual" ? "manual" : recording.mode === "auto" ? "auto" : null,
       }
       : null,
-    laneDevice: asString(laneDevice?.udid) ? { udid: asString(laneDevice?.udid)! } : null,
+    laneDevice: laneUdid ? { udid: laneUdid } : null,
     owner: ownerSessionId
       ? { chatSessionId: ownerSessionId, chatTitle: null }
       : null,

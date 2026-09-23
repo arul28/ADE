@@ -1767,9 +1767,12 @@ typealias WorkArtifactLoader = @MainActor (ComputerUseArtifactSummary, WorkArtif
 /// load before videos were read in slices.
 let workArtifactEagerVideoMaxBytes = 8 * 1024 * 1024
 
-/// Whether a stored video of this size downloads for `intent`.
-func workArtifactVideoDownloads(sizeBytes: Int, intent: WorkArtifactLoadIntent) -> Bool {
-  intent == .play || sizeBytes <= workArtifactEagerVideoMaxBytes
+/// A fresh temp file for one load of a stored video. Each load gets its own,
+/// so a stale load that deletes its file never deletes the one on screen.
+func workArtifactVideoTempURL(artifactId: String, fileExtension: String) -> URL {
+  FileManager.default.temporaryDirectory
+    .appendingPathComponent("ade-work-artifact-\(artifactId)-\(UUID().uuidString)")
+    .appendingPathExtension(fileExtension)
 }
 
 /// "34 MB" for the play placeholder.

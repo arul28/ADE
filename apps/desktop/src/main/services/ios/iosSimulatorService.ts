@@ -11,8 +11,6 @@ import type {
   AppleDeviceStopArgs,
   AppleDeviceStopResult,
   AppleDeviceCreateArgs,
-  AppleDeviceDeleteArgs,
-  AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
   AppleDeviceOrientation,
@@ -150,6 +148,7 @@ import {
   type SimRecordingService,
   type SimRecordingServiceDeps,
 } from "./recording/simRecordingService";
+import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 
@@ -287,9 +286,6 @@ const APPLE_SCROLL_DELTAS: Record<AppleScrollDirection, (amount: number) => { de
   right: (amount) => ({ deltaX: -amount, deltaY: 0 }),
   left: (amount) => ({ deltaX: amount, deltaY: 0 }),
 };
-
-export type { AppleDeviceDetachArgs } from "../../../shared/types";
-import type { AppleDeviceDetachArgs } from "../../../shared/types";
 
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
@@ -2560,6 +2556,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const laneDevices = createLaneDeviceRegistry({
     run: (command, commandArgs, options) => run(command, commandArgs, options),
+    powerOffDevice: (udid) => power.powerOffDevice(udid, "delete"),
     listInstalledSimulators,
     resolveLaneName: args.resolveLaneName ?? null,
     store: args.laneDeviceStore ?? null,
@@ -2587,49 +2584,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     },
   });
 
-  /**
-   * End a lane's hold on its device and leave the simulator's power alone.
-   *
-   * Shared by a takeover and by `deviceDetach`. The recording, the stream,
-   * the chat claim and the hub device session all go; the simulator keeps
-   * running, because the next owner (another lane, or the picker's next
-   * choice) may want it as it stands.
-   */
-  const releaseLaneHold = async (device: AppleLaneDevice): Promise<void> => {
-    // The old lane's recording ends with its hold on the device. Left
-    // running, it would record the new lane's work under the old lane, and
-    // the new lane's `record-start` would be refused.
-    await stopDeviceRecording(device.udid, "released");
-    const runtime = runtimes.get(laneKey(device.laneId));
-    if (!runtime) return;
-    await shutdown({ laneId: runtime.laneId, ignoreOwnership: true }).catch((error: unknown) => {
-      args.logger.debug("apple.lane_release_shutdown_failed", {
-        laneId: device.laneId,
-        udid: device.udid,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return { released: false, previousSession: null };
-    });
-    if (runtime.hub?.getDeviceSession()?.deviceUdid === device.udid) {
-      await runtime.hub.closeDevice({
-        deviceUdid: device.udid,
-        chatSessionId: null,
-        ignoreOwnership: true,
-        // Powering it off here would hand the next owner a dead simulator.
-        shutdownDevice: false,
-      }).catch((error: unknown) => {
-        args.logger.debug("apple.lane_release_close_device_failed", {
-          laneId: device.laneId,
-          udid: device.udid,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-    invalidateStatus(runtime);
-    // `released`, not `stopped`: the device is still running, it is just not
-    // this lane's any more, and this lane has to re-list to find that out.
-    emit({ type: "apple.device.state", laneId: device.laneId, udid: device.udid, phase: "released" });
-  };
+  /** Detach, delete, takeover and the picker's delete, over the registry above. */
+  const lifecycle = createLaneDeviceLifecycle<LaneRuntime>({
+    laneDevices,
+    runtimeForLane: (laneId) => runtimes.get(laneKey(laneId)) ?? null,
+    allRuntimes: () => [...runtimes.values()],
+    resolveRuntime: (scope) => resolveRuntime(scope),
+    requireLaneScope: (scope) => requireLaneScope(scope),
+    serializeDeviceLifecycle: (runtime, step) => serializeDeviceLifecycle(runtime, step),
+    assertDarwin: () => assertDarwin(),
+    assertSessionOwner: (runtime, caller) => assertSessionOwner(runtime, caller),
+    shutdown: (shutdownArgs) => shutdown(shutdownArgs),
+    stopRuntimeStream: (runtime) => stopRuntimeStream(runtime),
+    stopDeviceRecording: (udid, reason) => stopDeviceRecording(udid, reason),
+    invalidateStatus: (runtime) => invalidateStatus(runtime),
+    invalidateDeviceList: () => invalidateDeviceList(),
+    emit: (payload) => emit(payload),
+    logger: args.logger,
+  });
+  const releaseLaneHold = lifecycle.releaseLaneHold;
 
   /**
    * The recording half. Unit 2C owns the implementation; this service only
@@ -5134,6 +5107,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return next;
   };
 
+  /**
+   * The single-owner rule for ending a lane's session: another chat's session
+   * is refused unless the caller passes `force` or `ignoreOwnership`.
+   */
+  const assertSessionOwner = (
+    runtime: LaneRuntime,
+    caller: { chatSessionId?: string | null; force?: boolean | null; ignoreOwnership?: boolean | null },
+  ): void => {
+    const owner = runtime.activeSession?.chatSessionId;
+    if (owner && owner !== (caller.chatSessionId ?? null) && !caller.force && !caller.ignoreOwnership) {
+      throw new IosSimulatorOwnedBySessionError(runtime.activeSession);
+    }
+  };
+
   const shutdown = async (shutdownArgs: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> => {
     const runtime = resolveRuntime(shutdownArgs);
     // Same single-owner rule as `launch` above, checked before any teardown so
@@ -5146,16 +5133,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // hard-resets the launch lock) and `ignoreOwnership` (which does not) both
     // step around it deliberately, and so does any caller that names the
     // owner's own id — `getStatus` hands that id to anyone who asks.
-    const incomingChatSessionId = shutdownArgs.chatSessionId ?? null;
-    if (
-      runtime.activeSession
-      && runtime.activeSession.chatSessionId
-      && runtime.activeSession.chatSessionId !== incomingChatSessionId
-      && !shutdownArgs.force
-      && !shutdownArgs.ignoreOwnership
-    ) {
-      throw new IosSimulatorOwnedBySessionError(runtime.activeSession);
-    }
+    assertSessionOwner(runtime, shutdownArgs);
     const previousSession = runtime.activeSession;
     try {
       await stopStream({ laneId: runtime.laneId });
@@ -5397,6 +5375,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return runtime.streamStatus;
   };
 
+  /** Counts caps sent to each lane's live encoder, so only the newest answer writes the status. */
+  const capGenerations = new WeakMap<LaneRuntime, number>();
+
   /**
    * Send a new cap to a running capture's encoder. `bitrateKbps: 0` removes
    * the cap and the helper goes back to its own default.
@@ -5408,6 +5389,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     runtime: LaneRuntime,
     cap: { udid: string; fps: number; scale: number; bitrateKbps: number },
   ): Promise<IosSimulatorStreamStatus> => {
+    const generation = (capGenerations.get(runtime) ?? 0) + 1;
+    capGenerations.set(runtime, generation);
     const payload = await helper().send({
       type: "capture-start",
       udid: cap.udid,
@@ -5415,6 +5398,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       scale: cap.scale,
       bitrateKbps: cap.bitrateKbps,
     });
+    // A newer cap went to the helper while this one was in flight. The helper
+    // applies them in order, so the newer answer is the one to record.
+    if (capGenerations.get(runtime) !== generation) return runtime.streamStatus;
     const bitrateKbps = cap.bitrateKbps > 0 ? cap.bitrateKbps : null;
     const url = typeof payload.url === "string" ? payload.url : null;
     const token = typeof payload.token === "string" ? payload.token : null;
@@ -5454,14 +5440,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!status.running || !status.deviceUdid || (status.bitrateKbps ?? null) === null) return status;
     if (status.helperPid !== (helperClient?.pid() ?? null)) return status;
     if (remoteViewers?.watching(lane)) return status;
-    const lifted = await applyLiveBitrateCap(runtime, {
-      udid: status.deviceUdid,
-      fps: clampStreamFps(status.targetFps),
-      scale: 1,
-      bitrateKbps: 0,
-    });
-    args.logger.info("apple.stream_cap_lifted", { laneId: lane, deviceUdid: status.deviceUdid });
-    return lifted;
+    // Cleared before the helper call: a remote viewer that rejoins meanwhile
+    // then sees no cap and sends its own, which the helper applies after this.
+    runtime.streamStatus = { ...status, bitrateKbps: null };
+    const lastGeneration = capGenerations.get(runtime) ?? 0;
+    try {
+      const lifted = await applyLiveBitrateCap(runtime, {
+        udid: status.deviceUdid,
+        fps: clampStreamFps(status.targetFps),
+        scale: 1,
+        bitrateKbps: 0,
+      });
+      args.logger.info("apple.stream_cap_lifted", { laneId: lane, deviceUdid: status.deviceUdid });
+      return lifted;
+    } catch (error) {
+      // Refused (a helper too old to know 0): the cap stays, unless a newer
+      // cap was sent meanwhile.
+      if (capGenerations.get(runtime) === lastGeneration + 1) {
+        runtime.streamStatus = { ...runtime.streamStatus, bitrateKbps: status.bitrateKbps };
+      }
+      throw error;
+    }
   };
 
   /**
@@ -6089,122 +6088,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /**
-   * Remove an installed simulator by udid — the picker's per-device menu.
-   *
-   * No `requireLaneScope`: the target is named outright and the registry's own
-   * guard is the one that matters (it refuses any device a lane holds). Asking
-   * for a lane scope here would only say which lane is doing the tidying.
-   */
-  const deviceDeleteInstalled = async (deviceArgs: AppleDeviceDeleteInstalledArgs): Promise<void> => {
-    assertDarwin();
-    if (deviceArgs?.confirmedByUser !== true) {
-      // The check stays as a second guard behind the RPC gate that keeps this
-      // verb for user clients. The message does not coach a caller past it:
-      // deleting a simulator is the user's call, made in the picker.
-      throw new Error(
-        "Deleting an installed simulator is the user's call. Ask them to delete it from the Apple Development device picker (the ⋯ menu on the device), which confirms it by name.",
-      );
-    }
-    const runtime = resolveRuntime(deviceArgs);
-    const udid = deviceArgs.udid?.trim() ?? "";
-    // A device a lane holds is refused by the registry below. Nothing is torn
-    // down for it first, so a refused delete changes nothing.
-    if (udid && !laneDevices.list().some((device) => device.udid === udid)) {
-      await releaseUnlanedHolds(udid);
-      await stopDeviceRecording(udid, "device-off");
-      // The registry shuts the device down before deleting it.
-      await resetHelperDevice(udid, "delete");
-    }
-    await laneDevices.deviceDeleteInstalled({ udid: deviceArgs.udid });
-    invalidateDeviceList();
-    invalidateStatus(runtime);
-  };
-
-  /**
-   * Stop every stream and hub device session reading a device no lane holds.
-   *
-   * `resolveRuntime` can hand an un-laned caller a runtime for any simulator,
-   * so a device the picker may delete can still have a reader. Left alone, it
-   * waits on a deleted device.
-   */
-  const releaseUnlanedHolds = async (udid: string): Promise<void> => {
-    for (const runtime of [...runtimes.values()]) {
-      if (runtime.streamStatus.running && runtime.streamStatus.deviceUdid === udid) {
-        await stopRuntimeStream(runtime);
-      }
-      if (runtime.hub?.getDeviceSession()?.deviceUdid === udid) {
-        await runtime.hub.closeDevice({
-          deviceUdid: udid,
-          chatSessionId: null,
-          ignoreOwnership: true,
-          // The registry powers it off before the delete.
-          shutdownDevice: false,
-        }).catch((error: unknown) => {
-          args.logger.debug("apple.delete_installed_close_device_failed", {
-            udid,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }
-    }
-  };
-
-  const deviceDelete = async (deviceArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
-    const runtime = requireLaneScope(deviceArgs);
-    // Whatever was driving it stops first: deleting a simulator out from under
-    // a running stream leaves the reader waiting on bytes that never come.
-    await shutdown({ laneId: runtime.laneId, chatSessionId: deviceArgs.chatSessionId, ignoreOwnership: true })
-      .catch(() => ({ released: false, previousSession: null }));
-    const laneDevice = laneDevices.get(runtime.key);
-    if (laneDevice?.origin === "clone") {
-      // The registry deletes a clone. Powered off here first, so its
-      // recording, its helper session and the device list all hear it. Best
-      // effort: the registry's own shutdown and delete still run.
-      await power.powerOffDevice(laneDevice.udid, "delete").catch((error: unknown) => {
-        args.logger.debug("apple.device_delete_power_off_failed", {
-          udid: laneDevice.udid,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return false;
-      });
-    } else if (laneDevice && deviceArgs.force) {
-      // `force` only detaches an attached device, and it keeps running.
-      await stopDeviceRecording(laneDevice.udid, "released");
-    }
-    await laneDevices.deviceDelete({ laneId: runtime.key, force: deviceArgs.force });
-    invalidateStatus(runtime);
-    // The lane's binding changed ("Choose another device"): every surface that
-    // shows the lane's device re-reads now rather than on its next poll.
-    if (laneDevice && runtime.key) {
-      emit({ type: "apple.device.state", laneId: runtime.key, udid: laneDevice.udid, phase: "released" });
-    }
-  };
-
-  /**
-   * Give up the lane's device and keep the simulator installed.
-   *
-   * The off card's "Choose another device": the lane goes back to the picker
-   * and nothing is deleted, clone or attached. The simulator keeps its power
-   * state and shows up in the picker as a free device. `deviceDelete` is the
-   * verb that removes a clone.
-   *
-   * Queued with `deviceStart` and `deviceStop`, so a start already in flight
-   * cannot bind or boot the device again behind the detach.
-   */
-  const deviceDetach = async (deviceArgs: AppleDeviceDetachArgs = {}): Promise<AppleLaneDevice | null> => {
-    const runtime = requireLaneScope(deviceArgs);
-    return serializeDeviceLifecycle(runtime, async () => {
-      const detached = await laneDevices.deviceDetach({ laneId: runtime.key });
-      if (!detached) return null;
-      // After the binding is gone, so the `released` event this sends is read
-      // against a registry that already says the lane has no device.
-      await releaseLaneHold(detached);
-      args.logger.info("apple.lane_device_detached_by_request", { laneId: detached.laneId, udid: detached.udid });
-      return detached;
-    });
-  };
-
-  /**
    * The lane's device, created on first ask.
    *
    * `launch` and `open-device` call this: a lane gets no device until it is
@@ -6304,32 +6187,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  /**
-   * Lane archive / delete. Called from `laneService`'s delete cascade next to
-   * `removeLaneArtifactFiles`.
-   *
-   * Deletes the CLONE and never an attached device, and takes the recordings
-   * directory with it. `force` here means "detach an attached device too",
-   * which is what a lane that no longer exists needs.
-   */
-  const releaseLane = async (laneId: string): Promise<void> => {
-    const key = laneId.trim();
-    if (!key) return;
-    const runtime = runtimes.get(key);
-    if (runtime) {
-      await shutdown({ laneId: key, force: true }).catch(() => ({ released: false, previousSession: null }));
-      runtime.hub?.dispose();
-      runtime.hub = null;
-      runtimes.delete(key);
-    }
-    await laneDevices.deviceDelete({ laneId: key, force: true }).catch((error: unknown) => {
-      args.logger.warn("apple.lane_device_release_failed", {
-        laneId: key,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  };
-
   return {
     getStatus,
     claim,
@@ -6377,12 +6234,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /** Power the lane's simulator off and leave it registered. Not `shutdown`. */
     deviceStop,
     deviceList,
-    deviceDelete,
+    deviceDelete: lifecycle.deviceDelete,
     /** Unbind the lane's device and keep the simulator. The off card's "Choose another device". */
-    deviceDetach,
-    deviceDeleteInstalled,
-    /** Lane archive/delete hook. Deletes a clone, only detaches an attached device. */
-    releaseLane,
+    deviceDetach: lifecycle.deviceDetach,
+    deviceDeleteInstalled: lifecycle.deviceDeleteInstalled,
 
     /* Recording (unit 2C owns the implementation). */
     recordStart,

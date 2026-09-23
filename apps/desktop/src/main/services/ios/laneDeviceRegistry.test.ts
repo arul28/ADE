@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import path from "node:path";
+import { bareSimulatorPowerOff } from "./simulatorPower";
 import {
   appleDeviceDataRoot,
   appleDeviceFamily,
@@ -123,6 +125,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
       store,
       registry: createLaneDeviceRegistry({
         run: run as never,
+        powerOffDevice: bareSimulatorPowerOff(run as never),
         listInstalledSimulators: async () => installed,
         store,
         logger: noopLogger,
@@ -153,6 +156,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
     const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
     const registry = createLaneDeviceRegistry({
       run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
       listInstalledSimulators: async () => [],
       store: memoryStore(),
       logger: noopLogger,
@@ -233,6 +237,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
     // Every installed simulator is booted, so there is no cloneable template.
     const registry = createLaneDeviceRegistry({
       run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
       listInstalledSimulators: async () => [
         simulator({ udid: "only", name: "iPhone 17 Pro", state: "Booted" }),
       ],
@@ -342,7 +347,7 @@ describe("releaseLaneAppleDevice", () => {
       });
 
       expect(result.deletedUdid).toBe("clone-udid");
-      expect(removed).toEqual(["/repo/.ade/artifacts/apple-recordings/lane-1"]);
+      expect(removed).toEqual([path.join("/repo", ".ade", "artifacts", "apple-recordings", "lane-1")]);
       expect(store.rows["lane-1"]).toBeUndefined();
     } finally {
       platformSpy.mockRestore();
@@ -416,6 +421,7 @@ describe("laneDeviceRegistry deviceList ownership and disk", () => {
       store,
       registry: createLaneDeviceRegistry({
         run: run as never,
+        powerOffDevice: bareSimulatorPowerOff(run as never),
         listInstalledSimulators: async () => installed,
         store,
         deviceDataRoot: "/devices",
@@ -565,6 +571,7 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
     const released: unknown[] = [];
     const registry = createLaneDeviceRegistry({
       run: (async () => ({ stdout: "", stderr: "" })) as never,
+      powerOffDevice: async () => true,
       listInstalledSimulators: async () => installed,
       store,
       logger: noopLogger,
@@ -664,6 +671,7 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
     const released: string[] = [];
     const registry = createLaneDeviceRegistry({
       run: (async () => ({ stdout: "", stderr: "" })) as never,
+      powerOffDevice: async () => true,
       listInstalledSimulators: async () => installed,
       logger: noopLogger,
       releaseLaneDevice: (device) => { released.push(device.laneId); },

@@ -1,14 +1,9 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it } from "vitest";
-import {
-  appleCanvasHasDecoded,
-  appleDeviceInputSize,
-  appleDragIntent,
-  appleWheelIntent,
-  orientedToPortrait,
-  type AppleDeviceOrientation,
-} from "./AppleDevice3DView";
+import type { AppleDeviceOrientation } from "../../../shared/types";
+import { appleDragIntent, appleWheelIntent } from "./AppleDevice3DView";
+import { appleCanvasHasDecoded, appleDeviceInputSize, orientedToPortrait } from "./appleDeviceScene";
 import { createDeviceModelLoader } from "./appleDeviceModelLoader";
 
 describe("appleDragIntent (round 4 §A3)", () => {

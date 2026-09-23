@@ -183,8 +183,6 @@ async function allSettledWithConcurrency<T>(
   return results;
 }
 
-/** What the Work page itself can show for the chat in front. */
-
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
   const { machineRouter, resolveSessionRuntimePin } = work;

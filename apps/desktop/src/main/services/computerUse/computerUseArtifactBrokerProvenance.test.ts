@@ -74,7 +74,7 @@ describe("computerUseArtifactBroker proof provenance", () => {
     return file;
   };
 
-  const attach = (broker: ReturnType<typeof makeBroker>, file: string, title: string) => broker.ingest({
+  const attach = (broker: ReturnType<typeof makeBroker>, file: string, title: string) => broker.ingestAsync({
     backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
     owners: [{ kind: "chat_session", id: "chat-1" }],
     inputs: [{ kind: "video_recording", title, path: file }],
@@ -89,9 +89,9 @@ describe("computerUseArtifactBroker proof provenance", () => {
     }
   };
 
-  it("stamps an attach with its source, hash, and size", () => {
+  it("stamps an attach with its source, hash, and size", async () => {
     const bytes = mp4Bytes(null, 1);
-    const result = attach(makeBroker(), writeCacheFile("a.mp4", bytes), "First");
+    const result = await attach(makeBroker(), writeCacheFile("a.mp4", bytes), "First");
     expect(result.artifacts[0]!.metadata).toMatchObject({
       proofSource: "attached",
       contentSha256: sha256(bytes),
@@ -100,44 +100,44 @@ describe("computerUseArtifactBroker proof provenance", () => {
     expect(result.warnings).toBeUndefined();
   });
 
-  it("refuses a renamed copy of existing proof and names the earlier one", () => {
+  it("refuses a renamed copy of existing proof and names the earlier one", async () => {
     const broker = makeBroker();
     const bytes = mp4Bytes(null, 2);
-    attach(broker, writeCacheFile("google-search.mp4", bytes), "Google search");
+    await attach(broker, writeCacheFile("google-search.mp4", bytes), "Google search");
     const before = storedFiles().length;
 
-    expect(() => attach(broker, writeCacheFile("safari-reddit-search.mp4", bytes), "Safari Reddit search"))
-      .toThrow(/^PROOF_DUPLICATE: Same bytes as "Google search" \(filed .+\)\. This file is already proof\. Record a new one, or report that recording failed\.$/);
+    await expect(attach(broker, writeCacheFile("safari-reddit-search.mp4", bytes), "Safari Reddit search"))
+      .rejects.toThrow(/^PROOF_DUPLICATE: Same bytes as "Google search" \(filed .+\)\. This file is already proof\. Record a new one, or report that recording failed\.$/);
     // The staged copy of the refused file is removed, and no row is written.
     expect(storedFiles()).toHaveLength(before);
     expect(broker.listArtifacts({})).toHaveLength(1);
   });
 
-  it("accepts different bytes", () => {
+  it("accepts different bytes", async () => {
     const broker = makeBroker();
-    attach(broker, writeCacheFile("one.mp4", mp4Bytes(null, 3)), "One");
-    attach(broker, writeCacheFile("two.mp4", mp4Bytes(null, 4)), "Two");
+    await attach(broker, writeCacheFile("one.mp4", mp4Bytes(null, 3)), "One");
+    await attach(broker, writeCacheFile("two.mp4", mp4Bytes(null, 4)), "Two");
     expect(broker.listArtifacts({})).toHaveLength(2);
   });
 
-  it("refuses the same bytes twice in one call", () => {
+  it("refuses the same bytes twice in one call", async () => {
     const bytes = mp4Bytes(null, 5);
     const broker = makeBroker();
-    expect(() => broker.ingest({
+    await expect(broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [
         { kind: "video_recording", title: "A", path: writeCacheFile("x.mp4", bytes) },
         { kind: "video_recording", title: "B", path: writeCacheFile("y.mp4", bytes) },
       ],
-    })).toThrow(/PROOF_DUPLICATE: Same bytes as "A"/);
+    })).rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "A"/);
     expect(broker.listArtifacts({})).toHaveLength(0);
   });
 
-  it("does not block ADE's own recorder, and records its start and stop", () => {
+  it("does not block ADE's own recorder, and records its start and stop", async () => {
     const broker = makeBroker();
     const bytes = mp4Bytes(null, 6);
-    attach(broker, writeCacheFile("first.mp4", bytes), "First");
-    const recorded = broker.ingest({
+    await attach(broker, writeCacheFile("first.mp4", bytes), "First");
+    const recorded = await broker.ingestAsync({
       backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
       provenance: {
         source: "ade-recorder",
@@ -154,9 +154,9 @@ describe("computerUseArtifactBroker proof provenance", () => {
     });
   });
 
-  it("stamps ade-capture and ignores a caller's own provenance claims", () => {
+  it("stamps ade-capture and ignores a caller's own provenance claims", async () => {
     const broker = makeBroker();
-    const capture = broker.ingest({
+    const capture = await broker.ingestAsync({
       backend: { name: "apple-device", toolName: "apple_screenshot" },
       provenance: { source: "ade-capture" },
       inputs: [{ kind: "screenshot", title: "Shot", path: writeCacheFile("shot.png", Buffer.from("png-1")) }],
@@ -164,7 +164,7 @@ describe("computerUseArtifactBroker proof provenance", () => {
     expect(capture.artifacts[0]!.metadata.proofSource).toBe("ade-capture");
     expect(capture.artifacts[0]!.metadata.recordedFrom).toBeUndefined();
 
-    const spoofed = broker.ingest({
+    const spoofed = await broker.ingestAsync({
       backend: { name: "ade-cli" },
       inputs: [{
         kind: "screenshot",
@@ -177,7 +177,7 @@ describe("computerUseArtifactBroker proof provenance", () => {
     expect(spoofed.artifacts[0]!.metadata.contentSha256).toBe(sha256(Buffer.from("png-2")));
   });
 
-  it("hashes an older row with no stored hash only when its size matches", () => {
+  it("hashes an older row with no stored hash only when its size matches", async () => {
     const broker = makeBroker();
     const legacyDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
     fs.mkdirSync(legacyDir, { recursive: true });
@@ -194,8 +194,8 @@ describe("computerUseArtifactBroker proof provenance", () => {
     insertLegacy("legacy-other", "legacy-other.mp4", "Other size");
     insertLegacy("legacy-same", "legacy-same.mp4", "Old recording");
 
-    expect(() => attach(broker, writeCacheFile("copy.mp4", bytes), "Copy"))
-      .toThrow(/PROOF_DUPLICATE: Same bytes as "Old recording"/);
+    await expect(attach(broker, writeCacheFile("copy.mp4", bytes), "Copy"))
+      .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Old recording"/);
     const readMeta = (id: string) => JSON.parse(db.get<{ metadata_json: string }>(
       "select metadata_json from computer_use_artifacts where id = ?",
       [id],
@@ -205,7 +205,7 @@ describe("computerUseArtifactBroker proof provenance", () => {
     expect(readMeta("legacy-other").contentSha256).toBeUndefined();
   });
 
-  it("refuses a copy of an Apple recording that never reached the drawer", () => {
+  it("refuses a copy of an Apple recording that never reached the drawer", async () => {
     const broker = makeBroker();
     const laneDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
     fs.mkdirSync(laneDir, { recursive: true });
@@ -217,11 +217,11 @@ describe("computerUseArtifactBroker proof provenance", () => {
       startedAt: "2026-09-23T05:19:00.000Z",
       proofArtifactId: null,
     }));
-    expect(() => attach(broker, writeCacheFile("safari.mp4", bytes), "Safari"))
-      .toThrow(/PROOF_DUPLICATE: Same bytes as "Simulator recording · iPhone · 0:12"/);
+    await expect(attach(broker, writeCacheFile("safari.mp4", bytes), "Safari"))
+      .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Simulator recording · iPhone · 0:12"/);
   });
 
-  it("attaches an Apple recording whose filing failed, in place, without calling it a copy of itself", () => {
+  it("attaches an Apple recording whose filing failed, in place, without calling it a copy of itself", async () => {
     const broker = makeBroker();
     const laneDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
     fs.mkdirSync(laneDir, { recursive: true });
@@ -234,12 +234,12 @@ describe("computerUseArtifactBroker proof provenance", () => {
       startedAt: "2026-09-23T05:19:00.000Z",
       proofArtifactId: null,
     }));
-    const result = attach(broker, recording, "Checkout flow");
+    const result = await attach(broker, recording, "Checkout flow");
     expect(result.artifacts[0]!.uri).toBe(".ade/artifacts/apple-recordings/lane-1/rec-2.mp4");
     expect(result.artifacts[0]!.metadata).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
     // A copy of it is still refused.
-    expect(() => attach(broker, writeCacheFile("copy-of-rec.mp4", bytes), "Copy"))
-      .toThrow(/PROOF_DUPLICATE: Same bytes as "Checkout flow"/);
+    await expect(attach(broker, writeCacheFile("copy-of-rec.mp4", bytes), "Copy"))
+      .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Checkout flow"/);
   });
 
   it("does not hash ADE's own recording at filing time, but still catches a later copy of it", async () => {
@@ -249,7 +249,7 @@ describe("computerUseArtifactBroker proof provenance", () => {
     const bytes = mp4Bytes(null, 16);
     const recording = path.join(laneDir, "rec-3.mp4");
     fs.writeFileSync(recording, bytes);
-    const filed = broker.ingest({
+    const filed = await broker.ingestAsync({
       backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
       owners: [{ kind: "lane", id: "lane-1" }],
       provenance: { source: "ade-recorder" },
@@ -280,13 +280,48 @@ describe("computerUseArtifactBroker proof provenance", () => {
     expect(result.artifacts[0]!.metadata).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
   });
 
+  it("regression: files a capture whose bytes changed after ADE hashed them as an attach", async () => {
+    const broker = makeBroker();
+    const bytes = mp4Bytes(null, 18);
+    await attach(broker, writeCacheFile("earlier.mp4", bytes), "Earlier");
+    const capture = (file: string, capturedSha256: string[]) => broker.ingestAsync({
+      backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+      owners: [{ kind: "chat_session", id: "chat-1" }],
+      provenance: { source: "ade-recorder", refuseDuplicates: false, flagOlderMedia: true, capturedSha256 },
+      inputs: [{ kind: "video_recording", title: "Capture", path: file }],
+    });
+
+    const fresh = mp4Bytes(null, 19);
+    const kept = await capture(writeCacheFile("fresh.mp4", fresh), [sha256(fresh)]);
+    expect(kept.artifacts[0]!.metadata).toMatchObject({ proofSource: "ade-recorder", contentSha256: sha256(fresh) });
+    // Old proof swapped in after the registry hashed the capture: an attach, so the duplicate check runs.
+    await expect(capture(writeCacheFile("swapped.mp4", bytes), [sha256(mp4Bytes(null, 20))]))
+      .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Earlier"/);
+    const other = mp4Bytes(null, 21);
+    const downgraded = await capture(writeCacheFile("other.mp4", other), [sha256(mp4Bytes(null, 22))]);
+    expect(downgraded.artifacts[0]!.metadata.proofSource).toBe("attached");
+  });
+
+  it("never hashes a stored file on the calling thread: the sync door sends that attach to ingestAsync", () => {
+    const broker = makeBroker();
+    const dir = path.join(projectRoot, ".ade", "artifacts", "manual");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "in-place.mp4"), mp4Bytes(null, 23));
+    expect(() => broker.ingest({
+      backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+      owners: [{ kind: "chat_session", id: "chat-1" }],
+      inputs: [{ kind: "video_recording", title: "Clip", path: path.join(dir, "in-place.mp4") }],
+    })).toThrow(/ingestAsync/);
+    expect(broker.listArtifacts({})).toHaveLength(0);
+  });
+
   describe("age of an attached video", () => {
     const turn = new Date("2026-09-23T10:00:00.000Z");
 
-    it("flags a video made before the chat's turn started, and warns", () => {
+    it("flags a video made before the chat's turn started, and warns", async () => {
       turnStartedAt = turn.toISOString();
       const made = new Date(turn.getTime() - 5 * 60 * 60 * 1000);
-      const result = attach(makeBroker(), writeCacheFile("old.mp4", mp4Bytes(made, 9)), "Old");
+      const result = await attach(makeBroker(), writeCacheFile("old.mp4", mp4Bytes(made, 9)), "Old");
       expect(result.artifacts[0]!.metadata).toMatchObject({
         mediaCreatedAt: made.toISOString(),
         recordedBeforeRequest: true,
@@ -297,31 +332,31 @@ describe("computerUseArtifactBroker proof provenance", () => {
       );
     });
 
-    it("does not flag a video made after the turn started, or within the slack", () => {
+    it("does not flag a video made after the turn started, or within the slack", async () => {
       turnStartedAt = turn.toISOString();
       const broker = makeBroker();
-      const after = attach(broker, writeCacheFile("new.mp4", mp4Bytes(new Date(turn.getTime() + 30_000), 10)), "New");
+      const after = await attach(broker, writeCacheFile("new.mp4", mp4Bytes(new Date(turn.getTime() + 30_000), 10)), "New");
       expect(after.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
       expect(after.artifacts[0]!.metadata.mediaCreatedAt).toBe(new Date(turn.getTime() + 30_000).toISOString());
-      const slack = attach(broker, writeCacheFile("slack.mp4", mp4Bytes(new Date(turn.getTime() - 30_000), 11)), "Slack");
+      const slack = await attach(broker, writeCacheFile("slack.mp4", mp4Bytes(new Date(turn.getTime() - 30_000), 11)), "Slack");
       expect(slack.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
       expect(after.warnings).toBeUndefined();
     });
 
-    it("does not flag an unknown creation time or a chat with no turn", () => {
+    it("does not flag an unknown creation time or a chat with no turn", async () => {
       turnStartedAt = turn.toISOString();
-      const unknown = attach(makeBroker(), writeCacheFile("zero.mp4", mp4Bytes(null, 12)), "Zero");
+      const unknown = await attach(makeBroker(), writeCacheFile("zero.mp4", mp4Bytes(null, 12)), "Zero");
       expect(unknown.artifacts[0]!.metadata.mediaCreatedAt).toBeUndefined();
       expect(unknown.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
 
       turnStartedAt = null;
-      const noTurn = attach(makeBroker(), writeCacheFile("noturn.mp4", mp4Bytes(new Date("2020-01-01T00:00:00Z"), 13)), "No turn");
+      const noTurn = await attach(makeBroker(), writeCacheFile("noturn.mp4", mp4Bytes(new Date("2020-01-01T00:00:00Z"), 13)), "No turn");
       expect(noTurn.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
     });
 
-    it("never flags ADE's own recorder", () => {
+    it("never flags ADE's own recorder", async () => {
       turnStartedAt = turn.toISOString();
-      const result = makeBroker().ingest({
+      const result = await makeBroker().ingestAsync({
         backend: { name: "apple-device", toolName: "apple_record" },
         owners: [{ kind: "chat_session", id: "chat-1" }],
         provenance: { source: "ade-recorder" },

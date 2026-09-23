@@ -9,6 +9,7 @@ import {
   appleEventAddresses,
   appleInputAllowed,
   appleLaneDeviceBooted,
+  appleStatusSaysBooted,
   applePowerFromPhase,
   laneDeviceBooted,
   appleRailVisible,
@@ -269,11 +270,24 @@ describe("power and event helpers", () => {
   });
 
   it("trusts simctl over an open session, and an off answer over both", () => {
-    const status = { activeDevice: null, deviceSession: { deviceUdid: "A" } } as never;
-    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: null, installedForLane: null, status })).toBe(true);
-    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: null, installedForLane: { state: "Shutdown" }, status })).toBe(false);
-    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: "A", installedForLane: { state: "Booted" }, status })).toBe(false);
-    expect(appleLaneDeviceBooted({ deviceUdid: null, offUdid: null, installedForLane: null, status })).toBe(false);
+    const session = { statusSaysBooted: false, sessionUdid: "A" };
+    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: null, installedForLane: null, ...session })).toBe(true);
+    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: null, installedForLane: { state: "Shutdown" }, ...session })).toBe(false);
+    expect(appleLaneDeviceBooted({ deviceUdid: "A", offUdid: "A", installedForLane: { state: "Booted" }, ...session })).toBe(false);
+    expect(appleLaneDeviceBooted({ deviceUdid: null, offUdid: null, installedForLane: null, ...session })).toBe(false);
+    // A status read of Booted beats a stale Shutdown in the list.
+    expect(appleLaneDeviceBooted({
+      deviceUdid: "A", offUdid: null, installedForLane: { state: "Shutdown" }, statusSaysBooted: true, sessionUdid: null,
+    })).toBe(true);
+  });
+
+  it("reads Booted from the status only for the device asked about", () => {
+    const status = { activeDevice: { udid: "A", state: "Booted" } } as never;
+    expect(appleStatusSaysBooted(status, "A")).toBe(true);
+    expect(appleStatusSaysBooted(status, "B")).toBe(false);
+    expect(appleStatusSaysBooted(status, null)).toBe(false);
+    expect(appleStatusSaysBooted({ activeDevice: { udid: "A", state: "Shutdown" } } as never, "A")).toBe(false);
+    expect(appleStatusSaysBooted(null, "A")).toBe(false);
   });
 
   it("scopes simulator events to one chat on one lane", () => {

@@ -31,6 +31,7 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { normalizeComputerUseArtifactKind } from "../../../shared/proofArtifacts";
 import {
   PROOF_PROVENANCE_METADATA_KEYS,
+  hasDrawerOwner,
   type ComputerUseProofSource,
 } from "../../../shared/proofProvenance";
 import type { Logger } from "../logging/logger";
@@ -47,14 +48,12 @@ import {
   writeTextAtomic,
 } from "../shared/utils";
 import { commandExists } from "../ai/utils";
-import { readFileRange } from "../shared/fileRange";
+import { readArtifactByteRange } from "./artifactByteRange";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
-import { knownArtifactMimeType } from "./artifactStreamProtocol";
-import { listAppleRecordingFiles } from "../ios/recording/appleRecordingsStore";
+import { isStreamableArtifactFile, knownArtifactMimeType } from "./artifactStreamProtocol";
 import {
   createProofFingerprintJudge,
   hashFile,
-  hashFileSync,
   type AttachPolicy,
   type ContentFingerprint,
 } from "./proofFingerprint";
@@ -271,8 +270,8 @@ async function readArtifactRangeChunk(args: {
   } catch {
     throw new Error("Artifact path must resolve within .ade/artifacts.");
   }
-  if (!knownArtifactMimeType(resolved)) throw new Error("This artifact type cannot be streamed.");
-  const range = await readFileRange(resolved, args.offset, args.length);
+  if (!isStreamableArtifactFile(resolved)) throw new Error("This artifact type cannot be streamed.");
+  const range = await readArtifactByteRange(resolved, args.offset, args.length);
   return { totalSize: range.totalSize, offset: range.rangeStart, data: range.base64 };
 }
 
@@ -824,7 +823,7 @@ export function createComputerUseArtifactBrokerService(args: {
     db,
     projectId,
     resolveStoredFilePath: ({ uri }) => resolveArtifactFilePath({ storageKind: "file", uri }),
-    listRecordings: () => listAppleRecordingFiles(projectRoot),
+    projectRoot,
     logger: args.logger,
   });
 
@@ -1271,8 +1270,10 @@ export function createComputerUseArtifactBrokerService(args: {
     laneId: string | null;
     proofSource: ComputerUseProofSource;
     policy: AttachPolicy;
-    /** Only an attach is hashed while filing; ADE's own captures are hashed later, if ever. */
+    /** An attach, or a capture whose hash is re-checked, is hashed while filing; other captures later, if ever. */
     hashAtFiling: boolean;
+    /** The hash each input had when ADE captured it, or null when there is nothing to re-check. */
+    capturedSha256: string[] | null;
     entries: Array<{
       input: ComputerUseArtifactInput;
       kind: ComputerUseArtifactKind;
@@ -1293,11 +1294,11 @@ export function createComputerUseArtifactBrokerService(args: {
     const owners = dedupeOwners(request.owners ?? []);
     const callerRoot = toOptionalString(request.callerRoot);
     const laneId = resolveLaneIdForOwners(owners);
-    if (!laneId && !owners.some((owner) => owner.kind === "chat_session")) {
+    if (!hasDrawerOwner(owners)) {
       // Not refused: a CTO scene still legitimately files with no owner when
       // no call is on a chat. But it IS worth a line, because a record with
-      // no lane and no chat is invisible in every drawer, and a run whose
-      // proof went nowhere left no trace of that anywhere until now.
+      // no owner is invisible in every drawer, and a run whose proof went
+      // nowhere left no trace of that anywhere until now.
       args.logger?.warn("computer_use.artifact_ingest_without_owner", {
         backend: request.backend?.name ?? null,
         toolName: request.backend?.toolName ?? null,
@@ -1315,6 +1316,7 @@ export function createComputerUseArtifactBrokerService(args: {
     const proofSource: ComputerUseProofSource = request.provenance?.source ?? "attached";
     const refuseDuplicates = request.provenance?.refuseDuplicates ?? proofSource === "attached";
     const flagOlderMedia = request.provenance?.flagOlderMedia ?? proofSource === "attached";
+    const capturedSha256 = proofSource === "attached" ? null : request.provenance?.capturedSha256 ?? null;
     const stagedFilePaths: string[] = [];
     const discard = () => {
       for (const stagedFilePath of stagedFilePaths) {
@@ -1344,15 +1346,46 @@ export function createComputerUseArtifactBrokerService(args: {
       callerRoot,
       laneId,
       proofSource,
-      policy: {
-        refuseDuplicates,
-        flagOlderMedia,
-        turnStartedAtMs: flagOlderMedia ? proofJudge.readOwnerTurnStartedAt(owners) : null,
-        toolName: request.backend?.toolName ?? null,
-      },
-      hashAtFiling: refuseDuplicates || proofSource === "attached",
+      policy: attachPolicy(request, owners, { refuseDuplicates, flagOlderMedia }),
+      hashAtFiling: refuseDuplicates || proofSource === "attached" || capturedSha256 !== null,
+      capturedSha256,
       entries,
       discard,
+    };
+  };
+
+  const attachPolicy = (
+    request: ComputerUseArtifactIngestionRequest,
+    owners: ComputerUseArtifactOwner[],
+    checks: { refuseDuplicates: boolean; flagOlderMedia: boolean },
+  ): AttachPolicy => ({
+    ...checks,
+    turnStartedAtMs: checks.flagOlderMedia ? proofJudge.readOwnerTurnStartedAt(owners) : null,
+    toolName: request.backend?.toolName ?? null,
+  });
+
+  /**
+   * An ADE capture whose bytes no longer hash to what ADE captured is filed as
+   * an attach, with every attach check on. The bytes can change between the
+   * RPC's registry check and this read.
+   */
+  const downgradeChangedCapture = (
+    prepared: PreparedIngest,
+    fingerprints: Array<ContentFingerprint | null>,
+  ): PreparedIngest => {
+    const expected = prepared.capturedSha256;
+    if (!expected) return prepared;
+    const unchanged = expected.length === prepared.entries.length
+      && expected.every((sha256, index) => fingerprints[index]?.sha256 === sha256);
+    if (unchanged) return prepared;
+    args.logger?.warn("computer_use.artifact_capture_changed", {
+      toolName: prepared.request.backend?.toolName ?? null,
+      proofSource: prepared.proofSource,
+    });
+    return {
+      ...prepared,
+      proofSource: "attached",
+      policy: attachPolicy(prepared.request, prepared.owners, { refuseDuplicates: true, flagOlderMedia: true }),
     };
   };
 
@@ -1457,25 +1490,29 @@ export function createComputerUseArtifactBrokerService(args: {
 
   return {
     /**
-     * Files proof. An attached file already in the store is hashed here, on
-     * the calling thread; `ingestAsync` streams that hash instead.
+     * Files proof that needs no file hashed here: ADE's own captures, text, and
+     * copies (a copy is hashed as it is made). A file that would have to be
+     * read again for its hash goes through `ingestAsync`, so the hash never
+     * holds the event loop.
      */
     ingest(request: ComputerUseArtifactIngestionRequest): ComputerUseArtifactIngestionResult {
       const prepared = prepareIngest(request);
-      return commitIngest(prepared, prepared.entries.map((entry) => {
-        const target = pathToHash(prepared, entry);
-        return entry.stored.fingerprint ?? (target ? hashFileSync(target) : null);
-      }));
+      if (prepared.entries.some((entry) => pathToHash(prepared, entry))) {
+        prepared.discard();
+        throw new Error("This proof needs its bytes hashed while filing. File it with ingestAsync.");
+      }
+      const fingerprints = prepared.entries.map((entry) => entry.stored.fingerprint);
+      return commitIngest(downgradeChangedCapture(prepared, fingerprints), fingerprints);
     },
 
-    /** The same, with any hash streamed so a long video does not hold the event loop. */
+    /** Files any proof, streaming the hash an attach or a re-checked capture needs. */
     async ingestAsync(request: ComputerUseArtifactIngestionRequest): Promise<ComputerUseArtifactIngestionResult> {
       const prepared = prepareIngest(request);
       const fingerprints = await Promise.all(prepared.entries.map(async (entry) => {
         const target = pathToHash(prepared, entry);
         return entry.stored.fingerprint ?? (target ? await hashFile(target) : null);
       }));
-      return commitIngest(prepared, fingerprints);
+      return commitIngest(downgradeChangedCapture(prepared, fingerprints), fingerprints);
     },
 
     /** Late wiring for the chat service, which is built after the broker. */

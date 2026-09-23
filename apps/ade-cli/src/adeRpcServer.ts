@@ -23,6 +23,7 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
@@ -94,7 +95,8 @@ import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
 } from "./services/builtInBrowser/desktopBridgeMethods";
 import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
-import { isSyntheticCallerId } from "./lib/syntheticCallerId";
+import { isSyntheticCallerId, syntheticCallerClient } from "../../desktop/src/shared/syntheticCallerId";
+import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 import {
   ADE_CAPTURE_ACTIONS,
   createAdeCaptureRegistry,
@@ -216,6 +218,21 @@ type SessionState = {
 
 function isUserClientSession(session: SessionState): boolean {
   return !callerIdentityIsAgent(session.identity);
+}
+
+/**
+ * Whether a caller may use a user-only action (`isUserOnlyAdeAction`).
+ *
+ * A user client, and not a process id minted by the `ade` CLI or TUI: an
+ * agent's shell with no chat identity (an OpenCode shell, say) also runs
+ * `ade`, and would otherwise pass as the user. The desktop's own runtime
+ * connection is a process id too (`ade-desktop-local:<pid>`), and it is the
+ * device picker, so it stays a user client.
+ */
+function mayUseUserOnlyActions(session: SessionState): boolean {
+  if (!isUserClientSession(session)) return false;
+  const client = syntheticCallerClient(session.identity.callerId);
+  return client === null || client.startsWith("ade-desktop");
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -2351,13 +2368,6 @@ export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean 
   return toolArgs?.proof === true;
 }
 
-/** Owners a proof listing scopes to. A row with none of them is shown nowhere. */
-const DRAWER_OWNER_KINDS: ReadonlySet<ComputerUseArtifactOwner["kind"]> = new Set([
-  "lane",
-  "chat_session",
-  "automation_run",
-]);
-
 /** One capture registry per runtime, shared by every connection to it. */
 const captureRegistries = new WeakMap<AdeRuntime, AdeCaptureRegistry>();
 
@@ -2380,24 +2390,34 @@ function captureRegistryFor(runtime: AdeRuntime): AdeCaptureRegistry {
  * arguments are never trusted. A still is exempt from the duplicate check
  * because a real capture of an unchanged screen can repeat bytes, and
  * `ade apple proof` files the still twice (once from `screenshot`). A video is
- * never exempt. The age flag stays on for every call.
+ * never exempt. The age flag stays on for every call. A capture matches once,
+ * so filing it again is an attach, and the broker re-checks each captured hash
+ * against the bytes it files.
  */
 export async function resolveIngestProvenance(
   registry: AdeCaptureRegistry,
   inputs: Array<Record<string, unknown>>,
   callerRoot: string,
 ): Promise<ComputerUseProofProvenanceInput> {
-  const sources = await Promise.all(inputs.map((input) => {
+  const matches = await Promise.all(inputs.map((input) => {
     const inputPath = asOptionalTrimmedString(input.path);
     return inputPath ? registry.match(path.resolve(callerRoot, inputPath)) : Promise.resolve(null);
   }));
-  const [source] = sources;
-  if (!source || sources.some((entry) => entry !== source)) return { source: "attached" };
+  const captured = matches.filter((entry) => entry !== null);
+  const source = captured[0]?.source;
+  if (!source || captured.length !== matches.length || captured.some((entry) => entry.source !== source)) {
+    return { source: "attached" };
+  }
   const allStills = inputs.every((input) => {
     const kind = asOptionalTrimmedString(input.kind);
     return kind === "screenshot" || kind === "browser_trace";
   });
-  return { source, refuseDuplicates: !allStills, flagOlderMedia: true };
+  return {
+    source,
+    refuseDuplicates: !allStills,
+    flagOlderMedia: true,
+    capturedSha256: captured.map((entry) => entry.sha256),
+  };
 }
 
 /** Remember the file a capture action just wrote. Never fails the action. */
@@ -4169,6 +4189,7 @@ async function runTool(args: {
       if (!service) return [];
       return listAllowedAdeActionNames(entry, service)
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
+        .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
@@ -4247,10 +4268,10 @@ async function runTool(args: {
     let undoBrowserActivityOnFailure: (() => void) | null = null;
     let result: unknown;
     const isUserClient = isUserClientSession(session);
-    if (domain === "ios_simulator" && action === "deviceDeleteInstalled" && !isUserClient) {
+    if (isUserOnlyAdeAction(domain, action) && !mayUseUserOnlyActions(session)) {
       // Deleting a simulator is the user's call, made from the device picker.
       scopeAccessDenied(
-        "ios_simulator.deviceDeleteInstalled is limited to user clients",
+        `${domain}.${action} is limited to user clients`,
         `run_ade_action:${domain}.${action}`,
       );
     }
@@ -5368,10 +5389,10 @@ async function runTool(args: {
     });
     // Refused before anything is stored: a row with no owner is shown by no
     // drawer, and it would make the retry with an owner a duplicate.
-    if (!owners.some((owner) => DRAWER_OWNER_KINDS.has(owner.kind))) {
+    if (!hasDrawerOwner(owners)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
-        "This proof has no lane and no chat session, so no proof drawer could show it. Nothing was filed."
+        "This proof has no lane, chat session, automation run, PR or issue, so no proof drawer could show it. Nothing was filed."
           + " Run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>.",
       );
     }

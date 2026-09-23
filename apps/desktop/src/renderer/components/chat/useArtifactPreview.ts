@@ -59,14 +59,14 @@ function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
  * `unsent`: that computer answered but did not send the bytes.
  * `unplayable`: the bytes arrived and the browser refused them.
  */
-export type ArtifactPreviewFailure = "offline" | "unsent" | "unplayable";
+type ArtifactPreviewFailure = "offline" | "unsent" | "unplayable";
 
-export type ArtifactPreviewProblem = {
+type ArtifactPreviewProblem = {
   reason: ArtifactPreviewFailure | null;
   machineName: string;
 };
 
-export function artifactMediaNoun(artifact: ComputerUseArtifactView): string {
+function artifactMediaNoun(artifact: ComputerUseArtifactView): string {
   if (isVideoArtifact(artifact)) return "video";
   if (isImageArtifact(artifact)) return "image";
   return "file";
@@ -77,7 +77,7 @@ export function artifactMediaNoun(artifact: ComputerUseArtifactView): string {
  * A missing preview can mean unsupported media or a size cap even when the
  * stored proof is intact. The generic line is only for a cause we do not know.
  */
-export function artifactPreviewExplanation(
+function artifactPreviewExplanation(
   artifact: ComputerUseArtifactView,
   problem: ArtifactPreviewProblem,
 ): string {
@@ -113,29 +113,7 @@ export function artifactPreviewExplanation(
  * stream, and a main process with no media server take the capped data URL
  * read.
  */
-export type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
-
-/** A paired machine's address for the media server. */
-type RemoteMediaTarget = {
-  targetId: string | null;
-  projectId: string | null;
-  rootPath: string | null;
-};
-
-/** The media server URL for a video, on this computer or a paired one. */
-export function artifactMediaStreamUrl(
-  base: string,
-  uri: string,
-  where: { local: true; rootPath: string | null | undefined } | { local: false; remote: RemoteMediaTarget },
-): string | null {
-  if (where.local) return localArtifactMediaUrl(base, uri, where.rootPath);
-  return remoteArtifactMediaUrl(base, {
-    uri,
-    targetId: where.remote.targetId ?? "",
-    projectId: where.remote.projectId ?? "",
-    remoteProjectRoot: where.remote.rootPath,
-  });
-}
+type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
 
 type PreviewState = {
   preview: string | null;
@@ -168,7 +146,6 @@ export function useArtifactPreview(
   const containerRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [state, setState] = useState<PreviewState>(EMPTY_PREVIEW);
-  const [mediaFailed, setMediaFailed] = useState(false);
   // Set once the remote stream failed, so the retry takes the data URL read.
   const [remoteStreamRefused, setRemoteStreamRefused] = useState(false);
   const remote = scope.binding?.kind === "remote" ? scope.binding : null;
@@ -198,10 +175,6 @@ export function useArtifactPreview(
     setState(EMPTY_PREVIEW);
     setRemoteStreamRefused(false);
   }, [artifact.id, artifact.uri]);
-
-  useEffect(() => {
-    setMediaFailed(false);
-  }, [artifact.id, artifact.uri, preview]);
 
   // The machine came back: load again instead of keeping "is offline".
   useEffect(() => {
@@ -271,11 +244,17 @@ export function useArtifactPreview(
       .catch(() => null)
       .then((base) => {
         if (cancelled) return;
-        const url = base
-          ? artifactMediaStreamUrl(base, artifact.uri, allowLocalArtifactProtocol
-            ? { local: true, rootPath: scope.rootPath }
-            : { local: false, remote: { targetId, projectId, rootPath: remoteRoot } })
-          : null;
+        let url: string | null = null;
+        if (base && allowLocalArtifactProtocol) {
+          url = localArtifactMediaUrl(base, artifact.uri, scope.rootPath);
+        } else if (base) {
+          url = remoteArtifactMediaUrl(base, {
+            uri: artifact.uri,
+            targetId: targetId ?? "",
+            projectId: projectId ?? "",
+            remoteProjectRoot: remoteRoot,
+          });
+        }
         if (!url) {
           readDataUrl();
           return;
@@ -314,10 +293,11 @@ export function useArtifactPreview(
       return;
     }
     setState((s) => ({ ...s, failure: "unplayable" }));
-    setMediaFailed(true);
   }, [source]);
 
-  const failed = mediaFailed || (loaded && !preview);
+  // "unplayable" is only set on a loaded preview and cleared with it (a new
+  // artifact resets the state).
+  const failed = failure === "unplayable" || (loaded && !preview);
   const explanation = useMemo(() => artifactPreviewExplanation(artifact, {
     // Offline explains any failure on a paired machine, whatever broke first.
     reason: failed && !allowLocalArtifactProtocol && remoteOffline ? "offline" : failure,

@@ -12,12 +12,8 @@
 // comparison rules are taken from the path's own shape rather than
 // `process.platform`.
 
+import { pathFlavorOf } from "../../../shared/pathCase";
 import { pathKey } from "../shared/pathCompare";
-
-/** Drive-letter or UNC spelling — the only path shapes Windows can produce. */
-function looksLikeWindowsPath(value: string): boolean {
-  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\");
-}
 
 /**
  * Comparison key for an owning-machine project root. `fold` opts into the
@@ -27,7 +23,7 @@ function looksLikeWindowsPath(value: string): boolean {
 function remoteRootPathKey(value: string, fold: boolean): string {
   // `linux` keeps `pathKey` case-sensitive for POSIX spellings; folding is
   // applied here instead, so the caller — not the host platform — decides.
-  const key = pathKey(value, looksLikeWindowsPath(value) ? "win32" : "linux");
+  const key = pathKey(value, pathFlavorOf(value) === "win32" ? "win32" : "linux");
   return fold ? key.toLowerCase() : key;
 }
 

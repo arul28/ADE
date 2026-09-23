@@ -9018,7 +9018,24 @@ describe("ADE CLI", () => {
           connection,
           values: { result: orphaned, verify: { artifacts: [{ id: "artifact-1" }] } },
         }),
-      ).toThrow(/proof attach failed — filed artifact-1 with no lane and no chat session/);
+      ).toThrow(/proof attach failed — filed artifact-1 with no lane, chat session, automation run, PR or issue/);
+    });
+
+    it("regression: accepts the owners the server accepts: an automation run, a PR or an issue", () => {
+      // The server stores these, so failing here would turn the retry into a PROOF_DUPLICATE.
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      for (const ownerKind of ["automation_run", "github_pr", "linear_issue"]) {
+        const filed = {
+          artifacts: [{ id: "artifact-1", kind: "screenshot", title: "run proof", laneId: null }],
+          links: [{ artifactId: "artifact-1", ownerKind, ownerId: "owner-1" }],
+        };
+        const summarized = summarizeExecution({
+          plan,
+          connection,
+          values: { result: filed, verify: { artifacts: [{ id: "artifact-1" }] } },
+        }) as Record<string, unknown>;
+        expect(summarized.ok, ownerKind).toBe(true);
+      }
     });
 
     it("fails when the runtime files nothing at all", () => {

@@ -5,7 +5,7 @@ import { render, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import type { WorkToolShowRequest } from "../../shared/types/workToolShow";
 import {
-  receiveWorkToolShowRequest,
+  answerWorkToolShowRequest,
   registerWorkToolShowHandler,
   resetWorkToolShowRequestsForTests,
   setWorkToolShowClockForTests,
@@ -35,7 +35,7 @@ describe("work tool show requests", () => {
   it("shows at once when the chat's surface is registered", async () => {
     const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
-    await expect(receiveWorkToolShowRequest(request())).resolves.toBe("shown");
+    await expect(answerWorkToolShowRequest(request())).resolves.toEqual({ status: "shown" });
     expect(show).toHaveBeenCalledTimes(1);
   });
 
@@ -43,7 +43,7 @@ describe("work tool show requests", () => {
     const onOtherChat = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-2", surfaces: ["apple", "proof"], show: onOtherChat });
     const asked = request({ surface: "proof" });
-    await expect(receiveWorkToolShowRequest(asked)).resolves.toBe("held");
+    await expect(answerWorkToolShowRequest(asked)).resolves.toMatchObject({ status: "held" });
     expect(onOtherChat).not.toHaveBeenCalled();
 
     const show = vi.fn(() => "shown" as const);
@@ -58,7 +58,7 @@ describe("work tool show requests", () => {
 
   it("keeps a hold only for a while", async () => {
     setWorkToolShowClockForTests(1_000);
-    await receiveWorkToolShowRequest(request());
+    await answerWorkToolShowRequest(request());
     setWorkToolShowClockForTests(1_000 + WORK_TOOL_SHOW_HOLD_TTL_MS + 1);
     const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
@@ -67,7 +67,7 @@ describe("work tool show requests", () => {
   });
 
   it("never holds an automatic float offer, and answers nothing for it", async () => {
-    await expect(receiveWorkToolShowRequest(request({ surface: "floating-apple", auto: true }))).resolves.toBeNull();
+    await expect(answerWorkToolShowRequest(request({ surface: "floating-apple", auto: true }))).resolves.toBeNull();
     const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["floating-apple"], show });
     await Promise.resolve();
@@ -78,21 +78,21 @@ describe("work tool show requests", () => {
     const show = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
     const asked = request();
-    await expect(receiveWorkToolShowRequest(asked)).resolves.toBe("shown");
-    await expect(receiveWorkToolShowRequest(asked)).resolves.toBeNull();
+    await expect(answerWorkToolShowRequest(asked)).resolves.toEqual({ status: "shown" });
+    await expect(answerWorkToolShowRequest(asked)).resolves.toBeNull();
     expect(show).toHaveBeenCalledTimes(1);
   });
 
   it("holds when the handler could not show it, and when it throws", async () => {
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show: () => "declined" as const });
-    await expect(receiveWorkToolShowRequest(request())).resolves.toBe("held");
+    await expect(answerWorkToolShowRequest(request())).resolves.toMatchObject({ status: "held" });
     resetWorkToolShowRequestsForTests();
     registerWorkToolShowHandler({
       chatSessionId: "chat-1",
       surfaces: ["floating-apple"],
       show: async () => { throw new Error("no device"); },
     });
-    await expect(receiveWorkToolShowRequest(request({ surface: "floating-apple" }))).resolves.toBe("held");
+    await expect(answerWorkToolShowRequest(request({ surface: "floating-apple" }))).resolves.toMatchObject({ status: "held" });
   });
 
   /* Regression (A2-3 / D3): a surface the handler already opened is never
@@ -100,7 +100,7 @@ describe("work tool show requests", () => {
   it("answers held but never replays a request the handler already opened", async () => {
     const show = vi.fn(() => "opened" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show });
-    await expect(receiveWorkToolShowRequest(request())).resolves.toBe("held");
+    await expect(answerWorkToolShowRequest(request())).resolves.toMatchObject({ status: "held" });
     const again = vi.fn(() => "shown" as const);
     registerWorkToolShowHandler({ chatSessionId: "chat-1", surfaces: ["apple"], show: again });
     await Promise.resolve();

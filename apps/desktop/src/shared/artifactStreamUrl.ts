@@ -20,6 +20,8 @@
  * refuses anything that lands outside it.
  */
 
+import { foldsCase, pathFlavorOf } from "./pathCase";
+
 /** The most a single remote range read returns. Bounds each RPC answer. */
 export const ARTIFACT_RANGE_READ_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -60,37 +62,20 @@ function withoutTrailingSlash(value: string): string {
 }
 
 /**
- * Whether a root's paths compare without case: a Windows-shaped root (drive
- * letter or UNC) always, a POSIX root when this host folds (macOS). Same rule
- * as `foldsCase` in pathContainment.ts, which cannot load in the renderer.
- * Only a first gate: the machine holding the file still jails it.
- */
-function rootFoldsCase(root: string, platform: string | undefined): boolean {
-  if (/^[a-zA-Z]:\//.test(root) || root.startsWith("//")) return true;
-  return platform === "darwin" || platform === "win32";
-}
-
-function hostPlatform(): string | undefined {
-  const scope = globalThis as { process?: { platform?: string }; navigator?: { platform?: string } };
-  if (typeof scope.process?.platform === "string") return scope.process.platform;
-  const navigatorPlatform = scope.navigator?.platform ?? "";
-  if (/^mac/i.test(navigatorPlatform)) return "darwin";
-  if (/^win/i.test(navigatorPlatform)) return "win32";
-  return undefined;
-}
-
-/**
  * A stored artifact uri as a project-relative path, or null when it is not one.
  *
  * Accepts the stored `ade-artifact://project/<path>` form, a plain relative
  * path, or an absolute path inside `projectRoot`. An absolute path anywhere
- * else, a web URL, and any path with `..` in it answer null. `platform` is the
- * host's own unless a test passes one.
+ * else, a web URL, and any path with `..` in it answer null.
+ *
+ * The root may belong to another machine, so its own shape sets the case rule:
+ * a drive-letter or UNC root compares without case, a POSIX root exactly. This
+ * check grants a path, so it never folds on a guess; it is only a first gate,
+ * and the machine holding the file still jails it inside `.ade/artifacts`.
  */
 export function projectRelativeArtifactPath(
   uri: string,
   projectRoot: string | null | undefined,
-  platform: string | undefined = hostPlatform(),
 ): string | null {
   const text = uri.trim();
   if (!text || /^https?:\/\//i.test(text)) return null;
@@ -116,7 +101,7 @@ export function projectRelativeArtifactPath(
     const root = withoutTrailingSlash((projectRoot ?? "").trim().replace(/\\/g, "/"));
     if (!root) return null;
     const head = candidate.slice(0, root.length + 1);
-    const inside = rootFoldsCase(root, platform)
+    const inside = foldsCase(pathFlavorOf(root))
       ? head.toLowerCase() === `${root}/`.toLowerCase()
       : head === `${root}/`;
     if (!inside) return null;
@@ -134,6 +119,18 @@ function encodePath(relativePath: string): string {
 export function localArtifactStreamUrl(uri: string, projectRoot: string | null | undefined): string | null {
   const relative = projectRelativeArtifactPath(uri, projectRoot);
   return relative ? `ade-artifact://project/${encodePath(relative)}` : null;
+}
+
+/**
+ * The `<img>` source for a stored proof image on this computer: an
+ * `ade-artifact://` uri as is, a project-relative path as its stream URL.
+ * With no project root, an absolute path or a web URL answers null.
+ */
+export function artifactImageSrc(uri: string | null | undefined): string | null {
+  const text = uri?.trim();
+  if (!text) return null;
+  if (/^ade-artifact:\/\//i.test(text)) return text;
+  return localArtifactStreamUrl(text, null);
 }
 
 /** Where a media server path points, after the token. */

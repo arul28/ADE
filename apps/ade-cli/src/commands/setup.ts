@@ -38,6 +38,7 @@ import {
   type DesktopManifestEntry,
 } from "./setupDesktop";
 import { resolveMachineAdeDir } from "../services/projects/machineLayout";
+import { foldsCase } from "../../../desktop/src/shared/pathCase";
 import {
   describeUnpublishedAccountDirectory,
   isSyncAccountDirectoryState,
@@ -727,9 +728,9 @@ function removeOtherCachedDesktopArtifacts(cacheDir: string, keep: string): void
   // asset casing changed between runs would leave the on-disk spelling
   // unmatched and this sweep would delete the very partial it meant to resume.
   // Linux stays case-sensitive, so this must not fold unconditionally.
-  const foldsCase = process.platform === "win32" || process.platform === "darwin";
+  const fold = foldsCase(process.platform);
   const sameName = (name: string): boolean =>
-    foldsCase ? name.toLowerCase() === keep.toLowerCase() : name === keep;
+    fold ? name.toLowerCase() === keep.toLowerCase() : name === keep;
   try {
     for (const name of fs.readdirSync(cacheDir)) {
       // The lock file is this directory's own bookkeeping, not a stale artifact.

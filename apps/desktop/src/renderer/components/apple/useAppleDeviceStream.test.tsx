@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { appleStreamLeaseCount, resetAppleStreamLeases } from "./appleStreamLease";
+import { appleStreamLeaseCount, appleStreamLeaseKey, resetAppleStreamLeases } from "./appleStreamLease";
+
+const heldOn = (deviceUdid: string) =>
+  appleStreamLeaseCount(appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid }));
 import {
   APPLE_FIRST_FRAME_TIMEOUT_MS,
   APPLE_FRAME_STALL_MS,
@@ -198,11 +201,11 @@ describe("useAppleDeviceStream", () => {
     render(<Harness onStream={(next) => { column.current = next; }} />);
     const card = render(<Harness onStream={() => {}} hidden={false} />);
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(2));
+    await waitFor(() => expect(heldOn("UDID-1")).toBe(2));
 
     // The card is dismissed. One lease left, and NO stop.
     card.unmount();
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(1));
+    await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
     expect(api.stopStream).not.toHaveBeenCalled();
     expect(column.current?.state).not.toBe("idle");
 
@@ -211,16 +214,16 @@ describe("useAppleDeviceStream", () => {
     cleanup();
     await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS + 50); });
     await waitFor(() => expect(api.stopStream).toHaveBeenCalledTimes(1));
-    expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(0);
+    expect(heldOn("UDID-1")).toBe(0);
   });
 
   it("does not stop the stream when only one of two viewers is hidden", async () => {
     const { rerender } = render(<Harness onStream={() => {}} />);
     render(<Harness onStream={() => {}} />);
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(2));
+    await waitFor(() => expect(heldOn("UDID-1")).toBe(2));
 
     rerender(<Harness onStream={() => {}} hidden />);
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(1));
+    await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
     expect(api.stopStream).not.toHaveBeenCalled();
   });
 
@@ -323,11 +326,11 @@ describe("useAppleDeviceStream", () => {
   it("regression: a viewer arriving just after the last one left joins the capture instead of a new one", async () => {
     // `apple show` hides the floating player a beat before the pane mounts.
     const player = render(<Harness onStream={() => {}} />);
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(1));
+    await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
     player.unmount();
     await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS / 2); });
     render(<Harness onStream={() => {}} />);
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(1));
+    await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
     await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS * 2); });
     expect(api.stopStream).not.toHaveBeenCalled();
   });
@@ -338,10 +341,10 @@ describe("useAppleDeviceStream", () => {
    */
   it("regression: a device swap inside one viewer does not stop the new stream", async () => {
     const { rerender } = render(<Harness onStream={() => {}} />);
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(1));
+    await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
     rerender(<Harness onStream={() => {}} deviceUdid="UDID-2" />);
-    await waitFor(() => expect(appleStreamLeaseCount("bound::lane-1::UDID-2")).toBe(1));
-    expect(appleStreamLeaseCount("bound::lane-1::UDID-1")).toBe(0);
+    await waitFor(() => expect(heldOn("UDID-2")).toBe(1));
+    expect(heldOn("UDID-1")).toBe(0);
     await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS * 2); });
     expect(api.stopStream).not.toHaveBeenCalled();
   });

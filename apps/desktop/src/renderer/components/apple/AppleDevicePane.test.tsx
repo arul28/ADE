@@ -88,7 +88,8 @@ vi.mock("./appleRecording", async (importOriginal) => ({
   }),
 }));
 
-const { AppleDevicePane, APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./AppleDevicePane");
+const { AppleDevicePane } = await import("./AppleDevicePane");
+const { APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./useAppleDeviceStartTracker");
 const { expectNoHorizontalOverflow } = await import("./testLayout");
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
@@ -430,7 +431,7 @@ describe("AppleDevicePane states", () => {
       iosSimulator.deviceList = vi.fn(async () => ({ installed: [{ ...PRO, state: "Shutdown" }, MAX], lane: null }));
       fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
       expect(screen.queryByText("Give up this device and pick another?")).toBeNull();
-      expect(iosSimulator.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" }, null);
+      expect(iosSimulator.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true }, null);
       expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
       await waitFor(() => expect(paneState()).toBe("no-device"));
     });

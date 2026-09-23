@@ -139,6 +139,22 @@ describe("handoffAppleMiniPlayer", () => {
     expect(stopStream).toHaveBeenCalledWith(null, { laneId: LANE, chatSessionId: "chat-1" });
   });
 
+  it("the hold's expiry leaves alone a second device the player moved to on the same lane", async () => {
+    vi.useFakeTimers();
+    const { stopStream } = installDeviceList("Booted");
+    paneIsStreaming();
+    handoff();
+    releaseAppleStreamLease(KEY);
+    // The player moves to device B on the same lane while the hold on A is live.
+    const other = appleStreamLeaseKey({ pin: null, bound: null, laneId: LANE, deviceUdid: "device-2" });
+    acquireAppleStreamLease(other, { laneId: LANE, deviceUdid: "device-2", pinKey: "bound" });
+
+    await vi.advanceTimersByTimeAsync(APPLE_STREAM_HANDOVER_HOLD_MS + 1);
+    expect(appleStreamLeaseCount(KEY)).toBe(0);
+    expect(appleStreamLeaseCount(other)).toBe(1);
+    expect(stopStream).not.toHaveBeenCalled();
+  });
+
   it("stays quiet for a lane with no live stream", () => {
     installDeviceList("Booted");
     noteAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null }, { udid: UDID, name: "ADE Repro", runtime: null, family: "iphone" });

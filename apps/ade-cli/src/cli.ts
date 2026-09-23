@@ -336,10 +336,11 @@ import {
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { servesMachineRuntimeEndpoint, startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
-import { looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
+import { CLI_GLOBAL_VALUE_FLAGS, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
-import { isSyntheticCallerId, syntheticCallerId } from "./lib/syntheticCallerId";
+import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
+import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -4251,44 +4252,10 @@ function parseCliArgs(argv: string[]): ParsedCli {
       command.push(token, ...argv.slice(index + 1));
       break;
     }
-    if (inGlobalPrefix && token === "--project-root") {
-      options.projectRoot = path.resolve(
-        requireValue(argv[index + 1] ?? null, "--project-root"),
-      );
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--project-root=")) {
-      options.projectRoot = path.resolve(
-        requireValue(token.slice("--project-root=".length), "--project-root"),
-      );
-      continue;
-    }
-    if (inGlobalPrefix && token === "--workspace-root") {
-      options.workspaceRoot = path.resolve(
-        requireValue(argv[index + 1] ?? null, "--workspace-root"),
-      );
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--workspace-root=")) {
-      options.workspaceRoot = path.resolve(
-        requireValue(
-          token.slice("--workspace-root=".length),
-          "--workspace-root",
-        ),
-      );
-      continue;
-    }
-    if (inGlobalPrefix && token === "--role") {
-      options.role = parseRole(requireValue(argv[index + 1] ?? null, "--role"));
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--role=")) {
-      options.role = parseRole(
-        requireValue(token.slice("--role=".length), "--role"),
-      );
+    const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
+    if (valueFlag) {
+      applyGlobalValueFlag(options, valueFlag.flag, requireValue(valueFlag.value, valueFlag.flag));
+      index += valueFlag.consumed;
       continue;
     }
     if (inGlobalPrefix && (token === "--headless" || token === "--no-socket")) {
@@ -4331,33 +4298,54 @@ function parseCliArgs(argv: string[]): ParsedCli {
       options.text = false;
       continue;
     }
-    if (inGlobalPrefix && token === "--timeout-ms") {
-      const parsed = Number.parseInt(
-        requireValue(argv[index + 1] ?? null, "--timeout-ms"),
-        10,
-      );
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new CliUsageError("--timeout-ms must be a positive integer.");
-      }
-      options.timeoutMs = parsed;
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--timeout-ms=")) {
-      const parsed = Number.parseInt(
-        requireValue(token.slice("--timeout-ms=".length), "--timeout-ms"),
-        10,
-      );
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new CliUsageError("--timeout-ms must be a positive integer.");
-      }
-      options.timeoutMs = parsed;
-      continue;
-    }
     command.push(token);
   }
 
   return { options, command };
+}
+
+/**
+ * A global value flag at `argv[index]`, spelled `--flag value` or `--flag=value`.
+ * The flags are {@link CLI_GLOBAL_VALUE_FLAGS}, the same set the delegation
+ * check skips. `consumed` is how many extra tokens the value took.
+ */
+function readGlobalValueFlag(
+  argv: string[],
+  index: number,
+): { flag: string; value: string | null; consumed: number } | null {
+  const token = argv[index]!;
+  if (CLI_GLOBAL_VALUE_FLAGS.has(token)) {
+    return { flag: token, value: argv[index + 1] ?? null, consumed: 1 };
+  }
+  const equals = token.indexOf("=");
+  const flag = equals > 0 ? token.slice(0, equals) : null;
+  return flag && CLI_GLOBAL_VALUE_FLAGS.has(flag)
+    ? { flag, value: token.slice(equals + 1), consumed: 0 }
+    : null;
+}
+
+function applyGlobalValueFlag(options: GlobalOptions, flag: string, value: string): void {
+  switch (flag) {
+    case "--project-root":
+      options.projectRoot = path.resolve(value);
+      return;
+    case "--workspace-root":
+      options.workspaceRoot = path.resolve(value);
+      return;
+    case "--role":
+      options.role = parseRole(value);
+      return;
+    case "--timeout-ms": {
+      const parsed = Number.parseInt(value, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new CliUsageError("--timeout-ms must be a positive integer.");
+      }
+      options.timeoutMs = parsed;
+      return;
+    }
+    default:
+      throw new Error(`No handler for the global flag ${flag}.`);
+  }
 }
 
 function parseRole(value: string): GlobalOptions["role"] {
@@ -26130,11 +26118,19 @@ function summarizeProofFiling(
    * attached. It was not attachED to anything.
    *
    * Checked after the re-read so the message can distinguish "nothing landed"
-   * from "it landed with no owner", which are different faults to report.
+   * from "it landed with no owner", which are different faults to report. The
+   * rule is the server's (`hasDrawerOwner`), except that a process id never
+   * counts as a chat.
    */
-  if (!laneId && !chatSessionId) {
+  const owners = [
+    ...(laneId ? [{ kind: "lane" }] : []),
+    ...(chatSessionId ? [{ kind: "chat_session" }] : []),
+    ...links.map((link) => ({ kind: asString(link.ownerKind) }))
+      .filter((owner) => owner.kind !== "lane" && owner.kind !== "chat_session"),
+  ];
+  if (!hasDrawerOwner(owners)) {
     fail(
-      `filed ${artifactIds.join(", ")} with no lane and no chat session, so no proof drawer can show it`
+      `filed ${artifactIds.join(", ")} with no lane, chat session, automation run, PR or issue, so no proof drawer can show it`
       + " — run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>",
     );
   }

@@ -3221,8 +3221,6 @@ function isLikelyMacRenderer(): boolean {
   return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
 }
 
-/** What a chat pane can show when an agent asks (`ade ui show`). */
-
 export function AgentChatPane({
   laneId,
   laneLabel,

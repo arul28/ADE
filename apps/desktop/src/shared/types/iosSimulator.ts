@@ -153,8 +153,6 @@ export const APPLE_AGENT_ACTIONS = [
   "deviceStop",
   "deviceDetach",
   "deviceDelete",
-  /* Listed for the desktop user client; the RPC server refuses it to agents. */
-  "deviceDeleteInstalled",
 
   /* Video. */
   "startStream",
@@ -236,6 +234,16 @@ export const APPLE_AGENT_ACTIONS = [
 ] as const;
 
 export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
+
+/**
+ * `ios_simulator` actions only the person may take, from a device picker.
+ *
+ * The action domain allows them, so the desktop and the web client can call
+ * them. Agents are never told about them (`getStatus().capabilities` reports
+ * {@link APPLE_AGENT_ACTIONS} only), the RPC server refuses them to agent
+ * callers, and automations cannot run them.
+ */
+export const APPLE_USER_ONLY_ACTIONS = ["deviceDeleteInstalled"] as const;
 
 /** The live recording, as `getStatus` reports it. */
 export type IosSimulatorStatusRecording = {
@@ -868,6 +876,8 @@ export type IosSimulatorEventPayload =
   | AppleDeviceStateEvent
   | AppleRecordingStateEvent;
 
+export type AppleRecordingPhase = "started" | "updated" | "stopped";
+
 /**
  * A lane's recording started, changed, or stopped, whoever asked for it.
  *
@@ -875,8 +885,6 @@ export type IosSimulatorEventPayload =
  * this event a recording an agent starts from the CLI after the pane opened
  * never showed (the owner's 2026-09-23 report).
  */
-export type AppleRecordingPhase = "started" | "updated" | "stopped";
-
 export type AppleRecordingStateEvent = {
   type: "apple.recording.state";
   laneId: string;
@@ -1559,10 +1567,18 @@ export type AppleDeviceDeleteArgs = {
   force?: boolean | null;
 };
 
-/** `deviceDetach`: the lane gives up its device; the simulator stays installed. */
+/**
+ * `deviceDetach`: the lane gives up its device; the simulator stays installed.
+ * Same single-owner rule as `deviceStop`: refused while another chat owns the
+ * lane's session, unless `force` or `ignoreOwnership` is passed.
+ */
 export type AppleDeviceDetachArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /** Detach a device another chat is driving as well. */
+  force?: boolean | null;
+  /** Detach for whoever is running, without claiming to be them (the Work pane). */
+  ignoreOwnership?: boolean | null;
 };
 
 /**

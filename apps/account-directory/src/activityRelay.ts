@@ -90,9 +90,10 @@ export async function callActivityRelay(
   if (!authorization) return { ok: false, reason: "missing caller authorization" };
   const path = `/attention/account/machines/${encodeURIComponent(args.machineKey)}`;
   const url = args.operation === "purge" ? `${baseUrl}${path}` : `${baseUrl}${path}/pairing`;
-  // Typed required, but a deployment missing it must fail here, not throw.
-  const binding = env.ACTIVITY_RELAY as ActivityRelayEnv["ACTIVITY_RELAY"] | undefined;
-  const fetchImpl = args.options.fetchImpl ?? binding?.fetch.bind(binding);
+  // Typed required and checked by the deploy preflight, but a Worker without
+  // the binding must fail closed here, not throw.
+  const fetchImpl = args.options.fetchImpl
+    ?? ("ACTIVITY_RELAY" in env ? env.ACTIVITY_RELAY.fetch.bind(env.ACTIVITY_RELAY) : undefined);
   if (!fetchImpl) return { ok: false, reason: "activity relay binding is not configured" };
   const retryDelayMs = Math.max(0, args.options.retryDelayMs ?? 250);
   let reason = "activity relay is unreachable";

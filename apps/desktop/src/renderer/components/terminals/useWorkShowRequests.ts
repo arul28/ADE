@@ -3,13 +3,9 @@ import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared
 import type { WorkToolShowRequest, WorkToolShowSurface } from "../../../shared/types/workToolShow";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
+import { isDocumentVisible, isWorkSurfaceOnScreen, workSurfaceKey } from "../../lib/workToolOnScreen";
 import {
-  isDocumentVisible,
-  isWorkSurfaceOnScreen,
-  waitForWorkSurfaceOnScreen,
-  workSurfaceKey,
-} from "../../lib/workToolOnScreen";
-import {
+  showOutcomeWhenOnScreen,
   useWorkToolShowHandler,
   useWorkToolShowRequestListener,
   type WorkToolShowOutcome,
@@ -19,8 +15,6 @@ import { appleEventAddresses } from "../apple/appleDeviceState";
 import { setWorkLivePreviewEnabledForChat } from "../chat/chatCompanionUiState";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = ["apple", "floating-apple", "browser"];
-
-const onScreenOutcome = (onScreen: boolean): WorkToolShowOutcome => (onScreen ? "shown" : "opened");
 
 /**
  * The Work page's side of `ade ui show`, and what the floating device checks
@@ -51,7 +45,10 @@ export function useWorkShowRequests({
   /** The session's resolved pin; null is the window's own machine. */
   runtimePin: OpenProjectBinding | null;
   projectBinding: OpenProjectBinding | null;
-  /** The lane the tools pane is showing, which is what its tools mount under. */
+  /**
+   * The lane the tools pane mounts its tools under: the session's own lane, or
+   * for a lane-less chat the pane's fallback lane.
+   */
   activeLaneId: string | null;
   workSidebarVisible: boolean;
   workSidebarTool: WorkSidebarTab | null;
@@ -76,35 +73,41 @@ export function useWorkShowRequests({
     request: WorkToolShowRequest,
   ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
     if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return "declined";
-    const sessionLaneId = activeWorkSession.laneId || null;
     /*
+     * One lane for every surface: the one the pane mounts its tools under.
      * Writing the tool into the store is a request, not a result: "shown" is
-     * answered only once the tool is on screen, in the lane the pane mounts it
-     * under (a lane-less chat's tools use the pane's fallback lane).
+     * answered only once the tool is on screen there.
      */
+    const toolLaneId = activeLaneId;
     if (request.surface === "browser") {
       setWorkSidebarTool("browser");
-      return waitForWorkSurfaceOnScreen(workSurfaceKey("browser", scopeKey, activeLaneId)).then(onScreenOutcome);
+      return showOutcomeWhenOnScreen(workSurfaceKey("browser", scopeKey, toolLaneId));
     }
     if (request.surface === "apple") {
       // An explicit ask undoes an earlier × for this chat's floating device.
       setWorkLivePreviewEnabledForChat(request.chatSessionId, "ios", true);
       // Mounting the Apple tool takes the device back from a floating player.
       setWorkSidebarTool("ios");
-      return waitForWorkSurfaceOnScreen(workSurfaceKey("ios", scopeKey, activeLaneId)).then(onScreenOutcome);
+      return showOutcomeWhenOnScreen(workSurfaceKey("ios", scopeKey, toolLaneId));
     }
     if (request.surface !== "floating-apple") return "declined";
-    // The chat's own device is already on screen in the pane.
-    if (isWorkSurfaceOnScreen(workSurfaceKey("ios", scopeKey, sessionLaneId))) return "shown";
+    // The Apple tool is already on screen in the pane.
+    if (isWorkSurfaceOnScreen(workSurfaceKey("ios", scopeKey, toolLaneId))) return "shown";
+    // The player only floats over a chat of its own lane, so a lane-less chat
+    // (whose tools borrow the pane's fallback lane) gets none.
+    if (!activeWorkSession.laneId) return "declined";
     // Opening, not yet visible: an automatic float would only be taken back
     // by the pane a moment later.
     if (request.auto && appleToolOpening) return "declined";
     return floatAppleMiniPlayerForChat({
-      laneId: sessionLaneId,
+      laneId: toolLaneId,
       chatSessionId: request.chatSessionId,
       runtimePin,
       auto: request.auto,
-    }).then((floated) => (floated ? onScreenOutcome(isDocumentVisible()) : "declined"));
+    }).then((floated): WorkToolShowOutcome => {
+      if (!floated) return "declined";
+      return isDocumentVisible() ? "shown" : "opened";
+    });
   }, [activeLaneId, activeWorkSession, appleToolOpening, runtimePin, scopeKey, setWorkSidebarTool]);
 
   useWorkToolShowHandler(
@@ -124,9 +127,8 @@ export function useWorkShowRequests({
   const sessionId = activeWorkSession?.id ?? null;
   const sessionLaneId = activeWorkSession?.laneId || null;
   useEffect(() => {
-    const api = window.ade?.iosSimulator;
-    if (!active || !sessionId || !api?.onEvent) return undefined;
-    return api.onEvent((event) => {
+    if (!active || !sessionId) return undefined;
+    return window.ade.iosSimulator.onEvent((event) => {
       if (event.type !== "drawer-open-requested") return;
       if (!appleEventAddresses(event, { chatSessionId: sessionId, laneId: sessionLaneId, acceptUnscoped: false })) return;
       setWorkSidebarTool("ios");

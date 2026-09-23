@@ -73,7 +73,7 @@ import {
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
 import {
-  receiveWorkToolShowRequest,
+  answerWorkToolShowRequest,
   resetWorkToolShowRequestsForTests,
 } from "../../lib/workToolShowRequests";
 import { setDocumentVisibleForTests } from "../../lib/workToolOnScreen";
@@ -2091,27 +2091,27 @@ describe("AgentChatPane companion drawers", () => {
 
     let status: string | null = null;
     // Not inside act: the drawer has to render while the show waits for it.
-    void receiveWorkToolShowRequest({
+    void answerWorkToolShowRequest({
         requestId: "wts-proof",
         surface: "proof",
         chatSessionId: "session-1",
         laneId: "lane-1",
         auto: false,
         requestedAt: new Date(0).toISOString(),
-    }).then((next) => { status = next; });
+    }).then((next) => { status = next?.status ?? null; });
     await waitFor(() => expect(status).toBe("shown"), { timeout: 5_000 });
     expect(await screen.findByText("No proof collected yet")).toBeTruthy();
 
     // Outside Work this pane owns the chat's Apple drawer too.
     // Not inside act: the drawer has to render while the show waits for it.
-    void receiveWorkToolShowRequest({
+    void answerWorkToolShowRequest({
         requestId: "wts-apple",
         surface: "apple",
         chatSessionId: "session-1",
         laneId: "lane-1",
         auto: false,
         requestedAt: new Date(0).toISOString(),
-    }).then((next) => { status = next; });
+    }).then((next) => { status = next?.status ?? null; });
     await waitFor(() => expect(status).toBe("shown"), { timeout: 5_000 });
     expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
     resetWorkToolShowRequestsForTests();
@@ -2130,14 +2130,14 @@ describe("AgentChatPane companion drawers", () => {
 
     let status: string | null = null;
     // Not inside act: the drawer has to render while the show waits for it.
-    void receiveWorkToolShowRequest({
+    void answerWorkToolShowRequest({
         requestId: "wts-apple-hidden",
         surface: "apple",
         chatSessionId: "session-1",
         laneId: "lane-1",
         auto: false,
         requestedAt: new Date(0).toISOString(),
-    }).then((next) => { status = next; });
+    }).then((next) => { status = next?.status ?? null; });
     await waitFor(() => expect(status).toBe("held"), { timeout: 5_000 });
     // Opened all the same: the user sees it when the window comes back.
     expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");

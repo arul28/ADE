@@ -8,8 +8,11 @@ import type { ComputerUseProofProvenanceInput } from "../../../../shared/types/c
 import { APPLE_DEVICE_ALREADY_RECORDING_CODE, type AppleInputSource, type AppleRecordingPhase } from "../../../../shared/types/iosSimulator";
 import type { SimHelperTransport } from "../simHelperClient";
 import {
+  appleRecordingMoviePath,
+  appleRecordingSidecarPath,
   appleRecordingsDirectory,
   appleRecordingsRoot,
+  listAppleRecordingLaneIds,
   readAppleRecordingSidecar,
 } from "./appleRecordingsStore";
 
@@ -511,8 +514,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
   };
 
   const laneDir = (laneId: string): string => appleRecordingsDirectory(requireRoot(), laneId);
-  const sidecarPath = (laneId: string, id: string): string => path.join(laneDir(laneId), `${id}.json`);
-  const moviePath = (laneId: string, id: string): string => path.join(laneDir(laneId), `${id}.mp4`);
+  const sidecarPath = (laneId: string, id: string): string => appleRecordingSidecarPath(requireRoot(), laneId, id);
+  const moviePath = (laneId: string, id: string): string => appleRecordingMoviePath(requireRoot(), laneId, id);
 
   const writeSidecar = (record: SimRecording): void => {
     const file = sidecarPath(record.laneId, record.id);
@@ -1177,15 +1180,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       } catch {
         return 0;
       }
-      const lanes = args?.laneId
-        ? [args.laneId]
-        : (() => {
-          try {
-            return fs.readdirSync(appleRecordingsRoot(root));
-          } catch {
-            return [] as string[];
-          }
-        })();
+      const lanes = args?.laneId ? [args.laneId] : listAppleRecordingLaneIds(root);
 
       let total = 0;
       for (const laneId of lanes) {

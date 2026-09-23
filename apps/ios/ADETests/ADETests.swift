@@ -23821,6 +23821,24 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
   }
 
+  /// A stale load deletes only its own file, never the one another load of
+  /// the same artifact published.
+  func testWorkArtifactVideoTempURLIsUniquePerLoad() throws {
+    let stale = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    let current = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    XCTAssertNotEqual(stale, current)
+    XCTAssertTrue(current.lastPathComponent.hasPrefix("ade-work-artifact-art-1-"))
+    XCTAssertEqual(current.pathExtension, "mp4")
+    try Data([0x00]).write(to: stale)
+    try Data([0x00]).write(to: current)
+    defer { try? FileManager.default.removeItem(at: current) }
+
+    workRemoveLoadedArtifactTempFile(.video(stale))
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
+  }
+
   func testParseANSISegmentsTracksForegroundColors() {
     let segments = parseANSISegments("\u{001B}[31mError\u{001B}[0m plain \u{001B}[32mOK\u{001B}[0m")
 

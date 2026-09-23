@@ -46,7 +46,7 @@ describe("computerUseArtifactBrokerService", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it("persists review metadata for ingested artifacts", () => {
+  it("persists review metadata for ingested artifacts", async () => {
     const events: Array<{ type: string; artifactId: string }> = [];
 
     const broker = createComputerUseArtifactBrokerService({
@@ -57,7 +57,7 @@ describe("computerUseArtifactBrokerService", () => {
       onEvent: (payload) => events.push({ type: payload.type, artifactId: payload.artifactId }),
     });
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: {
         name: "agent-browser",
       },
@@ -254,7 +254,7 @@ describe("computerUseArtifactBrokerService", () => {
     }
   });
 
-  it("allows ADE cache browser observations to be promoted into proof", () => {
+  it("allows ADE cache browser observations to be promoted into proof", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -266,7 +266,7 @@ describe("computerUseArtifactBrokerService", () => {
     const observationPath = path.join(observationDir, "obs.png");
     fs.writeFileSync(observationPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: {
         name: "ade-browser",
         style: "manual",
@@ -287,7 +287,7 @@ describe("computerUseArtifactBrokerService", () => {
     });
   });
 
-  it("allows only the configured machine-local personal browser scratch root to be promoted", () => {
+  it("allows only the configured machine-local personal browser scratch root to be promoted", async () => {
     const personalObservationRoot = fs.mkdtempSync(path.join(process.cwd(), ".browser-personal-proof-"));
     try {
       const broker = createComputerUseArtifactBrokerService({
@@ -301,7 +301,7 @@ describe("computerUseArtifactBrokerService", () => {
       fs.mkdirSync(path.dirname(observationPath), { recursive: true });
       fs.writeFileSync(observationPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-      const ingested = broker.ingest({
+      const ingested = await broker.ingestAsync({
         backend: { name: "ade-browser", style: "manual" },
         inputs: [{ kind: "screenshot", title: "Personal browser proof", path: observationPath }],
       });
@@ -316,7 +316,7 @@ describe("computerUseArtifactBrokerService", () => {
     }
   });
 
-  it("persists the declared backend style for ingested artifacts", () => {
+  it("persists the declared backend style for ingested artifacts", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -324,7 +324,7 @@ describe("computerUseArtifactBrokerService", () => {
       logger: createLogger(),
     });
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: {
         name: "ade-cli",
         style: "manual",
@@ -346,7 +346,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(row?.backend_style).toBe("manual");
   });
 
-  it("resolves a relative capture path against the caller's lane worktree", () => {
+  it("resolves a relative capture path against the caller's lane worktree", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -360,7 +360,7 @@ describe("computerUseArtifactBrokerService", () => {
     fs.mkdirSync(path.join(laneRoot, "shots"), { recursive: true });
     fs.writeFileSync(path.join(laneRoot, "shots", "proof.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       callerRoot: laneRoot,
       inputs: [{ kind: "screenshot", title: "Lane proof", path: "shots/proof.png" }],
@@ -373,7 +373,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ artifactId: stored.id })[0]?.availability).toBe("available");
   });
 
-  it("imports proof from a server-authorized attached lane root", () => {
+  it("imports proof from a server-authorized attached lane root", async () => {
     const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-lane-proof-"));
     try {
       const proofBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -407,7 +407,7 @@ describe("computerUseArtifactBrokerService", () => {
         ],
       );
 
-      const ingested = broker.ingest({
+      const ingested = await broker.ingestAsync({
         backend: { name: "ade-cli", style: "manual" },
         callerRoot: attachedLaneRoot,
         owners: [{ kind: "lane", id: "attached-lane" }],
@@ -472,7 +472,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
   });
 
-  it("deletes an artifact's rows and its stored file, and stays idempotent", () => {
+  it("deletes an artifact's rows and its stored file, and stays idempotent", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -480,7 +480,7 @@ describe("computerUseArtifactBrokerService", () => {
       logger: createLogger(),
     });
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       owners: [{ kind: "chat_session", id: "chat-1" }],
       inputs: [{ kind: "console_logs", title: "Notes", text: "hello" }],
@@ -503,7 +503,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(repeat.failed).toEqual([]);
   });
 
-  it("keeps shared stored bytes until the final artifact record is deleted", () => {
+  it("keeps shared stored bytes until the final artifact record is deleted", async () => {
     const canonicalProjectRoot = fs.realpathSync(projectRoot);
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -511,17 +511,17 @@ describe("computerUseArtifactBrokerService", () => {
       projectRoot: canonicalProjectRoot,
       logger: createLogger(),
     });
-    const first = broker.ingest({
+    const first = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Shared notes", text: "hello" }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
     // An ADE capture, so the duplicate refusal for attaches does not apply.
-    const second = broker.ingest({
+    const second = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Shared notes again", path: filePath }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
 
     expect(second.uri).toBe(first.uri);
     expect(broker.deleteArtifacts({ artifactId: first.id }).deleted[0]).toMatchObject({
@@ -545,7 +545,7 @@ describe("computerUseArtifactBrokerService", () => {
    * reference still unlinks the bytes — the earlier deletes in the same call
    * have to be struck off the set as they happen.
    */
-  it("unlinks bytes a single batch removes the last reference to", () => {
+  it("unlinks bytes a single batch removes the last reference to", async () => {
     const canonicalProjectRoot = fs.realpathSync(projectRoot);
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -553,17 +553,17 @@ describe("computerUseArtifactBrokerService", () => {
       projectRoot: canonicalProjectRoot,
       logger: createLogger(),
     });
-    const first = broker.ingest({
+    const first = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Batched notes", text: "hello" }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
     // An ADE capture, so the duplicate refusal for attaches does not apply.
-    const second = broker.ingest({
+    const second = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Batched notes again", path: filePath }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
 
     const result = broker.deleteArtifacts({ artifactIds: [first.id, second.id] });
 
@@ -571,7 +571,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(fs.existsSync(filePath)).toBe(false);
   });
 
-  it("keeps shared stored bytes when surviving records use an equivalent URI spelling", () => {
+  it("keeps shared stored bytes when surviving records use an equivalent URI spelling", async () => {
     const canonicalProjectRoot = fs.realpathSync(projectRoot);
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -579,17 +579,17 @@ describe("computerUseArtifactBrokerService", () => {
       projectRoot: canonicalProjectRoot,
       logger: createLogger(),
     });
-    const first = broker.ingest({
+    const first = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Shared aliases", text: "hello" }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
     // An ADE capture, so the duplicate refusal for attaches does not apply.
-    const second = broker.ingest({
+    const second = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Shared aliases again", path: filePath }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     db.run(
       "update computer_use_artifacts set uri = ? where id = ?",
       [`ade-artifact://project/${first.uri}`, second.id],
@@ -603,14 +603,14 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ artifactId: second.id })[0]?.availability).toBe("available");
   });
 
-  it("removes rows for records whose file was already deleted", () => {
+  it("removes rows for records whose file was already deleted", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
       logger: createLogger(),
     });
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Notes", text: "hello" }],
     });
@@ -623,14 +623,14 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ artifactId })).toHaveLength(0);
   });
 
-  it("retains the file and database rows when stored-byte deletion fails", () => {
+  it("retains the file and database rows when stored-byte deletion fails", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
       logger: createLogger(),
     });
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       owners: [{ kind: "chat_session", id: "chat-1" }],
       inputs: [{ kind: "console_logs", title: "Retryable notes", text: "hello" }],
@@ -805,7 +805,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(fs.readFileSync(path.join(projectRoot, recovered.uri), "utf8")).toBe("lane-a");
   });
 
-  it("does not recover from a caller-supplied absolutePath in another lane", () => {
+  it("does not recover from a caller-supplied absolutePath in another lane", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -838,7 +838,7 @@ describe("computerUseArtifactBrokerService", () => {
       ],
     );
 
-    const ingested = broker.ingest({
+    const ingested = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       callerRoot: owningLaneRoot,
       owners: [{ kind: "lane", id: "lane-a" }],
@@ -848,7 +848,7 @@ describe("computerUseArtifactBrokerService", () => {
         path: "shots/proof.png",
         metadata: { absolutePath: substitutePath },
       }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     fs.rmSync(path.join(projectRoot, ingested.uri), { force: true });
     fs.rmSync(originalPath, { force: true });
 
@@ -860,7 +860,7 @@ describe("computerUseArtifactBrokerService", () => {
       .toThrow(/original file.*no longer exists/i);
   });
 
-  it("recovers a local URI capture from its attached lane root", () => {
+  it("recovers a local URI capture from its attached lane root", async () => {
     const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-uri-recovery-"));
     try {
       const proofBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -891,7 +891,7 @@ describe("computerUseArtifactBrokerService", () => {
         projectRoot,
         logger: createLogger(),
       });
-      const ingested = broker.ingest({
+      const ingested = (await broker.ingestAsync({
         backend: { name: "ade-cli", style: "manual" },
         callerRoot: attachedLaneRoot,
         owners: [{ kind: "lane", id: "attached-uri-lane" }],
@@ -900,7 +900,7 @@ describe("computerUseArtifactBrokerService", () => {
           title: "Attached URI proof",
           uri: "shots/proof.png",
         }],
-      }).artifacts[0]!;
+      })).artifacts[0]!;
       fs.rmSync(path.join(projectRoot, ingested.uri), { force: true });
 
       expect(broker.listBrokenArtifacts()[0]?.recoverablePath)
@@ -1120,7 +1120,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
   });
 
-  it("still imports real proof from the project root", () => {
+  it("still imports real proof from the project root", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -1130,7 +1130,7 @@ describe("computerUseArtifactBrokerService", () => {
     const shotPath = path.join(projectRoot, "capture.png");
     fs.writeFileSync(shotPath, "png-bytes", "utf8");
 
-    const result = broker.ingest({
+    const result = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "screenshot", title: "Proof", path: shotPath }],
     });
@@ -1202,7 +1202,7 @@ describe("computerUseArtifactBrokerService", () => {
       expect(roots).toEqual(["/tmp"]);
     });
 
-    it("adds nothing beyond os.tmpdir() on Windows", () => {
+    it("adds nothing beyond os.tmpdir() on Windows", async () => {
       // %TEMP%/%TMP% are already os.tmpdir(); there is no /tmp to widen to.
       const roots = resolveTempImportRoots({
         platform: "win32",
@@ -1217,7 +1217,7 @@ describe("computerUseArtifactBrokerService", () => {
   // POSIX-only: the assertion is about the conventional `/tmp` staging root,
   // which Windows does not have. `skipIf` rather than a bare `return` so the
   // skip is reported instead of passing green.
-  it.skipIf(process.platform === "win32")("imports proof staged in the conventional /tmp directory", () => {
+  it.skipIf(process.platform === "win32")("imports proof staged in the conventional /tmp directory", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -1228,7 +1228,7 @@ describe("computerUseArtifactBrokerService", () => {
     const stagedPath = path.join("/tmp", `ade-proof-roots-${Date.now()}.png`);
     fs.writeFileSync(stagedPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     try {
-      const ingested = broker.ingest({
+      const ingested = await broker.ingestAsync({
         backend: { name: "ade-cli", style: "manual" },
         inputs: [{ kind: "screenshot", title: "Tmp proof", path: stagedPath }],
       });
@@ -1247,19 +1247,19 @@ describe("computerUseArtifactBrokerService", () => {
    * row out of a drawer listing.
    */
   describe("filtering by metadata kind", () => {
-    function seed() {
+    async function seed() {
       const broker = createComputerUseArtifactBrokerService({
         db,
         projectId: "project-1",
         projectRoot,
         logger: createLogger(),
       });
-      broker.ingest({
+      await broker.ingestAsync({
         backend: { name: "cto", style: "manual" },
         owners: [{ kind: "chat_session", id: "chat-1" }],
         inputs: [{ kind: "browser_verification", title: "Real proof", text: "{}" }],
       });
-      broker.ingest({
+      await broker.ingestAsync({
         backend: { name: "scene", style: "manual" },
         owners: [{ kind: "chat_session", id: "chat-1" }],
         inputs: [{
@@ -1272,8 +1272,8 @@ describe("computerUseArtifactBrokerService", () => {
       return broker;
     }
 
-    it("excludes a tagged kind and keeps every untagged artifact", () => {
-      const broker = seed();
+    it("excludes a tagged kind and keeps every untagged artifact", async () => {
+      const broker = await seed();
       const listed = broker.listArtifacts({
         ownerKind: "chat_session",
         ownerId: "chat-1",
@@ -1284,8 +1284,8 @@ describe("computerUseArtifactBrokerService", () => {
       expect(listed.map((artifact) => artifact.title)).toEqual(["Real proof"]);
     });
 
-    it("keeps only a tagged kind when asked for one", () => {
-      const broker = seed();
+    it("keeps only a tagged kind when asked for one", async () => {
+      const broker = await seed();
       const listed = broker.listArtifacts({
         ownerKind: "chat_session",
         ownerId: "chat-1",
@@ -1299,8 +1299,8 @@ describe("computerUseArtifactBrokerService", () => {
      * this table is CRR-replicated: one bad row from any peer took the whole
      * listing down — and the proof drawer reads through it on every open.
      */
-    it("survives a row whose metadata blob is not JSON at all", () => {
-      const broker = seed();
+    it("survives a row whose metadata blob is not JSON at all", async () => {
+      const broker = await seed();
       db.run("update computer_use_artifacts set metadata_json = '' where title = ?", ["Real proof"]);
 
       expect(broker.listArtifacts({
@@ -1315,8 +1315,8 @@ describe("computerUseArtifactBrokerService", () => {
       }).map((artifact) => artifact.title)).toEqual(["A still"]);
     });
 
-    it("applies the same filter to a read by id", () => {
-      const broker = seed();
+    it("applies the same filter to a read by id", async () => {
+      const broker = await seed();
       const still = broker.listArtifacts({ metadataKind: "scene_still" })[0]!;
       expect(broker.listArtifacts({ artifactId: still.id })).toHaveLength(1);
       expect(broker.listArtifacts({ artifactId: still.id, excludeMetadataKind: "scene_still" }))

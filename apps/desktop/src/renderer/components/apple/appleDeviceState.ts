@@ -148,13 +148,24 @@ export function appleLaneDeviceBooted(args: {
   deviceUdid: string | null;
   offUdid: string | null;
   installedForLane: Pick<AppleInstalledSimulator, "state"> | null;
-  status: Pick<IosSimulatorStatus, "activeDevice" | "deviceSession"> | null;
+  /** `appleStatusSaysBooted` for this device. */
+  statusSaysBooted: boolean;
+  /** The device the service's open session is on, if any. */
+  sessionUdid: string | null;
 }): boolean {
-  const { deviceUdid, status } = args;
+  const { deviceUdid } = args;
   if (!deviceUdid || deviceUdid === args.offUdid) return false;
-  if (status?.activeDevice?.udid === deviceUdid && status.activeDevice.state === "Booted") return true;
+  if (args.statusSaysBooted) return true;
   if (args.installedForLane) return isAppleSimulatorBooted(args.installedForLane);
-  return status?.deviceSession?.deviceUdid === deviceUdid;
+  return args.sessionUdid === deviceUdid;
+}
+
+/** The service's status reads this device as booted. */
+export function appleStatusSaysBooted(
+  status: Pick<IosSimulatorStatus, "activeDevice"> | null,
+  udid: string | null,
+): boolean {
+  return Boolean(udid) && status?.activeDevice?.udid === udid && status.activeDevice.state === "Booted";
 }
 
 /**

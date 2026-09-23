@@ -152,6 +152,14 @@ final class WorkProofRowModelTests: XCTestCase {
         XCTAssertEqual(workProofIdleCutLabel(3_842_000), "idle cut 1:04:02")
     }
 
+    /// Same cases as the desktop's `formatProofDuration`.
+    func testDurationMatchesTheDesktopFormat() {
+        XCTAssertEqual(workProofDuration(23_000), "0:23")
+        XCTAssertEqual(workProofDuration(3_842_000), "1:04:02")
+        XCTAssertEqual(workProofDuration(59_600), "1:00")
+        XCTAssertEqual(workProofDuration(-5_000), "0:00")
+    }
+
     /// A dotted day period is kept whole: not "10:24 a.–10:25 a.m.".
     func testRangeKeepsADottedDayPeriodWhole() {
         let canadian: (Date) -> String = { date in

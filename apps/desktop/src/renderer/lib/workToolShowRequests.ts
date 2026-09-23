@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import { THIS_MACHINE_NAME } from "../../shared/machineIdentity";
+import { waitForWorkSurfaceOnScreen } from "./workToolOnScreen";
 import type {
   WorkToolShowAck,
-  WorkToolShowAckStatus,
   WorkToolShowRequest,
   WorkToolShowSurface,
 } from "../../shared/types/workToolShow";
@@ -97,7 +97,12 @@ function hold(request: WorkToolShowRequest, heldAtMs: number = nowMs()): void {
 
 type ShowAnswer = Pick<WorkToolShowAck, "status" | "opened">;
 
-async function answerWorkToolShowRequest(request: WorkToolShowRequest): Promise<ShowAnswer | null> {
+/**
+ * Take a request off the wire. Returns what to tell the brain, or null for a
+ * request already seen (the same request can arrive on two subscriptions) and
+ * for an automatic offer nobody took.
+ */
+export async function answerWorkToolShowRequest(request: WorkToolShowRequest): Promise<ShowAnswer | null> {
   if (seen.has(request.requestId)) return null;
   seen.add(request.requestId);
   if (seen.size > SEEN_CAP) {
@@ -114,14 +119,11 @@ async function answerWorkToolShowRequest(request: WorkToolShowRequest): Promise<
 }
 
 /**
- * Take a request off the wire. Returns what to tell the brain, or null for a
- * request already seen (the same request can arrive on two subscriptions) and
- * for an automatic offer nobody took.
+ * Wait for the surface under `key` to be on screen: "shown" when it is, else
+ * "opened" (the handler opened it but the user may not see it).
  */
-export async function receiveWorkToolShowRequest(
-  request: WorkToolShowRequest,
-): Promise<WorkToolShowAckStatus | null> {
-  return (await answerWorkToolShowRequest(request))?.status ?? null;
+export async function showOutcomeWhenOnScreen(key: string): Promise<WorkToolShowOutcome> {
+  return (await waitForWorkSurfaceOnScreen(key)) ? "shown" : "opened";
 }
 
 /**

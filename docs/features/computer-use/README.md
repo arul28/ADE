@@ -137,7 +137,9 @@ any of them later.
   on the first `computerUse.mediaBaseUrl` call, and every path begins with a
   random per-launch token: `http://127.0.0.1:<port>/<token>/project/<path>` for
   this computer and `…/<token>/remote/<targetId>/<projectId>/<path>` for a
-  paired one (`shared/artifactStreamUrl.ts` builds and parses both). A local
+  paired one (`shared/artifactStreamUrl.ts` builds and parses both). An
+  absolute uri maps only when it sits under the project root; a drive-letter
+  or UNC root compares without case, a POSIX root exactly. A local
   path must resolve inside the project's `.ade/artifacts`, the same check the
   `ade-artifact://` handler makes; a remote one is read chunk by chunk from
   that machine's broker, which applies the check on its side. Remote images

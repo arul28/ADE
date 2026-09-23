@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,6 +51,7 @@ const { createAdeCaptureRegistry } = await import("./services/proof/adeCaptureRe
 
 let projectRoot = "";
 const createdRoots: string[] = [];
+const sha256Of = (filePath: string) => createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 
 function createRuntime() {
   projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-explicit-"));
@@ -303,7 +305,12 @@ describe("explicit proof capture", () => {
 
     expect(JSON.stringify(result.error ?? null)).toBe("null");
     const [[request]] = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
-    expect(request?.provenance).toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
+    expect(request?.provenance).toEqual({
+      source: "ade-capture",
+      refuseDuplicates: false,
+      flagOlderMedia: true,
+      capturedSha256: [sha256Of(capturePath)],
+    });
   });
 
   it("files `ade apple proof` as ADE's capture: the screenshot action's file, unchanged", async () => {
@@ -326,15 +333,42 @@ describe("explicit proof capture", () => {
 
     await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
     await ingestShot();
+    const capturedSha = sha256Of(shotPath);
     // Same path, other bytes: no longer the capture.
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
     fs.writeFileSync(shotPath, "an older screenshot");
     await ingestShot();
 
     const requests = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
     expect(requests.map(([request]) => request?.provenance)).toEqual([
-      { source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true },
+      { source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true, capturedSha256: [capturedSha] },
       { source: "attached" },
     ]);
+  });
+
+  it("regression: a capture files as ADE's once; attaching it again is an attach", async () => {
+    const fixture = createRuntime();
+    const { handler, laneRoot } = await laneAgentHandler(fixture);
+    const shotPath = path.join(laneRoot, "screen.png");
+    fixture.runtime.iosSimulatorService = {
+      screenshot: vi.fn(async () => {
+        fs.writeFileSync(shotPath, "device pixels");
+        return { filePath: shotPath, deviceUdid: "SIM-1" };
+      }),
+    };
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        callerRoot: laneRoot,
+        inputs: [{ kind: "screenshot", title: "Screen", path: shotPath }],
+      });
+    }
+
+    const requests = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(requests.map(([request]) => request?.provenance?.source)).toEqual(["ade-capture", "attached"]);
   });
 
   it("regression: refuses an ownerless ingest before storing it, so a retry with an owner is not a duplicate", async () => {
@@ -359,7 +393,7 @@ describe("explicit proof capture", () => {
       inputs: [{ kind: "screenshot", title: "Clip", path: file }],
     });
 
-    expect(JSON.stringify(result.error ?? "")).toMatch(/no lane and no chat session/);
+    expect(JSON.stringify(result.error ?? "")).toMatch(/no lane, chat session, automation run, PR or issue/);
     expect(fixture.ingest).not.toHaveBeenCalled();
   });
 
@@ -418,12 +452,18 @@ describe("resolveIngestProvenance", () => {
     expect(await resolveIngestProvenance(registry, [
       { kind: "screenshot", path: still },
       { kind: "browser_trace", path: "net.har" },
-    ], dir)).toEqual({ source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true });
+    ], dir)).toEqual({
+      source: "ade-capture",
+      refuseDuplicates: false,
+      flagOlderMedia: true,
+      capturedSha256: [sha256Of(still), sha256Of(trace)],
+    });
     expect(await resolveIngestProvenance(registry, [{ kind: "video_recording", path: video }], dir))
-      .toEqual({ source: "ade-recorder", refuseDuplicates: true, flagOlderMedia: true });
+      .toEqual({ source: "ade-recorder", refuseDuplicates: true, flagOlderMedia: true, capturedSha256: [sha256Of(video)] });
     // One input ADE did not write makes the whole call an attach.
     const other = path.join(dir, "other.png");
     fs.writeFileSync(other, "other");
+    await registry.remember(still, "ade-capture");
     expect(await resolveIngestProvenance(registry, [
       { kind: "screenshot", path: still },
       { kind: "screenshot", path: other },
@@ -447,6 +487,15 @@ describe("resolveIngestProvenance", () => {
     fs.writeFileSync(still, "png");
     await registry.remember(still, "ade-capture");
     now += 101;
+    expect(await registry.match(still)).toBeNull();
+  });
+
+  it("regression: matches a capture once, then forgets it", async () => {
+    const registry = createAdeCaptureRegistry();
+    const still = path.join(dir, "shot.png");
+    fs.writeFileSync(still, "png");
+    await registry.remember(still, "ade-capture");
+    expect(await registry.match(still)).toEqual({ source: "ade-capture", sha256: sha256Of(still) });
     expect(await registry.match(still)).toBeNull();
   });
 });

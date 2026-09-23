@@ -61,9 +61,11 @@ Components if none exist.
 `device-delete` removes a clone. An attached device is refused unless
 `--force`, and `--force` only detaches it. The clone is deleted on lane
 archive. `deviceDetach` gives up the lane's device and leaves the simulator
-installed; agents may call it. `deviceDeleteInstalled` deletes a simulator the
-user picked in the desktop picker; the RPC server takes it from user clients
-only and refuses agents.
+installed; agents may call it, under the same owner rule as `deviceStop`: it
+is refused for another chat's session unless `--force` or `ignoreOwnership`.
+`deviceDeleteInstalled` deletes a simulator the user picked in the desktop
+picker. It is never listed to agents, and it is refused to agents,
+automations and CLI or TUI processes that have no chat.
 
 **One lane owns a device at a time.** `device-attach` on a simulator another
 lane holds MOVES the binding rather than adding a second one: the losing lane's

@@ -883,9 +883,10 @@ extension WorkSessionDestinationView {
       return
     }
 
-    let videoURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("ade-work-artifact-\(artifact.id)")
-      .appendingPathExtension(fileExtension(for: artifact.mimeType, fallback: "mp4"))
+    let videoURL = workArtifactVideoTempURL(
+      artifactId: artifact.id,
+      fileExtension: fileExtension(for: artifact.mimeType, fallback: "mp4")
+    )
 
     if isVideo {
       // Pulled in slices: a long recording is larger than the whole-file read
@@ -895,7 +896,7 @@ extension WorkSessionDestinationView {
       do {
         if intent == .preview {
           let size = try await syncService.artifactSize(artifactId: artifact.id, uri: artifact.uri)
-          if !workArtifactVideoDownloads(sizeBytes: size, intent: intent) {
+          if size > workArtifactEagerVideoMaxBytes {
             publish(.videoOnDemand(sizeBytes: size))
             return
           }

@@ -19,7 +19,7 @@ import type { BufferedEvent } from "../eventBuffer";
 import { resolveAdeDefaultRole } from "../runtimeRoles";
 import { RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS } from "../serviceManager/runtimeServiceBudgets";
 import { RuntimeServiceStillStartingError } from "../serviceManager/common";
-import { syntheticCallerId } from "../lib/syntheticCallerId";
+import { syntheticCallerId } from "../../../desktop/src/shared/syntheticCallerId";
 
 type RpcResponseEnvelope<T> =
   | T

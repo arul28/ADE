@@ -5,8 +5,7 @@ import path from "node:path";
 import type { ComputerUseArtifactOwner } from "../../../shared/types";
 import { encodeCodedErrorMessage } from "../../../shared/codedError";
 import { PROOF_DUPLICATE_CODE } from "../../../shared/proofProvenance";
-import type { AppleRecordingFile } from "../ios/recording/appleRecordingsStore";
-import { readAppleRecordingSidecar } from "../ios/recording/appleRecordingsStore";
+import { listAppleRecordingFiles, readAppleRecordingSidecar } from "../ios/recording/appleRecordingsStore";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { pathKey } from "../shared/pathCompare";
@@ -58,7 +57,7 @@ const RECORDED_BEFORE_REQUEST_SLACK_MS = 60_000;
 const HASH_CHUNK_BYTES = 1024 * 1024;
 
 /** "5:19 AM" today, "Sep 22, 5:19 AM" on another day, in the host's local time. */
-export function formatLocalWhen(iso: string, now: Date = new Date()): string {
+function formatLocalWhen(iso: string, now: Date = new Date()): string {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return iso;
   const sameDay = date.toDateString() === now.toDateString();
@@ -134,7 +133,7 @@ export type AttachPolicy = {
   toolName: string | null;
 };
 
-export type AttachJudgement = {
+type AttachJudgement = {
   mediaCreatedAt: string | null;
   recordedBeforeRequest: boolean;
   warning: string | null;
@@ -145,7 +144,8 @@ export function createProofFingerprintJudge(deps: {
   projectId: string;
   /** The on-disk path of a stored row, or null when it is not in the store. */
   resolveStoredFilePath: (row: { uri: string }) => string | null;
-  listRecordings: () => AppleRecordingFile[];
+  /** Where Apple recordings that never reached the drawer are found. */
+  projectRoot: string;
   logger?: Logger | null;
 }) {
   const { db, projectId } = deps;
@@ -233,7 +233,7 @@ export function createProofFingerprintJudge(deps: {
 
     // Recordings on disk. A recording normally has a drawer row and was
     // checked above; one whose filing failed only exists here.
-    for (const recording of deps.listRecordings()) {
+    for (const recording of listAppleRecordingFiles(deps.projectRoot)) {
       const key = fileKey(recording.filePath);
       if (checkedKeys.has(key) || key === attachedKey) continue;
       let stat: fs.Stats;
@@ -256,8 +256,6 @@ export function createProofFingerprintJudge(deps: {
   };
 
   return {
-    findDuplicateProof,
-
     /** Late wiring for the chat service, which is built after the broker. */
     setChatTurnStartResolver(resolver: ((sessionId: string) => string | null | undefined) | null): void {
       resolveChatTurnStartedAt = resolver;
@@ -329,4 +327,3 @@ export function createProofFingerprintJudge(deps: {
   };
 }
 
-export type ProofFingerprintJudge = ReturnType<typeof createProofFingerprintJudge>;

@@ -214,6 +214,7 @@ export {
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "./actionPolicy";

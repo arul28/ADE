@@ -8,6 +8,7 @@ import {
   appleStreamLaneLeaseCount,
   appleStreamLeaseKey,
   releaseAppleStreamLease,
+  type AppleStreamLeaseKey,
 } from "./appleStreamLease";
 
 /**
@@ -191,7 +192,7 @@ export function useAppleDeviceStream({
    * the corner card both own a hook, `stopStream` is lane-scoped, and whichever
    * one unmounted first stopped the other's frames.
    */
-  const leaseKeyRef = useRef<string | null>(null);
+  const leaseKeyRef = useRef<AppleStreamLeaseKey | null>(null);
   /**
    * Which RUN of that stream this viewer's lease belongs to.
    *
@@ -328,7 +329,7 @@ export function useAppleDeviceStream({
     // A device swap inside one mounted viewer: the old capture's lease is this
     // viewer's to give back, or the count never reaches zero and the helper
     // keeps encoding a device nobody is watching.
-    if (leaseKeyRef.current && leaseKeyRef.current !== leaseKey) {
+    if (leaseKeyRef.current && leaseKeyRef.current.id !== leaseKey.id) {
       releaseLease({ laneId, chatSessionId });
     }
     if (!leaseKeyRef.current) {

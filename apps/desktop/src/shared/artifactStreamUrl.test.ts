@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  artifactImageSrc,
   localArtifactMediaUrl,
   localArtifactStreamUrl,
   parseArtifactMediaPath,
@@ -33,17 +34,25 @@ describe("proof stream URLs", () => {
       .toBe("ade-artifact://project/.ade/artifacts/x.mp4");
   });
 
-  it("compares a root without case on Windows-shaped roots and case-folding hosts only", () => {
-    // UNC roots fold like drive roots.
-    expect(projectRelativeArtifactPath("\\\\Server\\Share\\Repo\\.ade\\artifacts\\x.mp4", "\\\\server\\share\\repo", "linux"))
+  it("compares a Windows-shaped root without case and a POSIX root exactly", () => {
+    // Drive and UNC roots fold, whatever machine is looking at them.
+    expect(projectRelativeArtifactPath("\\\\Server\\Share\\Repo\\.ade\\artifacts\\x.mp4", "\\\\server\\share\\repo"))
       .toBe(".ade/artifacts/x.mp4");
-    expect(projectRelativeArtifactPath("file:///C:/Repo/.ade/artifacts/x.mp4", "c:\\repo", "linux"))
+    expect(projectRelativeArtifactPath("file:///C:/Repo/.ade/artifacts/x.mp4", "c:\\repo"))
       .toBe(".ade/artifacts/x.mp4");
-    // POSIX roots fold on macOS and stay exact on Linux.
-    expect(projectRelativeArtifactPath("/users/me/REPO/.ade/artifacts/x.mp4", root, "darwin"))
-      .toBe(".ade/artifacts/x.mp4");
-    expect(projectRelativeArtifactPath("/users/me/REPO/.ade/artifacts/x.mp4", root, "linux")).toBeNull();
-    expect(projectRelativeArtifactPath("/Users/me/repo-evil/x.mp4", root, "darwin")).toBeNull();
+    expect(projectRelativeArtifactPath("c:\\.ade\\artifacts\\x.mp4", "C:\\")).toBe(".ade/artifacts/x.mp4");
+    // A POSIX root may sit on a Linux or case-sensitive volume, so it never folds.
+    expect(projectRelativeArtifactPath("/users/me/REPO/.ade/artifacts/x.mp4", root)).toBeNull();
+    expect(projectRelativeArtifactPath(`${root}/.ade/artifacts/x.mp4`, root)).toBe(".ade/artifacts/x.mp4");
+    expect(projectRelativeArtifactPath("/Users/me/repo-evil/x.mp4", root)).toBeNull();
+  });
+
+  it("passes an ade-artifact image through and maps a relative one", () => {
+    expect(artifactImageSrc(" ade-artifact://project/.ade/artifacts/a.png ")).toBe("ade-artifact://project/.ade/artifacts/a.png");
+    expect(artifactImageSrc(".ade/artifacts/a b.png")).toBe("ade-artifact://project/.ade/artifacts/a%20b.png");
+    expect(artifactImageSrc("/Users/me/repo/.ade/artifacts/a.png")).toBeNull();
+    expect(artifactImageSrc("https://example.com/a.png")).toBeNull();
+    expect(artifactImageSrc(null)).toBeNull();
   });
 
   it("refuses paths outside the project and any `..`", () => {

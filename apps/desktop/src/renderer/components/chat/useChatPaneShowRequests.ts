@@ -1,10 +1,6 @@
 import type { WorkToolShowSurface } from "../../../shared/types/workToolShow";
-import {
-  useWorkSurfaceMountRef,
-  waitForWorkSurfaceOnScreen,
-  workSurfaceKey,
-} from "../../lib/workToolOnScreen";
-import { useWorkToolShowHandler } from "../../lib/workToolShowRequests";
+import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
+import { showOutcomeWhenOnScreen, useWorkToolShowHandler } from "../../lib/workToolShowRequests";
 
 const CHAT_PANE_SHOW_SURFACES: readonly WorkToolShowSurface[] = ["proof", "apple"];
 const CHAT_PANE_SHOW_SURFACES_IN_WORK: readonly WorkToolShowSurface[] = ["proof"];
@@ -61,8 +57,7 @@ export function useChatPaneShowRequests({
       } else {
         return "declined";
       }
-      return waitForWorkSurfaceOnScreen(workSurfaceKey(surface, CHAT_SCOPE, request.chatSessionId))
-        .then((onScreen) => (onScreen ? "shown" : "opened"));
+      return showOutcomeWhenOnScreen(workSurfaceKey(surface, CHAT_SCOPE, request.chatSessionId));
     },
   );
   return { proofDrawerRef, appleDrawerRef };

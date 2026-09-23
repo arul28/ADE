@@ -93,15 +93,20 @@ func workProofProvenanceLines(
   return (source, older)
 }
 
-/// "idle cut 1:52", or nil when less than a second was cut.
-func workProofIdleCutLabel(_ idleCutMs: Double?) -> String? {
-  guard let idleCutMs, idleCutMs.isFinite, idleCutMs >= 1000 else { return nil }
-  let total = Int((idleCutMs / 1000).rounded())
+/// "0:23" / "1:04:02". Mirrors `formatProofDuration` in proofProvenance.ts.
+func workProofDuration(_ ms: Double) -> String {
+  let total = ms.isFinite ? max(0, Int((ms / 1000).rounded())) : 0
   let seconds = String(format: "%02d", total % 60)
   let minutes = (total / 60) % 60
   let hours = total / 3600
-  let duration = hours > 0 ? "\(hours):\(String(format: "%02d", minutes)):\(seconds)" : "\(minutes):\(seconds)"
-  return "idle cut \(duration)"
+  return hours > 0 ? "\(hours):\(String(format: "%02d", minutes)):\(seconds)" : "\(minutes):\(seconds)"
+}
+
+/// "idle cut 1:52", or nil when less than a second was cut. Mirrors
+/// `proofIdleCutLabel` in proofProvenance.ts.
+func workProofIdleCutLabel(_ idleCutMs: Double?) -> String? {
+  guard let idleCutMs, idleCutMs.isFinite, idleCutMs >= 1000 else { return nil }
+  return "idle cut \(workProofDuration(idleCutMs))"
 }
 
 /// "10:24–10:25 AM": a day period both ends share is said once. The period is

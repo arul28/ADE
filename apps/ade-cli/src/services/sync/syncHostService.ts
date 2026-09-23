@@ -132,7 +132,7 @@ import {
   type SubagentProgressCoalescer,
 } from "../../../../desktop/src/shared/chatMobileSlim";
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
-import { readFileRange } from "../../../../desktop/src/main/services/shared/fileRange";
+import { readArtifactByteRange } from "../../../../desktop/src/main/services/computerUse/artifactByteRange";
 import { findStoredToolResult } from "../../../../desktop/src/main/services/chat/chatToolResultLookup";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -6431,7 +6431,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     request: Extract<SyncFileRequest, { action: "readArtifactRange" }>["args"],
   ): Promise<SyncArtifactRange> {
     const artifactPath = resolveArtifactPath(request);
-    const range = await readFileRange(artifactPath, request.offset, request.length);
+    const range = await readArtifactByteRange(artifactPath, request.offset, request.length);
     return {
       path: normalizeRelative(path.relative(args.projectRoot, artifactPath)),
       totalSize: range.totalSize,

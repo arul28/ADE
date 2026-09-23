@@ -57,7 +57,7 @@ const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
 type HeldAnswer = { desktopLabel: string | null; opened: boolean };
 
 /** The sentence the CLI prints, one per outcome. */
-export function describeWorkToolShowResult(
+function describeWorkToolShowResult(
   status: WorkToolShowStatus,
   surface: WorkToolShowSurface,
   desktopLabel: string | null,
@@ -217,12 +217,17 @@ export function createWorkToolShowRequests(args: {
       const desktopLabel = trimmedOrNull(record.desktopLabel);
       if (record.status === "shown") return { ok: finish(requestId, "shown", desktopLabel) };
       if (record.status !== "held") return { ok: false };
+      const opened = record.opened === true;
       if (!entry.held) {
-        const held: HeldAnswer = { desktopLabel, opened: record.opened === true };
+        const held: HeldAnswer = { desktopLabel, opened };
         entry.held = held;
         const heldTimer = setTimeout(() => finish(requestId, "held", held.desktopLabel, held.opened), heldGraceMs);
         heldTimer.unref?.();
         entry.heldTimer = heldTimer;
+      } else if (opened && !entry.held.opened) {
+        // The window that did open the tool outranks one that only held it.
+        entry.held.opened = true;
+        entry.held.desktopLabel = desktopLabel;
       }
       return { ok: true };
     },

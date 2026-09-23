@@ -2732,11 +2732,18 @@ describe("iosSimulatorService boot contract", () => {
     onShutdown?: (udid: string) => void;
     onBoot?: (udid: string) => void;
     helperPid?: () => number | null;
+    /** Answer a helper command; `undefined` falls through to the fake's default answer. */
+    helperAnswer?: (command: Record<string, unknown>) => Promise<Record<string, unknown>> | undefined;
   } = {}) {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const { run, calls, devices } = bootAwareRun(options);
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const defaultHelper = fakeSimHelper();
     const helper = fakeSimHelper({
+      ...(options.helperAnswer ? {
+        onSend: (command: Record<string, unknown>) =>
+          options.helperAnswer?.(command) ?? defaultHelper.client.send(command as never) as Promise<Record<string, unknown>>,
+      } : {}),
       ...(options.captureError ? {
         onSend: (command: Record<string, unknown>) => {
           if (command.type === "capture-start") throw new Error(options.captureError ?? "capture failed");
@@ -2858,6 +2865,17 @@ describe("iosSimulatorService boot contract", () => {
       }));
       // Nothing left to detach.
       await expect(service.deviceDetach({ laneId: "lane-b" })).resolves.toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: tells agents about no user-only verb", async () => {
+    const { service, dispose } = setup();
+    try {
+      const status = await service.getStatus({ laneId: "lane-a" });
+      expect(status.capabilities).toContain("deviceDelete");
+      expect(status.capabilities).not.toContain("deviceDeleteInstalled");
     } finally {
       dispose();
     }
@@ -3070,6 +3088,36 @@ describe("iosSimulatorService boot contract", () => {
       const sentWithCap = helper.sent.length;
       await service.liftStreamBitrateCap({ laneId: "lane-a" });
       expect(helper.sent.length).toBe(sentWithCap);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBe(1500);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: a phone that rejoins while the cap is being lifted keeps its cap", async () => {
+    // L6: the lift cleared the cap only after the helper answered, so a rejoin
+    // during that wait saw its own cap still recorded, sent nothing, and then
+    // watched uncapped once the lift landed.
+    const lift: { finish: (() => void) | null } = { finish: null };
+    const { service, helper, dispose } = setup({
+      helperAnswer: (command) => (command.type === "capture-start" && command.bitrateKbps === 0
+        ? new Promise((resolve) => { lift.finish = () => resolve({ type: "capture-started" }); })
+        : undefined),
+    });
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", bitrateKbps: 1500 });
+      const lifting = service.liftStreamBitrateCap({ laneId: "lane-a" });
+      await vi.waitFor(() => expect(lift.finish).not.toBeNull());
+
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", bitrateKbps: 1500 });
+      lift.finish?.();
+      await lifting;
+
+      const caps = helper.sent
+        .filter((command) => command.type === "capture-start")
+        .map((command) => command.bitrateKbps ?? null);
+      expect(caps.slice(-2)).toEqual([0, 1500]);
       expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBe(1500);
     } finally {
       dispose();

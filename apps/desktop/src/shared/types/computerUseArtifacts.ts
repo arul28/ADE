@@ -129,6 +129,11 @@ export type ComputerUseProofProvenanceInput = {
   refuseDuplicates?: boolean;
   /** Flag a video whose own creation time predates the chat's turn. Defaults to true only for "attached". */
   flagOlderMedia?: boolean;
+  /**
+   * The sha256 each input had when ADE captured it, by input index. The broker
+   * hashes what it files and treats the call as "attached" on any mismatch.
+   */
+  capturedSha256?: string[] | null;
 };
 
 export type ComputerUseArtifactIngestionResult = {
