@@ -96,7 +96,6 @@ export function WorkFilterBar({
   parsed,
   options,
   filterMenuKey,
-  matchCount,
   onMenuKeyChange,
   onAdd,
   onRemove,
@@ -106,7 +105,6 @@ export function WorkFilterBar({
   parsed: ParsedWorkSearch;
   options: Record<WorkSearchFilterKey, string[]>;
   filterMenuKey: WorkFilterMenuKey | null;
-  matchCount: number;
   onMenuKeyChange: (key: WorkFilterMenuKey | null) => void;
   onAdd: (key: WorkSearchFilterKey, value: string) => void;
   onRemove: (token: ParsedWorkSearch["filterTokens"][number]) => void;
@@ -122,54 +120,30 @@ export function WorkFilterBar({
   const hasFilters = activeTokens.length > 0;
 
   return (
-    <div
-      className="relative flex min-h-10 shrink-0 items-center gap-2 border-b px-4 py-1.5 text-[11px]"
-      style={{ borderColor: "var(--color-border)" }}
-    >
-      <span className="shrink-0 font-medium text-[var(--color-muted-fg)]">
-        Work
-      </span>
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-        {activeTokens.map((token) => (
-          <button
-            key={`${token.key}:${token.value}`}
-            type="button"
-            className="inline-flex max-w-[170px] items-center gap-1 rounded-full border border-[var(--color-accent)]/35 bg-[var(--color-accent-muted)] px-2 py-0.5 text-[var(--color-fg)] hover:border-[var(--color-accent)]"
-            aria-label={`Remove ${token.key} filter ${token.value}`}
-            onClick={() => onRemove(token)}
-          >
-            <span className="text-[var(--color-muted-fg)]">
-              {WORK_FILTER_LABELS[token.key]}:
-            </span>
-            <span className="truncate">
-              {workFilterValueLabel(token.key, token.value)}
-            </span>
-            <X size={10} weight="bold" aria-hidden />
-          </button>
-        ))}
-        {hasFilters ? (
-          <button
-            type="button"
-            className="shrink-0 px-1 text-[var(--color-muted-fg)] underline decoration-[var(--color-border)] underline-offset-2 hover:text-[var(--color-fg)]"
-            onClick={onClear}
-          >
-            Clear
-          </button>
-        ) : (
-          <span className="truncate text-[var(--color-muted-fg)]">
-            Any lane, provider, status, type, or machine
+    <div className="relative flex shrink-0 items-center gap-1.5">
+      {activeTokens.map((token) => (
+        <button
+          key={`${token.key}:${token.value}`}
+          type="button"
+          className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] text-[var(--color-fg)] hover:bg-white/[0.1]"
+          aria-label={`Remove ${token.key} filter ${token.value}`}
+          onClick={() => onRemove(token)}
+        >
+          <span className="text-[var(--color-muted-fg)]">
+            {WORK_FILTER_LABELS[token.key]}:
           </span>
-        )}
-      </div>
-      <span className="shrink-0 tabular-nums text-[var(--color-muted-fg)]">
-        {matchCount} {matchCount === 1 ? "match" : "matches"}
-      </span>
+          <span className="truncate">
+            {workFilterValueLabel(token.key, token.value)}
+          </span>
+          <X size={10} weight="bold" aria-hidden />
+        </button>
+      ))}
       <button
         type="button"
         className={
           filterMenuKey
-            ? "inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-[var(--color-accent)] bg-[var(--color-accent-muted)] px-2 text-[11px] text-[var(--color-fg)] transition-colors"
-            : "inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-[var(--color-border)] px-2 text-[11px] text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
+            ? "inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-white/[0.06] px-2 text-[11px] text-[var(--color-fg)] transition-colors"
+            : "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.04] hover:text-[var(--color-fg)]"
         }
         aria-label="Add Work filter"
         aria-expanded={filterMenuKey !== null}
@@ -177,6 +151,11 @@ export function WorkFilterBar({
       >
         <Funnel size={12} aria-hidden />
         Filter
+        {hasFilters ? (
+          <span className="tabular-nums text-[var(--color-fg)]">
+            {activeTokens.length}
+          </span>
+        ) : null}
       </button>
       {filterMenuKey ? (
         <div
@@ -186,19 +165,30 @@ export function WorkFilterBar({
               ? "Work filter facets"
               : `${WORK_FILTER_LABELS[filterMenuKey]} filter values`
           }
-          className="absolute right-4 top-full z-20 mt-1 max-h-64 min-w-44 overflow-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-popup-bg)] p-1 shadow-xl"
+          className="absolute right-0 top-full z-20 mt-1 max-h-64 min-w-44 overflow-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-popup-bg)] p-1 shadow-xl"
         >
           {filterMenuKey === "choose" ? (
             <>
-              <div className="flex items-center justify-between px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--color-muted-fg)]">
+              <div className="flex items-center justify-between gap-2 px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--color-muted-fg)]">
                 <span>Add Work filter</span>
-                <button
-                  type="button"
-                  className="text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
-                  onClick={() => onMenuKeyChange(null)}
-                >
-                  Done
-                </button>
+                <span className="flex items-center gap-2 normal-case tracking-normal">
+                  {hasFilters ? (
+                    <button
+                      type="button"
+                      className="text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
+                      onClick={onClear}
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="text-[var(--color-muted-fg)] hover:text-[var(--color-fg)]"
+                    onClick={() => onMenuKeyChange(null)}
+                  >
+                    Done
+                  </button>
+                </span>
               </div>
               {WORK_SEARCH_FILTER_KEYS.map((key) => (
                 <button
@@ -541,6 +531,9 @@ export function buildWorkToolCommands({
     ).map((definition) => ({
       id: `work-tools-${definition.id}`,
       title: `Tools: ${workToolLabel(definition.id)}`,
+      hint:
+        definition.hint ??
+        (definition.id === "files" ? "Browse lane files" : "Open this tool"),
       keywords: [
         "tools",
         "pane",
@@ -559,7 +552,7 @@ export function buildWorkToolCommands({
     {
       id: "work-tools-picker",
       title: "Tools: Show picker",
-      hint: "Back to the grid of every tool in the Work pane",
+      hint: "Back to the tool grid",
       keywords: ["tools", "picker", "pane", "sidebar", "grid"],
       group: "Work tools",
       run: () => {

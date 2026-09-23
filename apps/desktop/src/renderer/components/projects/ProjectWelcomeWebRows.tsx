@@ -17,7 +17,7 @@ import {
 import { WorktreeBadge } from "./WorktreeBadge";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { abbreviateHome } from "../../lib/pathUtils";
-import { toRelativeTime } from "../graph/graphHelpers";
+import { toRelativeTime } from "../../lib/relativeTime";
 import type {
   ProjectIcon,
   RecentProjectSummary,

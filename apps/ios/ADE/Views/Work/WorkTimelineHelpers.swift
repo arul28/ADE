@@ -2808,6 +2808,9 @@ func buildWorkEventCards(
 ) -> [WorkEventCardModel] {
   var byId: [String: WorkEventCardModel] = [:]
   var order: [String] = []
+  // Todo cards by session + turn, so a later plan naming every item can drop
+  // them (desktop `dropTodoRowsCoveredByPlan`).
+  var todoCardIdsByTurn: [String: [String]] = [:]
   let terminalDoneTurnIds = workTerminalDoneTurnIds(from: transcript)
   let recoveredCodexTurnIds = Set(transcript.compactMap { envelope -> String? in
     guard case .codexTurnRecovery(_, let receipt, let turnId) = envelope.event,
@@ -2850,6 +2853,16 @@ func buildWorkEventCards(
     if redundantWorkTerminalStatus(envelope.event, terminalDoneTurnIds: terminalDoneTurnIds) {
       continue
     }
+    if case .todoUpdate(let items, let turnId) = envelope.event,
+       let turnId,
+       !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let planId = workPlanCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id)
+      if let existing = byId[planId], existing.kind == "plan" {
+        let steps = foldingWorkTodoLines(items, into: existing.planSteps)
+        byId[planId] = workPlanCard(existing, planSteps: steps)
+        continue
+      }
+    }
     if case .codexTurnStalled(_, _, let turnId, _, _) = envelope.event,
        let turnId = normalizedWorkTurnId(turnId),
        recoveredCodexTurnIds.contains(turnId) {
@@ -2862,8 +2875,53 @@ func buildWorkEventCards(
       if byId[card.id] == nil { order.append(card.id) }
       byId[card.id] = card
     }
+    switch envelope.event {
+    case .todoUpdate(_, let turnId) where card.kind == "todo":
+      let key = workTodoTurnKey(sessionId: envelope.sessionId, turnId: turnId)
+      if todoCardIdsByTurn[key]?.contains(card.id) != true {
+        todoCardIdsByTurn[key, default: []].append(card.id)
+      }
+    case .plan(_, _, let turnId):
+      // The plan card is the one that stays; a todo row for the same turn that
+      // it fully names would only repeat it.
+      let key = workTodoTurnKey(sessionId: envelope.sessionId, turnId: turnId)
+      guard let plan = byId[card.id], plan.kind == "plan", let todoIds = todoCardIdsByTurn[key] else { break }
+      let covered = todoIds.filter { id in
+        guard let todo = byId[id], todo.kind == "todo" else { return false }
+        return workTodoLinesCoveredByPlanSteps(todo.bullets, plan.planSteps)
+      }
+      guard !covered.isEmpty else { break }
+      let dropped = Set(covered)
+      for id in covered { byId[id] = nil }
+      order.removeAll { dropped.contains($0) }
+      todoCardIdsByTurn[key] = todoIds.filter { !dropped.contains($0) }
+    default:
+      break
+    }
   }
   return order.compactMap { byId[$0] }
+}
+
+private func workTodoTurnKey(sessionId: String, turnId: String?) -> String {
+  "\(sessionId)|\(normalizedWorkTurnId(turnId) ?? "")"
+}
+
+/// Parser stores a todo as `"In Progress: description"`; this is the description.
+private func workTodoLineText(_ line: String) -> String {
+  let lowered = line.lowercased()
+  for prefix in ["in progress: ", "completed: ", "pending: "] where lowered.hasPrefix(prefix) {
+    return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+  return line.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// True when a plan names every todo item, so the todo row would only repeat
+/// the plan card. An empty todo or an empty plan is never covered. Desktop
+/// `todoItemsCoveredByPlanSteps`.
+func workTodoLinesCoveredByPlanSteps(_ lines: [String], _ steps: [WorkPlanStep]) -> Bool {
+  let texts = Set(steps.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+  guard !texts.isEmpty, !lines.isEmpty else { return false }
+  return lines.allSatisfy { texts.contains(workTodoLineText($0)) }
 }
 
 func workAvailableQueueRecovery(from transcript: [WorkChatEnvelope]) -> WorkQueueRecoveryModel? {
@@ -3063,6 +3121,58 @@ private let workHostSleepCardIdPrefix = "host-sleep"
 /// True for either half of a host-sleep chip, which share one card id.
 private func workIsHostSleepCardId(_ id: String) -> Bool {
   id.hasPrefix(workHostSleepCardIdPrefix + ":")
+}
+
+/// Parser stores a todo as `"In Progress: description"`. Match that back onto
+/// the plan step the same way desktop matches `description` and writes status.
+private func foldingWorkTodoLines(_ lines: [String], into steps: [WorkPlanStep]) -> [WorkPlanStep] {
+  let prefixes: [(String, String)] = [
+    ("in progress: ", "in_progress"),
+    ("completed: ", "completed"),
+    ("pending: ", "pending"),
+  ]
+  var next = steps
+  for line in lines {
+    let lowered = line.lowercased()
+    guard let match = prefixes.first(where: { lowered.hasPrefix($0.0) }) else { continue }
+    let text = String(line.dropFirst(match.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { continue }
+    if let index = next.firstIndex(where: { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == text }) {
+      next[index] = WorkPlanStep(text: next[index].text, status: match.1)
+    } else {
+      next.append(WorkPlanStep(text: text, status: match.1))
+    }
+  }
+  return next
+}
+
+private func workPlanCard(_ card: WorkEventCardModel, planSteps: [WorkPlanStep]) -> WorkEventCardModel {
+  WorkEventCardModel(
+    id: card.id,
+    kind: card.kind,
+    title: card.title,
+    icon: card.icon,
+    tint: card.tint,
+    timestamp: card.timestamp,
+    body: card.body,
+    bullets: planSteps.map(\.text),
+    metadata: card.metadata,
+    planSteps: planSteps,
+    isInProgress: card.isInProgress,
+    questionModel: card.questionModel,
+    planApprovalModel: card.planApprovalModel,
+    resolution: card.resolution,
+    recoveryOptions: card.recoveryOptions,
+    recoveryTurnId: card.recoveryTurnId,
+    recoverySessionId: card.recoverySessionId,
+    recoveryContext: card.recoveryContext,
+    recoveryReceipt: card.recoveryReceipt,
+    diagnosticModerationChecks: card.diagnosticModerationChecks,
+    diagnosticIntegrationFailures: card.diagnosticIntegrationFailures,
+    spawnCompletionChildId: card.spawnCompletionChildId,
+    technicalDetail: card.technicalDetail,
+    nextAction: card.nextAction
+  )
 }
 
 private func workPlanCardId(

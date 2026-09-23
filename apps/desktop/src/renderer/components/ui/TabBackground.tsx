@@ -3,7 +3,7 @@ import { useLocation } from "react-router-dom";
 import { cn } from "./cn";
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
+  const roots = ["/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
@@ -11,7 +11,6 @@ const routeToTabBg: Record<string, string> = {
   "/lanes": "ade-tab-bg-lanes",
   "/files": "ade-tab-bg-files",
   "/work": "ade-tab-bg-terminals",
-  "/graph": "ade-tab-bg-graph",
   "/prs": "ade-tab-bg-prs",
   "/history": "ade-tab-bg-history",
   "/automations": "ade-tab-bg-automations",
@@ -23,7 +22,6 @@ const routeToTint: Record<string, string> = {
   "/lanes": "tab-tint-lanes",
   "/files": "tab-tint-files",
   "/work": "tab-tint-work",
-  "/graph": "tab-tint-graph",
   "/prs": "tab-tint-prs",
   "/history": "tab-tint-history",
   "/automations": "tab-tint-automations",

@@ -245,6 +245,7 @@ export function toPrComment(
     id,
     author: asString(user?.login) || "unknown",
     authorAvatarUrl: asString(user?.avatar_url) || null,
+    ...(asString(user?.type).toLowerCase() === "bot" ? { authorIsBot: true } : {}),
     body: asString(record.body) || null,
     source,
     url: asString(record.html_url) || null,

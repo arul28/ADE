@@ -19,6 +19,7 @@ import {
   terminalStatusLine,
   workToolDotState,
   workToolSummary,
+  openPullRequestCount,
   useWorkToolStatuses,
 } from "./useWorkToolStatuses";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
@@ -50,6 +51,53 @@ function browserStatus(partial: Partial<BuiltInBrowserStatus>): BuiltInBrowserSt
 function tab(partial: Record<string, unknown>) {
   return { id: "t1", url: "https://example.com/", title: "Example", ownerLaneId: null, ...partial } as never;
 }
+
+describe("open pull request count", () => {
+  const lane = {
+    id: "lane-1",
+    laneType: "feature",
+    branchRef: "feature/pr",
+    baseRef: "main",
+  } as unknown as LaneSummary;
+
+  function pr(partial: Record<string, unknown>) {
+    return {
+      id: "pr-1",
+      laneId: "lane-1",
+      detached: false,
+      state: "open",
+      headBranch: "feature/pr",
+      chatSessionIds: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      githubPrNumber: 1,
+      ...partial,
+    } as never;
+  }
+
+  it("counts open and draft rows the pane shows, not merged ones", () => {
+    const rows = [
+      pr({ id: "open", state: "open", githubPrNumber: 2 }),
+      pr({ id: "draft", state: "draft", githubPrNumber: 3 }),
+      pr({ id: "merged", state: "merged", githubPrNumber: 1 }),
+      pr({ id: "other-branch", state: "open", headBranch: "feature/old", githubPrNumber: 4 }),
+    ];
+    expect(openPullRequestCount(rows, lane, "lane-1", null)).toBe(2);
+  });
+
+  it("uses the pane's chat id, so a pty id does not hide the lane's pull request", () => {
+    const rows = [
+      pr({
+        id: "linked",
+        state: "open",
+        chatSessionIds: ["chat-1"],
+        headBranch: "feature/old",
+      }),
+    ];
+    expect(openPullRequestCount(rows, lane, "lane-1", "chat-1")).toBe(1);
+    expect(openPullRequestCount(rows, lane, "lane-1", "pty-9")).toBe(0);
+    expect(openPullRequestCount(rows, lane, "lane-1", null)).toBe(1);
+  });
+});
 
 describe("work tool status lines", () => {
   it("counts shells instead of naming them", () => {

@@ -146,7 +146,7 @@ Preload consumes that as an optional trailing pin on chat/session APIs and on th
 
 The same trailing pin covers the domains a chat-scoped tool drives — the iOS simulator, App Control, and computer-use artifact actions, routed through the domain-bound wrappers `callIosSimulatorActionOr` / `callAppControlActionOr` / `callComputerUseArtifactActionOr` so the domain string is not retyped at every call site — plus the cross-machine handoff trio `agentChat.prepareCrossMachineHandoff` / `validateCrossMachineSource` / `markCrossMachineHandoff`. `iosSimulator.onEvent` and `appControl.onEvent` take the pin too, so a pinned panel's live updates follow its reads rather than describing the bound machine's simulator. `builtInBrowser.onEvent` is the deliberate exception: the built-in browser is hosted by this desktop's main process (it owns a `WebContentsView`) and the daemon only proxies calls into it over the desktop bridge socket, so a pin on another *local* checkout still drives this machine's browser and keeps the local IPC stream; only a `kind: "remote"` pin switches to the pinned runtime stream. Preload's short read caches are namespaced by binding (`boundReadCacheKey()`) because one preload process serves every machine a window talks to, and a pinned `iosSimulator.getStatus` / `listDevices` bypasses the cache entirely. The exposed object is declared `satisfies Window["ade"]` before `contextBridge.exposeInMainWorld`, so a signature that drops a `pin` parameter fails to compile instead of silently talking to the wrong machine.
 
-The Work tools pane (Terminal / Git / Files / iOS / App Control / Browser)
+The Work tools pane (Terminal / Git / PR / Files / iOS / App Control / Browser)
 honors the pin the same way, through a `runtimePin` prop taken from the active
 Work session's router entry. Tool React keys and drawer UI state use
 `workRuntimeScopeKey(pin, bound)` — the session's effective machine — so a
@@ -216,6 +216,21 @@ with "Runtime channel is only available to desktop clients", and `hello_ok`
 advertises `features.rpcChannel`/`features.portForward` as `false`. The host also
 caps concurrent channels per peer (32 RPC channels, 64 forwards) so an
 authenticated peer cannot exhaust file descriptors or memory.
+
+**Forward flow control.** A large remote-to-local transfer (for example a
+49 MB dev-server bundle) can fill the local browser socket faster than the
+browser reads it. `SyncPortForwardClient`
+(`apps/desktop/src/main/services/remoteRuntime/syncPortForwardClient.ts`) does
+not close the forward in that case. When the local socket holds more than
+4 MiB, or `write()` returns `false`, the client sends `fwd_pause` for that
+`forwardId`. The host (`syncPairedChannelService.ts`) then pauses its TCP
+socket and holds new outbound chunks. The client keeps the bytes that are
+already in flight in a queue. When the local socket drains, the client writes
+the queue and then sends `fwd_resume`. The host resumes its socket and flushes
+the chunks it held. Two limits stop a transfer that never drains: the client
+closes the forward if its paused queue passes 64 MiB, or if the socket stays
+paused for 60 seconds. A host that does not know `fwd_pause` ignores it, and
+the 64 MiB limit still applies.
 
 **An oversized reply closes one channel, not the connection.** `rpc_data` is a
 required send, so the host checks the socket before it writes a reply and

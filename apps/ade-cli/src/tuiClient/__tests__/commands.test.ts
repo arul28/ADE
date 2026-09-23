@@ -112,6 +112,11 @@ describe("commands", () => {
     expect(close?.args).toBe("confirm");
     expect(parseCommand("/pr comments")?.name).toBe("/pr comments");
     expect(parseCommand("/pr reopen")?.name).toBe("/pr reopen");
+    expect(parseCommand("/pr draft")?.name).toBe("/pr draft");
+    expect(parseCommand("/pr ready")?.name).toBe("/pr ready");
+    const autoMerge = parseCommand("/pr auto-merge off");
+    expect(autoMerge?.name).toBe("/pr auto-merge");
+    expect(autoMerge?.args).toBe("off");
 
     expect(paletteCommands("/pr update")).toContainEqual(expect.objectContaining({
       name: "/pr update-branch",

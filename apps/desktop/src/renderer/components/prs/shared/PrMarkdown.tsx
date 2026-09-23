@@ -1,6 +1,7 @@
-import {
+import React, {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -24,6 +25,17 @@ import { COLORS } from "../../lanes/laneDesignTokens";
 import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 import { PrMermaid } from "./PrMermaid";
+import {
+  GITHUB_ALERT,
+  PrAlertCallout,
+  PrFileChip,
+  PrMarkdownEnvContext,
+  PrRefPill,
+  resolveInlineFile,
+  type GithubAlertKind,
+} from "./prMarkdownContext";
+import { getFileIcon } from "../../files/filePresentation";
+import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
 type MarkdownRoot = Parameters<typeof findAndReplace>[0];
@@ -34,6 +46,8 @@ export type PrMarkdownProps = {
   repoName: string;
   tone?: PrMarkdownTone;
   dense?: boolean;
+  /** `document`: the PR description — larger headings, reading rhythm. */
+  variant?: "comment" | "document";
 };
 
 /* ── Extended sanitization schema ──────────────────────────────────── */
@@ -72,7 +86,7 @@ const PR_SAFE_SCHEMA = (() => {
       ],
       details: ["open"],
       summary: [],
-      code: [...(baseAttributes.code ?? []), ["className", /^language-/]],
+      code: [...(baseAttributes.code ?? []), ["className", /^language-/], "dataMeta"],
       span: [["className", /^pr-md-/]],
       div: [["className", /^pr-md-/]],
       th: [...(baseAttributes.th ?? []), "align"],
@@ -87,6 +101,23 @@ const PR_SAFE_SCHEMA = (() => {
 })();
 
 /* ── Remark plugin: autolink #123 and @user ────────────────────────── */
+
+/**
+ * Keep a fence's info string past `rehype-raw`, which re-parses the tree and
+ * drops `data.meta`: carry it as a `data-meta` attribute on the `<code>`.
+ */
+function remarkCodeMeta() {
+  return (tree: MarkdownRoot) => {
+    const visit = (node: { type?: string; meta?: string | null; data?: Record<string, unknown>; children?: unknown[] }) => {
+      if (node.type === "code" && node.meta) {
+        const data = (node.data ??= {});
+        data.hProperties = { ...((data.hProperties as Record<string, unknown>) ?? {}), dataMeta: node.meta };
+      }
+      for (const child of node.children ?? []) visit(child as typeof node);
+    };
+    visit(tree as unknown as Parameters<typeof visit>[0]);
+  };
+}
 
 function remarkPrAutolinks({
   repoOwner,
@@ -471,19 +502,156 @@ function toneAccent(tone: PrMarkdownTone): string {
   }
 }
 
+/* ── PR-aware inline pieces (need the Overview's env) ───────────────── */
+
+function textOf(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  if (node && typeof node === "object" && "props" in (node as object)) {
+    return textOf((node as { props?: { children?: ReactNode } }).props?.children);
+  }
+  return "";
+}
+
+function InlineCode({ children }: { children?: ReactNode }) {
+  const env = useContext(PrMarkdownEnvContext);
+  const text = textOf(children);
+  const file = env ? resolveInlineFile(text, env.prFiles) : null;
+  if (file && env) {
+    return (
+      <PrFileChip
+        path={file.path}
+        line={file.line}
+        inPr={file.inPr}
+        onOpen={env.onOpenFile ? () => env.onOpenFile!(file.path, file.inPr) : undefined}
+      />
+    );
+  }
+  return (
+    <code
+      className="rounded-[4px] px-1 py-0.5 font-mono text-[11px]"
+      style={{ background: "rgba(0,0,0,0.3)", color: COLORS.textPrimary }}
+    >
+      {children}
+    </code>
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Matches a PR or issue link in this repo only. A link to another repo stays a plain link. */
+function sameRepoRefPattern(repoOwner: string, repoName: string): RegExp {
+  return new RegExp(
+    `^https?://(?:www\\.)?github\\.com/${escapeRegExp(repoOwner)}/${escapeRegExp(repoName)}/(?:pull|issues)/(\\d+)(?:$|[?#/])`,
+    "i",
+  );
+}
+
+function PrRefOrLink({ href, children, repoOwner, repoName }: { href?: string; children?: ReactNode; repoOwner: string; repoName: string }) {
+  const env = useContext(PrMarkdownEnvContext);
+  const label = textOf(children);
+  const match = env && href ? sameRepoRefPattern(repoOwner, repoName).exec(href) : null;
+  if (env && match && label.trim() === `#${match[1]}`) {
+    const number = Number(match[1]);
+    const state = env.prStateByNumber?.get(number) ?? null;
+    return (
+      <PrRefPill
+        number={number}
+        state={state}
+        href={href}
+        onOpen={state && env.onOpenPr ? () => env.onOpenPr!(number) : () => openExternalUrl(href)}
+      />
+    );
+  }
+  return (
+    <PrLink href={href} repoOwner={repoOwner} repoName={repoName}>
+      {children}
+    </PrLink>
+  );
+}
+
+const ALERT_MARKER = /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i;
+
+/** GitHub alert syntax: a blockquote whose first line is `[!NOTE]` and friends. */
+function detectAlert(children: ReactNode): { kind: GithubAlertKind; rest: ReactNode } | null {
+  const items = React.Children.toArray(children);
+  const firstIndex = items.findIndex((child) => typeof child !== "string" || child.trim().length > 0);
+  const first = items[firstIndex];
+  if (!first || typeof first !== "object" || !("props" in first)) return null;
+  const para = first as React.ReactElement<{ children?: ReactNode }>;
+  const paraChildren = React.Children.toArray(para.props.children);
+  const lead = paraChildren[0];
+  if (typeof lead !== "string") return null;
+  const marker = ALERT_MARKER.exec(lead);
+  if (!marker) return null;
+  const kind = marker[1]!.toLowerCase() as GithubAlertKind;
+  if (!(kind in GITHUB_ALERT)) return null;
+  const stripped = [lead.slice(marker[0].length), ...paraChildren.slice(1)];
+  const rest = [
+    ...items.slice(0, firstIndex),
+    React.cloneElement(para, { key: "alert-lead" }, ...stripped),
+    ...items.slice(firstIndex + 1),
+  ];
+  return { kind, rest };
+}
+
+function CodeBlockWithHeader({ fileName, code, language }: { fileName: string; code: string; language: string }) {
+  const [copied, setCopied] = useState(false);
+  const { icon: Glyph, color } = getFileIcon(fileName);
+  return (
+    <div className="mb-3 overflow-hidden rounded-[8px] last:mb-0" style={{ background: "rgba(0,0,0,0.25)" }} data-testid="pr-md-code-file">
+      <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]" style={{ background: "rgba(255,255,255,0.035)", color: COLORS.textSecondary }}>
+        <Glyph size={12} style={{ color }} />
+        <span className="min-w-0 flex-1 truncate font-mono">{fileName}</span>
+        <button
+          type="button"
+          onClick={() => {
+            void copyTextToClipboard(code).then((ok) => {
+              if (!ok) return;
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1200);
+            });
+          }}
+          className="rounded px-1.5 py-0.5 text-[10.5px] hover:bg-white/[0.07]"
+          style={{ color: COLORS.textMuted, background: "none", border: "none", cursor: "pointer" }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <HighlightedCode code={code} language={language} />
+    </div>
+  );
+}
+
 function buildPrOverrides({
   tone,
   dense,
   repoOwner,
   repoName,
+  variant,
 }: {
   tone: PrMarkdownTone;
   dense: boolean;
   repoOwner: string;
   repoName: string;
+  variant?: "comment" | "document";
 }): Partial<Components> {
   const mb = dense ? "mb-2" : "mb-3";
-  const headerTone = toneAccent(tone);
+  const doc = variant === "document";
+  // A description reads as a document: real heading steps in the text color,
+  // not the small tinted labels a comment uses.
+  const headerTone = doc ? COLORS.textPrimary : toneAccent(tone);
+  const headingClass = (level: 1 | 2 | 3 | 4): string => {
+    if (!doc) return "";
+    return {
+      1: "text-[20px] mt-6 mb-3 tracking-[-0.01em]",
+      2: "text-[17px] mt-6 mb-2.5 tracking-[-0.01em]",
+      3: "text-[15px] mt-5 mb-2",
+      4: "text-[13.5px] mt-4 mb-1.5",
+    }[level];
+  };
 
   return {
     p: ({ children }) => (
@@ -493,7 +661,7 @@ function buildPrOverrides({
     ),
     h1: ({ children }) => (
       <h1
-        className={`${mb} mt-3 text-[15px] font-semibold leading-snug first:mt-0`}
+        className={doc ? `${headingClass(1)} font-semibold leading-snug first:mt-0` : `${mb} mt-3 text-[15px] font-semibold leading-snug first:mt-0`}
         style={{ color: headerTone }}
       >
         {children}
@@ -501,7 +669,7 @@ function buildPrOverrides({
     ),
     h2: ({ children }) => (
       <h2
-        className={`${mb} mt-3 text-[13px] font-semibold leading-snug first:mt-0`}
+        className={doc ? `${headingClass(2)} font-semibold leading-snug first:mt-0` : `${mb} mt-3 text-[13px] font-semibold leading-snug first:mt-0`}
         style={{ color: headerTone }}
       >
         {children}
@@ -509,7 +677,7 @@ function buildPrOverrides({
     ),
     h3: ({ children }) => (
       <h3
-        className={`${mb} mt-3 text-[12px] font-semibold leading-snug first:mt-0`}
+        className={doc ? `${headingClass(3)} font-semibold leading-snug first:mt-0` : `${mb} mt-3 text-[12px] font-semibold leading-snug first:mt-0`}
         style={{ color: headerTone }}
       >
         {children}
@@ -517,16 +685,16 @@ function buildPrOverrides({
     ),
     h4: ({ children }) => (
       <h4
-        className={`${mb} mt-3 text-[12px] font-medium leading-snug first:mt-0`}
+        className={doc ? `${headingClass(4)} font-semibold leading-snug first:mt-0` : `${mb} mt-3 text-[12px] font-medium leading-snug first:mt-0`}
         style={{ color: headerTone }}
       >
         {children}
       </h4>
     ),
     a: ({ href, children }) => (
-      <PrLink href={href} repoOwner={repoOwner} repoName={repoName}>
+      <PrRefOrLink href={href} repoOwner={repoOwner} repoName={repoName}>
         {children}
-      </PrLink>
+      </PrRefOrLink>
     ),
     // Route fenced code blocks through the shared Shiki highlighter, except
     // ```mermaid fences, which render as actual diagrams.
@@ -538,7 +706,7 @@ function buildPrOverrides({
         "props" in (first as object)
       ) {
         const props = (first as {
-          props?: { className?: string; children?: ReactNode };
+          props?: { className?: string; children?: ReactNode; "data-meta"?: unknown };
         }).props;
         const className = props?.className ?? "";
         const match = /language-([\w-]+)/.exec(className);
@@ -547,6 +715,11 @@ function buildPrOverrides({
         if (language === "mermaid") {
           return <PrMermaid source={codeText} />;
         }
+        // ```ts apps/desktop/src/foo.ts — the info string after the language
+        // names the file, so the block gets a file header and a copy button.
+        const meta = typeof props?.["data-meta"] === "string" ? props["data-meta"].trim() : "";
+        const fileName = /^(?:title=)?["']?([\w@.\-/]+\.[A-Za-z0-9]{1,8})["']?$/.exec(meta)?.[1] ?? null;
+        if (fileName) return <CodeBlockWithHeader fileName={fileName} code={codeText} language={language ?? "text"} />;
         return <HighlightedCode code={codeText} language={language} />;
       }
       return (
@@ -569,14 +742,7 @@ function buildPrOverrides({
       if (className && /language-/.test(className)) {
         return <code className={className}>{children}</code>;
       }
-      return (
-        <code
-          className="rounded-[4px] px-1 py-0.5 font-mono text-[11px]"
-          style={{ background: "rgba(0,0,0,0.3)", color: COLORS.textPrimary }}
-        >
-          {children}
-        </code>
-      );
+      return <InlineCode>{children}</InlineCode>;
     },
     // GFM: task-list checkbox inputs.
     input: (props) => {
@@ -617,14 +783,18 @@ function buildPrOverrides({
         {children}
       </td>
     ),
-    blockquote: ({ children }) => (
-      <blockquote
-        className={`${mb} border-l-2 pl-3 last:mb-0`}
-        style={{ borderColor: COLORS.accentBorder, color: COLORS.textSecondary }}
-      >
-        {children}
-      </blockquote>
-    ),
+    blockquote: ({ children }) => {
+      const alert = detectAlert(children);
+      if (alert) return <PrAlertCallout kind={alert.kind}>{alert.rest}</PrAlertCallout>;
+      return (
+        <blockquote
+          className={`${mb} border-l-2 pl-3 last:mb-0`}
+          style={{ borderColor: COLORS.accentBorder, color: COLORS.textSecondary }}
+        >
+          {children}
+        </blockquote>
+      );
+    },
     img: (props) => (
       <PrImage
         src={(props as { src?: string }).src}
@@ -650,10 +820,11 @@ export const PrMarkdown = memo(function PrMarkdown({
   repoName,
   tone = "neutral",
   dense = false,
+  variant = "comment",
 }: PrMarkdownProps) {
   const overrides = useMemo(
-    () => buildPrOverrides({ tone, dense, repoOwner, repoName }),
-    [tone, dense, repoOwner, repoName],
+    () => buildPrOverrides({ tone, dense, repoOwner, repoName, variant }),
+    [tone, dense, repoOwner, repoName, variant],
   );
 
   const components = useMemo<Components>(() => {
@@ -666,6 +837,7 @@ export const PrMarkdown = memo(function PrMarkdown({
   const remarkPlugins = useMemo(
     () => [
       remarkGfm,
+      remarkCodeMeta,
       [remarkPrAutolinks, { repoOwner, repoName }] as [
         typeof remarkPrAutolinks,
         { repoOwner: string; repoName: string },
@@ -681,7 +853,7 @@ export const PrMarkdown = memo(function PrMarkdown({
 
   return (
     <div
-      className={`pr-md-root min-w-0 max-w-full text-[13px] leading-[1.55] ${dense ? "pr-md-dense" : ""}`}
+      className={`pr-md-root min-w-0 max-w-full ${variant === "document" ? "text-[13.5px] leading-[1.65]" : "text-[13px] leading-[1.55]"} ${dense ? "pr-md-dense" : ""}`}
       style={{ color: COLORS.textPrimary }}
     >
       <ReactMarkdown

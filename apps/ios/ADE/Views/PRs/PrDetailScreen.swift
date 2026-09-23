@@ -50,6 +50,7 @@ struct PrDetailView: View {
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
   @State private var actionsSheetPresented: Bool = false
+  @State private var nextStepSheetPresented: Bool = false
   /// Closing a PR from the actions sheet asks first, matching desktop. The
   /// inline merge rail has its own two-tap confirm; this covers the other entry
   /// point, which used to fire the moment the row was tapped.
@@ -61,7 +62,6 @@ struct PrDetailView: View {
   @State private var hasLoadedLiveSidecars = false
   @State private var hasAttemptedInitialLoad = false
   @State private var hasSeededFromWarmCache = false
-  @State private var summaryCommitsExpanded = false
   @State private var pendingTimelineScrollId: String?
   @State private var timelineSectionMounted = false
   @SceneStorage("ade.prs.expandedUnmappedPrIds")
@@ -82,7 +82,7 @@ struct PrDetailView: View {
   @State private var timelineEvents: [PrTimelineEvent] = []
   /// Timeline folded for display: runs of consecutive same-author commits
   /// collapse into a single group row (desktop `PrTimeline` parity).
-  @State private var timelineDisplayItems: [PrTimelineDisplayItem] = []
+  @State private var timelineDisplayItems: [PrDigestDisplayItem] = []
   /// Review threads split + sorted once per data change (most recent first).
   @State private var unresolvedThreads: [PrReviewThread] = []
   @State private var resolvedThreads: [PrReviewThread] = []
@@ -356,14 +356,33 @@ struct PrDetailView: View {
     let snap = snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: [])
     // Ascending (oldest → newest), undated events sink to the end — mirrors
     // desktop `stableSortByTs`.
-    timelineEvents = buildPullRequestTimeline(pr: currentPr, snapshot: snap, activity: activityEvents)
+    // Bot blocks in the description become those bots' comments at PR creation.
+    let bodyBots = prSplitBodyBotSections(snap.detail?.body).sections.map { section in
+      PrTimelineEvent(
+        id: "\(prDescriptionBotEventPrefix)\(section.id)",
+        kind: .comment,
+        title: "\(section.login) commented",
+        author: section.login,
+        body: section.body,
+        timestamp: currentPr.createdAt,
+        metadata: nil
+      )
+    }
+    timelineEvents = (buildPullRequestTimeline(pr: currentPr, snapshot: snap, activity: activityEvents) + bodyBots)
       .sorted { lhs, rhs in
         let l = prParsedDate(lhs.timestamp) ?? .distantFuture
         let r = prParsedDate(rhs.timestamp) ?? .distantFuture
         if l != r { return l < r }
         return lhs.id < rhs.id
       }
-    timelineDisplayItems = buildPrTimelineDisplayItems(timelineEvents)
+    // Triage layout (desktop digest parity): one section per push, one folded
+    // row per bot. GitHub's account flag rides along so GraphQL-style bot
+    // logins without `[bot]` still fold.
+    var botFlags: [String: Bool] = [:]
+    for review in snap.reviews where review.reviewerIsBot == true { botFlags[review.reviewer] = true }
+    for comment in snap.comments where comment.authorIsBot == true { botFlags[comment.author] = true }
+    for event in bodyBots { if let author = event.author { botFlags[author] = true } }
+    timelineDisplayItems = buildPrDigestDisplayItems(timelineEvents, botFlags: botFlags)
     let sortedThreads = reviewThreads.sorted { lhs, rhs in
       let l = prParsedDate(lhs.updatedAt ?? lhs.createdAt) ?? .distantPast
       let r = prParsedDate(rhs.updatedAt ?? rhs.createdAt) ?? .distantPast
@@ -421,11 +440,9 @@ struct PrDetailView: View {
   }
 
   private var showsStickyActionBar: Bool {
-    // The unified Overview thread carries its own comment composer + inline
-    // merge rail at the bottom (desktop parity), so a global sticky merge bar
-    // in the same slot would cover the composer. Keep the sticky bar only on
-    // the non-thread tabs (Files / Checks).
-    hasPrDetailData && selectedTab != .overview && selectedTab != .activity
+    // The next step rides every tab: it is the one thing the screen answers.
+    // The Overview's composer scrolls above it (bottom content margin).
+    hasPrDetailData
   }
 
   /// Whether a local lane already tracks this PR's branch. Only decides whether
@@ -481,48 +498,6 @@ struct PrDetailView: View {
     )
   }
 
-  /// Builds the inline merge-rail model for the unified Overview thread.
-  private var overviewMergeRailModel: PrOverviewMergeRailModel {
-    let state = snapshot?.status?.state ?? currentPr.state
-    let phase: PrOverviewMergeRailModel.Phase = {
-      if state == "merged" { return .merged }
-      if state == "closed" { return .closed }
-      return .active
-    }()
-    return PrOverviewMergeRailModel(
-      phase: phase,
-      repoOwner: currentPr.repoOwner,
-      repoName: currentPr.repoName,
-      prNumber: currentPr.githubPrNumber,
-      gate: mergeGateInfo,
-      isDraft: isCurrentPrDraft,
-      // Green must agree with the STRUCTURED checklist: the gate's review math
-      // uses requestedReviewers counts, which read 0 when reviewDecision is
-      // reviewRequired but nobody is currently requested — without the fail-row
-      // condition the rail could enable merge under a visible failing row. The
-      // non-green arm keeps the deliberate blocked-attempt (bypass) affordance.
-      canMerge: canRunPrActions
-        && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
-        && (mergeGateInfo.tone == .green
-              ? !mergeChecklistItems.contains(where: { $0.state == .fail })
-              : canAttemptBlockedMerge),
-      canClose: canRunPrActions && shouldShowCloseAction,
-      canDeleteBranch: !currentPr.laneId.isEmpty,
-      canReopen: canRunPrActions && shouldShowReopenAction,
-      isBusy: isDetailBusy,
-      mergeMethod: mergeMethod,
-      shipped: phase == .merged ? shippedFacts : nil,
-      onMerge: { presentMergeMethodPicker() },
-      onChangeMethod: { mergeMethodSheetPresented = true },
-      onClose: { closeCurrentPr() },
-      onReopen: { reopenCurrentPr() },
-      onDeleteBranch: {
-        cleanupChoice = .deleteBranch
-        cleanupConfirmationPresented = true
-      }
-    )
-  }
-
   private var behindBaseBy: Int {
     snapshot?.status?.behindBaseBy ?? 0
   }
@@ -537,7 +512,7 @@ struct PrDetailView: View {
   private func tabTitle(_ tab: PrDetailTab) -> String {
     switch tab {
     case .overview: return "Overview"
-    case .checks: return "CI / Checks"
+    case .checks: return "Checks"
     case .activity: return "Activity"
     case .files: return "Files"
     }
@@ -553,8 +528,8 @@ struct PrDetailView: View {
       let count = snapshot?.files.count ?? 0
       return count > 0 ? count : nil
     case .checks:
-      let count = snapshot?.checks.count ?? 0
-      return count > 0 ? count : nil
+      // The live note beside the label carries the checks state instead.
+      return nil
     case .activity:
       let comments = snapshot?.comments.count ?? 0
       let reviews = snapshot?.reviews.count ?? 0
@@ -636,14 +611,11 @@ struct PrDetailView: View {
         )
         .prListRow()
       } else {
-        PrDetailSummarySection(
+        PrDetailHeaderCard(
           pr: currentPr,
-          snapshot: snapshot,
-          mergeGate: mergeGateInfo,
-          commitsExpanded: $summaryCommitsExpanded,
-          onChecksTap: { selectedTab = .checks },
-          onFilesTap: { selectedTab = .files },
-          onCommitTap: focusCommitInTimeline
+          state: isCurrentPrDraft ? "draft" : (snapshot?.status?.state ?? currentPr.state),
+          authorLogin: snapshot?.detail?.author.login ?? githubItem?.author,
+          laneName: currentPr.laneName ?? availableLanes.first(where: { $0.id == currentPr.laneId })?.name
         )
         .prListRow()
 
@@ -767,6 +739,29 @@ struct PrDetailView: View {
       .presentationDetents([.large])
       .presentationDragIndicator(.hidden)
       .presentationBackground(.clear)
+    }
+    .sheet(isPresented: $nextStepSheetPresented) {
+      PrNextStepSheet(
+        step: nextStep,
+        labelFor: nextStepLabel,
+        isAvailable: nextStepAvailable,
+        onAction: runNextStep,
+        onMergeAnyway: {
+          nextStepSheetPresented = false
+          presentMergeMethodPicker()
+        },
+        onChip: { chip in
+          nextStepSheetPresented = false
+          switch chip.id {
+          case "checks": selectedTab = .checks
+          case "threads", "review": selectedTab = .overview
+          default: break
+          }
+        },
+        onDismiss: { nextStepSheetPresented = false }
+      )
+      .presentationDetents([.medium, .large])
+      .presentationDragIndicator(.visible)
     }
     .sheet(item: $stackPresentation) { presentation in
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
@@ -931,6 +926,62 @@ struct PrDetailView: View {
     }
   }
 
+  /// Draft and auto-merge, from the same repo setting the desktop menu reads.
+  private var prStateActionRows: [PrDetailExtraAction] {
+    var rows: [PrDetailExtraAction] = []
+    let state = isCurrentPrDraft ? "draft" : (snapshot?.status?.state ?? currentPr.state)
+    let canDraft = canRunPrActions && syncService.supportsRemoteAction("prs.setDraft")
+    if state == "open" {
+      rows.append(PrDetailExtraAction(id: "draft", title: "Convert to draft", symbol: "doc.badge.ellipsis", disabled: !canDraft) {
+        actionsSheetPresented = false
+        runPrAction("Converting to draft") { try await syncService.setPullRequestDraft(prId: effectivePrId, draft: true) }
+      })
+      let canAutoMerge = canRunPrActions && syncService.supportsRemoteAction("prs.setAutoMerge")
+      if snapshot?.status?.autoMergeEnabled == true {
+        rows.append(PrDetailExtraAction(id: "auto-merge-off", title: "Turn off auto-merge", symbol: "arrow.triangle.merge", tint: ADEColor.info, disabled: !canAutoMerge) {
+          actionsSheetPresented = false
+          runNextStep(.disableAutoMerge)
+        })
+      } else if snapshot?.status?.autoMergeAllowed != false {
+        rows.append(PrDetailExtraAction(id: "auto-merge-on", title: "Enable auto-merge", symbol: "arrow.triangle.merge", tint: ADEColor.info, disabled: !canAutoMerge) {
+          actionsSheetPresented = false
+          runNextStep(.enableAutoMerge)
+        })
+      } else if snapshot?.status?.canBypass == true {
+        rows.append(PrDetailExtraAction(id: "auto-merge-settings", title: "Auto-merge is off for this repo", symbol: "gearshape", tint: ADEColor.textSecondary) {
+          actionsSheetPresented = false
+          openGitHub(urlString: "https://github.com/\(currentPr.repoOwner)/\(currentPr.repoName)/settings")
+        })
+      }
+    } else if state == "draft" {
+      rows.append(PrDetailExtraAction(id: "ready", title: "Ready for review", symbol: "checkmark.circle", tint: ADEColor.success, disabled: !canDraft) {
+        actionsSheetPresented = false
+        runNextStep(.readyForReview)
+      })
+    }
+    return rows
+  }
+
+  private var prCopyActionRows: [PrDetailExtraAction] {
+    let copy: (String, String) -> Void = { value, message in
+      actionsSheetPresented = false
+      UIPasteboard.general.string = value
+      ADEHaptics.success()
+      actionMessage = message
+    }
+    return [
+      PrDetailExtraAction(id: "copy-number", title: "Copy PR number", symbol: "number") {
+        copy("#\(currentPr.githubPrNumber)", "PR number copied.")
+      },
+      PrDetailExtraAction(id: "copy-branch", title: "Copy branch name", symbol: "arrow.triangle.branch", disabled: currentPr.headBranch.isEmpty) {
+        copy(currentPr.headBranch, "Branch name copied.")
+      },
+      PrDetailExtraAction(id: "copy-checkout", title: "Copy checkout command", symbol: "terminal") {
+        copy("gh pr checkout \(currentPr.githubPrNumber) --repo \(currentPr.repoOwner)/\(currentPr.repoName)", "Checkout command copied.")
+      },
+    ]
+  }
+
   private var prActionsSheet: some View {
     PrDetailActionsSheet(
       canUpdateMetadata: canUpdateCurrentPrMetadata,
@@ -993,7 +1044,9 @@ struct PrDetailView: View {
       onRefresh: {
         actionsSheetPresented = false
         Task { await reload(refreshRemote: true) }
-      }
+      },
+      stateRows: prStateActionRows,
+      copyRows: prCopyActionRows
     )
   }
 
@@ -1024,6 +1077,9 @@ struct PrDetailView: View {
               .foregroundStyle(active ? ADEColor.textPrimary : ADEColor.textSecondary)
               .lineLimit(1)
               .minimumScaleFactor(0.85)
+            if tab == .checks {
+              PrChecksTabNote(checks: snapshot?.checks ?? [])
+            }
             if let count {
               Text("\(count)")
                 .font(.system(size: 9.5, weight: .bold, design: .monospaced))
@@ -1091,8 +1147,8 @@ struct PrDetailView: View {
       .prListRow()
     }
 
-    // Description (PR body) — the first card of the chronological thread.
-    let descriptionText = (snapshot?.detail?.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    // Description (PR body) — the page itself, not a comment card.
+    let descriptionText = prSplitBodyBotSections(snapshot?.detail?.body).body
     if !descriptionText.isEmpty {
       PrThreadDescriptionCard(
         author: snapshot?.detail?.author.login ?? githubItem?.author,
@@ -1101,26 +1157,9 @@ struct PrDetailView: View {
       .prListRow()
     }
 
-    // Chronological event feed — one row per event / folded commit group.
-    ForEach(timelineDisplayItems) { item in
-      let anchorId = timelineAnchorId(for: item)
-      PrTimelineDisplayRow(item: item)
-        .id(anchorId)
-        .onAppear {
-          timelineSectionMounted = true
-          scrollPendingTimelineAnchorIfReady(anchorId: pendingTimelineScrollId, scrollProxy: scrollProxy)
-        }
-        .onDisappear {
-          if selectedTab != .overview && selectedTab != .activity {
-            timelineSectionMounted = false
-          }
-        }
-        .prListRow()
-    }
-
-    // Review threads: unresolved first, resolved folded away (desktop parity).
+    // Needs attention: open review threads, pinned above the history.
     if !unresolvedThreads.isEmpty {
-      PrThreadSectionHeader(title: "Threads", trailing: "\(unresolvedThreads.count) unresolved")
+      PrNeedsAttentionHeader(count: unresolvedThreads.count)
         .prListRow()
       ForEach(unresolvedThreads) { thread in
         PrReviewThreadCard(
@@ -1141,6 +1180,33 @@ struct PrDetailView: View {
         .prListRow()
       }
     }
+
+    // History: one section per push, one folded row per bot.
+    ForEach(timelineDisplayItems) { item in
+      let anchorId = timelineAnchorId(for: item)
+      Group {
+        switch item {
+        case .event(let event):
+          PrTimelineEventRow(event: event)
+        case .push(_, let events):
+          PrPushDividerRow(events: events)
+        case .botGroup(_, let identity, let events):
+          PrBotGroupRow(identity: identity, events: events)
+        }
+      }
+        .id(anchorId)
+        .onAppear {
+          timelineSectionMounted = true
+          scrollPendingTimelineAnchorIfReady(anchorId: pendingTimelineScrollId, scrollProxy: scrollProxy)
+        }
+        .onDisappear {
+          if selectedTab != .overview && selectedTab != .activity {
+            timelineSectionMounted = false
+          }
+        }
+        .prListRow()
+    }
+
     if !resolvedThreads.isEmpty {
       PrCollapsibleResolvedSection(
         threads: resolvedThreads,
@@ -1184,24 +1250,10 @@ struct PrDetailView: View {
         onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) }
       )
       .prListRow()
-    } else {
-      PrOverviewMergeRail(model: overviewMergeRailModel, checklist: mergeChecklistItems)
-        .prListRow()
     }
 
-    // Metadata cards — the desktop right rail, stacked.
-    if let snapshot, !snapshot.checks.isEmpty {
-      PrOverviewChecksCard(checks: snapshot.checks) { selectedTab = .checks }
-        .prListRow()
-    }
-    if let commits = snapshot?.commits, !commits.isEmpty {
-      PrOverviewCommitsCard(commits: commits)
-        .prListRow()
-    }
-    if let files = snapshot?.files, !files.isEmpty {
-      PrOverviewFilesCard(files: files) { selectedTab = .files }
-        .prListRow()
-    }
+    // Merge state lives in the bottom bar on every tab; checks, commits and
+    // files have their own tabs. What stays is who is on the PR.
     if snapshot?.detail != nil {
       PrOverviewPeopleCard(
         detail: snapshot?.detail,
@@ -1238,7 +1290,7 @@ struct PrDetailView: View {
 
   }
 
-  private func timelineAnchorId(for item: PrTimelineDisplayItem) -> String {
+  private func timelineAnchorId(for item: PrDigestDisplayItem) -> String {
     "pr-timeline-\(item.id)"
   }
 
@@ -1268,10 +1320,12 @@ struct PrDetailView: View {
         if eventMatches(commit: commit, event: event) {
           return timelineAnchorId(for: item)
         }
-      case .commitGroup(_, _, let events):
+      case .push(_, let events):
         if events.contains(where: { eventMatches(commit: commit, event: $0) }) {
           return timelineAnchorId(for: item)
         }
+      case .botGroup:
+        continue
       }
     }
     return nil
@@ -1314,140 +1368,122 @@ struct PrDetailView: View {
 
   // MARK: - Sticky action bar
 
+  // MARK: - Next step (desktop Merge card parity)
+
+  private var checkCounts: (failing: Int, pending: Int, passing: Int) {
+    let checks = snapshot?.checks ?? []
+    let failing = checks.filter { $0.status == "completed" && ["failure", "timed_out", "cancelled", "action_required"].contains($0.conclusion ?? "") }.count
+    let pending = checks.filter { $0.status != "completed" }.count
+    let passing = checks.filter { $0.status == "completed" && $0.conclusion == "success" }.count
+    return (failing, pending, passing)
+  }
+
+  private var nextStep: PrNextStep {
+    let status = snapshot?.status
+    let counts = checkCounts
+    return PrNextStep.resolve(PrNextStepInput(
+      state: isCurrentPrDraft ? "draft" : (status?.state ?? currentPr.state),
+      mergeStateStatus: status?.mergeStateStatus,
+      mergeConflicts: status?.mergeConflicts ?? false,
+      behindBaseBy: status?.behindBaseBy,
+      mergeabilityComputing: status?.mergeabilityComputing ?? false,
+      checksStatus: status?.checksStatus ?? currentPr.checksStatus,
+      failingChecks: counts.failing,
+      pendingChecks: counts.pending,
+      passingChecks: counts.passing,
+      reviewDecision: status?.reviewDecision,
+      approvalsCount: status?.approvalsCount,
+      requiredApprovals: status?.requiredApprovals,
+      changesRequestedBy: prChangesRequestedBy(snapshot?.reviews ?? []),
+      unresolvedThreads: unresolvedThreadCount,
+      canBypass: status?.canBypass ?? false,
+      autoMergeAllowed: status?.autoMergeAllowed,
+      autoMergeEnabled: status?.autoMergeEnabled ?? false,
+      autoMergeMethod: status?.autoMergeMethod,
+      baseBranch: currentPr.baseBranch
+    ))
+  }
+
+  private func nextStepLabel(_ action: PrNextStepAction) -> String {
+    switch action {
+    case .deleteBranch: return "Delete branch"
+    case .reopen: return "Reopen"
+    case .readyForReview: return "Ready for review"
+    case .resolveConflicts: return currentPr.laneId.isEmpty ? "Resolve on GitHub" : "Rebase lane"
+    case .updateBranch: return "Update branch"
+    case .fixChecks: return "Open checks"
+    case .rerunChecks: return "Re-run checks"
+    case .addressFeedback: return "Show feedback"
+    case .enableAutoMerge: return "Enable auto-merge"
+    case .disableAutoMerge: return "Turn off auto-merge"
+    case .requestReview: return "Request review"
+    case .fixThreads: return "Show open threads"
+    case .merge: return "Merge…"
+    }
+  }
+
+  private func nextStepAvailable(_ action: PrNextStepAction) -> Bool {
+    switch action {
+    case .readyForReview: return canRunPrActions && syncService.supportsRemoteAction("prs.setDraft")
+    case .enableAutoMerge, .disableAutoMerge: return canRunPrActions && syncService.supportsRemoteAction("prs.setAutoMerge")
+    case .updateBranch: return canRunPrActions && !currentPr.laneId.isEmpty
+    case .rerunChecks: return canRerunChecks
+    case .merge: return canRunPrActions && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
+    case .reopen: return canRunPrActions && shouldShowReopenAction
+    case .deleteBranch: return !currentPr.laneId.isEmpty
+    default: return true
+    }
+  }
+
+  private func runNextStep(_ action: PrNextStepAction) {
+    nextStepSheetPresented = false
+    switch action {
+    case .merge: presentMergeMethodPicker()
+    case .deleteBranch:
+      cleanupChoice = .deleteBranch
+      cleanupConfirmationPresented = true
+    case .reopen: reopenCurrentPr()
+    case .readyForReview:
+      runPrAction("Marking ready for review") { try await syncService.setPullRequestDraft(prId: effectivePrId, draft: false) }
+    case .enableAutoMerge:
+      runPrAction("Enabling auto-merge") { try await syncService.setPullRequestAutoMerge(prId: effectivePrId, enabled: true, method: mergeMethod.rawValue) }
+    case .disableAutoMerge:
+      runPrAction("Turning off auto-merge") { try await syncService.setPullRequestAutoMerge(prId: effectivePrId, enabled: false) }
+    case .updateBranch: triggerRebase()
+    case .resolveConflicts:
+      if currentPr.laneId.isEmpty { openGitHub(urlString: "\(currentPr.githubUrl)/conflicts") } else { triggerRebase() }
+    case .fixChecks: selectedTab = .checks
+    case .rerunChecks: rerunChecks()
+    case .addressFeedback, .fixThreads: selectedTab = .overview
+    case .requestReview:
+      actionsSheetPresented = true
+    }
+  }
+
   private var stickyActionBar: some View {
-    let gate = mergeGateInfo
-    let canRebaseFromGate = gate.tone == .amber
-      && gate.target == .overview
-      && (behindBaseBy > 0 || snapshot?.status?.isMergeable == false)
-
-    // Single full-width action — matches the mocks. The pre-merge "needs
-    // rebase" / "merge blocked" states surface as inline body cards (Merge
-    // Gate, Needs Attention, Rebase Banner) — they don't double up as
-    // bottom buttons. The bottom bar is the one decisive action right now.
-    let label: String
-    let symbol: String
-    let isPrimary: Bool   // green = ready to merge
-    let isAmber: Bool     // amber = need rebase first
-    let action: () -> Void
-    let enabled: Bool
-    let isStackHandoff = nativeStackMembership != nil
-
+    let step = nextStep
     if nativeStackMembership != nil {
-      label = "Review stack on GitHub"
-      symbol = "square.stack.3d.up.fill"
-      isPrimary = false
-      isAmber = false
-      enabled = !currentPr.githubUrl.isEmpty
-      action = { openGitHub(urlString: currentPr.githubUrl) }
-    } else {
-      switch gate.tone {
-      case .green:
-        label = "Merge"
-        symbol = "checkmark.seal.fill"
-        isPrimary = true
-        isAmber = false
-        // Same structured-checklist agreement rule as overviewMergeRailModel.
-        enabled = canRunPrActions
-          && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
-          && !mergeChecklistItems.contains(where: { $0.state == .fail })
-        action = { presentMergeMethodPicker() }
-      case .amber:
-        if canRebaseFromGate {
-          label = behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase"
-          symbol = "arrow.triangle.2.circlepath"
-        } else if gate.target == .checks {
-          label = "Checks pending"
-          symbol = "clock.badge.checkmark"
-        } else if gate.target == .reviews {
-          label = "Review needed"
-          symbol = "person.crop.circle.badge.exclamationmark"
-        } else {
-          label = "Waiting for status"
-          symbol = "clock"
-        }
-        isPrimary = false
-        isAmber = true
-        enabled = canRebaseFromGate && canRunPrActions && !currentPr.laneId.isEmpty
-        action = { if canRebaseFromGate { triggerRebase() } }
-      case .red where canAttemptBlockedMerge:
-        label = "Attempt merge"
-        symbol = "arrow.triangle.merge"
-        isPrimary = false
-        isAmber = true
-        enabled = true
-        action = { presentMergeMethodPicker() }
-      case .red:
-        label = "Merge blocked"
-        symbol = "xmark.octagon.fill"
-        isPrimary = false
-        isAmber = false
-        enabled = false
-        action = { }
-      }
+      return AnyView(PrNextStepBar(
+        step: step,
+        primaryLabel: "Review stack on GitHub",
+        primaryEnabled: !currentPr.githubUrl.isEmpty,
+        isBusy: false,
+        onOpenSheet: { openGitHub(urlString: currentPr.githubUrl) },
+        onPrimary: { openGitHub(urlString: currentPr.githubUrl) }
+      ))
     }
-
-    return PrStickyActionBar {
-      Button {
-        if enabled {
-          ADEHaptics.success()
-          action()
-        }
-      } label: {
-        HStack(spacing: 8) {
-          // Inline spinner mirrors the per-button pattern from PrRebaseScreen so
-          // the decisive bottom action shows local progress while its durable
-          // round-trip runs.
-          if isDetailBusy {
-            ProgressView()
-              .controlSize(.small)
-              .tint(
-                isPrimary ? .white : (isStackHandoff ? ADEColor.tintPRs : (isAmber ? ADEColor.warning : ADEColor.danger))
-              )
-          } else {
-            Image(systemName: symbol)
-              .font(.system(size: 14, weight: .bold))
-          }
-          Text(isDetailBusy ? (detailBusyLabel ?? label) : label)
-            .font(.system(size: 15, weight: .bold))
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-        }
-        .foregroundStyle(
-          isPrimary ? Color.white : (isStackHandoff ? ADEColor.tintPRs : (isAmber ? ADEColor.warning : ADEColor.danger))
-        )
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background {
-          if isPrimary {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-              .fill(ADEColor.success)
-          } else {
-            ZStack {
-              RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(PrGlassPalette.threadCard)
-              RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(
-                  (isStackHandoff ? ADEColor.tintPRs : (isAmber ? ADEColor.warning : ADEColor.danger)).opacity(0.12)
-                )
-            }
-          }
-        }
-        .overlay(
-          RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(
-              isPrimary
-                ? Color.white.opacity(0.20)
-                : (isStackHandoff
-                    ? ADEColor.tintPRs.opacity(0.45)
-                    : (isAmber ? ADEColor.warning.opacity(0.45) : ADEColor.danger.opacity(0.45))),
-              lineWidth: 0.75
-            )
-        )
-        .opacity(enabled ? 1 : 0.55)
+    let primary = step.primary.flatMap { nextStepAvailable($0) ? $0 : nil }
+    return AnyView(PrNextStepBar(
+      step: step,
+      primaryLabel: primary.map(nextStepLabel),
+      primaryEnabled: primary != nil,
+      isBusy: isDetailBusy,
+      onOpenSheet: { nextStepSheetPresented = true },
+      onPrimary: {
+        ADEHaptics.success()
+        if let primary { runNextStep(primary) }
       }
-      .buttonStyle(.plain)
-      .disabled(!enabled)
-    }
+    ))
   }
 
   private func presentMergeMethodPicker() {
@@ -1943,6 +1979,10 @@ private struct PrDetailActionsSheet: View {
   let onCopyUrl: () -> Void
   let onCopyAdeLink: () -> Void
   let onRefresh: () -> Void
+  /// Draft and auto-merge rows (desktop ⋯ menu parity).
+  var stateRows: [PrDetailExtraAction] = []
+  /// Copy PR number / branch / checkout command.
+  var copyRows: [PrDetailExtraAction] = []
 
   var body: some View {
     ZStack {
@@ -1984,6 +2024,9 @@ private struct PrDetailActionsSheet: View {
             PrDetailActionRow(title: "Edit description", symbol: "text.alignleft", disabled: !canUpdateMetadata, action: onEditDescription)
             PrDetailActionRow(title: "Set labels", symbol: "tag", disabled: !canUpdateMetadata, action: onSetLabels)
             PrDetailActionRow(title: "Submit review", symbol: "checkmark.seal", disabled: !canRunActions, action: onSubmitReview)
+            ForEach(stateRows) { row in
+              PrDetailActionRow(title: row.title, symbol: row.symbol, tint: row.tint, disabled: row.disabled, action: row.action)
+            }
             if shouldShowClose {
               PrDetailActionRow(
                 title: "Close PR",
@@ -2020,6 +2063,9 @@ private struct PrDetailActionsSheet: View {
               disabled: !hasADELink,
               action: onCopyAdeLink
             )
+            ForEach(copyRows) { row in
+              PrDetailActionRow(title: row.title, symbol: row.symbol, tint: row.tint, disabled: row.disabled, action: row.action)
+            }
             PrDetailActionRow(title: "Refresh", symbol: "arrow.clockwise", action: onRefresh)
           }
           .padding(16)
@@ -2027,6 +2073,15 @@ private struct PrDetailActionsSheet: View {
       }
     }
   }
+}
+
+struct PrDetailExtraAction: Identifiable {
+  let id: String
+  let title: String
+  let symbol: String
+  var tint: Color = PrGlassPalette.textSecondary
+  var disabled: Bool = false
+  let action: () -> Void
 }
 
 private struct PrDetailActionRow: View {

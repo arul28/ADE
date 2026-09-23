@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import type { PrReview } from "../../../../shared/types";
-import { PrBotReviewCard, detectBotProvider } from "./PrBotReviewCard";
+import { PrBotReviewCard } from "./PrBotReviewCard";
 
 vi.mock("../../chat/CodeHighlighter.tsx", () => ({
   HighlightedCode: ({ code }: { code: string }) => <pre>{code}</pre>,
@@ -34,30 +34,6 @@ afterEach(() => {
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
-describe("detectBotProvider", () => {
-  it("identifies greptile, seer, coderabbit, claude, sourcery logins", () => {
-    expect(detectBotProvider("greptile-apps[bot]")).toBe("greptile");
-    expect(detectBotProvider("seer-by-sentry")).toBe("seer");
-    expect(detectBotProvider("coderabbitai[bot]")).toBe("coderabbit");
-    expect(detectBotProvider("claude-reviewer")).toBe("claude");
-    expect(detectBotProvider("sourcery-ai[bot]")).toBe("sourcery");
-  });
-
-  it("identifies copilot, codex, vercel, linear, codecov bot logins", () => {
-    expect(detectBotProvider("github-copilot[bot]")).toBe("copilot");
-    expect(detectBotProvider("copilot-pull-request-reviewer[bot]")).toBe("copilot");
-    expect(detectBotProvider("chatgpt-codex-connector[bot]")).toBe("codex");
-    expect(detectBotProvider("vercel[bot]")).toBe("vercel");
-    expect(detectBotProvider("linear[bot]")).toBe("linear");
-    expect(detectBotProvider("codecov[bot]")).toBe("codecov");
-  });
-
-  it("returns null for human logins", () => {
-    expect(detectBotProvider("octocat")).toBeNull();
-    expect(detectBotProvider("")).toBeNull();
-  });
-});
-
 describe("PrBotReviewCard", () => {
   it("starts collapsed and toggles open on click", () => {
     render(
@@ -76,7 +52,7 @@ describe("PrBotReviewCard", () => {
     render(
       <PrBotReviewCard
         review={makeReview({
-          reviewer: "seer-by-sentry",
+          reviewer: "greptile-apps[bot]",
           body: "Found one P0 crash and one P2 code smell.",
         })}
         repoOwner="acme"
@@ -108,6 +84,43 @@ describe("PrBotReviewCard", () => {
       <PrBotReviewCard review={makeReview()} repoOwner="acme" repoName="ade" />,
     );
     expect(screen.getByText("App")).toBeTruthy();
+  });
+
+  it("takes the display name from the shared bot identity table", () => {
+    render(
+      <PrBotReviewCard
+        review={makeReview({ reviewer: "coderabbitai[bot]", body: "Summary." })}
+        repoOwner="acme"
+        repoName="ade"
+      />,
+    );
+    const card = document.querySelector("[data-pr-bot-review-card]");
+    expect(card?.getAttribute("data-provider")).toBe("coderabbit");
+    expect(screen.getByRole("button", { name: /CodeRabbit/ })).toBeTruthy();
+  });
+
+  it("uses the GitHub account flag for a short agent login", () => {
+    const { container } = render(
+      <PrBotReviewCard
+        review={makeReview({ reviewer: "cursor", reviewerIsBot: true, body: "Found one P1 bug." })}
+        repoOwner="acme"
+        repoName="ade"
+      />,
+    );
+    expect(container.querySelector("[data-pr-bot-review-card]")?.getAttribute("data-provider")).toBe("cursor");
+    expect(container.querySelector("[data-agent-kind='cursor']")).toBeTruthy();
+    expect(screen.getByText("P1")).toBeTruthy();
+  });
+
+  it("does not mine severity badges from an unknown bot's prose", () => {
+    render(
+      <PrBotReviewCard
+        review={makeReview({ reviewer: "some-helper[bot]", body: "Priority P0 in the docs." })}
+        repoOwner="acme"
+        repoName="ade"
+      />,
+    );
+    expect(screen.queryByText("P0")).toBeNull();
   });
 
   it("sets data-provider for unknown reviewers to 'unknown'", () => {

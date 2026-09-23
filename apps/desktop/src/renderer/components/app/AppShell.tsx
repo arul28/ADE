@@ -104,7 +104,7 @@ type AutoLinkToast = {
 };
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
+  const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
@@ -115,7 +115,6 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/lanes",
   "/files",
   "/work",
-  "/graph",
   "/prs",
   "/history",
   "/automations",
@@ -204,7 +203,6 @@ function serializeLocationRoute(location: ReturnType<typeof useLocation>): strin
     "/lanes",
     "/files",
     "/work",
-    "/graph",
     "/prs",
     "/history",
     "/automations",
@@ -1155,7 +1153,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/lanes": "tab-tint-lanes",
       "/files": "tab-tint-files",
       "/work": "tab-tint-work",
-      "/graph": "tab-tint-graph",
       "/prs": "tab-tint-prs",
       "/history": "tab-tint-history",
       "/automations": "tab-tint-automations",

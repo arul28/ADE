@@ -26,7 +26,7 @@ Ground rules used to compile this list:
 - **Estimated gain**: 30–80 ms per second of active use.
 
 ### 3. Split mega-components into memoized children
-- **Where**: `WorkspaceGraphPage.tsx` (4406 lines), `PrDetailPane.tsx` (3569), `AgentChatMessageList.tsx` (3175), `AgentChatPane.tsx` (3080), `IntegrationTab.tsx` (3022).
+- **Where**: `PrDetailPane.tsx` (3569), `AgentChatMessageList.tsx` (3175), `AgentChatPane.tsx` (3080), `IntegrationTab.tsx` (3022).
 - **Issue**: Single-file components re-render fully on any prop change. List items lack `memo`.
 - **Fix**: Extract stable list items into `React.memo`'d children. Move derived arrays into `useMemo`.
 - **Risk**: Medium (dep-array care required).

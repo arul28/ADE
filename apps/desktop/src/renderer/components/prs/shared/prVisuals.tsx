@@ -3,8 +3,6 @@ import { CircleNotch } from "@phosphor-icons/react";
 import type { PrChecksStatus, PrReviewStatus, PrState } from "../../../../shared/types";
 import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 
-export type PrActivityState = "active" | "idle" | "stale";
-
 type PrBadgeSpec = {
   label: string;
   color: string;
@@ -12,8 +10,13 @@ type PrBadgeSpec = {
   border: string;
 };
 
+/** The tokens are CSS variables, so alpha goes through color-mix, not a hex suffix. */
 function colorBadge(color: string) {
-  return { color, bg: `${color}18`, border: `${color}30` };
+  return {
+    color,
+    bg: `color-mix(in srgb, ${color} 9%, transparent)`,
+    border: `color-mix(in srgb, ${color} 19%, transparent)`,
+  };
 }
 
 export function getPrStateBadge(state: PrState): PrBadgeSpec {
@@ -41,25 +44,6 @@ export function getPrReviewsBadge(status: PrReviewStatus): PrBadgeSpec {
   return { label: "NONE", ...colorBadge(COLORS.textMuted) };
 }
 
-export function getPrEdgeColor(args: {
-  state: PrState;
-  checksStatus: PrChecksStatus;
-  reviewStatus: PrReviewStatus;
-  ciRunning?: boolean;
-}): string {
-  if (args.state === "merged") return COLORS.success;
-  if (args.state === "draft") return COLORS.accent;
-  if (args.reviewStatus === "changes_requested") return COLORS.danger;
-  if (args.ciRunning || args.checksStatus === "pending") return COLORS.info;
-  if (args.reviewStatus === "requested" || args.reviewStatus === "none") return COLORS.warning;
-  if (args.checksStatus === "failing") return COLORS.danger;
-  // ADE-135: an approved PR whose commit nothing verified must not wear the
-  // success edge — the approval is real, the verification is not.
-  if (args.checksStatus === "not_run") return COLORS.textMuted;
-  if (args.checksStatus === "passing" || args.reviewStatus === "approved") return COLORS.success;
-  return COLORS.textMuted;
-}
-
 export function getPrCiDotColor(args: {
   checksStatus: PrChecksStatus;
   ciRunning?: boolean;
@@ -82,19 +66,6 @@ export function getPrReviewDotColor(args: { reviewStatus: PrReviewStatus }): str
 export function formatCompactCount(value: number): string {
   if (value >= 1000) return `${Math.round(value / 100) / 10}k`;
   return String(value);
-}
-
-export function derivePrActivityState(args: {
-  state: PrState;
-  reviewStatus: PrReviewStatus;
-  lastActivityAt: string | null;
-  pendingCheckCount?: number;
-}): PrActivityState {
-  if (args.state === "merged" || args.state === "closed") return "idle";
-  if ((args.pendingCheckCount ?? 0) > 0 || args.reviewStatus === "requested") return "active";
-  const lastActivityTs = args.lastActivityAt ? Date.parse(args.lastActivityAt) : Number.NaN;
-  if (Number.isFinite(lastActivityTs) && Date.now() - lastActivityTs > 5 * 24 * 60 * 60 * 1000) return "stale";
-  return "idle";
 }
 
 export function InlinePrBadge(props: { label: string; color: string; bg: string; border: string }) {
@@ -139,8 +110,8 @@ export function PrCiRunningIndicator(props: {
         gap: 4,
         padding: "2px 6px",
         borderRadius: 999,
-        border: `1px solid ${color}26`,
-        background: `${color}12`,
+        border: `1px solid color-mix(in srgb, ${color} 15%, transparent)`,
+        background: `color-mix(in srgb, ${color} 7%, transparent)`,
         color,
         fontFamily: SANS_FONT,
         fontSize: 10,

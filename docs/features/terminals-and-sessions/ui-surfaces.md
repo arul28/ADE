@@ -404,9 +404,8 @@ context menu, lowers opacity, and renders a centered spinner/status overlay.
 This is used while the card's owning lane is being deleted.
 
 Selected and hovered rows spend the reserved background surface; multi-select
-adds a subtle ring. Non-prominent states (working, background work, starting, stale, stopped,
-ended, snoozed, and settled) recede until hovered, while Needs you, Done, and
-Failed keep full weight. Only canonical `needs_you` contributes to the Work-tab
+adds a subtle ring. Every row renders at full opacity; the status label's hue
+tells the states apart. Only canonical `needs_you` contributes to the Work-tab
 highlight, notifications, and Dock badge. `useAppWideSessionAttention` owns
 that count at `AppShell`, so it remains live outside Work.
 
@@ -992,6 +991,22 @@ Tabs:
   reach port N on <machine>" bar with Allow once / Always for this lane.
   See `docs/features/remote-runtime/README.md`.
 
+  **Lane groups.** Each tab carries a sticky `groupLaneId`: the lane it was
+  opened from, or the lane of the agent that opened it. It is set once and a
+  later navigation does not change it, so a tab keeps its lane after the agent
+  lease ends. `orderBrowserTabsByLane` (`chat/browser/browserTabGroups.ts`)
+  orders the strip: the tabs of the current lane first, then each other lane
+  in the order its first tab opened, then tabs with no lane. Inside a group,
+  tabs stay in the order they opened. `BrowserTabStrip` outlines each tab in
+  its lane's color. The robot mark shows only while a chat holds the tab
+  (`ownerChatSessionId`); a lane group alone is not an agent lease.
+
+  **Zoom-aware inspect.** The preview sets a CSS zoom on `<body>`. The inspect
+  overlay attaches to the document element, outside that zoom, and each hit
+  test also probes the pointer divided and multiplied by the zoom. It keeps
+  the element whose box contains the pointer, so the outline stays on the
+  element at any preview zoom.
+
   **Login handoff.** An agent that hits a page it cannot get past — a login
   form, a CAPTCHA, an HTTP-auth or client-certificate prompt — calls
   `ade browser handoff --tab <id> --reason "..."`. `startHandoff` in
@@ -1508,7 +1523,9 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   synthetic decline.
 - Chat rows also carry a **Hand off…** submenu with **Local handoff** and
   **Another machine** — both select the row and route the intent to the chat
-  pane's Handoff surface through `lib/chatHandoffIntent.ts` — plus **Auto
+  pane through `lib/chatHandoffIntent.ts`, which opens the local handoff dialog
+  or the cross-machine modal (see
+  [Chat Actions and Sources](../chat/composer-and-ui.md#chat-actions-and-sources)) — plus **Auto
   handoff…** (or **Edit auto handoff…** once rules exist for the chat) and
   **Remove auto handoff**, which open `AutoHandoffModal` — the chat menu's way
   of arming "when this chat hits its limit / fails / ends with no PR, continue

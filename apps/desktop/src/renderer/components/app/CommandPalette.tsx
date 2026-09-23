@@ -84,6 +84,11 @@ import {
   type ThreadIndexEntry,
 } from "./commandPaletteThreads";
 import {
+  CommandPaletteGlyph,
+  paletteCaption,
+  settingsPaletteCaption,
+} from "./commandPaletteMarks";
+import {
   buildWorkResults,
   buildWorkToolCommands,
   commandsLeadPaletteResults,
@@ -552,7 +557,7 @@ export function CommandPalette({
       {
         id: "project-browse",
         title: hasActiveProject ? "Open another project" : "Open project",
-        hint: "Browse folders in ADE before opening a repo",
+        hint: "Browse folders, then open",
         group: "Projects",
         closeOnRun: false,
         run: startProjectBrowse,
@@ -568,7 +573,7 @@ export function CommandPalette({
       {
         id: "project-clone",
         title: "Clone from GitHub",
-        hint: "Paste a URL or pick from your repos",
+        hint: "Paste a URL or pick a repo",
         group: "Projects",
         closeOnRun: false,
         run: startProjectClone,
@@ -576,7 +581,7 @@ export function CommandPalette({
       {
         id: "project-remote",
         title: "Connect to another machine",
-        hint: "Add a computer over SSH and list its ADE projects",
+        hint: "Connect a computer over SSH",
         group: "Projects",
         closeOnRun: false,
         run: startProjectRemote,
@@ -584,6 +589,7 @@ export function CommandPalette({
       {
         id: "go-lanes",
         title: "Go to Lanes",
+        hint: "Create and stack worktrees",
         shortcut: "G L",
         group: "Navigation",
         run: () => navigate("/lanes"),
@@ -591,6 +597,7 @@ export function CommandPalette({
       {
         id: "go-files",
         title: "Go to Files",
+        hint: "Browse the lane's files",
         shortcut: "G F",
         group: "Navigation",
         run: () => navigate("/files"),
@@ -598,6 +605,7 @@ export function CommandPalette({
       {
         id: "go-work",
         title: "Go to Work",
+        hint: "Chats, shells, and tools",
         shortcut: "G T",
         group: "Navigation",
         run: () => navigate("/work"),
@@ -610,7 +618,8 @@ export function CommandPalette({
             {
               id: "capture-screen-for-cto",
               title: "Ask the CTO about this screen",
-              hint: `Capture the window in front and attach it (${captureGestureChord()})`,
+              hint: "Attach the front window",
+              shortcut: captureGestureChord(),
               keywords: ["screenshot", "capture", "screen", "cto", "window", "image", "attach"],
               group: "Navigation",
               run: () => {
@@ -622,21 +631,15 @@ export function CommandPalette({
       {
         id: "go-cto",
         title: "Go to CTO",
-        hint: "The persistent project CTO, its team, and its Linear sync",
+        hint: "Project CTO and Linear",
         keywords: ["cto", "agent", "org", "team", "linear"],
         group: "Navigation",
         run: () => navigate("/cto"),
       },
       {
-        id: "go-graph",
-        title: "Go to Graph",
-        shortcut: "G G",
-        group: "Navigation",
-        run: () => navigate("/graph"),
-      },
-      {
         id: "go-prs",
         title: "Go to PRs",
+        hint: "Review pull requests",
         shortcut: "G R",
         group: "Navigation",
         run: () => navigate(readStoredPrsRoute(project?.rootPath) ?? "/prs"),
@@ -644,6 +647,7 @@ export function CommandPalette({
       {
         id: "go-history",
         title: "Go to History",
+        hint: "Commits and lane history",
         shortcut: "G H",
         group: "Navigation",
         run: () => navigate("/history"),
@@ -666,6 +670,7 @@ export function CommandPalette({
       {
         id: "go-settings",
         title: "Go to Settings",
+        hint: "Providers, GitHub, and keys",
         shortcut: "G S",
         group: "Navigation",
         run: () => navigate("/settings"),
@@ -677,7 +682,7 @@ export function CommandPalette({
       ...availableSettingsTabs().map((tab) => ({
         id: `go-settings-${tab.id}`,
         title: `Go to ${tab.label}`,
-        hint: tab.description,
+        hint: settingsPaletteCaption(tab.id) ?? tab.description,
         group: "Settings",
         run: () => navigate(`/settings?tab=${tab.id}`),
       })),
@@ -723,15 +728,9 @@ export function CommandPalette({
         run: () => navigate("/lanes"),
       },
       {
-        id: "action-open-graph",
-        title: "Open Workspace Graph",
-        hint: "Visual dependency graph",
-        group: "Actions",
-        run: () => navigate("/graph"),
-      },
-      {
         id: "lane-next",
         title: "Select Next Lane",
+        hint: "Move to the next lane",
         shortcut: "]",
         group: "Lanes",
         run: () => {
@@ -749,6 +748,7 @@ export function CommandPalette({
       {
         id: "lane-prev",
         title: "Select Previous Lane",
+        hint: "Move to the previous lane",
         shortcut: "[",
         group: "Lanes",
         run: () => {
@@ -766,6 +766,7 @@ export function CommandPalette({
       {
         id: "lane-filter",
         title: "Focus Lane Filter",
+        hint: "Filter the lane list",
         shortcut: "/",
         group: "Lanes",
         run: () => {
@@ -2019,17 +2020,9 @@ export function CommandPalette({
                     </Dialog.Close>
                   </div>
                 ) : (
-                  <div
-                    className="relative flex items-center gap-3 border-b px-4"
-                    style={{
-                      background:
-                        "color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.08))",
-                      borderColor:
-                        "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
-                    }}
-                  >
+                  <div className="relative flex items-center gap-3 border-b border-[var(--color-border)] px-4">
                     <MagnifyingGlass
-                      size={18}
+                      size={16}
                       weight="regular"
                       className="shrink-0 text-[var(--color-muted-fg)]"
                     />
@@ -2051,10 +2044,7 @@ export function CommandPalette({
                         isBrowsing ? handleBrowseKeyDown : handleDefaultKeyDown
                       }
                       placeholder={inputPlaceholder}
-                      className={cn(
-                        "h-[56px] w-full bg-transparent text-[15px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-muted-fg)]",
-                        !isBrowsing && "font-mono",
-                      )}
+                      className="ade-palette-search h-[52px] w-full border-0 bg-transparent text-[15px] text-[var(--color-fg)] shadow-none outline-none placeholder:text-[var(--color-muted-fg)] focus:border-transparent focus:shadow-none"
                       autoFocus
                     />
                     {!isBrowsing && searchLoading ? (
@@ -2064,25 +2054,20 @@ export function CommandPalette({
                         className="shrink-0 animate-spin text-[var(--color-muted-fg)]"
                       />
                     ) : null}
-                    <span className="hidden shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
-                      ESC
-                    </span>
+                    {!isBrowsing ? (
+                      <WorkFilterBar
+                        query={q}
+                        parsed={parsedWorkQuery}
+                        options={workFacetOptions}
+                        filterMenuKey={filterMenuKey}
+                        onMenuKeyChange={setFilterMenuKey}
+                        onAdd={addWorkFilter}
+                        onRemove={removeWorkFilter}
+                        onClear={clearWorkFilters}
+                      />
+                    ) : null}
                   </div>
                 )}
-
-                {!isAddFlow && !isBrowsing ? (
-                  <WorkFilterBar
-                    query={q}
-                    parsed={parsedWorkQuery}
-                    options={workFacetOptions}
-                    filterMenuKey={filterMenuKey}
-                    matchCount={workResults.length}
-                    onMenuKeyChange={setFilterMenuKey}
-                    onAdd={addWorkFilter}
-                    onRemove={removeWorkFilter}
-                    onClear={clearWorkFilters}
-                  />
-                ) : null}
 
                 {isAddFlow ? (
                   <div className="flex-1 overflow-auto p-6">
@@ -2591,23 +2576,24 @@ export function CommandPalette({
                                             type="button"
                                             data-cmd-item
                                             className={cn(
-                                              "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                                              "mx-2 flex w-[calc(100%-1rem)] items-center gap-3 rounded-lg border border-transparent px-2.5 py-2 text-left transition-colors",
                                               isSelected
-                                                ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-                                                : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
+                                                ? "bg-white/[0.06]"
+                                                : "hover:bg-white/[0.04]",
                                             )}
                                             onMouseEnter={() =>
                                               setSelectedIdx(index)
                                             }
                                             onClick={() => runCommand(command)}
                                           >
-                                            <div className="min-w-0">
+                                            <CommandPaletteGlyph id={command.id} />
+                                            <div className="min-w-0 flex-1">
                                               <div className="truncate text-sm font-medium text-[var(--color-fg)]">
                                                 {command.title}
                                               </div>
                                               {command.hint ? (
                                                 <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
-                                                  {command.hint}
+                                                  {paletteCaption(command.hint)}
                                                 </div>
                                               ) : null}
                                             </div>

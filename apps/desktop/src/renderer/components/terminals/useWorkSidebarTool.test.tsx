@@ -469,6 +469,56 @@ describe("work tool runtime publish", () => {
     expect(setActiveTool).toHaveBeenCalledWith("lane-studio", "git", ["git"], studioPin);
   });
 
+  it("retries once without the active tool when an older runtime rejects it", async () => {
+    setActiveTool.mockImplementationOnce(async () => {
+      throw new Error('work_tools.setActiveTool got an unknown tool "pr".');
+    });
+    const { result } = renderHook(() => useWorkSidebarTool("lane-studio", studioPin));
+    act(() => result.current.setTool("git"));
+    act(() => result.current.setTool("pr"));
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_TOOL_PUBLISH_DEBOUNCE_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(setActiveTool.mock.calls).toEqual([
+      ["lane-studio", "pr", ["git", "pr"], studioPin],
+      ["lane-studio", null, ["git", "pr"], studioPin],
+    ]);
+  });
+
+  it("does not retry without the tool when the publish fails for another reason", async () => {
+    setActiveTool.mockImplementationOnce(async () => {
+      throw new Error("runtime unavailable");
+    });
+    const { result } = renderHook(() => useWorkSidebarTool("lane-studio", studioPin));
+    act(() => result.current.setTool("git"));
+    await act(async () => {
+      vi.advanceTimersByTime(WORK_TOOL_PUBLISH_DEBOUNCE_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(setActiveTool.mock.calls).toEqual([["lane-studio", "git", ["git"], studioPin]]);
+  });
+
+  it("does not retry a rejected publish that already had no active tool", async () => {
+    setActiveTool.mockImplementation(async () => {
+      throw new Error("runtime unavailable");
+    });
+    try {
+      renderHook(() => useWorkSidebarTool("lane-studio", studioPin));
+      await act(async () => {
+        vi.advanceTimersByTime(WORK_TOOL_PUBLISH_DEBOUNCE_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(setActiveTool).toHaveBeenCalledTimes(1);
+      expect((setActiveTool.mock.calls[0] as unknown[] | undefined)?.[1]).toBeNull();
+    } finally {
+      setActiveTool.mockImplementation(async () => undefined);
+    }
+  });
+
   it("stores lane tool tabs on the session machine after the tab dropdown moves", () => {
     useAppStore.setState({
       project: { rootPath: PROJECT_ROOT, name: "Repo" },

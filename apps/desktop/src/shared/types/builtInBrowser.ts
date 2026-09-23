@@ -34,6 +34,13 @@ export type BuiltInBrowserClaimArgs = BuiltInBrowserProjectScopeArgs & {
   tabId?: string | null;
   laneId?: string | null;
   chatSessionId?: string | null;
+  /**
+   * Lane this tab belongs to for grouping. Sticky: set once when the tab is
+   * opened, never cleared by a later human navigation, and never a lease.
+   * Human opens pass this without `laneId` so the tab is grouped but not
+   * agent-owned. Agent opens omit it and the service stamps the claim lane.
+   */
+  groupLaneId?: string | null;
   force?: boolean;
   leaseTtlMs?: number | null;
 };
@@ -68,6 +75,12 @@ export type BuiltInBrowserTab = {
   isLoading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  /**
+   * Lane group for the tab strip. Distinct from the agent lease: a tab a
+   * person opened in a chat is grouped with that lane and still has no owner.
+   * Absent on a main process that predates grouping.
+   */
+  groupLaneId?: string | null;
   ownerLaneId: string | null;
   ownerChatSessionId: string | null;
   ownerClaimedAt: string | null;

@@ -3,7 +3,6 @@ import type { IntegrationProposal, LaneSummary } from "../../shared/types";
 import {
   buildIntegrationSourcesByLaneId,
   isHeuristicIntegrationLane,
-  isIntegrationLaneFromMetadata,
 } from "./integrationLanes";
 
 function makeLane(id: string, name: string, overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -63,17 +62,6 @@ describe("integrationLanes", () => {
       { laneId: "lane-a", laneName: "auth" },
       { laneId: "lane-b", laneName: "billing" },
     ]);
-  });
-
-  it("uses metadata before falling back to name/description heuristics", () => {
-    const regularLane = makeLane("lane-feature", "feature/auth");
-    const heuristicLane = makeLane("lane-int", "integration/preview");
-    const map = new Map([
-      ["lane-feature", [{ laneId: "lane-a", laneName: "auth" }]],
-    ]);
-
-    expect(isIntegrationLaneFromMetadata(regularLane, map)).toBe(true);
-    expect(isHeuristicIntegrationLane(heuristicLane)).toBe(true);
   });
 
   it("returns empty map when given no proposals", () => {
@@ -177,11 +165,5 @@ describe("integrationLanes", () => {
   it("isHeuristicIntegrationLane returns false for non-integration lanes", () => {
     const lane = makeLane("lane-x", "feature/auth", { description: "Normal feature work" });
     expect(isHeuristicIntegrationLane(lane)).toBe(false);
-  });
-
-  it("isIntegrationLaneFromMetadata returns false when lane is absent from both metadata and heuristic", () => {
-    const lane = makeLane("lane-x", "feature/auth");
-    const emptyMap = new Map<string, { laneId: string; laneName: string }[]>();
-    expect(isIntegrationLaneFromMetadata(lane, emptyMap)).toBe(false);
   });
 });

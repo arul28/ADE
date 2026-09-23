@@ -2,8 +2,8 @@
  * Lane ordering for the Work sidebar's by-lane list.
  *
  * Deliberately separate from `sortLanesForTabs` (components/lanes/laneUtils.ts):
- * that helper is shared with the Lanes route and the workspace graph, neither of
- * which knows about session quietness, Work-scoped pins, or a user-chosen sort
+ * that helper is shared with the Lanes route, which does not know about
+ * session quietness, Work-scoped pins, or a user-chosen sort
  * mode. Keeping this here means the Lanes tab cannot regress when the Work
  * sidebar's ordering rules change.
  *

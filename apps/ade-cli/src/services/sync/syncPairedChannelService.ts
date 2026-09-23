@@ -144,7 +144,9 @@ export function isPairedRuntimeEnvelopeType(
     || type === "rpc_close"
     || type === "fwd_open"
     || type === "fwd_data"
-    || type === "fwd_close";
+    || type === "fwd_close"
+    || type === "fwd_pause"
+    || type === "fwd_resume";
 }
 
 type LoggerLike = {
@@ -166,6 +168,8 @@ type ForwardChannel = {
   outboundPending: Buffer[];
   outboundPendingBytes: number;
   resumeTimer: ReturnType<typeof setInterval> | null;
+  /** The client asked us to stop reading until its local socket drains. */
+  peerPaused: boolean;
 };
 
 type PeerChannels = {
@@ -345,7 +349,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
   const flushForwardOutbound = (peer: TPeer, forwardId: string): void => {
     const forward = peers.get(peer)?.forwards.get(forwardId);
-    if (!forward) return;
+    if (!forward || forward.peerPaused) return;
     while (
       forward.outboundPending.length > 0
       && args.getBufferedAmount(peer) < peerBackpressureBytes
@@ -404,7 +408,8 @@ export function createSyncPairedChannelService<TPeer extends object>(
       const forward = peers.get(peer)?.forwards.get(forwardId);
       if (!forward) return;
       if (
-        forward.outboundPending.length > 0
+        forward.peerPaused
+        || forward.outboundPending.length > 0
         || args.getBufferedAmount(peer) >= peerBackpressureBytes
       ) {
         if (!queueForwardOutbound(peer, forwardId, chunk)) return;
@@ -608,6 +613,7 @@ export function createSyncPairedChannelService<TPeer extends object>(
       outboundPending: [],
       outboundPendingBytes: 0,
       resumeTimer: null,
+      peerPaused: false,
     };
     channelsFor(peer).forwards.set(forwardId, forward);
 
@@ -757,6 +763,36 @@ export function createSyncPairedChannelService<TPeer extends object>(
         case "fwd_close":
           closeForward(peer, id, closeReason(value.reason, "Forward closed by peer."), false);
           break;
+        case "fwd_pause": {
+          const forward = peers.get(peer)?.forwards.get(id);
+          if (!forward) break;
+          forward.peerPaused = true;
+          try {
+            forward.socket.pause();
+          } catch {
+            // The socket may already be closing.
+          }
+          break;
+        }
+        case "fwd_resume": {
+          const forward = peers.get(peer)?.forwards.get(id);
+          if (!forward) break;
+          forward.peerPaused = false;
+          if (forward.connected) {
+            try {
+              forward.socket.resume();
+            } catch {
+              // The socket may already be closing.
+            }
+          }
+          flushForwardOutbound(peer, id);
+          break;
+        }
+        default: {
+          const _exhaustive: never = type;
+          void _exhaustive;
+          break;
+        }
       }
       return true;
     },

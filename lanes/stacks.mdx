@@ -53,11 +53,7 @@ A child only tracks its parent when the parent is a real (non-primary) lane. A l
 - Child PRs automatically target their parent's branch.
 - Merge the base PR first, then walk up the stack.
 - When the parent advances, ADE keeps the children current (below).
-- Open the [graph](/tools/workspace-graph) when the stack gets hard to picture.
-
-<Frame caption="The worktree graph shows the stack, its PR links, and merge order at a glance.">
-  <img src="/media/features/worktrees/worktree-graph.webp" alt="A stack of child lanes in the worktree graph with PR links and merge order" />
-</Frame>
+- Open the lane's stack pane when the stack gets hard to picture.
 
 ## Rebase propagation when the parent moves
 
@@ -77,7 +73,7 @@ Stack only genuinely dependent work. If two tasks can merge in either order, giv
   <Card title="Stacked PRs guide" icon="code-pull-request" href="/guides/stacked-prs">
     The end-to-end review and merge flow for a stack.
   </Card>
-  <Card title="Workspace graph" icon="diagram-project" href="/tools/workspace-graph">
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
     See stack relationships, PR links, and merge order.
   </Card>
 </CardGroup>

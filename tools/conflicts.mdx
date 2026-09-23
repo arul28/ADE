@@ -6,7 +6,7 @@ icon: "code-merge"
 
 ADE surfaces integration risk before it becomes a merge-time emergency. A single engine predicts conflicts, computes pairwise risk, runs pre-flight merge simulations, and drives AI-assisted resolution — so you can reorder, rebase, or fix a collision while work is still in progress.
 
-There's no standalone "Conflicts" tab; the signal is projected into the surfaces where it matters: lane status badges, the **Graph** risk matrix, and the **PRs** rebase and integration views.
+There's no standalone "Conflicts" tab; the signal is projected into the surfaces where it matters: lane status badges and the **PRs** rebase and integration views.
 
 ## Pre-flight detection
 
@@ -34,17 +34,17 @@ For each lane pair, ADE derives a risk level from how many files overlap and whe
 | **Medium** | Several shared files; review before merging. |
 | **High** | Marker-level conflicts predicted, or heavy overlap — expect manual resolution. |
 
-The project-wide **risk matrix** in the Graph tab renders every pair at once, animating cells as risk levels change between prediction sweeps. Hover a cell for the overlapping file list; click an edge to open merge simulation and resolution.
+ADE also keeps a project-wide **risk matrix** that scores every lane pair at once. There is no matrix view in the app. Agents and scripts read it through the conflicts tools and actions: the CTO `getConflictRiskMatrix` tool, and the `conflicts.getRiskMatrix` and `conflicts.getBatchAssessment` actions.
 
 ## Live merge simulation
 
-From a Graph edge or a lane's merge panel, you can run a one-shot **merge simulation** between two lanes (or a lane and its base). ADE computes the merge base, runs `git merge-tree`, and returns one of:
+Agents can run a one-shot **merge simulation** (the CTO `simulateMerge` tool or the `conflicts.simulateMerge` action) between two lanes (or a lane and its base). ADE computes the merge base, runs `git merge-tree`, and returns one of:
 
 - **Clean** — no conflicts; the merged file list and diff stat.
 - **Conflict** — the conflicting files, each with rendered conflict-marker previews.
 - **Error** — a bad ref or corrupt index, surfaced rather than assumed clean.
 
-This is the same primitive that backs the PR merge-readiness check and integration (merge-plan) proposals, so the simulation you see in Graph matches what the PRs tab predicts.
+This is the same primitive that backs the PR merge-readiness check and integration (merge-plan) proposals, so a simulation matches what the PRs tab predicts.
 
 ## Rebase when a lane drifts
 
@@ -72,7 +72,6 @@ When a conflict needs more than a reorder, ADE can resolve it for you in two way
 - Keep lanes narrow so they touch fewer shared files.
 - Stack related changes instead of editing the same area from unrelated lanes.
 - Rebase long-running lanes regularly.
-- Check Graph before merging several PRs at once.
 - Ask an agent to explain a conflict before asking it to fix one.
 
 <Warning>
@@ -80,8 +79,8 @@ Conflict prediction is a warning system. Always verify with Git, tests, and PR c
 </Warning>
 
 <CardGroup cols={2}>
-  <Card title="Graph" icon="diagram-project" href="/tools/workspace-graph">
-    See lane topology, stack order, and the risk matrix at a glance.
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    See stack order and which lanes overlap before you merge.
   </Card>
   <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
     Review CI, comments, and merge readiness for each PR.

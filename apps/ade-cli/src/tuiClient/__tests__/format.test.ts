@@ -846,6 +846,101 @@ describe("renderChatLines", () => {
     })]);
   });
 
+  it("folds a later todo update into the plan for that turn", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "plan",
+            turnId: "t1",
+            steps: [
+              { text: "Read", status: "pending" },
+              { text: "Write", status: "pending" },
+            ],
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: {
+            type: "todo_update",
+            turnId: "t1",
+            items: [
+              { id: "1", description: "Read", status: "completed" },
+              { id: "2", description: "Write", status: "in_progress" },
+            ],
+          } as never,
+        },
+      ],
+    });
+    const planLines = lines.filter((line) => line.body.startsWith("plan"));
+    expect(planLines).toHaveLength(1);
+    expect(planLines[0]?.body).toContain("1/2");
+    expect(planLines[0]?.body).toContain("Read");
+    expect(planLines[0]?.body).toContain("Write");
+  });
+
+  it("drops an earlier todo row once a plan for that turn names every item, like desktop", () => {
+    const todo = (turnId: string, descriptions: string[], sequence: number) => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
+      sequence,
+      event: {
+        type: "todo_update",
+        turnId,
+        items: descriptions.map((description, index) => ({ id: String(index), description, status: "pending" })),
+      } as never,
+    });
+    const plan = (turnId: string, texts: string[], sequence: number) => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
+      sequence,
+      event: {
+        type: "plan",
+        turnId,
+        steps: texts.map((text) => ({ text, status: "pending" })),
+      } as never,
+    });
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        todo("t1", ["Read", "Write"], 1),
+        todo("t2", ["Read", "Deploy"], 2),
+        plan("t1", ["Read", "Write"], 3),
+        plan("t2", ["Read"], 4),
+      ],
+    });
+    const planLines = lines.filter((line) => line.body.startsWith("plan"));
+    // t1: the todo is covered, so only its plan card stays. t2: "Deploy" is
+    // not in the plan, so the todo row stays next to the plan.
+    expect(planLines).toHaveLength(3);
+    expect(planLines.filter((line) => line.body.includes("Deploy"))).toHaveLength(1);
+  });
+
+  it("keeps a turn's plan steps when a later plan event for it arrives empty", () => {
+    const plan = (steps: string[], sequence: number) => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
+      sequence,
+      event: { type: "plan", turnId: "t1", steps: steps.map((text) => ({ text, status: "pending" })) } as never,
+    });
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [plan(["Read", "Write"], 1), plan([], 2)],
+    });
+    const last = lines.filter((line) => line.body.startsWith("plan")).at(-1);
+    expect(last?.body).toContain("Read");
+    expect(last?.body).toContain("Write");
+  });
+
   it("renders the new event variants (status, error, done, todo, subagent, completion_report, turn_diff_summary, codex_context_compaction)", () => {
     const lines = renderChatLines({
       activeSession: null,
@@ -934,7 +1029,7 @@ describe("renderChatLines", () => {
     expect(body).toContain("[status] completed");
     expect(body).toContain("[error] rate limited");
     expect(body).toMatch(/\[done\] completed/);
-    expect(body).toContain("todos");
+    expect(body).toContain("plan  1/2");
     expect(body).toContain("● Read");
     expect(body).toContain("◐ Write");
     expect(body).toContain("[agent] do thing (started)");

@@ -1223,6 +1223,37 @@ describe("RightPane lane-details", () => {
     expect(frame).not.toContain("passing");
   });
 
+  it("says the PR's next step and names its agent reviewers", () => {
+    const content = {
+      kind: "lane-details" as const,
+      ...baseLaneDetails,
+      pr: {
+        number: 1285,
+        state: "open" as const,
+        url: "https://github.com/example/ADE/pull/1285",
+        checksPassed: 5,
+        checksTotal: 5,
+        checksPending: 0,
+        checksFailed: 0,
+        nextStep: { kind: "conflicts" as const, headline: "Conflicts with main", tone: "danger" as const },
+        agents: ["CodeRabbit", "Devin"],
+      },
+    };
+    const frame = stripAnsi(render(<RightPane content={content} focused />).lastFrame() ?? "");
+    expect(frame).toContain("▸ Conflicts with main");
+    expect(frame).toContain("agents · CodeRabbit, Devin");
+    // The two extra lines belong to the PR row's click target.
+    expect(laneDetailsInteractionLayout(content).prRow?.height).toBe(5);
+
+    // The selected row shows the link instead of the insight lines, so its
+    // click target must not count them.
+    const selected = { ...content, selectedActionIndex: LANE_DETAIL_PR_ACTION_INDEX };
+    const selectedFrame = stripAnsi(render(<RightPane content={selected} focused />).lastFrame() ?? "");
+    expect(selectedFrame).not.toContain("▸ Conflicts with main");
+    expect(selectedFrame).not.toContain("agents · CodeRabbit, Devin");
+    expect(laneDetailsInteractionLayout(selected).prRow?.height).toBe(3);
+  });
+
   it("shows the PR GitHub link when the PR row is selected", () => {
     const result = render(
       <RightPane

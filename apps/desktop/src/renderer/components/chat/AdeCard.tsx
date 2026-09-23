@@ -3,8 +3,11 @@ import {
   ArrowSquareOut,
   CaretRight,
   Cube,
+  GitBranch,
   GitMerge,
+  GitPullRequest,
   Warning,
+  XCircle,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -12,6 +15,7 @@ import { formatSubagentDurationMs } from "../../lib/format";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { CHAT_TRANSCRIPT_GLASS_CARD_CLASS } from "./chatTranscriptChrome";
 import {
+  CHAT_CARD_BODY_TEXT,
   CHAT_CARD_MICRO_TEXT,
   CHAT_CARD_WIDTH_CLASS,
   ChatCard,
@@ -123,6 +127,223 @@ function liveElapsedText(startedAt: string | null | undefined, nowMs: number): s
   return formatSubagentDurationMs(Math.max(0, nowMs - start));
 }
 
+/** The pull request number from the card's PR nav target. */
+function prNumberOf(card: AdeCardPayload): number | null {
+  const target = card.navTarget;
+  return target?.kind === "pr" && typeof target.prNumber === "number" ? target.prNumber : null;
+}
+
+/** "· pr N": a link to the pull request, after a rail card's title. */
+function CardPrLink({
+  prNumber,
+  target,
+  onOpen,
+}: {
+  prNumber: number;
+  target: AdeCardPayload["navTarget"];
+  onOpen: () => void;
+}) {
+  return (
+    <>
+      <span className="shrink-0 text-fg/30" aria-hidden>·</span>
+      <button
+        type="button"
+        aria-label="Open pull request"
+        title={adeCardDeeplink(target) ?? "Open pull request"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen();
+        }}
+        className={cn(
+          "inline-flex min-w-0 items-center gap-1 text-fg/70 transition-colors hover:text-fg/95",
+          CHAT_CARD_BODY_TEXT,
+        )}
+      >
+        <GitPullRequest size={12} weight="bold" aria-hidden />
+        <span className="truncate">pr {prNumber}</span>
+      </button>
+    </>
+  );
+}
+
+/** The "open ›" text arrow at the right end of a rail card's line. */
+function CardOpenArrow({ label, onOpen }: { label: string; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen();
+      }}
+      className={cn(
+        "ml-auto inline-flex shrink-0 items-center gap-0.5 text-fg/55 transition-colors hover:text-fg/85",
+        CHAT_CARD_MICRO_TEXT,
+      )}
+    >
+      open
+      <CaretRight size={10} weight="bold" aria-hidden />
+    </button>
+  );
+}
+
+function withPrDetailTab(
+  card: AdeCardPayload,
+  detailTab: "overview" | "checks",
+): AdeCardPayload["navTarget"] {
+  const target = card.navTarget;
+  if (!target) return null;
+  if (target.kind !== "pr") return target;
+  return { ...target, detailTab };
+}
+
+const GENERIC_CHECK_DETAIL = /^(?:CI|Other) · (failed|passed|running|queued|skipped|unknown)$/;
+
+/** "CI · failed" is the group label. A step name or a duration is the detail. */
+function ciFailureRowDetail(detail: string | null | undefined): string {
+  const raw = detail?.trim() ?? "";
+  const generic = raw.match(GENERIC_CHECK_DETAIL);
+  if (!generic) return raw;
+  return generic[1] ?? raw;
+}
+
+/**
+ * The failing CI card. One line of status, then the three red checks.
+ *
+ * The yellow rail stays. Counts are text, not chips. The link opens the pull
+ * request; Open and "+N more" open its checks tab.
+ */
+function CiFailureCard({ card }: { card: AdeCardPayload }) {
+  const prNumber = prNumberOf(card);
+  const passed = Math.max(0, card.progress?.passed ?? 0);
+  const failed = Math.max(0, card.progress?.failed ?? 0);
+  const failedRows = (card.rows ?? [])
+    .filter((row) => row.icon === "fail" || normalizeAdeCardTone(row.tone) === "warning")
+    .slice(0, 3);
+  const truncated = Math.max(0, card.rowsTruncated ?? 0);
+  const prTarget = withPrDetailTab(card, "overview");
+  const checksTarget = withPrDetailTab(card, "checks");
+  const openTarget = (target: AdeCardPayload["navTarget"]) => {
+    if (target) navigateToAppTarget(target);
+  };
+
+  return (
+    <ChatCard skin="rail" tone="warn" data-testid="ci-failure-card">
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <ChatCardTitle className="shrink-0">CI Failure</ChatCardTitle>
+          {prNumber != null ? (
+            <CardPrLink prNumber={prNumber} target={prTarget} onOpen={() => openTarget(prTarget)} />
+          ) : null}
+          {prNumber != null ? (
+            <span className="shrink-0 text-fg/30" aria-hidden>·</span>
+          ) : null}
+          <span className={cn("shrink-0 font-mono tabular-nums text-emerald-300/90", CHAT_CARD_MICRO_TEXT)}>
+            {passed} passed
+          </span>
+          {failed > 0 ? (
+            <span className={cn("shrink-0 font-mono tabular-nums text-red-400", CHAT_CARD_MICRO_TEXT)}>
+              {failed} failed
+            </span>
+          ) : null}
+        </div>
+        {checksTarget ? (
+          <CardOpenArrow label="Open checks" onOpen={() => openTarget(checksTarget)} />
+        ) : null}
+      </div>
+      {failedRows.length || truncated > 0 ? (
+        <ChatCardDetail>
+          {failedRows.map((row, index) => {
+            const detail = ciFailureRowDetail(row.detail);
+            return (
+              <div
+                key={`${index}:${row.text}`}
+                title={row.detail ?? row.text}
+                className={cn("flex min-w-0 items-center gap-2 py-[3px] text-left", CHAT_CARD_BODY_TEXT)}
+              >
+                <XCircle size={9} weight="bold" className="shrink-0 text-amber-300/85" aria-hidden />
+                <span className="truncate text-fg/70">{row.text}</span>
+                {detail ? <span className="truncate text-fg/45">{detail}</span> : null}
+              </div>
+            );
+          })}
+          {truncated > 0 ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                openTarget(checksTarget);
+              }}
+              className={cn(
+                "w-fit pt-1 text-left text-fg/45 transition-colors hover:text-fg/80",
+                CHAT_CARD_MICRO_TEXT,
+              )}
+            >
+              +{truncated} more
+            </button>
+          ) : null}
+        </ChatCardDetail>
+      ) : null}
+    </ChatCard>
+  );
+}
+
+function metricValue(card: AdeCardPayload, label: string): string | null {
+  const metric = (card.metrics ?? []).find((entry) => entry.label === label);
+  const value = metric?.value?.trim();
+  return value ? value : null;
+}
+
+function behindCountMetric(card: AdeCardPayload): { value: string; label: string } | null {
+  const metric = (card.metrics ?? []).find((entry) => entry.label.endsWith("behind"));
+  const value = metric?.value?.trim();
+  if (!metric || !value) return null;
+  return { value, label: metric.label };
+}
+
+/**
+ * One line: the base it fell behind, the pull request, the head branch, and
+ * how many commits separate them. Open stays a text arrow, same as the other
+ * rails.
+ */
+function BranchBehindCard({ card }: { card: AdeCardPayload }) {
+  const prNumber = prNumberOf(card);
+  const branch = metricValue(card, "branch");
+  const behind = behindCountMetric(card);
+  const target = card.navTarget ?? null;
+  const open = () => {
+    if (target) navigateToAppTarget(target);
+  };
+
+  return (
+    <ChatCard skin="rail" tone="warn" data-testid="branch-behind-card">
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <ChatCardTitle className="shrink-0">{card.title}</ChatCardTitle>
+          {prNumber != null ? (
+            <CardPrLink prNumber={prNumber} target={target} onOpen={open} />
+          ) : null}
+          {branch ? (
+            <>
+              <span className="shrink-0 text-fg/30" aria-hidden>·</span>
+              <span className={cn("inline-flex min-w-0 items-center gap-1 text-fg/70", CHAT_CARD_BODY_TEXT)}>
+                <GitBranch size={12} weight="bold" aria-hidden />
+                <span className="truncate">{branch}</span>
+              </span>
+            </>
+          ) : null}
+          {behind ? (
+            <ChatCardChip tone="warn">
+              {behind.value} {behind.label}
+            </ChatCardChip>
+          ) : null}
+        </div>
+        {target ? <CardOpenArrow label="Open pull request overview" onOpen={open} /> : null}
+      </div>
+    </ChatCard>
+  );
+}
+
 /**
  * The span between the card's first and last emit. NOT a run duration — a CI
  * card that is re-polled for three hours has a three-hour span and a three-
@@ -232,6 +453,15 @@ export function AdeCard({
   const actions = (card.actions ?? []).filter((action) => (
     (action.id === "open" && navigable) || onAction != null
   ));
+
+  // A finished CI failure is its own short card. A live run keeps the meter.
+  if (card.variant === "pr_ci" && !isLive && hasWarning) {
+    return <CiFailureCard card={card} />;
+  }
+
+  if (card.variant === "pr_conflict" && behindCountMetric(card)) {
+    return <BranchBehindCard card={card} />;
+  }
 
   const inner = (
     <>

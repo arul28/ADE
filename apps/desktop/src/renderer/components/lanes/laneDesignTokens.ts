@@ -55,7 +55,6 @@ export const RADII = {
   xl: 16,
 } as const;
 
-export const APP_FONT_STACK = "\"Geist\", -apple-system, BlinkMacSystemFont, sans-serif";
 export const SANS_FONT = "var(--font-sans)";
 export const MONO_FONT = "var(--font-mono)";
 

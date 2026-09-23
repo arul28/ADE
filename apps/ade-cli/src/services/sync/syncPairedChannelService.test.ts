@@ -650,4 +650,34 @@ describe("createSyncPairedChannelService", () => {
     });
     service.dispose();
   });
+
+  it("pauses the remote TCP socket while the client is backpressured and resumes it", async () => {
+    const socket = new FakeForwardSocket();
+    const { service, sent, peer } = createHarness({ connectForward: () => socket });
+
+    await service.handleEnvelope(peer, "fwd_open", {
+      forwardId: "fwd-client-pause",
+      host: "127.0.0.1",
+      port: 5175,
+    }, true, true);
+    socket.connect();
+    await service.handleEnvelope(peer, "fwd_pause", { forwardId: "fwd-client-pause" }, true, true);
+    expect(socket.paused).toBe(true);
+
+    socket.push("held");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sent.some((envelope) => envelope.type === "fwd_data")).toBe(false);
+
+    await service.handleEnvelope(peer, "fwd_resume", { forwardId: "fwd-client-pause" }, true, true);
+    expect(socket.paused).toBe(false);
+    await waitFor(
+      () => sent.some((envelope) => envelope.type === "fwd_data"),
+      "resume after client pause",
+    );
+    expect(Buffer.from(
+      String(sent.find((envelope) => envelope.type === "fwd_data")?.payload.data),
+      "base64",
+    ).toString("utf8")).toBe("held");
+    service.dispose();
+  });
 });

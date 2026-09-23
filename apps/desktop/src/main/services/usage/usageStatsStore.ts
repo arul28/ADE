@@ -134,6 +134,8 @@ const MEANINGFUL_ACTIONS = new Set([
   "prs.delete",
   "prs.close",
   "prs.reopen",
+  "prs.setDraft",
+  "prs.setAutoMerge",
   "prs.addComment",
   "prs.submitReview",
   "prs.rerunChecks",
