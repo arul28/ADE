@@ -27,6 +27,8 @@ import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneMachineMarker } from "./LaneMachineMarker";
+import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
+import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { SessionCard } from "./SessionCard";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { ToolLogo } from "./ToolLogos";
@@ -513,6 +515,7 @@ function StickyGroupHeader({
   subLabel,
   prBadge = null,
   machineMarker = null,
+  appleDevice = null,
   headerAction = null,
   variant = "default",
   tone = "default",
@@ -552,6 +555,8 @@ function StickyGroupHeader({
    * on this machine, so local-only setups never render one.
    */
   machineMarker?: React.ReactNode;
+  /** Apple mark for `variant="lane"`, set when the lane holds a simulator. */
+  appleDevice?: React.ReactNode;
   /** Dims the whole group — used for lanes on a machine that has gone offline. */
   dimmed?: boolean;
   /** Compact action shown next to the count for non-lane headers. */
@@ -772,6 +777,7 @@ function StickyGroupHeader({
                 <LaneNamingLabel laneName={label} naming={namingLane} />
                 {showInlineCount ? ` (${count})` : null}
               </span>
+              {isLane ? appleDevice : null}
               {/* Branch sits immediately right of the label and expands to fill
                   whatever space is free, truncating only when it runs out. */}
               {showBranchCluster ? (
@@ -1095,6 +1101,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
   const projectBinding = useAppStore((state) => state.projectBinding);
   const prsByLaneId = useLanePrsByLaneId();
+  // Keyed to the lane list, so claims refresh when the lanes do.
+  const laneAppleDevices = useLaneAppleDevices({ refreshKey: lanesProp });
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
   const keybindings = useAppStore((state) => state.keybindings);
   const commandPaletteBinding = useMemo(
@@ -2058,6 +2066,8 @@ export const SessionListPane = React.memo(function SessionListPane({
      * that machine was somewhere else entirely. One resolver, one answer.
      */
     machineMarker?: CrossMachineLaneMarker | null;
+    /** The Apple device a headerless lane holds; its card shows the mark. */
+    laneAppleDevice?: LaneAppleDevice | null;
     /** Board cards only: the column states the status, so the card must not. */
     suppressStatusLabel?: boolean;
     nestedSubagent?: boolean;
@@ -2150,6 +2160,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         runtimePin={foreignRow?.binding}
         machineMarker={options?.machineMarker ?? null}
+        laneAppleDevice={options?.laneAppleDevice ?? null}
         suppressMachineChip={options?.suppressMachineChip}
         suppressStatusLabel={options?.suppressStatusLabel}
         nestedSubagent={options?.nestedSubagent}
@@ -2239,6 +2250,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   showLaneIdentity: false,
                   laneActions: null,
                   machineMarker: null,
+                  laneAppleDevice: null,
                 })}
               </div>
             ))}
@@ -2320,6 +2332,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           })}`)
         : undefined,
       machineMarker: markersByLaneId.get(session.laneId) ?? null,
+      laneAppleDevice: lane ? laneAppleDevices.get(lane.id) ?? null : null,
       laneActions: lane
         ? {
             laneId: lane.id,
@@ -2832,6 +2845,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     // A lane already filed into a quiet shelf renders its rows flat: the shelf
     // states the tier once, for everything under it.
     const inQuietShelf = laneShelfFor(lane.id) !== null && !sharedBranchInboxKeepIds.has(lane.id);
+    const laneAppleDevice = laneAppleDevices.get(lane.id) ?? null;
     return (
       <StickyGroupHeader
         key={lane.id}
@@ -2847,6 +2861,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         accentColor={laneAccent}
         prBadge={prBadge}
         machineMarker={machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
+        appleDevice={laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
         pinned={lanePinned}
         dragProps={laneDragProps(lane.id)}
@@ -2893,6 +2908,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 selectedRebaseItemId: null,
               })}`),
               machineMarker,
+              laneAppleDevice,
               laneActions: {
                 laneId: lane.id,
                 laneName: lane.name,

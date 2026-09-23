@@ -60,6 +60,15 @@ vi.mock("./useLanePrs", async (importOriginal) => ({
   useLanePrsByLaneId: () => lanePrsByLaneIdForTest,
 }));
 
+// The Apple claims hook reads the runtime; tests seed its lane map directly.
+const { laneAppleDevicesForTest } = vi.hoisted(() => ({
+  laneAppleDevicesForTest: new Map<string, { udid: string; name: string | null; running: boolean | null }>(),
+}));
+vi.mock("../apple/useLaneAppleDevices", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../apple/useLaneAppleDevices")>()),
+  useLaneAppleDevices: () => laneAppleDevicesForTest,
+}));
+
 function makePr(overrides: Partial<PrSummary> = {}): PrSummary {
   return {
     id: "pr-1",
@@ -4187,5 +4196,77 @@ describe("SessionListPane shared-branch clusters", () => {
     expect(container.querySelector('[data-testid="shelf-body-settled"]')?.contains(cluster)).toBe(true);
     expect(cluster?.querySelector('[data-group-id="lane-local-mobile"]')).toBeTruthy();
     expect(cluster?.querySelector('[data-group-id="target-studio:lane-studio-mobile"]')).toBeTruthy();
+  });
+});
+
+describe("SessionListPane Apple device marks", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    cleanup();
+    laneAppleDevicesForTest.clear();
+    Reflect.deleteProperty(window, "ade");
+  });
+
+  const groupLane = makeLane({ id: "lane-group", name: "Group lane", branchRef: "group-lane" });
+  const soloLane = makeLane({ id: "lane-solo", name: "Solo lane", branchRef: "solo-lane" });
+  const plainLane = makeLane({ id: "lane-plain", name: "Plain lane", branchRef: "plain-lane" });
+  const groupA = makeSession({ id: "session-group-a", laneId: "lane-group", laneName: "Group lane", title: "Group A" });
+  const groupB = makeSession({ id: "session-group-b", laneId: "lane-group", laneName: "Group lane", title: "Group B" });
+  const solo = makeSession({ id: "session-solo", laneId: "lane-solo", laneName: "Solo lane", title: "Solo chat" });
+  const plain = makeSession({ id: "session-plain", laneId: "lane-plain", laneName: "Plain lane", title: "Plain chat" });
+
+  function renderLanes() {
+    const sessions = [groupA, groupB, solo, plain];
+    return renderPane({
+      lanes: [groupLane, soloLane, plainLane],
+      runningFiltered: sessions,
+      allSessionsUnfiltered: sessions,
+      sessionsGroupedByLane: new Map([
+        ["lane-group", [groupA, groupB]],
+        ["lane-solo", [solo]],
+        ["lane-plain", [plain]],
+      ]),
+    });
+  }
+
+  it("marks a lane header whose lane holds a device, with the device in the tooltip", () => {
+    laneAppleDevicesForTest.set("lane-group", { udid: "udid-group", name: "iPhone 16 Pro", running: true });
+    vi.useFakeTimers();
+    const { container } = renderLanes();
+
+    const header = container.querySelector('[data-section-id="lane-group"]') as HTMLElement;
+    const mark = within(header).getByRole("img", { name: "iPhone 16 Pro on this lane" });
+    expect(mark.getAttribute("data-lane-apple-device-running")).toBe("true");
+
+    fireEvent.pointerEnter(mark.parentElement!);
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(screen.getByRole("tooltip").textContent).toBe("iPhone 16 Pro on this lane");
+  });
+
+  it("marks a singleton lane's card, and says when the device is off", () => {
+    laneAppleDevicesForTest.set("lane-solo", { udid: "udid-solo", name: "iPad Air", running: false });
+    const { container } = renderLanes();
+
+    expect(container.querySelector('[data-section-id="lane-solo"]')).toBeNull();
+    const card = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
+    const identity = card.querySelector('[data-session-lane-identity="Solo lane"]') as HTMLElement;
+    const mark = within(identity).getByRole("img", { name: "iPad Air on this lane (off)" });
+    expect(mark.getAttribute("data-lane-apple-device-running")).toBe("false");
+  });
+
+  it("leaves lanes without a device unmarked", () => {
+    laneAppleDevicesForTest.set("lane-group", { udid: "udid-group", name: "iPhone 16 Pro", running: true });
+    const { container } = renderLanes();
+
+    const plainCard = container.querySelector('[data-session-id="session-plain"]') as HTMLElement;
+    expect(plainCard.querySelector("[data-lane-apple-device]")).toBeNull();
+    const soloCard = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
+    expect(soloCard.querySelector("[data-lane-apple-device]")).toBeNull();
+    // Rows under a marked header do not repeat the mark.
+    const groupCard = container.querySelector('[data-session-id="session-group-a"]') as HTMLElement;
+    expect(groupCard.querySelector("[data-lane-apple-device]")).toBeNull();
+    expect(container.querySelectorAll("[data-lane-apple-device]")).toHaveLength(1);
   });
 });
