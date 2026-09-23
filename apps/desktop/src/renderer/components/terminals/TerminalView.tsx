@@ -14,9 +14,8 @@ import {
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
+import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
 import {
-  TERMINAL_BRACKETED_PASTE_END,
-  TERMINAL_BRACKETED_PASTE_START,
   clearImagePasteNotice,
   clipboardImageBlobFromEvent,
   pasteClipboardImageBlob,

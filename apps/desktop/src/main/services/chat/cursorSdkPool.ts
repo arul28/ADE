@@ -121,14 +121,6 @@ function sameSkillDirs(a: readonly string[] | undefined, b: readonly string[] | 
  */
 const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
 /**
- * Gap between SIGTERM and SIGKILL once the dispose grace expires.
- *
- * Named here rather than left to `terminateChildProcessTree`'s default, because
- * the replacement wait below has to be derived from it: two independent numbers
- * would drift, and the drift is only observable as a failed turn an hour into a
- * session.
- */
-/**
  * Cap how long a replacement waits for the previous worker of the same pool key.
  *
  * This has to cover the whole teardown ladder, not just the dispose grace. A

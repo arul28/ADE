@@ -1,5 +1,6 @@
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
 
 /**
  * Clipboard-image paste for tracked agent CLI terminals.
@@ -8,9 +9,6 @@ import type { OpenProjectBinding } from "../../../shared/types";
  * a short path/type stub goes into the PTY as a bracketed paste. The terminal
  * runtime lives in `TerminalView`; this module sees only the fields it needs.
  */
-
-export const TERMINAL_BRACKETED_PASTE_START = "\x1b[200~";
-export const TERMINAL_BRACKETED_PASTE_END = "\x1b[201~";
 
 /** How long a failed image paste stays visible in the pane. */
 export const IMAGE_PASTE_NOTICE_MS = 8_000;
@@ -30,13 +28,13 @@ export type TerminalImagePasteIo = {
   writeInput: (data: string) => void;
 };
 
-export type TerminalClipboardImage = { data: string; filename: string; mimeType: string };
+type TerminalClipboardImage = { data: string; filename: string; mimeType: string };
 
 function bracketedPaste(text: string): string {
   return `${TERMINAL_BRACKETED_PASTE_START}${text.trimEnd()}\n${TERMINAL_BRACKETED_PASTE_END}`;
 }
 
-export function formatClipboardImageForPty(path: string, mimeType: string): string {
+function formatClipboardImageForPty(path: string, mimeType: string): string {
   return [
     "ADE clipboard image attached.",
     `Path: ${path}`,
@@ -50,7 +48,7 @@ export function formatClipboardImageForPty(path: string, mimeType: string): stri
 // outside the base64 alphabet). The web adapter's readClipboardImage answers
 // with a full data URL, so strip the prefix rather than shipping bytes that
 // decode to garbage on one side and throw on the other.
-export function base64FromImageData(value: string): string {
+function base64FromImageData(value: string): string {
   if (!value.startsWith("data:")) return value;
   const comma = value.indexOf(",");
   return comma >= 0 ? value.slice(comma + 1) : "";
@@ -64,7 +62,7 @@ export function base64FromImageData(value: string): string {
  * `window.console`, so a report from a user carries the reason. It also runs
  * for a failed clipboard read, so the fallback reason names no stage.
  */
-export function reportImagePasteFailure(
+function reportImagePasteFailure(
   runtime: TerminalImagePasteRuntime,
   io: TerminalImagePasteIo,
   error: unknown,
