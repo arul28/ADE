@@ -1271,7 +1271,10 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The empty new-chat surface paints
   `WorkToolPickerBackdrop` behind the draft (the chat shell is
-  transparent there). The grid mode renders through the shared
+  transparent there). It marks the Work draft surface and Chat/CLI mode
+  switcher for the first-send handoff; while the new chat's composer docks,
+  the matching foreground transition skips its blur dissolve. See
+  [Composer and Chat UI](../chat/composer-and-ui.md#composer-dock). The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from
   `buildWorkSessionTilingTree`. It builds a session-title index and threads it
   into locked `AgentChatPane` embeddings so spawned-chat roster rows use live

@@ -62,6 +62,8 @@ export function ImportFloatingBadge({
     // flex-col where the logo is the only row meant to absorb overflow.
     <div className="flex w-full shrink-0 justify-center">
       <div
+        // Fades out with the rest of the draft when a sent chat opens (`chatLaunchDock`).
+        data-draft-depart="fade"
         className={cn(
           "relative inline-flex items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
           disabled ? "opacity-40" : "transition-transform hover:-translate-y-px",

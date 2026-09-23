@@ -1301,6 +1301,7 @@ function renderParallelDraftPane(args?: {
 }
 
 function renderAutoCreateDraftPane(args?: {
+  draftContextTargetId?: string | null;
   onSessionCreated?: (
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
@@ -1352,6 +1353,7 @@ function renderAutoCreateDraftPane(args?: {
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
+                draftContextTargetId={args?.draftContextTargetId}
                 availableLanes={lanes}
                 onLaneChange={args?.onLaneChange ?? vi.fn()}
                 onDraftMachineChange={args?.onDraftMachineChange}
@@ -7640,6 +7642,146 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByText(/Keep this launch visible\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
+  });
+
+  it("removes the sent attachment after the remounted foreground pane also unmounts", async () => {
+    const { send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    const draftContextTargetId = "remounted-foreground-draft";
+    const submittedPrompt = "Send this prompt once.";
+    const submittedAttachment = "/tmp/project-under-test/submitted.png";
+    const laterAttachment = "/tmp/project-under-test/later.txt";
+    const draftStorageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    });
+
+    const firstPane = renderAutoCreateDraftPane({ draftContextTargetId });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const firstTextbox = await screen.findByRole("textbox");
+    fireEvent.change(firstTextbox, { target: { value: submittedPrompt } });
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: submittedAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+
+    firstPane.unmount();
+    const remountedPane = renderAutoCreateDraftPane({ draftContextTargetId });
+    expect(await screen.findByDisplayValue(submittedPrompt)).toBeTruthy();
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: laterAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("later.txt")).toBeTruthy();
+
+    remountedPane.unmount();
+    await act(async () => {
+      resolveSend();
+    });
+
+    const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    expect(saved.text).toBe("");
+    expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([laterAttachment]);
+  });
+
+  it("preserves hydrated unsent attachments when an already-ready foreground launch opens on remount", async () => {
+    installAdeMocks({ sessions: [] });
+    const submittedPrompt = "Send this first prompt.";
+    const submittedAttachment = { path: "/tmp/project-under-test/submitted.png", type: "file" };
+    const laterAttachment = { path: "/tmp/project-under-test/later.txt", type: "file" };
+    const draftStorageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    });
+    const updatedAt = "2026-07-27T18:00:00.000Z";
+    window.localStorage.setItem(draftStorageKey, JSON.stringify({
+      version: 1,
+      text: submittedPrompt,
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: null,
+      fastMode: false,
+      executionMode: "focused",
+      controls: {},
+      attachments: [submittedAttachment, laterAttachment],
+      attachmentOwnerBinding: null,
+      contextAttachments: [],
+      iosContextItems: [],
+      appControlContextItems: [],
+      builtInBrowserContextItems: [],
+      draftLaunchTargetId: null,
+      updatedAt,
+    }));
+    const scopeKey = draftLaunchJobsScopeKeyForTest({
+      projectBindingKey: LOCAL_PROJECT_BINDING.key,
+      laneId: "lane-1",
+    });
+    useAppStore.setState({
+      draftLaunchJobsByScope: {
+        [scopeKey]: [{
+          id: "ready-foreground-launch",
+          mode: "foreground",
+          draftKind: "chat",
+          status: "ready",
+          title: "Ready launch after remount",
+          laneId: "lane-1",
+          laneName: "current-lane",
+          sessionId: "created-session",
+          namingModelId: null,
+          error: null,
+          warning: null,
+          autoOpen: true,
+          createdAtMs: Date.now(),
+          snapshot: {
+            text: submittedPrompt,
+            draft: submittedPrompt,
+            modelId: "openai/gpt-5.4",
+            reasoningEffort: null,
+            fastMode: false,
+            executionMode: "focused",
+            nativeControls: {},
+            attachments: [submittedAttachment],
+            contextAttachments: [],
+            iosContextItems: [],
+            appControlContextItems: [],
+            builtInBrowserContextItems: [],
+            visualContextPrefix: "",
+            visualContextDisplayChips: "",
+            isLiteralSlashCommand: false,
+          },
+        } as any],
+      },
+    });
+
+    const rendered = renderAutoCreateDraftPane();
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+    rendered.unmount();
+
+    const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    expect(saved.text).toBe("");
+    expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([laterAttachment.path]);
   });
 
   it("allows stale active draft launch rows to be hidden", async () => {

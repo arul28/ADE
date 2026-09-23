@@ -2832,6 +2832,7 @@ function renderEvent(
             "ade-chat-message-card-user group relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
           )}
           style={MESSAGE_CARD_STYLE}
+          data-chat-user-message-card=""
         >
           {deliveryChip ? (
             <span

@@ -6564,6 +6564,7 @@ export function AgentChatComposer({
                   )}
                   data-chat-layout-variant={layoutVariant}
                   data-composer-answer-editor={answer ? "true" : undefined}
+                  data-chat-composer-text={answer ? undefined : ""}
                   onInput={handleRichEditorInput}
                   onCompositionStart={() => {
                     imeComposingRef.current = true;
@@ -6718,6 +6719,7 @@ export function AgentChatComposer({
                   )}
                   style={plainOverlayContent ? { caretColor: "var(--color-fg)" } : undefined}
                   data-chat-layout-variant={layoutVariant}
+                  data-chat-composer-text=""
                   placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}

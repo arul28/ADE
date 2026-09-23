@@ -333,12 +333,31 @@ import {
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
-import { playComposerDock, stashComposerDockOrigin, takeComposerDockOrigin } from "./launch/chatLaunchDock";
+import {
+  captureComposerHandoff,
+  CHAT_SHELL_HEADER_SELECTOR,
+  findComposerHandoffElement,
+  peekComposerHandoffFirstMessage,
+  playComposerDock,
+  playDepartingDraftChrome,
+  playFirstMessageFlight,
+  refreshComposerHandoffDeparture,
+  stashComposerHandoffOrigin,
+  stashComposerDockOrigin,
+  takeComposerDockOrigin,
+  type ComposerHandoff,
+} from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
 import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
 import {
+  clearSubmittedDraftText,
+  removeSubmittedDraftItems,
   runRendererOwnedLaunch as runRendererOwnedDraftLaunch,
+  sameStoredDraftItem,
+  discardRendererLaunchHandoff,
+  takeRendererLaunchHandoff,
   type DraftLaunchLaneTarget,
+  type OpenLaunchedDraftSessionInput,
   type StartedDraftLaunch,
 } from "./launch/rendererOwnedLaunch";
 import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
@@ -350,7 +369,6 @@ import {
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   LAUNCH_PROJECT_CHANGED_MESSAGE,
-  type BackgroundLaunchNotice,
   type DraftLaunchJob,
   type DraftLaunchJobStatus,
   type DraftLaunchKind,
@@ -921,6 +939,20 @@ function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch 
     selectedAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.attachments,
     selectedContextAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.contextAttachments,
   };
+}
+
+/**
+ * Where a sent draft's departing chrome lives: the whole Work draft surface
+ * (its mode switcher sits outside this pane), or just this pane elsewhere.
+ */
+function draftDepartingScope(shell: HTMLElement | null): Element | null {
+  return shell?.closest("[data-work-draft-surface]") ?? shell;
+}
+
+function draftComposerHandoffElement(shell: HTMLElement | null): Element | null {
+  if (!shell) return null;
+  const emptyState = shell.querySelector("[data-chat-empty-state]") ?? shell;
+  return findComposerHandoffElement(emptyState);
 }
 
 /**
@@ -3760,6 +3792,10 @@ export function AgentChatPane({
     storageKey: string;
     snapshot: ComposerDraftStorageSnapshot;
   } | null>(null);
+  const latestComposerDraftSnapshotRef = useRef<{
+    storageKey: string;
+    snapshot: ComposerDraftStorageSnapshot;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [importBrowserOpen, setImportBrowserOpen] = useState(false);
@@ -3945,13 +3981,19 @@ export function AgentChatPane({
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);
   const composerDraftHydratingTextRef = useRef<string | null>(null);
+  const [hydratedComposerDraftStorageKey, setHydratedComposerDraftStorageKey] = useState<string | null>(null);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestionsBySession, setPromptSuggestionsBySession] = useState<Record<string, string>>({});
   const [optimisticOutgoingMessage, setOptimisticOutgoingMessage] = useState<{
     sessionId: string;
     envelope: AgentChatEventEnvelope;
-  } | null>(null);
+  } | null>(() => {
+    // A launch that opened this chat after creating it hands over its first
+    // message, so the bubble is on the first frame (see `chatLaunchDock`).
+    const firstMessage = lockSessionId ? peekComposerHandoffFirstMessage(lockSessionId) : null;
+    return firstMessage && lockSessionId ? { sessionId: lockSessionId, envelope: firstMessage } : null;
+  });
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
@@ -4008,15 +4050,39 @@ export function AgentChatPane({
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
-  // Foreground new-lane launch: glide the docked composer down from where the
-  // draft composer sat (see `chatLaunchDock`). Layout effect so the first
-  // painted frame is already at the old position.
+  // First message of a chat launched from a draft in another pane: glide the
+  // docked composer down from where the draft composer sat and fly the first
+  // bubble up from where the prompt text sat (see `chatLaunchDock`). Layout
+  // effect so the first painted frame is already at the old positions.
   useLayoutEffect(() => {
     if (!lockSessionId) return;
-    const origin = takeComposerDockOrigin(lockSessionId);
-    if (!origin) return;
-    playComposerDock(composerDockRef.current, origin);
+    const handoff = takeComposerDockOrigin(lockSessionId);
+    if (!handoff) return;
+    playComposerDock(composerDockRef.current, handoff.composer);
+    playFirstMessageFlight(shellRef.current, handoff.text);
+    // The draft's mode switcher morphs into this chat's header.
+    playDepartingDraftChrome(handoff.departing, shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR));
   }, [lockSessionId]);
+  // The same handoff for a chat this pane creates in place (no draft launch):
+  // measured before the create round trip, played on the commit that swaps the
+  // empty state for the thread.
+  const inPlaceFirstSendHandoffRef = useRef<ComposerHandoff | null>(null);
+  useLayoutEffect(() => {
+    const handoff = inPlaceFirstSendHandoffRef.current;
+    if (!handoff || !selectedSessionId) return;
+    inPlaceFirstSendHandoffRef.current = null;
+    const shell = shellRef.current;
+    if (!shell) return;
+    // The empty state fades out around its own copy of the composer; hide
+    // that copy so only the docked one moves.
+    for (const ghost of shell.querySelectorAll<HTMLElement>("[data-chat-empty-state] [data-chat-composer-wrapper]")) {
+      ghost.style.visibility = "hidden";
+    }
+    const docked = Array.from(shell.querySelectorAll<HTMLDivElement>("[data-chat-composer-dock]"))
+      .find((element) => !element.closest("[data-chat-empty-state]")) ?? null;
+    playComposerDock(docked, handoff.composer);
+    playFirstMessageFlight(shell, handoff.text);
+  }, [selectedSessionId]);
   // Measure the chat surface width to drive the 3-quadrant pane reserve.
   const [chatAreaWidth, setChatAreaWidth] = useState(0);
   useEffect(() => {
@@ -7776,8 +7842,13 @@ export function AgentChatPane({
     setChatActionsOpen(false);
     setHandoffBusy(false);
     setModelPickerOpenRequest(undefined);
-    optimisticOutgoingMessageRef.current = null;
-    setOptimisticOutgoingMessage(null);
+    // Drop the pending bubble of the chat we left, but keep one that belongs to
+    // the chat just selected: a first send sets it in the same batch that
+    // selects the new chat, and a launched chat seeds it on mount.
+    if (optimisticOutgoingMessageRef.current?.sessionId !== selectedSessionId) {
+      optimisticOutgoingMessageRef.current = null;
+    }
+    setOptimisticOutgoingMessage((current) => (current?.sessionId === selectedSessionId ? current : null));
     // The full composer bucket effect above owns draft/context hydration for
     // session and lane switches; this effect resets transient chat UI only.
   }, [selectedSessionId, laneId]);
@@ -9092,6 +9163,7 @@ export function AgentChatPane({
           updatedAt: saved.updatedAt,
         });
       }
+      setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
       return;
     }
     const savedText = draftsPerSessionRef.current.get(companionStateKey) ?? "";
@@ -9104,14 +9176,58 @@ export function AgentChatPane({
     setAppControlContextItems([]);
     setBuiltInBrowserContextItems([]);
     setDraftLaunchTargetId(null);
+    setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
   }, [
     applyLaunchConfigToComposer,
     companionStateKey,
+    composerDraftStorageKeyValue,
     composerDraftStorageKeyValues,
     draftLaunchConfigScopeKey,
     initialNativeControls,
     selectedSessionId,
   ]);
+
+  const currentComposerDraftSnapshot = useMemo<ComposerDraftStorageSnapshot>(() => ({
+    version: 1,
+    text: draft,
+    mentionLabels,
+    modelId,
+    reasoningEffort,
+    fastMode,
+    cursorCloudServiceTier,
+    executionMode,
+    controls: {
+      ...currentNativeControls,
+      cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
+    },
+    attachments,
+    attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
+    contextAttachments,
+    iosContextItems: iosElementContextItems,
+    appControlContextItems,
+    builtInBrowserContextItems,
+    draftLaunchTargetId,
+    updatedAt: new Date().toISOString(),
+  }), [
+    appControlContextItems,
+    attachments,
+    builtInBrowserContextItems,
+    contextAttachments,
+    cursorCloudServiceTier,
+    currentNativeControls,
+    draft,
+    draftLaunchTargetId,
+    executionMode,
+    fastMode,
+    iosElementContextItems,
+    mentionLabels,
+    modelId,
+    reasoningEffort,
+  ]);
+  latestComposerDraftSnapshotRef.current = {
+    storageKey: composerDraftStorageKeyValue,
+    snapshot: currentComposerDraftSnapshot,
+  };
 
   useEffect(() => {
     if (composerDraftHydratingRef.current) {
@@ -9121,31 +9237,9 @@ export function AgentChatPane({
       if (draft === hydratedText) return;
     }
     draftsPerSessionRef.current.set(companionStateKey, draft);
-    const snapshot: ComposerDraftStorageSnapshot = {
-      version: 1,
-      text: draft,
-      mentionLabels,
-      modelId,
-      reasoningEffort,
-      fastMode,
-      cursorCloudServiceTier,
-      executionMode,
-      controls: {
-        ...currentNativeControls,
-        cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
-      },
-      attachments,
-      attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
-      contextAttachments,
-      iosContextItems: iosElementContextItems,
-      appControlContextItems,
-      builtInBrowserContextItems,
-      draftLaunchTargetId,
-      updatedAt: new Date().toISOString(),
-    };
     pendingComposerDraftWriteRef.current = {
       storageKey: composerDraftStorageKeyValue,
-      snapshot,
+      snapshot: currentComposerDraftSnapshot,
     };
     if (composerDraftWriteTimerRef.current != null) {
       window.clearTimeout(composerDraftWriteTimerRef.current);
@@ -9158,24 +9252,7 @@ export function AgentChatPane({
         writeComposerDraftSnapshot(pending.storageKey, pending.snapshot);
       }
     }, COMPOSER_DRAFT_WRITE_DEBOUNCE_MS);
-  }, [
-    appControlContextItems,
-    attachments,
-    builtInBrowserContextItems,
-    cursorCloudServiceTier,
-    fastMode,
-    companionStateKey,
-    composerDraftStorageKeyValue,
-    contextAttachments,
-    currentNativeControls,
-    draft,
-    draftLaunchTargetId,
-    executionMode,
-    iosElementContextItems,
-    modelId,
-    mentionLabels,
-    reasoningEffort,
-  ]);
+  }, [companionStateKey, composerDraftStorageKeyValue, currentComposerDraftSnapshot, draft]);
 
   useEffect(() => {
     if (!parallelChatMode) return;
@@ -9535,6 +9612,7 @@ export function AgentChatPane({
   }, [draftLaunchJobsScopeKey]);
 
   const dismissDraftLaunchJob = useCallback((jobId: string) => {
+    discardRendererLaunchHandoff(jobId);
     setDraftLaunchJobs((current) => current.filter((job) => job.id !== jobId));
   }, [setDraftLaunchJobs]);
 
@@ -9544,9 +9622,38 @@ export function AgentChatPane({
     if (options?.clearError) setError(null);
   }, [dismissDraftLaunchJob, restoreDraftLaunchSnapshot]);
 
-  const openLaunchedDraftSession = useCallback((launch: BackgroundLaunchNotice & { jobId?: string }) => {
+  const openLaunchedDraftSession = useCallback((launch: OpenLaunchedDraftSessionInput) => {
     if (launch.jobId) {
       dismissDraftLaunchJob(launch.jobId);
+    }
+    if (launch.draftKind === "chat" && launch.firstMessage) {
+      // The chat exists and its prompt is sent, but the new pane has nothing
+      // to show until history loads: hand it the prompt as its first bubble,
+      // plus where the composer and text sat so both can animate into place.
+      const prepared = launch.firstMessage;
+      const firstMessage: AgentChatEventEnvelope = {
+        sessionId: launch.sessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "user_message",
+          text: prepared.finalText,
+          displayText: prepared.finalDisplayText || "Selected visual app context",
+          ...(prepared.selectedAttachments.length ? { attachments: prepared.selectedAttachments } : {}),
+          ...(prepared.selectedContextAttachments.length ? { contextAttachments: prepared.selectedContextAttachments } : {}),
+        },
+      };
+      if (launch.composerHandoff) {
+        const handoff = refreshComposerHandoffDeparture(
+          launch.composerHandoff,
+          draftDepartingScope(shellRef.current),
+        );
+        stashComposerHandoffOrigin(launch.sessionId, { ...handoff, firstMessage });
+      } else {
+        stashComposerDockOrigin(launch.sessionId, draftComposerHandoffElement(shellRef.current), {
+          departingScope: draftDepartingScope(shellRef.current),
+          firstMessage,
+        });
+      }
     }
     if (projectRoot) {
       setWorkViewState(projectRoot, (prev) => ({
@@ -9592,8 +9699,94 @@ export function AgentChatPane({
   // directly with no status banner. If the inline open was skipped because this
   // pane remounted mid-launch, this effect opens the ready job from whichever
   // instance is mounted.
+  const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
+    const clearSubmittedContent = (saved: ComposerDraftStorageSnapshot): ComposerDraftStorageSnapshot => {
+      const text = clearSubmittedDraftText(saved.text, snapshot.draft);
+      const clearText = text !== saved.text;
+      const attachments = removeSubmittedDraftItems(saved.attachments, snapshot.attachments, sameStoredDraftItem);
+      const contextAttachments = removeSubmittedDraftItems(
+        saved.contextAttachments,
+        snapshot.contextAttachments,
+        sameStoredDraftItem,
+      );
+      const iosContextItems = removeSubmittedDraftItems(saved.iosContextItems, snapshot.iosContextItems, sameStoredDraftItem);
+      const appControlContextItems = removeSubmittedDraftItems(
+        saved.appControlContextItems,
+        snapshot.appControlContextItems,
+        sameStoredDraftItem,
+      );
+      const builtInBrowserContextItems = removeSubmittedDraftItems(
+        saved.builtInBrowserContextItems,
+        snapshot.builtInBrowserContextItems,
+        sameStoredDraftItem,
+      );
+      if (
+        !clearText
+        && attachments === saved.attachments
+        && contextAttachments === saved.contextAttachments
+        && iosContextItems === saved.iosContextItems
+        && appControlContextItems === saved.appControlContextItems
+        && builtInBrowserContextItems === saved.builtInBrowserContextItems
+      ) return saved;
+      return {
+        ...saved,
+        text,
+        mentionLabels: clearText ? {} : saved.mentionLabels,
+        attachments,
+        contextAttachments,
+        iosContextItems,
+        appControlContextItems,
+        builtInBrowserContextItems,
+        updatedAt: new Date().toISOString(),
+      };
+    };
+
+    const storageKeys = new Set(composerDraftStorageKeyValues);
+    // A detached renderer-owned launch callback may outlive a newer pane.
+    // That pane flushes its composer draft on unmount, so persisted storage is
+    // authoritative once this instance is gone.
+    const paneIsMounted = paneMountedRef.current;
+    const pending = paneIsMounted ? pendingComposerDraftWriteRef.current : null;
+    const latest = paneIsMounted ? latestComposerDraftSnapshotRef.current : null;
+    const latestDraft = latest && storageKeys.has(latest.storageKey) && !composerDraftHydratingRef.current
+      ? latest
+      : null;
+    for (const storageKey of storageKeys) {
+      const saved = readComposerDraftSnapshot(storageKey, initialNativeControls);
+      const current = latestDraft?.storageKey === storageKey
+        ? latestDraft.snapshot
+        : pending?.storageKey === storageKey
+          ? pending.snapshot
+          : saved;
+      const clearedSaved = saved ? clearSubmittedContent(saved) : null;
+      const clearedCurrent = current ? clearSubmittedContent(current) : null;
+      if (clearedSaved && clearedSaved !== saved) writeComposerDraftSnapshot(storageKey, clearedSaved);
+      if (clearedCurrent && clearedCurrent !== current) writeComposerDraftSnapshot(storageKey, clearedCurrent);
+      const reconciled = clearedCurrent ?? clearedSaved;
+      if (pending?.storageKey === storageKey && reconciled && pending.snapshot !== reconciled) {
+        pendingComposerDraftWriteRef.current = { ...pending, snapshot: reconciled };
+      }
+    }
+
+    setDraft((current) => {
+      const next = clearSubmittedDraftText(current, snapshot.draft);
+      if (next === current) return current;
+      draftsPerSessionRef.current.set(companionStateKey, "");
+      return next;
+    });
+    setAttachments((current) => removeSubmittedDraftItems(current, snapshot.attachments, sameStoredDraftItem));
+    setContextAttachments((current) => removeSubmittedDraftItems(current, snapshot.contextAttachments, sameStoredDraftItem));
+    setIosElementContextItems((current) => removeSubmittedDraftItems(current, snapshot.iosContextItems, sameStoredDraftItem));
+    setAppControlContextItems((current) => removeSubmittedDraftItems(current, snapshot.appControlContextItems, sameStoredDraftItem));
+    setBuiltInBrowserContextItems((current) => removeSubmittedDraftItems(current, snapshot.builtInBrowserContextItems, sameStoredDraftItem));
+  }, [companionStateKey, composerDraftStorageKeyValues, initialNativeControls]);
+
   useEffect(() => {
     if (!forceDraft) return;
+    // A ready launch can outlive the pane that started it. Wait for this
+    // mount's stored composer scope to commit before reconciling it; the first
+    // render still contains the empty pre-hydration state.
+    if (hydratedComposerDraftStorageKey !== composerDraftStorageKeyValue) return;
     const job = draftLaunchJobs.find(
       (entry) => entry.mode === "foreground"
         && entry.status === "ready"
@@ -9601,14 +9794,30 @@ export function AgentChatPane({
         && Boolean(entry.laneId && entry.laneName && entry.sessionId),
     );
     if (!job) return;
+    const composerHandoff = takeRendererLaunchHandoff(job.id);
+    if (job.mode === "foreground" && job.draftKind === "chat") {
+      // A remounted draft pane can collect more composer input while this
+      // launch is pending. Reconcile its persisted and debounced snapshots
+      // before changing composer scope so teardown cannot restore sent items.
+      clearDraftLaunchComposer(job.snapshot);
+    }
     openLaunchedDraftSession({
       laneId: job.laneId!,
       laneName: job.laneName!,
       sessionId: job.sessionId!,
       draftKind: job.draftKind,
       jobId: job.id,
+      ...(job.draftKind === "chat" ? { firstMessage: prepareDraftLaunch(job.snapshot) } : {}),
+      composerHandoff,
     });
-  }, [draftLaunchJobs, forceDraft, openLaunchedDraftSession]);
+  }, [
+    clearDraftLaunchComposer,
+    composerDraftStorageKeyValue,
+    draftLaunchJobs,
+    forceDraft,
+    hydratedComposerDraftStorageKey,
+    openLaunchedDraftSession,
+  ]);
 
   // Shared background-naming lifecycle: flag the affected lanes as "naming", ask
   // the backend for a name (it has its own timeout and returns the deterministic
@@ -9886,19 +10095,6 @@ export function AgentChatPane({
     startBackgroundLaneNaming,
   ]);
 
-  const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
-    setDraft((current) => {
-      if (current !== snapshot.draft) return current;
-      draftsPerSessionRef.current.set(companionStateKey, "");
-      return "";
-    });
-    setAttachments([]);
-    setContextAttachments([]);
-    setIosElementContextItems([]);
-    setAppControlContextItems([]);
-    setBuiltInBrowserContextItems([]);
-  }, [companionStateKey]);
-
   const cleanupDraftChatSession = useCallback(async (
     session: AgentChatSession,
     targetLane: DraftLaunchLaneTarget,
@@ -10141,7 +10337,9 @@ export function AgentChatPane({
     setError(null);
     const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
     if (opensNow) {
-      stashComposerDockOrigin(launchId, shellRef.current?.querySelector("[data-chat-composer-wrapper]"));
+      stashComposerDockOrigin(launchId, draftComposerHandoffElement(shellRef.current), {
+        departingScope: draftDepartingScope(shellRef.current),
+      });
     }
     clearDraftLaunchComposer(snapshot);
     if (opensNow) {
@@ -10233,6 +10431,10 @@ export function AgentChatPane({
       latestForegroundJobIdRef: latestForegroundDraftLaunchJobIdRef,
       inFlightKeysRef: draftLaunchInFlightKeysRef,
       paneMountedRef,
+      captureHandoffOrigin: () => captureComposerHandoff(
+        draftComposerHandoffElement(shellRef.current),
+        { departingScope: draftDepartingScope(shellRef.current) },
+      ),
       prepare: prepareDraftLaunch,
       resolveLane: resolveDraftLaunchLane,
       startChat: startDraftChatLaunch,
@@ -11527,7 +11729,11 @@ export function AgentChatPane({
         deferredComposerSessionIdRef.current = null;
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
-        // No session yet — create one
+        // No session yet — create one. The empty-state composer holds the
+        // text until the chat exists; measure it now for the send handoff.
+        inPlaceFirstSendHandoffRef.current = suppressOptimisticOutgoing
+          ? null
+          : captureComposerHandoff(draftComposerHandoffElement(shellRef.current));
         sessionId = await createSession();
         if (!sessionId) {
           throw new Error("Unable to create chat session.");
@@ -11652,6 +11858,7 @@ export function AgentChatPane({
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setOptimisticOutgoingMessageSynced(null);
+      inPlaceFirstSendHandoffRef.current = null;
       setError(message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
@@ -14145,6 +14352,7 @@ export function AgentChatPane({
   const composerWithTypographyRoot = (
     <div
       ref={composerDockRef}
+      data-chat-composer-dock
       data-chat-appearance-root
       style={{ ...chatAppearanceRootStyle, paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
@@ -14762,6 +14970,7 @@ export function AgentChatPane({
                         appPanelOpen ? null : "max-w-[680px]",
                       )}>
                         <motion.div
+                          data-draft-depart="fade"
                           className={cn(
                             // The logo is the only flexible row: in a short window it absorbs the
                             // overflow down to a legible floor, so the composer stays visible far
@@ -14806,6 +15015,7 @@ export function AgentChatPane({
                                 ? "w-full"
                                 : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
                             )}
+                            data-draft-depart="fade"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
                             <div className="flex min-w-0 items-center gap-2">
@@ -14928,7 +15138,7 @@ export function AgentChatPane({
                             exit={{ opacity: 0, y: 6 }}
                             transition={{ duration: 0.28, ease: "easeOut" }}
                           >
-                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="">
+                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="" data-draft-depart="fade">
                               <WorkActivityModule />
                             </div>
                           </motion.div>
