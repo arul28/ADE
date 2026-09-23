@@ -4,7 +4,15 @@ import {
   classifyProviderRetryCause,
   formatProviderRetryActivityDetail,
 } from "../../../shared/providerRetryPresentation";
-import type { PiSdkExtensionInfo, PiSdkUiNoticePayload, PiSdkUiRequestPayload, PiSdkUiResponsePayload } from "./piSdkProtocol";
+import {
+  isPiSdkAccount,
+  type PiSdkAccount,
+  type PiSdkExtensionInfo,
+  type PiSdkUiNoticePayload,
+  type PiSdkUiRequestPayload,
+  type PiSdkUiResponsePayload,
+} from "./piSdkProtocol";
+import { finiteNumberOrNull, toOptionalString } from "../shared/utils";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -12,15 +20,113 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function addUsageValue(
+  usage: PiSdkEventMapperState["usage"],
+  key: "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheCreationTokens" | "cacheWrite1hTokens" | "reasoningTokens" | "costUsd",
+  value: number | null,
+): void {
+  if (value == null) return;
+  usage[key] = (usage[key] ?? 0) + value;
+}
+
+function readAccount(value: unknown): PiSdkAccount | null {
+  if (!isPiSdkAccount(value)) return null;
+  const accountId = toOptionalString(value.accountId);
+  return {
+    kind: value.kind,
+    upstream: value.upstream.trim(),
+    ...(accountId ? { accountId } : {}),
+  };
+}
+
+export type PiSdkTurnUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  cacheWrite1hTokens?: number;
+  reasoningTokens?: number;
+  contextTokens?: number;
+  requestCount: number;
+  costUsd?: number;
+};
+
+/** What one turn's events told the mapper; the done event reads it. */
+export type PiSdkEventMapperState = {
+  usage: PiSdkTurnUsage;
+  servedModel?: string;
+  provider?: string;
+  account?: PiSdkAccount;
+};
+
+export function createPiSdkEventMapperState(): PiSdkEventMapperState {
+  return { usage: { requestCount: 0 } };
+}
+
+/** Clears the state before the next prompt. */
+export function resetPiSdkEventMapperTurn(state: PiSdkEventMapperState): void {
+  state.usage = { requestCount: 0 };
+  state.servedModel = undefined;
+  state.provider = undefined;
+  state.account = undefined;
+}
+
+function mapAssistantMessageEnd(
+  message: Record<string, unknown>,
+  turnId: string | undefined,
+  state: PiSdkEventMapperState,
+): AgentChatEvent[] {
+  state.usage.requestCount += 1;
+  const usage = asRecord(message.usage);
+  const inputTokens = finiteNumberOrNull(usage?.input);
+  const outputTokens = finiteNumberOrNull(usage?.output);
+  const cacheReadTokens = finiteNumberOrNull(usage?.cacheRead);
+  const cacheWriteTokens = finiteNumberOrNull(usage?.cacheWrite);
+  const reasoningTokens = finiteNumberOrNull(usage?.reasoning);
+  addUsageValue(state.usage, "inputTokens", inputTokens);
+  addUsageValue(state.usage, "outputTokens", outputTokens);
+  addUsageValue(state.usage, "cacheReadTokens", cacheReadTokens);
+  addUsageValue(state.usage, "cacheCreationTokens", cacheWriteTokens);
+  addUsageValue(state.usage, "cacheWrite1hTokens", finiteNumberOrNull(usage?.cacheWrite1h));
+  addUsageValue(state.usage, "reasoningTokens", reasoningTokens);
+  addUsageValue(state.usage, "costUsd", finiteNumberOrNull(asRecord(usage?.cost)?.total));
+  state.usage.contextTokens = inputTokens != null || cacheReadTokens != null || cacheWriteTokens != null
+    ? (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+    : undefined;
+  const provider = toOptionalString(message.provider);
+  const servedModel = toOptionalString(message.responseModel) ?? toOptionalString(message.model);
+  if (provider) state.provider = provider;
+  if (servedModel) state.servedModel = servedModel;
+  const account = readAccount(message.account);
+  if (account) state.account = account;
+  if (!turnId) return [];
+
+  return [{
+    type: "tokens",
+    turnId,
+    ...(toOptionalString(message.responseId) ? { itemId: toOptionalString(message.responseId)! } : {}),
+    ...(inputTokens != null ? { inputTokens } : {}),
+    ...(outputTokens != null ? { outputTokens } : {}),
+    ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens != null ? { cacheWriteTokens } : {}),
+    ...(reasoningTokens != null ? { reasoningTokens } : {}),
+  }];
+}
+
 /** Translate untrusted Pi SDK events into ADE's durable chat event contract. */
 export function mapPiSdkEventToChatEvents(
   event: unknown,
-  turnId?: string,
-  compactionId?: string | null,
+  turnId: string | undefined,
+  compactionId: string | null | undefined,
+  state: PiSdkEventMapperState,
 ): AgentChatEvent[] {
   const record = asRecord(event);
   if (!record) return [];
   const type = typeof record.type === "string" ? record.type : "";
+  if (type === "message_end") {
+    const message = asRecord(record.message);
+    return message?.role === "assistant" ? mapAssistantMessageEnd(message, turnId, state) : [];
+  }
   if (type === "message_update") {
     const assistant = asRecord(record.assistantMessageEvent);
     if (!assistant) return [];
@@ -63,13 +169,18 @@ export function mapPiSdkEventToChatEvents(
     return [{ type: "activity", activity: "running_command", detail: record.delta, turnId }];
   }
   if (type === "compaction_start" || type === "compaction_end") {
+    // The session's compaction count is the shared emitter's to keep.
+    const completed = type === "compaction_end";
+    const result = asRecord(record.result);
     return [{
       type: "context_compact",
       trigger: record.reason === "manual" ? "manual" : "auto",
       provider: "pi",
-      state: type === "compaction_start" ? "started" : "completed",
+      state: completed ? "completed" : "started",
       ...(compactionId ? { compactionId } : {}),
       ...(turnId ? { turnId } : {}),
+      ...(completed && finiteNumberOrNull(result?.tokensBefore) != null ? { preTokens: finiteNumberOrNull(result?.tokensBefore)! } : {}),
+      ...(completed && finiteNumberOrNull(result?.estimatedTokensAfter) != null ? { postTokens: finiteNumberOrNull(result?.estimatedTokensAfter)! } : {}),
     }];
   }
   if (type === "auto_retry_start") {
@@ -106,6 +217,76 @@ export function mapPiSdkEventToChatEvents(
     return name ? [{ type: "system_notice", noticeKind: "info", message: `Pi session renamed to ${name}.`, turnId }] : [];
   }
   return [];
+}
+
+/**
+ * What `done.servedModel` reports for a Pi turn: the route that answered, when
+ * it is not the one ADE asked for, else undefined.
+ *
+ * A Pi route is provider + model. The same model id from two providers is two
+ * different paid routes, so a provider change alone counts, and is reported
+ * with its provider (`openrouter/gpt-5`). A model change within the requested
+ * provider is reported as the model id, as before.
+ */
+function piServedRoute(args: {
+  requestedProvider: string | null;
+  requestedModel: string | null;
+  servedProvider: string | null;
+  servedModel: string | null;
+}): string | undefined {
+  const { requestedProvider, requestedModel, servedProvider, servedModel } = args;
+  if (servedProvider && requestedProvider && servedProvider !== requestedProvider) {
+    const model = servedModel ?? requestedModel;
+    return model ? `${servedProvider}/${model}` : servedProvider;
+  }
+  return servedModel && requestedModel && servedModel !== requestedModel ? servedModel : undefined;
+}
+
+export function mapPiSdkRunResultToDoneEvent(meta: {
+  turnId: string;
+  model: string;
+  modelId?: string;
+  requestedModel?: string | null;
+  provider?: string | null;
+  account?: PiSdkAccount | null;
+  state: PiSdkEventMapperState;
+  status: "completed" | "interrupted" | "failed";
+}): Extract<AgentChatEvent, { type: "done" }> {
+  // A copy: the live state keeps accumulating until the next reset, and the
+  // cost rides on `done.costUsd`, never inside `usage`.
+  const { costUsd, ...usage } = meta.state.usage;
+  const upstream = meta.state.provider ?? meta.provider ?? meta.account?.upstream ?? null;
+  // The account the turn's own events named wins over the one the worker
+  // reported at start; either counts only when it is for the upstream that ran.
+  const matched = upstream
+    ? [meta.state.account, meta.account].find((candidate) => candidate?.upstream === upstream)
+    : undefined;
+  const account = upstream
+    ? {
+        provider: "pi",
+        kind: matched?.kind ?? "unknown" as const,
+        upstream,
+        ...(upstream === "openai-codex" && matched?.accountId ? { accountId: matched.accountId } : {}),
+      }
+    : undefined;
+  const servedModel = piServedRoute({
+    requestedProvider: meta.provider?.trim() || null,
+    requestedModel: meta.requestedModel?.trim() || null,
+    servedProvider: meta.state.provider ?? null,
+    servedModel: meta.state.servedModel ?? null,
+  });
+  const hasUsage = usage.requestCount > 0 || Object.keys(usage).some((key) => key !== "requestCount");
+  return {
+    type: "done",
+    turnId: meta.turnId,
+    status: meta.status,
+    model: meta.model,
+    ...(meta.modelId ? { modelId: meta.modelId } : {}),
+    ...(hasUsage ? { usage } : {}),
+    ...(costUsd != null ? { costUsd, costSource: "list_price" as const } : {}),
+    ...(servedModel ? { servedModel } : {}),
+    ...(account ? { account } : {}),
+  };
 }
 
 /**

@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { isChatToolType } from "../../lib/sessions";
+import { laneWorkViewScopeKey, useAppStore } from "../../state/appStore";
 import { WorkViewArea } from "./WorkViewArea";
 
 const chatPaneLifecycle = vi.hoisted(() => ({
@@ -157,20 +158,6 @@ vi.mock("../chat/AgentChatPane", async () => {
         />
       );
     },
-  };
-});
-
-vi.mock("../chat/ChatPrPane", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../chat/ChatPrPane")>();
-  return {
-    ...actual,
-    ChatPrPane: ({ laneId, runtimePin }: { laneId: string; runtimePin?: { key: string } | null }) => (
-      <div
-        data-testid="chat-pr-pane"
-        data-lane-id={laneId}
-        data-runtime-pin-key={runtimePin?.key ?? ""}
-      />
-    ),
   };
 });
 
@@ -651,7 +638,13 @@ describe("WorkViewArea", () => {
     ).toContain("session-shell");
   });
 
-  it("pins the PR pane reads to the owning machine for a foreign running CLI", async () => {
+  it("opens the PR tool on the owning machine for a foreign running CLI", () => {
+    useAppStore.setState({
+      project: { rootPath: "/repo", name: "Repo" },
+      projectBinding: null,
+      workViewByProject: {},
+      laneWorkViewByScope: {},
+    } as never);
     const session = { ...makeRunningSession("session-foreign", "pty-foreign"), toolType: "codex" as const };
     const runtimePin = {
       kind: "remote",
@@ -681,17 +674,21 @@ describe("WorkViewArea", () => {
     );
     const local = within(view.container);
 
-    // A lane's PR lives in ITS machine's database, so a foreign session gets the
-    // same PR affordance as a local one — the pane is handed the resolved pin
-    // so its reads carry it. Before this, the pane was suppressed outright,
-    // which made a remote session's PR invisible until the tab was rebound.
+    // A lane's PR lives in ITS machine's database, so a foreign session still
+    // gets the header affordance. The click opens that machine's PR tool.
     fireEvent.click(local.getByRole("button", { name: "Toggle PR pane" }));
-    const pane = await local.findByTestId("chat-pr-pane");
-    expect(pane.getAttribute("data-lane-id")).toBe("lane-1");
-    expect(pane.getAttribute("data-runtime-pin-key")).toBe("remote:target-b:project-b");
+    expect(local.getByRole("button", { name: "Toggle PR pane" }).getAttribute("aria-pressed")).toBe("true");
+    const scopeKey = laneWorkViewScopeKey(runtimePin.key, session.laneId);
+    expect(useAppStore.getState().laneWorkViewByScope[scopeKey]?.workSidebarTool).toBe("pr");
   });
 
-  it("keeps PR pane controls enabled for a local running CLI", async () => {
+  it("opens the PR tool for a local running CLI", () => {
+    useAppStore.setState({
+      project: { rootPath: "/repo", name: "Repo" },
+      projectBinding: null,
+      workViewByProject: {},
+      laneWorkViewByScope: {},
+    } as never);
     const session = { ...makeRunningSession("session-local", "pty-local"), toolType: "codex" as const };
     const view = render(
       <WorkViewArea
@@ -712,7 +709,9 @@ describe("WorkViewArea", () => {
     const local = within(view.container);
 
     fireEvent.click(local.getByRole("button", { name: "Toggle PR pane" }));
-    expect((await local.findByTestId("chat-pr-pane")).getAttribute("data-lane-id")).toBe("lane-1");
+    expect(local.getByRole("button", { name: "Toggle PR pane" }).getAttribute("aria-pressed")).toBe("true");
+    const scopeKey = laneWorkViewScopeKey("/repo", session.laneId);
+    expect(useAppStore.getState().laneWorkViewByScope[scopeKey]?.workSidebarTool).toBe("pr");
   });
 
   it("shows the transcript for closed agent CLI sessions instead of the generic ended card", async () => {

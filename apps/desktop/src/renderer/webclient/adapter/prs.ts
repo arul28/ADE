@@ -369,6 +369,12 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     reopen: async (args: unknown) => {
       await call("prs.reopen", args, undefined, false);
     },
+    setDraft: async (args: unknown) => {
+      await call("prs.setDraft", args, undefined, false);
+    },
+    setAutoMerge: async (args: unknown) => {
+      await call("prs.setAutoMerge", args, undefined, false);
+    },
     rerunChecks: async (args: unknown) => {
       await call("prs.rerunChecks", args, undefined, false);
     },

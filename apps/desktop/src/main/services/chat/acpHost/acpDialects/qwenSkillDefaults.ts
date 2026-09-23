@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../../../shared/adeLayout";
 import { pathKey } from "../../../shared/pathCompare";
+import { getErrorMessage } from "../../../shared/utils";
 import { existingAgentSkillRoots } from "../../../skills/agentSkillRuntimeService";
 
 /**
@@ -135,7 +136,7 @@ function readJsonObject(file: string): BaseRead {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT") return { ok: true, value: {} };
-    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    return { ok: false, reason: getErrorMessage(error) };
   }
   try {
     const parsed: unknown = JSON.parse(text);
@@ -144,7 +145,7 @@ function readJsonObject(file: string): BaseRead {
     }
     return { ok: true, value: parsed };
   } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    return { ok: false, reason: getErrorMessage(error) };
   }
 }
 
@@ -234,7 +235,7 @@ export function ensureQwenAdeSkillDefaultsFile(args: {
     return {
       path: null,
       roots: [],
-      reason: error instanceof Error ? error.message : String(error),
+      reason: getErrorMessage(error),
     };
   }
 }

@@ -531,6 +531,9 @@ struct WorkUsageSummary: Hashable {
   var contextState: WorkContextUsageState? = nil
   /// Monotonic runtime sample used to reject late pre-compaction snapshots.
   var contextSampleId: Int? = nil
+  /// Context occupancy after a turn (`done.usage.contextTokens`): the input
+  /// side of the turn's last request. The token fields above are turn totals.
+  var contextTokens: Int? = nil
 }
 
 struct WorkContextUsageViewModel: Equatable {
@@ -912,6 +915,9 @@ struct WorkAdeCardRow: Hashable {
   let text: String
   let detail: String?
   let tone: WorkAdeCardTone
+  /// Wire `key`: the row's stable identity (a `lane_setup` stage id). Nil on
+  /// cards written before hosts sent it.
+  var key: String? = nil
 }
 
 struct WorkAdeCardProgress: Hashable {
@@ -969,6 +975,7 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "pr_merge_ready",
     "pr_conflict",
     "claude_session_quota",
+    "lane_setup",
   ]
 
   let id: String

@@ -32,7 +32,8 @@ export type FeatureAnalyticsAction =
   | "start"
   | "stop"
   | "reset_credit_consumed"
-  | "pending_input_dismissed";
+  | "pending_input_dismissed"
+  | "new_lane_launch";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -42,6 +43,7 @@ export type FeatureAnalyticsOutcome =
   | "nothing_to_reset"
   | "no_credit"
   | "already_redeemed"
+  | "cancelled"
   | "failed";
 
 /**
@@ -202,5 +204,24 @@ export function capturePendingInputDismissedAnalytics(args: {
     feature: "chat",
     action: "pending_input_dismissed",
     outcome: "completed",
+  });
+}
+
+/**
+ * One brain-owned "chat in a new lane" launch reached an outcome: the agent
+ * started (`completed`), the user deleted it during setup (`cancelled`), or a
+ * setup stage failed (`failed`). Captured by the launch service's outcome hook,
+ * never per progress tick.
+ */
+export function captureNewLaneLaunchAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "cancelled" | "failed">;
+  provider: unknown;
+}): void {
+  captureFeatureUsedAnalytics({
+    ...args,
+    feature: "chat",
+    action: "new_lane_launch",
   });
 }

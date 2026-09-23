@@ -50,6 +50,12 @@ export type ModelListRowProps = {
    * row (plain toggle) and a non-selected one (select + enable).
    */
   onFastModeChange?: (modelId: string, next: boolean) => void;
+  /**
+   * Why Fast cannot run with this row's other picks (an OpenCode effort with
+   * no Fast route). The chip dims, shows the reason, and cannot turn Fast on.
+   * It can still turn Fast off.
+   */
+  fastUnavailableReason?: string | null;
   /** Cursor Cloud's nullable fast/standard service-tier affordance. */
   serviceTierMode?: boolean;
   serviceTier?: CursorCloudServiceTier | null;
@@ -71,6 +77,7 @@ export const ModelListRow = memo(function ModelListRow({
   inlineReasoningChip,
   fastModeOn = false,
   onFastModeChange,
+  fastUnavailableReason = null,
   serviceTierMode = false,
   serviceTier = null,
   onServiceTierChange,
@@ -79,6 +86,7 @@ export const ModelListRow = memo(function ModelListRow({
   const details = modelDetailLine(model);
   const localBadge = isLocalModel(model);
   const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
+  const fastBlocked = showFastChip && Boolean(fastUnavailableReason);
   const showServiceTierChip = serviceTierMode
     && Boolean(onServiceTierChange)
     && (modelSupportsServiceTier(model, "fast") || modelSupportsServiceTier(model, "standard"));
@@ -254,7 +262,7 @@ export const ModelListRow = memo(function ModelListRow({
               "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded transition-all duration-150",
               "opacity-40 group-hover:opacity-100",
               isFavorite && "opacity-100",
-              "hover:scale-110 active:scale-95",
+              "hover:scale-110",
             )}
           >
             <Star
@@ -328,25 +336,32 @@ export const ModelListRow = memo(function ModelListRow({
                 : `Fast mode for ${model.displayName}`}
               aria-pressed={activeTier != null}
               data-fast-on={activeTier === "fast" ? "true" : undefined}
+              data-fast-unavailable={fastBlocked ? "true" : undefined}
               title={
                 showServiceTierChip
                   ? activeTier
                     ? `${activeTier === "fast" ? "Fast" : "Standard"} tier selected — click to cycle`
                     : "Leave service tier unset — click to choose a tier"
+                  : fastBlocked
+                  ? fastUnavailableReason ?? undefined
                   : fastModeOn
                   ? "Fast mode on"
                   : isActive
                     ? "Enable fast mode"
                     : `Use ${model.displayName} in fast mode`
               }
+              // Fast that cannot run must not turn on; one that is on can still turn off.
+              disabled={fastBlocked && !fastModeOn}
               onClick={showServiceTierChip ? handleServiceTierClick : handleFastChipClick}
               onKeyDown={showServiceTierChip ? handleServiceTierKeyDown : handleFastChipKeyDown}
               className={cn(
                 "ml-1 inline-flex h-4 shrink-0 items-center gap-1 self-center rounded-full border px-1.5",
                 "text-[9px] font-semibold uppercase leading-none tracking-wide",
+                "disabled:cursor-not-allowed",
+                fastBlocked && "opacity-45",
                 // Rest reads as plainly off; hover only darkens; the press itself
                 // is the depress; "on" is the only violet state.
-                reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100 active:scale-[0.97]",
+                reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100",
                 activeTier
                   ? "border-violet-400/50 bg-violet-500/85 text-white shadow-[0_0_0_1px_rgba(139,92,246,0.20)] hover:bg-violet-500 active:bg-violet-500/70"
                   : "border-white/[0.08] bg-white/[0.02] text-muted-fg/55 hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg/80 active:bg-white/[0.12]",

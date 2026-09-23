@@ -75,7 +75,7 @@ export const PrDeploymentCard = memo(function PrDeploymentCard({
       <div className="flex items-center gap-2">
         <span
           className="inline-block h-2 w-2 shrink-0 rounded-full"
-          style={{ background: color, boxShadow: `0 0 6px ${color}60` }}
+          style={{ background: color, boxShadow: `0 0 6px color-mix(in srgb, ${color} 38%, transparent)` }}
         />
         <span
           className="truncate text-[12px] font-medium"

@@ -23,6 +23,7 @@ import type {
   UpdateSessionMetaArgs,
 } from "../../../shared/types";
 import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
+import { isSessionActivityValue, normalizeSessionActivityReport } from "../../../shared/sessionActivity";
 import {
   isTrackedAgentCliToolType,
   parseSessionSettleOverride,
@@ -60,6 +61,8 @@ type SessionRow = {
   archivedAt: string | null;
   settledAt: string | null;
   statusNote: string | null;
+  activityStatusJson: string | null;
+  activityStatusChangedAt: string | null;
   attentionRequestedAt: string | null;
   attentionMessage: string | null;
   attentionSource: string | null;
@@ -132,6 +135,8 @@ const SESSION_COLUMNS = `
   s.archived_at as archivedAt,
   s.settled_at as settledAt,
   s.status_note as statusNote,
+  s.activity_status_json as activityStatusJson,
+  s.activity_status_changed_at as activityStatusChangedAt,
   s.attention_requested_at as attentionRequestedAt,
   s.attention_message as attentionMessage,
   s.attention_source as attentionSource,
@@ -481,6 +486,26 @@ export function createSessionService({
     return true;
   };
 
+  const writeSessionActivity = (sessionId: string, value: unknown): boolean => {
+    if (value !== null && !isSessionActivityValue(value)) {
+      throw new Error("setSessionActivity requires a supported activity value or null.");
+    }
+    return mutateSessionMeta(sessionId, (id) => {
+      const changedAt = new Date().toISOString();
+      const report = value === null
+        ? null
+        : {
+            value,
+            source: "agent" as const,
+            updatedAt: changedAt,
+          };
+      db.run(
+        "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
+        [report ? JSON.stringify(report) : null, changedAt, id],
+      );
+    });
+  };
+
   /**
    * Move a session row back to `running`, restricted to the given scope.
    *
@@ -693,6 +718,8 @@ export function createSessionService({
   };
 
   const mapRow = (row: SessionRow) => {
+    const { activityStatusJson, ...summaryRow } = row;
+    const activityStatus = normalizeSessionActivityReport(activityStatusJson);
     const toolType = inferToolTypeFromResumeCommand(
       normalizeToolType(row.toolType),
       row.resumeCommand ?? null,
@@ -706,7 +733,7 @@ export function createSessionService({
       }
     }
     return {
-      ...row,
+      ...summaryRow,
       tracked: row.tracked === 1,
       pinned: row.pinned === 1,
       manuallyNamed: row.manuallyNamed === 1,
@@ -720,6 +747,8 @@ export function createSessionService({
       archivedAt: row.archivedAt ?? null,
       settledAt: normalizeIsoTimestamp(row.settledAt),
       statusNote: normalizeSessionStatusNote(row.statusNote),
+      activityStatus,
+      activityStatusChangedAt: normalizeIsoTimestamp(row.activityStatusChangedAt) ?? activityStatus?.updatedAt ?? null,
       attentionRequestedAt: normalizeIsoTimestamp(row.attentionRequestedAt),
       attentionMessage: normalizeOptionalText(row.attentionMessage, 500),
       attentionSource: normalizeAttentionSource(row.attentionSource),
@@ -1448,6 +1477,24 @@ export function createSessionService({
       );
       if (!row) return null;
       return mapRow(row) as TerminalSessionDetail;
+    },
+
+    /** Resolve the chat's own row, falling back to its newest attached terminal for legacy chats. */
+    getByChatSessionId(chatSessionId: string): TerminalSessionSummary | null {
+      const trimmedId = typeof chatSessionId === "string" ? chatSessionId.trim() : "";
+      if (!trimmedId) return null;
+      const row = db.get<SessionRow>(
+        `
+          select ${SESSION_COLUMNS}
+          from terminal_sessions s
+          join lanes l on l.id = s.lane_id
+          where s.chat_session_id = ?
+          order by case when s.id = ? then 0 else 1 end, s.started_at desc
+          limit 1
+        `,
+        [trimmedId, trimmedId],
+      );
+      return row ? mapRow(row) as TerminalSessionSummary : null;
     },
 
     updateMeta(args: UpdateSessionMetaArgs): TerminalSessionSummary | null {
@@ -2179,6 +2226,11 @@ export function createSessionService({
       });
     },
 
+    /** Store one host-timestamped, fixed-value activity report for this session. */
+    setSessionActivity(sessionId: string, value: unknown): boolean {
+      return writeSessionActivity(sessionId, value);
+    },
+
     getStatusNoteUpdatedAt(sessionId: string): string | null {
       return statusNoteUpdatedAtById.get(sessionId.trim()) ?? null;
     },
@@ -2244,6 +2296,11 @@ export function createSessionService({
         db.run("update terminal_sessions set last_turn_failed_at = null where id = ?", [id]);
         wakeSnoozedRow(id, "turn_complete");
       });
+    },
+
+    /** Clear an agent activity report at a real turn boundary, not on PTY keystrokes. */
+    clearSessionActivity(sessionId: string): boolean {
+      return writeSessionActivity(sessionId, null);
     },
 
     clearTurnStartMarkers(sessionId: string): boolean {

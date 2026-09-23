@@ -121,7 +121,7 @@ type CreateEmbeddedRuntime = (args: {
   projectRoot: string;
   workspaceRoot: string;
   chatRuntime: "agent";
-  runtimeProfile: "chat";
+  runtimeProfile: "embedded";
 }) => Promise<EmbeddedRuntime>;
 
 type CreateEmbeddedRpcRequestHandler = (args: {
@@ -199,7 +199,7 @@ async function loadEmbeddedAdeCli(): Promise<{
     projectRoot: string;
     workspaceRoot: string;
     chatRuntime: "agent";
-    runtimeProfile: "chat";
+    runtimeProfile: "embedded";
   }) => Promise<EmbeddedRuntime>;
   createAdeRpcRequestHandler: CreateEmbeddedRpcRequestHandler;
 }> {
@@ -1047,7 +1047,7 @@ export async function connectToAde(args: {
     projectRoot: args.project.projectRoot,
     workspaceRoot: args.project.workspaceRoot,
     chatRuntime: "agent",
-    runtimeProfile: "chat",
+    runtimeProfile: "embedded",
   });
   const handler: DirectHandler = createAdeRpcRequestHandler({
     runtime,

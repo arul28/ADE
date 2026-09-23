@@ -38,13 +38,10 @@ import {
   markCursorModelCachesStale,
   mergeCursorModelDescriptorSources,
   parseCursorCliModelsStdout,
-  describeCursorSdkModelSelectionFailure,
+  peekCursorSdkCatalogRows,
   probeCursorSdkModelDiscovery,
-  resolveCursorSdkModelSelection,
-  resolveCursorSdkModelSelectionFromCache,
-  resolveCursorSdkModelSelectionParams,
+  readCursorSdkCatalog,
   resolveCachedCursorModelAvailability,
-  verifyExplicitCursorModelSelection,
 } from "./cursorModelsDiscovery";
 
 beforeEach(() => {
@@ -97,18 +94,6 @@ describe("parseCursorCliModelsStdout", () => {
     expect(descriptors.some((descriptor) => descriptor.id === "xai/grok-4-6")).toBe(false);
     expect(descriptors.find((descriptor) => descriptor.id === "cursor/claude-4-sonnet-thinking")?.displayName)
       .toBe("Claude 4 Sonnet Thinking");
-  });
-
-  it("leaves an unrequested tier unset and refuses a tier the model cannot express", async () => {
-    cursorModelsListMock.mockResolvedValue([{ id: "plain-model", displayName: "Plain Model" }]);
-
-    await expect(resolveCursorSdkModelSelection("crsr_test", {
-      modelSdkId: "plain-model",
-    })).resolves.toEqual({ status: "ok", params: [] });
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "plain-model",
-      serviceTier: "fast",
-    })).rejects.toThrow(/fast tier/i);
   });
 
   it("warms exact Cursor SDK models only in cached-or-fallback mode", async () => {
@@ -425,485 +410,6 @@ describe("parseCursorCliModelsStdout", () => {
     });
   });
 
-  it("preserves Cursor SDK parameters and variants as runtime reasoning and service tiers", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2",
-        displayName: "Composer 2",
-        aliases: ["composer-latest"],
-        parameters: [
-          {
-            id: "reasoning_effort",
-            displayName: "Reasoning effort",
-            values: [
-              { value: "low", displayName: "Low" },
-              { value: "high", displayName: "High" },
-            ],
-          },
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [{ value: "fast", displayName: "Fast" }],
-          },
-        ],
-        variants: [
-          {
-            displayName: "Fast High",
-            params: [
-              { id: "reasoning_effort", value: "high" },
-              { id: "speed", value: "fast" },
-            ],
-          },
-        ],
-      },
-    ]);
-
-    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(descriptors[0]).toMatchObject({
-      id: "cursor/composer-2",
-      reasoningTiers: ["low", "high"],
-      serviceTiers: ["fast"],
-    });
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "composer-2",
-      reasoningEffort: "high",
-      fastMode: true,
-    })).toEqual([
-      { id: "reasoning_effort", value: "high" },
-      { id: "speed", value: "fast" },
-    ]);
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "composer-latest",
-      reasoningEffort: "high",
-      fastMode: true,
-    })).toEqual([
-      { id: "reasoning_effort", value: "high" },
-      { id: "speed", value: "fast" },
-    ]);
-  });
-
-  it("passes explicit standard service tier params when Cursor fast mode is off", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2.5",
-        displayName: "Composer 2.5",
-        parameters: [
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [
-              { value: "standard", displayName: "Standard" },
-              { value: "fast", displayName: "Fast" },
-            ],
-          },
-        ],
-        variants: [
-          {
-            displayName: "Standard",
-            params: [{ id: "speed", value: "standard" }],
-          },
-          {
-            displayName: "Fast",
-            params: [{ id: "speed", value: "fast" }],
-          },
-        ],
-      },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "composer-2.5",
-      fastMode: false,
-    })).toEqual([{ id: "speed", value: "standard" }]);
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "composer-2.5",
-      fastMode: true,
-    })).toEqual([{ id: "speed", value: "fast" }]);
-  });
-
-  it("discovers and resolves service tiers from compact variant-only rows", async () => {
-    cursorModelsListMock.mockResolvedValue([{
-      id: "composer-2.6",
-      displayName: "Composer 2.6",
-      variants: [
-        { displayName: "Standard", params: [{ id: "service_tier", value: "standard" }] },
-        { displayName: "Fast", params: [{ id: "service_tier", value: "fast" }] },
-      ],
-    }]);
-
-    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(descriptors[0]?.serviceTiers).toEqual(["standard", "fast"]);
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "composer-2.6",
-      serviceTier: "standard",
-    })).toEqual({ status: "ok", params: [{ id: "service_tier", value: "standard" }] });
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "composer-2.6",
-      serviceTier: "fast",
-    })).toEqual({ status: "ok", params: [{ id: "service_tier", value: "fast" }] });
-  });
-
-  it("keeps a known model with no parameterized controls valid", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      { id: "grok-4.6", displayName: "Grok 4.6" },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "grok-4.6",
-      fastMode: false,
-    })).toEqual([]);
-  });
-
-  it("reports a value a control the model DOES declare cannot express as partial", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "grok-4.6",
-        displayName: "Grok 4.6",
-        // A bare snake-case id and no display name. The classifier still reads
-        // it as a reasoning control, so the requested value is unmet, not
-        // inapplicable.
-        parameters: [{
-          id: "reasoning_effort",
-          values: [{ value: "high" }],
-        }],
-      },
-      {
-        id: "grok-4.6-tiered",
-        displayName: "Grok 4.6 Tiered",
-        parameters: [{
-          id: "service_tier",
-          values: [{ value: "standard" }, { value: "fast" }],
-        }],
-      },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "grok-4.6",
-      reasoningEffort: "xhigh",
-      fastMode: false,
-    })).toEqual({ status: "partial", params: [], unmet: ["reasoning"] });
-    // The local chat path still sends whatever resolved: dropping every param
-    // because one control could not be expressed loses the others too.
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "grok-4.6",
-      reasoningEffort: "xhigh",
-      fastMode: false,
-    })).toEqual([]);
-    // The same for a bare tier id: `service_tier` alone classifies as a tier
-    // control, so the chosen tier resolves to a real value.
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "grok-4.6-tiered",
-      fastMode: false,
-    })).toEqual({ status: "ok", params: [{ id: "service_tier", value: "standard" }] });
-  });
-
-  it("treats a control the model declares no parameter for as inapplicable, not unmet", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2.5",
-        displayName: "Composer 2.5",
-        // Cursor's real row for this model declares a speed control and no
-        // reasoning control at all.
-        parameters: [{
-          id: "speed",
-          displayName: "Speed",
-          values: [
-            { value: "standard", displayName: "Standard" },
-            { value: "fast", displayName: "Fast" },
-          ],
-        }],
-      },
-      {
-        id: "grok-4.6",
-        displayName: "Grok 4.6",
-        // The mirror case: a reasoning control and no service tier control.
-        parameters: [{
-          id: "reasoning_effort",
-          displayName: "Reasoning effort",
-          values: [{ value: "high", displayName: "High" }],
-        }],
-      },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    // A stale reasoning effort left on the draft by a previously selected model
-    // cannot block this one: there is no variant Cursor could silently pick.
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "xhigh",
-      fastMode: true,
-    })).toEqual({ status: "ok", params: [{ id: "speed", value: "fast" }] });
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "xhigh",
-      fastMode: null,
-    })).toEqual({ status: "ok", params: [] });
-    // Fast mode on a model with no service tier control is inapplicable too.
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "grok-4.6",
-      reasoningEffort: "high",
-      fastMode: true,
-    })).toEqual({ status: "ok", params: [{ id: "reasoning_effort", value: "high" }] });
-  });
-
-  it("lets a cloud create launch a model that declares no reasoning control", async () => {
-    cursorModelsListMock.mockResolvedValue([{
-      id: "composer-2.5",
-      displayName: "Composer 2.5",
-      parameters: [{
-        id: "speed",
-        displayName: "Speed",
-        values: [
-          { value: "standard", displayName: "Standard" },
-          { value: "fast", displayName: "Fast" },
-        ],
-      }],
-    }]);
-
-    // The fail-closed cloud path verifies the same way: it returns the params it
-    // could express instead of refusing the launch over an inapplicable control.
-    await expect(resolveCursorSdkModelSelection("crsr_test", {
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "xhigh",
-      fastMode: false,
-    })).resolves.toEqual({ status: "ok", params: [{ id: "speed", value: "standard" }] });
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "xhigh",
-      fastMode: false,
-    })).resolves.toEqual([{ id: "speed", value: "standard" }]);
-  });
-
-  it("tells an unlisted model apart from a catalog it could not load", async () => {
-    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" })).toEqual({
-      status: "catalog-unavailable",
-      reason: expect.any(String),
-    });
-
-    cursorModelsListMock.mockResolvedValue([{ id: "composer-2", displayName: "Composer 2" }]);
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" }))
-      .toEqual({ status: "ok", params: [] });
-    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "gpt-9" }))
-      .toEqual({ status: "unknown-model" });
-  });
-
-  it("probes and resolves in one call, and names a probe failure as its reason", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2",
-        displayName: "Composer 2",
-        parameters: [{
-          id: "reasoning_effort",
-          displayName: "Reasoning effort",
-          values: [{ value: "high" }],
-        }],
-      },
-    ]);
-
-    await expect(resolveCursorSdkModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      reasoningEffort: "high",
-    })).resolves.toEqual({ status: "ok", params: [{ id: "reasoning_effort", value: "high" }] });
-
-    clearCursorCliModelsCache();
-    cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 })));
-
-    const failed = await resolveCursorSdkModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      reasoningEffort: "high",
-    });
-    // The async resolver supplies the probe's own reason. The cache-only
-    // resolver cannot: it takes no API key, so it never speaks for one.
-    expect(failed).toEqual({ status: "catalog-unavailable", reason: expect.any(String) });
-    if (failed.status === "ok") throw new Error("unreachable");
-    expect(describeCursorSdkModelSelectionFailure("composer-2", failed))
-      .toMatch(/^Could not load Cursor's model catalog \(.+\)\. Try again\.$/);
-    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" })).toEqual({
-      status: "catalog-unavailable",
-      reason: "Cursor's model catalog has not loaded yet.",
-    });
-  });
-
-  it("verifies a cloud create only when the caller chose a control", async () => {
-    cursorModelsListMock.mockResolvedValue([{
-      id: "composer-2",
-      displayName: "Composer 2",
-      parameters: [{
-        id: "speed",
-        displayName: "Speed",
-        values: [{ value: "fast", displayName: "Fast" }],
-      }],
-    }]);
-
-    // Nothing chosen: no verification, and the caller supplies its own fallback.
-    await expect(verifyExplicitCursorModelSelection("crsr_test", { modelSdkId: "composer-2" }))
-      .resolves.toBeNull();
-    // An absent fast mode is no tier opinion, so a catalog with no standard
-    // value still verifies. Both cloud create paths read it the same way.
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      reasoningEffort: null,
-      fastMode: true,
-    })).resolves.toEqual([{ id: "speed", value: "fast" }]);
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      fastMode: false,
-    })).rejects.toThrow("could not verify the selected model settings (standard tier)");
-  });
-
-  it("treats blank reasoning effort as no explicit control", async () => {
-    cursorModelsListMock.mockRejectedValue(new Error("should not probe"));
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      reasoningEffort: " ",
-    })).resolves.toBeNull();
-    expect(cursorModelsListMock).not.toHaveBeenCalled();
-  });
-
-  it("resolves an authoritative empty probe without another key's cached catalog", async () => {
-    cursorModelsListMock.mockResolvedValueOnce([{ id: "composer-2", displayName: "Composer 2" }]);
-    await expect(resolveCursorSdkModelSelection("crsr_key_a", {
-      modelSdkId: "composer-2",
-    })).resolves.toEqual({ status: "ok", params: [] });
-    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" }))
-      .toEqual({ status: "ok", params: [] });
-
-    cursorModelsListMock.mockResolvedValue([]);
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) })));
-
-    await expect(resolveCursorSdkModelSelection("crsr_key_b", {
-      modelSdkId: "composer-2",
-      fastMode: true,
-    })).resolves.toEqual({ status: "unknown-model" });
-    // The cache-only path still sees key A's rows: empty probes do not overwrite
-    // a different key. Authoritative resolve must not follow that cache.
-    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" }))
-      .toEqual({ status: "ok", params: [] });
-  });
-
-  it("names the cause of every selection a fail-closed caller refuses", () => {
-    expect(describeCursorSdkModelSelectionFailure("composer-2", { status: "unknown-model" }))
-      .toBe("Cursor Cloud does not list model composer-2. Refresh Cursor models.");
-    expect(describeCursorSdkModelSelectionFailure("composer-2", {
-      status: "partial",
-      params: [],
-      unmet: ["fast"],
-    })).toBe(
-      "Cursor Cloud could not verify the selected model settings (fast tier). Refresh Cursor models and try again.",
-    );
-  });
-
-  it("does not let standard tier variants overwrite selected Cursor reasoning params", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2.5",
-        displayName: "Composer 2.5",
-        parameters: [
-          {
-            id: "reasoning_effort",
-            displayName: "Reasoning effort",
-            values: [
-              { value: "low", displayName: "Low" },
-              { value: "high", displayName: "High" },
-            ],
-          },
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [
-              { value: "standard", displayName: "Standard" },
-              { value: "fast", displayName: "Fast" },
-            ],
-          },
-        ],
-        variants: [
-          {
-            displayName: "High reasoning",
-            params: [{ id: "reasoning_effort", value: "high" }],
-          },
-          {
-            displayName: "Standard",
-            params: [
-              { id: "speed", value: "standard" },
-              { id: "reasoning_effort", value: "low" },
-            ],
-          },
-        ],
-      },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "high",
-      fastMode: false,
-    })).toEqual([
-      { id: "reasoning_effort", value: "high" },
-      { id: "speed", value: "standard" },
-    ]);
-  });
-
-  it("does not treat a Fast variant's default reasoning as the requested effort", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "grok-4.6",
-        displayName: "Grok 4.6",
-        parameters: [
-          {
-            id: "reasoning_effort",
-            displayName: "Reasoning effort",
-            values: [
-              { value: "high", displayName: "High" },
-            ],
-          },
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [
-              { value: "fast", displayName: "Fast" },
-            ],
-          },
-        ],
-        variants: [
-          {
-            displayName: "Fast",
-            params: [
-              { id: "speed", value: "fast" },
-              { id: "reasoning_effort", value: "high" },
-            ],
-          },
-        ],
-      },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionFromCache({
-      modelSdkId: "grok-4.6",
-      reasoningEffort: "xhigh",
-      fastMode: true,
-    })).toEqual({
-      status: "partial",
-      params: [
-        { id: "speed", value: "fast" },
-        { id: "reasoning_effort", value: "high" },
-      ],
-      unmet: ["reasoning"],
-    });
-  });
-
   it("falls back to Cursor's official models API when SDK model listing fails", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     const fetchMock = vi.fn(async () => ({
@@ -1095,5 +601,48 @@ describe("parseCursorCliModelsStdout", () => {
     expect(
       await discoverCursorCliModelDescriptors("/usr/local/bin/cursor-agent", { mode: "cached-only" }),
     ).toEqual([]);
+  });
+});
+
+describe("the catalog the selection resolvers read", () => {
+  it("peeks at the catalog in memory without fetching", async () => {
+    expect(peekCursorSdkCatalogRows()).toBeNull();
+    expect(cursorModelsListMock).not.toHaveBeenCalled();
+    cursorModelsListMock.mockResolvedValue([{ id: "composer-2", displayName: "Composer 2" }]);
+    await probeCursorSdkModelDiscovery("crsr_test");
+    expect(peekCursorSdkCatalogRows()?.map((row) => row.id)).toEqual(["composer-2"]);
+    expect(cursorModelsListMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads this key's catalog from memory, and fetches for a key it does not hold", async () => {
+    cursorModelsListMock.mockResolvedValue([{ id: "composer-2", displayName: "Composer 2" }]);
+    await expect(readCursorSdkCatalog("crsr_key_a")).resolves.toMatchObject({
+      status: "loaded",
+      rows: [{ id: "composer-2" }],
+    });
+    await readCursorSdkCatalog("crsr_key_a");
+    expect(cursorModelsListMock).toHaveBeenCalledTimes(1);
+
+    // A successful empty fetch is an empty catalog, not a failure.
+    cursorModelsListMock.mockResolvedValue([]);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) })));
+    await expect(readCursorSdkCatalog("crsr_key_b")).resolves.toEqual({ status: "loaded", rows: [] });
+    expect(cursorModelsListMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails fast with this key's last cause only when asked, so a retry is real", async () => {
+    cursorModelsListMock.mockRejectedValue(new Error("AuthenticationError (status=401, endpoint=GET /v1/models)"));
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const calls = (): number => cursorModelsListMock.mock.calls.length + fetchMock.mock.calls.length;
+
+    const first = await readCursorSdkCatalog("crsr_test");
+    expect(first).toMatchObject({ status: "unavailable" });
+    const afterFirst = calls();
+
+    await expect(readCursorSdkCatalog("crsr_test", { failFast: true })).resolves.toEqual(first);
+    expect(calls()).toBe(afterFirst);
+    await readCursorSdkCatalog("crsr_test");
+    expect(calls()).toBeGreaterThan(afterFirst);
   });
 });

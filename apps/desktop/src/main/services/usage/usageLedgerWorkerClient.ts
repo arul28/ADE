@@ -90,7 +90,7 @@ export type UsageLedgerScanResult = {
   incompleteProviders: string[];
 };
 
-/** Nine providers, each an ASCII slug. This only bounds a malformed payload. */
+/** One ASCII slug per scanned provider. This only bounds a malformed payload. */
 const MAX_INCOMPLETE_PROVIDERS = 64;
 const MAX_PROVIDER_NAME_LENGTH = 128;
 
@@ -414,17 +414,21 @@ export function scanUsageLedgersInWorker(
     timeout.unref?.();
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      const text = chunk.toString();
+    // The stream decoder holds back a multi-byte character that a chunk
+    // boundary splits. `chunk.toString()` per chunk would corrupt it (a CJK
+    // project path in `projectCostsByRoot`).
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (text: string) => {
       stdout += text;
       stream.push(text);
       if (Buffer.byteLength(stdout, "utf8") > LEDGER_WORKER_MAX_OUTPUT_BYTES) {
         fail(new Error("Usage ledger worker produced too much output"));
       }
     });
-    child.stderr.on("data", (chunk: Buffer | string) => {
+    child.stderr.on("data", (text: string) => {
       if (Buffer.byteLength(stderr, "utf8") >= LEDGER_WORKER_MAX_ERROR_BYTES) return;
-      stderr += chunk.toString();
+      stderr += text;
     });
     child.on("error", (error) => finish(() => reject(error)));
     child.on("close", (code, signal) => {

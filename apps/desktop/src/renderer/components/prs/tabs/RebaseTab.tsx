@@ -629,7 +629,7 @@ export function RebaseTab({
         style={{
           borderRadius: 0,
           borderLeft: isSelected ? `3px solid ${stateColor}` : "3px solid transparent",
-          backgroundColor: isSelected ? `${stateColor}12` : "transparent",
+          backgroundColor: isSelected ? `color-mix(in srgb, ${stateColor} 7%, transparent)` : "transparent",
         }}
         onMouseEnter={(e) => {
           if (!isSelected) e.currentTarget.style.backgroundColor = "#13101A66";
@@ -657,8 +657,8 @@ export function RebaseTab({
               fontSize: 10,
               letterSpacing: "1px",
               color: stateColor,
-              backgroundColor: `${stateColor}18`,
-              border: `1px solid ${stateColor}30`,
+              backgroundColor: `color-mix(in srgb, ${stateColor} 9%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${stateColor} 19%, transparent)`,
               padding: "2px 6px",
               borderRadius: 0,
             }}
@@ -1637,8 +1637,8 @@ export function RebaseTab({
                                     letterSpacing: "1px",
                                     color: statusColor,
                                     padding: "2px 6px",
-                                    backgroundColor: `${statusColor}18`,
-                                    border: `1px solid ${statusColor}30`,
+                                    backgroundColor: `color-mix(in srgb, ${statusColor} 9%, transparent)`,
+                                    border: `1px solid color-mix(in srgb, ${statusColor} 19%, transparent)`,
                                   }}
                                 >
                                   {lane.status === "conflict" ? "CONFLICTS" : lane.status.toUpperCase()}

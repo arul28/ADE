@@ -58,6 +58,7 @@ struct HubScreen: View {
   // local resolution without creating a request loop.
   @State private var requestedRosterLookupRequestId: String?
   @State private var rosterFilter: HubRosterFilter = .all
+  @Environment(\.scenePhase) private var scenePhase
 
   private var isNoMachineBlankState: Bool {
     syncService.connectionState == .disconnected || syncService.connectionState == .error
@@ -342,10 +343,28 @@ struct HubScreen: View {
       guard personalChatsRefreshKey != nil else { return }
       _ = try? await syncService.refreshPersonalChats(includeArchived: true)
     }
+    // Launches set up in other projects get no pushes. While the Hub is on
+    // screen and one is still moving, pull those projects every few seconds;
+    // the loop ends as soon as nothing is pending.
+    .task(id: foreignLaunchRefreshActive) {
+      guard foreignLaunchRefreshActive else { return }
+      while !Task.isCancelled {
+        await syncService.refreshForeignProjectChatLaunches()
+        guard !syncService.foreignChatLaunchRefreshScopes().isEmpty else { return }
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+      }
+    }
     // Persist the user's expand/collapse choices as they change so the hub
     // restores identically after opening a project and returning.
     .onChange(of: collapsedProjectIds) { _, _ in persistHubLayout() }
     .onChange(of: collapsedLaneKeys) { _, _ in persistHubLayout() }
+  }
+
+  private var foreignLaunchRefreshActive: Bool {
+    hubIsActive
+      && canShowProjects
+      && scenePhase == .active
+      && !syncService.foreignChatLaunchRefreshScopes().isEmpty
   }
 
   /// Composite key that changes whenever the active project's local chat/lane
@@ -414,6 +433,7 @@ struct HubScreen: View {
     return [
       projectKey,
       String(syncService.rosterRevision),
+      String(syncService.chatLaunchRevision),
       syncService.activeProjectId ?? "",
       String(syncService.isProjectSwitching),
     ].joined(separator: "#")
@@ -457,6 +477,16 @@ struct HubScreen: View {
   /// replacing the roster; otherwise opening Versic collapses it to whichever
   /// small subset has hydrated locally and makes ADE's rows appear to vanish.
   private func rosterEntry(for project: MobileProjectSummary) -> RemoteRosterProject? {
+    // Chats still being launched into a new lane show under that lane before
+    // the roster (or the lane) knows about them.
+    hubRosterOverlayingChatLaunches(
+      baseRosterEntry(for: project),
+      project: project,
+      launches: syncService.chatLaunches(for: project)
+    )
+  }
+
+  private func baseRosterEntry(for project: MobileProjectSummary) -> RemoteRosterProject? {
     let remoteRoster = syncService.rosterProject(for: project)
     guard syncService.isActiveProject(project),
           activeRosterProjectId == project.id,
@@ -595,7 +625,7 @@ struct HubScreen: View {
     var chatIndexById = Dictionary(uniqueKeysWithValues: merged.chats.enumerated().map { ($0.element.id, $0.offset) })
     for localChat in local.chats {
       if let index = chatIndexById[localChat.id] {
-        merged.chats[index] = mergedHubChat(remote: merged.chats[index], local: localChat)
+        merged.chats[index] = merged.chats[index].merging(local: localChat)
       } else {
         chatIndexById[localChat.id] = merged.chats.count
         merged.chats.append(localChat)
@@ -607,34 +637,6 @@ struct HubScreen: View {
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     return merged.excludingIdentityChats()
-  }
-
-  private func mergedHubChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
-    var merged = remote
-    let localIsAtLeastAsFresh = (local.lastActivityAt ?? "") >= (remote.lastActivityAt ?? "")
-
-    if localIsAtLeastAsFresh {
-      merged.status = local.status
-      merged.awaitingInput = local.awaitingInput ?? remote.awaitingInput
-      merged.pinned = local.pinned ?? remote.pinned
-      merged.archived = local.archived ?? remote.archived
-      merged.lastActivityAt = nonEmpty(local.lastActivityAt) ?? remote.lastActivityAt
-      merged.title = nonEmpty(local.title) ?? remote.title
-      merged.preview = nonEmpty(local.preview) ?? remote.preview
-    }
-
-    merged.provider = nonEmpty(remote.provider) ?? local.provider
-    merged.model = nonEmpty(remote.model) ?? local.model
-    merged.toolType = nonEmpty(remote.toolType) ?? local.toolType
-    merged.chatSessionId = nonEmpty(remote.chatSessionId) ?? local.chatSessionId
-    merged.identityKey = nonEmpty(remote.identityKey) ?? local.identityKey
-    merged.applyLocalSnoozeOverlay(local)
-    return merged
-  }
-
-  private func nonEmpty(_ value: String?) -> String? {
-    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-    return value
   }
 
   private func toggle(_ set: inout Set<String>, _ id: String) {

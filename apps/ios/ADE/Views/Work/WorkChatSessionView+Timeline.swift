@@ -105,6 +105,10 @@ extension WorkChatSessionView {
       if card.isHiddenAfterDismiss
         || (card.variant == "claude_session_quota" && chatSummaryContext.usageLimitResume != nil) {
         EmptyView()
+      } else if card.variant == "lane_setup", let launchStore = SyncService.shared?.chatLaunchStore {
+        // The instant-lane setup record. Rendered from the live launch snapshot
+        // while this device holds one, from the card's own rows otherwise.
+        WorkLaneSetupTranscriptCard(card: card, store: launchStore)
       } else {
         WorkAdeCardView(
           card: card,

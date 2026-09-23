@@ -202,6 +202,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "stop",
   "reset_credit_consumed",
   "pending_input_dismissed",
+  "new_lane_launch",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -293,7 +294,7 @@ const ERROR_CODE_VALUE = /^[a-z][a-z0-9_-]{0,47}$/;
 
 const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   screen: new Set([
-    "project", "hub", "lanes", "files", "work", "graph", "prs", "history", "automations",
+    "project", "hub", "lanes", "files", "work", "prs", "history", "automations",
     "cto", "settings", "chats", "onboarding", "other", "terminal_control", "drawer_lanes", "drawer_chats",
     "details", "details_model_picker", "details_help", "details_status", "details_list", "details_details",
     "details_context_usage", "details_diff", "details_chat_info", "details_external_session_browser",
@@ -340,11 +341,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // answer different questions, and the first is the guardrail working.
     "skipped_budget",
     // Which Work tool was opened. Prefixed so these can never be confused with
-    // the usage scopes above, and closed to the six ids in
-    // `shared/types/workTools.ts` — a seventh tool has to be added here
+    // the usage scopes above, and closed to the ids in
+    // `shared/types/workTools.ts` — a new tool has to be added here
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
-    "tool_browser",
+    "tool_browser", "tool_pr",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

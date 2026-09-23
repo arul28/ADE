@@ -250,6 +250,21 @@ Adapters preserve provider richness while converging on compact event shapes:
   row, so its plan renders through the same card the fenced `ade_update_plan`
   control block produces.
 
+### Todo lists fold into the plan card
+
+Some providers (Cursor, Claude) write a todo list and a plan for the same work
+in one turn. The plan card is the one that stays. The rules are in
+`apps/desktop/src/shared/todoPlanFold.ts`, and desktop `chatTranscriptRows`,
+ADE Code `renderChatLines`, and iOS `WorkTimelineHelpers.swift` all apply them:
+
+- A `todo_update` that arrives after a plan of the same turn writes onto that
+  plan (`foldTodoItemsIntoPlanSteps`). A step with the same text takes the new
+  status, and an item with new text adds a step. The todo row is not shown.
+- A plan that arrives after todo rows of the same turn removes each earlier
+  todo row whose items it fully names (`todoItemsCoveredByPlanSteps`). An empty
+  todo update is never covered.
+- Any other todo row still renders on its own.
+
 Every event uses the provider item id (plus turn id) as its lifecycle key.
 Desktop `chatTranscriptRows`, ADE Code `aggregateChatBlocks`, and iOS
 `WorkEventMapping`/`WorkTranscriptParser` therefore update one row instead of

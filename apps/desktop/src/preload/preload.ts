@@ -6,7 +6,6 @@ import {
 } from "../shared/types/systemSettings";
 import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
-import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type {
   CtoVoiceBridge,
@@ -293,7 +292,6 @@ import type {
   DevToolsCheckResult,
   DiffChanges,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -357,8 +355,6 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
-  GitSyncStatuses,
-  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -433,6 +429,8 @@ import type {
   SubmitPrReviewResult,
   ClosePrArgs,
   ReopenPrArgs,
+  SetPrAutoMergeArgs,
+  SetPrDraftArgs,
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
@@ -581,8 +579,6 @@ import type {
   ListSessionsArgs,
   DeleteSessionArgs,
   ListTestRunsArgs,
-  MergeSimulationArgs,
-  MergeSimulationResult,
   OperationRecord,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -691,6 +687,12 @@ import type {
   RestoreLaneResult,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
+  ChatLaunchArgs,
+  ChatLaunchCompleteClientArgs,
+  ChatLaunchEvent,
+  ChatLaunchIdArgs,
+  ChatLaunchQueueMessageArgs,
+  ChatLaunchSnapshot,
   LaneOverlayOverrides,
   LaneTemplate,
   GetLaneTemplateArgs,
@@ -1742,6 +1744,12 @@ async function callLocalProjectActionStrictIfBound<T>(
 // Electron's in-process registry is not that machine's OpenCode list.
 const MUTATING_CHAT_ACTIONS = new Set<string>([
   "sendMessage",
+  "startLaunch",
+  "cancelLaunch",
+  "retryLaunch",
+  "startLaunchNow",
+  "queueLaunchMessage",
+  "completeLaunchClient",
   "respondToInput",
   "dismissPendingInput",
   "approveToolUse",
@@ -2090,19 +2098,15 @@ async function uploadAttachmentBytesToRemote(
   }
 }
 
-async function readLegacySyncStatuses(
-  laneIds: string[],
-  pin?: OpenProjectBinding | null,
-): Promise<GitSyncStatuses> {
-  return settleLaneSyncStatuses(laneIds, (laneId) =>
-    callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
-      pin,
-      "git",
-      "getSyncStatus",
-      { args: { laneId } },
-      () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
-    ),
-  );
+// Chat launches exist only on a runtime (local daemon or remote machine); an
+// unbound window has no brain to own the launch, so it fails loudly.
+function callChatLaunchAction<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
+    Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
 }
 
 function readLegacyPrDetailBundle(prId: string): Promise<PrDetailBundle> {
@@ -2495,6 +2499,11 @@ const remoteLaneEnvEventFanout = createRemoteRuntimeFanout<LaneEnvInitEvent>({
   label: "lane env",
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
 });
+const remoteChatLaunchEventFanout = createRemoteRuntimeFanout<ChatLaunchEvent>({
+  eventType: "chat_launch_event",
+  label: "chat launch",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 const remoteLanePortEventFanout = createRemoteRuntimeFanout<PortAllocationEvent>({
   eventType: "lane_port_event",
   label: "lane port",
@@ -2676,6 +2685,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteLaneRebaseSuggestionsEventFanout,
   remoteLaneAutoRebaseEventFanout,
   remoteLaneEnvEventFanout,
+  remoteChatLaunchEventFanout,
   remoteLanePortEventFanout,
   remoteLaneProxyEventFanout,
   remoteLaneOAuthEventFanout,
@@ -6782,6 +6792,38 @@ const adeBridge = {
       };
     },
   },
+  /**
+   * New-lane chat launches owned by the brain (see shared/types/chatLaunch.ts).
+   * Always runtime-backed: there is no in-process Electron implementation.
+   */
+  chatLaunch: {
+    start: (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
+      callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args }),
+    get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "getLaunch", { args }),
+    list: (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> =>
+      callChatLaunchAction<ChatLaunchSnapshot[]>(pin, "listLaunches", { args: {} }),
+    cancel: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "cancelLaunch", { args }),
+    retry: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "retryLaunch", { args }),
+    startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "startLaunchNow", { args }),
+    queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
+      callChatLaunchAction<ChatLaunchSnapshot>(pin, "queueLaunchMessage", { args }),
+    completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
+      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "completeLaunchClient", { args }),
+    onEvent: (cb: (event: ChatLaunchEvent) => void, pin?: OpenProjectBinding | null): (() => void) => {
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<ChatLaunchEvent>(payload, "chat_launch_event"),
+        cb,
+        "chat launch",
+      );
+      if (removePinned) return removePinned;
+      return remoteChatLaunchEventFanout.subscribe(cb);
+    },
+  },
   agentChat: {
     list: async (
       args: AgentChatListArgs = {},
@@ -10302,25 +10344,6 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
       ),
-    getSyncStatuses: async (
-      args: GitSyncStatusesArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<GitSyncStatuses> => {
-      const laneIds = normalizeSyncStatusLaneIds(args);
-      if (laneIds.length === 0) return {};
-      try {
-        return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
-          pin,
-          "git",
-          "getSyncStatuses",
-          { args: { laneIds } },
-          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
-        );
-      } catch (error) {
-        if (!isUnsupportedAdeActionError(error)) throw error;
-        return await readLegacySyncStatuses(laneIds, pin);
-      }
-    },
     getOriginRemote: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -10498,21 +10521,11 @@ const adeBridge = {
       callProjectRuntimeActionOr("conflicts", "getRiskMatrix", {}, () =>
         ipcRenderer.invoke(IPC.conflictsGetRiskMatrix),
       ),
-    simulateMerge: async (
-      args: MergeSimulationArgs,
-    ): Promise<MergeSimulationResult> =>
-      callProjectRuntimeActionOr("conflicts", "simulateMerge", { args }, () =>
-        ipcRenderer.invoke(IPC.conflictsSimulateMerge, args),
-      ),
     runPrediction: async (
       args: RunConflictPredictionArgs = {},
     ): Promise<BatchAssessmentResult> =>
       callProjectRuntimeActionOr("conflicts", "runPrediction", { args }, () =>
         ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
-      ),
-    getBatchAssessment: async (): Promise<BatchAssessmentResult> =>
-      callProjectRuntimeActionOr("conflicts", "getBatchAssessment", {}, () =>
-        ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
       ),
     listProposals: async (laneId: string): Promise<ConflictProposal[]> =>
       callProjectRuntimeActionOr(
@@ -11437,6 +11450,14 @@ const adeBridge = {
       callProjectRuntimeActionOr("pr", "reopenPr", { args }, () =>
         ipcRenderer.invoke(IPC.prsReopen, args),
       ),
+    setDraft: async (args: SetPrDraftArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "setDraft", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetDraft, args),
+      ),
+    setAutoMerge: async (args: SetPrAutoMergeArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "setAutoMerge", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetAutoMerge, args),
+      ),
     rerunChecks: async (args: RerunPrChecksArgs): Promise<void> =>
       callProjectRuntimeActionOr("pr", "rerunChecks", { args }, () =>
         ipcRenderer.invoke(IPC.prsRerunChecks, args),
@@ -11615,19 +11636,6 @@ const adeBridge = {
         "set",
         { args: { layoutId, tree } },
         () => ipcRenderer.invoke(IPC.tilingTreeSet, { layoutId, tree }),
-      ).then(() => undefined),
-  },
-  graphState: {
-    get: async (projectId: string): Promise<GraphPersistedState | null> =>
-      callProjectRuntimeActionOr("graph_state", "get", {}, () =>
-        ipcRenderer.invoke(IPC.graphStateGet, { projectId }),
-      ),
-    set: async (projectId: string, state: GraphPersistedState): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "graph_state",
-        "set",
-        { args: { state } },
-        () => ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
       ).then(() => undefined),
   },
   /**

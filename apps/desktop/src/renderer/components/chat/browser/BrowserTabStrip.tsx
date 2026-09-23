@@ -17,6 +17,7 @@ import { tunnelAwareUrl, type TabTunnelMap } from "../browserRemoteTunnels";
 import { browserTabLabel } from "./browserToolbarLabels";
 import { cn } from "../../ui/cn";
 import { TOOLBAR_FOCUS } from "./browserChrome";
+import { browserTabGroupKey } from "./browserTabGroups";
 import type { BrowserTab } from "./browserPanelTypes";
 
 /** The `layoutId` spring the tools rail uses for its sliding indicator. */
@@ -37,10 +38,13 @@ function browserTabOwnerLabel(tab: BuiltInBrowserTab): string | null {
   // During a login handoff the tab is the human's, so the strip must not keep
   // advertising an agent owner it has just been taken away from.
   if (tab.handoff) return "you own this tab";
+  // A lane group is not an agent lease. The robot only means a chat holds
+  // this tab right now.
+  if (!tab.ownerChatSessionId) return null;
   const lane = shortOwnerId(tab.ownerLaneId);
   const chat = shortSessionId(tab.ownerChatSessionId);
   if (lane && chat) return `${lane} · ${chat}`;
-  return lane ?? chat;
+  return chat;
 }
 
 export type BrowserTabStripProps = {
@@ -58,6 +62,8 @@ export type BrowserTabStripProps = {
   onSwitchTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onNewTab: () => void;
+  /** Lane color for the group outline. Missing lanes draw no outline. */
+  laneColorById?: ReadonlyMap<string, string>;
 };
 
 export function BrowserTabStrip({
@@ -75,6 +81,7 @@ export function BrowserTabStrip({
   onSwitchTab,
   onCloseTab,
   onNewTab,
+  laneColorById,
 }: BrowserTabStripProps) {
   /*
     Roving focus, so the strip costs one Tab stop instead of 2N.
@@ -138,6 +145,7 @@ export function BrowserTabStrip({
           const tabUrl = tunnelAwareUrl(tab.url, tabTunnels[tab.id] ?? null) || null;
           const label = browserTabLabel(tab, tabUrl);
           const ownerLabel = browserTabOwnerLabel(tab);
+          const groupColor = laneColorById?.get(browserTabGroupKey(tab) ?? "") ?? null;
           const ownerTitle = tab.handoff
             ? `You own this tab until you hand it back · ${tab.handoff.reason}`
             : ownerLabel
@@ -159,6 +167,7 @@ export function BrowserTabStrip({
                 "transition-colors duration-[120ms] ease-out",
                 active ? "text-fg/92" : "text-muted-fg/70 hover:bg-white/[0.04] hover:text-fg/85",
               )}
+              style={groupColor ? { boxShadow: `inset 0 0 0 1px ${groupColor}` } : undefined}
               title={[ownerTitle, tabUrl ?? label].filter(Boolean).join(" · ")}
             >
               {active ? (

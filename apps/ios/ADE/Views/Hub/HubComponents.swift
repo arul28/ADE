@@ -514,6 +514,7 @@ private func hubChatRowRenderSignature(
   hasher.combine(chat.lastActivityAt)
   hasher.combine(chat.snoozedUntil)
   hasher.combine(chat.snoozedAt)
+  hasher.combine(chat.launchRail)
   hasher.combine(childRows.map(\.renderSignature))
   return hasher.finalize()
 }
@@ -886,11 +887,17 @@ struct HubChatRow: View, Equatable {
       HStack(spacing: 10) {
         WorkProviderBareLogo(provider: row.providerKey, fallbackSymbol: "terminal.fill", tint: ADEColor.textSecondary, size: compact ? 16 : 20)
 
-        Text(row.title)
-          .font(.system(.footnote, design: .rounded).weight(.medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+          Text(row.title)
+            .font(.system(.footnote, design: .rounded).weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          // A chat still being launched into a new lane: the shared setup rail.
+          if let rail = row.chat.launchRail, !rail.isEmpty {
+            WorkChatLaunchRowRail(segments: rail)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
 
         // One cluster, tight spacing: word, mark, time. `.fixedSize()` on the
         // whole group is what stops a long chat name from eating the state —

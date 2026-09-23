@@ -21,6 +21,8 @@ import {
   findProjectRoots,
   formatChatResumeNow,
   formatChatContinueOnAccount,
+  formatChatLaunch,
+  formatChatLaunches,
   formatChatResumeRelativeDelta,
   formatChatStatus,
   formatDiagnosticError,
@@ -68,6 +70,7 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { PI_LOGIN_IPC_TIMEOUT_MS } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { parseChatLaunchArgs } from "../../desktop/src/main/services/chat/chatLaunchArgs";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -2961,6 +2964,26 @@ describe("ADE CLI", () => {
     // provider happened to emit three seconds ago.
     expect(text).toMatch(/^status\s+Background work \u00d72 2h$/mu);
     expect(text).toContain("pid 59213 (2h)");
+
+    const activityText = formatOutput(
+      {
+        sessionId: "chat-1",
+        status: "running",
+        runtimeState: "running",
+        toolType: "claude-chat",
+        currentTurnStartedAt: new Date(now - 60_000).toISOString(),
+        lastActivityAt: new Date(now - 1_000).toISOString(),
+        activityStatus: {
+          value: "testing",
+          source: "agent",
+          updatedAt: new Date(now - 30_000).toISOString(),
+        },
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    expect(activityText).toMatch(/^status\s+Testing\b/mu);
+    expect(activityText).not.toMatch(/^status\s+Working\b/mu);
   });
 
   it("ade session show mutation acks carry no activity lines", () => {
@@ -4985,6 +5008,11 @@ describe("ADE CLI", () => {
         action: "setSessionStatusNote",
         args: { note: "running e2e shard 2/4" },
       },
+      {
+        command: ["activity", "testing"],
+        action: "setSessionActivity",
+        args: { value: "testing" },
+      },
     ];
 
     for (const testCase of cases) {
@@ -5007,6 +5035,29 @@ describe("ADE CLI", () => {
         args: { note: "" },
       },
     });
+
+    const clearActivity = expectExecutePlan(buildCliPlan(["chat", "activity", "clear"]));
+    expect(clearActivity.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { value: null },
+      },
+    });
+    const terminalActivity = withEnv({ ADE_ACTIVITY_SESSION_ID: "terminal-row-1" }, () =>
+      expectExecutePlan(buildCliPlan(["chat", "activity", "testing"])),
+    );
+    expect(terminalActivity.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { sessionId: "terminal-row-1", value: "testing" },
+      },
+    });
+    expect(() => buildCliPlan(["chat", "activity", "coding"]))
+      .toThrow(/Unsupported chat activity 'coding'.*planning.*monitoring.*clear/i);
+    expect(() => buildCliPlan(["chat", "activity"]))
+      .toThrow(/chat activity requires one value/i);
 
     const textOutput = parseCliArgs(["chat", "note", "working", "--text"]);
     expect(textOutput.options.text).toBe(true);
@@ -5050,6 +5101,11 @@ describe("ADE CLI", () => {
     expect(help.kind).toBe("help");
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
+      expect(help.text).toContain("ade chat activity testing");
+      expect(help.text).toContain("planning | implementing | testing | reviewing | debugging | monitoring");
+      expect(help.text).toContain(
+        "Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.",
+      );
       expect(help.text).toContain("ade chat ask");
       expect(help.text).toContain("ade chat generate-names");
       expect(help.text).toContain("ade chat demote");
@@ -5068,6 +5124,7 @@ describe("ADE CLI", () => {
   it.each([
     ["ask", ["q"], "requestSessionAttention", { message: "q" }],
     ["note", ["working"], "setSessionStatusNote", { note: "working" }],
+    ["activity", ["debugging"], "setSessionActivity", { value: "debugging" }],
   ])(
     "passes --session through for chat %s",
     (subcommand, commandArgs, action, expectedArgs) => {
@@ -6312,6 +6369,18 @@ describe("ADE CLI", () => {
         argsList: ["chat-1"],
       },
     });
+    expect(show.formatter).toBe("chat-summary");
+    expect(formatOutput({
+      sessionId: "chat-1",
+      provider: "codex",
+      model: "gpt-5.6",
+      codexEffectiveCollaborationMode: "plan",
+      activityStatus: {
+        value: "testing",
+        source: "agent",
+        updatedAt: "2026-09-22T12:00:00.000Z",
+      },
+    }, { text: true } as any, inferFormatter(show))).toMatch(/collaboration mode\s+plan\s+activity\s+Testing/);
 
     const status = buildCliPlan(["chat", "status", "--session-id", "chat-2"]);
     expect(status.kind).toBe("execute");
@@ -6382,6 +6451,106 @@ describe("ADE CLI", () => {
       expect(plan.exitCodeFromResult?.({ ok: false, reason: "No usage limit is live." })).toBe(1);
       expect(plan.exitCodeFromResult?.({})).toBe(1);
     }
+  });
+
+  it("builds chat launch as one chat.startLaunch the brain's parser accepts", () => {
+    const launchId = "6F1C2B7A-0000-4000-8000-000000000001";
+    const plan = buildCliPlan([
+      "chat", "launch", "fix", "the", "flaky", "test",
+      "--provider", "claude", "--model", "anthropic/claude-opus-5", "--effort", "high",
+      "--permissions", "full-auto", "--fast", "--base", "origin/main", "--lane-name", "flaky-test",
+      "--launch-id", launchId, "--wait", "--timeout-ms", "5000",
+    ]);
+    expect(plan.kind).toBe("chat-launch");
+    if (plan.kind !== "chat-launch") return;
+    expect(plan.wait).toBe(true);
+    expect(plan.timeoutMs).toBe(5000);
+    expect(plan.launchArgs).toMatchObject({
+      kind: "chat",
+      mode: "background",
+      launchId: launchId.toLowerCase(),
+      prompt: "fix the flaky test",
+      laneName: "flaky-test",
+      baseBranch: "origin/main",
+      chat: {
+        create: {
+          provider: "claude",
+          model: "anthropic/claude-opus-5",
+          reasoningEffort: "high",
+          permissionMode: "full-auto",
+          fastMode: true,
+        },
+        message: { text: "fix the flaky test" },
+      },
+    });
+    expect(typeof plan.launchArgs.laneId).toBe("string");
+    const parsed = parseChatLaunchArgs(plan.launchArgs);
+    expect(parsed.launchId).toBe(launchId.toLowerCase());
+    expect(parsed.laneId).toBe(plan.launchArgs.laneId);
+    expect(parsed.chat?.create).toMatchObject({ provider: "claude", reasoningEffort: "high", fastMode: true });
+    expect(parsed.chat?.message.text).toBe("fix the flaky test");
+  });
+
+  it("chat launch generates fresh ids, defaults to codex, and validates its inputs", () => {
+    const first = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
+    const second = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
+    if (first.kind !== "chat-launch" || second.kind !== "chat-launch") throw new Error("expected chat-launch");
+    expect(first.wait).toBe(false);
+    expect(first.launchArgs.launchId).not.toBe(second.launchArgs.launchId);
+    expect((first.launchArgs.chat as { create: { provider: string } }).create.provider).toBe("codex");
+    expect(() => buildCliPlan(["chat", "launch"])).toThrow(/prompt/);
+    expect(() => buildCliPlan(["chat", "launch", "hi", "--launch-id", "nope"])).toThrow(/--launch-id must be a UUID/);
+    expect(() => buildCliPlan(["chat", "launch", "hi", "--provider", "shell"])).toThrow();
+    const dryRun = buildCliPlan(["chat", "launch", "hi", "--dry-run"]);
+    expect(dryRun.kind).toBe("static");
+  });
+
+  it("builds chat launches / launch-status / launch-cancel over the launch actions", () => {
+    const list = buildCliPlan(["chat", "launches"]);
+    if (list.kind !== "execute") throw new Error("expected execute");
+    expect(list.formatter).toBe("chat-launches");
+    expect(list.steps[0]?.params).toMatchObject({ arguments: { domain: "chat", action: "listLaunches" } });
+    for (const [verb, action] of [["launch-status", "getLaunch"], ["launch-cancel", "cancelLaunch"]] as const) {
+      const plan = buildCliPlan(["chat", verb, "launch-1"]);
+      if (plan.kind !== "execute") throw new Error("expected execute");
+      expect(plan.formatter).toBe("chat-launch");
+      expect(plan.steps[0]?.params).toEqual({
+        name: "run_ade_action",
+        arguments: { domain: "chat", action, args: { launchId: "launch-1" } },
+      });
+      expect(plan.exitCodeFromResult?.({ launchId: "launch-1", phase: "running" })).toBe(0);
+      expect(plan.exitCodeFromResult?.(null)).toBe(1);
+    }
+    const byFlag = buildCliPlan(["chat", "launch-status", "--launch-id", "launch-2"]);
+    if (byFlag.kind !== "execute") throw new Error("expected execute");
+    expect(byFlag.steps[0]?.params).toMatchObject({ arguments: { args: { launchId: "launch-2" } } });
+  });
+
+  it("formats a chat launch snapshot and the launch list compactly", () => {
+    const snapshot = {
+      launchId: "l-1",
+      phase: "running",
+      laneId: "lane-1",
+      laneName: "flaky-test",
+      baseRef: "origin/main",
+      sessionId: "l-1",
+      title: "Fix flaky test",
+      stages: [
+        { id: "fetch", status: "done", percent: null },
+        { id: "checkout", status: "running", percent: 42.4 },
+        { id: "agent", status: "pending", percent: null },
+      ],
+      queuedMessages: [],
+      error: null,
+    };
+    const text = formatChatLaunch(snapshot);
+    expect(text).toContain("ADE chat launch l-1 · running");
+    expect(text).toContain("fetch done · checkout running 42% · agent pending");
+    expect(text).toContain("flaky-test (lane-1)");
+    expect(formatChatLaunch({ ok: false, error: "timed_out", elapsedMs: 5000, launch: snapshot })).toContain("timed out after 5000ms");
+    expect(formatChatLaunch(null)).toContain("(no launch)");
+    expect(formatChatLaunches([snapshot])).toContain("flaky-test");
+    expect(formatChatLaunches([])).toContain("(no launches)");
   });
 
   it("builds chat continue-on-account as chat.continueUsageLimitOnAlternate", () => {
@@ -9316,6 +9485,37 @@ describe("ADE CLI", () => {
         },
       },
     });
+  });
+
+  it("routes prs draft/ready/auto-merge to pr.setDraft and pr.setAutoMerge", () => {
+    const argsOf = (argv: string[]) => {
+      const plan = buildCliPlan(argv);
+      if (plan.kind !== "execute") throw new Error(`Expected ${argv.join(" ")} to produce an execute plan`);
+      return plan.steps[0]?.params;
+    };
+    expect(argsOf(["prs", "draft", "pr-1"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setDraft", args: { prId: "pr-1", draft: true } },
+    });
+    expect(argsOf(["prs", "ready", "gh:acme/ade#42"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setDraft", args: { prId: "gh:acme/ade#42", draft: false } },
+    });
+    expect(argsOf(["prs", "auto-merge", "pr-1", "on", "--method", "rebase"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setAutoMerge", args: { prId: "pr-1", enabled: true, method: "rebase" } },
+    });
+    expect(argsOf(["prs", "auto-merge", "pr-1"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setAutoMerge", args: { prId: "pr-1", enabled: true } },
+    });
+    expect(argsOf(["prs", "auto-merge", "pr-1", "off"])).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "pr", action: "setAutoMerge", args: { prId: "pr-1", enabled: false } },
+    });
+    expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "maybe"])).toThrow(/on or off/);
+    expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "off", "--method", "squash"])).toThrow(/--method/);
+    expect(() => buildCliPlan(["prs", "auto-merge", "pr-1", "--method", "fast"])).toThrow(/merge, squash, or rebase/);
   });
 
   it("maps git user-identity and prs list-open to typed RPC tools", () => {
@@ -15946,6 +16146,49 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["usage", "stats", "--since", "yesterday"])).toThrow(
       /--since must be an ISO timestamp/i,
     );
+  });
+
+  it("usage turns forwards days, grouping, and recent rows to usage.getTurnUsageSummary", () => {
+    const plan = buildCliPlan(["usage", "turns", "--days", "14", "--group-by", "provider", "--recent", "20"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage turns");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "usage",
+        action: "getTurnUsageSummary",
+        args: { days: 14, groupBy: "provider", recent: 20 },
+      },
+    });
+
+    // The service owns the defaults, so a bare call sends none.
+    const bare = buildCliPlan(["usage", "turns"]);
+    expect(bare.kind).toBe("execute");
+    if (bare.kind !== "execute") return;
+    expect(bare.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "getTurnUsageSummary", args: {} },
+    });
+
+    // `ledger` and `router` were never documented; only `turns` names the command.
+    for (const alias of ["ledger", "router"]) {
+      expect(JSON.stringify(buildCliPlan(["usage", alias]))).not.toContain("getTurnUsageSummary");
+    }
+
+    // Only `--group-by` names the grouping; `--by` is not an alias for it.
+    const byAlias = buildCliPlan(["usage", "turns", "--by", "provider"]);
+    expect(byAlias.kind).toBe("execute");
+    if (byAlias.kind !== "execute") return;
+    expect(byAlias.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "getTurnUsageSummary", args: {} },
+    });
+
+    expect(() => buildCliPlan(["usage", "turns", "--days", "0"])).toThrow(/--days must be a number from 1 to 90/i);
+    expect(() => buildCliPlan(["usage", "turns", "--group-by", "lane"]))
+      .toThrow("usage turns --group-by must be one of provider, provider_model, provider_account_model.");
+    expect(() => buildCliPlan(["usage", "turns", "--recent", "500"])).toThrow(/--recent must be a number from 0 to 200/i);
   });
 
   it("usage budget get routes to the budget.getConfig action", () => {

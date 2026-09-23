@@ -592,6 +592,8 @@ ade prs comments pr-id --text
 ade prs land pr-id --method squash                          # merges and KEEPS the head branch on the remote
 ade prs land pr-id --method squash --delete-remote-branch   # opt in to deleting the head branch after the merge
 ade prs close pr-id                                         # close on GitHub; the branch is kept and `ade prs reopen pr-id` undoes it
+ade prs draft pr-id                                         # convert an open PR back to a draft; `ade prs ready pr-id` marks it ready for review
+ade prs auto-merge pr-id on --method squash                 # arm GitHub auto-merge (squash by default); `ade prs auto-merge pr-id off` disarms it
 ade prs cleanup-branch pr-id --delete-remote-branch         # delete a merged/closed PR's branch (local too, unless --keep-local)
 ade prs land 'gh:owner/repo#42' --method squash             # id form for a PR ADE has no row for; quote it, '#' starts a shell comment
                                                             # works for land/close/reopen/cleanup-branch/checks/comments/review; threads, deployments and ai-review-summary still need an ADE row
@@ -606,6 +608,10 @@ ade new chat --mode cli --lane lane-id --provider codex --type peer --parent cha
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
+ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait --text   # new-lane chat owned by the brain (chat.startLaunch): fetch base, check out worktree, default lane template, then create the chat + send; --wait polls chat.getLaunch (exit 0 completed / 1 failed, cancelled, or timed out)
+ade chat launches --text                                     # chat.listLaunches: launches running or recently finished on the brain
+ade chat launch-status launch-id --text                      # chat.getLaunch (exit 1 when unknown or expired); `ade chat launch-cancel launch-id` = chat.cancelLaunch (deletes the chat, lane, and branch)
+ade actions run chat.retryLaunch --input-json '{"launchId":"launch-id"}'   # also startLaunchNow / queueLaunchMessage / completeLaunchClient (client-side CLI-launch handshake)
 ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat status session-id --text                            # live turn phase (exit 0 running / 1 idle / 2 blocked); adds a `resume` line while a usage limit is live
@@ -617,7 +623,8 @@ ade chat steer session-id --text "active-turn context"
 ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude and Cursor take both; a Cursor cloud run declines inline and stages)
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
-ade session show session-id --text                          # status + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
+ade chat activity testing                                  # set one fixed detail: planning|implementing|testing|reviewing|debugging|monitoring; `clear` removes it; add --session <id> to target explicitly
+ade session show session-id --text                          # status/activity detail + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
 ade --role cto session move session-id --to done             # file the row under a Work-board column: needs-you|working|done ('needs_you' spelling also accepted)
                                                             # CTO-only, like every other settle-column writer: a move tells the agent the USER moved it, so a session-bound agent must not move its own card
                                                             # 'waiting' is refused — a row sits there because it is snoozed or its PR is mid-CI, so it is derived, never a target
@@ -764,6 +771,8 @@ ade usage stats --scope account --text             # merged across every machine
 ade usage stats --scope project --preset 30d --text
 ade usage stats --scope account --force --text     # skip the account fan-out rate floor (explicit refresh)
 ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z --text
+ade usage turns --days 14 --text                   # per-turn ledger (action usage.getTurnUsageSummary): cost and cache by provider, account, model, plus quota burn rates
+ade usage turns --group-by provider --recent 20 --text  # group by provider (default provider_account_model); add this project's 20 newest turns
 ade --role cto usage refresh --text                # live Claude/Codex quota only (same snapshot layout as `usage snapshot`)
 ade --role cto usage refresh --history --text      # local provider history + costs
 ade usage budget get --text

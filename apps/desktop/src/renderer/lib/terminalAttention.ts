@@ -48,19 +48,6 @@ const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g;
 const TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g;
 
-const NEEDS_INPUT_PATTERNS: RegExp[] = [
-  /\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i,
-  /\b(?:press|hit)\b.{0,14}\b(?:enter|return|any key)\b/i,
-  /\b(?:select|choose|pick)\b.{0,28}\b(?:option|number|profile|item)\b/i,
-  /\b(?:confirm|continue|proceed|retry)\b.{0,24}\?/i,
-  /\((?:y\/n|yes\/no)\)/i,
-  /\[(?:y\/n|yes\/no)\]/i,
-  /\b(?:enter|type)\b.{0,24}:\s*$/i,
-  // Claude Code tool-approval / plan-mode prompts: "(Y)es / (N)o", "(Y)es, (N)o, (A)lways"
-  /\([Yy]\)\w*\s*.{0,12}\([Nn]\)\w*/,
-  /\ballow\b.{0,40}\?\s/i,
-];
-
 const IDLE_ATTENTION_TOOL_TYPES = new Set<TerminalToolType>([
   "claude",
   "codex",
@@ -120,12 +107,6 @@ export function sanitizeTerminalInlineText(raw: string | null | undefined, maxCh
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-export function runningSessionNeedsAttention(preview: string | null | undefined): boolean {
-  const text = sanitizeTerminalInlineText(preview, 280);
-  if (!text) return false;
-  return NEEDS_INPUT_PATTERNS.some((pattern) => pattern.test(text));
-}
-
 function indicatorFromCounts(runningCount: number, needsAttentionCount: number): TerminalRunIndicatorState {
   if (runningCount <= 0) return "none";
   if (needsAttentionCount > 0) return "running-needs-attention";
@@ -154,6 +135,8 @@ type SessionCanonicalUiInput = {
    */
   usageLimitResume?: AgentChatUsageLimitResume | null;
   chatActivityMode?: TerminalSessionSummary["chatActivityMode"];
+  activityStatus?: TerminalSessionSummary["activityStatus"];
+  currentTurnStartedAt?: TerminalSessionSummary["currentTurnStartedAt"];
   activeBackgroundTaskCount?: number;
   backgroundWork?: SessionBackgroundWork | null;
   nowMs?: number;
@@ -181,6 +164,8 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     nextWakeAt: session.nextWakeAt,
     usageLimitResume: session.usageLimitResume,
     chatActivityMode: session.chatActivityMode,
+    activityStatus: session.activityStatus,
+    currentTurnStartedAt: session.currentTurnStartedAt,
     activeBackgroundTaskCount: session.activeBackgroundTaskCount,
     backgroundWork: backgroundWorkFromSummary(session),
   };
@@ -267,6 +252,8 @@ export function sessionStatusDisplay(
   const state = sessionCanonicalUiState(session);
   return sessionStatusPresentation(state.phase, overlay, {
     chatActivityMode: session.chatActivityMode,
+    activityStatus: session.activityStatus,
+    currentTurnStartedAt: session.currentTurnStartedAt,
     liveness: state.liveness,
     backgroundWork: backgroundWorkFromSummary(session),
     nextWakeAt: session.nextWakeAt,
@@ -391,6 +378,8 @@ export function sessionStatusDot(
   // the full status slot — otherwise a monitoring row's dot reads "Working".
   const presentation = sessionStatusPresentation(phase, overlay, {
     chatActivityMode: session.chatActivityMode,
+    activityStatus: session.activityStatus,
+    currentTurnStartedAt: session.currentTurnStartedAt,
     liveness: state.liveness,
     backgroundWork: backgroundWorkFromSummary(session),
     // Same forward as the full slot: without it a chat parked on a published

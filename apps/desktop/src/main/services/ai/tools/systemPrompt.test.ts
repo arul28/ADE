@@ -75,6 +75,15 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("Autonomous mode");
   });
 
+  it("includes session activity guidance only when a provider supplies it", () => {
+    const guidance = "Report this session's current activity through ADE.";
+    expect(buildCodingAgentSystemPrompt({
+      cwd: "/x",
+      sessionActivityGuidance: guidance,
+    })).toContain(guidance);
+    expect(buildCodingAgentSystemPrompt({ cwd: "/x" })).not.toContain(guidance);
+  });
+
   it("lists provided tool names when non-empty", () => {
     const result = buildCodingAgentSystemPrompt({
       cwd: "/x",

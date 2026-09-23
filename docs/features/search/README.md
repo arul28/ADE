@@ -118,6 +118,15 @@ Desktop ⌘K command palette:
   always retain their owner machine name for matching; results show an amber
   name marker only when that owner is not This computer, including threads from the
   remote-bound active tab.
+- `apps/desktop/src/renderer/components/app/commandPaletteMarks.tsx` — the
+  palette's icons and captions: `commandPaletteMark` / `CommandPaletteGlyph`
+  (a colored tile per command id, with Work tool marks from
+  `WORK_TOOL_DEFINITIONS`), `PaletteIconTile`, `paletteCaption` / `clipCaption`
+  (one short subtitle line, cut at seven words, with the cut index so match
+  highlights past the cut are dropped), and `settingsPaletteCaption` (short
+  captions for the "Go to" settings commands; the Settings page keeps the full
+  descriptions). The palette search input has the `ade-palette-search` class,
+  which removes the global focus ring from that autofocused field.
 
 `ade search` CLI + agent skill:
 

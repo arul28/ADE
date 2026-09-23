@@ -142,6 +142,30 @@ describe("isSessionInPlanMode", () => {
       claudePermissionMode: "bypassPermissions",
     }))).toBe(false);
   });
+
+  it("captures Plan intent before Claude query option normalization", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const source = fs.readFileSync(path.join(__dirname, "agentChatService.ts"), "utf8");
+    const builderStart = source.indexOf("const buildClaudeQueryOptions = (");
+    const planSnapshot = source.indexOf(
+      "const hadPlanIntentAtOptionBuildStart = isSessionInPlanMode(managed.session);",
+      builderStart,
+    );
+    const nativeModeNormalization = source.indexOf(
+      "const claudePermissionMode = resolveSessionClaudePermissionMode(",
+      builderStart,
+    );
+    const activityGate = source.indexOf(
+      "!hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== \"plan\"",
+      builderStart,
+    );
+
+    expect(builderStart).toBeGreaterThanOrEqual(0);
+    expect(planSnapshot).toBeGreaterThan(builderStart);
+    expect(planSnapshot).toBeLessThan(nativeModeNormalization);
+    expect(activityGate).toBeGreaterThan(nativeModeNormalization);
+  });
 });
 describe("persistence round-trip", () => {
   it("restores the pre-plan mode after the session is rehydrated mid-plan", () => {

@@ -1,5 +1,6 @@
 /**
- * Live quota for Cursor, Copilot, Grok, and OpenCode.
+ * Live quota for Kimi, Cursor, Copilot, Grok, and OpenCode: credentials,
+ * requests, and polling. The response parsers are in `providerQuotaParsers.ts`.
  *
  * The request shapes follow the public CodexBar provider notes. ADE does not
  * copy that app, does not import browser cookies, and does not log credentials.
@@ -7,7 +8,6 @@
  * network call, so an unsigned install never becomes an error chip.
  */
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -16,9 +16,23 @@ import type {
   UsageProvider,
   UsageProviderErrorKind,
   UsageWindow,
-  UsageWindowType,
 } from "../../../shared/types";
-import { grokConfigHome } from "../shared/providerConfigHomes";
+import { getApiKey } from "../ai/apiKeyStore";
+import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
+import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
+import { copilotConfigHome, grokConfigHome, openCodeDataDirs } from "../shared/providerConfigHomes";
+import { asRecord, finiteNumberOrNull, sha256Hex, toOptionalString } from "../shared/utils";
+import {
+  parseCopilotIdentity,
+  parseCopilotQuota,
+  parseCursorUsageSummary,
+  parseFactorySessionCredits,
+  parseGrokCredits,
+  parseKimiIdentity,
+  parseKimiUsage,
+  parseOpenCodeGoUsage,
+  stringField,
+} from "./providerQuotaParsers";
 import type { UsageProviderPollContext, UsageProviderPollResult } from "./usageProviderStrategies";
 
 const HTTP_TIMEOUT_MS = 4_000;
@@ -26,8 +40,10 @@ const GH_TOKEN_TTL_MS = 15 * 60_000;
 
 const CURSOR_USAGE_URL = "https://cursor.com/api/usage-summary";
 const COPILOT_USAGE_URL = "https://api.github.com/copilot_internal/user";
+const COPILOT_USER_URL = "https://api.github.com/user";
 const GROK_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 const OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+const FACTORY_SESSIONS_URL = "https://api.factory.ai/api/v0/sessions";
 
 type QuotaFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -40,6 +56,7 @@ export type ExtraQuotaIo = {
   readText?: (filePath: string) => Promise<string | null>;
   readCursorSession?: (dbPath: string) => Promise<{ token: string | null; unreadable: boolean }>;
   readGhToken?: (force: boolean) => Promise<string | null>;
+  readFactoryApiKey?: () => string | null;
 };
 
 type ResolvedIo = {
@@ -51,6 +68,7 @@ type ResolvedIo = {
   readText: (filePath: string) => Promise<string | null>;
   readCursorSession: (dbPath: string) => Promise<{ token: string | null; unreadable: boolean }>;
   readGhToken: (force: boolean) => Promise<string | null>;
+  readFactoryApiKey: () => string | null;
 };
 
 function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
@@ -63,6 +81,7 @@ function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
     readText: io.readText ?? readTextFile,
     readCursorSession: io.readCursorSession ?? readCursorSessionToken,
     readGhToken: io.readGhToken ?? readCachedGhAuthToken,
+    readFactoryApiKey: io.readFactoryApiKey ?? readStoredFactoryApiKey,
   };
 }
 
@@ -70,41 +89,50 @@ function notSignedIn(): UsageProviderPollResult {
   return { disposition: "not_signed_in", windows: [], errors: [] };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value != null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
+type IdentityProvider = "kimi" | "copilot";
+type QuotaIdentity = { email: string | null };
+
+/**
+ * The last identity each provider's identity call returned, and a fingerprint
+ * of the credential it was read with. The account id is `<provider>:<email>`
+ * only while that call answers; one failed call used to stamp the windows
+ * `<provider>:local`, a different account to the burn-rate history, which then
+ * restarted its samples and lost the turn join for its whole retention window.
+ *
+ * The remembered email is reused only for the same credential. A different
+ * credential may be a different account, and stamping it with the old email
+ * would file one account's quota under another. Kimi rotates its access token
+ * on refresh, so a refresh that lands on a failed `/me` reads as unknown for
+ * that one poll — never as the wrong account. The fingerprint is a truncated
+ * SHA-256, in memory only, never logged, and forgotten on sign-out.
+ */
+const lastQuotaIdentity = new Map<IdentityProvider, { fingerprint: string; identity: QuotaIdentity }>();
+
+function signedOut(provider: IdentityProvider): UsageProviderPollResult {
+  lastQuotaIdentity.delete(provider);
+  return notSignedIn();
 }
 
-/** Whole-number percents. 1 means 1%, never 100%. */
-export function wholePercent(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) return null;
-  return value;
-}
-
-function ratioPercent(used: unknown, limit: unknown): number | null {
-  if (typeof used !== "number" || typeof limit !== "number" || !Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) {
-    return null;
+async function quotaIdentity(
+  provider: IdentityProvider,
+  credential: string,
+  request: Promise<HttpJson>,
+  parse: (body: unknown) => QuotaIdentity,
+): Promise<QuotaIdentity> {
+  const fingerprint = sha256Hex(credential).slice(0, 16);
+  const response = await request;
+  if (!response.ok) {
+    const remembered = lastQuotaIdentity.get(provider);
+    return remembered?.fingerprint === fingerprint ? remembered.identity : { email: null };
   }
-  return wholePercent((used / limit) * 100);
+  const identity = { email: parse(response.body).email };
+  lastQuotaIdentity.set(provider, { fingerprint, identity });
+  return identity;
 }
 
-function isoField(record: Record<string, unknown> | null, ...keys: string[]): string | null {
-  if (!record) return null;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && Number.isFinite(Date.parse(value))) return value;
-  }
-  return null;
-}
-
-function stringField(record: Record<string, unknown> | null, ...keys: string[]): string | null {
-  if (!record) return null;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
+/** Test seam: forget every remembered identity. */
+export function resetQuotaIdentityCacheForTests(): void {
+  lastQuotaIdentity.clear();
 }
 
 function expiryMs(value: unknown): number | null {
@@ -114,169 +142,6 @@ function expiryMs(value: unknown): number | null {
   if (Number.isFinite(asNumber) && asNumber > 1e9) return asNumber > 1e12 ? asNumber : asNumber * 1000;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-/** Matches `accountIdFor` in the usage tracker: email when known, else this machine. */
-export function localQuotaAccountId(provider: UsageProvider, email?: string | null): string {
-  const trimmed = email?.trim();
-  return trimmed ? `${provider}:${trimmed.toLowerCase()}` : `${provider}:local`;
-}
-
-function quotaWindow(input: {
-  provider: UsageProvider;
-  windowType: UsageWindowType;
-  percentUsed: number;
-  resetsAt: string | null;
-  nowMs: number;
-  email?: string | null;
-  windowDurationMs?: number;
-}): UsageWindow {
-  const resetsAt = input.resetsAt ?? "";
-  const resetMs = resetsAt ? Date.parse(resetsAt) : Number.NaN;
-  return {
-    provider: input.provider,
-    windowType: input.windowType,
-    accountId: localQuotaAccountId(input.provider, input.email),
-    percentUsed: input.percentUsed,
-    resetsAt,
-    resetsInMs: Number.isFinite(resetMs) ? Math.max(0, resetMs - input.nowMs) : 0,
-    ...(input.windowDurationMs && input.windowDurationMs > 0 ? { windowDurationMs: input.windowDurationMs } : {}),
-  };
-}
-
-function resetFromSeconds(seconds: unknown, nowMs: number): string | null {
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return null;
-  return new Date(nowMs + seconds * 1000).toISOString();
-}
-
-function windowFromUsageNode(
-  provider: UsageProvider,
-  windowType: UsageWindowType,
-  node: Record<string, unknown> | null,
-  nowMs: number,
-  email?: string | null,
-  windowDurationMs?: number,
-): UsageWindow | null {
-  if (!node) return null;
-  const percent = wholePercent(node.percent)
-    ?? wholePercent(node.usagePercent)
-    ?? wholePercent(node.percentUsed);
-  if (percent == null) return null;
-  const resetsAt = isoField(node, "resetsAt", "resets_at")
-    ?? resetFromSeconds(node.resetInSec ?? node.reset_in_sec, nowMs);
-  return quotaWindow({ provider, windowType, percentUsed: percent, resetsAt, nowMs, email, windowDurationMs });
-}
-
-export function parseCursorUsageSummary(payload: unknown, nowMs: number): {
-  windows: UsageWindow[];
-  plan: string | null;
-  email: string | null;
-} {
-  const root = asRecord(payload);
-  const individual = asRecord(root?.individualUsage) ?? asRecord(root?.individual_usage);
-  const planNode = asRecord(individual?.plan) ?? asRecord(root?.plan);
-  const percent = wholePercent(planNode?.totalPercentUsed)
-    ?? wholePercent(planNode?.total_percent_used)
-    ?? ratioPercent(planNode?.used, planNode?.limit);
-  if (!root || percent == null) return { windows: [], plan: null, email: null };
-  const email = stringField(root, "email");
-  const plan = stringField(root, "membershipType", "membership_type");
-  const resetsAt = isoField(root, "billingCycleEnd", "billing_cycle_end");
-  return {
-    windows: [quotaWindow({
-      provider: "cursor",
-      windowType: "monthly",
-      percentUsed: percent,
-      resetsAt,
-      nowMs,
-      email,
-    })],
-    plan,
-    email,
-  };
-}
-
-export function parseCopilotQuota(payload: unknown, nowMs: number): {
-  windows: UsageWindow[];
-  plan: string | null;
-} {
-  const root = asRecord(payload);
-  const snapshots = asRecord(root?.quotaSnapshots) ?? asRecord(root?.quota_snapshots);
-  const premium = asRecord(snapshots?.premiumInteractions) ?? asRecord(snapshots?.premium_interactions);
-  const remaining = wholePercent(premium?.percentRemaining) ?? wholePercent(premium?.percent_remaining);
-  const percent = remaining == null ? null : wholePercent(100 - remaining);
-  if (percent == null) return { windows: [], plan: null };
-  const plan = stringField(root, "copilotPlan", "copilot_plan");
-  const resetsAt = isoField(premium, "resetAt", "reset_at")
-    ?? isoField(root, "quotaResetAt", "quota_reset_at");
-  return {
-    windows: [quotaWindow({
-      provider: "copilot",
-      windowType: "monthly",
-      percentUsed: percent,
-      resetsAt,
-      nowMs,
-    })],
-    plan,
-  };
-}
-
-function grokWindowType(startIso: string | null, endIso: string | null): {
-  windowType: UsageWindowType;
-  windowDurationMs?: number;
-} {
-  if (!startIso || !endIso) return { windowType: "monthly" };
-  const duration = Date.parse(endIso) - Date.parse(startIso);
-  if (!Number.isFinite(duration) || duration <= 0) return { windowType: "monthly" };
-  const days = duration / 86_400_000;
-  if (days >= 5 && days <= 9) return { windowType: "weekly", windowDurationMs: duration };
-  return { windowType: "monthly", windowDurationMs: duration };
-}
-
-export function parseGrokCredits(payload: unknown, nowMs: number): {
-  windows: UsageWindow[];
-  plan: string | null;
-} {
-  const root = asRecord(payload);
-  const config = asRecord(root?.config) ?? root;
-  if (!config) return { windows: [], plan: null };
-  const onDemandUsed = asRecord(config.onDemandUsed) ?? asRecord(config.on_demand_used);
-  const onDemandCap = asRecord(config.onDemandCap) ?? asRecord(config.on_demand_cap);
-  const percent = wholePercent(config.creditUsagePercent)
-    ?? wholePercent(config.credit_usage_percent)
-    ?? ratioPercent(onDemandUsed?.val, onDemandCap?.val);
-  if (percent == null) return { windows: [], plan: null };
-  const period = asRecord(config.currentPeriod) ?? asRecord(config.current_period);
-  const start = isoField(period, "start") ?? isoField(config, "billingPeriodStart", "billing_period_start");
-  const end = isoField(period, "end")
-    ?? isoField(config, "billingPeriodEnd", "billing_period_end");
-  const cycle = grokWindowType(start, end);
-  const plan = stringField(config, "subscriptionTier", "subscription_tier_display", "subscription_tier");
-  return {
-    windows: [quotaWindow({
-      provider: "grok",
-      windowType: cycle.windowType,
-      percentUsed: percent,
-      resetsAt: end,
-      nowMs,
-      ...(cycle.windowDurationMs ? { windowDurationMs: cycle.windowDurationMs } : {}),
-    })],
-    plan,
-  };
-}
-
-export function parseOpenCodeGoUsage(payload: unknown, nowMs: number): UsageWindow[] {
-  const root = asRecord(payload);
-  const usage = asRecord(root?.usage) ?? root;
-  if (!usage) return [];
-  const rolling = asRecord(usage.rolling) ?? asRecord(usage.rollingUsage);
-  const weekly = asRecord(usage.weekly) ?? asRecord(usage.weeklyUsage);
-  const monthly = asRecord(usage.monthly) ?? asRecord(usage.monthlyUsage);
-  return [
-    windowFromUsageNode("opencode", "five_hour", rolling, nowMs, null, 5 * 3_600_000),
-    windowFromUsageNode("opencode", "weekly", weekly, nowMs),
-    windowFromUsageNode("opencode", "monthly", monthly, nowMs),
-  ].filter((window): window is UsageWindow => window != null);
 }
 
 function appDataDir(io: ResolvedIo): string {
@@ -306,16 +171,10 @@ export function copilotHostsPath(io: Pick<ResolvedIo, "homeDir" | "platform" | "
   return path.join(xdgConfigDir(io as ResolvedIo), "github-copilot", "hosts.json");
 }
 
+/** OpenCode's `auth.json` candidates, in the lookup order every OpenCode reader shares. */
 export function openCodeAuthPaths(io: Pick<ResolvedIo, "homeDir" | "platform" | "env">): string[] {
-  const paths: string[] = [];
-  const xdgData = io.env.XDG_DATA_HOME?.trim();
-  if (xdgData) paths.push(path.join(xdgData, "opencode", "auth.json"));
-  paths.push(path.join(io.homeDir, ".local", "share", "opencode", "auth.json"));
-  if (io.platform === "darwin") {
-    paths.push(path.join(io.homeDir, "Library", "Application Support", "opencode", "auth.json"));
-  }
-  if (io.platform === "win32") paths.push(path.join(appDataDir(io as ResolvedIo), "opencode", "auth.json"));
-  return paths;
+  return openCodeDataDirs({ env: io.env, homeDir: io.homeDir, platform: io.platform })
+    .map((dir) => path.join(dir, "auth.json"));
 }
 
 function sqliteText(value: unknown): string | null {
@@ -342,8 +201,8 @@ function jwtPayload(token: string): { exp?: unknown; sub?: unknown } | null {
 }
 
 function jwtExpiryMs(token: string): number | null {
-  const exp = jwtPayload(token)?.exp;
-  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null;
+  const exp = finiteNumberOrNull(jwtPayload(token)?.exp);
+  return exp == null ? null : exp * 1000;
 }
 
 /**
@@ -362,7 +221,7 @@ export function cursorSessionCookie(token: string): string {
   return `${userId}::${trimmed}`;
 }
 
-function usableSessionToken(token: string | null, nowMs: number): string | null {
+export function usableSessionToken(token: string | null, nowMs: number): string | null {
   if (!token) return null;
   const exp = jwtExpiryMs(token);
   if (exp != null && exp <= nowMs + 60_000) return null;
@@ -377,18 +236,7 @@ async function readTextFile(filePath: string): Promise<string | null> {
   }
 }
 
-function openCursorDatabase(dbPath: string): DatabaseSync {
-  // `node:sqlite` is a Node builtin. A static import is rewritten by the
-  // desktop test bundler into a missing `sqlite` URL, so this stays a runtime
-  // require and only runs when a Cursor session file is actually there.
-  const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-  const { DatabaseSync: Database } = require("node:sqlite") as {
-    DatabaseSync: new (location: string, options?: { readOnly?: boolean }) => DatabaseSync;
-  };
-  return new Database(dbPath, { readOnly: true });
-}
-
-async function readCursorSessionToken(dbPath: string): Promise<{ token: string | null; unreadable: boolean }> {
+export async function readCursorSessionToken(dbPath: string): Promise<{ token: string | null; unreadable: boolean }> {
   try {
     await access(dbPath);
   } catch {
@@ -396,7 +244,8 @@ async function readCursorSessionToken(dbPath: string): Promise<{ token: string |
   }
   let db: DatabaseSync | null = null;
   try {
-    db = openCursorDatabase(dbPath);
+    // Loads `node:sqlite` only now, when a Cursor session file is actually there.
+    db = openReadOnlyDatabase(dbPath);
     const row = db.prepare("select value from ItemTable where key = ?").get("cursorAuth/accessToken") as { value?: unknown } | undefined;
     return { token: sqliteText(row?.value ?? null), unreadable: false };
   } catch {
@@ -465,6 +314,30 @@ export function readOpenCodeApiKey(auth: unknown): string | null {
     if (key) return key;
   }
   return null;
+}
+
+export function readKimiAccessToken(auth: unknown, nowMs: number): string | null {
+  const root = asRecord(auth);
+  const credentials = asRecord(root?.tokens) ?? root;
+  if (!credentials) return null;
+  const token = stringField(credentials, "access_token");
+  if (!token) return null;
+  const expires = expiryMs(credentials.expires_at ?? credentials.expiresAt);
+  if (expires != null && expires <= nowMs + 60_000) return null;
+  return token;
+}
+
+function readStoredFactoryApiKey(): string | null {
+  try {
+    return getApiKey("droid")?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function factoryApiKey(io: ResolvedIo): string | null {
+  const key = io.readFactoryApiKey()?.trim() || envToken(io.env, "FACTORY_API_KEY");
+  return key?.startsWith("fk-") ? key : null;
 }
 
 type HttpJson =
@@ -569,10 +442,46 @@ export async function pollCursorQuota(
 
 function envToken(env: NodeJS.ProcessEnv, ...names: string[]): string | null {
   for (const name of names) {
-    const value = env[name]?.trim();
+    const value = toOptionalString(env[name]);
     if (value) return value;
   }
   return null;
+}
+
+export async function pollKimiQuota(
+  _context: UsageProviderPollContext = { reason: "automatic" },
+  io: ExtraQuotaIo = {},
+): Promise<UsageProviderPollResult> {
+  const resolved = resolveIo(io);
+  // The slot and API base Kimi Code itself would use: `config.toml`'s managed
+  // login first (a `--region global` login lives in its own scoped file), then
+  // the default `kimi-code.json` with the region marker.
+  const login = resolveKimiCodeLogin({ env: resolved.env, homeDir: resolved.homeDir });
+  const raw = login ? await resolved.readText(login.credentialPath) : null;
+  let auth: unknown = null;
+  if (raw) {
+    try {
+      auth = JSON.parse(raw);
+    } catch {
+      auth = null;
+    }
+  }
+  const token = readKimiAccessToken(auth, resolved.nowMs);
+  if (!login || !token) return signedOut("kimi");
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
+  };
+  const response = await fetchJson(resolved.fetchImpl, `${login.baseUrl}/usages`, headers);
+  if (!response.ok) return httpFailure("kimi", response);
+  const identity = await quotaIdentity(
+    "kimi",
+    token,
+    fetchJson(resolved.fetchImpl, `${login.baseUrl}/me`, headers),
+    parseKimiIdentity,
+  );
+  const windows = parseKimiUsage(response.body, resolved.nowMs, identity.email);
+  return freshResult("kimi", windows, { email: identity.email }, "usage response had no recognized windows");
 }
 
 export async function pollCopilotQuota(
@@ -586,18 +495,16 @@ export async function pollCopilotQuota(
     token = hosts ? readCopilotTokenFromHosts(hosts) : null;
   }
   if (!token) {
-    const copilotHome = path.join(
-      resolved.env.COPILOT_HOME?.trim() || path.join(resolved.homeDir, ".copilot"),
-    );
+    const copilotHome = copilotConfigHome({ env: resolved.env, homeDir: resolved.homeDir });
     const ghHosts = path.join(xdgConfigDir(resolved), "gh", "hosts.yml");
     const [copilotConfig, ghConfig] = await Promise.all([
       resolved.readText(path.join(copilotHome, "config.json")),
       resolved.readText(ghHosts),
     ]);
-    if (copilotConfig == null && ghConfig == null) return notSignedIn();
+    if (copilotConfig == null && ghConfig == null) return signedOut("copilot");
     token = await resolved.readGhToken(context.reason === "user");
   }
-  if (!token) return notSignedIn();
+  if (!token) return signedOut("copilot");
   const response = await fetchJson(resolved.fetchImpl, COPILOT_USAGE_URL, {
     Authorization: `token ${token}`,
     Accept: "application/json",
@@ -607,8 +514,18 @@ export async function pollCopilotQuota(
     "X-Github-Api-Version": "2025-04-01",
   });
   if (!response.ok) return httpFailure("copilot", response);
-  const parsed = parseCopilotQuota(response.body, resolved.nowMs);
-  return freshResult("copilot", parsed.windows, { plan: parsed.plan }, "usage response had no premium quota");
+  const identity = await quotaIdentity(
+    "copilot",
+    token,
+    fetchJson(resolved.fetchImpl, COPILOT_USER_URL, {
+      Authorization: `token ${token}`,
+      Accept: "application/json",
+      "X-Github-Api-Version": "2025-04-01",
+    }),
+    parseCopilotIdentity,
+  );
+  const parsed = parseCopilotQuota(response.body, resolved.nowMs, identity.email);
+  return freshResult("copilot", parsed.windows, { email: identity.email, plan: parsed.plan }, "usage response had no premium quota");
 }
 
 export async function pollGrokQuota(
@@ -634,11 +551,8 @@ export async function pollGrokQuota(
     Accept: "application/json",
   });
   if (!response.ok) return httpFailure("grok", response);
-  const credits = parseGrokCredits(response.body, resolved.nowMs);
-  const windows = bearer.email
-    ? credits.windows.map((window) => ({ ...window, accountId: localQuotaAccountId("grok", bearer.email) }))
-    : credits.windows;
-  return freshResult("grok", windows, { email: bearer.email, plan: credits.plan }, "billing response had no usage percent");
+  const credits = parseGrokCredits(response.body, resolved.nowMs, bearer.email);
+  return freshResult("grok", credits.windows, { email: bearer.email, plan: credits.plan }, "billing response had no usage percent");
 }
 
 export async function pollOpenCodeQuota(
@@ -666,6 +580,26 @@ export async function pollOpenCodeQuota(
   });
   if (!response.ok) return httpFailure("opencode", response);
   return freshResult("opencode", parseOpenCodeGoUsage(response.body, resolved.nowMs), {}, "usage response had no windows");
+}
+
+/** Returns one completed Droid session's provider-recorded Factory credits. */
+export async function fetchFactorySessionCredits(
+  sessionId: string,
+  io: ExtraQuotaIo = {},
+): Promise<number | null> {
+  const resolved = resolveIo(io);
+  const key = factoryApiKey(resolved);
+  const id = sessionId.trim();
+  if (!key || !id) return null;
+  const response = await fetchJson(
+    resolved.fetchImpl,
+    `${FACTORY_SESSIONS_URL}/${encodeURIComponent(id)}`,
+    {
+      Authorization: `Bearer ${key}`,
+      Accept: "application/json",
+    },
+  );
+  return response.ok ? parseFactorySessionCredits(response.body) : null;
 }
 
 let ghTokenCache: { at: number; token: string | null } | null = null;

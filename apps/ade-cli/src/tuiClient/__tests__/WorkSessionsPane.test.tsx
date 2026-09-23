@@ -280,6 +280,61 @@ describe("WorkSessionsPane cards", () => {
     expect(frame).not.toContain("✻");
   });
 
+  it("renders one effective status per card, with Needs you replacing activity detail", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(NOW));
+
+    const frame = paneFrame({
+      lanes: [lane("lane-1", "Feature")],
+      sessions: [
+        session({
+          sessionId: "chat-testing",
+          laneId: "lane-1",
+          title: "Tests underway",
+          status: "active",
+          runtimeState: "running",
+          currentTurnStartedAt: "2026-05-12T11:52:00.000Z",
+          activityStatus: {
+            value: "testing",
+            source: "agent",
+            updatedAt: "2026-05-12T11:59:00.000Z",
+          },
+        }),
+        session({
+          sessionId: "chat-needs-you",
+          laneId: "lane-1",
+          title: "Question pending",
+          status: "active",
+          runtimeState: "running",
+          currentTurnStartedAt: "2026-05-12T11:52:00.000Z",
+          activityStatus: {
+            value: "testing",
+            source: "agent",
+            updatedAt: "2026-05-12T11:59:00.000Z",
+          },
+          attentionRequestedAt: "2026-05-12T11:59:30.000Z",
+          attentionMessage: "Which account?",
+        }),
+      ],
+      width: 72,
+    });
+
+    const lines = frame.split("\n");
+    const card = (title: string) => {
+      const titleIndex = lines.findIndex((line) => line.includes(title));
+      return lines.slice(titleIndex - 1, titleIndex + 2).join("\n");
+    };
+    const testingCard = card("Tests underway");
+    const needsYouCard = card("Question pending");
+
+    expect(testingCard).toContain("Testing");
+    expect(testingCard.match(/\bTesting\b/g)).toHaveLength(1);
+    expect(testingCard).not.toContain("Working");
+    expect(needsYouCard).toContain("Needs you");
+    expect(needsYouCard.match(/\bNeeds you\b/g)).toHaveLength(1);
+    expect(needsYouCard).not.toContain("Testing");
+  });
+
   it("keeps a lane header when the lane has more than one live chat", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));

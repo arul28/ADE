@@ -238,6 +238,9 @@ describe("connectToAde embedded mode", () => {
         role: "cto",
       },
     });
+    expect(embedded.createAdeRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      runtimeProfile: "embedded",
+    }));
     expect(process.env.ADE_DEFAULT_ROLE).toBeUndefined();
   });
 

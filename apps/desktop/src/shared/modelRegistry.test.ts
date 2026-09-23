@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyModelManifest,
+  BUNDLED_MODEL_MANIFEST,
+  getAppDefaultModelDescriptor,
   createDynamicAcpModelDescriptor,
   clearDynamicAcpModelDescriptors,
   createDynamicDroidCliModelDescriptor,
@@ -23,7 +26,9 @@ import {
   getRuntimeModelRefForDescriptor,
   listAcpModelDescriptorsForProvider,
   listModelDescriptorsForProvider,
+  mergeDynamicAcpModelDescriptors,
   MODEL_REGISTRY,
+  resolveAcpModelDescriptor,
   replaceDynamicPiModelDescriptors,
   resolveModelAlias,
   resolveCursorCliModelVariant,
@@ -34,6 +39,8 @@ import {
   resolveModelSlug,
   selectSupportedReasoningEffort,
   normalizeAnthropicRuntimeAlias,
+  openCodeRegistryIdFor,
+  resolveOpenCodeFastEffortSelection,
   usesCodexNamedEffortLabels,
 } from "./modelRegistry";
 import type { ModelDescriptor, ProviderFamily } from "./modelRegistry";
@@ -118,6 +125,82 @@ describe("modelRegistry", () => {
       expect(models[0]?.providerModelId).toBe("gpt-5.5");
       expect(getDefaultModelDescriptor("qwen")?.providerModelId).toBe("gpt-5.5");
       expect(models.some((model) => model.providerModelId === "qwen3-coder-plus")).toBe(true);
+    } finally {
+      clearDynamicAcpModelDescriptors();
+    }
+  });
+
+  it("shows a live Grok report of a curated model as the curated row, with the live efforts", () => {
+    const liveTiers = ["low", "medium", "high", "xhigh"];
+    try {
+      // The live session names the model by its provider id, which registers as
+      // `xai/grok-4.5`; the curated row for the same model is `xai/grok-4-5`.
+      mergeDynamicAcpModelDescriptors("grok", [
+        createDynamicAcpModelDescriptor("grok", "grok-4.5", { reasoningTiers: liveTiers }),
+        createDynamicAcpModelDescriptor("grok", "grok-4.7", { reasoningTiers: ["low", "high"] }),
+      ]);
+      const rows = listModelDescriptorsForProvider("grok");
+      expect(rows.filter((row) => row.providerModelId === "grok-4.5")).toHaveLength(1);
+      expect(rows.find((row) => row.providerModelId === "grok-4.5")).toMatchObject({
+        id: "xai/grok-4-5",
+        displayName: "Grok 4.5",
+        contextWindow: 500_000,
+        color: "#B91C1C",
+        reasoningTiers: liveTiers,
+        defaultReasoningEffort: "high",
+      });
+      // An uncurated live model is still its own row.
+      expect(rows.some((row) => row.id === "xai/grok-4.7")).toBe(true);
+      // A chat that picked the live row resolves to the curated one.
+      expect(getModelById("xai/grok-4.5")?.id).toBe("xai/grok-4-5");
+      expect(resolveModelAlias("grok-4.5")?.reasoningTiers).toEqual(liveTiers);
+      expect(resolveAcpModelDescriptor("grok", "grok-4.5")?.reasoningTiers).toEqual(liveTiers);
+
+      // A later report that does not mention the model keeps what was learned.
+      mergeDynamicAcpModelDescriptors("grok", [
+        createDynamicAcpModelDescriptor("grok", "grok-4.7", { reasoningTiers: ["low", "high"] }),
+      ]);
+      expect(getModelById("xai/grok-4-5")?.reasoningTiers).toEqual(liveTiers);
+    } finally {
+      clearDynamicAcpModelDescriptors();
+    }
+    expect(getModelById("xai/grok-4-5")?.reasoningTiers).toEqual(["low", "medium", "high"]);
+    expect(getModelById("xai/grok-4.5")).toBeUndefined();
+  });
+
+  it("serves a curated row's live efforts to every lookup, scan, and default", () => {
+    const liveTiers = ["low", "medium", "high", "xhigh"];
+    try {
+      mergeDynamicAcpModelDescriptors("grok", [
+        createDynamicAcpModelDescriptor("grok", "grok-4.5", { reasoningTiers: liveTiers }),
+      ]);
+      expect(resolveModelDescriptorForProvider("grok-4.5", "grok")?.reasoningTiers).toEqual(liveTiers);
+      expect(resolveModelDescriptorForProvider("xai/grok-4-5", "grok")?.reasoningTiers).toEqual(liveTiers);
+      expect(resolveModelSlug("grok-4.5", "grok")).toBe("xai/grok-4-5");
+      const available = getAvailableModels([{ type: "cli-subscription", cli: "grok", authenticated: true }]);
+      expect(available.find((model) => model.id === "xai/grok-4-5")?.reasoningTiers).toEqual(liveTiers);
+      applyModelManifest({
+        version: 1,
+        updatedAt: "2030-01-01T00:00:00Z",
+        models: [],
+        defaults: { app: [{ model: "xai/grok-4-5" }] },
+      });
+      expect(getAppDefaultModelDescriptor()?.reasoningTiers).toEqual(liveTiers);
+    } finally {
+      applyModelManifest(BUNDLED_MODEL_MANIFEST);
+      clearDynamicAcpModelDescriptors();
+    }
+    expect(resolveModelDescriptorForProvider("grok-4.5", "grok")?.reasoningTiers).toEqual(["low", "medium", "high"]);
+    // The overlay never writes into the curated registry itself.
+    expect(MODEL_REGISTRY.find((model) => model.id === "xai/grok-4-5")?.reasoningTiers).toEqual(["low", "medium", "high"]);
+  });
+
+  it("keeps a curated ACP row's researched efforts when the live report names none", () => {
+    try {
+      replaceDynamicAcpModelDescriptors("grok", [createDynamicAcpModelDescriptor("grok", "grok-4.6")]);
+      expect(listModelDescriptorsForProvider("grok").filter((row) => row.providerModelId === "grok-4.6")).toHaveLength(1);
+      expect(getModelById("xai/grok-4-6")?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh"]);
+      expect(getModelById("xai/grok-4-6")?.defaultReasoningEffort).toBe("high");
     } finally {
       clearDynamicAcpModelDescriptors();
     }
@@ -219,7 +302,6 @@ describe("modelRegistry", () => {
       capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "high",
-      serviceTiers: ["fast"],
     });
     expect(currentOpus).toMatchObject({
       id: "opencode/anthropic/claude-opus-5-5",
@@ -230,7 +312,136 @@ describe("modelRegistry", () => {
       maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "medium",
-      serviceTiers: ["fast"],
+    });
+    // With no inventory, Fast is not guessed: OpenCode runs it through a
+    // `-fast` sibling model, and only an inventory names one.
+    expect(opus?.serviceTiers).toBeUndefined();
+    expect(currentOpus?.serviceTiers).toBeUndefined();
+  });
+
+  it("gives an inventory-built OpenCode row only the tiers OpenCode reported", () => {
+    // `opus` is an alias of Claude Opus 5.5, whose canonical ladder is
+    // low..max with `medium` by default and Fast. OpenCode reported only `high`.
+    const alias = createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: "anthropic",
+      openCodeModelId: "opus",
+      reasoningTiers: ["high"],
+      reportedTiers: true,
+    });
+    expect(alias).toMatchObject({ id: "opencode/anthropic/claude-opus-5-5", reasoningTiers: ["high"] });
+    expect(alias.defaultReasoningEffort).toBeUndefined();
+    expect(alias.serviceTiers).toBeUndefined();
+
+    const bare = createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: "anthropic",
+      openCodeModelId: "opus",
+      reportedTiers: true,
+    });
+    expect(bare.reasoningTiers).toBeUndefined();
+    expect(bare.defaultReasoningEffort).toBeUndefined();
+
+    // The canonical default stays when OpenCode reported it.
+    expect(createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: "anthropic",
+      openCodeModelId: "claude-opus-5-5",
+      reasoningTiers: ["medium", "high"],
+      reportedTiers: true,
+    }).defaultReasoningEffort).toBe("medium");
+  });
+
+  it("names an OpenCode model with one registry id for requests and served models", () => {
+    // OpenRouter model ids carry a `/`; the row id encodes it.
+    expect(openCodeRegistryIdFor("openrouter", "anthropic/claude-opus-4.7"))
+      .toBe("opencode/openrouter/anthropic%2Fclaude-opus-4.7");
+    expect(openCodeRegistryIdFor("openrouter", "anthropic/claude-opus-4.7")).toBe(createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: "openrouter",
+      openCodeModelId: "anthropic/claude-opus-4.7",
+    }).id);
+    // Anthropic aliases take the canonical row's id, as the row does.
+    expect(openCodeRegistryIdFor("anthropic", "opus")).toBe("opencode/anthropic/claude-opus-5-5");
+    expect(openCodeRegistryIdFor("anthropic", "opus")).toBe(createDynamicOpenCodeModelDescriptor("", {
+      openCodeProviderId: "anthropic",
+      openCodeModelId: "opus",
+    }).id);
+  });
+
+  describe("resolveOpenCodeFastEffortSelection", () => {
+    const row = (patch: Partial<ModelDescriptor>): ModelDescriptor => ({
+      ...createDynamicOpenCodeModelDescriptor("", {
+        displayName: "GPT-5.4",
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5.4",
+        reasoningTiers: ["low", "medium", "high"],
+        serviceTiers: ["fast"],
+        reportedTiers: true,
+      }),
+      ...patch,
+    });
+
+    it("runs Fast with an effort as the fast sibling model plus the effort variant", () => {
+      const descriptor = row({
+        openCodeVariantKeys: { high: "High" },
+        openCodeFast: {
+          withoutEffort: { modelId: "gpt-5.4-fast" },
+          byEffort: { high: { modelId: "gpt-5.4-fast", variant: "High" } },
+        },
+      });
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true, reasoningEffort: "high" }))
+        .toEqual({ modelId: "gpt-5.4-fast", variant: "High", fastApplied: true });
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true, reasoningEffort: null }))
+        .toEqual({ modelId: "gpt-5.4-fast", variant: null, fastApplied: true });
+      // An effort the model does not list counts as no effort.
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true, reasoningEffort: "ultra" }))
+        .toEqual({ modelId: "gpt-5.4-fast", variant: null, fastApplied: true });
+      // Fast off sends the row's own model and OpenCode's key for the effort.
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: false, reasoningEffort: "high" }))
+        .toEqual({ modelId: "gpt-5.4", variant: "High", fastApplied: false });
+    });
+
+    it("uses a combined key, then a plain fast key, and otherwise keeps the effort", () => {
+      const descriptor = row({
+        openCodeFast: {
+          withoutEffort: { variant: "fast" },
+          byEffort: { high: { variant: "high-fast" } },
+        },
+      });
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true, reasoningEffort: "high" }))
+        .toEqual({ modelId: "gpt-5.4", variant: "high-fast", fastApplied: true });
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true, reasoningEffort: null }))
+        .toEqual({ modelId: "gpt-5.4", variant: "fast", fastApplied: true });
+      // `low` has no combined key and `fast` is one variant, so the effort wins.
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true, reasoningEffort: "low" })).toEqual({
+        modelId: "gpt-5.4",
+        variant: "low",
+        fastApplied: false,
+        fastUnavailableReason: "OpenCode cannot run GPT-5.4 in Fast mode at low effort.",
+      });
+    });
+
+    it("treats a fast service tier with no routes as a plain fast variant", () => {
+      const descriptor = row({ openCodeVariantKeys: { fast: "Fast" } });
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true }))
+        .toEqual({ modelId: "gpt-5.4", variant: "Fast", fastApplied: true });
+      expect(resolveOpenCodeFastEffortSelection(descriptor, { fastMode: true, reasoningEffort: "medium" }))
+        .toMatchObject({ variant: "medium", fastApplied: false });
+    });
+
+    it("explains Fast on a row that has none, or needs an effort", () => {
+      expect(resolveOpenCodeFastEffortSelection(row({ serviceTiers: undefined }), { fastMode: true, reasoningEffort: "low" }))
+        .toEqual({
+          modelId: "gpt-5.4",
+          variant: "low",
+          fastApplied: false,
+          fastUnavailableReason: "OpenCode has no Fast mode for GPT-5.4.",
+        });
+      expect(resolveOpenCodeFastEffortSelection(
+        row({ openCodeFast: { byEffort: { high: { variant: "high-fast" } } } }),
+        { fastMode: true },
+      )).toMatchObject({
+        variant: null,
+        fastApplied: false,
+        fastUnavailableReason: "OpenCode runs GPT-5.4 in Fast mode only with an effort level.",
+      });
     });
   });
 

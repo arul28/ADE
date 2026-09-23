@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { showToast } from "../app/toast/toastStore";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, ArrowsLeftRight, CaretRight, CircleNotch, CloudArrowUp, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X, type Icon } from "@phosphor-icons/react";
+import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -58,7 +57,8 @@ import {
   type CursorCloudOpenChatResult,
   type OpenProjectBinding,
   type TerminalSessionDetail,
-  type AutomationRuleSummary,
+  type AgentChatSendArgs,
+  type ChatLaunchChatArgs,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
@@ -226,12 +226,12 @@ import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel } from "./ChatCursorCloudPanel";
-import { getLaneAccent } from "../lanes/laneColorPalette";
-import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
 import { navigateToSpawnedChat } from "./spawnNavigation";
-import { AgentBrowserPresenceBadge } from "../terminals/AgentBrowserPresenceBadge";
+import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
+import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
+import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
@@ -241,12 +241,13 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
-import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
+import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
+import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
+import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
-import { AutoHandoffModal, loadAutoHandoffRulesForSession } from "../terminals/AutoHandoffModal";
-import { ChatPrPane } from "./ChatPrPane";
-import { useChatPrPaneOpen } from "./useChatPrPaneOpen";
+import { subscribeChatHandoff, takeChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
+import { useWorkSidebarTool } from "../terminals/useWorkSidebarTool";
 import {
   patchChatCompanionUiState,
   readChatCompanionUiState,
@@ -274,11 +275,6 @@ import {
 } from "../../lib/chatMachineRouting";
 import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
-import {
-  subscribeChatHandoff,
-  takeChatHandoff,
-  type ChatHandoffIntent,
-} from "../../lib/chatHandoffIntent";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
 import {
@@ -309,7 +305,7 @@ import {
   type WorkPtyLaunchArgs,
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
-import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
+import { CenteredWorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
@@ -330,7 +326,25 @@ import {
   type AiStatusCacheInvalidatedEventDetail,
   type AiStatusCacheUpdatedEventDetail,
 } from "../../lib/aiDiscoveryCache";
-import { getProjectConfigCached } from "../../lib/projectConfigCache";
+import { getProjectConfigCached, peekProjectConfigCached } from "../../lib/projectConfigCache";
+import {
+  buildOptimisticChatLaunchSnapshot,
+  getChatLaunchOriginClientId,
+  insertOptimisticChatLaunch,
+  registerChatLaunchLocalRecord,
+  type ChatLaunchCliParams,
+} from "../../state/chatLaunchStore";
+import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
+import { playComposerDock, stashComposerDockOrigin, takeComposerDockOrigin } from "./launch/chatLaunchDock";
+import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
+import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
+import {
+  runRendererOwnedLaunch as runRendererOwnedDraftLaunch,
+  type DraftLaunchLaneTarget,
+  type StartedDraftLaunch,
+} from "./launch/rendererOwnedLaunch";
+import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
+import { consumeChatLaunchDraftRestore, useChatLaunchDraftRestore } from "./launch/chatLaunchDraftRestore";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
   isDraftLaunchJobStale,
@@ -362,18 +376,14 @@ import {
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
   createIosContextInstanceId,
-  formatAppControlContextChipsForDisplay,
-  formatAppControlContextForPrompt,
-  formatBuiltInBrowserContextChipsForDisplay,
-  formatBuiltInBrowserContextForPrompt,
-  formatIosElementContextChipsForDisplay,
-  formatIosElementContextForPrompt,
   getAppControlContextAttachmentPath,
   getBuiltInBrowserContextAttachmentPath,
   getIosContextAttachmentPath,
   iosContextSurface,
   normalizeBuiltInBrowserContextItem,
   stripDataUrlPrefix,
+  applyVisualContext,
+  composeVisualContext,
 } from "../../lib/visualContextFormatting";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
@@ -403,91 +413,6 @@ const chatToolbarActionIdle =
 
 function handoffProviderDisplayName(provider: string | null | undefined): string {
   return providerDisplayLabel(provider, "this provider");
-}
-
-/** The three landing cards: the two bridge destinations plus the auto editor. */
-type HandoffTone = ChatHandoffIntent | "auto";
-
-/** Per-destination chrome for the handoff landing cards, keyed by tone. */
-const HANDOFF_CARD_TONE_CLASS: Record<
-  HandoffTone,
-  { border: string; wash: string; hover: string; plate: string }
-> = {
-  remote: {
-    border: "border-sky-300/18",
-    wash: "bg-[linear-gradient(150deg,rgba(56,189,248,0.10),rgba(255,255,255,0.014)_62%)]",
-    hover: "hover:border-sky-300/34 hover:bg-[linear-gradient(150deg,rgba(56,189,248,0.17),rgba(255,255,255,0.02)_62%)]",
-    plate: "border-sky-300/24 bg-sky-400/12 text-sky-100",
-  },
-  local: {
-    border: "border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)]",
-    wash: "bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_13%,transparent),rgba(255,255,255,0.014)_62%)]",
-    hover:
-      "hover:border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] hover:bg-[linear-gradient(150deg,color-mix(in_srgb,var(--chat-accent)_20%,transparent),rgba(255,255,255,0.02)_62%)]",
-    plate:
-      "border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_15%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_84%,white)]",
-  },
-  auto: {
-    border: "border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)]",
-    wash: "bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_12%,transparent),rgba(255,255,255,0.014)_62%)]",
-    hover:
-      "hover:border-[color:color-mix(in_srgb,var(--color-accent)_38%,transparent)] hover:bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_19%,transparent),rgba(255,255,255,0.02)_62%)]",
-    plate:
-      "border-[color:color-mix(in_srgb,var(--color-accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent",
-  },
-};
-
-/**
- * One of the three landing cards on the handoff tab (remote / local / auto).
- * Rich icon plate + a single line of copy; the parent owns the
- * disabled/gated states.
- */
-function HandoffMenuCard({
-  tone,
-  icon: Icon,
-  title,
-  description,
-  footnote,
-  disabled,
-  onClick,
-}: {
-  tone: HandoffTone;
-  icon: Icon;
-  title: string;
-  description: string;
-  footnote?: string | null;
-  disabled?: boolean;
-  onClick?: () => void;
-}) {
-  const toneCls = HANDOFF_CARD_TONE_CLASS[tone];
-  return (
-    <button
-      type="button"
-      onClick={disabled ? undefined : onClick}
-      disabled={disabled}
-      className={cn(
-        "group flex w-full items-start gap-3 rounded-xl border px-3.5 py-3.5 text-left transition-all",
-        toneCls.border,
-        toneCls.wash,
-        disabled ? "cursor-not-allowed opacity-55" : cn("cursor-pointer", toneCls.hover),
-      )}
-    >
-      <div className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-lg border", toneCls.plate)}>
-        <Icon size={18} weight="duotone" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="font-sans text-[12.5px] font-semibold text-fg/88">{title}</div>
-        <div className="mt-1 text-[11px] leading-4 text-fg/52">{description}</div>
-        {footnote ? <div className="mt-1.5 text-[10px] leading-4 text-fg/40">{footnote}</div> : null}
-      </div>
-      {!disabled ? (
-        <CaretRight
-          size={13}
-          className="mt-0.5 shrink-0 text-fg/28 transition-transform group-hover:translate-x-0.5 group-hover:text-fg/45"
-        />
-      ) : null}
-    </button>
-  );
 }
 
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
@@ -919,18 +844,6 @@ const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 // the lane picker's machine derivation re-run on every render.
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_REMOTE_PROJECT_TABS: Extract<OpenProjectBinding, { kind: "remote" }>[] = [];
-type DraftLaunchLaneTarget = {
-  laneId: string;
-  laneName: string;
-  worktreePath: string | null;
-  autoCreated: boolean;
-};
-
-type StartedDraftLaunch = {
-  sessionId: string;
-  draftKind: DraftLaunchKind;
-};
-
 function draftLaunchRequestKey(args: {
   kind: DraftLaunchKind;
   mode: DraftLaunchMode;
@@ -992,6 +905,48 @@ function buildDraftLaunchNamingSeed(snapshot: DraftLaunchSnapshot): string {
   return parts.join(" - ");
 }
 
+/** Final send text/display text/attachments for a captured draft. Pure and synchronous. */
+function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch {
+  const composed = applyVisualContext(snapshot.text, {
+    prefix: snapshot.visualContextPrefix,
+    displayChips: snapshot.visualContextDisplayChips,
+  });
+  let finalText = composed.text;
+  if (!finalText.trim().length && snapshot.contextAttachments.length) {
+    finalText = "Use the attached issue context.";
+  }
+  const finalDisplayText = composed.displayText ?? "Attached issue context";
+  return {
+    ...snapshot,
+    finalText,
+    finalDisplayText,
+    selectedAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.attachments,
+    selectedContextAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.contextAttachments,
+  };
+}
+
+/**
+ * The opening `agentChat.send` for a drafted chat, minus the session id. Used
+ * by the direct create-then-send path and by the brain-owned new-lane launch,
+ * so both send the same message. `interactionMode` is only sent to Claude.
+ */
+function buildDraftChatMessageArgs(
+  prepared: PreparedDraftLaunch,
+  provider: string,
+  interactionMode: AgentChatInteractionMode | null | undefined,
+): Omit<AgentChatSendArgs, "sessionId"> {
+  return {
+    text: prepared.finalText,
+    displayText: prepared.finalDisplayText || "Selected visual app context",
+    attachments: prepared.selectedAttachments,
+    contextAttachments: prepared.selectedContextAttachments,
+    reasoningEffort: prepared.reasoningEffort,
+    executionMode: prepared.executionMode,
+    interactionMode: provider === "claude" ? interactionMode ?? null : null,
+    ...(provider === "cursor" ? { runtime: "local" as const } : {}),
+  };
+}
+
 function createDraftLaunchJobId(): string {
   try {
     const uuid = globalThis.crypto?.randomUUID?.();
@@ -1046,8 +1001,7 @@ function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
 
 /**
  * The right chat-actions pane may reserve space when it would otherwise cover the
- * centered transcript. The PR pane is deliberately excluded: it is a true left
- * overlay, so opening it must not move the transcript or its minimap rail.
+ * centered transcript. Nothing reserves space on the left.
  */
 const PANE_RESERVE_RIGHT_PX = 276; // 16.5rem pane + 12px gutter
 const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen allows
@@ -1056,14 +1010,10 @@ const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen a
 // CSS that lays the column out can never disagree.
 /**
  * Reserve right gutter space only when the chat-actions pane would otherwise
- * overlap the centered chat column. The left PR pane always overlays.
+ * overlap the centered chat column. Returns a CSS length.
  */
-const ZERO_PANE_RESERVE = { left: "0px", right: "0px" } as const;
-function computePaneReserve(
-  width: number,
-  rightOpen: boolean,
-): { left: string; right: string } {
-  if (width <= 0) return { left: "0px", right: "0px" };
+function computePaneReserveRight(width: number, rightOpen: boolean): string {
+  if (width <= 0) return "0px";
   // Free space on each side of the centered column at full width.
   const naturalSideMargin = Math.max(0, (width - resolveChatContentWidthPx(width)) / 2);
   let right = 0;
@@ -1074,7 +1024,7 @@ function computePaneReserve(
   ) {
     right = PANE_RESERVE_RIGHT_PX;
   }
-  return { left: "0px", right: `${right}px` };
+  return `${right}px`;
 }
 
 type AiStatusSnapshot = AiSettingsStatus & {
@@ -2440,19 +2390,35 @@ function codexControlsFromPermissionMode(
   };
 }
 
-function cursorConfigValuesFromSnapshot(
+/**
+ * The Cursor config values the user actually set: no `null` and no empty
+ * choice, which both mean Cursor's default. A key sent with a value rides the
+ * next run as a model param, so an untouched option must not be sent at all.
+ */
+export function userSetCursorConfigValues(
+  values: Readonly<Record<string, AgentChatCursorConfigValue | null | undefined>> | null | undefined,
+): Record<string, AgentChatCursorConfigValue> {
+  const out: Record<string, AgentChatCursorConfigValue> = {};
+  for (const [key, value] of Object.entries(values ?? {})) {
+    if (value == null || (typeof value === "string" && !value.trim())) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+export function cursorConfigValuesFromSnapshot(
   snapshot: AgentChatSessionSummary["cursorModeSnapshot"] | AgentChatSession["cursorModeSnapshot"] | undefined,
 ): Record<string, AgentChatCursorConfigValue> {
-  return Object.fromEntries(
+  return userSetCursorConfigValues(Object.fromEntries(
     (snapshot?.configOptions ?? [])
       .filter((option) => option.id !== snapshot?.modeConfigId)
-      .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
-  );
+      .map((option) => [option.id, option.currentValue]),
+  ));
 }
 
 function normalizeCursorConfigValues(value: unknown): Record<string, AgentChatCursorConfigValue> {
   if (!isRecord(value)) return {};
-  return { ...value } as Record<string, AgentChatCursorConfigValue>;
+  return userSetCursorConfigValues(value as Record<string, AgentChatCursorConfigValue>);
 }
 
 function readStoredFastMode(value: Record<string, unknown>): boolean {
@@ -2647,6 +2613,47 @@ function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): vo
   } catch {
     // ignore
   }
+}
+
+/** The settings a chat was launched with, as `buildChatCreateArgs` resolves them. */
+type ChatLaunchSettings = {
+  launchModelId: string;
+  launchReasoningEffort: LaunchConfigSessionSource["reasoningEffort"];
+  launchFastMode: LaunchConfigSessionSource["fastMode"];
+  launchExecutionMode: LaunchConfigSessionSource["executionMode"];
+  launchControls: NativeControlState;
+  nativeControlPayload: Pick<LaunchConfigSessionSource, "permissionMode">;
+};
+
+/**
+ * "Remember what I launched with": the next draft opens on these settings.
+ * `created` is what the host reports for the new chat when it already exists.
+ */
+function rememberLaunchConfig(
+  storageKey: string,
+  settings: ChatLaunchSettings,
+  created: { model: LaunchConfigSessionSource["model"]; modelId?: string | null },
+  defaults: NativeControlState,
+): void {
+  const controls = settings.launchControls;
+  const launchConfig = buildLastLaunchConfig({
+    model: created.model,
+    modelId: created.modelId ?? settings.launchModelId,
+    reasoningEffort: settings.launchReasoningEffort,
+    fastMode: settings.launchFastMode,
+    executionMode: settings.launchExecutionMode,
+    permissionMode: settings.nativeControlPayload.permissionMode,
+    interactionMode: controls.interactionMode,
+    claudePermissionMode: controls.claudePermissionMode,
+    codexApprovalPolicy: controls.codexApprovalPolicy,
+    codexSandbox: controls.codexSandbox,
+    codexConfigSource: controls.codexConfigSource,
+    opencodePermissionMode: controls.opencodePermissionMode,
+    droidPermissionMode: controls.droidPermissionMode,
+    cursorModeId: controls.cursorModeId,
+    cursorConfigValues: controls.cursorConfigValues,
+  }, defaults);
+  if (launchConfig) writeLastLaunchConfig(storageKey, launchConfig);
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -3795,19 +3802,7 @@ export function AgentChatPane({
       handoffErrorClearTimerRef.current = null;
     }
   }, []);
-  const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
-    () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
-  );
-  // The handoff router reads the drawer's open/tab state to decide whether it
-  // can apply a destination directly or must hand it to the tab's one-shot open
-  // effect. It reads them through latest-value refs so the intent subscription
-  // does not tear down and re-arm on every drawer open/close/tab change.
-  const chatActionsOpenRef = useRef(chatActionsOpen);
-  chatActionsOpenRef.current = chatActionsOpen;
-  const chatActionsTabRef = useRef(chatActionsTab);
-  chatActionsTabRef.current = chatActionsTab;
   const openProofDrawer = useCallback(() => {
-    setChatActionsTab("proof");
     setChatActionsOpen(true);
   }, []);
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
@@ -3984,27 +3979,10 @@ export function AgentChatPane({
     () => ({ ...initialNativeControls.cursorConfigValues }),
   );
   const [handoffNote, setHandoffNote] = useState("");
+  // A note the local handoff form takes when it next opens (the quota card's
+  // fork button). The form's one-shot open effect consumes it.
   const pendingHandoffPrefillRef = useRef<{ note: string } | null>(null);
-  // A destination named while the drawer is closed (or on another tab): the
-  // one-shot open effect owns `handoffView`, so it consumes this instead of
-  // racing a direct write that the effect would overwrite back to the menu.
-  const pendingHandoffDestinationRef = useRef<ChatHandoffIntent | null>(null);
-
-  /**
-   * Brings the Chat actions drawer to the Handoff tab. Every handoff entry
-   * shares this prelude so the destination views are always mounted where they
-   * render and no other side panel is left open over them.
-   */
-  const openHandoffTab = useCallback(() => {
-    setIosSimulatorOpen(false);
-    setAppControlOpen(false);
-    setCursorCloudPaneOpen(false);
-    setChatActionsTab("handoff");
-    setChatActionsOpen(true);
-  }, []);
-  // Two-view handoff tab: the landing menu (remote / local / auto) and the
-  // local handoff surface (fork | brief). Both reset each time the tab opens.
-  const [handoffView, setHandoffView] = useState<"menu" | "local">("menu");
+  // The local handoff form (fork | brief). The mode resets each time it opens.
   const [handoffLocalMode, setHandoffLocalMode] = useState<"fork" | "brief">("fork");
   // Brief handoffs may target a different lane (or a freshly created one); fork
   // always stays in the source lane. Seeded to the current lane on tab open.
@@ -4013,18 +3991,7 @@ export function AgentChatPane({
   // longer preselects one; defaulted to the source session model on tab open.
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
-  // Auto handoff opened from the Handoff tab (and reachable from the session
-  // context menu, which hosts its own copy). Rules are loaded BEFORE the modal
-  // opens so it prefills from whatever this chat already has armed — the editor
-  // reads `existingRules` once, at mount.
-  const [autoHandoffOpen, setAutoHandoffOpen] = useState(false);
-  // Tagged with the chat the rules belong to: a session switch is not
-  // synchronous with the reset effect, so the modal must never render another
-  // chat's rules even for one frame.
-  const [autoHandoffRules, setAutoHandoffRules] = useState<{ sessionId: string; rules: AutomationRuleSummary[]; binding: OpenProjectBinding | null } | null>(null);
-  // Token for the in-flight rules read; a later open or a session switch
-  // invalidates an older response so it cannot prefill the wrong chat.
-  const autoHandoffRequestRef = useRef(0);
+  const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
   // `handoffTurnGate` is derived far below in the render; the handoff router is
   // declared above it, so it reads the gate through this latest-value ref.
   const handoffTurnGateRef = useRef(false);
@@ -4042,6 +4009,16 @@ export function AgentChatPane({
   const [parallelLaunchBusy, setParallelLaunchBusy] = useState(false);
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  const composerDockRef = useRef<HTMLDivElement | null>(null);
+  // Foreground new-lane launch: glide the docked composer down from where the
+  // draft composer sat (see `chatLaunchDock`). Layout effect so the first
+  // painted frame is already at the old position.
+  useLayoutEffect(() => {
+    if (!lockSessionId) return;
+    const origin = takeComposerDockOrigin(lockSessionId);
+    if (!origin) return;
+    playComposerDock(composerDockRef.current, origin);
+  }, [lockSessionId]);
   // Measure the chat surface width to drive the 3-quadrant pane reserve.
   const [chatAreaWidth, setChatAreaWidth] = useState(0);
   useEffect(() => {
@@ -4144,6 +4121,16 @@ export function AgentChatPane({
   const chatSelectionTransitioning = composerSessionId !== renderedSessionId;
   const renderedSessionIdRef = useRef<string | null>(renderedSessionId);
   renderedSessionIdRef.current = renderedSessionId;
+  // A chat opened the instant a new-lane launch was sent: its session id is
+  // reserved, but until the brain reports `sessionCreated` there is no summary
+  // or transcript to read. The pane renders the launch instead (prompt bubble,
+  // setup card, queued messages) and holds every session read until then —
+  // the read-only effects below key off `readableSessionId`, which is null
+  // for exactly that window.
+  const { chatLaunch, launchAwaitingSession, launchQueuesComposer, launchRoutesSends } = useChatLaunchPaneState(lockSessionId, renderedSessionId);
+  const readableSessionId = launchAwaitingSession ? null : selectedSessionId;
+  const launchAwaitingSessionRef = useRef(launchAwaitingSession);
+  launchAwaitingSessionRef.current = launchAwaitingSession;
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
@@ -4204,11 +4191,11 @@ export function AgentChatPane({
   // a chat on another machine reports paths on that machine's disk, so opening
   // one has to ask that machine — not whichever machine this tab is bound to.
   const chatWorkspacePaths = useWorkspacePathOpener({ laneId, navigate, runtimePin: chatRuntimePin });
-  // Left PR floating pane (ADE chats only). It never auto-opens — only an
-  // explicit toggle moves it; shared with the CLI session surface via
-  // useChatPrPaneOpen. `persistKey` makes open/closed per chat and durable
-  // across restarts: open it once for a chat and it stays open until closed.
-  const { prPaneOpen, setPrPaneOpen } = useChatPrPaneOpen(companionStateKey);
+  // The header PR pill opens the per-lane PR tools tab. Pressed state follows
+  // the tab the Work pane is showing for this lane.
+  const workSidebar = useWorkSidebarTool(laneId, chatRuntimePin);
+  const attachedTerminalShells = useAttachedTerminalShells(selectedSessionId, chatRuntimePin);
+  const hasAttachedTerminal = hasAttachedTerminalShell(attachedTerminalShells);
   const renderedSession = useMemo(
     () => (
       renderedSessionId
@@ -4314,7 +4301,6 @@ export function AgentChatPane({
     companionHydrationKeyRef.current = companionStateKey;
     const saved = readChatCompanionUiState(companionStateKey);
     setChatActionsOpen(saved.chatActionsOpen);
-    setChatActionsTab(saved.chatActionsTab);
     setIosSimulatorOpen(saved.iosSimulatorOpen);
     setAppControlOpen(saved.appControlOpen);
     setTerminalDrawerOpen(saved.terminalDrawerOpen);
@@ -4325,16 +4311,13 @@ export function AgentChatPane({
       companionHydrationKeyRef.current = null;
       return;
     }
-    // `prPaneOpen` is owned by useChatPrPaneOpen's own persist effect; the patch
-    // helper does the read-merge-write, so a drawer toggle can't clobber it.
     patchChatCompanionUiState(companionStateKey, {
       chatActionsOpen,
-      chatActionsTab,
       iosSimulatorOpen,
       appControlOpen,
       terminalDrawerOpen,
     });
-  }, [appControlOpen, chatActionsOpen, chatActionsTab, companionStateKey, iosSimulatorOpen, terminalDrawerOpen]);
+  }, [appControlOpen, chatActionsOpen, companionStateKey, iosSimulatorOpen, terminalDrawerOpen]);
 
   // Companion state prunes itself on write (see `chatCompanionUiState`). This
   // pane deliberately does NOT drive that: its roster only ever contains chat
@@ -4431,6 +4414,7 @@ export function AgentChatPane({
    */
   const selectedChatCold = Boolean(
     renderedSessionId
+    && !chatLaunch
     && selectedEvents.length === 0
     && !eventsBySession[renderedSessionId]
     && !peekAgentChatSessionViewCache(renderedSessionId),
@@ -4478,8 +4462,22 @@ export function AgentChatPane({
       }
       return true;
     });
+    // A launching chat shows its prompt, setup card and queued messages until
+    // the real transcript carries them (each stand-in yields to its real row).
+    // Queued messages the host has not delivered yet outlive the launch.
+    if (
+      chatLaunch
+      && (
+        launchQueuesComposer
+        || !chatLaunch.sessionCreated
+        || displayEvents.length === 0
+        || chatLaunch.queuedMessages.length > 0
+      )
+    ) {
+      return buildChatLaunchThreadEvents(chatLaunch, displayEvents);
+    }
     return displayEvents;
-  }, [optimisticOutgoingMessage, renderedSessionId, selectedEvents]);
+  }, [chatLaunch, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId, selectedEvents]);
   // Fresh snapshot of the visible transcript for the auth-retry/recovery handlers
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
@@ -4882,16 +4880,16 @@ export function AgentChatPane({
 
 
   useEffect(() => {
+    // An open form takes the note now; a closed one takes it from its one-shot
+    // open effect, which also resets the mode to fork.
     const applyLocalForkPrefill = (note: string) => {
-      pendingHandoffPrefillRef.current = { note };
-      if (chatActionsOpen && chatActionsTab === "handoff") {
-        pendingHandoffPrefillRef.current = null;
+      if (localHandoffOpen) {
         setHandoffNote(note);
-        setHandoffView("local");
         setHandoffLocalMode("fork");
         return;
       }
-      openHandoffTab();
+      pendingHandoffPrefillRef.current = { note };
+      setLocalHandoffOpen(true);
     };
     const isLocalForkDetail = (detail: {
       actionId?: string;
@@ -4924,7 +4922,6 @@ export function AgentChatPane({
         return;
       }
       if (event.type !== "ade:chat:open-info") return;
-      setChatActionsTab("agents");
       setIosSimulatorOpen(false);
       setAppControlOpen(false);
       setCursorCloudPaneOpen(false);
@@ -4951,88 +4948,22 @@ export function AgentChatPane({
       window.removeEventListener("ade:chat:card-action", handler);
       window.removeEventListener("ade:chat:open-info", handler);
     };
-  }, [chatActionsOpen, chatActionsTab, openHandoffTab, selectedSessionId, selectedSubagentSnapshots]);
+  }, [localHandoffOpen, selectedSessionId, selectedSubagentSnapshots]);
 
   /**
-   * Routes "where should this chat go" to the matching destination view. One
-   * switch for both the Handoff tab's own cards and any surface that can only
-   * name a destination. The pane's gates live here, not at each caller: a
-   * running turn or a chat that already lives on another machine is refused for
-   * the menu exactly as the cards refuse it.
+   * Routes "where should this chat go" to the matching modal. A running turn
+   * does not refuse the choice: each modal says the turn is still going and
+   * keeps its send off until it ends (the local view's banner, the
+   * cross-machine modal's `turnActive`). A chat that already lives on another
+   * machine opens the dialog that names that machine instead of the modal.
    */
   const openHandoffDestination = useCallback((intent: ChatHandoffIntent) => {
-    if (handoffTurnGateRef.current) return;
     if (intent === "remote") {
-      if (isRemoteChat) return;
       setCrossMachineHandoffOpen(true);
       return;
     }
-    // The Handoff tab's one-shot open effect resets `handoffView` to the landing
-    // menu. When the drawer is not already on that tab — the normal context-menu
-    // case — hand the effect the destination through the pending ref instead of
-    // racing it; apply directly only when the tab is already showing.
-    if (chatActionsOpenRef.current && chatActionsTabRef.current === "handoff") {
-      setHandoffView("local");
-      setHandoffLocalMode("fork");
-      return;
-    }
-    pendingHandoffDestinationRef.current = "local";
-  }, [isRemoteChat]);
-
-  /**
-   * Opens the Auto handoff rule editor for the selected chat, prefilled from the
-   * rules this chat already owns. The rules are read BEFORE the modal opens: the
-   * editor seeds its form from `existingRules` at mount, so opening first would
-   * always show defaults from the tab path.
-   */
-  const openAutoHandoff = useCallback(async () => {
-    const sessionId = selectedSessionId;
-    const requestId = ++autoHandoffRequestRef.current;
-    // Freeze the machine for this read. The chat's pin can re-resolve while the
-    // read is in flight; seeding the editor from one machine's rules while it
-    // saved through another would overwrite the other machine's rules, so the
-    // read and the modal are both bound to the pin captured here.
-    const pin = chatRuntimePinRef.current;
-    const rules = sessionId
-      ? await loadAutoHandoffRulesForSession(sessionId, pin)
-      : null;
-    if (autoHandoffRequestRef.current !== requestId) return;
-    if ((chatRuntimePinRef.current?.key ?? null) !== (pin?.key ?? null)) return;
-    if (!sessionId) return;
-    // A failed read is not "no rules": opening the editor on defaults would let
-    // Save delete conditions the read never saw. Keep it closed and say so.
-    if (rules === null) {
-      showToast({
-        id: `auto-handoff-read:${sessionId}`,
-        title: "Couldn't load auto handoff",
-        message: "The rules for this chat didn't load. Try again in a moment.",
-      });
-      return;
-    }
-    openHandoffTab();
-    setAutoHandoffRules({ sessionId, rules, binding: pin });
-    setAutoHandoffOpen(true);
-  }, [openHandoffTab, selectedSessionId]);
-
-  /**
-   * Routes a Handoff intent from a surface that can only name a destination —
-   * currently the session context menu — into this pane's own Handoff tab.
-   */
-  const applyChatHandoffIntent = useCallback((intent: ChatHandoffIntent) => {
-    openHandoffTab();
-    openHandoffDestination(intent);
-  }, [openHandoffDestination, openHandoffTab]);
-
-  // Rules are scoped to one chat, so a session change drops any auto-handoff
-  // state the previous chat left behind — a form seeded from another chat's
-  // rules would delete them on save. Bumping the request token also discards an
-  // in-flight rules read for the chat we just left.
-  useEffect(() => {
-    autoHandoffRequestRef.current += 1;
-    pendingHandoffDestinationRef.current = null;
-    setAutoHandoffOpen(false);
-    setAutoHandoffRules(null);
-  }, [selectedSessionId]);
+    setLocalHandoffOpen(true);
+  }, []);
 
   // Handoff intents queued by the session context menu. The menu can run before
   // this pane renders for the target chat, so it both notifies live listeners
@@ -5046,12 +4977,12 @@ export function AgentChatPane({
     const unsubscribe = subscribeChatHandoff((targetSessionId) => {
       if (targetSessionId !== selectedSessionId) return;
       const intent = takeChatHandoff(targetSessionId);
-      if (intent) applyChatHandoffIntent(intent);
+      if (intent) openHandoffDestination(intent);
     });
     const queued = takeChatHandoff(selectedSessionId);
-    if (queued) applyChatHandoffIntent(queued);
+    if (queued) openHandoffDestination(queued);
     return unsubscribe;
-  }, [applyChatHandoffIntent, isTileActive, selectedSessionId]);
+  }, [isTileActive, openHandoffDestination, selectedSessionId]);
 
   // Cheap probe for the subagents panel: does this agent actually have a
   // pullable transcript? It runs the EXACT same fetch the takeover view uses
@@ -5224,25 +5155,19 @@ export function AgentChatPane({
         /* best-effort persistence */
       }
     };
-    // Don't consume the once-per-session auto-open until we can actually surface
-    // the actions panel. If the chat-actions pane is already open (possibly on a
-    // different tab), leave the user where they are and retry when it next closes
-    // — otherwise the flag gets burned without the agents panel ever opening,
-    // which is exactly why subagents sometimes didn't auto-open (it was runtime-
-    // independent; it depended on whether the pane happened to be open already).
+    // The drawer always shows the agents section first, so an already-open
+    // drawer already shows what the auto-open would show. Mark it and leave
+    // the user where they are.
     if (chatActionsOpen) {
-      if (chatActionsTab === "agents") {
-        markChatActionsAutoOpened();
-      }
+      markChatActionsAutoOpened();
       return;
     }
     markChatActionsAutoOpened();
-    setChatActionsTab("agents");
     setIosSimulatorOpen(false);
     setAppControlOpen(false);
     setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
-  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTodoItems.length]);
+  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTodoItems.length]);
 
   const persistParallelLaunchState = useCallback(async (
     state: AgentChatParallelLaunchState | null,
@@ -5594,6 +5519,14 @@ export function AgentChatPane({
     localRuntimeNotice,
     localRuntimeState?.endpoint,
   ]);
+  const [cursorRuntimeNoticeDismissed, setCursorRuntimeNoticeDismissed] = useState(false);
+  const cursorRuntimeBlocked = Boolean(
+    cliRuntimeBlocked && activeProviderConnection?.provider === "cursor",
+  );
+  const showCursorRuntimePopup = cursorRuntimeBlocked && !cursorRuntimeNoticeDismissed;
+  useEffect(() => {
+    if (!cliRuntimeBlocked) setCursorRuntimeNoticeDismissed(false);
+  }, [cliRuntimeBlocked]);
 
   const surfaceMode = presentation?.mode ?? "standard";
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
@@ -5702,6 +5635,9 @@ export function AgentChatPane({
         if (Object.prototype.hasOwnProperty.call(cursorConfigValues, option.id)) {
           return { ...option, currentValue: cursorConfigValues[option.id] ?? option.currentValue };
         }
+        // A model option the composer holds no value for is at Cursor's
+        // default, including right after the user chose Default again.
+        if (option.category === "model") return { ...option, currentValue: null };
         return option;
       }),
     };
@@ -5778,7 +5714,7 @@ export function AgentChatPane({
       onDroidPermissionModeChange: (mode) => patchParallelSlot(idx, { droidPermissionMode: mode }),
       onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
       onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
-        cursorConfigValues: { ...row.cursorConfigValues, [configId]: value },
+        cursorConfigValues: userSetCursorConfigValues({ ...row.cursorConfigValues, [configId]: value }),
       }),
     };
   }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
@@ -5896,11 +5832,7 @@ export function AgentChatPane({
     setCursorConfigValues(
       cursorModeWasExplicitlyCleared
         ? normalizeCursorConfigValues(session.cursorConfigValues)
-        : Object.fromEntries(
-            (session.cursorModeSnapshot?.configOptions ?? [])
-              .filter((option) => option.id !== session.cursorModeSnapshot?.modeConfigId)
-              .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
-          ),
+        : cursorConfigValuesFromSnapshot(session.cursorModeSnapshot),
     );
   }, [
     applyLaunchConfigToComposer,
@@ -5921,10 +5853,12 @@ export function AgentChatPane({
   const hasComputerUseSelectionChanged = false;
   const launchModeEditable = !selectedSessionId || selectedEvents.length === 0;
   const resolvedTitle = presentation?.title?.trim()
-    || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
-  const chatHeaderLane = laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null;
-  const chatHeaderLaneName = chatHeaderLane?.name ?? laneId ?? "lane";
-  const chatHeaderLaneColor = getLaneAccent(chatHeaderLane, 0);
+    || (surfaceMode === "resolver"
+      ? "AI Resolver"
+      : selectedSession
+        ? chatSessionTitle(selectedSession)
+        // A launching chat has no session yet; its launch knows the title.
+        : chatLaunch?.title?.trim() || "New chat");
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const defaultMessagePlaceholder = "Type to vibecode...";
@@ -6177,7 +6111,7 @@ export function AgentChatPane({
    * once closed there was no way back.
    */
   const chatActionsAvailable = Boolean((showWorkspaceChrome && laneId) || canShowHandoff);
-  const chatActionsHandoffActive = chatActionsOpen && chatActionsTab === "handoff";
+  const handoffFormActive = localHandoffOpen || crossMachineHandoffOpen;
   // Companion UI state is shared across surfaces, so a drawer opened on a Work
   // chat used to restore itself on the CTO tab, which has no button to close
   // it with.
@@ -6545,6 +6479,15 @@ export function AgentChatPane({
     if (!lockSessionId) {
       setSessions([]);
       setArchivedSessions([]);
+      return null;
+    }
+
+    if (launchAwaitingSessionRef.current) {
+      // The brain has reserved this id but not created the chat yet; asking
+      // for its summary would only report "not found".
+      setSessions([]);
+      draftSelectionLockedRef.current = false;
+      setSelectedSessionId(lockSessionId);
       return null;
     }
 
@@ -7577,20 +7520,35 @@ export function AgentChatPane({
     clearAgentChatSessionViewCacheForSessions(departed);
   }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
 
+  // Stay true until this open has a model other than the source chat's. The
+  // catalog often shows up as only that model first; treating that seed as a
+  // user choice kept every brief on the same model.
+  const handoffModelAutoseedRef = useRef(true);
+  const chooseHandoffModel = useCallback((modelId: string) => {
+    handoffModelAutoseedRef.current = false;
+    setHandoffModelId(modelId);
+  }, []);
   useEffect(() => {
-    if (!chatActionsHandoffActive) return;
+    if (!handoffFormActive) {
+      handoffModelAutoseedRef.current = true;
+      return;
+    }
+    const autoseed = handoffModelAutoseedRef.current;
     const preferredTargetId = handoffAvailableModelIds.find((id) => id !== selectedSessionModelId) ?? handoffAvailableModelIds[0] ?? "";
+    const hasAlternative = Boolean(selectedSessionModelId)
+      && handoffAvailableModelIds.some((id) => id !== selectedSessionModelId);
     setHandoffModelId((current) => {
-      if (current && handoffAvailableModelIds.includes(current)) {
-        return current;
-      }
+      if (!autoseed && current && handoffAvailableModelIds.includes(current)) return current;
       return preferredTargetId;
     });
-  }, [chatActionsHandoffActive, handoffAvailableModelIds, selectedSessionModelId]);
+    // The catalog often arrives as just the source model, then grows. Locking
+    // on that first id left every brief on the chat's own model.
+    if (hasAlternative) handoffModelAutoseedRef.current = false;
+  }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
   useEffect(() => {
-    if (chatActionsHandoffActive && !prevHandoffOpenRef.current) {
+    if (handoffFormActive && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
       setHandoffFastMode(fastMode);
       setHandoffClaudePermissionMode(claudePermissionMode);
@@ -7603,14 +7561,9 @@ export function AgentChatPane({
       setHandoffCursorConfigValues({ ...cursorConfigValues });
       const prefill = pendingHandoffPrefillRef.current;
       pendingHandoffPrefillRef.current = null;
-      const destination = pendingHandoffDestinationRef.current;
-      pendingHandoffDestinationRef.current = null;
       setHandoffNote(prefill?.note ?? "");
-      // Land on the menu each open; skip straight to local fork when a quota
-      // card or a context-menu intent asked for that form. Default the local
-      // mode to fork when the source provider can fork, else brief. Seed lane +
-      // remote model.
-      setHandoffView(prefill || destination === "local" ? "local" : "menu");
+      // Each open starts in fork mode on the current lane and seeds the remote
+      // model.
       setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
       setRemoteHandoffModelId(
@@ -7619,16 +7572,16 @@ export function AgentChatPane({
           || "",
       );
     }
-    prevHandoffOpenRef.current = chatActionsHandoffActive;
+    prevHandoffOpenRef.current = handoffFormActive;
     // Intentional: one-shot on open; avoid resetting the handoff form when underlying composer state changes while the menu is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatActionsHandoffActive]);
+  }, [handoffFormActive]);
 
   // The one-shot open effect above can run before the model catalog loads,
   // seeding the remote model to "". Backfill it when models arrive so the
   // cross-machine modal never prepares with an empty targetModelId.
   useEffect(() => {
-    if (!chatActionsHandoffActive || handoffAvailableModelIds.length === 0) return;
+    if (!handoffFormActive || handoffAvailableModelIds.length === 0) return;
     setRemoteHandoffModelId((current) => {
       if (current && handoffAvailableModelIds.includes(current)) return current;
       if (selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)) {
@@ -7636,46 +7589,47 @@ export function AgentChatPane({
       }
       return handoffAvailableModelIds[0] ?? current;
     });
-  }, [chatActionsHandoffActive, handoffAvailableModelIds, selectedSessionModelId]);
+  }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
 
   // Keep the fork model picker on a same-provider model. When the local view is
   // in fork mode, snap handoffModelId into the constrained list (preferring the
   // source model) so the picker value never falls outside the fork catalog.
   useEffect(() => {
-    if (!chatActionsHandoffActive) return;
-    if (handoffView !== "local" || handoffLocalMode !== "fork" || !handoffForkSupported) return;
+    if (!handoffFormActive || !handoffModelId) return;
+    if (!localHandoffOpen || handoffLocalMode !== "fork" || !handoffForkSupported) return;
     if (handoffForkAvailableModelIds.length === 0) return;
-    setHandoffModelId((current) => {
-      if (current && handoffForkAvailableModelIds.includes(current)) return current;
-      if (selectedSessionModelId && handoffForkAvailableModelIds.includes(selectedSessionModelId)) {
-        return selectedSessionModelId;
-      }
-      return handoffForkAvailableModelIds[0] ?? current;
-    });
+    if (handoffForkAvailableModelIds.includes(handoffModelId)) return;
+    const next = selectedSessionModelId && handoffForkAvailableModelIds.includes(selectedSessionModelId)
+      ? selectedSessionModelId
+      : handoffForkAvailableModelIds[0];
+    if (next) setHandoffModelId(next);
   }, [
-    chatActionsHandoffActive,
+    handoffFormActive,
     handoffForkAvailableModelIds,
     handoffForkSupported,
     handoffLocalMode,
-    handoffView,
+    handoffModelId,
+    localHandoffOpen,
     selectedSessionModelId,
   ]);
 
   useEffect(() => {
-    if (!chatActionsHandoffActive || !handoffModelId) return;
+    if (!handoffFormActive || !handoffModelId) return;
     setHandoffReasoningEffort((prev) => clampHandoffReasoningToModel(prev, handoffTargetDescriptor));
-  }, [chatActionsHandoffActive, handoffModelId, handoffTargetDescriptor]);
+  }, [handoffFormActive, handoffModelId, handoffTargetDescriptor]);
 
   useEffect(() => {
     if (!isTileVisible) return;
-    if (!selectedSessionId) return;
+    // Null while there is no chat to read (or a launching chat has no
+    // transcript yet); this re-runs, and loads it, the moment it has one.
+    if (!readableSessionId) return;
     // Take the stream back from the retention module (see chatSessionRetention).
     // `adopted` means the cached view already carries everything that arrived
     // while this pane was hidden, so the reconcile below is gap insurance
     // against the remote pump's epoch resets / `replay:false` rebinds rather
     // than the primary catch-up — fire it immediately and only once.
-    const adopted = adoptRetainedSession(selectedSessionId);
-    const restoredFromCache = applyCachedSessionView(selectedSessionId);
+    const adopted = adoptRetainedSession(readableSessionId);
+    const restoredFromCache = applyCachedSessionView(readableSessionId);
     const refreshOptions = { force: !restoredFromCache };
     // `mergeChatHistorySnapshot` dedupes, so this can never blank the view.
     const reconcileDelayMs = adopted ? 0 : 650;
@@ -7683,10 +7637,10 @@ export function AgentChatPane({
       // Re-read the selected transcript on every tab switch so the selected
       // chat can recover from any background event loss instead of relying
       // solely on the in-memory background buffer.
-      void loadHistory(selectedSessionId, refreshOptions);
+      void loadHistory(readableSessionId, refreshOptions);
       if (!restoredFromCache) return;
       const refreshHandle = window.setTimeout(() => {
-        void loadHistory(selectedSessionId, { force: true });
+        void loadHistory(readableSessionId, { force: true });
       }, reconcileDelayMs);
       return () => window.clearTimeout(refreshHandle);
     }
@@ -7697,21 +7651,30 @@ export function AgentChatPane({
     // previous component instance.
     const hydrateDelayMs = isTileActive
       ? 0
-      : 220 + (stableSessionDelayOffset(selectedSessionId) % 260);
+      : 220 + (stableSessionDelayOffset(readableSessionId) % 260);
     const handle = window.setTimeout(() => {
-      void loadHistory(selectedSessionId, refreshOptions);
+      void loadHistory(readableSessionId, refreshOptions);
     }, hydrateDelayMs);
     let refreshHandle: number | null = null;
     if (restoredFromCache) {
       refreshHandle = window.setTimeout(() => {
-        void loadHistory(selectedSessionId, { force: true });
+        void loadHistory(readableSessionId, { force: true });
       }, Math.max(reconcileDelayMs, hydrateDelayMs + reconcileDelayMs));
     }
     return () => {
       window.clearTimeout(handle);
       if (refreshHandle != null) window.clearTimeout(refreshHandle);
     };
-  }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
+  }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, readableSessionId]);
+
+  useChatLaunchPaneLifecycle({
+    chatLaunch,
+    launchAwaitingSession,
+    refreshSessions,
+    setModelId,
+    optimisticSessionIdsRef,
+    knownSessionIdsRef,
+  });
 
   // Subscription handoff. While this pane is visible it owns the only
   // `agentChat.onEvent` subscription; when it hides or unmounts the retention
@@ -7741,7 +7704,7 @@ export function AgentChatPane({
   }, [chatRuntimePin, isTileVisible, projectBinding, selectedSessionId]);
 
   useEffect(() => {
-    if (!isTileVisible || !selectedSessionId) return undefined;
+    if (!isTileVisible || !readableSessionId) return undefined;
     const shouldRecoverLiveTranscript =
       turnActive
       || selectedSession?.status === "active"
@@ -7758,7 +7721,7 @@ export function AgentChatPane({
         && lastEventReceivedAtMsRef.current > 0
         && Date.now() - lastEventReceivedAtMsRef.current < ACTIVE_TURN_RECOVERY_INTERVAL_MS
       ) return;
-      void loadHistory(selectedSessionId, { force: true });
+      void loadHistory(readableSessionId, { force: true });
     };
 
     // A newly-created headless chat can become visible before its first
@@ -7773,7 +7736,7 @@ export function AgentChatPane({
       };
     }
 
-    const offset = stableSessionDelayOffset(selectedSessionId);
+    const offset = stableSessionDelayOffset(readableSessionId);
     const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
     // Jittered so a grid of tiles doesn't re-read every transcript on the same
     // frame; the base is the stall-detector interval, not a polling rate.
@@ -7790,10 +7753,10 @@ export function AgentChatPane({
     isTileActive,
     isTileVisible,
     loadHistory,
+    readableSessionId,
     selectedEvents.length,
     selectedSession?.status,
     selectedSessionAwaitingInput,
-    selectedSessionId,
     turnActive,
   ]);
 
@@ -7802,19 +7765,20 @@ export function AgentChatPane({
       setComputerUseSnapshot(null);
       return;
     }
-    if (!lockedSingleSessionMode) {
-      void refreshComputerUseSnapshot(selectedSessionId);
+    // No readable chat: clear now (a launching chat has nothing to snapshot).
+    if (!lockedSingleSessionMode || !readableSessionId) {
+      void refreshComputerUseSnapshot(readableSessionId);
       return;
     }
     const handle = window.setTimeout(() => {
-      void refreshComputerUseSnapshot(selectedSessionId);
+      void refreshComputerUseSnapshot(readableSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
   }, [
     isTileActive,
     lockedSingleSessionMode,
+    readableSessionId,
     refreshComputerUseSnapshot,
-    selectedSessionId,
   ]);
 
   useEffect(() => {
@@ -7883,10 +7847,10 @@ export function AgentChatPane({
   // chats skip the mount-time decoration fetch; the bridge should stay focused
   // on loading the transcript until the user actually runs a turn.
   useEffect(() => {
-    if (!selectedSessionId || !isTileActive) { setSessionDelta(null); return; }
-    const sameSession = sessionDeltaSessionIdRef.current === selectedSessionId;
+    if (!readableSessionId || !isTileActive) { setSessionDelta(null); return; }
+    const sameSession = sessionDeltaSessionIdRef.current === readableSessionId;
     const previousTurnActive = sameSession ? sessionDeltaTurnActiveRef.current : false;
-    sessionDeltaSessionIdRef.current = selectedSessionId;
+    sessionDeltaSessionIdRef.current = readableSessionId;
     sessionDeltaTurnActiveRef.current = turnActive;
     if (isRemoteChat) {
       const completedTurn =
@@ -7897,11 +7861,11 @@ export function AgentChatPane({
         if (!turnActive) setSessionDelta(null);
         return;
       }
-      remoteDeltaArmedSessionsRef.current.delete(selectedSessionId);
+      remoteDeltaArmedSessionsRef.current.delete(readableSessionId);
     }
     let cancelled = false;
     const fetchDelta = () => {
-      window.ade.sessions.getDelta(selectedSessionId, chatRuntimePinRef.current)
+      window.ade.sessions.getDelta(readableSessionId, chatRuntimePinRef.current)
         .then((delta) => {
           if (cancelled) return;
           if (delta && (delta.insertions > 0 || delta.deletions > 0)) {
@@ -7914,7 +7878,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [isRemoteChat, isTileActive, selectedSessionId, turnActive]);
+  }, [isRemoteChat, isTileActive, readableSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -8178,15 +8142,9 @@ export function AgentChatPane({
             // the host only recomputes cursorModeSnapshot on mode changes);
             // otherwise fall back to deriving values from the snapshot.
             if (meta.cursorConfigValues !== undefined) {
-              setCursorConfigValues(meta.cursorConfigValues ?? {});
+              setCursorConfigValues(userSetCursorConfigValues(meta.cursorConfigValues));
             } else if (snapshot) {
-              setCursorConfigValues(
-                Object.fromEntries(
-                  (snapshot.configOptions ?? [])
-                    .filter((option) => option.id !== snapshot.modeConfigId)
-                    .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
-                ),
-              );
+              setCursorConfigValues(cursorConfigValuesFromSnapshot(snapshot));
             }
           }
         }
@@ -9330,6 +9288,52 @@ export function AgentChatPane({
     isLivePinnedBinding(pin, openProjectBindingsRef.current)
   ), []);
 
+  // The `agentChat.create` args for a chat launched from this composer, minus
+  // the lane. Shared by the direct create path and the brain-owned new-lane
+  // launch (`chatLaunch.start`), so both start the chat with identical settings.
+  const buildChatCreateArgs = useCallback((launchState?: DraftLaunchSnapshot) => {
+    const launchModelId = launchState?.modelId ?? modelId;
+    // `effectiveReasoningEffort`, not the raw state: the control displays the
+    // remembered family effort when nothing explicit is set, and the launch
+    // must carry the value the user can actually see.
+    const launchReasoningEffort = launchState?.reasoningEffort ?? effectiveReasoningEffort;
+    const launchFastMode = launchState?.fastMode ?? fastMode;
+    const launchExecutionMode = launchState?.executionMode ?? executionMode;
+    const launchControls = launchState?.nativeControls ?? currentNativeControls;
+    const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
+    const provider = resolveChatRuntimeProvider(desc);
+    const model = provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
+    const sessionProfile = resolveChatSessionProfile();
+    const nativeControlPayload = {
+      ...summarizeNativeControls(provider, launchControls),
+      ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
+    };
+    const createArgs = {
+      provider,
+      model,
+      modelId: launchModelId,
+      sessionProfile,
+      reasoningEffort: launchReasoningEffort,
+      fastMode: launchFastMode,
+      // The saved preset (or the stored key) the picker named. Sent as an id:
+      // the runtime that owns the lane is the one that can read this
+      // machine's preset list and key store, so nothing resolved travels.
+      ...draftLaunchBrainRef.current,
+      ...nativeControlPayload,
+    };
+    return {
+      createArgs,
+      desc,
+      provider,
+      launchModelId,
+      launchReasoningEffort,
+      launchFastMode,
+      launchExecutionMode,
+      launchControls,
+      nativeControlPayload,
+    };
+  }, [currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, modelCatalogScopeKey, modelId]);
+
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
     options: {
@@ -9347,37 +9351,9 @@ export function AgentChatPane({
       if (constrainedModelSelectionError) {
         throw new Error(constrainedModelSelectionError);
       }
-      const launchModelId = options.launchState?.modelId ?? modelId;
-      // `effectiveReasoningEffort`, not the raw state: the control displays the
-      // remembered family effort when nothing explicit is set, and the launch
-      // must carry the value the user can actually see.
-      const launchReasoningEffort = options.launchState?.reasoningEffort ?? effectiveReasoningEffort;
-      const launchFastMode = options.launchState?.fastMode ?? fastMode;
-      const launchExecutionMode = options.launchState?.executionMode ?? executionMode;
-      const baseNativeControls = options.launchState?.nativeControls ?? currentNativeControls;
-      const desc = resolveScopedModelDescriptor(launchModelId, modelCatalogScopeKey);
-      const provider = resolveChatRuntimeProvider(desc);
-      const model = provider === "opencode" ? launchModelId : runtimeFacingModelId(desc, launchModelId);
-      const sessionProfile = resolveChatSessionProfile();
-      const launchControls = baseNativeControls;
-      const nativeControlPayload = {
-        ...summarizeNativeControls(provider, launchControls),
-        ...(provider === "cursor" ? { cursorConfigValues: launchControls.cursorConfigValues } : {}),
-      };
-      const createArgs = {
-        laneId: targetLaneId,
-        provider,
-        model,
-        modelId: launchModelId,
-        sessionProfile,
-        reasoningEffort: launchReasoningEffort,
-        fastMode: launchFastMode,
-        // The saved preset (or the stored key) the picker named. Sent as an id:
-        // the runtime that owns the lane is the one that can read this
-        // machine's preset list and key store, so nothing resolved travels.
-        ...draftLaunchBrainRef.current,
-        ...nativeControlPayload,
-      };
+      const built = buildChatCreateArgs(options.launchState);
+      const { createArgs: laneFreeCreateArgs, desc, launchModelId } = built;
+      const createArgs = { laneId: targetLaneId, ...laneFreeCreateArgs };
       const created = options.pin
         ? await window.ade.agentChat.create(createArgs, options.pin)
         : await window.ade.agentChat.create(createArgs);
@@ -9389,24 +9365,7 @@ export function AgentChatPane({
         throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
       }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-      const launchConfig = buildLastLaunchConfig({
-        model: created.model,
-        modelId: created.modelId ?? launchModelId,
-        reasoningEffort: launchReasoningEffort,
-        fastMode: launchFastMode,
-        executionMode: launchExecutionMode,
-        permissionMode: nativeControlPayload.permissionMode,
-        interactionMode: launchControls.interactionMode,
-        claudePermissionMode: launchControls.claudePermissionMode,
-        codexApprovalPolicy: launchControls.codexApprovalPolicy,
-        codexSandbox: launchControls.codexSandbox,
-        codexConfigSource: launchControls.codexConfigSource,
-        opencodePermissionMode: launchControls.opencodePermissionMode,
-        droidPermissionMode: launchControls.droidPermissionMode,
-        cursorModeId: launchControls.cursorModeId,
-        cursorConfigValues: launchControls.cursorConfigValues,
-      }, initialNativeControls);
-      if (launchConfig) writeLastLaunchConfig(lastLaunchConfigStorageKey, launchConfig);
+      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
       knownSessionIdsRef.current.add(created.id);
@@ -9427,7 +9386,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [canRefreshPinnedProject, fastMode, constrainedModelSelectionError, currentNativeControls, effectiveReasoningEffort, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, refreshSessions, touchSession, workDraftKind]);
+  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -9456,16 +9415,11 @@ export function AgentChatPane({
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
     const contextAttachmentsSnapshot = [...contextAttachments];
-    const visualContextPrefix = [
-      formatIosElementContextForPrompt(iosContextSnapshot),
-      formatAppControlContextForPrompt(appControlContextSnapshot),
-      formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot),
-    ].filter(Boolean).join("\n");
-    const visualContextDisplayChips = [
-      formatIosElementContextChipsForDisplay(iosContextSnapshot),
-      formatAppControlContextChipsForDisplay(appControlContextSnapshot),
-      formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot),
-    ].filter(Boolean).join(" ");
+    const { prefix: visualContextPrefix, displayChips: visualContextDisplayChips } = composeVisualContext(
+      iosContextSnapshot,
+      appControlContextSnapshot,
+      builtInBrowserContextSnapshot,
+    );
     if (
       !text.length
       && !visualContextPrefix.length
@@ -9516,31 +9470,6 @@ export function AgentChatPane({
     effectiveReasoningEffort,
   ]);
 
-  const prepareDraftLaunchForSend = useCallback(async (
-    snapshot: DraftLaunchSnapshot,
-    _targetLaneId: string,
-  ): Promise<PreparedDraftLaunch> => {
-    const finalTextPrefix = snapshot.visualContextPrefix;
-    let finalText = finalTextPrefix ? `${finalTextPrefix}${snapshot.text}` : snapshot.text;
-    if (!finalText.trim().length && snapshot.contextAttachments.length) {
-      finalText = "Use the attached issue context.";
-    }
-    const finalDisplayText = snapshot.visualContextDisplayChips
-      ? snapshot.text.length
-        ? `${snapshot.visualContextDisplayChips} ${snapshot.text}`
-        : snapshot.visualContextDisplayChips
-      : snapshot.text.length
-        ? snapshot.text
-        : "Attached issue context";
-    return {
-      ...snapshot,
-      finalText,
-      finalDisplayText,
-      selectedAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.attachments,
-      selectedContextAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.contextAttachments,
-    };
-  }, []);
-
   const restoreDraftLaunchSnapshot = useCallback((snapshot: DraftLaunchSnapshot) => {
     setDraft((current) => {
       const snapshotDraft = snapshot.draft.trim();
@@ -9576,6 +9505,31 @@ export function AgentChatPane({
       });
     }
   }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey]);
+
+  // A cancelled or deleted new-lane launch hands its prompt back here, merged
+  // into whatever is already typed (see `chatLaunchDraftRestore`).
+  const chatLaunchDraftRestore = useChatLaunchDraftRestore(isWorkDraftComposer ? workDraftKind : null);
+  useEffect(() => {
+    if (!chatLaunchDraftRestore) return;
+    consumeChatLaunchDraftRestore(chatLaunchDraftRestore.launchId);
+    if (chatLaunchDraftRestore.draftSnapshot) {
+      restoreDraftLaunchSnapshot(chatLaunchDraftRestore.draftSnapshot);
+      return;
+    }
+    const restoredText = chatLaunchDraftRestore.prompt.text;
+    if (restoredText.trim()) {
+      setDraft((current) => {
+        const next = current.trim().length && !current.includes(restoredText)
+          ? `${current.trimEnd()}\n\n${restoredText}`
+          : current.trim().length ? current : restoredText;
+        draftsPerSessionRef.current.set(companionStateKey, next);
+        return next;
+      });
+    }
+    if (chatLaunchDraftRestore.prompt.attachments.length) {
+      setAttachments((current) => mergeAttachments(current, chatLaunchDraftRestore.prompt.attachments));
+    }
+  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot]);
 
   const patchDraftLaunchJob = useCallback((jobId: string, patch: Partial<DraftLaunchJob>) => {
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs(current.map((job) => (
@@ -9995,19 +9949,13 @@ export function AgentChatPane({
       // than sending into a stale launch.
       assertActive?.();
       touchSession(createdSession.id);
-      const sendInteractionMode = createdSession.provider === "claude"
-        ? createdSession.interactionMode ?? prepared.interactionMode
-        : null;
       const sendArgs = {
         sessionId: createdSession.id,
-        text: prepared.finalText,
-        displayText: prepared.finalDisplayText || "Selected visual app context",
-        attachments: prepared.selectedAttachments,
-        contextAttachments: prepared.selectedContextAttachments,
-        reasoningEffort: prepared.reasoningEffort,
-        executionMode: prepared.executionMode,
-        interactionMode: sendInteractionMode,
-        ...(createdSession.provider === "cursor" ? { runtime: "local" as const } : {}),
+        ...buildDraftChatMessageArgs(
+          prepared,
+          createdSession.provider,
+          createdSession.interactionMode ?? prepared.interactionMode,
+        ),
       };
       if (pin) {
         await window.ade.agentChat.send(sendArgs, pin);
@@ -10042,14 +9990,10 @@ export function AgentChatPane({
     touchSession,
   ]);
 
-  const startDraftCliLaunch = useCallback(async (
-    prepared: PreparedDraftLaunch,
-    targetLane: DraftLaunchLaneTarget,
-    mode: DraftLaunchMode,
-    assertActive?: () => void,
-    pin?: OpenProjectBinding | null,
-  ): Promise<StartedDraftLaunch> => {
-    if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
+  // The PTY launch a Work CLI draft starts, minus where it runs (lane, machine,
+  // disposition). Shared by the direct path and the new-lane launch, whose CLI
+  // driver starts it once the brain reports the lane ready.
+  const buildDraftCliLaunchParams = useCallback((prepared: PreparedDraftLaunch): ChatLaunchCliParams => {
     if (!prepared.modelId) throw new Error("Select a model before launching a CLI session.");
     const desc = resolveScopedModelDescriptor(prepared.modelId, modelCatalogScopeKey);
     if (!desc) throw new Error("Select a model before launching a CLI session.");
@@ -10078,11 +10022,7 @@ export function AgentChatPane({
     });
     if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
     const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-    // Final checkpoint before the PTY/session is spawned: abort if the launch
-    // timed out while building the launch command.
-    assertActive?.();
-    const result = await onLaunchCliSession({
-      laneId: targetLane.laneId,
+    return {
       profile: provider,
       title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
       startupDelayMs: workCliStartupDelayMs,
@@ -10098,6 +10038,24 @@ export function AgentChatPane({
         initialPrompt: cliPrompt,
       },
       tracked: true,
+    };
+  }, [modelCatalogScopeKey]);
+
+  const startDraftCliLaunch = useCallback(async (
+    prepared: PreparedDraftLaunch,
+    targetLane: DraftLaunchLaneTarget,
+    mode: DraftLaunchMode,
+    assertActive?: () => void,
+    pin?: OpenProjectBinding | null,
+  ): Promise<StartedDraftLaunch> => {
+    if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
+    const cliParams = buildDraftCliLaunchParams(prepared);
+    // Final checkpoint before the PTY/session is spawned: abort if the launch
+    // timed out while building the launch command.
+    assertActive?.();
+    const result = await onLaunchCliSession({
+      ...cliParams,
+      laneId: targetLane.laneId,
       disposition: mode,
       pin,
     });
@@ -10119,8 +10077,102 @@ export function AgentChatPane({
       draftKind: "cli",
     };
   }, [
+    buildDraftCliLaunchParams,
     onLaunchCliSession,
+  ]);
+
+  // "Auto-create lane" launches (chat or CLI, foreground or background) are
+  // owned by the brain: this picks the chat's session id and the lane's id,
+  // shows the launch at once, and fires `chatLaunch.start` without waiting.
+  // A foreground chat opens immediately with its prompt bubble and a live
+  // setup card; background chats and CLI launches stay on the draft and report
+  // in the Launches slide-out. Nothing here awaits before the UI moves.
+  const launchDraftIntoNewLane = useCallback((
+    kind: DraftLaunchKind,
+    mode: DraftLaunchMode,
+    snapshot: DraftLaunchSnapshot,
+    launchBinding: OpenProjectBinding,
+    onUnsupported: () => void,
+  ): boolean => {
+    const prepared = prepareDraftLaunch(snapshot);
+    let cli: ChatLaunchCliParams | null = null;
+    let chat: ChatLaunchChatArgs | undefined;
+    let provider: string | null = null;
+    try {
+      if (kind === "cli") {
+        if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
+        cli = buildDraftCliLaunchParams(prepared);
+        provider = cli.profile;
+      } else {
+        if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
+        const built = buildChatCreateArgs(prepared);
+        provider = built.provider;
+        // Same "remember what I launched with" write the direct create path makes.
+        rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+        chat = {
+          create: built.createArgs,
+          message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode),
+        };
+      }
+    } catch (buildError) {
+      setError(errorMessage(buildError));
+      return false;
+    }
+
+    const launchId = crypto.randomUUID();
+    const newLaneId = crypto.randomUUID();
+    const laneName = createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), {
+      genericSuffix: autoLaneGenericSuffix(),
+    });
+    const args = buildNewLaneLaunchArgs({
+      kind,
+      mode,
+      launchId,
+      laneId: newLaneId,
+      laneName,
+      prepared,
+      provider,
+      cliTitle: cli?.title ?? null,
+      chat,
+      originClientId: getChatLaunchOriginClientId(),
+    });
+    // Predict the stages the host will report so the card has its shape from
+    // the first frame. Only `fetch` depends on project config; an unread
+    // config assumes the default (fetch from the remote).
+    const knownConfig = peekProjectConfigCached({ projectRoot, pin: launchBinding });
+    const includeFetch = effectiveNewLaneBaseSource(knownConfig) !== "local";
+    registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
+    insertOptimisticChatLaunch(
+      launchBinding,
+      buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
+    );
+    clearPromptSuggestionForSession(selectedSessionId);
+    setError(null);
+    const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
+    if (opensNow) {
+      stashComposerDockOrigin(launchId, shellRef.current?.querySelector("[data-chat-composer-wrapper]"));
+    }
+    clearDraftLaunchComposer(snapshot);
+    if (opensNow) {
+      openLaunchedDraftSession({ laneId: newLaneId, laneName, sessionId: launchId, draftKind: "chat" });
+    }
+    // A runtime that predates brain-owned launches rejects the action; that one
+    // launch then drops its card/row and runs the renderer-owned chain.
+    void startChatLaunch(launchId, { onUnsupported });
+    return true;
+  }, [
+    buildChatCreateArgs,
+    buildDraftCliLaunchParams,
+    canRefreshPinnedProject,
+    clearDraftLaunchComposer,
+    clearPromptSuggestionForSession,
+    constrainedModelSelectionError,
+    initialNativeControls,
+    lastLaunchConfigStorageKey,
+    onLaunchCliSession,
+    openLaunchedDraftSession,
     projectRoot,
+    selectedSessionId,
   ]);
 
   const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
@@ -10174,155 +10226,51 @@ export function AgentChatPane({
     draftLaunchInFlightKeysRef.current.add(requestKey);
     void copyPromptForLaunch(snapshot.text);
 
-    // Pin this launch to the project that started it. The chain runs detached
-    // from the pane's lifecycle, so if the user switches projects mid-launch the
-    // lane/session/send calls keep targeting the originating runtime instead of
-    // the now-active project. `launchBinding` is this pane's project-scoped
-    // binding; the root store's binding tracks whichever project is currently
-    // active.
-    //
-    // `launchTimedOut` is the normal abort source: withDraftLaunchTimeout rejects
-    // the renderer wait but cannot cancel the underlying IPC, so a timed-out
-    // step that keeps running must be stopped before its next mutation.
-    let launchTimedOut = false;
-    const assertLaunchActive = () => {
-      if (launchTimedOut) {
-        throw new Error("Draft launch aborted after timeout.");
-      }
-    };
-    const markLaunchTimedOut = () => {
-      launchTimedOut = true;
-    };
-
-    const jobId = createDraftLaunchJobId();
-    if (mode === "foreground") {
-      latestForegroundDraftLaunchJobIdRef.current = jobId;
-    }
-    const job: DraftLaunchJob = {
-      id: jobId,
+    // The renderer-owned chain: used for launches into an existing lane, and
+    // as the fallback for a new-lane launch on a runtime that predates
+    // `chat.startLaunch`.
+    const runRendererOwnedLaunch = () => runRendererOwnedDraftLaunch({
+      kind,
       mode,
-      draftKind: kind,
-      target: "local",
-      // Auto-create no longer blocks on naming (deterministic name now, AI rename
-      // in the background), so the launch goes straight to lane creation.
-      status: draftLaunchTargetIsAutoCreate ? "creating-lane" : "starting-session",
-      title: buildDraftLaunchJobTitle(kind, snapshot),
-      laneId: null,
-      laneName: null,
-      sessionId: null,
-      namingModelId: null,
-      error: null,
-      warning: null,
-      autoOpen: mode === "foreground",
-      createdAtMs: Date.now(),
       snapshot,
-    };
-    clearPromptSuggestionForSession(selectedSessionId);
-    setError(null);
-    setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
-      job,
-      ...current.map((entry) => (
-        mode === "foreground" && entry.mode === "foreground"
-          ? { ...entry, autoOpen: false }
-          : entry
-      )),
-    ]));
-    clearDraftLaunchComposer(snapshot);
+      launchBinding,
+      requestKey,
+      autoCreate: draftLaunchTargetIsAutoCreate,
+      paneLaneId: laneId,
+      jobId: createDraftLaunchJobId(),
+      jobTitle: buildDraftLaunchJobTitle(kind, snapshot),
+      latestForegroundJobIdRef: latestForegroundDraftLaunchJobIdRef,
+      inFlightKeysRef: draftLaunchInFlightKeysRef,
+      paneMountedRef,
+      prepare: prepareDraftLaunch,
+      resolveLane: resolveDraftLaunchLane,
+      startChat: startDraftChatLaunch,
+      startCli: startDraftCliLaunch,
+      clearPromptSuggestion: () => clearPromptSuggestionForSession(selectedSessionId),
+      setError,
+      setDraftLaunchJobs,
+      clearDraftLaunchComposer,
+      patchDraftLaunchJob,
+      draftLaunchJobExists,
+      canRefreshPinnedProject,
+      refreshSessions,
+      refreshLanes: refreshLanesStore,
+      openLaunchedDraftSession,
+      clearSelectedSession: () => setSelectedSessionId(null),
+    });
 
-    let targetLane: DraftLaunchLaneTarget | null = null;
-
-    try {
-      targetLane = await withDraftLaunchTimeout(resolveDraftLaunchLane(snapshot, {
-        onAutoCreateNameResolved: () => {
-          patchDraftLaunchJob(jobId, { status: "creating-lane" });
-        },
-        onAutoCreateNameModelResolved: (namingModelId) => {
-          patchDraftLaunchJob(jobId, { namingModelId });
-        },
-        assertActive: assertLaunchActive,
-        pin: launchBinding,
-      }), "Lane setup", markLaunchTimedOut);
-      patchDraftLaunchJob(jobId, {
-        status: "starting-session",
-        laneId: targetLane.laneId,
-        laneName: targetLane.laneName,
+    if (draftLaunchTargetIsAutoCreate) {
+      // Brain-owned: returns synchronously. The short hold on the request key
+      // absorbs a double-press that lands before the cleared composer renders.
+      launchDraftIntoNewLane(kind, mode, snapshot, launchBinding, () => {
+        draftLaunchInFlightKeysRef.current.add(requestKey);
+        void runRendererOwnedLaunch();
       });
-      const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
-      patchDraftLaunchJob(jobId, {
-        status: "sending-prompt",
-        laneId: targetLane.laneId,
-        laneName: targetLane.laneName,
-      });
-      // Re-check before starting the session. The start functions also re-assert
-      // immediately before each of their own mutating calls.
-      assertLaunchActive();
-      const launched = await withDraftLaunchTimeout(
-        kind === "chat"
-          ? startDraftChatLaunch(prepared, targetLane, launchBinding, assertLaunchActive)
-          : startDraftCliLaunch(prepared, targetLane, mode, assertLaunchActive, launchBinding),
-        "Session start",
-        markLaunchTimedOut,
-      );
-      invalidateSessionListCache();
-      invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
-      if (launched.draftKind === "chat" && targetLane.laneId === laneId && canRefreshPinnedProject(launchBinding)) {
-        void refreshSessions({ force: true }).catch(() => {});
-      }
-      const launch = {
-        laneId: targetLane.laneId,
-        laneName: targetLane.laneName,
-        sessionId: launched.sessionId,
-        draftKind: launched.draftKind,
-      };
-      const canMutateLaunchUi = canRefreshPinnedProject(launchBinding);
-      const shouldAutoOpen =
-        canMutateLaunchUi && mode === "foreground" && latestForegroundDraftLaunchJobIdRef.current === jobId;
-      const jobStillVisible = draftLaunchJobExists(jobId);
-      patchDraftLaunchJob(jobId, {
-        status: "ready",
-        laneId: launch.laneId,
-        laneName: launch.laneName,
-        sessionId: launch.sessionId,
-        draftKind: launch.draftKind,
-        // Keep autoOpen set for foreground sends so the effect below can open the
-        // chat even if this pane instance remounted during the launch (otherwise
-        // the inline open is skipped and the job sits at "ready").
-        autoOpen: mode === "foreground" && canMutateLaunchUi,
-      });
-      if (!jobStillVisible) {
-        return;
-      }
-      if (shouldAutoOpen && paneMountedRef.current) {
-        openLaunchedDraftSession({ ...launch, jobId });
-      } else if (canMutateLaunchUi && mode === "background" && paneMountedRef.current) {
-        setSelectedSessionId(null);
-      }
-    } catch (launchError) {
-      if (targetLane?.autoCreated) {
-        // Pin the rollback to the originating project so it deletes the lane we
-        // created, even if the active project has since changed.
-        await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }, launchBinding).catch((cleanupError: unknown) => {
-          console.warn(`draft ${kind} launch lane cleanup failed`, cleanupError);
-        });
-        if (canRefreshPinnedProject(launchBinding)) {
-          await refreshLanesStore().catch(() => undefined);
-        }
-      }
-      const message = launchError instanceof Error ? launchError.message : String(launchError);
-      const jobStillVisible = draftLaunchJobExists(jobId);
-      patchDraftLaunchJob(jobId, {
-        status: "failed",
-        laneId: targetLane?.laneId ?? null,
-        laneName: targetLane?.laneName ?? null,
-        error: message,
-        autoOpen: false,
-      });
-      if (jobStillVisible && paneMountedRef.current) {
-        setError(message);
-      }
-    } finally {
-      draftLaunchInFlightKeysRef.current.delete(requestKey);
+      window.setTimeout(() => draftLaunchInFlightKeysRef.current.delete(requestKey), 400);
+      return;
     }
+
+    await runRendererOwnedLaunch();
   }, [
     buildDraftLaunchSnapshotForCurrentState,
     canRefreshPinnedProject,
@@ -10332,12 +10280,12 @@ export function AgentChatPane({
     draftLaunchTargetIsAutoCreate,
     isWorkCliLaunchDraft,
     laneId,
+    launchDraftIntoNewLane,
     modelId,
     onLaunchCliSession,
     openLaunchedDraftSession,
     patchDraftLaunchJob,
     parallelLaunchBusy,
-    prepareDraftLaunchForSend,
     projectBinding,
     projectTransitionBlocksChat,
     copyPromptForLaunch,
@@ -11036,6 +10984,41 @@ export function AgentChatPane({
     }
     clearPromptSuggestionForSession(selectedSessionId);
 
+    if (launchRoutesSends && chatLaunch && selectedSessionId && selectedSessionId === chatLaunch.sessionId) {
+      // The lane is still being set up (or earlier queued messages still wait
+      // for delivery): the message waits in the launch and is sent, in order,
+      // once the agent runs. It never needs the session's model or summary,
+      // which may not exist yet. Issue context stays in the composer — a
+      // queued launch message carries text and files only.
+      const text = draft.trim();
+      const visualContext = composeVisualContext(iosElementContextItems, appControlContextItems, builtInBrowserContextItems);
+      if (!text.length && !visualContext.prefix.length && !attachments.length) return;
+      const composed = applyVisualContext(text, visualContext);
+      const queuedText = composed.text;
+      const queuedDisplayText = composed.displayText ?? text;
+      const queuedAttachments = [...attachments];
+      const draftBeforeQueue = draft;
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      setAttachments([]);
+      setIosElementContextItems([]);
+      setAppControlContextItems([]);
+      setBuiltInBrowserContextItems([]);
+      try {
+        await queueChatLaunchMessage(chatLaunch.launchId, {
+          text: queuedText,
+          displayText: queuedDisplayText,
+          attachments: queuedAttachments,
+        });
+      } catch (queueError) {
+        setDraft((current) => (current.trim().length ? current : draftBeforeQueue));
+        setAttachments((current) => mergeAttachments(current, queuedAttachments));
+        setError(errorMessage(queueError));
+      }
+      return;
+    }
+
     const isParallelLaunch =
       !lockSessionId
       && !initialSessionId
@@ -11332,14 +11315,9 @@ export function AgentChatPane({
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
     const contextAttachmentsSnapshot = [...contextAttachments];
-    const iosContextPrefix = formatIosElementContextForPrompt(iosContextSnapshot);
-    const appControlContextPrefix = formatAppControlContextForPrompt(appControlContextSnapshot);
-    const builtInBrowserContextPrefix = formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot);
-    const iosContextDisplayChips = formatIosElementContextChipsForDisplay(iosContextSnapshot);
-    const appControlContextDisplayChips = formatAppControlContextChipsForDisplay(appControlContextSnapshot);
-    const builtInBrowserContextDisplayChips = formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot);
-    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix].filter(Boolean).join("\n");
-    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips].filter(Boolean).join(" ");
+    const visualContext = composeVisualContext(iosContextSnapshot, appControlContextSnapshot, builtInBrowserContextSnapshot);
+    const visualContextPrefix = visualContext.prefix;
+    const composedWithVisualContext = applyVisualContext(text, visualContext);
     if (
       (!text.length && !visualContextPrefix.length && !contextAttachmentsSnapshot.length && !(isWorkCliLaunchDraft && attachments.length))
       || !laneId
@@ -11467,17 +11445,12 @@ export function AgentChatPane({
     // by hundreds of ms on a typical send.
     const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
-    const optimisticDisplayText = visualContextDisplayChips
-      ? text.length
-        ? `${visualContextDisplayChips} ${text}`
-        : visualContextDisplayChips
-      : text.length
-        ? text
-        : attachmentsSnapshot.length
-          ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
-          : contextAttachmentsSnapshot.length
-            ? "Attached issue context"
-            : text;
+    const optimisticDisplayText = composedWithVisualContext.displayText
+      ?? (attachmentsSnapshot.length
+        ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
+        : contextAttachmentsSnapshot.length
+          ? "Attached issue context"
+          : text);
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
@@ -11497,22 +11470,14 @@ export function AgentChatPane({
 
     try {
       let justCreatedSession = false;
-      const finalTextPrefix = visualContextPrefix;
-      let finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
+      let finalText = composedWithVisualContext.text;
       if (!finalText.trim().length && attachmentsSnapshot.length) {
         finalText = DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
       } else if (!finalText.trim().length && contextAttachmentsSnapshot.length) {
         finalText = "Use the attached issue context.";
       }
-      const finalDisplayText = visualContextDisplayChips
-        ? text.length
-          ? `${visualContextDisplayChips} ${text}`
-          : visualContextDisplayChips
-        : text.length
-          ? text
-          : attachmentsSnapshot.length
-            ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST
-            : "Attached issue context";
+      const finalDisplayText = composedWithVisualContext.displayText
+        ?? (attachmentsSnapshot.length ? DEFAULT_PARALLEL_ATTACHMENT_REQUEST : "Attached issue context");
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -11771,6 +11736,8 @@ export function AgentChatPane({
     appControlContextItems,
     builtInBrowserContextItems,
     workDraftKind,
+    chatLaunch,
+    launchRoutesSends,
   ]);
 
   const compactContext = useCallback(async () => {
@@ -12071,7 +12038,7 @@ export function AgentChatPane({
     const provider = selectedSession?.provider ?? sessionProvider;
     const nextSummary = {
       ...summarizeNativeControls(provider, nextControls),
-      ...(provider === "cursor" ? { cursorConfigValues: nextControls.cursorConfigValues } : {}),
+      ...(provider === "cursor" ? { cursorConfigValues: userSetCursorConfigValues(nextControls.cursorConfigValues) } : {}),
     };
     patchSessionSummary(selectedSessionId, nextSummary);
     if (isPersistentIdentitySurface) {
@@ -12696,14 +12663,6 @@ export function AgentChatPane({
     modelFamily: composerModelDescribesRenderedChat ? selectedModelDesc?.family ?? null : null,
     modelColor: composerModelDescribesRenderedChat ? selectedModelDesc?.color ?? null : null,
   });
-  const chatActionsToolbarIcon = chatActionsOpen
-    ? (chatActionsTab === "proof"
-      ? Cube
-      : chatActionsTab === "handoff"
-        ? ArrowBendUpRight
-        : TreeStructure)
-    : TreeStructure;
-  const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
   const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
     <ChatSubagentsPanel
@@ -12786,7 +12745,6 @@ export function AgentChatPane({
         }
         : undefined}
       variant="pane"
-      className="h-full"
       onSelectSubagent={(selection) => {
         setSubagentView({
           taskId: selection.taskId,
@@ -12828,12 +12786,12 @@ export function AgentChatPane({
       }
     />
   ) : (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
+    <div className="flex flex-col items-center justify-center px-4 py-8 text-center">
       <p className="font-sans text-[13px] text-fg/50">No agent activity detected</p>
     </div>
   );
   const proofTabContent = (
-    <div ref={proofDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
+    <div ref={proofDrawerRef} className="border-t border-white/[0.06] px-4 py-3">
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
@@ -12969,65 +12927,14 @@ export function AgentChatPane({
       <span className="block text-[10px] leading-4 text-fg/38">{caption}</span>
     </div>
   );
-  const handoffMenuView = (
-    <div data-testid="handoff-menu" className="min-h-0 flex-1 overflow-auto p-4">
-      <div className="mb-3 space-y-0.5">
-        <div className="font-sans text-[12px] font-semibold text-fg/82">Hand off this chat</div>
-        <div className="text-[11px] leading-4 text-fg/50">Continue the work somewhere new — another machine, a fresh chat here, or automatically when this one stops.</div>
-      </div>
-      <div className="space-y-2.5">
-        <div
-          className={cn("relative space-y-2.5", handoffTurnGate && "pointer-events-none select-none opacity-40")}
-          aria-disabled={handoffTurnGate || undefined}
-        >
-          <HandoffMenuCard
-            tone="remote"
-            icon={Desktop}
-            title="Continue on another machine"
-            description="Move this chat to another computer running ADE."
-            disabled={isRemoteChat || handoffTurnGate}
-            footnote={isRemoteChat
-              ? `This chat runs on ${chatMachineName}. Open that machine's project to start a cross-machine handoff.`
-              : null}
-            onClick={() => openHandoffDestination("remote")}
-          />
-          <HandoffMenuCard
-            tone="local"
-            icon={GitFork}
-            title="Hand off locally"
-            description="Start a new chat from this one — fork the thread or send a brief."
-            disabled={handoffTurnGate}
-            onClick={() => openHandoffDestination("local")}
-          />
-          {handoffTurnGate ? (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-3">
-              <div className="pointer-events-auto max-w-[220px] rounded-lg border border-amber-300/22 bg-[color:color-mix(in_srgb,#f59e0b_16%,#11131a)] px-3 py-2 text-center text-[10.5px] font-medium leading-4 text-amber-100/90 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.7)]">
-                A turn is running — wait for it to finish before handing off.
-              </div>
-            </div>
-          ) : null}
-        </div>
-        {/* Auto handoff is a rule editor, not a move: arming "continue when this
-            stops" is most useful while the turn is still running, so it stays
-            available while the two live-handoff cards are gated. */}
-        <HandoffMenuCard
-          tone="auto"
-          icon={ArrowsLeftRight}
-          title="Auto handoff"
-          description="If this chat hits a limit, fails, or ends — continue it automatically."
-          onClick={() => { void openAutoHandoff(); }}
-        />
-      </div>
-    </div>
-  );
   const handoffForkTabDisabled = !handoffForkSupported;
   const handoffLocalView = (
     <div data-testid="handoff-local" className="flex h-full min-h-0 flex-col">
       <div className="flex items-start gap-2.5 border-b border-white/[0.06] px-4 py-3">
         <button
           type="button"
-          aria-label="Back to handoff options"
-          onClick={() => setHandoffView("menu")}
+          aria-label="Close local handoff"
+          onClick={() => setLocalHandoffOpen(false)}
           className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md border border-white/[0.07] bg-white/[0.03] text-fg/55 transition-colors hover:border-white/[0.14] hover:text-fg/85"
         >
           <ArrowLeft size={13} />
@@ -13037,6 +12944,11 @@ export function AgentChatPane({
           <div className="mt-0.5 text-[10.5px] leading-4 text-fg/48">{handoffForkCopy.subtitle}</div>
         </div>
       </div>
+      {handoffTurnGate ? (
+        <div className="border-b border-amber-300/20 bg-amber-400/10 px-4 py-2 text-[11px] leading-4 text-amber-100/90">
+          A turn is running — wait for it to finish before handing off.
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-4">
         <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
           {([
@@ -13076,7 +12988,7 @@ export function AgentChatPane({
             <div className="inline-flex items-center gap-1.5">
               <ModelPicker
                 value={handoffModelId}
-                onChange={setHandoffModelId}
+                onChange={chooseHandoffModel}
                 availableModelIds={handoffAvailableModelIds}
                 filter={handoffForkModelFilter}
                 onOpenSignIn={openProviderSignIn}
@@ -13113,7 +13025,7 @@ export function AgentChatPane({
             <div className="inline-flex items-center gap-1.5">
               <ModelPicker
                 value={handoffModelId}
-                onChange={setHandoffModelId}
+                onChange={chooseHandoffModel}
                 availableModelIds={handoffAvailableModelIds}
                 onOpenSignIn={openProviderSignIn}
                 runtimePin={activeComposerRuntimeBinding}
@@ -13158,33 +13070,28 @@ export function AgentChatPane({
       </div>
     </div>
   );
-  const handoffTabContent = canShowHandoff ? (
-    handoffView === "local" ? handoffLocalView : handoffMenuView
-  ) : (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
-      <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
-    </div>
-  );
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
-      tab={chatActionsTab}
-      onTabChange={setChatActionsTab}
-      onClose={() => setChatActionsOpen(false)}
       agentsContent={agentsTabContent}
-      missionsContent={selectedMission ? (
-        <div className="h-full min-h-0 overflow-y-auto">
-          <MissionControlPanel
-            mission={selectedMission}
-            onKillWorker={killDroidWorker}
-            killingWorkerIds={killingWorkerIds}
-          />
-        </div>
-      ) : undefined}
-      proofContent={proofTabContent}
-      handoffContent={handoffTabContent}
-      sourcesContent={selectedSession?.provider === "codex" ? (
-        <ChatSourcesPanel events={selectedEventsForDisplay} />
-      ) : undefined}
+      proofContent={proofArtifactCount > 0 ? proofTabContent : null}
+      extras={(
+        <>
+          {selectedMission ? (
+            <div className="border-t border-white/[0.06]">
+              <MissionControlPanel
+                mission={selectedMission}
+                onKillWorker={killDroidWorker}
+                killingWorkerIds={killingWorkerIds}
+              />
+            </div>
+          ) : null}
+          {selectedSession?.provider === "codex" ? (
+            <div className="border-t border-white/[0.06]">
+              <ChatSourcesPanel events={selectedEventsForDisplay} />
+            </div>
+          ) : null}
+        </>
+      )}
     />
   );
   const cursorCloudPanelContent = (
@@ -13417,83 +13324,6 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {chatActionsAvailable ? (
-            <SmartTooltip
-              content={{
-                label: chatActionsOpen ? "Close chat actions" : "Open chat actions",
-                description: chatActionsOpen
-                  ? "Hide agents, proof artifacts, and handoff controls."
-                  : "Open agents, proof artifacts, and handoff controls for this chat.",
-                effect: [
-                  proofArtifactCount > 0 ? `${proofArtifactCount} artifact${proofArtifactCount === 1 ? "" : "s"}` : null,
-                  runningSubagentCount > 0
-                    ? `${runningSubagentCount} subagent${runningSubagentCount === 1 ? "" : "s"} running`
-                    : null,
-                  selectedScheduledWorkSnapshots.length > 0
-                    ? `${selectedScheduledWorkSnapshots.length} scheduled`
-                    : null,
-                  selectedTodoItems.length > 0
-                    ? `${selectedTodoItems.length} task${selectedTodoItems.length === 1 ? "" : "s"}`
-                    : null,
-                ].filter(Boolean).join(" · ") || undefined,
-              }}
-            >
-              <button
-                type="button"
-                className={cn(
-                  chatToolbarActionBase,
-                  chatActionsOpen
-                    ? "border-violet-400/22 bg-violet-500/10 text-violet-100/80"
-                    : chatToolbarActionIdle,
-                )}
-                onClick={() => {
-                  setError(null);
-                  setChatActionsOpen((current) => {
-                    const next = !current;
-                    if (next) {
-                      setIosSimulatorOpen(false);
-                      setCursorCloudPaneOpen(false);
-                      setAppControlOpen(false);
-                    }
-                    return next;
-                  });
-                }}
-                title={chatActionsOpen ? "Close chat actions drawer" : "Open chat actions drawer"}
-                aria-label={chatActionsOpen ? "Close chat actions drawer" : "Open chat actions drawer"}
-                aria-pressed={chatActionsOpen}
-              >
-                <span>Chat actions</span>
-                <ChatActionsToolbarIcon size={13} weight={chatActionsOpen ? "fill" : "regular"} />
-                {proofArtifactCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
-                    {proofArtifactCount}
-                  </span>
-                ) : runningSubagentCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
-                    {runningSubagentCount}
-                  </span>
-                ) : selectedScheduledWorkSnapshots.length > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
-                    {selectedScheduledWorkSnapshots.length}
-                  </span>
-                ) : selectedTodoItems.length > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-violet-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
-                    {selectedTodoItems.length}
-                  </span>
-                ) : null}
-                {!chatActionsOpen && hasRunningBackgroundSubagent ? (
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "absolute -bottom-0.5 -right-0.5 h-[7px] w-[7px] rounded-full",
-                      "bg-[color:var(--color-accent,#A78BFA)] ring-2 ring-[color:var(--color-bg,#0c0b10)]",
-                      "motion-safe:ade-glow-pulse",
-                    )}
-                  />
-                ) : null}
-              </button>
-            </SmartTooltip>
-          ) : null}
           {headerChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -13517,20 +13347,64 @@ export function AgentChatPane({
           ) : null}
     </>
   );
+  const chatActionsToggle = (
+    <>
+      <AgentBrowserPresenceHeaderButton
+        chatSessionId={selectedSessionId}
+        onClick={() => workSidebar.setTool("browser")}
+      />
+      {hasAttachedTerminal ? (
+        <button
+          type="button"
+          className={WORK_HEADER_ICON_BUTTON_CLASS}
+          title="Open terminal"
+          aria-label="Open terminal"
+          onClick={() => workSidebar.setTool("terminal")}
+        >
+          <Terminal size={16} weight="bold" />
+        </button>
+      ) : null}
+      {chatActionsAvailable ? (
+    <button
+      type="button"
+      className={cn(WORK_HEADER_ICON_BUTTON_CLASS, "relative")}
+      onClick={() => {
+        setError(null);
+        setChatActionsOpen((current) => {
+          const next = !current;
+          if (next) {
+            setIosSimulatorOpen(false);
+            setCursorCloudPaneOpen(false);
+            setAppControlOpen(false);
+          }
+          return next;
+        });
+      }}
+      title={chatActionsOpen ? "Close chat progress" : "Open chat progress"}
+      aria-label={chatActionsOpen ? "Close chat actions drawer" : "Open chat actions drawer"}
+      aria-pressed={chatActionsOpen}
+    >
+      <TreeStructure size={16} weight="bold" />
+      {proofArtifactCount > 0 ? (
+        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
+          {proofArtifactCount}
+        </span>
+      ) : runningSubagentCount > 0 ? (
+        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
+          {runningSubagentCount}
+        </span>
+      ) : null}
+    </button>
+      ) : null}
+    </>
+  );
   const shellHeader = (
     <div className={CHAT_SHELL_HEADER_CLASS}>
-      <WorkSurfaceHeader
+      <CenteredWorkSurfaceHeader
         title={resolvedTitle}
         laneId={laneId}
-        laneChipName={chatHeaderLaneName}
-        laneChipColor={chatHeaderLaneColor}
-        showLaneChip={showWorkspaceChrome}
-        /* Two accessories, one slot: the live browser badge leads because it is
-           the only one that is TRUE RIGHT NOW — the Cursor Cloud link is a
-           property of the chat and will still be there in an hour. */
-        titleAccessory={<>
-        <AgentBrowserPresenceBadge chatSessionId={selectedSessionId} size={13} />
-        {selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
+        prBadgeOnly
+        titleAccessory={selectedSession?.cursorCloudAgentId && cursorCloudAgentWebUrl(selectedSession.cursorCloudAgentId) ? (
           <button
             type="button"
             data-testid="cursor-cloud-header-link"
@@ -13546,8 +13420,6 @@ export function AgentChatPane({
             <span>Cursor Cloud</span>
           </button>
         ) : null}
-        </>}
-        onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         lifecycleSessionId={selectedSessionId ?? null}
@@ -13561,11 +13433,12 @@ export function AgentChatPane({
         // the toolbar's inline PR menu instead of toggling persisted state for
         // a pane that cannot appear there.
         onTogglePrPane={showWorkspaceChrome && laneId && Boolean(selectedSessionId)
-          ? () => setPrPaneOpen((v) => !v)
+          ? () => workSidebar.setTool("pr")
           : undefined}
-        prPaneOpen={prPaneOpen}
+        prPaneOpen={workSidebar.tool === "pr"}
         runtimePin={chatRuntimePin}
         trailingActions={chatHeaderTrailingActions}
+        actionsToggle={chatActionsToggle}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
         className="h-8 space-y-0 p-0"
@@ -13821,6 +13694,7 @@ export function AgentChatPane({
             }}
             allowCliOnlyModels={workDraftKind === "cli" && !cursorCloudSessionActive}
             reasoningEffort={reasoningEffort}
+            effectiveReasoningEffort={effectiveReasoningEffort}
             fastMode={fastMode}
             cursorCloudServiceTier={cursorCloudServiceTier}
             onCursorCloudServiceTierChange={handleCursorCloudServiceTierChange}
@@ -13895,10 +13769,10 @@ export function AgentChatPane({
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
             onCursorConfigChange={(configId, value) => {
               void updateNativeControls({
-                cursorConfigValues: {
+                cursorConfigValues: userSetCursorConfigValues({
                   ...nativeControlsRef.current.cursorConfigValues,
                   [configId]: value,
-                },
+                }),
               });
             }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
@@ -14275,8 +14149,9 @@ export function AgentChatPane({
     : null;
   const composerWithTypographyRoot = (
     <div
+      ref={composerDockRef}
       data-chat-appearance-root
-      style={{ ...chatAppearanceRootStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
+      style={{ ...chatAppearanceRootStyle, paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
     >
       {visibleDraftLaunchJobs.map((job) => {
@@ -14407,32 +14282,23 @@ export function AgentChatPane({
   const supportsSplit = layoutVariant !== "grid-tile";
   const chatActionsFloating = chatActionsAvailable && chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
   const chatActionsRightPaneOpen = chatActionsAvailable && chatActionsOpen && !chatActionsFloating;
-  const prFloating = prPaneOpen && Boolean(laneId) && supportsSplit;
-  // Only the right chat-actions pane may reserve gutter space. The PR pane stays
-  // a fixed overlay so the transcript and minimap never shift when it opens;
-  // its z-30 card wins any intentional overlap.
-  //
-  // Gate the reserve on the surface that actually renders those panes. Both the
-  // PR pane and the chat-actions pane live in the `selectedSessionId` branch
-  // below; the empty/draft surface renders neither. `chatActionsOpen` (like
-  // `prPaneOpen`) is persisted per chat, so without this gate a lane that once
-  // had the chat-actions pane open pays a 276px right gutter on the new-chat
-  // screen — shoving the hero composer sideways to clear a pane that is not on
-  // screen.
+  // Gate the reserve on the surface that actually renders the chat-actions
+  // pane. The empty/draft surface renders neither. `chatActionsOpen` is
+  // persisted per chat, so without this gate a lane that once had the pane
+  // open pays a 276px right gutter on the new-chat screen.
   const sessionSurfaceMounted = Boolean(selectedSessionId);
-  const paneReserve = sessionSurfaceMounted
-    ? computePaneReserve(chatAreaWidth, chatActionsFloating)
-    : ZERO_PANE_RESERVE;
-  // When a pane doesn't force the chat to shift (reserve 0), center it within its
-  // side margin so all three zones (left pane / chat / right pane) read as
-  // centered in their quadrant. When it does shift the chat, pin it to the edge.
+  const paneReserveRight = sessionSurfaceMounted
+    ? computePaneReserveRight(chatAreaWidth, chatActionsFloating)
+    : "0px";
+  // When the pane doesn't force the chat to shift (reserve 0), center it within
+  // its side margin so the chat and the pane both read as centered. When it
+  // does shift the chat, pin it to the edge.
   const SIDE_PANE_WIDTH_PX = 264; // 16.5rem
   const centeredPaneOffsetPx = Math.max(
     12,
     Math.round(((chatAreaWidth - resolveChatContentWidthPx(chatAreaWidth)) / 2 - SIDE_PANE_WIDTH_PX) / 2),
   );
-  const rightPaneOffsetPx = paneReserve.right === "0px" ? centeredPaneOffsetPx : 12;
-  const leftPaneOffsetPx = paneReserve.left === "0px" ? centeredPaneOffsetPx : 12;
+  const rightPaneOffsetPx = paneReserveRight === "0px" ? centeredPaneOffsetPx : 12;
   const splitChatColStyle: React.CSSProperties | undefined =
     heavyRightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
   const splitRightPaneStyle: React.CSSProperties | undefined =
@@ -14483,22 +14349,6 @@ export function AgentChatPane({
       </div>
     </motion.div>
   );
-  const renderFloatingLeftPane = (content: React.ReactNode) => (
-    <motion.div
-      key="floating-left-pane"
-      className="absolute top-3 z-30 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
-      style={{ left: `${leftPaneOffsetPx}px` }}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={SIDE_PANE_FADE}
-    >
-      <div className={FLOATING_PANE_CARD_CLASS}>
-        {content}
-      </div>
-    </motion.div>
-  );
-
   return (
     <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
@@ -14506,8 +14356,7 @@ export function AgentChatPane({
       <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
-        paneReserveLeft={paneReserve.left}
-        paneReserveRight={paneReserve.right}
+        paneReserveRight={paneReserveRight}
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
         contentScale={1}
@@ -14566,7 +14415,7 @@ export function AgentChatPane({
             </button>
           </div>
         ) : null}
-        {mergedRuntimeBanner?.kind === "cli-only" ? (
+        {mergedRuntimeBanner?.kind === "cli-only" && !cursorRuntimeBlocked ? (
           <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
               {mergedRuntimeBanner.cliTitle}
@@ -14583,28 +14432,35 @@ export function AgentChatPane({
           />
         ) : null}
         {mergedRuntimeBanner?.kind === "merged" ? (
-          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
-            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              Runtime status
-            </div>
-            <div className="mt-3 space-y-3">
-              <div>
-                <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
-                  {mergedRuntimeBanner.cliTitle}
+          cursorRuntimeBlocked ? (
+            <LocalRuntimeNoticeBlock
+              notice={mergedRuntimeBanner.localNotice}
+              endpoint={mergedRuntimeBanner.localEndpoint}
+            />
+          ) : (
+            <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
+                Runtime status
+              </div>
+              <div className="mt-3 space-y-3">
+                <div>
+                  <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
+                    {mergedRuntimeBanner.cliTitle}
+                  </div>
+                  <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
+                    {mergedRuntimeBanner.cliBody}
+                  </div>
                 </div>
-                <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-                  {mergedRuntimeBanner.cliBody}
+                <div className="border-t border-white/[0.06] pt-3">
+                  <LocalRuntimeNoticeBlock
+                    variant="inline"
+                    notice={mergedRuntimeBanner.localNotice}
+                    endpoint={mergedRuntimeBanner.localEndpoint}
+                  />
                 </div>
               </div>
-              <div className="border-t border-white/[0.06] pt-3">
-                <LocalRuntimeNoticeBlock
-                  variant="inline"
-                  notice={mergedRuntimeBanner.localNotice}
-                  endpoint={mergedRuntimeBanner.localEndpoint}
-                />
-              </div>
             </div>
-          </div>
+          )
         ) : null}
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -14636,7 +14492,7 @@ export function AgentChatPane({
                   <div
                     data-chat-appearance-root
                     data-chat-sync-pending={selectedSyncPending ? "true" : undefined}
-                    style={{ ...chatAppearanceRootStyle, ...splitChatColStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
+                    style={{ ...chatAppearanceRootStyle, ...splitChatColStyle, paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
                     className={cn(
                       "relative flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
@@ -14658,6 +14514,12 @@ export function AgentChatPane({
                         selectedSyncPending ? "opacity-70" : "opacity-0",
                       )}
                     />
+                    {showCursorRuntimePopup ? (
+                      <CursorRuntimeNotice
+                        onOpenSettings={() => navigate(settingsRouteFor("agents.provider.cursor"))}
+                        onDismiss={() => setCursorRuntimeNoticeDismissed(true)}
+                      />
+                    ) : null}
                     {cloudConversationPending ? (
                       <div
                         data-testid="cursor-cloud-connecting"
@@ -14877,20 +14739,6 @@ export function AgentChatPane({
                   {chatActionsRightPaneOpen
                     ? renderRightPane(chatActionsPanelContent)
                     : null}
-                  <AnimatePresence initial={false}>
-                    {prFloating && laneId
-                      ? renderFloatingLeftPane(
-                          <ChatPrPane
-                            laneId={laneId}
-                            branchName={laneGitBranch}
-                            sessionTitle={selectedSession?.title ?? null}
-                            sessionId={renderedSessionId}
-                            onClose={() => setPrPaneOpen(false)}
-                            runtimePin={chatRuntimePin}
-                          />,
-                        )
-                      : null}
-                  </AnimatePresence>
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
@@ -15128,9 +14976,17 @@ export function AgentChatPane({
         onCancel={closeRewindConfirmDialog}
         onConfirm={confirmRewindDialog}
       />
+      <ChatHandoffDialogs
+        localOpen={localHandoffOpen}
+        localContent={canShowHandoff ? handoffLocalView : null}
+        onCloseLocal={() => setLocalHandoffOpen(false)}
+        remoteNoticeOpen={crossMachineHandoffOpen && isRemoteChat}
+        machineName={chatMachineName}
+        onCloseRemoteNotice={() => setCrossMachineHandoffOpen(false)}
+      />
       {selectedSessionId && (selectedSession?.laneId ?? laneId) ? (
         <CrossMachineHandoffModal
-          open={crossMachineHandoffOpen}
+          open={crossMachineHandoffOpen && !isRemoteChat}
           sourceSessionId={selectedSessionId}
           sourceLaneId={(selectedSession?.laneId ?? laneId)!}
           runtimePin={chatRuntimePin}
@@ -15154,31 +15010,6 @@ export function AgentChatPane({
           onFinished={() => {
             setHandoffNote("");
             void refreshSessions({ force: true }).catch(() => undefined);
-          }}
-        />
-      ) : null}
-      {autoHandoffOpen && selectedSession ? (
-        <AutoHandoffModal
-          key={selectedSession.sessionId}
-          session={{
-            id: selectedSession.sessionId,
-            title: selectedSession.title ?? "This chat",
-            laneId: selectedSession.laneId,
-            modelId: selectedSession.modelId ?? selectedSession.model,
-          }}
-          binding={
-            autoHandoffRules?.sessionId === selectedSession.sessionId
-              ? autoHandoffRules.binding
-              : chatRuntimePin
-          }
-          existingRules={
-            autoHandoffRules?.sessionId === selectedSession.sessionId
-              ? autoHandoffRules.rules
-              : []
-          }
-          onClose={() => {
-            setAutoHandoffOpen(false);
-            setAutoHandoffRules(null);
           }}
         />
       ) : null}

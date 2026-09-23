@@ -38,7 +38,19 @@
     // raising it is a deliberate act with arithmetic attached (README,
     // "Diagnostic report uploads"). `0` stops every upload without a code
     // deploy; unset or unparseable falls back to the same 400.
-    "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
+    "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400",
+    // Daily usage research reports (`POST /usage-research/daily`), stored in
+    // the D1 database below, which ALSO holds machines and sign-in state. A
+    // full database refuses every write, so these three bound what research
+    // data can ever take (README, "Usage research reports"):
+    //   - writes that change a row, fleet-wide, per UTC day (`0` stops them);
+    //   - days of reports the cron keeps (never below 9, the accepted window);
+    //   - report megabytes the table may hold in total (`0` stops growth; the
+    //     Worker clamps anything above 6144).
+    // Unset or unparseable falls back to the same values.
+    "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT": "20000",
+    "USAGE_RESEARCH_RETENTION_DAYS": "180",
+    "USAGE_RESEARCH_STORAGE_CEILING_MB": "4096"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -76,7 +88,11 @@
         // Same ceiling as the default environment, and set explicitly: wrangler
         // environments do not inherit `vars`, so an omission here would silently
         // fall back to the code default rather than to the value above.
-        "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
+        "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400",
+        // Usage research bounds, restated for the same reason.
+        "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT": "20000",
+        "USAGE_RESEARCH_RETENTION_DAYS": "180",
+        "USAGE_RESEARCH_STORAGE_CEILING_MB": "4096"
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [

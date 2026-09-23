@@ -152,6 +152,41 @@ describe("PR chat cards", () => {
     ]);
   });
 
+  it("replaces a generic CI failure label with the step that failed and how long it ran", () => {
+    const card = buildPrCiCard({
+      pr: pr({ checksStatus: "failing" }),
+      runs: [run({
+        status: "completed",
+        conclusion: "failure",
+        jobs: [
+          {
+            id: 1,
+            name: "test-desktop (8)",
+            status: "completed",
+            conclusion: "failure",
+            startedAt: "2026-07-27T11:00:00.000Z",
+            completedAt: "2026-07-27T11:06:20.000Z",
+            steps: [
+              {
+                name: "Run vitest",
+                status: "completed",
+                conclusion: "failure",
+                number: 4,
+                startedAt: "2026-07-27T11:02:00.000Z",
+                completedAt: "2026-07-27T11:06:20.000Z",
+              },
+            ],
+          },
+        ],
+      })],
+      checks: [],
+    });
+    expect(card.rows?.[0]).toMatchObject({
+      text: "test-desktop (8)",
+      detail: "Run vitest · 6m 20s",
+    });
+  });
+
   it("keeps a third-party check out of the CI group and out of CI's counters", () => {
     const card = buildPrCiCard({
       pr: pr({ checksStatus: "not_run" }),
@@ -314,7 +349,11 @@ describe("PR chat cards", () => {
     expect(buildPrConflictCard({ pr: pr({ behindBaseBy: 4 }), kind: "behind" })).toMatchObject({
       cardId: "pr-conflict:pr-7:abc123:behind",
       variant: "pr_conflict",
-      metrics: [{ label: "commits behind", value: "4", tone: "warning" }],
+      title: "Branch behind main",
+      metrics: [
+        { label: "branch", value: "feature", tone: "neutral" },
+        { label: "commits behind", value: "4", tone: "warning" },
+      ],
     });
   });
 

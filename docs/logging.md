@@ -255,6 +255,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
 | `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | `codex` |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
+| `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -463,6 +464,18 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
 
+A chat started in a new lane (the brain-owned launch in
+`chatLaunchService`) records `chat/new_lane_launch` once per outcome per
+launch, captured at the brain (surface `api`) through the service's outcome
+hook: `completed` when the agent started, `cancelled` when the user deleted the
+launch during setup, `failed` when a setup stage failed. Checkout progress,
+stage transitions, retries, queued messages, and lane naming emit nothing; the
+lane name, branch, base ref, template, prompt, and launch id stay local. The
+one-hour action/outcome/family key admits at most 3 outcomes × 11 families ×
+24 = 792 key slots per day before budgets; the event-level `ade_feature_used`
+140-per-day / 30-per-minute limits remain the hard bound, and no ceiling was
+raised.
+
 The two Claude session-capability facts are siblings on the same
 `ade_feature_used` event with `feature: "chat"`, `outcome: "failed"`,
 `provider: "claude"`, and `source: "runtime"`: `action: "hooks_ignored"` when
@@ -490,12 +503,12 @@ Which tool an installation opens in the Work tools pane records the existing
 palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
 `action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
 closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
-`tool_ios`, `tool_app_control`, or `tool_browser`. It is emitted from
+`tool_ios`, `tool_app_control`, `tool_browser`, or `tool_pr`. It is emitted from
 the renderer because tool selection has no durable backend mutation — the
 runtime publish that mirrors it to iOS and the hosted web client is a
 device-mirror push, not a record of the choice.
 
-The product question is only which of the six tools an installation actually
+The product question is only which Work tool an installation actually
 uses; `ade_screen_viewed` `work` says the surface was reached and cannot tell a
 Browser install from a Git one. Nothing finer crosses the boundary: no lane,
 project, tab, URL, session, ordering, or dwell time — a tool id says what was
@@ -754,8 +767,8 @@ Persisted `usage_events` are the preferred source for meaningful user mutations.
 
 Pull-request mutations reach analytics through that ledger and nowhere else.
 `prs.land`, `prs.close`, `prs.reopen`, `prs.createFromLane`, `prs.updateBranch`,
-`prs.retargetBase`, `prs.addComment`, `prs.submitReview`, and `prs.rerunChecks`
-are recorded at the IPC channel / RPC domain boundary, keyed on the action name
+`prs.retargetBase`, `prs.addComment`, `prs.submitReview`, `prs.rerunChecks`,
+`prs.setDraft`, and `prs.setAutoMerge` are recorded at the IPC channel / RPC domain boundary, keyed on the action name
 rather than on the presence of a local `pull_requests` row — so removing the
 lane-mapping gate widened what an installation can do without needing any new
 instrumentation. `prs.cleanupBranch` joined the set for the same reason: while
@@ -770,13 +783,18 @@ when someone asks the question.
 
 Everything else the PRs tab does is a read or a view mechanic — list polling,
 snapshot refreshes, the CI graph fetch, tab and drawer toggles, commit-tick
-hover, header narrowing, pane resizing — and stays untracked by the rule above.
+hover, header narrowing, pane resizing, the ⋯ menu and its right-click twin,
+the floating dock's bubbles and cards, the push tick rail, and the bot-row
+expansion — and stays untracked by the rule above. A ⋯ chat action only puts a
+prompt in the composer; the send that may follow is the chat's own event.
 The `ade_screen_viewed` `prs` arrival already records that the surface was
 opened.
 
 The fresh-install milestone is stored in machine analytics state before enqueue. Activation is stored the same way and derives `time_since_install_seconds` locally. Legacy analytics state is marked as already installed and activated during migration so upgrades never create false funnel entrants. Account identification is pseudonymous and limited to three accepted identity changes per UTC day and two per minute. It still consumes PostHog ingestion quota. Explicit sign-out rotates the anonymous ID so later anonymous activity is not attached to the signed-out account.
 
 Daily usage summaries report coarse totals and only the top coarse provider and model family. They never report provider account IDs, exact model strings, prompt content, or per-session content.
+
+The daily usage research report is a separate sink and is not PostHog. `usageResearchUploader` sends one report for each finished local day to the account directory Worker (`POST /usage-research/daily`), which keeps one row for each install and day in D1. The report holds exact provider and model ids, token sums, list-price and billed costs, plan tier, quota readings, and the local hour of each turn, because routing research needs them. It never holds an email, an account or provider-instance id, a path, a lane, session, or turn id, a prompt, or a hostname. `installId` comes from a per-install salt that never leaves the machine, so it cannot be linked to the PostHog `distinct_id`. `accountRef` is a salted hash from the same salt. The uploader sends only while product analytics is in effect (`getStatus().effective`), checks that again before each POST, and adds no PostHog event. The Worker limits each address to 20 reports a day, the fleet to `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT`, and the table to `USAGE_RESEARCH_STORAGE_CEILING_MB`, and deletes rows after `USAGE_RESEARCH_RETENTION_DAYS`. Details: `docs/features/onboarding-and-settings/usage-tracking.md`.
 
 The storage doctor emits one `ade_feature_used` per completed maintenance run at the daemon boundary (`storageInsightsService`), with `feature: "storage_doctor"`, `action: "maintenance_run"`, a coarse `outcome` (`completed`, `partial`, or `failed`), and the numeric aggregates `bytes_freed` and `files_compressed`. It carries no paths, table names, or per-item detail. A per-project local dedupe key (`storage_doctor_run:<project>`) with a 20 h minimum interval collapses the daily run and any manual "Clean up now" into a single accepted event, so worst-case volume is well under 2 accepted events per project per day — inside the shared 200-event ceiling and the `ade_feature_used` per-day cap. The run also writes the local `storage.maintenance_completed` jsonl line (with `storage.maintenance_step_failed` per failed step); those operational lines are never forwarded to PostHog.
 
@@ -906,6 +924,7 @@ The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does
 - Desktop/runtime builds are default-on when correctly configured and expose a durable opt-out in Settings. The machine-wide disable marker immediately stops all local clients and cancels queued delivery.
 - Native iOS is default-on and has no in-app opt-out. Hosted web and the public marketing site are default-on with a durable browser-local opt-out (explicit "false" preference); there is no first-run consent prompt.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
+- The daily usage research report follows the product analytics consent: the Settings opt-out, the disable marker, and `ADE_DISABLE_PRODUCT_ANALYTICS=1` all stop it. `ADE_USAGE_RESEARCH=0` stops only the report.
 - Development builds are analytics-inert unless a developer explicitly sets `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
 - Tests disable analytics automatically.
 - Missing or invalid configuration disables capture without affecting ADE startup.

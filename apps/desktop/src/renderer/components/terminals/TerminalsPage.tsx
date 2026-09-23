@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { paneTransition } from "../../lib/motion";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
+import { useChatLaunchCliDriver } from "./useChatLaunchCliDriver";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
@@ -185,6 +186,10 @@ async function allSettledWithConcurrency<T>(
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
+  // New-lane CLI launches this window started: open their PTY once the brain
+  // reports the lane ready. Lives here, beside the roster that owns
+  // `launchPtySession`, so it outlives the draft pane that sent the launch.
+  useChatLaunchCliDriver(work.launchPtySession);
   const { machineRouter, resolveSessionRuntimePin } = work;
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);

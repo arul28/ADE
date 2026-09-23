@@ -122,6 +122,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // a 45s remote-branch deletion. The old 30s client budget reported failure
   // while the daemon kept mutating state to a successful completion.
   ["lane.delete", 4 * 60_000],
+  // Cancelling a new-lane launch waits out an in-flight checkout, then fully
+  // deletes the chat and the lane (worktree + local and remote branch).
+  ["chat.cancelLaunch", 5 * 60_000],
   ["lane.archive", 120_000],
   ["lane.unarchive", 120_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],

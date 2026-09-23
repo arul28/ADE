@@ -11,6 +11,7 @@ import {
 import { cleanupLegacyAdeSkills } from "../skills/legacySkillCleanupService";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
+import { pathsEqual } from "../shared/pathCompare";
 import {
   getPathEnvValue,
   setPathEnvValue,
@@ -150,17 +151,24 @@ function splitPathEntries(value: string | null | undefined): string[] {
   return (value ?? "").split(pathDelimiter()).map((entry) => entry.trim()).filter(Boolean);
 }
 
+function pathEntriesEqual(entry: string, directory: string): boolean {
+  try {
+    return pathsEqual(path.resolve(entry), path.resolve(directory));
+  } catch {
+    return false;
+  }
+}
+
 function pathContainsDir(pathValue: string | null | undefined, dir: string | null): boolean {
   if (!dir) return false;
-  const resolved = process.platform === "win32" ? path.resolve(dir).toLowerCase() : path.resolve(dir);
-  return splitPathEntries(pathValue).some((entry) => {
-    try {
-      const candidate = process.platform === "win32" ? path.resolve(entry).toLowerCase() : path.resolve(entry);
-      return candidate === resolved;
-    } catch {
-      return false;
-    }
-  });
+  return splitPathEntries(pathValue).some((entry) => pathEntriesEqual(entry, dir));
+}
+
+function removePathDir(pathValue: string | null | undefined, dir: string | null | undefined): string | undefined {
+  const trimmedDir = dir?.trim();
+  if (pathValue == null || !trimmedDir) return pathValue ?? undefined;
+  const remaining = splitPathEntries(pathValue).filter((entry) => !pathEntriesEqual(entry, trimmedDir));
+  return remaining.join(pathDelimiter());
 }
 
 function prependPathDir(pathValue: string | null | undefined, dir: string | null): string | undefined {
@@ -449,6 +457,19 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs, commandName: string): Re
     };
   }
 
+  // A packaged app must only advertise a CLI shipped with that app. Falling
+  // back to a development checkout can make a broken package appear healthy
+  // and hand agents a command path that does not exist on the user's machine.
+  if (args.isPackaged) {
+    return {
+      commandPath: null,
+      binDir: null,
+      installerPath: null,
+      cliJsPath: null,
+      source: "missing",
+    };
+  }
+
   const devCli = resolveDevCliEntry(args.devRepoRoot);
   if (devCli) {
     const shim = writeDevShim({
@@ -610,14 +631,27 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
 
   const agentEnv = (baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
     const next: NodeJS.ProcessEnv = { ...baseEnv };
-    const nextPath = prependPathDir(getPathEnvValue(next), resolved.binDir);
-    if (nextPath) setPathEnvValue(next, nextPath);
-    if (resolved.commandPath) next.ADE_CLI_PATH = resolved.commandPath;
-    if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
-    // Delegation trusts this as the identity of `ADE_CLI_PATH`, so an inherited
-    // value naming another build must not ride along with our command.
-    if (resolved.commandPath && resolved.cliJsPath) next.ADE_CLI_ENTRY_PATH = resolved.cliJsPath;
-    else delete next.ADE_CLI_ENTRY_PATH;
+    if (resolved.commandPath) {
+      const nextPath = prependPathDir(getPathEnvValue(next), resolved.binDir);
+      if (nextPath) setPathEnvValue(next, nextPath);
+      next.ADE_CLI_PATH = resolved.commandPath;
+      if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
+      // Delegation trusts this as the identity of `ADE_CLI_PATH`, so an inherited
+      // value naming another build must not ride along with our command.
+      if (resolved.cliJsPath) next.ADE_CLI_ENTRY_PATH = resolved.cliJsPath;
+      else delete next.ADE_CLI_ENTRY_PATH;
+    } else {
+      // A missing bundled CLI must not inherit an older CLI location through
+      // explicit resolver variables or PATH. Otherwise a downstream shell can
+      // silently select a different channel/version after ADE cleared only the
+      // direct executable path.
+      const inheritedBinDir = next.ADE_CLI_BIN_DIR;
+      const pathWithoutInheritedCli = removePathDir(getPathEnvValue(next), inheritedBinDir);
+      if (pathWithoutInheritedCli !== undefined) setPathEnvValue(next, pathWithoutInheritedCli);
+      delete next.ADE_CLI_PATH;
+      delete next.ADE_CLI_BIN_DIR;
+      delete next.ADE_CLI_ENTRY_PATH;
+    }
     next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(next[ADE_AGENT_SKILLS_DIRS_ENV], bundledAgentSkillsRoot);
     if (bundledAgentSkillsRoot) {
       next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = bundledAgentSkillsRoot;
@@ -630,9 +664,16 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const applyToProcessEnv = (): void => {
     const next = agentEnv(process.env);
     const nextPath = getPathEnvValue(next);
-    if (nextPath) setPathEnvValue(process.env, nextPath);
+    if (nextPath !== undefined) setPathEnvValue(process.env, nextPath);
+    else {
+      for (const key of Object.keys(process.env)) {
+        if (key.toLowerCase() === "path") delete process.env[key];
+      }
+    }
     if (next.ADE_CLI_PATH) process.env.ADE_CLI_PATH = next.ADE_CLI_PATH;
+    else delete process.env.ADE_CLI_PATH;
     if (next.ADE_CLI_BIN_DIR) process.env.ADE_CLI_BIN_DIR = next.ADE_CLI_BIN_DIR;
+    else delete process.env.ADE_CLI_BIN_DIR;
     if (next.ADE_CLI_ENTRY_PATH) process.env.ADE_CLI_ENTRY_PATH = next.ADE_CLI_ENTRY_PATH;
     else delete process.env.ADE_CLI_ENTRY_PATH;
     if (next[ADE_AGENT_SKILLS_DIRS_ENV]) process.env[ADE_AGENT_SKILLS_DIRS_ENV] = next[ADE_AGENT_SKILLS_DIRS_ENV];

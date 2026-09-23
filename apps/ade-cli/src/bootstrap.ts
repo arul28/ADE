@@ -55,6 +55,11 @@ import type { createAdeCliService } from "../../desktop/src/main/services/cli/ad
 import type { createDevToolsService } from "../../desktop/src/main/services/devTools/devToolsService";
 import { createOnboardingService } from "../../desktop/src/main/services/onboarding/onboardingService";
 import { createLaneEnvironmentService } from "../../desktop/src/main/services/lanes/laneEnvironmentService";
+import { planNewLaneEnvironment, runLaneEnvironmentSetup } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
+import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
+import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
+import { resolveLaneCreateRemoteBaseDetailed } from "./services/laneCreateRemoteBase";
+import { resolveGitCommit } from "../../desktop/src/main/services/git/git";
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
@@ -125,6 +130,11 @@ import {
   type UsageTrackingHost,
 } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
+import { getSharedTurnUsageLedger } from "../../desktop/src/main/services/usage/turnUsageLedger";
+import {
+  attachSharedUsageResearchUploader,
+  createUsageResearchUploader,
+} from "../../desktop/src/main/services/usage/usageResearchUploader";
 import {
   createProductAnalyticsService,
   defaultProductAnalyticsStateFile,
@@ -147,7 +157,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
+import { captureNewLaneLaunchAnalytics, capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
@@ -317,6 +327,8 @@ export type AdeRuntime = {
   projectId: string;
   project: { rootPath: string; displayName: string; baseRef: string };
   paths: AdeRuntimePaths;
+  /** Whether this runtime serves the RPC endpoint needed by activity reports. */
+  sessionActivityReportingEnabled: boolean;
   logger: Logger;
   db: AdeDb;
   keybindingsService?: ReturnType<typeof createKeybindingsService> | null;
@@ -353,6 +365,7 @@ export type AdeRuntime = {
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
+  chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
@@ -728,6 +741,7 @@ export async function createAdeRuntime(args: {
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
     : paths.socketPath;
+  const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
@@ -1288,6 +1302,8 @@ export async function createAdeRuntime(args: {
 
     const ptyService = createPtyService({
       projectRoot,
+      runtimeSocketPath,
+      sessionActivityReportingEnabled,
       transcriptsDir: paths.transcriptsDir,
       laneService,
       sessionService,
@@ -1640,6 +1656,21 @@ export async function createAdeRuntime(args: {
     });
 
     let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+    // Machine-level, like the quota poller: every project scope in this brain
+    // writes one ledger under `<adeHome>/usage/`.
+    const turnUsageLedger = getSharedTurnUsageLedger(resolveMachineAdeLayout().adeDir, logger);
+    // Machine-level as well: one daily usage research report per finished
+    // local day, read from that ledger. It sends nothing while product
+    // analytics is off, and `ADE_USAGE_RESEARCH=0` turns it off.
+    const detachUsageResearch = attachSharedUsageResearchUploader(resolveMachineAdeLayout().adeDir, () =>
+      createUsageResearchUploader({
+        adeDir: resolveMachineAdeLayout().adeDir,
+        store: turnUsageLedger.store,
+        analytics: productAnalyticsService,
+        appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+        logger,
+      }));
+    teardown.push(() => detachUsageResearch());
 
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
     if (resolvedArgs.chatRuntime === "agent") {
@@ -1648,6 +1679,7 @@ export async function createAdeRuntime(args: {
         browserActorCapabilityIssuer,
         projectRoot,
         runtimeSocketPath,
+        sessionActivityReportingEnabled,
         adeDir: paths.adeDir,
         transcriptsDir: paths.transcriptsDir,
         fileService: headlessLinearServices.fileService,
@@ -1686,6 +1718,7 @@ export async function createAdeRuntime(args: {
           projectId,
           event,
         }),
+        turnUsageLedger,
         onClaudeHooksIgnored: (event) => captureClaudeHooksIgnoredAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -1762,6 +1795,64 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
     }
+    const chatLaunchService = agentChatService
+      ? createChatLaunchService({
+        launchesDir: path.join(paths.cacheDir, "chat-launches"),
+        logger,
+        laneService,
+        agentChatService,
+        usesLocalLaneBase: () => {
+          try {
+            return projectConfigService.getEffective().git?.newLaneBaseSource === "local";
+          } catch {
+            return false;
+          }
+        },
+        resolveBase: async () => {
+          const { baseRef, fetchSucceeded } = await resolveLaneCreateRemoteBaseDetailed({
+            laneService,
+            gitService,
+            projectConfigService,
+          });
+          return { baseRef, fetch: baseRef ? (fetchSucceeded === false ? "failed" : "ok") : "skipped" };
+        },
+        resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
+        resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),
+        planEnvironment: () => {
+          const effective = projectConfigService.getEffective();
+          const templateId = laneTemplateService.getDefaultTemplateId();
+          const template = templateId ? laneTemplateService.getTemplate(templateId) : null;
+          return planNewLaneEnvironment({
+            laneEnvInit: effective.laneEnvInit ?? null,
+            laneOverlayPolicies: effective.laneOverlayPolicies ?? null,
+            defaultTemplate: template,
+          });
+        },
+        runEnvironment: ({ laneId, templateId }) =>
+          runLaneEnvironmentSetup(
+            {
+              laneService,
+              projectConfigService,
+              portAllocationService,
+              laneEnvironmentService,
+              laneTemplateService,
+            },
+            { laneId, templateId },
+          ),
+        onEnvironmentEvent: (listener) => laneEnvironmentService.onEvent(listener),
+        abortEnvironment: ({ laneId, worktreePath }) => {
+          laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath);
+        },
+        emit: (event) => pushEvent("runtime", { type: "chat_launch_event", event }),
+        onOutcome: ({ outcome, provider }) => captureNewLaneLaunchAnalytics({
+          analytics: productAnalyticsService,
+          surface: "api",
+          outcome,
+          provider,
+        }),
+      })
+      : null;
+    if (chatLaunchService) teardown.push(() => chatLaunchService.dispose());
     // Automations are unattended work the machine's own ADE schedules and owns.
     // An embedded runtime runs inside somebody else's process on somebody
     // else's lifecycle, so it must not start rules, fire ingress dispatches, or
@@ -2215,6 +2306,7 @@ export async function createAdeRuntime(args: {
         pollIntervalMs: 120_000,
         dependencies: {
           captureInternalAnalytics: (input) => productAnalyticsService.captureInternal(input),
+          turnUsageLedger,
         },
       }),
       {
@@ -2344,6 +2436,7 @@ export async function createAdeRuntime(args: {
         projectRoot,
         appVersion: syncRuntimeOptions.appVersion ?? "ade-cli",
         runtimeKind: syncRuntimeOptions.runtimeKind ?? "headless",
+        sessionActivityReportingEnabled,
         localDeviceIdPath: syncRuntimeOptions.localDeviceIdPath,
         phonePairingStateDir: syncRuntimeOptions.phonePairingStateDir,
         fileService: headlessLinearServices.fileService,
@@ -2367,6 +2460,7 @@ export async function createAdeRuntime(args: {
         autoRebaseService,
         computerUseArtifactBrokerService,
         agentChatService,
+        chatLaunchService,
         cursorCloudFleetService,
         pushPublisherService,
         ctoStateService,
@@ -2505,6 +2599,7 @@ export async function createAdeRuntime(args: {
       projectId,
       project,
       paths,
+      sessionActivityReportingEnabled,
       logger,
       db,
       keybindingsService,
@@ -2542,6 +2637,7 @@ export async function createAdeRuntime(args: {
       externalSessionsService,
       aiIntegrationService,
       agentChatService,
+      chatLaunchService,
       cursorCloudFleetService,
       ctoStateService,
       ctoMemoryService,

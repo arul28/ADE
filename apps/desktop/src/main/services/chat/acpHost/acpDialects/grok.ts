@@ -34,38 +34,65 @@
  *    they carry are documented in `shared/grokSupervision.ts`.
  * 2. `_meta.clientIdentifier: "ade"` must be stamped at `initialize`.
  * 3. `x.ai/session_notification` with `pending_interaction{kind:"permission"}`
- *    is a spinner hint, not a permission request. Never answer it.
+ *    is a spinner hint, not a permission request. Never answer it. The same
+ *    method carries Grok's usage, so its reader maps that payload to nothing.
  * 4. Read, Grep, and WebSearch never prompt. They are safe commands. Silence
  *    for reads is correct behavior, not a missing prompt.
  * 5. The option ids Grok actually offers are `allow-edits-session`,
  *    `allow-once`, and `reject-once`. The permission bridge classifies them
  *    from the id, so an unrecognized id still lands on a safe kind.
  * 6. `session/cancel` as a REQUEST answers -32601. Send it as a notification.
- * 7. Usage does not arrive as `usage_update`. It rides the `session/prompt`
- *    result `_meta`.
+ * 7. Usage does not arrive as `usage_update`. Per-response usage, turn totals,
+ *    subagents, compaction, and the model catalog ride xAI extension
+ *    notifications, and the `session/prompt` result `_meta` repeats the turn
+ *    totals. See `grokTelemetry.ts`.
  * 8. Never advertise the client `fs` capability. Grok proxies binary reads
  *    through the text file system and corrupts the bytes.
  * 9. `GROK_HOME` IS a valid config-home override (`xai-dirs` reads it). ADE
  *    passes the resolved value through unchanged so the auth probe, diagnostics,
  *    and session all inspect the same credential directory. ADE never writes it.
+ * 10. The model and the effort are session config options (1.0.40). The
+ *    `session/new` and `session/resume` results advertise `model` (grok-4.7,
+ *    grok-4.7-build-fast, grok-4.6, grok-4.5) and `reasoning_effort` (xhigh,
+ *    high, medium, low). `session/set_config_option { configId, value }`
+ *    switches the session and answers with the whole option set; an unknown
+ *    value is -32602. The spawn flags do not hold: `-m grok-4.7-build-fast`
+ *    opened on grok-4.7 and served `grok-4.7-build`, `--reasoning-effort low`
+ *    opened at `medium`, and `session/resume` brings back the model and effort
+ *    the session last ran with. Set through the config option, the same turn
+ *    served `grok-4.7-build-fast`. There is no `mode` option. Builds before
+ *    1.0.40 advertise no `reasoning_effort` option, so the spawn flag still
+ *    carries the effort for them.
  */
 
 import {
   capability,
   capabilityAbsent,
   defineAcpDialect,
+  type AcpExtensionNotificationReader,
   type AcpSpawnContext,
   type AcpSpawnPlan,
-  type AcpUsageSample,
 } from "../acpHostTypes";
 import {
   ADE_CLIENT_INFO,
+  extensionMethodVariants,
   standardClose,
   standardLoad,
   standardResume,
+  standardSetConfigOption,
   transportGatedMcpInjection,
   withOptionalEnv,
 } from "./shared";
+import { grokReasoningEffortFlags, resolveGrokReasoningEffort } from "../../../../../shared/cliLaunch";
+import { readGrokAccount } from "./acpAccounts";
+import {
+  GROK_MODELS_UPDATE_METHOD,
+  GROK_SESSION_NOTIFICATION_METHOD,
+  GROK_SESSION_UPDATE_METHOD,
+  readGrokModelsUpdate,
+  readGrokPromptUsage,
+  readGrokSessionNotification,
+} from "./grokTelemetry";
 import { grokSupervisionEnv } from "../../../../../shared/grokSupervision";
 
 export { GROK_CLAUDE_MARKER_OVERRIDE_ENV, grokSupervisionEnv } from "../../../../../shared/grokSupervision";
@@ -73,111 +100,15 @@ export { GROK_CLAUDE_MARKER_OVERRIDE_ENV, grokSupervisionEnv } from "../../../..
 /** Extension notification that switches Grok's auto-approve mode off. */
 export const GROK_YOLO_MODE_CHANGED_METHOD = "x.ai/yolo_mode_changed";
 
-/** Extension notification that is only a spinner hint. Never answer it. */
-export const GROK_SESSION_NOTIFICATION_METHOD = "x.ai/session_notification";
-
 /** Lowest Grok version this dialect is written against. */
 export const GROK_MINIMUM_VERSION = "1.0.13";
 
-/**
- * xAI `costUsdTicks` are nano-dollars: 1_000_000_000 ticks = $1.00.
- * A 1e6 scale showed a 30k-token ping as $86.65 in the usage footer.
- */
-const GROK_COST_TICKS_PER_USD = 1_000_000_000;
-
-function readNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function readFromLayers(
-  layers: Array<Record<string, unknown> | null | undefined>,
-  key: string,
-): number | undefined {
-  for (const layer of layers) {
-    const value = readNumber(layer?.[key]);
-    if (value !== undefined) return value;
-  }
-  return undefined;
-}
-
-function readModelUsage(modelUsage: unknown): Pick<AcpUsageSample, "inputTokens" | "outputTokens" | "reasoningTokens" | "totalTokens"> | null {
-  const record = asRecord(modelUsage);
-  if (!record) return null;
-  let input = 0;
-  let output = 0;
-  let reasoning = 0;
-  let sawAny = false;
-  for (const entry of Object.values(record)) {
-    const row = asRecord(entry);
-    if (!row) continue;
-    const entryInput = readNumber(row.inputTokens) ?? readNumber(row.promptTokens);
-    const entryOutput = readNumber(row.outputTokens) ?? readNumber(row.completionTokens);
-    const entryReasoning = readNumber(row.reasoningTokens) ?? readNumber(row.thoughtTokens);
-    if (entryInput !== undefined) {
-      input += entryInput;
-      sawAny = true;
-    }
-    if (entryOutput !== undefined) {
-      output += entryOutput;
-      sawAny = true;
-    }
-    if (entryReasoning !== undefined) {
-      reasoning += entryReasoning;
-      sawAny = true;
-    }
-  }
-  if (!sawAny) return null;
-  return {
-    inputTokens: input,
-    outputTokens: output,
-    ...(reasoning ? { reasoningTokens: reasoning } : {}),
-    totalTokens: input + output,
-  };
-}
-
-/**
- * Read Grok's usage from the `session/prompt` result `_meta`.
- *
- * Grok 1.0.13 puts `costUsdTicks` and `modelUsage` under `_meta.usage`, and
- * repeats the token totals at the top level. Older captures put `costUsdTicks`
- * and `modelUsage` at the top level. The reader accepts both.
- */
-export function readGrokPromptUsage(meta: Record<string, unknown> | null | undefined): AcpUsageSample | null {
-  if (!meta) return null;
-  const nested = asRecord(meta.usage);
-  const sample: AcpUsageSample = {};
-
-  const costTicks = readFromLayers([meta, nested], "costUsdTicks");
-  if (costTicks !== undefined) sample.costUsd = costTicks / GROK_COST_TICKS_PER_USD;
-
-  const cachedRead = readFromLayers([meta, nested], "cachedReadTokens");
-  if (cachedRead !== undefined) sample.cacheReadTokens = cachedRead;
-
-  const fromModels = readModelUsage(meta.modelUsage) ?? readModelUsage(nested?.modelUsage);
-  if (fromModels) {
-    Object.assign(sample, fromModels);
-  } else {
-    const input = readFromLayers([meta, nested], "inputTokens");
-    const output = readFromLayers([meta, nested], "outputTokens");
-    const reasoning = readFromLayers([meta, nested], "reasoningTokens");
-    const total = readFromLayers([meta, nested], "totalTokens");
-    if (input !== undefined) sample.inputTokens = input;
-    if (output !== undefined) sample.outputTokens = output;
-    if (reasoning !== undefined) sample.reasoningTokens = reasoning;
-    if (total !== undefined) sample.totalTokens = total;
-    else if (input !== undefined || output !== undefined) {
-      sample.totalTokens = (input ?? 0) + (output ?? 0);
-    }
-  }
-
-  return Object.keys(sample).length ? sample : null;
-}
+/** Every xAI extension method, under both spellings (1.0.40 adds the underscore). */
+const GROK_EXTENSION_NOTIFICATIONS: Record<string, AcpExtensionNotificationReader> = {
+  ...extensionMethodVariants(GROK_SESSION_NOTIFICATION_METHOD, readGrokSessionNotification),
+  ...extensionMethodVariants(GROK_SESSION_UPDATE_METHOD, readGrokSessionNotification),
+  ...extensionMethodVariants(GROK_MODELS_UPDATE_METHOD, readGrokModelsUpdate),
+};
 
 /**
  * Grok's `--permission-mode` is a process-global spawn flag.
@@ -202,6 +133,9 @@ export function grokPermissionModeFlags(permissionMode: string | null | undefine
   }
 }
 
+/** Config option ids Grok 1.0.40 advertises at `session/new` and `session/resume`. */
+export const GROK_CONFIG_OPTION_IDS = ["model", "reasoning_effort"] as const;
+
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   const args = [
     "--no-auto-update",
@@ -210,11 +144,19 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
     "agent",
     "--no-leader",
   ];
-  // Model and effort go on the command line. Grok's `session/set_config_option`
-  // is non-standard: it keys on `configId` and its value enumeration is not
-  // documented, so ADE does not use it.
+  // `-m` only sets the process default, and only for some ids: on 1.0.40
+  // `-m grok-4.6` opened on grok-4.6, but `-m grok-4.7-build-fast` opened on
+  // grok-4.7. A resumed session ignores it. The coordinator therefore also
+  // sets the model through `session/set_config_option` after every entry;
+  // this flag stays as the process default.
+  //
+  // `--reasoning-effort` is for builds before 1.0.40, whose session does not
+  // advertise a `reasoning_effort` option. On 1.0.40 the flag never reached
+  // the session (`--reasoning-effort low` opened at `medium`), so there the
+  // effort rides `session/set_config_option`, and a change to this flag alone
+  // does not restart a session that advertises the option (`spawnFlag`).
   if (context.modelId?.length) args.push("-m", context.modelId);
-  if (context.reasoningEffort?.length) args.push("--reasoning-effort", context.reasoningEffort);
+  args.push(...grokReasoningEffortFlags(context.reasoningEffort));
   args.push("stdio");
   return {
     command: context.binaryPath,
@@ -264,8 +206,15 @@ export const grokDialect = defineAcpDialect({
   // needs filtering here.
   includeSlashCommand: () => true,
 
-  // A spinner hint, not a permission request. Receive it and do nothing.
-  ignoredNotificationMethods: [GROK_SESSION_NOTIFICATION_METHOD],
+  // The spinner hint rides the session-notification method, whose telemetry
+  // reader maps it to nothing. It never reaches the permission bridge.
+  extensionNotifications: GROK_EXTENSION_NOTIFICATIONS,
+  localUsage: capabilityAbsent,
+  readAccount: readGrokAccount,
+  // Grok reports its own compactions (`auto_compact_*`), and it sends no
+  // `usage_update` to infer one from.
+  inferCompaction: false,
+  usageUpdateAfterTurn: false,
 
   sessionIdPersistence: {
     assignableAtLaunch: true,
@@ -284,7 +233,6 @@ export const grokDialect = defineAcpDialect({
     "Grok does not accept image or audio attachments.",
   ],
 
-  usageSource: "prompt_result_meta",
   usage: capability(({ promptResponse }) =>
     readGrokPromptUsage((promptResponse?._meta ?? null) as Record<string, unknown> | null),
   ),
@@ -296,11 +244,19 @@ export const grokDialect = defineAcpDialect({
   resumeSession: capability(standardResume),
   loadSession: capability(standardLoad),
 
-  // Non-standard on this agent. Model and effort ride spawn flags instead.
-  sessionConfig: capabilityAbsent,
+  // Model and effort only. The permission posture rides spawn flags (rule 1),
+  // so there is no `mode` option and the coordinator sends no mode call.
+  sessionConfig: capability(standardSetConfigOption),
   modelSelection: capabilityAbsent,
   mcpInjection: capability(transportGatedMcpInjection),
   // No image or audio prompt support.
   imagePrompts: capabilityAbsent,
-  configOptionIds: [],
+  configOptionIds: GROK_CONFIG_OPTION_IDS,
+  // A clear puts back the effort the session opened with. A failed set is
+  // logged, and the session keeps running on its own effort.
+  reasoningEffortOption: {
+    configId: "reasoning_effort",
+    toAgentValue: resolveGrokReasoningEffort,
+    spawnFlag: "--reasoning-effort",
+  },
 });

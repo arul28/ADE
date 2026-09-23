@@ -1156,7 +1156,12 @@ describe("createAdeWebAdapter", () => {
       "chat.getChatEventHistory",
     ]);
     fake.commandResults.set("lanes.list", [{ id: "lane-1" }]);
-    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
+    const activityStatus = {
+      value: "testing",
+      source: "agent",
+      updatedAt: "2026-09-23T08:00:00.000Z",
+    };
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1", activityStatus }]);
     fake.commandResults.set("prs.list", [{ id: "pr-1" }]);
     fake.commandResults.set("git.getChanges", { files: [{ path: "a.ts" }] });
     fake.commandResults.set("chat.getChatEventHistory", {
@@ -1171,7 +1176,11 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-1" }]);
-    await expect(adapter.ade.sessions.list()).resolves.toEqual([{ id: "session-1", ptyId: "pty-1" }]);
+    await expect(adapter.ade.sessions.list()).resolves.toEqual([{
+      id: "session-1",
+      ptyId: "pty-1",
+      activityStatus,
+    }]);
     await expect(adapter.ade.prs.listAll()).resolves.toEqual([{ id: "pr-1" }]);
     await expect(adapter.ade.diff.getChanges({ laneId: "lane-1" } as never)).resolves.toEqual({
       files: [{ path: "a.ts" }],
@@ -1784,6 +1793,33 @@ describe("createAdeWebAdapter", () => {
       "chat.cancelScheduledWork",
       "chat.setScheduledWorkPaused",
     ]);
+    adapter.dispose();
+  });
+
+  it("routes new-lane launches through the chat launch actions and rejects on an older host", async () => {
+    fake.descriptors = descriptors(["chat.startLaunch", "chat.listLaunches", "chat.cancelLaunch", "chat.queueLaunchMessage"]);
+    const launch = { launchId: "launch-1", phase: "running" };
+    fake.commandResults.set("chat.startLaunch", launch);
+    fake.commandResults.set("chat.listLaunches", [launch]);
+    fake.commandResults.set("chat.cancelLaunch", { ...launch, phase: "cancelled" });
+    fake.commandResults.set("chat.queueLaunchMessage", launch);
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.chatLaunch.start({ kind: "chat", mode: "foreground", launchId: "launch-1", prompt: "Fix it" }))
+      .resolves.toEqual(launch);
+    await expect(adapter.ade.chatLaunch.list()).resolves.toEqual([launch]);
+    await expect(adapter.ade.chatLaunch.queueMessage({ launchId: "launch-1", text: "Also this" })).resolves.toEqual(launch);
+    await expect(adapter.ade.chatLaunch.cancel({ launchId: "launch-1" })).resolves.toMatchObject({ phase: "cancelled" });
+    expect(fake.commandCalls.map((call) => call.action)).toEqual([
+      "chat.startLaunch",
+      "chat.listLaunches",
+      "chat.queueLaunchMessage",
+      "chat.cancelLaunch",
+    ]);
+    // A host without the action rejects the write instead of faking a launch.
+    await expect(adapter.ade.chatLaunch.retry({ launchId: "launch-1" })).rejects.toThrow(/chat\.retryLaunch/);
     adapter.dispose();
   });
 
@@ -2425,32 +2461,21 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("routes Graph fan-out reads through one batched sync command and one PR detail command", async () => {
-    fake.descriptors = descriptors(["git.getSyncStatuses", "prs.getDetailBundle"]);
-    const syncStatuses = {
-      "lane-1": { hasUpstream: true, upstreamState: "tracking" },
-      "lane-2": null,
-    };
+  it("routes PR detail reads through one bundled command", async () => {
+    fake.descriptors = descriptors(["prs.getDetailBundle"]);
     const detail = {
       status: { prId: "pr-1", isMergeable: true },
       checks: [{ id: "check-1" }],
       reviews: [{ id: "review-1" }],
       comments: [{ id: "comment-1" }],
     };
-    fake.commandResults.set("git.getSyncStatuses", syncStatuses);
     fake.commandResults.set("prs.getDetailBundle", detail);
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual(syncStatuses);
     await expect(adapter.ade.prs.getDetailBundle("pr-1")).resolves.toEqual(detail);
 
     expect(fake.commandCalls).toEqual([
-      expect.objectContaining({
-        action: "git.getSyncStatuses",
-        args: { laneIds: ["lane-1", "lane-2"] },
-        opts: { projectId: "project-1" },
-      }),
       expect.objectContaining({
         action: "prs.getDetailBundle",
         args: { prId: "pr-1" },
@@ -2461,30 +2486,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("keeps Graph sync data on a legacy host with only per-lane status reads", async () => {
-    fake.descriptors = descriptors(["git.getSyncStatus"]);
-    const status = { hasUpstream: true, upstreamState: "tracking", ahead: 1, behind: 0 };
-    fake.commandResults.set("git.getSyncStatus", status);
-    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
-    adapter.bindProject(project, "project-1");
-
-    await expect(adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual({
-      "lane-1": status,
-      "lane-2": status,
-    });
-    expect(fake.commandCalls.map((call) => call.action)).toEqual([
-      "git.getSyncStatus",
-      "git.getSyncStatus",
-    ]);
-    expect(fake.commandCalls.map((call) => call.args)).toEqual([
-      { laneId: "lane-1" },
-      { laneId: "lane-2" },
-    ]);
-
-    adapter.dispose();
-  });
-
-  it("keeps Graph PR detail data on a legacy host with per-sidecar reads", async () => {
+  it("keeps PR detail data on a legacy host with per-sidecar reads", async () => {
     fake.descriptors = descriptors([
       "prs.getStatus",
       "prs.getChecks",

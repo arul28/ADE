@@ -1,3 +1,5 @@
+import type { PrLaneNextStep } from "../prNextStep";
+
 // ---------------------------------------------------------------------------
 // PR types
 // ---------------------------------------------------------------------------
@@ -145,6 +147,10 @@ export type PrLaneSummary = {
    */
   checksStatus?: PrChecksStatus;
   stack?: GitHubPrStackMembership | null;
+  /** The one next step (`resolvePrNextStep`), from the cached status snapshot. */
+  nextStep?: PrLaneNextStep | null;
+  /** Product names of the agent reviewers on this PR ("CodeRabbit", "Devin"). */
+  agents?: string[];
 };
 
 export type PrStatus = {
@@ -178,6 +184,12 @@ export type PrStatus = {
   canBypass?: boolean;
   /** Head SHA at the time status was computed; used for the stale-head guard. */
   headSha?: string | null;
+  /** Repository setting "Allow auto-merge" (GraphQL `autoMergeAllowed`). */
+  autoMergeAllowed?: boolean;
+  /** Auto-merge is armed on this PR; GitHub merges it once requirements pass. */
+  autoMergeEnabled?: boolean;
+  /** Method the armed auto-merge will use. */
+  autoMergeMethod?: MergeMethod | null;
 };
 
 export type PrCheck = {
@@ -213,6 +225,8 @@ export type PrCheck = {
 export type PrReview = {
   reviewer: string;
   reviewerAvatarUrl: string | null;
+  /** GitHub marks the account as an app or bot (REST `user.type` / GraphQL `__typename`). */
+  reviewerIsBot?: boolean;
   state: "pending" | "approved" | "changes_requested" | "commented" | "dismissed";
   body: string | null;
   submittedAt: string | null;
@@ -222,6 +236,8 @@ export type PrComment = {
   id: string;
   author: string;
   authorAvatarUrl: string | null;
+  /** GitHub marks the account as an app or bot (REST `user.type`). */
+  authorIsBot?: boolean;
   body: string | null;
   source: "issue" | "review";
   url: string | null;
@@ -240,6 +256,11 @@ export type PrReviewThreadComment = {
   id: string;
   author: string;
   authorAvatarUrl: string | null;
+  /**
+   * GitHub marks the account as a bot (GraphQL `__typename === "Bot"`). GraphQL
+   * bot logins carry no `[bot]` suffix, so the login alone cannot tell.
+   */
+  authorIsBot?: boolean;
   body: string | null;
   url: string | null;
   createdAt: string | null;
@@ -1278,6 +1299,8 @@ export type PrLabel = {
 export type PrUser = {
   login: string;
   avatarUrl: string | null;
+  /** GitHub marks the account as an app or bot. */
+  isBot?: boolean;
 };
 
 export type PrTeam = {
@@ -1611,6 +1634,12 @@ export type RequestPrReviewersArgs = {
   teamReviewers?: string[];
 };
 
+/** People and teams the Reviewers card asks for. Team entries are slugs. */
+export type ReviewerRequest = {
+  reviewers: string[];
+  teamReviewers: string[];
+};
+
 export type SubmitPrReviewArgs = {
   prId: string;
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
@@ -1636,6 +1665,20 @@ export type ClosePrArgs = {
 
 export type ReopenPrArgs = {
   prId: string;
+};
+
+/** `draft: true` converts to draft; `false` marks it ready for review. */
+export type SetPrDraftArgs = {
+  prId: string;
+  draft: boolean;
+};
+
+/** Arm (`enabled: true`) or disarm GitHub auto-merge on a PR. */
+export type SetPrAutoMergeArgs = {
+  prId: string;
+  enabled: boolean;
+  /** Merge method for an armed auto-merge; defaults to squash. */
+  method?: MergeMethod;
 };
 
 export type PrRerunChecksTarget = {

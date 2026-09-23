@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
+  captureNewLaneLaunchAnalytics,
   providerAccountAnalyticsCapture,
   coarseProviderFamily,
   type FeatureAnalytics,
@@ -60,5 +62,22 @@ describe("providerAccountAnalyticsCapture", () => {
   it("is safe when analytics is not configured", () => {
     const capture = providerAccountAnalyticsCapture(null, "desktop");
     expect(() => capture("auto_start_changed", "disabled", "codex")).not.toThrow();
+  });
+});
+
+describe("captureNewLaneLaunchAnalytics", () => {
+  it("records one coarse outcome per new-lane launch, deduped per outcome and provider family", () => {
+    const { analytics, captured } = recorder();
+    captureNewLaneLaunchAnalytics({ analytics, surface: "api", outcome: "cancelled", provider: "codex" });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      event: "ade_feature_used",
+      surface: "api",
+      dedupeKey: "feature:chat:new_lane_launch:cancelled:codex",
+      properties: { feature: "chat", action: "new_lane_launch", outcome: "cancelled", provider: "codex" },
+    });
+    // The allowlist keeps every value: nothing is silently dropped at the boundary.
+    const sanitized = sanitizeProductAnalyticsProperties("ade_feature_used", (captured[0] as { properties: Record<string, unknown> }).properties as never);
+    expect(sanitized).toMatchObject({ feature: "chat", action: "new_lane_launch", outcome: "cancelled", provider: "codex" });
   });
 });

@@ -384,14 +384,25 @@ export const ChatTurnFileChangesPanel = React.memo(function ChatTurnFileChangesP
   turnSummary,
   threadSummaries,
   sessionId,
+  variant = "line",
 }: {
   turnSummary: TurnDiffSummary;
   threadSummaries: TurnDiffSummary[];
   sessionId: string;
+  /** `detail` is the expanded browser only, for the turn summary line. */
+  variant?: "line" | "detail";
 }) {
   const thread = threadSummaries.length ? threadSummaries : [turnSummary];
   const turnFiles = useMemo(() => aggregateFiles([turnSummary]), [turnSummary]);
   if (!turnFiles.length) return null;
+  if (variant === "detail") {
+    return (
+      <div className="mt-2 space-y-2">
+        <NestedFileChangesSection label="This turn" summaries={[turnSummary]} sessionId={sessionId} />
+        <NestedFileChangesSection label="Full thread" summaries={thread} sessionId={sessionId} />
+      </div>
+    );
+  }
 
   const additions = turnFiles.reduce((sum, file) => sum + file.additions, 0);
   const deletions = turnFiles.reduce((sum, file) => sum + file.deletions, 0);

@@ -1,0 +1,32 @@
+{
+  "_note": "assistant_usage_events row Copilot CLI 1.0.88 wrote for the probe turn in copilot.usage-turn.jsonl, read read-only from ~/.copilot/session-store.db on 2026-09-23.",
+  "rows": [
+    {
+      "id": 33,
+      "session_id": "74a58a1f-afd3-4310-9e75-888aeda92d62",
+      "turn_index": 0,
+      "agent_id": null,
+      "parent_tool_call_id": null,
+      "model": "mai-code-1.1-flash",
+      "input_tokens": 14160,
+      "output_tokens": 5,
+      "cache_read_tokens": 1152,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 0,
+      "total_nano_aiu": 236757600,
+      "request_multiplier": 1.0,
+      "duration_ms": 1830,
+      "time_to_first_token_ms": 1760.8285409999999,
+      "output_ttft_ms": 1760.8286249999999,
+      "inter_token_latency_ms": null,
+      "initiator": "user",
+      "api_endpoint": "/responses",
+      "reasoning_effort": "high",
+      "finish_reason": "stop",
+      "content_filter_triggered": 0,
+      "token_details_json": "[{\"batchSize\":1000000,\"costPerBatch\":18000000000,\"tokenCount\":13008,\"tokenType\":\"input\",\"model\":\"mai-code-1.1-flash\"},{\"batchSize\":1000000,\"costPerBatch\":1800000000,\"tokenCount\":1152,\"tokenType\":\"cache_read\",\"model\":\"mai-code-1.1-flash\"},{\"batchSize\":1000000,\"costPerBatch\":22500000000,\"tokenCount\":0,\"tokenType\":\"cache_write\",\"model\":\"mai-code-1.1-flash\"},{\"batchSize\":1000000,\"costPerBatch\":108000000000,\"tokenCount\":5,\"tokenType\":\"output\",\"model\":\"mai-code-1.1-flash\"}]",
+      "created_at": "2026-09-23T07:38:17.494Z",
+      "copilot_usage_model": null
+    }
+  ]
+}

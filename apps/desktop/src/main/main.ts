@@ -3779,6 +3779,7 @@ app.whenReady().then(async () => {
       });
     const ptyService = createPtyService({
       projectRoot,
+      runtimeSocketPath: machineAdeLayout.socketPath,
       transcriptsDir: adePaths.transcriptsDir,
       laneService,
       sessionService,
@@ -5085,6 +5086,7 @@ app.whenReady().then(async () => {
       projectId,
       project,
       paths: adePaths as unknown as AdeRuntimePaths,
+      sessionActivityReportingEnabled: true,
       logger,
       db,
       keybindingsService,

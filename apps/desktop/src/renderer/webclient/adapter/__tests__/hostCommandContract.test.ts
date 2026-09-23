@@ -52,7 +52,6 @@ const KNOWN_UNSUPPORTED: Record<string, string> = {
   "conflicts.listProposals": "no remote contract for resolver sessions",
   "conflicts.prepareProposal": "no remote contract for resolver sessions",
   "conflicts.requestProposal": "no remote contract for resolver sessions",
-  "conflicts.simulateMerge": "no remote contract for resolver sessions",
   "conflicts.undoProposal": "no remote contract for resolver sessions",
   // Codex goal state is held by the local Codex app-server connection.
   "chat.codex.clearGoal": "codex goal state is local to the app-server connection",

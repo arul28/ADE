@@ -2,7 +2,16 @@ import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessi
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { adeBundledAgentSkills, buildAdeBootstrapGuidance, buildAdeCliAgentGuidance } from "./adeCliGuidance";
+import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
+import {
+  adeBundledAgentSkills,
+  buildAdeBootstrapGuidance,
+  buildAdeCliAgentGuidance,
+  buildAdePosixTrackedCliActivityGuidance,
+  buildAdeRuntimeSocketEnv,
+  buildAdeSessionActivityGuidance,
+  buildAdeWindowsTrackedCliActivityGuidance,
+} from "./adeCliGuidance";
 
 describe("ADE CLI guidance", () => {
   it("now aliases the minimal bootstrap (the verbose always-on blob was removed)", () => {
@@ -117,5 +126,60 @@ describe("Work board status guidance", () => {
     const guidance = buildAdeBootstrapGuidance([]);
     expect(guidance).not.toContain("moveOnBoard");
     expect(guidance).toContain("You cannot settle or unsettle a session");
+  });
+});
+
+describe("ADE session activity guidance", () => {
+  it("has distinct POSIX and Windows tracked CLI guidance", () => {
+    const posix = buildAdePosixTrackedCliActivityGuidance();
+    const windows = buildAdeWindowsTrackedCliActivityGuidance();
+
+    expect(posix).toContain('"$ADE_CLI_PATH" chat activity testing');
+    expect(posix).toContain("ADE_ACTIVITY_SESSION_ID");
+    expect(posix).not.toContain("PowerShell");
+    expect(windows).toContain("PowerShell");
+    expect(windows).toContain("cmd.exe");
+    expect(windows).toContain("Git Bash");
+    expect(windows).toContain(SESSION_ACTIVITY_VALUES.join(", "));
+  });
+
+  it("pins all CLI socket selectors to one exact runtime", () => {
+    expect(buildAdeRuntimeSocketEnv(" /runtime/ade.sock ")).toEqual({
+      ADE_RPC_URL: "/runtime/ade.sock",
+      ADE_RPC_SOCKET_PATH: "/runtime/ade.sock",
+      ADE_RUNTIME_SOCKET_PATH: "/runtime/ade.sock",
+    });
+    expect(buildAdeRuntimeSocketEnv("  ")).toEqual({});
+  });
+
+  it("targets a shared OpenCode server at the exact CLI and runtime for both shells", () => {
+    const posixGuidance = buildAdeSessionActivityGuidance({
+      sessionId: "chat-1",
+      cliPath: "/Applications/ADE Beta.app/bin/ade",
+      shell: "posix",
+      target: { type: "inline", runtimeSocketPath: "/Users/admin/.ade-beta/sock/ade.sock" },
+    });
+    const powershellGuidance = buildAdeSessionActivityGuidance({
+      sessionId: "chat-1",
+      cliPath: "C:\\Program Files\\ADE Beta\\ade.exe",
+      shell: "powershell",
+      target: { type: "inline", runtimeSocketPath: "C:\\Users\\admin\\.ade-beta\\sock\\ade.sock" },
+    });
+
+    expect(posixGuidance).toContain(
+      "ADE_DEFAULT_ROLE='agent' ADE_CHAT_SESSION_ID='chat-1' ADE_RPC_URL='/Users/admin/.ade-beta/sock/ade.sock' ADE_RPC_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' ADE_RUNTIME_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' '/Applications/ADE Beta.app/bin/ade' chat activity testing --session 'chat-1'",
+    );
+    expect(posixGuidance).toContain("chat activity clear --session 'chat-1'");
+    expect(posixGuidance).not.toContain("$ADE_CLI_PATH");
+    expect(powershellGuidance).toContain(
+      "$env:ADE_DEFAULT_ROLE = 'agent'; $env:ADE_CHAT_SESSION_ID = 'chat-1'; $env:ADE_RPC_URL = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RPC_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RUNTIME_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; & 'C:\\Program Files\\ADE Beta\\ade.exe' chat activity testing --session 'chat-1'",
+    );
+    expect(powershellGuidance).not.toContain("$env:ADE_CLI_PATH");
+    expect(buildAdeSessionActivityGuidance({
+      sessionId: "chat-1",
+      cliPath: "/Applications/ADE Beta.app/bin/ade",
+      shell: "posix",
+      target: { type: "inline", runtimeSocketPath: " " },
+    })).toBeNull();
   });
 });

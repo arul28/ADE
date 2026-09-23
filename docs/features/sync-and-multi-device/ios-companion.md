@@ -317,9 +317,13 @@ apps/ios/
 │   │   │                            # bounce the URL to a paired host via the
 │   │   │                            # deeplinks.open sync command.
 │   ├── Models/
-│   │   └── RemoteModels.swift       # Codable structs mirroring shared types,
-│   │                                # including legacy and dotted subagent
-│   │                                # lifecycle chat events
+│   │   ├── RemoteModels.swift       # Codable structs mirroring shared types,
+│   │   │                            # including legacy and dotted subagent
+│   │   │                            # lifecycle chat events
+│   │   └── ChatLaunchModels.swift   # hand mirror of shared/types/chatLaunch.ts
+│   │                                # (snapshot, stages, queued messages,
+│   │                                # chat_launch_event envelope); tolerant
+│   │                                # decoding, only launchId required
 │   ├── Resources/
 │   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts; carries
 │   │   │                            # the replicated `terminal_sessions`
@@ -392,6 +396,14 @@ apps/ios/
 │   │   ├── SyncService+MachineWake.swift # the confirm/waking/failed prompt
 │   │   │                            # state machine and its 90 s decision
 │   │   │                            # deadline
+│   │   ├── ChatLaunchStore.swift    # new-lane launch snapshots per project
+│   │   │                            # plus this device's local facts (start
+│   │   │                            # in flight, retry request, deferred
+│   │   │                            # messages); own observable so launch
+│   │   │                            # ticks re-render only launch surfaces
+│   │   ├── SyncService+ChatLaunch.swift # chat.startLaunch … commands,
+│   │   │                            # chat_launch_event handling, hydration
+│   │   │                            # and foreign-project pull refresh
 │   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
 │   │   │                                # ACK timeout/retry, stable input ids
 │   │   ├── Dictation/               # SpeechDictationService,
@@ -551,6 +563,14 @@ apps/ios/
 │   │   │                            #   groups, quiet-zone shelves,
 │   │   │                            #   WorkViewStateStore; nested drawers
 │   │   │                            #   come from WorkSpawnNesting),
+│   │   │                            # WorkChatLaunch* (new-lane launches:
+│   │   │                            #   Presentation = hand mirror of
+│   │   │                            #   shared/chatLaunch.ts wording, Views =
+│   │   │                            #   palette/glyphs/rail/stage row,
+│   │   │                            #   SetupCard, PendingScreen + the route
+│   │   │                            #   gate, ListProjection = Work/Hub row
+│   │   │                            #   overlay), WorkLaneSetupTranscriptCard
+│   │   │                            #   (the lane_setup ade_card row),
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   launcher + per-project interface
 │   │   │                            #   preference shared with Hub; pinned
@@ -2513,6 +2533,59 @@ stored choice. `WorkNewChatScreen` captures the active project id when pushed;
 changes so a hub-created session cannot accidentally launch with the previous
 project's interface mode.
 
+### New-lane chat launches
+
+A new **chat** on the auto-create-lane target — from `WorkNewChatScreen` or
+the Hub composer drawer — goes through the brain-owned launch
+(`chat.startLaunch`, see
+[Chat › New-lane launches](../chat/README.md#new-lane-launches)) when
+`SyncService.canStartChatLaunch` holds: the host advertises
+`chat.startLaunch`, it has not rejected it as unknown on this connection
+(`chatLaunchKnownUnsupported`, reset on reconnect), and the phone can send
+live requests. CLI sessions, Cursor Cloud mode, offline sends, and older
+hosts keep the chained `lanes.create` → `chat.create` → `chat.send` flow
+unchanged (`ChatLaunchRequest` returns nil).
+
+`SyncService.beginChatLaunch` inserts an optimistic snapshot and returns it
+at once; attachments stage on the host in the background and
+`chat.startLaunch` follows. The session id is the launch id, so the screen
+opens the chat route immediately (Work) or reports the created chat (Hub)
+with no placeholder swap. On the route, `WorkChatLaunchGate` shows
+`WorkChatLaunchPendingScreen` — the opening bubble, the live setup card,
+queued follow-ups, and a composer whose sends go to
+`chat.queueLaunchMessage` — until the agent starts, then hands over to the
+ordinary chat destination for the same session id and never flips back.
+With no launch held, the gate waits until this connection has listed the
+project's launches, so a relaunch mid-setup does not strand the chat without
+its setup screen, Retry, or Delete. The setup card
+(`WorkChatLaunchSetupCard`) offers Start now and Cancel while running, and
+Retry, Start anyway (lane exists and the environment failed) and Delete on
+failure; its wording is a hand mirror of `shared/chatLaunch.ts`
+(`WorkChatLaunchPresentation.swift`, covered by `ChatLaunchTests`). Once the
+chat exists, `WorkLaneSetupTranscriptCard` renders the transcript's
+`lane_setup` `ade_card` from the live snapshot, or from the card's own rows
+(matched by each row's `key`) after a reload.
+
+**Rows.** `workOverlayChatLaunches` folds pending launches into the Work
+list: a launch whose session row has not replicated yet gets a synthesized
+row under its lane (the lane may not have replicated either), and once the
+real row lands only its preview line borrows the launch's status line.
+`WorkSessionRowCard` draws the shared segmented rail under that line.
+`hubRosterOverlayingChatLaunches` does the same for each Hub project's
+roster. Deleting a pending launch row cancels the launch, which deletes the
+lane (worktree, local and remote branch) and the chat on the host;
+`chat.cancelLaunch` gets a 5-minute request budget (longer than `lanes.delete`), matching the desktop: it waits out an in-flight checkout and then deletes the lane.
+
+**Refresh.** Pushed `chat_launch_event` envelopes carry the host's
+`projectId` / `projectRootPath` (older hosts omit them and the push is
+filed under the active project). The active project hydrates with
+`chat.listLaunches` once per connection (project switches reconnect).
+Launches in other projects get no pushes, so the phone pulls
+`chat.listLaunches` per project for any launch the host accepted that is
+still running or awaiting its client — on connect, on foreground, and
+every 3 s while the Hub is on screen and the app is active; the loop stops
+as soon as nothing is moving.
+
 The Work chat composer folds by gesture, not by a control. A downward swipe
 anywhere on the composer card — the field, the controls row, or the card's own
 padding — folds the field to one line and lowers the keyboard in one spring; an
@@ -2726,14 +2799,21 @@ The iOS pieces:
 
 - `apps/ios/ADE/Resources/DatabaseBootstrap.sql` declares the five new nullable
   `terminal_sessions` columns (`settle_override`, `snoozed_until`,
-  `snoozed_at`, `woke_at`, `woke_reason`) for fresh installs.
+  `snoozed_at`, `woke_at`, `woke_reason`) for fresh installs. The separate
+  `activity_status_json` and `activity_status_changed_at` columns carry the
+  host-authored Work-card activity detail.
 - `apps/ios/ADE/Services/Database.swift` carries the matching `ensureColumn`
   migrations for existing installs, plus the columns threaded through the
-  session upsert bind indices, the row struct, and the session read queries.
+  session upsert bind indices, the row struct, and the session read queries,
+  including the two activity-report columns.
 - `apps/ios/ADE/Models/RemoteModels.swift` and `RemoteRosterModels.swift` decode
   `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt`, and `wokeReason` as
   optional `String` fields through `decodeIfPresent`, and include them in
-  equality so a lifecycle-only change still redraws the row. Roster chats expose
+  equality so a lifecycle-only change still redraws the row. Session summaries
+  also decode `activityStatus` and `activityStatusChangedAt`; chat summaries
+  carry `currentTurnStartedAt` for the Work-row timer. Roster chats merge
+  activity reports by their own timestamp, separately from lifecycle freshness.
+  Roster chats expose
   `countsTowardRunning` (live running, not snoozed) and
   `applyLocalSnoozeOverlay`, because snooze does not bump `lastActivityAt` and a
   fresher remote row would otherwise wipe the overlay the phone just wrote.
@@ -2742,8 +2822,10 @@ The iOS pieces:
   is `idle`, and both `idle` and `ended` strings land on `idle` rather than
   `done` so week-old roster history does not paint emerald.
 - `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
-  callers. The phone never decides a lifecycle value, so these commands are the
-  mechanism, and the connect-time descriptor list gates the affordances.
+  callers. The phone does not author activity-report columns; the host filters
+  phone-authored copies and sends normalized reports through CRR. Session
+  commands remain the lifecycle mutation path, and the connect-time descriptor
+  list gates the affordances.
 - **The settle columns are host-authoritative and the phone never writes them.**
   `settled_at`, `settle_override`, and `settle_source` are decided by the host's
   `sessionService`, which is the only place that can weigh a settle against live
@@ -2765,6 +2847,9 @@ The iOS pieces:
   from inbound phone changesets (`syncHostService`), and such a phone self-heals
   on the next `refreshWorkSessions`. See
   [settle-teardown design §3c-i](../terminals-and-sessions/settle-teardown-design.md).
+  The same phone-only inbound changeset filter protects `activity_status_json`
+  and `activity_status_changed_at`: these reports are written and timestamped
+  by the host, then replicated to the phone for display.
 - **Attention clears get the same treatment, on a shorter fuse.**
   `PendingAttentionClearStates.swift` is the second local, non-persisted overlay,
   covering the three host-authoritative columns the needs-you tier reads
@@ -2899,6 +2984,16 @@ supposed to mean *your move*, so the "Needs you" badge stopped registering.
 2. Title plus the lane's PR badge (`WorkLanePrIndicator` / `LanePrTag`).
 3. An italic preview line plus the provider mark.
 
+The status slot shows one effective label. A structured provider mode may show
+**Planning** for the live turn; a current agent activity report can refine a
+running row to **Planning**, **Implementing**, **Testing**, **Reviewing**,
+**Debugging**, or **Monitoring**. Pending input keeps **Needs you** in the slot
+ahead of an activity detail. The report refines the card presentation only: it
+does not change the session phase, Work-board column, or grouped Activity count.
+The phone does not generate these reports; it displays the host-authoritative
+value. Provider-specific planning signals and activity-report eligibility are
+listed in [the session provider signal boundaries](../terminals-and-sessions/README.md#provider-signal-boundaries).
+
 A nested same-lane subagent is a compact one-line card: identicon, title, then
 the provider mark on the trailing edge (same seat as a full card), and
 shout-only status words (Needs you / Failed). The **N subagents** drawer
@@ -2965,11 +3060,13 @@ Known limits, all deliberate:
   `spawnKind`, so the by-lane Work list nests same-lane subagent chats under
   the parent the way desktop does (`WorkSpawnNesting.swift`). Nested compact
   rows put the identicon and title on the leading edge and the provider mark
-  on the trailing edge. It still omits `branchRef`,
-  `currentTurnStartedAt`, `nextWakeAt`, and `lastActivityAt`, so desktop's
-  branch chip, machine tower glyph, grid indicator, and `nextWakeAt`-driven
-  "Waiting" status have no iOS equivalent, and the elapsed ticker anchors on
-  activity time rather than turn start. `parentIdentityKey` is present.
+  on the trailing edge. The terminal summary still omits `branchRef` and
+  `nextWakeAt`, so desktop's branch chip, machine tower glyph, grid indicator,
+  and `nextWakeAt`-driven **Waiting** status have no iOS equivalent. It includes
+  `lastActivityAt`, which drives row freshness and sorting. Chat summaries carry
+  `currentTurnStartedAt` for foreground chat timers; tracked CLI rows have no
+  such turn anchor and fall back to an eligible activity report's timestamp,
+  then the row's activity timestamp. `parentIdentityKey` is also present.
 - Against a host that predates `dismissPendingInput` on the bulk action, the
   flag is ignored: the settle reports success and the row stays "Needs you".
 
@@ -3104,7 +3201,7 @@ available.
 
 ### Planned
 
-- Automations, Graph, History tabs.
+- Automations and History tabs.
 - Full Settings parity with the desktop.
 - iPad adaptive layout, Spotlight.
 
@@ -3367,11 +3464,10 @@ Timeline+Rails PR view. Its Overview is emitted as sibling `List` rows
 virtualizes offscreen thread content instead of laying out the whole PR on
 every scroll frame. The navigation header uses a plain back chevron, centered
 PR title with `#number · lane · branch`, and a plain ellipsis actions button.
-Reading order (desktop parity, folded to one column):
+Reading order (the desktop triage layout, native to a phone):
 
-1. a compact summary section (`PrDetailSummarySection`) with a state/approval
-   line and three metrics: Checks, Changes, and Commits. Commits expand inline
-   from their metric and jump to the matching timeline anchor;
+1. the header card (`PrDetailHeaderCard`, `PrDetailRedesign.swift`): number,
+   author and age, state, the title, `base ← head`, and the lane;
 2. a collapsed-by-default local-lane offer (`PrLocalLaneOfferBanner`) when no
    local lane tracks this PR's branch — "Create a lane from this branch, or link
    one you already have, to edit the code on your machine". It is an offer to
@@ -3382,31 +3478,35 @@ Reading order (desktop parity, folded to one column):
 3. the PR description (`PrThreadDescriptionCard`). GitHub's embedded HTML is
    normalized into safe Markdown, while `<details>/<summary>` regions become
    native `DisclosureGroup` rows instead of visible raw tags;
-4. a chronological event feed — one row per timeline event or folded
-   commit group, ascending oldest → newest, built by
-   `buildPullRequestTimeline` and folded via `buildPrTimelineDisplayItems`
-   (`PrDetailActivityTab.swift`) so runs of same-author commits collapse
-   into a single group row;
-5. review threads (unresolved first, resolved folded into a collapsible
-   section). Individual thread/comment cards are also collapsible on mobile:
-   folded rows use cheap inline preview text, while expanded rows render the
-   full normalized markdown body through `WorkMarkdownRenderer`;
-6. the comment composer — shown for every PR. Commenting is a GitHub call, so a
-   local lane is not a precondition and there is no locked-composer state;
-7. the inline merge rail (`PrOverviewMergeRail`) carrying the desktop
-   GitHub-style requirement checklist (`PrMergeChecklist` —
-   conflicts / behind-base / checks / review), the merge-method sheet, and
-   admin-bypass gating;
-8. metadata cards — checks, commits, files, people, and the stack card,
-   plus a post-merge cleanup banner.
+4. "Needs attention" (`PrNeedsAttentionHeader`): the unresolved review threads,
+   with reply and resolve, pinned above the history;
+5. the history, built by `buildPullRequestTimeline` and folded by
+   `buildPrDigestDisplayItems`: a divider per push (`PrPushDividerRow`) and one
+   folded row per bot per push (`PrBotGroupRow`). People and lifecycle events
+   stay as full rows. GitHub's bot flag (`reviewerIsBot` / `authorIsBot`)
+   rides along, so a GraphQL-style bot login without `[bot]` still folds;
+6. resolved threads, folded into a collapsible section;
+7. the comment composer — shown for every PR;
+8. the people card, the ADE stack card, and the post-merge cleanup banner.
 
-There is no separate Activity sub-tab — the activity feed lives inside
-Overview, and the visible sub-tabs are Overview / Files / CI-Checks (a
-persisted `.activity` selection routes to Overview). The
-render-path-expensive derived models — the sorted timeline, the folded
-display items, the unresolved/resolved thread split, and the synthesized
-fallback PR — are precomputed once per data change in
-`recomputeDerivedModels()`, never inside `body`.
+The next step is a bar above the tab bar on every tab (`PrNextStepBar`). It
+shows the headline from `PrNextStep.resolve` (the Swift port of the desktop
+`resolvePrNextStep`, same priority order) and its one action. A tap on the
+headline opens `PrNextStepSheet` with the detail, the requirement chips, the
+secondary action, and "Merge anyway" (the admin bypass when rules block), which
+opens the existing merge-method sheet. The inline merge rail and the checks,
+commits, and files cards are gone from Overview: the bar and the tabs carry
+them.
+
+The sub-tabs are Overview / Files / Checks. Checks has a live note
+(`PrChecksTabNote`): passed/total while any check runs, then a pass or fail
+mark. A persisted `.activity` selection routes to Overview. The `⋯` actions
+sheet adds Convert to draft / Ready for review (`prs.setDraft`), Enable or Turn
+off auto-merge (`prs.setAutoMerge`, shown from the repo's `autoMergeAllowed`),
+and Copy PR number / branch / checkout command. The render-path-expensive
+derived models — the sorted timeline, the digest items, the unresolved/resolved
+thread split, and the synthesized fallback PR — are precomputed once per data
+change in `recomputeDerivedModels()`, never inside `body`.
 
 A PR with no local `pull_requests` row navigates to this same full screen with a
 synthetic `gh:owner/repo#number` route instead of opening the old metadata-only
@@ -3426,9 +3526,10 @@ tell a test job from a preview bot, and reimplementing the producer rule locally
 is exactly how the two would drift. The host's canonical rollup arrives on the
 replicated `pull_requests` row as `checksStatus` (`passing | failing | pending |
 none | not_run`) plus `checksReason` and `checksMissingRequired`, and every iOS
-surface reads it: `PrRowCard`'s status dot, the merge checklist
-(`PrMergeChecklist`), the merge gate card, the Work-chat PR views, and
-`PrDetailChecksTab`. `not_run` — something was expected and nothing verified the
+surface reads it: `PrRowCard`'s status dot, the next-step resolver and its
+requirement chips (`PrDetailRedesign.swift`), the merge checklist
+(`PrMergeChecklist`), the merge gate (`prComputeMergeGate`), the Work-chat PR
+views, and `PrDetailChecksTab`. `not_run` — something was expected and nothing verified the
 commit — renders as a hollow dashed ring, distinct from `none` (a repo with no
 CI, which stays quiet), and the CI-Checks empty state reads "No CI ran on this
 commit" over the host's `checksReason` sentence instead of the default "No CI
@@ -3588,7 +3689,7 @@ the stats and shows update guidance.
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, cross-client activity carousel in the new-chat screen's collapsible header (kept mounted, collapsed rather than unmounted, when the header tier hides it) |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
-| Automations / Graph / History tabs | Planned |
+| Automations / History tabs | Planned |
 | Full Settings parity | Planned |
 | Lock Screen widget | Implemented; one prioritized account status across signed-in machines/projects, agents, PRs, sync, offline, and idle states |
 | Push notifications (APNs alerts + exact cross-machine deep links) | Implemented (on-device E2E needs a physical iPhone) |

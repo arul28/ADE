@@ -44,7 +44,12 @@ import {
   makeGitHubIssueContextAttachment,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
-import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
+import {
+  getModelById,
+  modelSupportsFastMode,
+  resolveOpenCodeFastEffortSelection,
+  type ProviderFamily,
+} from "../../../shared/modelRegistry";
 import { claudeApprovalOptionsOfferSession } from "../../../shared/claudePermissionDialog";
 import {
   composerTriggerForSelection,
@@ -490,7 +495,8 @@ export type ParallelComposerControlSlot = {
   onOpenCodePermissionModeChange: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange: (modeId: string) => void;
-  onCursorConfigChange: (configId: string, value: string | boolean) => void;
+  /** `null` hands the option back to Cursor's default. */
+  onCursorConfigChange: (configId: string, value: string | boolean | null) => void;
 };
 
 /**
@@ -612,7 +618,7 @@ const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
  * Read-only by design. A chat is pinned to the machine that owns its lane, so
  * there is nothing here to pick — moving it is a real operation with real
  * consequences for the worktree and the transcript, and it already has a home
- * in Chat actions → Handoff → Continue on another machine. The tooltip points
+ * in the session menu: Hand off… → Another machine. The tooltip points
  * there rather than pretending this label is a control.
  *
  * Shown for LOCAL chats too, which is a deliberate departure from the sidebar,
@@ -630,7 +636,7 @@ function ComposerMachineChip({ machineName, cloud = false }: { machineName: stri
         label: machineName,
         description: cloud
           ? "This chat is a live view of a Cursor Cloud agent. Replies run in cloud."
-          : "This chat runs on the machine that owns its lane. To move it, use Chat actions → Handoff → Continue on another machine.",
+          : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
       }}
     >
       <span
@@ -773,7 +779,7 @@ function ComposerIdleSendButton({
             onClick={onSend}
             aria-label={label}
             className={cn(
-              "inline-flex h-7 items-center justify-center rounded-l-full pl-2.5 pr-2 transition-all active:scale-[0.98]",
+              "inline-flex h-7 items-center justify-center rounded-l-full pl-2.5 pr-2 transition-all",
               sendEnabled
                 ? "bg-white/90 text-zinc-900 hover:bg-white"
                 : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
@@ -798,7 +804,7 @@ function ComposerIdleSendButton({
             aria-label="Send options"
             onClick={() => setMenuOpen((current) => !current)}
             className={cn(
-              "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all active:scale-[0.98]",
+              "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all",
               sendEnabled || backgroundEnabled
                 ? "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white"
                 : "border-white/[0.06] bg-white/[0.06] text-muted-fg/20",
@@ -1111,6 +1117,16 @@ const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode,
 const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
   BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
 
+/** A Cursor boolean option's label: unset is Cursor's default, not Off. */
+export function cursorBooleanConfigLabel(value: unknown): "On" | "Off" | "Default" {
+  return value === true ? "On" : value === false ? "Off" : "Default";
+}
+
+/** The next value of a Cursor boolean option: Default, then On, then Off, then Default again. */
+export function nextCursorBooleanConfigValue(value: unknown): boolean | null {
+  return value === true ? false : value === false ? null : true;
+}
+
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
   return snapshot.configOptions.find((option) => option.id === snapshot.modeConfigId || option.category === "mode") ?? null;
@@ -1392,7 +1408,7 @@ function ActiveTurnSendButton({
             onClick={onSend}
             aria-label={selectedCopy.label}
             className={cn(
-              "inline-flex h-7 items-center justify-center gap-1 rounded-l-full pl-2.5 pr-2 transition-all active:scale-[0.98]",
+              "inline-flex h-7 items-center justify-center gap-1 rounded-l-full pl-2.5 pr-2 transition-all",
               enabled
                 ? "bg-white/90 text-zinc-900 hover:bg-white"
                 : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
@@ -1416,7 +1432,7 @@ function ActiveTurnSendButton({
             aria-label="More send options"
             onClick={() => setMenuOpen((current) => !current)}
             className={cn(
-              "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all active:scale-[0.98]",
+              "inline-flex h-7 items-center justify-center border-l pl-1 pr-1.5 transition-all",
               "border-zinc-900/15 bg-white/90 text-zinc-900 hover:bg-white",
             )}
           >
@@ -1619,6 +1635,7 @@ export function AgentChatComposer({
   listsHarnessPresets = true,
   onOpenHarnessSettings,
   reasoningEffort,
+  effectiveReasoningEffort,
   fastMode = false,
   cursorCloudServiceTier = null,
   usageViewModel = null,
@@ -1778,6 +1795,13 @@ export function AgentChatComposer({
   /** Opens Settings › Providers › Custom from the Custom empty state. */
   onOpenHarnessSettings?: () => void;
   reasoningEffort: string | null;
+  /**
+   * The effort the reasoning control shows and a launch sends: the explicit
+   * effort, else the one remembered for the model's family. The Fast chip
+   * reads it, so it agrees with what a launch sends. Defaults to
+   * `reasoningEffort`.
+   */
+  effectiveReasoningEffort?: string | null;
   fastMode?: boolean;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
@@ -1902,7 +1926,8 @@ export function AgentChatComposer({
   onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
   onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
-  onCursorConfigChange?: (configId: string, value: string | boolean) => void;
+  /** `null` hands the option back to Cursor's default. */
+  onCursorConfigChange?: (configId: string, value: string | boolean | null) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
   onRemoveIosElementContext?: (id: string) => void;
   onRemoveAppControlContext?: (id: string) => void;
@@ -3992,13 +4017,23 @@ export function AgentChatComposer({
     parallelChatMode && parallelConfiguringIndex != null
       ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
       : (modelId ?? "");
-  const fastModeSupported = modelSupportsFastMode(
-    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId, modelCatalogScopeKey) ?? getModelById(fastModeModelId),
-  );
+  const fastModeDescriptor =
+    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId, modelCatalogScopeKey) ?? getModelById(fastModeModelId);
+  const fastModeSupported = modelSupportsFastMode(fastModeDescriptor);
   const fastModeActive =
     parallelChatMode && parallelConfiguringIndex != null
       ? parallelModelSlots[parallelConfiguringIndex]?.fastMode === true
       : fastMode === true;
+  const fastModeEffort =
+    parallelChatMode && parallelConfiguringIndex != null
+      ? parallelModelSlots[parallelConfiguringIndex]?.reasoningEffort ?? null
+      : effectiveReasoningEffort !== undefined ? effectiveReasoningEffort : reasoningEffort;
+  // OpenCode sends Fast and the effort in one `variant`, so some pairs cannot
+  // run together. The prompt path reads the same resolver.
+  const fastModeUnavailableReason = fastModeSupported && fastModeDescriptor?.providerRoute === "opencode"
+    ? resolveOpenCodeFastEffortSelection(fastModeDescriptor, { fastMode: true, reasoningEffort: fastModeEffort })
+      .fastUnavailableReason ?? null
+    : null;
 
   /* The preset this chat runs on, resolved from the account-scoped list.
 
@@ -4279,14 +4314,17 @@ export function AgentChatComposer({
           {cursorExtraOptions.map((option) => {
             if (option.type === "boolean") {
               const active = option.currentValue === true;
+              // Three states: Default (unset, Cursor decides), On, Off. The
+              // cycle ends back at Default, so an option can be un-set again.
+              const next = nextCursorBooleanConfigValue(option.currentValue);
               return (
                 <button
                   key={option.id}
                   type="button"
                   disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
                   onClick={() => {
-                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, !active);
-                    else onCursorConfigChange?.(option.id, !active);
+                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, next);
+                    else onCursorConfigChange?.(option.id, next);
                   }}
                   className={cn(
                     "inline-flex h-8 min-h-8 items-center gap-2 rounded-md px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
@@ -4308,7 +4346,7 @@ export function AgentChatComposer({
                   aria-pressed={active}
                 >
                   <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.12em] text-muted-fg/45">
-                    {active ? "On" : "Off"}
+                    {cursorBooleanConfigLabel(option.currentValue)}
                   </span>
                   <span>{option.name}</span>
                 </button>
@@ -6099,6 +6137,7 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
                   fastModeSupported={fastModeSupported}
+                  fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(onParallelSlotFastModeChange
                     ? {
                         onFastModeChange: (next: boolean) =>
@@ -6139,6 +6178,7 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastMode={fastModeActive}
                   fastModeSupported={fastModeSupported}
+                  fastModeUnavailableReason={fastModeUnavailableReason}
                   {...(cursorCloudSessionActive ? {
                     serviceTierMode: true,
                     serviceTier: cursorCloudServiceTier,
@@ -6292,7 +6332,7 @@ export function AgentChatComposer({
                       // HashRouter deep-link to the voice-input card under General.
                       window.location.hash = `#${settingsRouteFor("agents.dictation")}`;
                     }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-fg/30 transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)] active:scale-[0.97]"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-fg/30 transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)]"
                     aria-label="Set up voice input"
                   >
                     <MicrophoneSlash size={14} weight="regular" />
@@ -6345,7 +6385,7 @@ export function AgentChatComposer({
                         type="button"
                         disabled={!activeSteerEnabled}
                         className={cn(
-                          "inline-flex h-7 w-7 items-center justify-center rounded-full transition-all active:scale-[0.97]",
+                          "inline-flex h-7 w-7 items-center justify-center rounded-full transition-all",
                           activeSteerEnabled
                             ? "bg-white/90 text-zinc-900 hover:bg-white"
                             : "cursor-not-allowed bg-white/[0.06] text-muted-fg/20",
@@ -6396,7 +6436,7 @@ export function AgentChatComposer({
                       <button
                         type="button"
                         className={cn(
-                          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97]",
+                          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
                           sendEnabled
                             ? "bg-white/90 text-zinc-900 hover:bg-white"
                             : "bg-white/[0.06] text-muted-fg/20",

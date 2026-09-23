@@ -34,6 +34,7 @@ import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
+import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch";
 // The fixture must demo the link the product actually opens, so it reads the
 // same source the host stamps onto every snapshot.
 import { usageProviderAccountUrl } from "../shared/types/usage";
@@ -65,12 +66,12 @@ import {
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
   type AgentChatResolveUnprocessedMessageResult,
-  type GitSyncStatusesArgs,
   MAX_PROMPT_STASHES,
   type PromptStashCreateArgs,
   type PromptStashEntry,
   type RemoteRuntimeActionRequest,
 } from "../shared/types";
+import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
 import type {
   ApiCredentialGetArgs,
@@ -135,6 +136,86 @@ const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
     v;
+/* ── chatLaunch (browser preview) ─────────────────────────────────────────
+   A small simulator so the Vite preview shows a new-lane launch moving:
+   fetch → check out files (with %) → start agent, a few hundred ms apart. A
+   CLI launch parks at awaiting-client like the real brain. */
+const browserMockChatLaunches = new Map<string, ChatLaunchSnapshot>();
+const browserMockChatLaunchListeners = new Set<(event: ChatLaunchEvent) => void>();
+
+function emitBrowserMockChatLaunch(launch: ChatLaunchSnapshot): ChatLaunchSnapshot {
+  const next = { ...launch, sequence: launch.sequence + 1, updatedAt: new Date().toISOString() };
+  browserMockChatLaunches.set(next.launchId, next);
+  for (const listener of browserMockChatLaunchListeners) listener({ type: "launch-updated", launch: next });
+  return next;
+}
+
+function advanceBrowserMockChatLaunch(launchId: string): void {
+  const launch = browserMockChatLaunches.get(launchId);
+  if (!launch || launch.phase !== "running") return;
+  const now = new Date().toISOString();
+  const stages = launch.stages.map((stage) => ({ ...stage }));
+  const running = stages.find((stage) => stage.status === "running");
+  if (running?.id === "checkout" && (running.percent ?? 0) < 100) {
+    running.percent = Math.min(100, (running.percent ?? 0) + 25);
+    running.detail = "4,917 files";
+    emitBrowserMockChatLaunch({ ...launch, stages, laneCreated: true, worktreePath: `/tmp/${launch.laneName}` });
+    window.setTimeout(() => advanceBrowserMockChatLaunch(launchId), 260);
+    return;
+  }
+  if (running) {
+    running.status = "done";
+    running.endedAt = now;
+    if (running.id === "fetch") running.detail = "origin/main at 807fb2c";
+  }
+  const next = stages.find((stage) => stage.status === "pending");
+  if (next && !(next.id === "agent" && launch.kind === "cli")) {
+    next.status = "running";
+    next.startedAt = now;
+    if (next.id === "checkout") next.percent = 0;
+    emitBrowserMockChatLaunch({ ...launch, stages, laneCreated: launch.laneCreated || next.id !== "fetch" });
+    window.setTimeout(() => advanceBrowserMockChatLaunch(launchId), 420);
+    return;
+  }
+  if (next && launch.kind === "cli") {
+    emitBrowserMockChatLaunch({ ...launch, stages, phase: "awaiting-client", laneCreated: true });
+    return;
+  }
+  emitBrowserMockChatLaunch({
+    ...launch,
+    stages,
+    phase: "completed",
+    laneCreated: true,
+    sessionCreated: true,
+    agentStarted: true,
+    endedAt: now,
+    queuedMessages: [],
+  });
+}
+
+function startBrowserMockChatLaunch(args: any = {}): ChatLaunchSnapshot {
+  const existing = browserMockChatLaunches.get(String(args.launchId));
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const base = createChatLaunchSnapshot({
+    launch: { ...args, launchId: String(args.launchId) },
+    laneId: String(args.laneId ?? `lane-${Date.now()}`),
+    laneName: String(args.laneName ?? "New lane"),
+    includeFetch: true,
+    includeEnvironment: false,
+    nowIso: now,
+  });
+  const launch: ChatLaunchSnapshot = {
+    ...base,
+    branchRef: `refs/heads/ade/${base.launchId.slice(0, 8)}`,
+    baseRef: base.baseRef ?? "origin/main",
+    stages: base.stages.map((stage, index) => (index === 0 ? { ...stage, status: "running", startedAt: now } : stage)),
+  };
+  browserMockChatLaunches.set(launch.launchId, launch);
+  window.setTimeout(() => advanceBrowserMockChatLaunch(launch.launchId), 420);
+  return launch;
+}
+
 /**
  * Reads a preview-only override from the URL (plain query or hash query) and
  * remembers it in localStorage so it survives in-app navigation.
@@ -4961,6 +5042,58 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       streamEvents: async ({ cursor = 0 }: any = {}) => ({ events: [], nextCursor: cursor, hasMore: false }),
     },
+    chatLaunch: {
+      start: async (args: any = {}) => startBrowserMockChatLaunch(args),
+      get: async (args: any = {}) => browserMockChatLaunches.get(String(args?.launchId)) ?? null,
+      list: async () => [...browserMockChatLaunches.values()],
+      cancel: async (args: any = {}) => {
+        const launch = browserMockChatLaunches.get(String(args?.launchId));
+        if (!launch) return null;
+        if (launch.phase === "cancelled") return launch;
+        if (launch.agentStarted || launch.phase === "completed") {
+          throw new Error("This chat already started — delete its lane from the lane menu instead.");
+        }
+        return emitBrowserMockChatLaunch({ ...launch, phase: "cancelled", queuedMessages: [], endedAt: new Date().toISOString() });
+      },
+      retry: async (args: any = {}) => browserMockChatLaunches.get(String(args?.launchId)) ?? null,
+      startNow: async (args: any = {}) => browserMockChatLaunches.get(String(args?.launchId)) ?? null,
+      queueMessage: async (args: any = {}) => {
+        const launch = browserMockChatLaunches.get(String(args?.launchId));
+        if (!launch) throw new Error(`Launch not found: ${String(args?.launchId)}`);
+        return emitBrowserMockChatLaunch({
+          ...launch,
+          queuedMessages: [
+            ...launch.queuedMessages,
+            toQueuedMessage(
+              { text: String(args.text ?? ""), displayText: args.displayText ? String(args.displayText) : null },
+              { id: `mock-queued-${Date.now()}`, createdAt: new Date().toISOString() },
+            ),
+          ],
+        });
+      },
+      completeClient: async (args: any = {}) => {
+        const launch = browserMockChatLaunches.get(String(args?.launchId));
+        if (!launch) return null;
+        const now = new Date().toISOString();
+        return emitBrowserMockChatLaunch({
+          ...launch,
+          sessionId: args.sessionId ?? launch.sessionId,
+          phase: args.error ? "failed" : "completed",
+          error: args.error ?? null,
+          agentStarted: !args.error,
+          endedAt: args.error ? null : now,
+          stages: launch.stages.map((stage) => (stage.id === "agent"
+            ? { ...stage, status: args.error ? "failed" : "done", startedAt: stage.startedAt ?? now, endedAt: now, error: args.error ?? null }
+            : stage)),
+        });
+      },
+      onEvent: (listener: (event: ChatLaunchEvent) => void) => {
+        browserMockChatLaunchListeners.add(listener);
+        return () => {
+          browserMockChatLaunchListeners.delete(listener);
+        };
+      },
+    },
     agentChat: {
       list: async (args: any = {}) => listMockAgentChatSummaries(args),
       getSummary: async (args: any = {}) => {
@@ -5252,27 +5385,54 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;
-      }) => ({
-        sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : "",
-        events: (() => {
-          const sessionId =
-            typeof arg?.sessionId === "string" ? arg.sessionId : "";
-          const events = getMockChatTranscriptEvents(sessionId);
-          const maxEvents = Number.isFinite(arg?.maxEvents)
-            ? Math.max(1, Math.floor(arg.maxEvents!))
-            : events.length;
-          return events.length > maxEvents ? events.slice(-maxEvents) : events;
-        })(),
-        truncated: (() => {
-          const sessionId =
-            typeof arg?.sessionId === "string" ? arg.sessionId : "";
-          const events = getMockChatTranscriptEvents(sessionId);
-          const maxEvents = Number.isFinite(arg?.maxEvents)
-            ? Math.max(1, Math.floor(arg.maxEvents!))
-            : events.length;
-          return events.length > maxEvents;
-        })(),
-      }),
+      }) => {
+        const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+        const events = getMockChatTranscriptEvents(sessionId);
+        const maxEvents = Number.isFinite(arg?.maxEvents)
+          ? Math.max(1, Math.floor(arg.maxEvents!))
+          : events.length;
+        const omitted = Math.max(0, events.length - maxEvents);
+        return {
+          sessionId,
+          events: omitted > 0 ? events.slice(omitted) : events,
+          truncated: omitted > 0,
+          hasOlderHistory: omitted > 0,
+          tailStartOffset: omitted > 0 ? omitted : null,
+        };
+      },
+      getEventHistoryPage: async (arg: {
+        sessionId: string;
+        beforeOffset: number;
+        maxBytes?: number;
+      }) => {
+        const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+        const events = getMockChatTranscriptEvents(sessionId);
+        const before = Number.isFinite(arg?.beforeOffset)
+          ? Math.max(0, Math.floor(arg.beforeOffset))
+          : 0;
+        const older = events.slice(0, Math.min(before, events.length));
+        const maxBytes = Number.isFinite(arg?.maxBytes) && arg.maxBytes! > 0
+          ? arg.maxBytes!
+          : 256 * 1024;
+        const page: typeof older = [];
+        let bytes = 0;
+        for (let index = older.length - 1; index >= 0; index -= 1) {
+          const raw = JSON.stringify(older[index]);
+          if (page.length > 0 && bytes + raw.length > maxBytes) break;
+          page.push(older[index]!);
+          bytes += raw.length;
+          if (page.length >= 200) break;
+        }
+        page.reverse();
+        const startOffset = older.length - page.length;
+        return {
+          sessionId,
+          events: page,
+          startOffset,
+          hasMore: startOffset > 0,
+          sessionFound: events.length > 0,
+        };
+      },
     },
     appControl: {
       getStatus: resolved({
@@ -6115,17 +6275,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         diverged: false,
         recommendedAction: "none",
       }),
-      getSyncStatuses: async (args: GitSyncStatusesArgs) => Object.fromEntries(
-        (Array.isArray(args?.laneIds) ? args.laneIds : []).map((laneId: string) => [laneId, {
-          hasUpstream: true,
-          upstreamState: "tracking",
-          upstreamRef: "origin/main",
-          ahead: 0,
-          behind: 0,
-          diverged: false,
-          recommendedAction: "none",
-        }]),
-      ),
       getOriginRemote: resolvedArg({
         remoteUrl: "git@github.com:ade/browser-preview.git",
         branch: "main",
@@ -6145,9 +6294,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getLaneStatus: resolvedArg({ status: "clean" }),
       listOverlaps: resolvedArg([]),
       getRiskMatrix: resolved([]),
-      simulateMerge: resolvedArg({ conflicts: [] }),
       runPrediction: resolved({ assessments: [] }),
-      getBatchAssessment: resolved({ assessments: [] }),
       listProposals: resolvedArg([]),
       prepareProposal: resolvedArg({}),
       requestProposal: resolvedArg({}),
@@ -6511,7 +6658,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         reviews: ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviews ?? MOCK_REVIEWS_BY_PR[prId] ?? [],
         comments: ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.comments ?? MOCK_COMMENTS_BY_PR[prId] ?? [],
       }),
-      getReviewThreads: resolvedArg([]),
+      getReviewThreads: async (prId: string) => ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviewThreads ?? [],
       getDetailByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.detail ?? null,
       getFilesByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.files ?? [],
       getCommitsByGithub: async (args: any) => getAdeDbPrSnapshotByGithubCoordinates(args)?.commits ?? [],
@@ -6738,6 +6885,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       close: resolvedArg(undefined),
       reopen: resolvedArg(undefined),
+      setDraft: resolvedArg(undefined),
+      setAutoMerge: resolvedArg(undefined),
       rerunChecks: resolvedArg(undefined),
       aiReviewSummary: resolvedArg({
         summary: "AI review summary placeholder",
@@ -6807,10 +6956,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       set: resolvedArg2(undefined),
     },
     tilingTree: {
-      get: resolvedArg(null),
-      set: resolvedArg2(undefined),
-    },
-    graphState: {
       get: resolvedArg(null),
       set: resolvedArg2(undefined),
     },

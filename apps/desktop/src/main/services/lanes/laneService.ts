@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
-import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
+import { getHeadSha, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type GitCheckoutProgress } from "../git/git";
 import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -84,6 +84,7 @@ import type {
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
   detectLaneBranchDrift,
   laneNameAdvertisesBranch,
@@ -298,16 +299,34 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   await Promise.all(entries.map((entry) => makeTreeWritableForRemoval(path.join(targetPath, entry))));
 }
 
-async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
-  try {
-    await fs.promises.rm(targetPath, { recursive: true, force: true });
-    return;
-  } catch (error) {
-    if (!isPermissionError(error)) throw error;
-  }
+const WORKTREE_REMOVE_ATTEMPTS = 20;
+const WORKTREE_REMOVE_RETRY_MS = 250;
 
-  await makeTreeWritableForRemoval(targetPath);
-  await fs.promises.rm(targetPath, { recursive: true, force: true });
+function isRetryableRemoveError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EBUSY" || code === "EPERM" || code === "EACCES" || code === "ENOTEMPTY";
+}
+
+/**
+ * Remove a worktree directory, recovering from read-only files and — on
+ * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
+ * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
+ * bounded schedule (~5 s) instead of failing the cleanup outright. Exported
+ * only for the Windows lock-retry regression test.
+ */
+export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await fs.promises.rm(targetPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!isRetryableRemoveError(error) || attempt >= WORKTREE_REMOVE_ATTEMPTS) throw error;
+      if (isPermissionError(error)) await makeTreeWritableForRemoval(targetPath);
+      if (attempt > 1 || !isPermissionError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, WORKTREE_REMOVE_RETRY_MS));
+      }
+    }
+  }
 }
 
 async function managedTreeBytes(targetPath: string): Promise<number> {
@@ -1305,6 +1324,19 @@ function cloneLaneDeleteProgress(progress: LaneDeleteProgress): LaneDeleteProgre
 function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
   return progress.overallStatus !== "running";
 }
+
+/**
+ * Caller-side knobs for `laneService.create` that are not part of the public
+ * lane-create contract (RPC and IPC callers never pass them). The brain's
+ * chat-launch service uses them to reserve the lane id up front, stream
+ * checkout progress, and cancel an in-flight checkout.
+ */
+export type LaneCreateRuntimeOptions = {
+  /** Reserve this id for the new lane (a UUID). Must not belong to an existing lane. */
+  laneId?: string | null;
+  onCheckoutProgress?: (progress: GitCheckoutProgress) => void;
+  signal?: AbortSignal;
+};
 
 export type LaneDeleteTeardownDeps = {
   agentChatService?: {
@@ -3477,6 +3509,14 @@ export function createLaneService({
     }
   };
 
+  const resolvePresetLaneId = (requested: string | null | undefined): string => {
+    const trimmed = requested?.trim() ?? "";
+    if (!trimmed) return randomUUID();
+    const normalized = requireNormalizedUuid(trimmed, "A reserved lane id must be a UUID.");
+    if (getLaneRow(normalized)) throw new Error(`Lane id already in use: ${normalized}`);
+    return normalized;
+  };
+
   const createWorktreeLane = async (args: {
     name: string;
     description?: string;
@@ -3486,8 +3526,8 @@ export function createLaneService({
     folder?: string;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
-  }): Promise<LaneSummary> => {
-    const laneId = randomUUID();
+  }, runtimeOptions: LaneCreateRuntimeOptions = {}): Promise<LaneSummary> => {
+    const laneId = resolvePresetLaneId(runtimeOptions.laneId);
     const now = new Date().toISOString();
     const slug = slugify(args.name);
     const suffix = laneId.slice(0, 8);
@@ -3507,12 +3547,43 @@ export function createLaneService({
     let linearIssue: LaneLinearIssue | null = null;
     let absorbedRacedAdoptionRows = 0;
     try {
-      await runGitWorktreeMutation(() =>
-        runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
-          cwd: projectRoot,
-          timeoutMs: 60_000
-        })
-      );
+      const onCheckoutProgress = runtimeOptions.onCheckoutProgress;
+      let gitStarted = false;
+      try {
+        await runGitWorktreeMutation(() => {
+          // Cancelled before git ran (e.g. while waiting on the worktree
+          // mutex): nothing was created, so there is nothing to clean up, and
+          // the cleanup below must not delete a branch this call never made.
+          if (runtimeOptions.signal?.aborted) throw new Error("Lane creation was cancelled.");
+          gitStarted = true;
+          return runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
+            cwd: projectRoot,
+            timeoutMs: 60_000,
+            ...(runtimeOptions.signal ? { signal: runtimeOptions.signal } : {}),
+            ...(onCheckoutProgress
+              ? {
+                  // Git only prints checkout progress to a pipe once its delay
+                  // elapses; a zero delay streams it from the first file.
+                  env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
+                  onStderrLine: (line: string) => {
+                    const parsed = parseGitCheckoutProgressLine(line);
+                    if (parsed) onCheckoutProgress(parsed);
+                  },
+                }
+              : {}),
+          });
+        });
+      } catch (addError) {
+        // A cancelled checkout leaves a half-written worktree registered (and
+        // still locked "initializing" by the killed git) plus a fresh branch.
+        // Nothing else owns them yet, so remove both. Only on abort: a plain
+        // `worktree add -b` failure (e.g. the branch already exists) must not
+        // delete a branch this call never created.
+        if (gitStarted && runtimeOptions.signal?.aborted) {
+          await cleanupCreatedWorktreeLaneAfterCreateFailure({ laneId, branchRef, worktreePath, cause: addError });
+        }
+        throw addError;
+      }
 
       // From this point the worktree exists on disk. Any failure persisting the lane
       // row or dependent inserts must remove the worktree, otherwise we orphan a
@@ -4141,6 +4212,112 @@ export function createLaneService({
     }
   };
 
+  /**
+   * Remove a worktree + branch that no lane row owns (a failed or cancelled
+   * create). `remove --force --force` also removes a worktree still locked
+   * "initializing" by a killed `git worktree add`, which a single `--force`
+   * (and `worktree prune`) refuse; the fallback unlocks before pruning for the
+   * same reason. Returns the cleanup errors; never throws.
+   */
+  async function removeUnownedWorktreeAndBranch(args: {
+    worktreePath: string;
+    branchRef: string | null;
+  }): Promise<string[]> {
+    const cleanupErrors: string[] = [];
+    try {
+      await runGitWorktreeMutation(async () => {
+        try {
+          await runGitOrThrow(
+            ["worktree", "remove", "--force", "--force", args.worktreePath],
+            { cwd: projectRoot, timeoutMs: 60_000 },
+          );
+        } catch {
+          try {
+            await removeWorktreeDirectoryWithRecovery(args.worktreePath);
+          } finally {
+            // Even when the directory could not be removed (a Windows handle
+            // still open), drop git's registration so the path is reusable.
+            await runGit(["worktree", "unlock", args.worktreePath], { cwd: projectRoot, timeoutMs: 15_000 });
+            await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+          }
+        }
+      });
+    } catch (error) {
+      cleanupErrors.push(`worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (!args.branchRef) return cleanupErrors;
+    try {
+      const result = await runGit(
+        ["branch", "-D", args.branchRef],
+        { cwd: projectRoot, timeoutMs: 30_000 },
+      );
+      if (result.exitCode !== 0) {
+        const message = (result.stderr || result.stdout).trim();
+        cleanupErrors.push(`branch cleanup failed: ${message || `git branch -D exited ${result.exitCode}`}`);
+      }
+    } catch (error) {
+      cleanupErrors.push(`branch cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return cleanupErrors;
+  }
+
+  /**
+   * Before a chat launch retries a failed checkout, clear whatever an earlier
+   * attempt left at the lane's reserved worktree path
+   * (`<worktreesDir>/<slug>-<laneId[0:8]>`), which would otherwise make every
+   * retry's `worktree add` fail. Deliberately narrow: nothing happens when a
+   * lane row owns the id or the path, the path must sit inside the worktrees
+   * dir, and the branch checked out there is only deleted when it is an
+   * auto-lane temporary branch no lane row references.
+   */
+  async function cleanupReservedWorktree(args: { laneId: string; name: string }): Promise<void> {
+    const laneId = requireNormalizedUuid(args.laneId, "A reserved lane id must be a UUID.");
+    if (getLaneRow(laneId)) return;
+    const worktreePath = path.join(worktreesDir, `${slugify(args.name)}-${laneId.slice(0, 8)}`);
+    if (!isDirectlyInsideManagedWorktreesDir(normAbs(worktreePath))) return;
+    if (pendingWorktreeCreationPaths.has(normAbs(worktreePath))) return;
+    const owner = db.get<{ id: string }>(
+      "select id from lanes where project_id = ? and worktree_path = ? limit 1",
+      [projectId, worktreePath],
+    );
+    if (owner) return;
+
+    const canonicalWorktreePath = canonicalPath(worktreePath);
+    const isReservedPath = (candidate: string) =>
+      pathsEqual(candidate, worktreePath) || pathsEqual(candidate, canonicalWorktreePath);
+    let registeredBranch: string | null = null;
+    let registered = false;
+    const listed = await runGit(["worktree", "list", "--porcelain"], { cwd: projectRoot, timeoutMs: 15_000 });
+    if (listed.exitCode === 0) {
+      let current: string | null = null;
+      for (const line of listed.stdout.split(/\r?\n/)) {
+        if (line.startsWith("worktree ")) {
+          current = line.slice("worktree ".length).trim();
+          if (isReservedPath(current)) registered = true;
+        } else if (line.startsWith("branch ") && current && isReservedPath(current)) {
+          registeredBranch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+        }
+      }
+    }
+    if (!registered && !fs.existsSync(worktreePath)) return;
+
+    const branchRef = registeredBranch
+      && isAutoLaneTemporaryBranch(registeredBranch)
+      && !db.get<{ id: string }>(
+        "select id from lanes where project_id = ? and branch_ref = ? limit 1",
+        [projectId, registeredBranch],
+      )
+      ? registeredBranch
+      : null;
+    const cleanupErrors = await removeUnownedWorktreeAndBranch({ worktreePath, branchRef });
+    if (cleanupErrors.length > 0) {
+      logger.error("laneService.reserved_worktree_cleanup_failed", { laneId, worktreePath, cleanupErrors });
+      throw new Error(`Could not clear the previous checkout at ${worktreePath}: ${cleanupErrors.join("; ")}`);
+    }
+    logger.info("laneService.reserved_worktree_cleaned", { laneId, worktreePath, branchRef });
+  }
+
   async function cleanupCreatedWorktreeLaneAfterCreateFailure(args: {
     laneId: string;
     branchRef: string;
@@ -4171,34 +4348,10 @@ export function createLaneService({
       cleanupErrors.push(`database cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    try {
-      await runGitWorktreeMutation(async () => {
-        try {
-          await runGitOrThrow(
-            ["worktree", "remove", "--force", args.worktreePath],
-            { cwd: projectRoot, timeoutMs: 60_000 },
-          );
-        } catch {
-          await removeWorktreeDirectoryWithRecovery(args.worktreePath);
-          await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
-        }
-      });
-    } catch (error) {
-      cleanupErrors.push(`worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    try {
-      const result = await runGit(
-        ["branch", "-D", args.branchRef],
-        { cwd: projectRoot, timeoutMs: 30_000 },
-      );
-      if (result.exitCode !== 0) {
-        const message = (result.stderr || result.stdout).trim();
-        cleanupErrors.push(`branch cleanup failed: ${message || `git branch -D exited ${result.exitCode}`}`);
-      }
-    } catch (error) {
-      cleanupErrors.push(`branch cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    cleanupErrors.push(...await removeUnownedWorktreeAndBranch({
+      worktreePath: args.worktreePath,
+      branchRef: args.branchRef,
+    }));
 
     if (cleanupErrors.length > 0) {
       logger.error("laneService.lane_create_cleanup_failed", {
@@ -4787,7 +4940,12 @@ export function createLaneService({
       return true;
     },
 
-    async create({ name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue }: CreateLaneArgs): Promise<LaneSummary> {
+    cleanupReservedWorktree,
+
+    async create(
+      { name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue }: CreateLaneArgs,
+      runtimeOptions: LaneCreateRuntimeOptions = {},
+    ): Promise<LaneSummary> {
       const requestedStartPoint = startPoint?.trim() ?? "";
       if (parentLaneId) {
         const parent = getLaneRow(parentLaneId);
@@ -4847,7 +5005,7 @@ export function createLaneService({
           parentLaneId: parent.lane_type === "primary" ? null : parent.id,
           branchName,
           linearIssue,
-        });
+        }, runtimeOptions);
       }
 
       // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
@@ -4872,7 +5030,7 @@ export function createLaneService({
         parentLaneId: null,
         branchName,
         linearIssue,
-      });
+      }, runtimeOptions);
     },
 
     async createChild(args: CreateChildLaneArgs): Promise<LaneSummary> {
@@ -7814,6 +7972,17 @@ export function createLaneService({
         if (!best || length > best.length) best = { id: row.id, length };
       }
       return best?.id ?? null;
+    },
+
+    /**
+     * The live (non-archived) lane row with this id, or null. The chat-launch
+     * service uses it to adopt a lane whose create finished inserting the row
+     * but never returned (ADE restarted mid-checkout).
+     */
+    findLaneIdentity(laneId: string): { id: string; name: string; branchRef: string; baseRef: string; worktreePath: string } | null {
+      const row = getLaneRow(laneId);
+      if (!row || row.status === "archived") return null;
+      return { id: row.id, name: row.name, branchRef: row.branch_ref, baseRef: row.base_ref, worktreePath: row.worktree_path };
     },
 
     getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType; linearIssue: LaneLinearIssue | null } {

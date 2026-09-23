@@ -423,8 +423,6 @@ export type PrChecksTabProps = {
    */
   checksStatus?: PrChecksStatus | null;
   onRerunChecks?: (target?: PrRerunChecksTarget) => void;
-  focusedCheckId?: string | null;
-  onFocusedCheckConsumed?: () => void;
   /** Bumped by the `g k` chord in `PrDetailPane` to open the checks palette. */
   paletteRequest?: number;
   /** Opens the lane's most recent Work chat with the failing log prefilled. */
@@ -440,8 +438,6 @@ export function PrChecksTab({
   actionBusy,
   checksStatus,
   onRerunChecks,
-  focusedCheckId,
-  onFocusedCheckConsumed,
   paletteRequest = 0,
   onFixInChat,
   pollGovernor = UNGOVERNED,
@@ -760,18 +756,6 @@ export function PrChecksTab({
       failures.length === 0 ? 0 : Math.min(current, failures.length - 1)
     ));
   }, [failures.length]);
-
-  // Focus request from the overview rail: select the matching node and open it.
-  React.useEffect(() => {
-    if (!focusedCheckId) return;
-    const item = unified.find((i) => i.id === focusedCheckId);
-    const node = graph.nodes.find(
-      (n) => n.jobId === focusedCheckId
-        || (item != null && n.displayName === item.displayName),
-    );
-    if (node) openDrawerFor(node);
-    onFocusedCheckConsumed?.();
-  }, [focusedCheckId, graph.nodes, onFocusedCheckConsumed, openDrawerFor, unified]);
 
   // ---- keyboard: g k palette, j/k across failures, Enter to open ---------
   React.useEffect(() => {

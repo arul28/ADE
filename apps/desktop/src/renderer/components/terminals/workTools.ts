@@ -2,6 +2,7 @@ import {
   Desktop,
   FolderOpen,
   GitBranch,
+  GithubLogo,
   Globe,
   Terminal,
   type Icon,
@@ -86,6 +87,13 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     hint: "Commit, push, rebase",
     // The branch, not the dirty count: the count is already the status line.
     contextLabel: ({ lane }) => lane?.branchRef ?? null,
+  },
+  {
+    id: "pr",
+    label: "PR",
+    icon: GithubLogo,
+    color: "#3fb950",
+    hint: "Open or create a PR",
   },
   {
     id: "files",

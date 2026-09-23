@@ -1,23 +1,11 @@
 /*
- * The PR detail header's layout rules.
+ * The PR detail header card.
  *
- * Two things cannot be expressed inline. The narrowing order is keyed on the
- * header's own width rather than the window's — the PR list column is
- * drag-resizable, so the window tells you nothing about how much room this row
- * actually has — and that needs a container query. The hover/focus reveal of the
- * edit pencil needs `:hover` and `:focus-within` on an ancestor.
- *
- * It lives here rather than in `index.css` so the rules sit next to the markup
- * they describe, the same way the Activity pane and the PR list row
- * (`shared/prListRow.css`) keep their own sheets.
- *
- * ── Why `display` lives here and not in a `style={{}}` ──────────────────────
- * An inline style beats a stylesheet rule. The first version of this file set
- * `display: none` in a container query while the markup set `display: flex`
- * inline, so the rule never applied: the branch group shrank to zero width but
- * kept `overflow: visible`, and its contents spilled out and painted on top of
- * the tab row. Anything the ladder below can hide therefore takes its `display`
- * from here, never from the element's own style attribute.
+ * Narrowing is keyed on the header's own width (a container query), not the
+ * window's: the same header renders in the wide PRs tab and in the chat tools
+ * panel, which can be 360px wide. Anything a rule hides takes its `display`
+ * from this sheet, never from an inline style — an inline style would beat the
+ * rule and the element would never hide.
  */
 
 .ade-pr-detail-header {
@@ -25,31 +13,82 @@
   container-name: pr-detail-header;
 }
 
-.ade-pr-detail-header-identity,
-.ade-pr-detail-header-branches {
+.ade-pr-detail-header-card {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 18px 10px;
 }
 
-.ade-pr-detail-header-badge,
-.ade-pr-detail-header-tab-label {
+.ade-pr-detail-header-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+
+.ade-pr-detail-header-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  opacity: 0.9;
+}
+
+.ade-pr-detail-header-number:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.ade-pr-detail-header-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ade-pr-detail-header-badge {
   display: inline-flex;
 }
 
-/*
- * The branch group must CLIP, not spill. It is the only shrinkable group here
- * (`flex: 0 100 auto`), so it is the one that reaches zero width first — and a
- * zero-width box with visible overflow paints its contents straight over its
- * neighbours. This is the belt to the ladder's braces: it holds even at a width
- * no rule below matches.
- */
-.ade-pr-detail-header-branches {
-  overflow: hidden;
+.ade-pr-detail-header-identity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
-/* Reserved in the flow at all times, so revealing it never shifts the title.
-   Transparent rather than removed: the button stays in the tab order, so a
-   keyboard user reaches it and the :focus-within rule below reveals it. */
+.ade-pr-detail-header-title {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Reserved in the flow so revealing it never shifts the title; transparent
+   rather than removed so keyboard users still reach it. */
 .ade-pr-detail-header-edit {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--color-muted-fg);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -61,53 +100,182 @@
   pointer-events: auto;
 }
 
-/*
- * ── The narrowing ladder ───────────────────────────────────────────────────
- * In the order the owner asked for. Each rung buys room for the one below it,
- * so the things that identify the PR outlive the things that decorate it.
- *
- * 1. 1100px — the state badge. Merged/Open/Closed is also carried by the merge
- *    rail and by the list row this PR was opened from, so it is the cheapest
- *    thing on the row to lose.
- * 2. 980px  — the branch pair truncates. It is already `flex: 0 100 auto`, so
- *    it has been giving up pixels since long before this; here it starts
- *    ellipsing rather than merely narrowing.
- * 3. 860px  — the branch pair and its leading rule go entirely. Below this a
- *    truncated branch name is a stub, not information.
- * 4. 700px  — the title's floor drops, so it ellipses sooner rather than
- *    pushing the tabs.
- * 5. 560px  — last resort: the tab words go, icon plus count carries each tab.
- *    Every tab keeps its `aria-label`, so they stay named for assistive tech.
- *
- * The PR number, the title and the tabs never disappear.
- */
+.ade-pr-detail-header-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
 
-@container pr-detail-header (max-width: 1100px) {
+.ade-pr-detail-header-branches {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.ade-pr-detail-header-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+  opacity: 0.85;
+}
+
+.ade-pr-detail-header-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+  height: 20px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.ade-pr-detail-header-chat span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-pr-detail-header-chat:hover {
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+.ade-pr-detail-header-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px 0 14px;
+}
+
+.ade-pr-detail-header-tablist {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ade-pr-detail-header-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.ade-pr-detail-header-tab:hover {
+  color: var(--color-fg);
+}
+
+.ade-pr-detail-header-tab[data-active] {
+  color: var(--color-fg);
+  font-weight: 600;
+  border-bottom-color: var(--color-accent);
+}
+
+.ade-pr-detail-header-tab-label {
+  display: inline;
+}
+
+.ade-pr-detail-header-tab-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-muted-fg) 22%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ade-pr-detail-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.ade-pr-detail-header-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-fg);
+  opacity: 0.8;
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease;
+}
+
+.ade-pr-detail-header-icon-button:hover:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.ade-pr-detail-header-ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
+  color: var(--color-success);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.ade-pr-detail-header-ready:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-success) 26%, transparent);
+}
+
+/* Narrow (tools panel): the state badge and tab words go first. */
+@container pr-detail-header (max-width: 520px) {
   .ade-pr-detail-header-badge {
     display: none;
   }
-}
-
-@container pr-detail-header (max-width: 980px) {
-  .ade-pr-detail-header-branch-name {
-    max-width: 140px;
+  .ade-pr-detail-header-card {
+    padding: 10px 12px 8px;
   }
-}
-
-@container pr-detail-header (max-width: 860px) {
-  .ade-pr-detail-header-branches,
-  .ade-pr-detail-header-rule-lead {
-    display: none;
-  }
-}
-
-@container pr-detail-header (max-width: 700px) {
   .ade-pr-detail-header-title {
-    max-width: 320px;
+    font-size: 14.5px;
   }
 }
 
-@container pr-detail-header (max-width: 560px) {
+@container pr-detail-header (max-width: 400px) {
   .ade-pr-detail-header-tab-label {
     display: none;
   }

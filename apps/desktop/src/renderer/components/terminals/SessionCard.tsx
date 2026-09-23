@@ -13,6 +13,7 @@ import {
   Tag,
   TreeStructure,
   UsersThree,
+  Warning,
   XCircle,
 } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
@@ -71,6 +72,7 @@ import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
+import { useChatLaunchRowState, useChatLaunchStatusLine } from "../../state/chatLaunchStore";
 import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
 import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
@@ -374,6 +376,12 @@ function SessionProviderLogoStack({
   );
 }
 
+/** The launch's moving status line, isolated so progress ticks re-render only this text. */
+function ChatLaunchStatusText({ launchId }: { launchId: string }) {
+  const text = useChatLaunchStatusLine(launchId);
+  return <span className="min-w-0 truncate">{text ?? ""}</span>;
+}
+
 export const SessionCard = React.memo(function SessionCard({
   session,
   lane,
@@ -582,6 +590,12 @@ export const SessionCard = React.memo(function SessionCard({
     return () => window.clearTimeout(timer);
   }, [canonicalPhase]);
 
+  // Narrow on purpose: checkout progress moves the launch snapshot several
+  // times a second, and this row must not re-render for it. Only the status
+  // text below subscribes to the moving part.
+  const chatLaunch = useChatLaunchRowState(session.id);
+  // Only a row born this moment slides in; a remount of an older launch row is still.
+  const launchRowJustAppeared = Boolean(chatLaunch && Date.now() - Date.parse(chatLaunch.startedAt) < 1500);
   const namingLane = useLaneNamePending(lane?.id ?? session.laneId);
   const namingTitle = useSessionFieldGenerating(session.id, "title");
   const namingStatus = useSessionFieldGenerating(session.id, "statusLine");
@@ -933,15 +947,12 @@ export const SessionCard = React.memo(function SessionCard({
      (PR state, red for a broken exit). */
   const lanePrList = lanePr ? (lanePrs.length > 0 ? lanePrs : [lanePr]) : [];
   const hoverRows: SessionHoverCardRow[] = [];
-  /* Board rows only. The row face gave the status word up to its column (see
-     `suppressStatusLabel`), and that word is not pure duplication: the column
-     files "Failed" and "Ended" together under Done, and "Stale 4h" next to
-     "Working 14s" under Working. Rather than lose the distinction, it lands
-     here — first, because "what is this actually doing" is the question the
-     card is opened to answer.
-
-     `SessionStatusLabel` renders it, not a re-derived string: one hue and one
-     glyph per state, resolved in exactly one place. */
+  /* Board rows put the parent phase in the column. At rest, a distinct activity
+     detail stays on the card face. Once hover actions hide that face label, the
+     hover card carries the detail and its provenance; when there is no detail,
+     it carries the full phase so Stale / Failed are not lost. `SessionStatusLabel`
+     renders both from the shared presentation, with one hue and glyph per
+     visible status. */
   if (suppressStatusLabel && presentation) {
     hoverRows.push({
       id: "status",
@@ -1129,14 +1140,32 @@ export const SessionCard = React.memo(function SessionCard({
     });
   }
 
-  const statusSlot = (
+  // A chat whose new-lane launch is still setting up its lane: the row says
+  // what is happening ("Checking out files · 62%") on the preview line and a
+  // short word in the status slot, with no settle/snooze actions (there is no
+  // session to act on yet). Same row height as every other row.
+  const launchPending = chatLaunch?.pending ? chatLaunch : null;
+  const launchFailed = Boolean(launchPending?.failed);
+  const statusSlot = launchPending ? (
+    <span
+      className={cn(
+        "ml-auto flex h-5 shrink-0 items-center self-center whitespace-nowrap",
+        compact ? "text-[10px]" : "text-[11px]",
+        launchFailed ? "text-amber-300/85" : "text-muted-fg/60",
+      )}
+      data-testid="session-status-label"
+      data-session-launch-status={launchFailed ? "failed" : "setting-up"}
+    >
+      {launchFailed ? "Setup failed" : "Setting up"}
+    </span>
+  ) : (
     <SessionStatusSlot
       session={session}
       /* `null` + an empty timestamp is the slot's own "nothing to say" state
          (it is what a settled row already uses), so suppression needs no new
          branch inside the slot — and the hover action cluster, which is a
          separate layer, keeps working exactly as it does on a list row. */
-      presentation={suppressStatusLabel ? null : presentation}
+      presentation={suppressStatusLabel && !presentation?.activityDetail ? null : presentation}
       /* Deliberately not `sessionActivityInstant`: the slot's stamp answers
          "when did this finish", so a still-running row shows how long it has
          been going rather than how long since its last token. */
@@ -1273,13 +1302,6 @@ export const SessionCard = React.memo(function SessionCard({
     </span>
   );
 
-  /* Recede rule (inbox-zero): rows the presentation marks non-prominent —
-     Working, Starting, Stale, Stopped, Ended, Snoozed — and settled rows fade
-     back so the handful that actually want a human stand out. The status label
-     keeps its hue either way, so a working row is still findable. Selection
-     always wins: whatever you are looking at renders at full strength. */
-  const shouldRecede = !isHighlighted && !presentation?.prominent;
-
   const row = (
     <div
       role="button"
@@ -1298,12 +1320,11 @@ export const SessionCard = React.memo(function SessionCard({
         // ROW" rather than "you are hovering a card". A full-width band wants a
         // hairline corner, not a card's.
         "group/v2-row relative w-full select-none overflow-hidden rounded-md text-left outline-none transition-[background-color,opacity] duration-100",
+        launchRowJustAppeared && "ade-launch-row-enter",
         disabledReason ? "cursor-default" : "cursor-pointer",
-        isHighlighted ? "bg-white/[0.06]" : "bg-transparent hover:bg-white/[0.035]",
+        isHighlighted ? "bg-white/[0.06]" : "hover:bg-white/[0.05]",
         isMultiSelected && "ring-1 ring-accent/35",
-        shouldRecede && "opacity-70 hover:opacity-100",
       )}
-      data-session-recede={shouldRecede ? "true" : undefined}
       {...(disabledReason
         ? { "aria-label": `${primaryText}: ${disabledReason}` }
         : { "aria-label": primaryText })}
@@ -1368,7 +1389,23 @@ export const SessionCard = React.memo(function SessionCard({
 
           {/* Line 3 — what it is doing, then the quiet meta. */}
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-muted-fg/65">
-            {namingStatus ? (
+            {launchPending ? (
+              <span
+                className={cn(
+                  "flex min-w-0 flex-1 items-center gap-1.5 truncate",
+                  launchFailed ? "text-amber-200/80" : "text-muted-fg/70",
+                )}
+                data-session-preview-source="launch"
+                data-testid="session-launch-status"
+              >
+                {launchFailed ? (
+                  <Warning size={11} weight="bold" className="shrink-0 text-amber-300/85" aria-hidden />
+                ) : (
+                  <CircleNotch size={11} className="shrink-0 motion-safe:animate-spin text-muted-fg/55" aria-hidden />
+                )}
+                <ChatLaunchStatusText launchId={session.id} />
+              </span>
+            ) : namingStatus ? (
               <span
                 className="min-w-0 flex-1 truncate italic"
                 data-session-preview-source="generating"

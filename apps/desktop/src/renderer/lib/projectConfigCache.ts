@@ -61,6 +61,18 @@ export async function getProjectConfigCached(args?: {
   return promise;
 }
 
+/**
+ * Last config read for this project, even if stale, without any IPC. For
+ * synchronous UI predictions that must not wait on a read (e.g. which stages a
+ * new-lane launch will show before the host answers).
+ */
+export function peekProjectConfigCached(args?: {
+  projectRoot?: string | null;
+  pin?: OpenProjectBinding | null;
+}): ProjectConfigSnapshot | null {
+  return configCache.get(getCacheKey(args?.projectRoot, args?.pin))?.value ?? null;
+}
+
 export function invalidateProjectConfigCache(projectRoot?: string | null): void {
   if (projectRoot == null) {
     configCache.clear();

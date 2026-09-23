@@ -100,8 +100,14 @@ describe("session lifecycle parity", () => {
     const lifecycle = {
       id: "session-1",
       lastActivityAt: "2026-07-23T12:00:00.000Z",
+      currentTurnStartedAt: "2026-07-23T11:58:00.000Z",
       settledAt: "2026-07-23T12:01:00.000Z",
       statusNote: "PR merged",
+      activityStatus: {
+        value: "testing",
+        source: "agent",
+        updatedAt: "2026-07-23T11:59:00.000Z",
+      },
       instanceId: "codex-work",
       presetId: "preset-1",
       credentialId: "cred-1",
@@ -131,6 +137,8 @@ describe("session lifecycle parity", () => {
     expect(chat[0]).toMatchObject({
       settledAt: lifecycle.settledAt,
       statusNote: "PR merged",
+      activityStatus: lifecycle.activityStatus,
+      currentTurnStartedAt: lifecycle.currentTurnStartedAt,
       lastActivityAt: "2026-07-23T11:30:00.000Z",
     });
 
@@ -157,6 +165,8 @@ describe("session lifecycle parity", () => {
     expect(terminal[0]).toMatchObject({
       settledAt: lifecycle.settledAt,
       statusNote: "PR merged",
+      activityStatus: lifecycle.activityStatus,
+      currentTurnStartedAt: lifecycle.currentTurnStartedAt,
       lastActivityAt: lifecycle.lastActivityAt,
       instanceId: "codex-work",
       presetId: "preset-1",
@@ -229,6 +239,7 @@ describe("session lifecycle parity", () => {
       model: "gpt-5.5",
       status: "idle",
       startedAt: "2026-07-26T11:00:00.000Z",
+      currentTurnStartedAt: "2026-07-26T11:25:00.000Z",
       endedAt: null,
       lastActivityAt: "2026-07-26T11:30:00.000Z",
       lastOutputPreview: null,
@@ -242,7 +253,26 @@ describe("session lifecycle parity", () => {
       snoozedAt: "2026-07-26T12:00:00.000Z",
       wokeAt: "2026-07-26T13:00:00.000Z",
       wokeReason: "needs_you",
+      currentTurnStartedAt: "2026-07-26T11:25:00.000Z",
     });
+  });
+
+  it("does not synthesize a current-turn anchor when neither source has one", () => {
+    const [chat] = enrichChatSessionsWithLifecycle([{
+      sessionId: "session-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-07-26T11:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-26T11:30:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt: null,
+    }], [{ id: "session-1" } as TerminalSessionSummary]);
+
+    expect(chat).not.toHaveProperty("currentTurnStartedAt");
   });
 });
 
@@ -474,6 +504,50 @@ describe("Cursor Cloud fleet helper", () => {
 });
 
 describe("latestTokenStats", () => {
+  it("uses a done event's contextTokens instead of the turn's summed totals", () => {
+    const stats = latestTokenStats([
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 30_000, cacheReadTokens: 900_000, outputTokens: 4_000, contextTokens: 120_000, contextWindow: 1_000_000 },
+      }),
+    ]);
+    expect(stats.inputTokens).toBe(120_000);
+    expect(stats.outputTokens).toBeNull();
+    expect(stats.cacheReadTokens).toBeNull();
+    expect(stats.percent).toBe(12);
+  });
+
+  it("keeps a done's contextTokens when a tokens event for that turn lands after it", () => {
+    const stats = latestTokenStats([
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 500, cacheReadTokens: 90_000, outputTokens: 300, contextTokens: 91_000, contextWindow: 200_000 },
+      }),
+      envelope(2, { type: "tokens", turnId: "turn-1", inputTokens: 1_400_000, outputTokens: 15_000 } as AgentChatEventEnvelope["event"]),
+    ]);
+    expect(stats.inputTokens).toBe(91_000);
+    expect(stats.outputTokens).toBeNull();
+  });
+
+  it("keeps a live context sample over the same turn's summed totals", () => {
+    const stats = latestTokenStats([
+      envelope(1, {
+        type: "context_usage",
+        turnId: "turn-1",
+        state: "measured",
+        usage: { categories: [], totalTokens: 64_000, maxTokens: 128_000, percentage: 50 },
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, { type: "tokens", turnId: "turn-1", inputTokens: 300_000 } as AgentChatEventEnvelope["event"]),
+      envelope(3, { type: "done", turnId: "turn-1", status: "completed", usage: { inputTokens: 300_000 }, costUsd: 0.1 }),
+    ]);
+    expect(stats.inputTokens).toBe(64_000);
+    expect(stats.costUsd).toBe(0.1);
+  });
+
   it("tracks streaming state, context percentage, token counts, and cost", () => {
     const events = [
       envelope(1, { type: "status", turnStatus: "started" }),

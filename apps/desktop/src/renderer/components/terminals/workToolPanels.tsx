@@ -16,6 +16,7 @@ import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
+import { ChatPrPane } from "../chat/ChatPrPane";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
 import {
@@ -256,6 +257,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
       <ChatBuiltInBrowserPanel
         key={`work-browser:${mountScope}`}
         sessionId={panelSessionId}
+        groupLaneId={laneId}
         runtimePin={runtimePin}
         onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
         onAddContext={canInsertContext ? onAddBuiltInBrowserContext : undefined}
@@ -546,6 +548,28 @@ function WorkAppControlTool({
   );
 }
 
+function WorkPrTool({
+  laneId,
+  activeLane,
+  activeSession,
+  runtimePin,
+  panelSessionId,
+}: WorkToolPanelProps) {
+  if (!laneId) return <NoLaneNotice />;
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <ChatPrPane
+        laneId={laneId}
+        branchName={activeLane?.branchRef ?? null}
+        sessionTitle={activeSession?.title ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+        variant="tools"
+      />
+    </div>
+  );
+}
+
 export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>> = {
   terminal: WorkTerminalTool,
   browser: WorkBrowserTool,
@@ -553,4 +577,5 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   files: WorkFilesTool,
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
+  pr: WorkPrTool,
 };

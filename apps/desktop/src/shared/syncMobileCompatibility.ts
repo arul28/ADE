@@ -6,6 +6,15 @@ export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 // hello_ok.features.commandRouting.actions. They must not become part of the
 // required set below, because older mobile builds do not implement them.
 export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
+  // New-lane launches owned by the brain. Optional: a phone falls back to the
+  // chained lanes.create → chat.create flow against a brain without them.
+  "chat.startLaunch",
+  "chat.getLaunch",
+  "chat.listLaunches",
+  "chat.cancelLaunch",
+  "chat.retryLaunch",
+  "chat.startLaunchNow",
+  "chat.queueLaunchMessage",
   "cto.startLinearMobileOAuth",
   "cto.completeLinearMobileOAuth",
   "cto.setLinearToken",
@@ -108,6 +117,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "apple.recordList",
   "apple.recordStart",
   "apple.recordStop",
+  // Draft and auto-merge toggles. The phone hides each control until the
+  // host advertises the action, so an older host stays "full".
+  "prs.setDraft",
+  "prs.setAutoMerge",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

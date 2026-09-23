@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
+import { createTurnUsageLedger, createTurnUsageLedgerStore, type TurnUsageLedgerStore } from "../usage/turnUsageLedger";
 import zlib, { gzipSync } from "node:zlib";
 import { getSessionInfo, getSessionMessages, getSubagentMessages, query, renameSession, startup, tagSession, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
@@ -16,6 +17,10 @@ import {
 import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./acpHost/mockAcpAgent";
 import { createAcpSessionPool } from "./acpHost/acpSessionPool";
 import type { AcpSessionUpdate } from "./acpHost/acpProtocolTypes";
+import type * as AcpHostModule from "./acpHost";
+import type * as TurnUsageReconcilersModule from "../usage/turnUsageReconcilers";
+import type * as PiSdkPoolModule from "./piSdkPool";
+import type * as PiInstallationModule from "../ai/piInstallation";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
@@ -187,6 +192,12 @@ const mockState = vi.hoisted(() => ({
   cursorSdkAgentIdForNextAcquire: null as string | null,
   cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
   cursorSdkCloudResponses: new Map<string, unknown>(),
+  /** Every `scheduleTurnUsageFollowUps` call, recorded by the pass-through mock below. */
+  turnUsageFollowUps: [] as Array<Record<string, unknown>>,
+  /** When set, stands in for the Pi worker pool (`acquirePiSdkConnection`). */
+  piAcquire: null as null | ((args: Record<string, unknown>) => Promise<{ generation: number; pooled: any }>),
+  /** When set, stands in for `resolvePiInstallation`. */
+  piInstallation: null as null | Record<string, unknown>,
   cursorSendPromptGate: null as Promise<void> | null,
   cursorSendPromptError: null as unknown,
   cursorSendPromptResult: null as unknown,
@@ -912,11 +923,15 @@ vi.mock("../ai/qwenUserSettings", () => ({
     authenticated: false,
     models: [],
     defaultModelId: null,
+    selectedType: null,
+    baseUrlOrigin: null,
   })),
   parseQwenUserSettings: vi.fn(() => ({
     authenticated: false,
     models: [],
     defaultModelId: null,
+    selectedType: null,
+    baseUrlOrigin: null,
   })),
 }));
 
@@ -1151,9 +1166,56 @@ vi.mock("./droidSdkPool", () => ({
   releaseDroidSdkConnection: vi.fn(),
 }));
 
+// Pass-through: records which provider handles a settled turn's follow-ups were given.
+vi.mock("../usage/turnUsageReconcilers", async (importOriginal) => {
+  const actual = await importOriginal<typeof TurnUsageReconcilersModule>();
+  return {
+    ...actual,
+    scheduleTurnUsageFollowUps: vi.fn((args: Parameters<typeof actual.scheduleTurnUsageFollowUps>[0]) => {
+      mockState.turnUsageFollowUps.push(args as unknown as Record<string, unknown>);
+      return actual.scheduleTurnUsageFollowUps(args);
+    }),
+  };
+});
+
+// Pass-through: a test can stand in for the Pi worker pool and the installed
+// Pi SDK (`mockState.piAcquire` / `mockState.piInstallation`).
+vi.mock("./piSdkPool", async (importOriginal) => {
+  const actual = await importOriginal<typeof PiSdkPoolModule>();
+  return {
+    ...actual,
+    acquirePiSdkConnection: vi.fn((args: Parameters<typeof actual.acquirePiSdkConnection>[0]) =>
+      mockState.piAcquire
+        ? mockState.piAcquire(args as unknown as Record<string, unknown>)
+        : actual.acquirePiSdkConnection(args)),
+    isPiSdkPooledAlive: vi.fn((pooled: Parameters<typeof actual.isPiSdkPooledAlive>[0]) =>
+      mockState.piAcquire ? true : actual.isPiSdkPooledAlive(pooled)),
+    releasePiSdkConnection: vi.fn((...args: Parameters<typeof actual.releasePiSdkConnection>) => {
+      if (!mockState.piAcquire) return actual.releasePiSdkConnection(...args);
+      args[2]?.();
+    }),
+  };
+});
+vi.mock("../ai/piInstallation", async (importOriginal) => {
+  const actual = await importOriginal<typeof PiInstallationModule>();
+  return {
+    ...actual,
+    resolvePiInstallation: vi.fn((...args: Parameters<typeof actual.resolvePiInstallation>) =>
+      (mockState.piInstallation as ReturnType<typeof actual.resolvePiInstallation> | null)
+        ?? actual.resolvePiInstallation(...args)),
+  };
+});
+
+// Pass-through: a test can wrap the ACP runtime it opens (see the Stop-race test).
+vi.mock("./acpHost", async (importOriginal) => {
+  const actual = await importOriginal<typeof AcpHostModule>();
+  return { ...actual, createAcpRuntime: vi.fn(actual.createAcpRuntime) };
+});
+
 // ---------------------------------------------------------------------------
 // Import system under test (after mocks)
 // ---------------------------------------------------------------------------
+import { createAcpRuntime, type AcpSession } from "./acpHost";
 import {
   buildOpenCodeStreamMessages,
   buildComputerUseDirective,
@@ -1188,14 +1250,16 @@ import {
   CROSS_PROVIDER_REPLAY_HEADER,
 } from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
-import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
-import type { AgentChatCreateArgs, AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
+import { clearCursorCliModelsCache, probeCursorSdkModelDiscovery } from "./cursorModelsDiscovery";
+import type { AdeTurnUsageRecord, AgentChatCreateArgs, AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { PTY_SEND_PRE_DELIVERY_ERROR_CODE } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { stableStringify } from "../shared/utils";
 import {
   createDynamicOpenCodeModelDescriptor,
   createDynamicPiModelDescriptor,
+  getDynamicAcpModelDescriptors,
+  getModelById,
   replaceDynamicOpenCodeModelDescriptors,
   replaceDynamicPiModelDescriptors,
 } from "../../../shared/modelRegistry";
@@ -1724,6 +1788,7 @@ function createMockSessionService() {
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
+    clearSessionActivity: vi.fn(),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),
@@ -2287,6 +2352,7 @@ async function createClaudeStreamFixture(args: {
   messages: Array<Record<string, unknown>>;
   getContextUsage?: (options?: unknown) => Promise<unknown>;
   initializationResult?: () => Promise<unknown>;
+  serviceOverrides?: Record<string, unknown>;
 }) {
   const events: AgentChatEventEnvelope[] = [];
   const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -2322,6 +2388,7 @@ async function createClaudeStreamFixture(args: {
 
   const harness = createService({
     onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    ...args.serviceOverrides,
   });
   const { service } = harness;
   const session = await service.createSession({
@@ -2337,6 +2404,24 @@ async function createClaudeStreamFixture(args: {
   });
 
   return { ...harness, events, session, send };
+}
+
+/**
+ * A usage ledger whose rows stay in memory, so a test reads exactly what the
+ * chat service settled without the month-file reader.
+ */
+function createMemoryTurnUsageLedger() {
+  const rows: AdeTurnUsageRecord[] = [];
+  const store = {
+    dir: "/memory/usage",
+    appendTurn: (record: AdeTurnUsageRecord) => { rows.push(record); },
+    amendTurn: () => {},
+    appendQuotaSample: () => {},
+    readTurns: async () => rows,
+    readQuotaSamples: async () => [],
+    readQuotaSamplesSync: () => [],
+  } as unknown as TurnUsageLedgerStore;
+  return { ledger: createTurnUsageLedger({ store }), rows };
 }
 
 /**
@@ -2527,6 +2612,9 @@ beforeEach(() => {
   mockState.cursorSteerGate = null;
   mockState.cursorSdkAgentIdForNextAcquire = null;
   mockState.cursorSdkCloudRequests = [];
+  mockState.turnUsageFollowUps = [];
+  mockState.piAcquire = null;
+  mockState.piInstallation = null;
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
   mockState.releaseCursorSendPrompt = null;
   mockState.cursorSendParks = [];
@@ -2569,6 +2657,16 @@ beforeEach(() => {
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
   vi.mocked(clearOpenCodeInventoryCache).mockClear();
   clearCursorCliModelsCache();
+  // No test reaches Cursor's API. A Cursor send loads the model catalog when
+  // the chat names an effort, and a catalog the mocked SDK cannot list falls
+  // back to api.cursor.com; a real request there made those tests depend on
+  // the network. `vi.restoreAllMocks()` in afterEach puts `fetch` back.
+  const passThroughFetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (/^https:\/\/api\.cursor\.com\//u.test(url)) throw new Error("Tests do not reach Cursor's API.");
+    return passThroughFetch(input, init);
+  });
   vi.mocked(peekOpenCodeInventoryCache).mockReset();
   vi.mocked(peekOpenCodeInventoryCache).mockReturnValue(null);
   vi.mocked(probeOpenCodeProviderInventory).mockReset();
@@ -3174,6 +3272,58 @@ describe("createAgentChatService", () => {
     service.forceDisposeAll();
   });
 
+  it("writes each settled turn to the usage ledger once, with the events it saw", async () => {
+    installClaudeResponseFixture({
+      sdkSessionId: "sdk-turn-ledger",
+      responseText: "Finished successfully.",
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-chat-turn-ledger-"));
+    try {
+      const store = createTurnUsageLedgerStore({ dir });
+      const ledger = createTurnUsageLedger({ store });
+      const observe = vi.spyOn(ledger, "observe");
+      const { service } = createService({ turnUsageLedger: ledger });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        surface: "work",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "Complete the task." });
+
+      expect(observe).toHaveBeenCalled();
+      // `node:readline` is mocked for the Codex app-server in this file; the
+      // ledger reads its month file line by line, so it gets a real reader.
+      const readline = await import("node:readline");
+      const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
+        on: vi.fn(),
+        close: vi.fn(),
+        [Symbol.asyncIterator]: () => (async function* () {
+          const chunks: string[] = [];
+          for await (const chunk of options.input) chunks.push(String(chunk));
+          for (const line of chunks.join("").split(/\r?\n/u)) yield line;
+        })(),
+      });
+      vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
+      vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+      const rows = await store.readTurns();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        sessionId: session.id,
+        provider: "claude",
+        status: "completed",
+        laneId: "lane-1",
+        surface: "work",
+      });
+      expect(rows[0]?.key).toBe(`${session.id}:${rows[0]?.turnId}`);
+      expect(rows[0]?.startedAt).toBeTruthy();
+      service.forceDisposeAll();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // --------------------------------------------------------------------------
   // computer-use directive cadence
   // --------------------------------------------------------------------------
@@ -3234,6 +3384,27 @@ describe("createAgentChatService", () => {
 
       const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
       expect(prompts.some((text) => text.includes("## Computer Use"))).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("sends Droid's nearest effort for Ultracode instead of none", async () => {
+      // Droid has no Ultracode tier; dropping the value left the previous
+      // turn's effort in force.
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "claude-fable-5-1",
+        modelId: "droid/claude-fable-5-1",
+        reasoningEffort: "ultracode",
+      });
+      expect(session.reasoningEffort).toBe("ultracode");
+      await service.sendMessage({ sessionId: session.id, text: "Plan the migration." }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
+      expect(mockState.droidPromptCalls[0]?.settings).toMatchObject({
+        modelId: "claude-fable-5-1",
+        reasoningEffort: "xhigh",
+      });
       service.forceDisposeAll();
     });
 
@@ -4502,14 +4673,15 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // The raw preference survives the model switch; runtime capability gates
-      // whether the current provider can use it.
+      // Fast is a tier of one model. Sonnet has none, so the switch clears it
+      // rather than leaving it hidden until a later fast-capable model.
       await service.updateSession({
         sessionId: session.id,
         modelId: "anthropic/claude-sonnet-5",
       });
 
-      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).not.toBe(true);
     });
 
     it("handles Claude /fast commands inline and persists the ADE fast setting", async () => {
@@ -4786,6 +4958,37 @@ describe("createAgentChatService", () => {
       });
       expect(session).not.toHaveProperty("mcpServers");
       expect(session).not.toHaveProperty("mcpCapability");
+    });
+
+    it("persists the Pi model a switch picks while no Pi runtime is live", async () => {
+      const { service } = createService();
+      const first = createDynamicPiModelDescriptor("anthropic", "claude-sonnet-5");
+      const next = createDynamicPiModelDescriptor("openai", "gpt-5.4");
+      replaceDynamicPiModelDescriptors([first, next]);
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "pi",
+        model: first.id,
+        modelId: first.id as never,
+      });
+      // The chat resumes a Pi session file on its next launch.
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        piSessionId: "pi-session-1",
+        piProviderId: "anthropic",
+        piModelId: "claude-sonnet-5",
+      });
+
+      await service.updateSession({ sessionId: session.id, modelId: next.id as never });
+
+      // Writing the previous file's ids back made the next launch resume on
+      // the old model while ADE showed the new one.
+      expect(readPersistedChatState(session.id)).toMatchObject({
+        modelId: next.id,
+        piSessionId: "pi-session-1",
+        piProviderId: "openai",
+        piModelId: "gpt-5.4",
+      });
     });
 
     it("reports delivery without claiming strict mode when strict was never requested", async () => {
@@ -10182,6 +10385,95 @@ describe("createAgentChatService", () => {
       expect(secondUserContent).not.toContain("CLI controls ADE state");
     });
 
+    it("gives OpenCode activity guidance an explicit per-chat CLI and runtime target", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
+      const { service } = createService({
+        runtimeSocketPath,
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
+          ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
+          ADE_RPC_URL: staleRuntimeSocketPath,
+        }),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
+
+      let promptBody: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
+        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
+        expect(promptBody).toBeDefined();
+      });
+      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
+      for (const selector of ["ADE_RPC_URL", "ADE_RPC_SOCKET_PATH", "ADE_RUNTIME_SOCKET_PATH"]) {
+        expect(systemPromptArgs?.sessionActivityGuidance)
+          .toContain(`${selector}='${runtimeSocketPath}'`);
+      }
+      expect(systemPromptArgs?.sessionActivityGuidance).toContain("ADE_DEFAULT_ROLE='agent'");
+      expect(systemPromptArgs?.sessionActivityGuidance).toContain(`ADE_CHAT_SESSION_ID='${session.id}'`);
+      expect(systemPromptArgs?.sessionActivityGuidance)
+        .toContain(`'${cliPath}' chat activity testing --session '${session.id}'`);
+      expect(systemPromptArgs?.sessionActivityGuidance).not.toContain(staleRuntimeSocketPath);
+      await service.dispose({ sessionId: session.id });
+    });
+
+    it("withholds SDK activity guidance for an embedded runtime without RPC", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const { service } = createService({
+        runtimeSocketPath: "/runtime/unserved.sock",
+        sessionActivityReportingEnabled: false,
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: "/runtime/stable.sock",
+        }),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
+
+      let promptBody: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
+        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
+        expect(promptBody).toBeDefined();
+      });
+      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
+      expect(systemPromptArgs?.sessionActivityGuidance).toBeNull();
+      await service.dispose({ sessionId: session.id });
+    });
+
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
@@ -10505,6 +10797,51 @@ describe("createAgentChatService", () => {
       expect(spawnArgs).not.toContain("computer_use");
     });
 
+    it("routes Codex activity reports through the runtime that owns the chat", async () => {
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: path.dirname(cliPath),
+        ADE_CLI_PATH: cliPath,
+        ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
+        ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
+        ADE_RPC_URL: staleRuntimeSocketPath,
+      }));
+      const { service } = createService({ getAdeCliAgentEnv, runtimeSocketPath });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      try {
+        await service.sendMessage(
+          { sessionId: session.id, text: "Run the checks." },
+          { awaitDispatch: true },
+        );
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+        });
+
+        const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
+          call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
+        );
+        const spawnEnv = (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+        expect(spawnEnv).toMatchObject({
+          ADE_RPC_URL: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: runtimeSocketPath,
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+        });
+      } finally {
+        await service.dispose({ sessionId: session.id });
+      }
+    });
+
     it("passes raw CLI access env to the Cursor SDK pool for worker sanitization", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const getAdeCliAgentEnv = vi.fn(() => ({
@@ -10560,6 +10897,79 @@ describe("createAgentChatService", () => {
       await service.dispose({ sessionId: session.id });
 
       expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
+    });
+
+    it("targets Cursor SDK activity reports at the service runtime and disables them without an exact socket", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: path.dirname(cliPath),
+        ADE_CLI_PATH: cliPath,
+        // The service's socket is authoritative if a launcher carries stale env.
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade/sock/ade.sock",
+      }));
+
+      const { service } = createService({ getAdeCliAgentEnv, runtimeSocketPath });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+        activityRuntimeSocketPath: runtimeSocketPath,
+      }));
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .toContain(`chat activity testing --session '${session.id}'`);
+      await service.dispose({ sessionId: session.id });
+
+      mockState.cursorSdkAcquireCalls = [];
+      mockState.cursorSdkSendCalls = [];
+      const fallbackSocketPath = "/runtime/fallback.sock";
+      const { service: fallbackService } = createService({
+        runtimeSocketPath: "   ",
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: fallbackSocketPath,
+        }),
+      });
+      const fallbackSession = await fallbackService.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await fallbackService.sendMessage({ sessionId: fallbackSession.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+        activityRuntimeSocketPath: fallbackSocketPath,
+      }));
+      await fallbackService.dispose({ sessionId: fallbackSession.id });
+
+      mockState.cursorSdkAcquireCalls = [];
+      mockState.cursorSdkSendCalls = [];
+      const { service: noSocketService } = createService({
+        getAdeCliAgentEnv: () => ({ PATH: path.dirname(cliPath), ADE_CLI_PATH: cliPath }),
+      });
+      const noSocketSession = await noSocketService.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await noSocketService.sendMessage({ sessionId: noSocketSession.id, text: "Run locally." }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).not.toHaveProperty("activityRuntimeSocketPath");
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .not.toContain("chat activity testing --session");
+      await noSocketService.dispose({ sessionId: noSocketSession.id });
     });
   });
 
@@ -18442,6 +18852,7 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
 
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "wake prompt",
@@ -18455,10 +18866,13 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
 
       await service.sendMessage({ sessionId: session.id, text: "real user reply" });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledTimes(1);
     });
 
     it("writes a receipt for every Claude approval it settles, not just a cleared map", async () => {
@@ -18766,6 +19180,7 @@ describe("createAgentChatService", () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
 
       await service.respondToInput({
         sessionId: session.id,
@@ -18774,6 +19189,7 @@ describe("createAgentChatService", () => {
       });
 
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
       // And a receipt was written, so the card cannot be redrawn either.
       const history = await service.getChatEventHistory(session.id);
       expect(history.events.some((envelope) =>
@@ -18810,18 +19226,21 @@ describe("createAgentChatService", () => {
         { hostContinuation: { reason: "plan_followup" } },
       ]) {
         sessionService.clearTurnStartMarkers.mockClear();
+        sessionService.clearSessionActivity.mockClear();
         await service.sendMessage({
           sessionId: session.id,
           text: "host-authored delivery",
           metadata: metadata as never,
         });
         expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+        expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
       }
 
       // A board move is host-authored provenance but a HUMAN act, so it does
       // clear — except a move INTO Needs you, which exists to raise the hand
       // the clear would wipe in the same breath.
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "You moved this chat from Done to Working.",
@@ -18830,8 +19249,10 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
 
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
       await service.sendMessage({
         sessionId: session.id,
         text: "The user parked this for their input.",
@@ -18840,6 +19261,7 @@ describe("createAgentChatService", () => {
         } as never,
       });
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -18876,6 +19298,7 @@ describe("createAgentChatService", () => {
           modelId,
         });
         sessionService.clearTurnStartMarkers.mockClear();
+        sessionService.clearSessionActivity.mockClear();
 
         let turnSettled = false;
         const steerPromise = service.steerUserMessage({
@@ -18908,6 +19331,8 @@ describe("createAgentChatService", () => {
             expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
           });
           expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+          expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
+          expect(sessionService.clearSessionActivity).toHaveBeenCalledTimes(1);
           expect(turnSettled).toBe(false);
         } finally {
           finishTurn();
@@ -18929,12 +19354,14 @@ describe("createAgentChatService", () => {
         modelId: "cursor/composer-2",
       });
       sessionService.clearTurnStartMarkers.mockClear();
+      sessionService.clearSessionActivity.mockClear();
 
       await expect(service.steerUserMessage({
         sessionId: session.id,
         text: "Continue from my answer.",
       })).rejects.toThrow("Cursor rejected the dispatch.");
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
     it("preserves lifecycle markers when an idle OpenCode prompt is rejected before dispatch", async () => {
@@ -21808,6 +22235,101 @@ describe("createAgentChatService", () => {
 
       await waitForSessionTitle(sessionService, session.id, "Droid Native Title");
     });
+
+    it("turns a Droid context sample that trails done into a meter reading without touching the finished turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Do it." }, { awaitDispatch: true });
+      const done = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        } => event.event.type === "done",
+      );
+      expect(done.event.status).toBe("completed");
+      // A Stop after the run settled has nothing to flip.
+      await service.interrupt({ sessionId: session.id });
+
+      // The worker's background `droid.get_context_stats` read lands after done.
+      mockState.droidPooled.bridge.onEvent?.({
+        type: "context_stats",
+        contextStats: { used: 900, remaining: 1_100, limit: 2_000, accuracy: "exact", updatedAt: "2026-09-23T12:00:00.000Z" },
+      });
+      const usage = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "context_usage" }>;
+        } => event.event.type === "context_usage",
+      );
+      expect(usage.event.usage).toMatchObject({ totalTokens: 900, maxTokens: 2_000 });
+      expect(events.filter((event) => event.event.type === "done")).toHaveLength(1);
+      expect(events.some((event) =>
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(false);
+    });
+
+    it("never takes a trailing Droid context sample as the next turn's dispatch ack, and keeps it on its own turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "First." }, { awaitDispatch: true });
+      const firstDone = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        } => event.event.type === "done",
+      );
+      const firstTurnId = firstDone.event.turnId;
+      expect(mockState.droidPromptCalls[0]?.turnId).toBe(firstTurnId);
+
+      let releaseTurn: () => void = () => {};
+      mockState.droidPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      let dispatched = false;
+      const second = service.sendMessage({ sessionId: session.id, text: "Second." }, { awaitBackendDispatch: true })
+        .then(() => { dispatched = true; });
+      await vi.waitFor(() => expect(mockState.droidPromptCalls).toHaveLength(2));
+      const secondTurnId = mockState.droidPromptCalls[1]?.turnId;
+      expect(typeof secondTurnId).toBe("string");
+      expect(secondTurnId).not.toBe(firstTurnId);
+
+      // Turn one's trailing sample lands while turn two waits on Droid.
+      mockState.droidPooled.bridge.onEvent?.({
+        type: "context_stats",
+        contextStats: { used: 900, remaining: 1_100, limit: 2_000, accuracy: "exact", updatedAt: "2026-09-23T12:00:00.000Z" },
+        turnId: firstTurnId,
+      });
+      const usage = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "context_usage" }>;
+        } => event.event.type === "context_usage",
+      );
+      expect(usage.event.turnId).toBe(firstTurnId);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(dispatched).toBe(false);
+
+      // A real stream event from turn two is the acknowledgement.
+      mockState.droidPooled.bridge.onEvent?.({ type: "working_state_changed", state: "streaming_assistant_message" });
+      await vi.waitFor(() => expect(dispatched).toBe(true));
+      releaseTurn();
+      await second;
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -21936,7 +22458,6 @@ describe("createAgentChatService", () => {
       });
       const before = {
         reasoningEffort: session.reasoningEffort,
-        fastMode: session.fastMode,
         permissionMode: session.permissionMode,
         codexApprovalPolicy: session.codexApprovalPolicy,
         codexSandbox: session.codexSandbox,
@@ -21951,6 +22472,9 @@ describe("createAgentChatService", () => {
       expect(updated.provider).toBe("claude");
       expect(updated.modelId).toBe("anthropic/claude-sonnet-5");
       expect(updated).toMatchObject(before);
+      // Fast is the one control that belongs to the model: Sonnet has no fast
+      // tier, so the switch clears it.
+      expect(updated.fastMode).not.toBe(true);
     });
 
     it("does not broadcast mode fields when no mode field is updated", async () => {
@@ -33390,6 +33914,306 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("keeps a Codex subagent's token usage on its own card, not the parent's meter", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Spawn a scanner." }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-1",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Scan the renderer",
+            agentsStates: {},
+          },
+        },
+      });
+
+      // The subagent thread's own cumulative counter (Codex input includes the cached part).
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "agent-thread-1",
+          turnId: "agent-turn-1",
+          tokenUsage: {
+            total: { inputTokens: 28_004, cachedInputTokens: 27_392, outputTokens: 508, reasoningOutputTokens: 241, totalTokens: 28_512 },
+            last: { inputTokens: 28_004, cachedInputTokens: 27_392, outputTokens: 508, reasoningOutputTokens: 241, totalTokens: 28_512 },
+            modelContextWindow: 258_400,
+          },
+        },
+      });
+      const progress = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "subagent_progress" }>;
+        } => event.event.type === "subagent_progress" && event.event.taskId === "agent-thread-1" && event.event.usage != null,
+      );
+      expect(progress.event.usage).toEqual({
+        inputTokens: 612,
+        outputTokens: 508,
+        cacheReadTokens: 27_392,
+        reasoningTokens: 241,
+        totalTokens: 28_512,
+      });
+      expect(progress.event.turnId).toBe("turn-1");
+      expect(events.some((event) => event.event.type === "codex_token_usage")).toBe(false);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-2",
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            senderThreadId: "thread-1",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: null,
+            agentsStates: { "agent-thread-1": { status: "completed", message: "Renderer scanned." } },
+          },
+        },
+      });
+      const result = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "subagent_result" }>;
+        } => event.event.type === "subagent_result" && event.event.taskId === "agent-thread-1",
+      );
+      expect(result.event.usage).toMatchObject({ inputTokens: 612, cacheReadTokens: 27_392, totalTokens: 28_512 });
+      expect(result.event.usage?.usageConfidence).toBeUndefined();
+
+      // A late counter for a settled subagent must not reopen its card.
+      const progressCount = events.filter((event) => event.event.type === "subagent_progress").length;
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/tokenUsage/updated",
+        params: { threadId: "agent-thread-1", tokenUsage: { total: { inputTokens: 30_000, outputTokens: 600 } } },
+      });
+      expect(events.filter((event) => event.event.type === "subagent_progress")).toHaveLength(progressCount);
+    });
+
+    it("drops a Codex subagent result that waited on its rollout if the agent resumed meanwhile", async () => {
+      process.env.CODEX_HOME = path.join(tmpHomeRoot, "codex-subagent-rollout");
+      // Real UUIDv7 ids: created 2026-09-21T00:39:15.014Z.
+      const finishedId = "01a0c167-1b46-7d11-8257-d9827213c3db";
+      const resumedId = "01a0c167-1b46-7d11-8257-d9827213c3dc";
+      const created = new Date(1_789_951_155_014);
+      const pad = (value: number) => String(value).padStart(2, "0");
+      const dayDir = path.join(
+        process.env.CODEX_HOME,
+        "sessions",
+        String(created.getFullYear()),
+        pad(created.getMonth() + 1),
+        pad(created.getDate()),
+      );
+      fs.mkdirSync(dayDir, { recursive: true });
+      for (const threadId of [finishedId, resumedId]) {
+        fs.writeFileSync(path.join(dayDir, `rollout-2026-09-20T20-39-15-${threadId}.jsonl`), `${JSON.stringify({
+          type: "token_usage_record",
+          payload: {
+            thread_id: threadId,
+            usage: { input_tokens: 1_000, cached_input_tokens: 800, output_tokens: 100, total_tokens: 1_100 },
+          },
+        })}\n`);
+      }
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Spawn two scanners." }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+      );
+      const collab = (id: string, tool: string, status: "inProgress" | "completed", extra: Record<string, unknown>) =>
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: status === "inProgress" ? "item/started" : "item/completed",
+          params: {
+            turnId: "turn-1",
+            item: { id, type: "collabAgentToolCall", tool, status, senderThreadId: "thread-1", prompt: null, ...extra },
+          },
+        });
+      collab("spawn-1", "spawnAgent", "inProgress", { receiverThreadIds: [finishedId], prompt: "Scan A", agentsStates: {} });
+      collab("spawn-2", "spawnAgent", "inProgress", { receiverThreadIds: [resumedId], prompt: "Scan B", agentsStates: {} });
+      collab("wait-1", "wait", "completed", {
+        receiverThreadIds: [finishedId, resumedId],
+        agentsStates: {
+          [finishedId]: { status: "completed", message: "A scanned." },
+          [resumedId]: { status: "completed", message: "B scanned." },
+        },
+      });
+      // No live counter arrived, so both results wait on a rollout read. One
+      // agent is resumed before its read can finish.
+      collab("send-1", "sendInput", "completed", { receiverThreadIds: [resumedId], prompt: "One more pass" });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { threadId: resumedId, turn: { id: "resumed-turn", status: "inProgress" } },
+      });
+
+      // This file mocks `node:readline`, so the read itself yields nothing here
+      // (codexSubagentUsage.test.ts covers the sums); the ordering is the point.
+      const result = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "subagent_result" }>;
+        } => event.event.type === "subagent_result" && event.event.taskId === finishedId,
+      );
+      expect(result.event.status).toBe("completed");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(events.some((event) => event.event.type === "subagent_result" && event.event.taskId === resumedId)).toBe(false);
+      expect(
+        (await service.listSubagents({ sessionId: session.id })).find((snapshot) => snapshot.taskId === resumedId)?.status,
+      ).toBe("running");
+    });
+
+    it("reports a Codex model reroute as a notice and as the turn's served model", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Do the risky thing." }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "model/rerouted",
+        params: { threadId: "thread-1", turnId: "turn-1", fromModel: "gpt-5.4", toModel: "gpt-5.4-safe", reason: "highRiskCyberActivity" },
+      });
+      const notice = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }>;
+        } => event.event.type === "system_notice" && event.event.message.includes("rerouted"),
+      );
+      expect(notice.event.message).toBe("Codex rerouted this turn from gpt-5.4 to gpt-5.4-safe.");
+      expect(notice.event.turnId).toBe("turn-1");
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
+      });
+      const done = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        } => event.event.type === "done" && event.event.turnId === "turn-1",
+      );
+      expect(done.event.servedModel).toBe("gpt-5.4-safe");
+      expect(done.event.account).toMatchObject({ provider: "codex" });
+    });
+
+    it("gives the usage ledger a Codex turn's thread-total delta, context, served model, and account", async () => {
+      // `codex app-server` 0.153 answers `account/read` like this for an API key;
+      // it sends no `account/updated` at startup, so the read is the only report.
+      mockState.codexResponseOverrides.set("account/read", { account: { type: "apiKey" }, requiresOpenaiAuth: true });
+      const { ledger, rows } = createMemoryTurnUsageLedger();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        turnUsageLedger: ledger,
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Refactor the parser." }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "account/read")?.params)
+        .toEqual({ refreshToken: false });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+      );
+      const breakdown = (input: number, cached: number, output: number, reasoning: number) => ({
+        totalTokens: input + output,
+        inputTokens: input,
+        cachedInputTokens: cached,
+        cacheWriteInputTokens: 0,
+        outputTokens: output,
+        reasoningOutputTokens: reasoning,
+      });
+      // Thread totals run across turns: 5,000 input (4,000 cached) came before
+      // this turn. Two requests follow; the turn is the delta.
+      const usageUpdate = (total: ReturnType<typeof breakdown>, last: ReturnType<typeof breakdown>) =>
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "thread/tokenUsage/updated",
+          params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total, last, modelContextWindow: 258_000 } },
+        });
+      usageUpdate(breakdown(6_200, 5_000, 380, 130), breakdown(1_200, 1_000, 80, 30));
+      usageUpdate(breakdown(7_700, 6_300, 500, 170), breakdown(1_500, 1_300, 120, 40));
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "model/rerouted",
+        params: { threadId: "thread-1", turnId: "turn-1", fromModel: "gpt-5.4", toModel: "gpt-5.4-safe", reason: "highRiskCyberActivity" },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
+      });
+      const done = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        } => event.event.type === "done" && event.event.turnId === "turn-1",
+      );
+      const usageEvents = events.filter((event) => event.event.type === "codex_token_usage");
+      expect(usageEvents.map((event) => (event.event as { turnId?: string }).turnId)).toEqual(["turn-1", "turn-1"]);
+      expect(done.event).toMatchObject({
+        servedModel: "gpt-5.4-safe",
+        account: { provider: "codex", kind: "api_key" },
+      });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        provider: "codex",
+        requestedModel: "openai/gpt-5.4",
+        servedModel: "gpt-5.4-safe",
+        // 2,700 input of which 2,300 cached, 200 output, 70 reasoning.
+        inputTokens: 400,
+        cacheReadTokens: 2_300,
+        outputTokens: 200,
+        reasoningTokens: 70,
+        // The last request's input side, in the model's window.
+        contextTokens: 1_500,
+        contextWindow: 258_000,
+        usageConfidence: "derived",
+        account: { provider: "codex", kind: "api_key" },
+      });
+      // A reroute to another model is worth one log line.
+      expect(logger.warn).toHaveBeenCalledWith("agent_chat.served_model_mismatch", expect.objectContaining({
+        sessionId: session.id,
+        provider: "codex",
+        requestedModel: "gpt-5.4",
+        servedModel: "gpt-5.4-safe",
+      }));
+    });
+
     it("switches the Claude SDK session into plan mode before a plan turn", async () => {
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
@@ -34568,6 +35392,8 @@ describe("createAgentChatService", () => {
         authenticated: true,
         models: [{ id: "gpt-5.5", displayName: "gpt-5.5" }],
         defaultModelId: "gpt-5.5",
+        selectedType: null,
+        baseUrlOrigin: null,
       });
 
       const { service } = createService();
@@ -36662,7 +37488,10 @@ describe("createAgentChatService", () => {
      * status, reach into the mocked session state, and wake the stream's waiters
      * after pushing events. `finish` releases the gate and settles the send.
      */
-    const startOpenCodeTurn = async (promptText: string) => {
+    const startOpenCodeTurn = async (
+      promptText: string,
+      sessionOptions: { strictMcpConfig?: boolean; fastMode?: boolean; reasoningEffort?: string } = {},
+    ) => {
       const events: AgentChatEventEnvelope[] = [];
       let releaseStream!: () => void;
       const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
@@ -36681,6 +37510,7 @@ describe("createAgentChatService", () => {
         provider: "opencode",
         model: "opencode/openai/gpt-5.4",
         modelId: "opencode/openai/gpt-5.4",
+        ...sessionOptions,
       });
 
       const sendPromise = service.sendMessage({ sessionId: session.id, text: promptText });
@@ -36865,6 +37695,146 @@ describe("createAgentChatService", () => {
       expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
         variant: "fast",
       }));
+    });
+
+    it("sends OpenCode's own variant key for the chosen reasoning tier", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      const descriptor = createDynamicOpenCodeModelDescriptor("", {
+        displayName: "DeepSeek Reasoner",
+        capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+        openCodeProviderId: "deepseek",
+        openCodeModelId: "deepseek-reasoner",
+        reasoningTiers: ["low", "xhigh"],
+      });
+      // The model's OpenCode config names the tier `extra-high`.
+      descriptor.openCodeVariantKeys = { xhigh: "extra-high" };
+      replaceDynamicOpenCodeModelDescriptors([descriptor]);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/deepseek/deepseek-reasoner",
+        reasoningEffort: "xhigh",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Think hard." }, { awaitDispatch: true });
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      await vi.waitFor(() => {
+        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+      });
+      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
+        variant: "extra-high",
+      }));
+    });
+
+    /** GPT-5.4 as the inventory lists it when OpenCode also has its `-fast` sibling. */
+    const registerOpenCodeFastSiblingRow = (): void => {
+      const descriptor = createDynamicOpenCodeModelDescriptor("", {
+        displayName: "GPT-5.4",
+        capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5.4",
+        reasoningTiers: ["low", "high"],
+        serviceTiers: ["fast"],
+        reportedTiers: true,
+      });
+      descriptor.openCodeFast = {
+        withoutEffort: { modelId: "gpt-5.4-fast" },
+        byEffort: {
+          low: { modelId: "gpt-5.4-fast", variant: "low" },
+          high: { modelId: "gpt-5.4-fast", variant: "high" },
+        },
+      };
+      replaceDynamicOpenCodeModelDescriptors([descriptor]);
+    };
+
+    it("runs Fast with an effort as OpenCode's fast sibling model plus the effort variant", async () => {
+      // OpenCode's prompt takes one `variant`. Sending `fast` there dropped the
+      // effort; the sibling model keeps both.
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      registerOpenCodeFastSiblingRow();
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        fastMode: true,
+        reasoningEffort: "high",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Fast and careful." }, { awaitDispatch: true });
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      await vi.waitFor(() => {
+        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+      });
+      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
+        model: { providerID: "openai", modelID: "gpt-5.4-fast" },
+        variant: "high",
+      }));
+    });
+
+    it("keeps the effort and logs when OpenCode cannot run Fast with it", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      // A plain `fast` variant only: it cannot share the prompt's one `variant`.
+      replaceDynamicOpenCodeModelDescriptors([
+        createDynamicOpenCodeModelDescriptor("", {
+          displayName: "GPT-5.4",
+          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+          reasoningTiers: ["low", "high"],
+          serviceTiers: ["fast"],
+          reportedTiers: true,
+        }),
+      ]);
+
+      const { service, logger } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        fastMode: true,
+        reasoningEffort: "high",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Think hard." }, { awaitDispatch: true });
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      await vi.waitFor(() => {
+        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+      });
+      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
+        model: { providerID: "openai", modelID: "gpt-5.4" },
+        variant: "high",
+      }));
+      const fastNotApplied = vi.mocked(logger.warn).mock.calls
+        .filter(([event]) => event === "agent_chat.opencode_fast_not_applied");
+      expect(fastNotApplied).toHaveLength(1);
+      expect(fastNotApplied[0]![1]).toMatchObject({
+        sessionId: session.id,
+        modelId: "opencode/openai/gpt-5.4",
+        reasoningEffort: "high",
+        reason: "OpenCode cannot run GPT-5.4 in Fast mode at high effort.",
+      });
     });
 
     it("lists an OpenCode approval that is blocking the session", async () => {
@@ -37417,6 +38387,142 @@ describe("createAgentChatService", () => {
       await turn.finish();
     });
 
+    it("reports an OpenCode turn's summed usage, provider cost, and last-step context", async () => {
+      // Every step is one model request. The done event used to carry only the
+      // last step and dropped reasoning and cost; it now sums the turn and keeps
+      // the last step's input side as the context the next request starts from.
+      // OpenCode's auth.json is read from this data dir, never the machine's.
+      const previousXdgDataHome = process.env.XDG_DATA_HOME;
+      const openCodeDataHome = path.join(tmpRoot, "xdg-data");
+      fs.mkdirSync(path.join(openCodeDataHome, "opencode"), { recursive: true });
+      fs.writeFileSync(
+        path.join(openCodeDataHome, "opencode", "auth.json"),
+        JSON.stringify({ openai: { type: "oauth", access: "secret", accountId: "acct-test" } }),
+      );
+      process.env.XDG_DATA_HOME = openCodeDataHome;
+      try {
+        const turn = await startOpenCodeTurn("Use tools for a while.");
+        const { sessionID } = turn;
+        const stepFinish = (id: string, input: number, output: number, reasoning: number, read: number, write: number, cost: number) => ({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id,
+              type: "step-finish",
+              messageID: "msg-a",
+              sessionID,
+              reason: "tool-calls",
+              cost,
+              tokens: { input, output, reasoning, cache: { read, write } },
+            },
+          },
+        });
+
+        turn.pushEvents(
+          {
+            type: "message.updated",
+            properties: {
+              info: { id: "msg-a", role: "assistant", sessionID, providerID: "openai", modelID: "gpt-5.4-mini" },
+            },
+          },
+          stepFinish("prt-1", 1_000, 100, 40, 5_000, 200, 0.01),
+          stepFinish("prt-2", 300, 50, 10, 6_000, 0, 0.02),
+          stepFinish("prt-3", 200, 80, 0, 6_300, 100, 0.03),
+          { type: "session.idle", properties: { sessionID } },
+        );
+        const done = await turn.waitForDone();
+        const doneEvent = done.event as Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        expect(doneEvent.usage).toEqual({
+          inputTokens: 1_500,
+          outputTokens: 230,
+          cacheReadTokens: 17_300,
+          cacheCreationTokens: 300,
+          reasoningTokens: 50,
+          // The model's context limit ADE already has for the descriptor.
+          contextWindow: 200_000,
+          contextTokens: 6_600,
+          requestCount: 3,
+        });
+        expect(doneEvent.costUsd).toBeCloseTo(0.06, 10);
+        expect(doneEvent.costSource).toBe("provider");
+        // The request named openai/gpt-5.4; the assistant message says what answered.
+        expect(doneEvent.servedModel).toBe("opencode/openai/gpt-5.4-mini");
+        // An OAuth login in OpenCode's auth.json is a plan; the token never leaves the file.
+        expect(doneEvent.account).toEqual({
+          provider: "opencode",
+          kind: "subscription",
+          upstream: "openai",
+          accountId: "acct-test",
+        });
+
+        const liveSamples = turn.events
+          .map((event) => event.event)
+          .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "context_usage" }> =>
+            event.type === "context_usage");
+        // One live meter sample per step, each the step's input side.
+        expect(liveSamples.map((sample) => sample.usage.totalTokens)).toEqual([6_200, 6_300, 6_600]);
+        expect(liveSamples.every((sample) => sample.origin === "live" && sample.state === "measured")).toBe(true);
+        expect(liveSamples[2]?.usage.maxTokens).toBe(200_000);
+
+        await turn.finish();
+      } finally {
+        if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+        else process.env.XDG_DATA_HOME = previousXdgDataHome;
+      }
+    });
+
+    it("names a strict-config OpenCode chat's account from its isolated server's store", async () => {
+      // A strict-config chat runs its own OpenCode server on ADE's isolated
+      // XDG_DATA_HOME; the user's login in their own store did not pay.
+      const previousXdgDataHome = process.env.XDG_DATA_HOME;
+      const previousXdgRoot = process.env.ADE_OPENCODE_XDG_ROOT;
+      const userDataHome = path.join(tmpRoot, "user-xdg-data");
+      const isolatedRoot = path.join(tmpRoot, "ade-opencode-runtime");
+      const isolatedStore = path.join(isolatedRoot, "xdg-v1", "data", "opencode");
+      fs.mkdirSync(path.join(userDataHome, "opencode"), { recursive: true });
+      fs.mkdirSync(isolatedStore, { recursive: true });
+      fs.writeFileSync(
+        path.join(userDataHome, "opencode", "auth.json"),
+        JSON.stringify({ openai: { type: "oauth", access: "secret", accountId: "acct-user" } }),
+      );
+      fs.writeFileSync(path.join(isolatedStore, "auth.json"), JSON.stringify({ openai: { type: "api", key: "secret" } }));
+      process.env.XDG_DATA_HOME = userDataHome;
+      process.env.ADE_OPENCODE_XDG_ROOT = isolatedRoot;
+      try {
+        const turn = await startOpenCodeTurn("Answer from the isolated server.", { strictMcpConfig: true });
+        turn.pushEvents({ type: "session.idle", properties: { sessionID: turn.sessionID } });
+        const done = await turn.waitForDone();
+        const doneEvent = done.event as Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+        expect(doneEvent.account).toEqual({ provider: "opencode", kind: "api_key", upstream: "openai" });
+        await turn.finish();
+      } finally {
+        if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+        else process.env.XDG_DATA_HOME = previousXdgDataHome;
+        if (previousXdgRoot === undefined) delete process.env.ADE_OPENCODE_XDG_ROOT;
+        else process.env.ADE_OPENCODE_XDG_ROOT = previousXdgRoot;
+      }
+    });
+
+    it("reports no served-model change when the fast sibling ADE asked for answers", async () => {
+      registerOpenCodeFastSiblingRow();
+      const turn = await startOpenCodeTurn("Answer fast.", { fastMode: true, reasoningEffort: "high" });
+      const { sessionID } = turn;
+      turn.pushEvents(
+        {
+          type: "message.updated",
+          properties: {
+            info: { id: "msg-a", role: "assistant", sessionID, providerID: "openai", modelID: "gpt-5.4-fast" },
+          },
+        },
+        { type: "session.idle", properties: { sessionID } },
+      );
+      const done = await turn.waitForDone();
+      const doneEvent = done.event as Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      expect(doneEvent.status).toBe("completed");
+      expect(doneEvent.servedModel).toBeUndefined();
+      await turn.finish();
+    });
+
     it("ignores part deltas that belong to a user message", async () => {
       // The delta stream carries no role, so the same assistant-role gate that
       // protects `message.part.updated` has to protect this one — otherwise the
@@ -37848,7 +38954,21 @@ describe("createAgentChatService", () => {
     });
 
     it("sends Codex plan collaboration mode on turn start for plan sessions", async () => {
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      let readSessionSummary: ((sessionId: string) => Promise<unknown>) | null = null;
+      let summaryReadAtClear: Promise<unknown> | null = null;
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+          if (
+            event.event.type === "session_meta_updated"
+            && event.event.codexEffectiveCollaborationMode === null
+            && readSessionSummary
+          ) {
+            summaryReadAtClear = readSessionSummary(event.sessionId);
+          }
+        },
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -37858,6 +38978,7 @@ describe("createAgentChatService", () => {
         codexConfigSource: "flags",
       });
       expect(session.permissionMode).toBe("plan");
+      readSessionSummary = (sessionId) => service.getSessionSummary(sessionId);
 
       await service.sendMessage({
         sessionId: session.id,
@@ -37891,6 +39012,22 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
       expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("plan");
+      });
+      expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationModeWasCleared)
+        .toBeUndefined();
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === null,
+      )).toBe(true);
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === "plan",
+      )).toBe(true);
+      const clearedSummary = summaryReadAtClear;
+      if (!clearedSummary) throw new Error("Expected a summary read while Codex mode was cleared");
+      expect(await clearedSummary).toMatchObject({
+        codexEffectiveCollaborationModeWasCleared: true,
+      });
       expect(textInputs).toHaveLength(1);
       expect(textInputs.at(-1)?.text).toContain("User request:");
       expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");
@@ -37904,6 +39041,7 @@ describe("createAgentChatService", () => {
           runtime: "codex-app-server",
         }),
       );
+
     });
 
     it("turns native Codex plan items into an implementation approval request", async () => {
@@ -42616,7 +43754,7 @@ describe("createAgentChatService", () => {
       expect(afterMessages.length).toBe(beforeNoticeCount + 1);
     });
 
-    it("preserves fast mode when switching a session away from Codex", async () => {
+    it("keeps fast mode switching away from Codex only onto a model with a fast tier", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -42625,15 +43763,21 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      const updated = await service.updateSession({
+      const onOpus = await service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-opus-5",
+      });
+      expect(onOpus.provider).toBe("claude");
+      expect(onOpus.fastMode).toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).toBe(true);
+
+      const onSonnet = await service.updateSession({
         sessionId: session.id,
         modelId: "anthropic/claude-sonnet-5",
       });
-
-      expect(updated.provider).toBe("claude");
-      expect(updated.fastMode).toBe(true);
-      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
-      expect(readPersistedChatState(session.id).fastMode).toBe(true);
+      expect(onSonnet.fastMode).not.toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).not.toBe(true);
     });
 
     it("re-resumes Codex threads when fast mode changes mid-session", async () => {
@@ -43903,7 +45047,10 @@ describe("createAgentChatService", () => {
 
     it("falls back to default collaboration mode when plan is not advertised", async () => {
       mockState.codexCollaborationModes = [{ mode: "default" }];
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -43928,6 +45075,12 @@ describe("createAgentChatService", () => {
       const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
 
       expect(collaborationMode?.mode).toBe("default");
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("default");
+      });
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === "default",
+      )).toBe(true);
     });
   });
 
@@ -49733,6 +50886,256 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       queuedTurnCount: 0,
       userMessageUuid: "user-msg-result",
     });
+    // One ModelUsage key naming the requested model is not a different served model.
+    expect(done?.servedModel).toBeUndefined();
+  });
+
+  it("reports Claude's served model, 1h cache writes, and API-key account on done", async () => {
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: "sdk-served-model",
+      messages: [
+        {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-served-model",
+          model: "claude-sonnet-5",
+          apiKeySource: "ANTHROPIC_API_KEY",
+          slash_commands: [],
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage: {
+            input_tokens: 10,
+            output_tokens: 920,
+            cache_creation_input_tokens: 500,
+            cache_creation: { ephemeral_5m_input_tokens: 200, ephemeral_1h_input_tokens: 300 },
+          },
+          modelUsage: {
+            // The requested model answered little; a fallback carried the turn.
+            "claude-sonnet-5": { inputTokens: 5, outputTokens: 20 },
+            "claude-haiku-4-5": { inputTokens: 5, outputTokens: 900 },
+          },
+        },
+      ],
+    });
+    const done = events
+      .map((entry) => entry.event)
+      .find((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done");
+    expect(done?.usage?.cacheWrite1hTokens).toBe(300);
+    expect(done?.servedModel).toBe("claude-haiku-4-5");
+    expect(done?.account).toMatchObject({ provider: "claude", kind: "api_key" });
+    // An API-key turn is not billed to the login, so its email and plan stay off.
+    expect(done?.account?.email).toBeUndefined();
+  });
+
+  it("gives the usage ledger every figure a Claude turn reports", async () => {
+    const { ledger, rows } = createMemoryTurnUsageLedger();
+    const requestStart = (usage: Record<string, number>, extra: Record<string, unknown> = {}) => ({
+      type: "stream_event",
+      ...extra,
+      event: { type: "message_start", message: { id: `msg-${Object.values(usage).join("-")}`, usage } },
+    });
+    const { events, session } = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-ledger-complete",
+      serviceOverrides: { turnUsageLedger: ledger },
+      messages: [
+        { type: "system", subtype: "init", session_id: "sdk-ledger-complete", model: "claude-sonnet-5", apiKeySource: "none", slash_commands: [] },
+        requestStart({ input_tokens: 10, cache_read_input_tokens: 5_000, cache_creation_input_tokens: 200, output_tokens: 1 }),
+        // A subagent's request is its own; it is not a request of this turn.
+        requestStart({ input_tokens: 90_000, output_tokens: 1 }, { parent_tool_use_id: "toolu_subagent" }),
+        requestStart({ input_tokens: 4, cache_read_input_tokens: 5_200, cache_creation_input_tokens: 150, output_tokens: 1 }),
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          total_cost_usd: 0.0421,
+          usage: {
+            input_tokens: 14,
+            output_tokens: 600,
+            cache_read_input_tokens: 10_200,
+            cache_creation_input_tokens: 350,
+            cache_creation: { ephemeral_5m_input_tokens: 50, ephemeral_1h_input_tokens: 300 },
+          },
+          modelUsage: {
+            "claude-sonnet-5": {
+              inputTokens: 14,
+              outputTokens: 600,
+              cacheReadInputTokens: 10_200,
+              cacheCreationInputTokens: 350,
+              webSearchRequests: 0,
+              costUSD: 0.0421,
+              contextWindow: 1_000_000,
+              maxOutputTokens: 64_000,
+              provider: "firstParty",
+              costBasis: "list",
+            },
+          },
+        },
+      ],
+    });
+    const done = events
+      .map((entry) => entry.event)
+      .find((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done");
+    expect(done).toMatchObject({
+      status: "completed",
+      usage: {
+        inputTokens: 14,
+        outputTokens: 600,
+        cacheReadTokens: 10_200,
+        cacheCreationTokens: 350,
+        cacheWrite1hTokens: 300,
+        // The last main-thread request's whole input side.
+        contextTokens: 5_354,
+        contextWindow: 1_000_000,
+        requestCount: 2,
+      },
+      costUsd: 0.0421,
+      costSource: "list_price",
+      costBasis: "list",
+      account: { provider: "claude", kind: "subscription" },
+    });
+    expect(done?.servedModel).toBeUndefined();
+    expect(done?.account).not.toHaveProperty("routedAway");
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sessionId: session.id,
+      provider: "claude",
+      requestedModel: "anthropic/claude-sonnet-5",
+      servedModel: null,
+      inputTokens: 14,
+      outputTokens: 600,
+      cacheReadTokens: 10_200,
+      cacheWriteTokens: 350,
+      cacheWrite1hTokens: 300,
+      contextTokens: 5_354,
+      contextWindow: 1_000_000,
+      requestCount: 2,
+      costUsd: 0.0421,
+      costSource: "list_price",
+      usageConfidence: "measured",
+      account: { provider: "claude", kind: "subscription" },
+    });
+  });
+
+  it.each([
+    { name: "an API key", apiKeySource: "ANTHROPIC_API_KEY", provider: "firstParty", env: {}, kind: "api_key", routedAway: undefined },
+    { name: "Bedrock", apiKeySource: "none", provider: "bedrock", env: {}, kind: "unknown", routedAway: "cloud" },
+    {
+      name: "a redirected endpoint",
+      apiKeySource: "none",
+      provider: "firstParty",
+      env: { ANTHROPIC_BASE_URL: "https://gateway.example" },
+      kind: "unknown",
+      routedAway: "endpoint",
+    },
+  ])("names who paid for a Claude turn on $name", async ({ apiKeySource, provider, env, kind, routedAway }) => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    try {
+      const { ledger, rows } = createMemoryTurnUsageLedger();
+      const { events } = await createClaudeStreamFixture({
+        sdkSessionId: `sdk-ledger-account-${provider}-${apiKeySource}`,
+        serviceOverrides: { turnUsageLedger: ledger },
+        messages: [
+          { type: "system", subtype: "init", session_id: "sdk-ledger-account", model: "claude-sonnet-5", apiKeySource, slash_commands: [] },
+          {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            total_cost_usd: 0.001,
+            usage: { input_tokens: 1, output_tokens: 1 },
+            modelUsage: { "claude-sonnet-5": { inputTokens: 1, outputTokens: 1, provider } },
+          },
+        ],
+      });
+      const done = events
+        .map((entry) => entry.event)
+        .find((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> => event.type === "done");
+      expect(done?.account).toMatchObject({ provider: "claude", kind });
+      expect(done?.account?.routedAway).toBe(routedAway);
+      expect(rows[0]?.account).toMatchObject({ kind });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("counts each idle Claude turn's own requests and cost", async () => {
+    const { ledger, rows } = createMemoryTurnUsageLedger();
+    const events: AgentChatEventEnvelope[] = [];
+    let streamCall = 0;
+    let releaseIdle!: () => void;
+    const releaseIdlePromise = new Promise<void>((resolve) => { releaseIdle = resolve; });
+    const requestStart = (id: string, input: number) => ({
+      type: "stream_event",
+      event: { type: "message_start", message: { id, usage: { input_tokens: input, output_tokens: 1 } } },
+    });
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send: vi.fn().mockResolvedValue(undefined),
+      stream: vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-idle-ledger", slash_commands: [] };
+          return;
+        }
+        yield { type: "result", subtype: "success", is_error: false, session_id: "sdk-idle-ledger" };
+        await releaseIdlePromise;
+        // Background turn one: two requests.
+        yield requestStart("idle-1a", 100);
+        yield requestStart("idle-1b", 120);
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          total_cost_usd: 0.02,
+          usage: { input_tokens: 220, output_tokens: 8 },
+          session_id: "sdk-idle-ledger",
+        };
+        // Background turn two: one request of its own.
+        yield requestStart("idle-2a", 140);
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 140, output_tokens: 4 },
+          session_id: "sdk-idle-ledger",
+        };
+      })()),
+      close: vi.fn(),
+      sessionId: "sdk-idle-ledger",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      turnUsageLedger: ledger,
+    });
+    const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+    await service.runSessionTurn({ sessionId: session.id, text: "Start background work." });
+    releaseIdle();
+
+    await waitForCondition(
+      () => events.filter((event) => event.event.type === "done" && event.event.turnId.startsWith("claude-idle-")).length === 2,
+      "two idle Claude turns",
+    );
+    const idleDone = events
+      .map((entry) => entry.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "done" }> =>
+        event.type === "done" && event.turnId.startsWith("claude-idle-"));
+    expect(idleDone[0]).toMatchObject({
+      usage: { inputTokens: 220, requestCount: 2, contextTokens: 120 },
+      costUsd: 0.02,
+      costSource: "list_price",
+    });
+    expect(idleDone[1]).toMatchObject({
+      usage: { inputTokens: 140, requestCount: 1, contextTokens: 140 },
+      costUsd: 0.01,
+      costSource: "list_price",
+    });
+    expect(rows.filter((row) => row.turnId.startsWith("claude-idle-")).map((row) => row.requestCount)).toEqual([2, 1]);
+    service.forceDisposeAll();
   });
 
   it("stamps user_message_uuid from the first assistant frame onto done", async () => {
@@ -52408,6 +53811,38 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     ]));
   });
 
+  it("ends a stored-login Cursor turn without asking getUsage; an API-key turn still asks", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+    const runTurn = async (text: string) => {
+      const doneCount = events.filter((event) => event.event.type === "done").length;
+      await service.sendMessage({ sessionId: session.id, text }, { awaitDispatch: true });
+      await waitForCondition(
+        () => events.filter((event) => event.event.type === "done").length > doneCount,
+        "Cursor turn done",
+      );
+    };
+    const usageRequests = () => mockState.cursorSdkCloudRequests.filter((r) => r.type === "agent.getUsage");
+
+    await runTurn("With a key.");
+    expect(usageRequests()).toHaveLength(1);
+
+    // The worker keeps running on the stored login once no key is configured.
+    delete process.env.CURSOR_API_KEY;
+    await runTurn("Stored login.");
+    await runTurn("Stored login again.");
+    expect(usageRequests()).toHaveLength(1);
+  });
+
   it("renders Cursor SDK private plan control blocks without exposing them as chat text", async () => {
     process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
@@ -52755,6 +54190,16 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
           && event.event.itemId === "cursor-hook-preview-failure",
       );
 
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([
+        expect.objectContaining({
+          itemId: "cursor-hook-preview-failure",
+          source: "cursor",
+          kind: "permissions",
+          blocking: true,
+          providerMetadata: expect.objectContaining({ cursorSdk: true, toolName: "shell" }),
+        }),
+      ]);
+
       await service.respondToInput({
         sessionId: session.id,
         itemId: approvalEvent.event.itemId,
@@ -52762,6 +54207,7 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       });
 
       await expect(hookResponse).resolves.toEqual({ permission: "allow" });
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
       expect(logger.warn).toHaveBeenCalledWith(
         "agent_chat.preview_update_failed",
         expect.objectContaining({
@@ -53118,6 +54564,68 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
   });
 
+  it("lists and resolves a live Droid SDK permission card", async () => {
+    let finishTurn = () => {};
+    mockState.droidPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+    });
+
+    try {
+      const turnPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Read a file that needs permission.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.droidPromptCalls.length).toBeGreaterThan(0);
+        expect(typeof mockState.droidPooled?.bridge.onPermissionRequest).toBe("function");
+      });
+
+      const permissionResponse = mockState.droidPooled.bridge.onPermissionRequest({
+        id: "droid-permission-card",
+        title: "Read file",
+        summary: "Read README.md",
+        toolName: "Read",
+        toolInput: { filePath: "README.md" },
+        toolUseIds: ["tool-use-1"],
+        options: [
+          { label: "Allow once", value: "proceed_once" },
+          { label: "Cancel", value: "cancel" },
+        ],
+        raw: { filePath: "README.md" },
+      });
+
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([
+        expect.objectContaining({
+          itemId: "droid-permission-card",
+          source: "droid",
+          kind: "permissions",
+          blocking: true,
+          options: expect.arrayContaining([
+            expect.objectContaining({ label: "Allow once", value: "proceed_once" }),
+          ]),
+        }),
+      ]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "droid-permission-card",
+        decision: "accept",
+      });
+
+      await expect(permissionResponse).resolves.toEqual({ selectedOption: "proceed_once" });
+      expect(service.listPendingInputs({ sessionId: session.id }).requests).toEqual([]);
+      finishTurn();
+      await expect(turnPromise).resolves.toBeUndefined();
+    } finally {
+      finishTurn();
+    }
+  });
+
   it("sends Droid screenshots as attachment paths over worker IPC", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
@@ -53409,6 +54917,140 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
       expect(mockState.cursorSdkCloudRequests.map((request) => request.type)).toEqual(
         expect.arrayContaining(["cloud.agent.get", "cloud.runs.list", "cloud.run.conversation"]),
       );
+    });
+
+    it("adopts a cloud run's model once, so a later pick survives the mirror refresh", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", { name: "Cloud chat" });
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{ runId: "cloud-run-1", status: "finished", model: { id: "grok-4.6" } }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", { turns: [] });
+      const readModel = async () => (await service.getSessionSummary(session.id))?.model;
+
+      // First attach: the chat takes the model the agent last ran on.
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      expect(await readModel()).toBe("grok-4.6");
+
+      // The user picks another model; the mirror re-reads the same finished run.
+      await service.updateSession({ sessionId: session.id, modelId: "cursor/composer-2" });
+      const picked = await readModel();
+      expect(picked).not.toBe("grok-4.6");
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      expect(await readModel()).toBe(picked);
+
+      // A new run (from cursor.com) on another model is adopted.
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [
+          { runId: "cloud-run-2", status: "finished", model: { id: "gpt-5.4" } },
+          { runId: "cloud-run-1", status: "finished", model: { id: "grok-4.6" } },
+        ],
+      });
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
+      expect(await readModel()).toBe("gpt-5.4");
+    });
+
+    it("drops the choices an adopted cloud model cannot take, and keeps them while the catalog cannot say", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const createChoosingSession = () => service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        reasoningEffort: "low",
+        fastMode: true,
+        cursorConfigValues: { verbosity: "verbose", max_context: true },
+      } as any);
+      mockState.cursorSdkCloudResponses.set("cloud.agent.get", { name: "Cloud chat" });
+      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
+        items: [{ runId: "cloud-run-1", status: "finished", model: { id: "grok-4.6" } }],
+      });
+      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", { turns: [] });
+
+      // Cold catalog: unknown is not unsupported, so every choice stays.
+      const cold = await createChoosingSession();
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: cold.id });
+      expect(await service.getSessionSummary(cold.id)).toMatchObject({
+        model: "grok-4.6",
+        reasoningEffort: "low",
+        fastMode: true,
+        cursorConfigValues: { verbosity: "verbose", max_context: true },
+      });
+
+      cursorModelsListMock.mockResolvedValue([
+        {
+          id: "grok-4.6",
+          parameters: [
+            { id: "reasoning_effort", values: [{ value: "high" }] },
+            { id: "verbosity", values: [{ value: "terse" }] },
+          ],
+        },
+      ]);
+      await probeCursorSdkModelDiscovery("cursor-test-key");
+      const warm = await createChoosingSession();
+      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-2", laneId: "lane-1", sessionId: warm.id });
+      const summary = await service.getSessionSummary(warm.id);
+      expect(summary?.model).toBe("grok-4.6");
+      // grok-4.6 has no `low` effort, no Fast tier, and no `verbose`. It does
+      // not declare max_context at all, so that choice is inapplicable and stays.
+      expect(summary?.reasoningEffort ?? null).toBeNull();
+      expect(summary?.fastMode).not.toBe(true);
+      expect(summary?.cursorConfigValues).toEqual({ max_context: true });
+    });
+
+    it("keeps a model picked while a local Cursor run is starting", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const releaseSend = parkCursorSend();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      const firstSend = service.sendMessage({ sessionId: session.id, text: "Start on Composer." });
+      try {
+        await vi.waitFor(() => {
+          expect(mockState.cursorSdkSendCalls.length).toBe(1);
+        });
+        // The switch lands while the turn is busy, so it is deferred to turn end.
+        await service.updateSession({ sessionId: session.id, modelId: "cursor/gpt-5.4" });
+        const picked = (await service.getSessionSummary(session.id))?.modelId;
+        expect(picked).toBe("cursor/gpt-5.4");
+        // The run then reports the model this runtime sent, the old one.
+        mockState.cursorSdkPooled.bridge.onRunStarted({
+          agentId: "cursor-sdk-agent-1",
+          runId: "cursor-sdk-run-1",
+          modelSdkId: "composer-2",
+        }, { runtime: "local" });
+        expect((await service.getSessionSummary(session.id))?.modelId).toBe("cursor/gpt-5.4");
+      } finally {
+        releaseSend();
+      }
+      await firstSend;
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "done" && event.sessionId === session.id,
+      );
+      await service.sendMessage({ sessionId: session.id, text: "Continue on GPT." }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBe(2);
+      });
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toMatchObject({ modelSdkId: "gpt-5.4" });
     });
 
     it("re-reads Cursor's name on the first visible turn while the ADE title is still a default", async () => {
@@ -55678,6 +57320,38 @@ describe("acp chat runtime", () => {
     expect(configCalls.some((entry) => (entry.params as { configId?: string }).configId === "model")).toBe(false);
   });
 
+  it("logs an ACP turn that another model answered through the generic served-model check", async () => {
+    // Copilot's own `model` option names the model it runs. It is not the one
+    // the chat picked, so the turn's done event carries it as `servedModel`.
+    const harness = await openAcpHarness({
+      provider: "copilot",
+      model: "claude-sonnet-4.6",
+      modelId: "github-copilot/claude-sonnet-4.6",
+      sessionExtra: {
+        configOptions: [{
+          type: "select",
+          id: "model",
+          name: "Model",
+          currentValue: "gpt-5.6-luna",
+          options: [{ value: "gpt-5.6-luna", name: "GPT-5.6 Luna" }, { value: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }],
+        }],
+      },
+    });
+    scriptPrompt(harness.agent, [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hi." } }]);
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "who answers?" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    expect(eventsOfType(harness, "done").at(-1)?.servedModel).toBe("gpt-5.6-luna");
+    expect(harness.logger.warn).toHaveBeenCalledWith("agent_chat.served_model_mismatch", expect.objectContaining({
+      sessionId: harness.session.id,
+      provider: "copilot",
+      servedModel: "gpt-5.6-luna",
+    }));
+  });
+
   it("applies Qwen's selected model and reasoning effort at session startup", async () => {
     const harness = await openAcpHarness({
       provider: "qwen",
@@ -56030,6 +57704,98 @@ describe("acp chat runtime", () => {
     expect(eventsOfType(harness, "done").at(-1)?.status).toBe("interrupted");
   });
 
+  /**
+   * Opens a Qwen harness whose first turn the agent answers and then holds in
+   * the host's usage wait, with `session.turnAnswered` true, as the real
+   * session reports it, until the test releases the wait.
+   */
+  const openAnsweredWindowHarness = async () => {
+    const { createAcpRuntime: actualCreateAcpRuntime } = await vi.importActual<typeof AcpHostModule>("./acpHost");
+    let markAnswered!: () => void;
+    const answered = new Promise<void>((resolve) => { markAnswered = resolve; });
+    let releaseUsage!: () => void;
+    const usageWait = new Promise<void>((resolve) => { releaseUsage = resolve; });
+    let queue: Array<Record<string, unknown>> | null = null;
+    vi.mocked(createAcpRuntime).mockImplementationOnce(async (runtimeArgs) => {
+      const runtime = await actualCreateAcpRuntime(runtimeArgs);
+      queue = runtime.pendingSteers as Array<Record<string, unknown>>;
+      const realPrompt = runtime.session.prompt.bind(runtime.session);
+      let inAnsweredWindow = false;
+      const realAnswered = Object.getOwnPropertyDescriptor(runtime.session, "turnAnswered")?.get;
+      Object.defineProperty(runtime.session, "turnAnswered", {
+        configurable: true,
+        get: () => inAnsweredWindow || (realAnswered?.call(runtime.session) ?? false),
+      });
+      let first = true;
+      (runtime.session as { prompt: AcpSession["prompt"] }).prompt = async (promptArgs) => {
+        if (!first) return realPrompt(promptArgs);
+        first = false;
+        const interrupted = promptArgs.isInterrupted?.() ?? false;
+        inAnsweredWindow = true;
+        markAnswered();
+        await usageWait;
+        inAnsweredWindow = false;
+        return { stopReason: "end_turn", interrupted, usage: null, events: [], done: {} };
+      };
+      return runtime;
+    });
+    const harness = await openAcpHarness({
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+    scriptPrompt(harness.agent, []);
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "first" });
+    await answered;
+    // What the user queued for after this turn.
+    queue!.push({
+      steerId: "steer-after",
+      uuid: "steer-after-uuid",
+      text: "then this",
+      attachments: [],
+      contextAttachments: [],
+      resolvedAttachments: [],
+    });
+    return { harness, releaseUsage, queue: queue! };
+  };
+
+  it("keeps a turn the agent already answered, and its queued steer, when a keep-queue Stop lands during the usage wait", async () => {
+    // The verdict is taken when `session/prompt` answers. The usage the host
+    // folds afterwards must not give a late Stop a window to flip a finished
+    // turn to interrupted or to drop what the user queued next.
+    const { harness, releaseUsage } = await openAnsweredWindowHarness();
+    await harness.service.interrupt({ sessionId: harness.session.id, mode: "stop_only" });
+    releaseUsage();
+
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(2);
+    });
+    // The finished turn stays finished, and the runtime runs the queued steer.
+    expect(eventsOfType(harness, "error")).toEqual([]);
+    expect(eventsOfType(harness, "done").map((event) => event.status)).toEqual(["completed", "completed"]);
+    expect(eventsOfType(harness, "status").some((event) => event.turnStatus === "interrupted")).toBe(false);
+    expect(harness.agent.received.some((entry) => entry.method === "session/cancel")).toBe(false);
+    expect(JSON.stringify(harness.agent.received.filter((entry) => entry.method === "session/prompt").at(-1)?.params))
+      .toContain("then this");
+  });
+
+  it("still clears the queue on a clearing Stop in the answered window, without flipping the turn or cancelling", async () => {
+    const { harness, releaseUsage, queue } = await openAnsweredWindowHarness();
+    await harness.service.interrupt({ sessionId: harness.session.id });
+    expect(queue).toHaveLength(0);
+    releaseUsage();
+
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+    expect(eventsOfType(harness, "done").map((event) => event.status)).toEqual(["completed"]);
+    expect(eventsOfType(harness, "status").some((event) => event.turnStatus === "interrupted")).toBe(false);
+    expect(harness.agent.received.some((entry) => entry.method === "session/cancel")).toBe(false);
+    // The cleared steer never reaches the agent.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.agent.received.filter((entry) => entry.method === "session/prompt")).toHaveLength(0);
+  });
+
   it("reopens an ACP runtime when permission mode changes during a turn", async () => {
     const harness = await openAcpHarness({
       provider: "copilot",
@@ -56116,43 +57882,181 @@ describe("acp chat runtime", () => {
     });
 
     const tokens = eventsOfType(harness, "tokens").at(-1);
-    expect(tokens?.inputTokens).toBe(100);
+    // Grok's `inputTokens` counts the cache read. ADE's usage rows carry
+    // uncached input with the cache in its own field (the meter adds them
+    // back), so the 100 on the wire lands as 60 uncached + 40 cached.
+    expect(tokens?.inputTokens).toBe(60);
     expect(tokens?.outputTokens).toBe(20);
     expect(tokens?.cacheReadTokens).toBe(40);
   });
 
-  it("emits no usage for Kimi and says why once", async () => {
-    // Kimi's ACP integration still has no verified usage payload. Fabricating
-    // a zero would be a lie; saying nothing at all reads as a broken meter.
+  /** Grok 1.0.40's `session/new` and `session/resume` config options, in its wire shape. */
+  const grokSessionOptions = (model: string, effort: string) => ({
+    configOptions: [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: model,
+        options: ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"].map((value) => ({ value, name: value })),
+      },
+      {
+        id: "reasoning_effort",
+        name: "Reasoning Effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: effort,
+        options: ["xhigh", "high", "medium", "low"].map((value) => ({ value, name: value })),
+      },
+    ],
+  });
+
+  const configCallsOf = (agent: MockAcpAgent) => agent.received
+    .filter((entry) => entry.method === "session/set_config_option")
+    .map((entry) => entry.params as { configId?: string; value?: unknown });
+
+  it("applies Grok's selected model and effort through session/set_config_option, with no mode call", async () => {
+    // Live 1.0.40: `-m` alone opened some ids on another model, and
+    // `--reasoning-effort` never reached the session.
     const harness = await openAcpHarness({
-      provider: "kimi",
-      model: "kimi-code/k3",
-      modelId: "moonshot/k3",
+      provider: "grok",
+      model: "grok-4.6",
+      modelId: "xai/grok-4-6",
+      sessionExtra: grokSessionOptions("grok-4.7", "medium"),
+      sessionOverrides: { reasoningEffort: "low" },
     });
-    scriptPrompt(harness.agent, [
-      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } },
-    ]);
+    scriptPrompt(harness.agent, []);
 
     await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
     await vi.waitFor(() => {
       expect(eventTypes(harness)).toContain("done");
     });
 
-    expect(eventsOfType(harness, "tokens")).toHaveLength(0);
-    const notices = eventsOfType(harness, "system_notice").map((event) => String(event.message));
-    expect(notices.filter((message) => message.includes("token usage"))).toHaveLength(1);
+    expect(configCallsOf(harness.agent)).toEqual([
+      { sessionId: "acp-session-1", configId: "model", value: "grok-4.6" },
+      { sessionId: "acp-session-1", configId: "reasoning_effort", value: "low" },
+    ]);
+  });
 
-    // Once per chat, not once per turn.
-    harness.events.length = 0;
-    await harness.service.sendMessage({ sessionId: harness.session.id, text: "again" });
+  it("gives Grok's live-only models the efforts the session advertises", async () => {
+    // grok-4.7 and grok-4.7-build-fast are not curated; they reach the catalog
+    // only through the session's `model` option, and their effort picker only
+    // through its `reasoning_effort` option.
+    const harness = await openAcpHarness({
+      provider: "grok",
+      model: "grok-4.6",
+      modelId: "xai/grok-4-6",
+      sessionExtra: grokSessionOptions("grok-4.7", "medium"),
+    });
+    scriptPrompt(harness.agent, []);
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
     await vi.waitFor(() => {
       expect(eventTypes(harness)).toContain("done");
     });
-    expect(
-      eventsOfType(harness, "system_notice")
-        .map((event) => String(event.message))
-        .filter((message) => message.includes("token usage")),
-    ).toHaveLength(0);
+
+    const live = getDynamicAcpModelDescriptors("grok");
+    for (const shortId of ["grok-4.7", "grok-4.7-build-fast"]) {
+      expect(live.find((descriptor) => descriptor.shortId === shortId)?.reasoningTiers, shortId)
+        .toEqual(["low", "medium", "high", "xhigh"]);
+    }
+    // A curated row keeps its researched tiers.
+    expect(getModelById("xai/grok-4-5")?.reasoningTiers).toEqual(["low", "medium", "high"]);
+  });
+
+  it("moves a Grok chat to a newly picked model through session/set_config_option on the rejoined session", async () => {
+    const harness = await openAcpHarness({
+      provider: "grok",
+      model: "grok-4.6",
+      modelId: "xai/grok-4-6",
+      sessionExtra: grokSessionOptions("grok-4.6", "medium"),
+    });
+    scriptPrompt(harness.agent, []);
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "first" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+
+    await harness.service.updateSession({ sessionId: harness.session.id, modelId: "xai/grok-4-5" });
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "second" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(2);
+    });
+
+    // `session/resume` brings back the model the session last ran, whatever
+    // `-m` says, so the new model has to ride the config option.
+    expect(harness.agent.methodsReceived()).toContain("session/resume");
+    expect(configCallsOf(harness.agent).filter((params) => params.configId === "model")).toEqual([
+      { sessionId: "acp-session-1", configId: "model", value: "grok-4.5" },
+    ]);
+  });
+
+  it("still auto-approves Grok's permission requests in full auto, although Grok now takes session config", async () => {
+    // Grok's posture rides spawn flags, not a `mode` config option, so ADE
+    // answers for it when the user chose full auto.
+    const harness = await openAcpHarness({
+      provider: "grok",
+      model: "grok-4.6",
+      modelId: "xai/grok-4-6",
+      sessionOverrides: { permissionMode: "full-auto" },
+    });
+    let permissionAnswer: unknown = null;
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      permissionAnswer = await harness.agent.callClient("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "tool-1", title: "Write src/index.ts", kind: "edit" },
+        options: [
+          { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+          { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+        ],
+      });
+      return { result: { stopReason: "end_turn" } };
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "edit it" });
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "done")).toHaveLength(1);
+    });
+
+    expect(harness.session.acpPermissionMode).toBe("yolo");
+    expect(permissionAnswer).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } });
+    expect(eventsOfType(harness, "approval_request")[0]?.detail).toMatchObject({ autoApproved: true });
+    expect(configCallsOf(harness.agent).some((params) => params.configId === "mode")).toBe(false);
+  });
+
+  it("reads Kimi's usage when it reports it, and never shows a no-usage notice", async () => {
+    // Kimi 0.39.1 pushes one `usage_update` after each settled turn, after the
+    // prompt result, and the result may carry the ACP `usage` block. Both are
+    // read when present; there is no standing "no usage" banner.
+    const harness = await openAcpHarness({
+      provider: "kimi",
+      model: "kimi-code/k3",
+      modelId: "moonshot/k3",
+    });
+    harness.agent.on("session/prompt", async (params) => {
+      const sessionId = (params as { sessionId: string }).sessionId;
+      harness.agent.emitUpdate(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } });
+      setImmediate(() => harness.agent.emitUpdate(sessionId, { sessionUpdate: "usage_update", used: 12_000, size: 256_000 }));
+      return {
+        result: {
+          stopReason: "end_turn",
+          usage: { inputTokens: 1_000, outputTokens: 10, totalTokens: 1_010, cachedReadTokens: 400 },
+        },
+      };
+    });
+
+    await harness.service.sendMessage({ sessionId: harness.session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(eventTypes(harness)).toContain("done");
+    });
+
+    const contextEvents = eventsOfType(harness, "context_usage");
+    expect(contextEvents.at(-1)?.usage).toMatchObject({ totalTokens: 12_000, maxTokens: 256_000 });
+    // The exact context sample owns the meter, so no prompt-result tokens row.
+    expect(eventsOfType(harness, "tokens")).toHaveLength(0);
+    const notices = eventsOfType(harness, "system_notice").map((event) => String(event.message));
+    expect(notices.filter((message) => message.includes("token usage"))).toHaveLength(0);
   });
 
   it("persists the agent's session id and rejoins with it after a restart", async () => {
@@ -57517,6 +59421,531 @@ describe("Claude resume_return dialog", () => {
     const opts = capturedClaudeOptions();
     expect(opts?.supportedDialogKinds).toBeUndefined();
     expect(opts?.onUserDialog).toBeUndefined();
+  });
+});
+
+describe("Cursor runs what the user picked", () => {
+  type DoneEnvelope = AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> };
+  const doneFor = (sessionId: string) => (event: AgentChatEventEnvelope): event is DoneEnvelope =>
+    event.event.type === "done" && event.sessionId === sessionId;
+  const cloudRepo = { repoUrl: "https://github.com/example/repo.git" };
+
+  const composer2 = {
+    id: "composer-2",
+    displayName: "Composer 2",
+    parameters: [
+      { id: "reasoning_effort", displayName: "Reasoning effort", values: [{ value: "low" }, { value: "high" }] },
+      {
+        id: "verbosity",
+        displayName: "Verbosity",
+        values: [{ value: "terse", displayName: "Terse" }, { value: "verbose", displayName: "Verbose" }],
+      },
+    ],
+  };
+  const composer25 = {
+    id: "composer-2.5",
+    displayName: "Composer 2.5",
+    parameters: [
+      { id: "reasoning_effort", displayName: "Reasoning effort", values: [{ value: "low" }, { value: "high" }] },
+      { id: "speed", displayName: "Speed", values: [{ value: "standard" }, { value: "fast" }] },
+    ],
+  };
+
+  beforeEach(() => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    process.env.ADE_CURSOR_DASHBOARD_USAGE = "0";
+  });
+  afterEach(() => {
+    delete process.env.ADE_CURSOR_DASHBOARD_USAGE;
+  });
+
+  it("sends a cloud follow-up the params it can express, and says once what it left out", async () => {
+    // The only tier this model declares is standard, so Fast cannot be
+    // expressed. A follow-up on a running conversation still goes, with the
+    // params that did resolve, and the chat is told once.
+    cursorModelsListMock.mockResolvedValue([{
+      id: "composer-2",
+      displayName: "Composer 2",
+      parameters: [
+        { id: "reasoning_effort", displayName: "Reasoning effort", values: [{ value: "high" }] },
+        { id: "speed", displayName: "Speed", values: [{ value: "standard" }] },
+      ],
+    }]);
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      reasoningEffort: "high",
+    } as any);
+    await service.sendMessage({ sessionId: session.id, text: "Create.", runtime: "cloud", cloudOverrides: cloudRepo } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+    const listCallsAfterCreate = cursorModelsListMock.mock.calls.length;
+
+    await service.updateSession({ sessionId: session.id, fastMode: true });
+    const allEvents: AgentChatEventEnvelope[] = [];
+    for (const text of ["Follow up.", "Again."]) {
+      events.length = 0;
+      await service.sendMessage({ sessionId: session.id, text, runtime: "cloud" } as any, { awaitDispatch: true });
+      await waitForEvent(events, doneFor(session.id));
+      allEvents.push(...events);
+    }
+
+    const followups = mockState.cursorSdkCloudRequests.filter((request) => request.type === "cloud.followup");
+    expect(followups).toHaveLength(2);
+    expect(followups[0]?.payload.modelParams).toEqual([{ id: "reasoning_effort", value: "high" }]);
+    const notices = allEvents.filter((event) =>
+      event.sessionId === session.id
+      && event.event.type === "system_notice"
+      && event.event.message.includes("Cursor cannot apply the selected fast tier to composer-2"));
+    expect(notices).toHaveLength(1);
+    // The warm catalog for this key answered every follow-up: no fetch per run.
+    expect(cursorModelsListMock.mock.calls.length).toBe(listCallsAfterCreate);
+  });
+
+  it("sends a cloud follow-up when the catalog cannot load", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "Create.", runtime: "cloud", cloudOverrides: cloudRepo } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    cursorModelsListMock.mockRejectedValue(new Error("network down"));
+    vi.mocked(globalThis.fetch).mockImplementation(async () => { throw new Error("network down"); });
+    await service.updateSession({ sessionId: session.id, reasoningEffort: "high" });
+    events.length = 0;
+    await service.sendMessage({ sessionId: session.id, text: "Follow up.", runtime: "cloud" } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    const followup = mockState.cursorSdkCloudRequests.find((request) => request.type === "cloud.followup");
+    expect(followup).toBeDefined();
+    expect(followup?.payload.modelParams).toBeUndefined();
+    expect(events.some((event) =>
+      event.event.type === "system_notice"
+      && event.event.message.includes("Cursor's model list could not be loaded"))).toBe(true);
+  });
+
+  it("refuses a cloud follow-up only for a model Cursor does not list", async () => {
+    cursorModelsListMock.mockResolvedValue([composer2]);
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "Create.", runtime: "cloud", cloudOverrides: cloudRepo } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    // The catalog no longer lists the model.
+    clearCursorCliModelsCache();
+    cursorModelsListMock.mockResolvedValue([composer25]);
+    await service.updateSession({ sessionId: session.id, reasoningEffort: "high" });
+    events.length = 0;
+    await service.sendMessage({ sessionId: session.id, text: "Follow up.", runtime: "cloud" } as any, { awaitDispatch: true })
+      .catch(() => undefined);
+    const errorEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+        event.event.type === "error" && event.sessionId === session.id,
+    );
+    expect(errorEvent.event.message).toContain("Cursor Cloud does not list model composer-2");
+    expect(mockState.cursorSdkCloudRequests.some((request) => request.type === "cloud.followup")).toBe(false);
+  });
+
+  it("sends a cloud follow-up the verified params of a fresh catalog read", async () => {
+    cursorModelsListMock.mockResolvedValue([composer2]);
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      reasoningEffort: "high",
+    } as any);
+    await service.sendMessage({ sessionId: session.id, text: "Create.", runtime: "cloud", cloudOverrides: cloudRepo } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    events.length = 0;
+    await service.sendMessage({ sessionId: session.id, text: "Follow up.", runtime: "cloud" } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    const followup = mockState.cursorSdkCloudRequests.find((request) => request.type === "cloud.followup");
+    expect(followup?.payload.modelParams).toEqual([{ id: "reasoning_effort", value: "high" }]);
+  });
+
+  it("loads Cursor's catalog before a local send no picker ever warmed", async () => {
+    // A CLI or automation chat: nothing called getModelCatalog, so the
+    // in-memory catalog is empty when the first turn resolves its params.
+    cursorModelsListMock.mockResolvedValue([composer25]);
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2.5",
+      modelId: "cursor/composer-2.5",
+      reasoningEffort: "high",
+      fastMode: true,
+    } as any);
+
+    await service.sendMessage({ sessionId: session.id, text: "Go." }, { awaitDispatch: true });
+
+    const expected = [
+      { id: "reasoning_effort", value: "high" },
+      { id: "speed", value: "fast" },
+    ];
+    expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({ modelParams: expected }));
+    expect(mockState.cursorSdkSendCalls.at(-1)).toEqual(expect.objectContaining({ modelParams: expected }));
+  });
+
+  it("says once, instead of silently dropping them, when the catalog cannot load for a local send", async () => {
+    cursorModelsListMock.mockRejectedValue(new Error("network down"));
+    vi.mocked(globalThis.fetch).mockImplementation(async () => { throw new Error("network down"); });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2.5",
+      modelId: "cursor/composer-2.5",
+      reasoningEffort: "high",
+    } as any);
+
+    await service.sendMessage({ sessionId: session.id, text: "Go." }, { awaitDispatch: true });
+
+    expect(mockState.cursorSdkSendCalls.at(-1)?.modelParams).toBeUndefined();
+    const notices = events.filter((event) =>
+      event.sessionId === session.id
+      && event.event.type === "system_notice"
+      && event.event.message.includes("Cursor's model list could not be loaded"));
+    expect(notices).toHaveLength(1);
+    expect((notices[0]?.event as { message: string }).message).toContain("high reasoning effort");
+  });
+
+  it("sends the chat's Cursor config values as model params, local and cloud, and shows them as options", async () => {
+    cursorModelsListMock.mockResolvedValue([composer2]);
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+      cursorConfigValues: { verbosity: "Verbose" },
+    } as any);
+
+    await service.sendMessage({ sessionId: session.id, text: "Local." }, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+    expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+      modelParams: [{ id: "verbosity", value: "verbose" }],
+    }));
+    expect(mockState.cursorSdkSendCalls.at(-1)).toEqual(expect.objectContaining({
+      modelParams: [{ id: "verbosity", value: "verbose" }],
+    }));
+
+    // The composer renders the model's own options from the runtime snapshot;
+    // effort has its own control and is not repeated there.
+    const summary = await service.getSessionSummary(session.id);
+    const options = summary?.cursorModeSnapshot?.configOptions ?? [];
+    expect(options.map((option) => option.id)).toEqual(["verbosity"]);
+    expect(options[0]).toMatchObject({ type: "select", currentValue: "Verbose" });
+    expect(options[0]?.options?.map((choice) => choice.value)).toEqual(["", "terse", "verbose"]);
+
+    // A change made in the composer rides the next run.
+    await service.updateSession({ sessionId: session.id, cursorConfigValues: { verbosity: "terse" } });
+    events.length = 0;
+    await service.sendMessage({ sessionId: session.id, text: "Cloud.", runtime: "cloud", cloudOverrides: cloudRepo } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+    const created = mockState.cursorSdkCloudRequests.find((request) => request.type === "cloud.send.stream");
+    expect(created?.payload.modelParams).toEqual([{ id: "verbosity", value: "terse" }]);
+  });
+
+  it("shows a model option the chat never set as Cursor's default, not as an explicit value", async () => {
+    cursorModelsListMock.mockResolvedValue([{
+      ...composer2,
+      parameters: [
+        ...composer2.parameters,
+        { id: "max_context", displayName: "Max context", values: [{ value: "true" }, { value: "false" }] },
+      ],
+    }]);
+    // The picker's catalog fetch, which a desktop chat has already run.
+    await probeCursorSdkModelDiscovery("cursor-test-key");
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "Local." }, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    const options = (await service.getSessionSummary(session.id))?.cursorModeSnapshot?.configOptions ?? [];
+    expect(options.map((option) => [option.id, option.type, option.currentValue])).toEqual([
+      ["verbosity", "select", null],
+      ["max_context", "boolean", null],
+    ]);
+    // Untouched options ride no param.
+    expect(mockState.cursorSdkSendCalls.at(-1)?.modelParams ?? []).toEqual([]);
+  });
+
+  it("clears Fast on a switch to a model without a fast tier, and does not bring it back", async () => {
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "opus-5",
+      modelId: "anthropic/claude-opus-5",
+      fastMode: true,
+    } as any);
+    expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+
+    // Opus to Fable: both have a fast tier, so the choice stands.
+    await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-fable-5-1" });
+    expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+
+    // Sonnet has none. Left on, it hid behind the missing chip and came back
+    // on the next fast-capable model.
+    await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-sonnet-5" });
+    expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+    expect(readPersistedChatState(session.id).fastMode).not.toBe(true);
+
+    await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-opus-5" });
+    expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+  });
+
+  it("reads Cursor's catalog to decide whether Fast survives a Cursor model switch", async () => {
+    cursorModelsListMock.mockResolvedValue([composer25, composer2]);
+    await probeCursorSdkModelDiscovery("cursor-test-key");
+    const listCalls = cursorModelsListMock.mock.calls.length;
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2.5",
+      modelId: "cursor/composer-2.5",
+      fastMode: true,
+    } as any);
+
+    // composer-2 declares no speed parameter.
+    await service.updateSession({ sessionId: session.id, modelId: "cursor/composer-2" });
+    expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+    // The switch read the catalog in memory; it never fetched.
+    expect(cursorModelsListMock.mock.calls.length).toBe(listCalls);
+  });
+
+  it("keeps Fast across a Cursor switch without waiting on a cold catalog", async () => {
+    // A fetch that never answers: a switch that waited on it would hang here.
+    cursorModelsListMock.mockImplementation(() => new Promise(() => {}));
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2.5",
+      modelId: "cursor/composer-2.5",
+      fastMode: true,
+    } as any);
+
+    await service.updateSession({ sessionId: session.id, modelId: "cursor/composer-2" });
+    expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+  });
+
+  it("keeps Fast across a Cursor switch when the catalog cannot say", async () => {
+    cursorModelsListMock.mockRejectedValue(new Error("network down"));
+    vi.mocked(globalThis.fetch).mockImplementation(async () => { throw new Error("network down"); });
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2.5",
+      modelId: "cursor/composer-2.5",
+      fastMode: true,
+    } as any);
+
+    await service.updateSession({ sessionId: session.id, modelId: "cursor/composer-2" });
+    expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+  });
+
+  it("reconciles a cloud turn's served model against the cloud agent, not the local worker's", async () => {
+    const settle = vi.fn(({ event }: { event: { turnId: string } }) => ({
+      key: `session:${event.turnId}`,
+      sessionId: "session",
+      turnId: event.turnId,
+      at: new Date().toISOString(),
+    }));
+    const ledger = {
+      settle,
+      observe: vi.fn(),
+      amend: vi.fn(),
+      nextTurnStartAfter: vi.fn(() => null),
+    };
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      turnUsageLedger: ledger,
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+    await service.sendMessage({ sessionId: session.id, text: "Create.", runtime: "cloud", cloudOverrides: cloudRepo } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    // The real worker posts the run's start and then its result before the
+    // request resolves, and the result clears the active cloud run.
+    const pooled = mockState.cursorSdkPooled;
+    const request = pooled.request;
+    pooled.request = vi.fn(async (type: string, payload?: unknown) => {
+      if (type === "cloud.followup") {
+        pooled.bridge.onRunStarted?.(
+          { agentId: "cloud-agent-1", runId: "cloud-run-2", modelSdkId: "composer-2" },
+          { runtime: "cloud", runId: "cloud-run-2", agentId: "cloud-agent-1" },
+        );
+        pooled.bridge.onRunResult?.({ status: "finished" }, { runtime: "cloud", runId: "cloud-run-2", agentId: "cloud-agent-1" });
+      }
+      return request(type, payload);
+    });
+    mockState.turnUsageFollowUps = [];
+    events.length = 0;
+    await service.sendMessage({ sessionId: session.id, text: "Follow up.", runtime: "cloud" } as any, { awaitDispatch: true });
+    await waitForEvent(events, doneFor(session.id));
+
+    await vi.waitFor(() => expect(mockState.turnUsageFollowUps.length).toBeGreaterThan(0));
+    expect(mockState.turnUsageFollowUps.at(-1)?.cursorAgentId).toBe("cloud-agent-1");
+  });
+});
+
+describe("Pi follows the chat's effort and names another provider's route", () => {
+  let sessionDir = "";
+  const originalSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+
+  beforeEach(() => {
+    sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pi-sessions-"));
+    process.env.PI_CODING_AGENT_SESSION_DIR = sessionDir;
+    mockState.piInstallation = {
+      cliPath: null,
+      packageRoot: sessionDir,
+      packageEntry: path.join(sessionDir, "index.js"),
+      version: "0.0.0-test",
+      nodeVersion: process.versions.node,
+      sdkAvailable: true,
+      cliAvailable: false,
+      agentDir: sessionDir,
+      settingsPath: path.join(sessionDir, "settings.json"),
+      authPath: path.join(sessionDir, "auth.json"),
+      modelsPath: path.join(sessionDir, "models.json"),
+      modelsStorePath: path.join(sessionDir, "models-store.json"),
+      blocker: null,
+    };
+  });
+  afterEach(() => {
+    if (originalSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+    else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionDir;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  });
+
+  /** A live Pi worker that answers every call without running Pi. */
+  const installFakePiWorker = (sendPrompt?: (pooled: any) => Promise<unknown>) => {
+    const pooled: any = {
+      process: { exitCode: null, killed: false, connected: true },
+      bridge: { onEvent: null, onLifecycle: null, onUiRequest: null },
+      ready: null,
+      sessionFile: path.join(sessionDir, "pi-session.jsonl"),
+      sessionId: "pi-session-1",
+      currentModel: null,
+      account: null,
+      version: null,
+      availableModels: [],
+      request: vi.fn(async () => ({})),
+      steer: vi.fn(async () => ({})),
+      followUp: vi.fn(async () => ({})),
+      abort: vi.fn(async () => {}),
+      setModel: vi.fn(async () => ({})),
+      setThinking: vi.fn(async () => ({})),
+      compact: vi.fn(async () => ({})),
+      getContextUsage: vi.fn(async () => null),
+      requestModels: vi.fn(async () => []),
+      requestAuth: vi.fn(async () => ({})),
+      login: vi.fn(async () => undefined),
+      cancelLogin: vi.fn(),
+      respondToUi: vi.fn(),
+      dispose: vi.fn(),
+    };
+    pooled.sendPrompt = vi.fn(async () => (sendPrompt ? sendPrompt(pooled) : {}));
+    mockState.piAcquire = async () => ({ generation: 1, pooled });
+    return pooled;
+  };
+
+  const createPiSession = async (service: ReturnType<typeof createService>["service"], reasoningEffort?: string) => {
+    const descriptor = createDynamicPiModelDescriptor("anthropic", "claude-sonnet-5");
+    replaceDynamicPiModelDescriptors([descriptor]);
+    return service.createSession({
+      laneId: "lane-1",
+      provider: "pi",
+      model: descriptor.id,
+      modelId: descriptor.id as never,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    } as any);
+  };
+
+  it("clears a live Pi session's thinking level when the chat clears its effort", async () => {
+    const pooled = installFakePiWorker();
+    const { service } = createService();
+    const session = await createPiSession(service, "high");
+    await service.resumeSession({ sessionId: session.id });
+    expect(mockState.piAcquire).not.toBeNull();
+
+    await service.updateSession({ sessionId: session.id, reasoningEffort: null });
+
+    // Before, a cleared effort mapped to no level and nothing was sent, so the
+    // live session kept thinking at `high`.
+    expect(pooled.setThinking).toHaveBeenCalledWith(null);
+    service.forceDisposeAll();
+  });
+
+  it("logs a Pi turn another provider answered, though the model name is the same", async () => {
+    installFakePiWorker(async (pooled) => {
+      pooled.bridge.onEvent?.({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          provider: "openrouter",
+          model: "claude-sonnet-5",
+          usage: { input: 10, output: 2 },
+        },
+      });
+      return {};
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, logger } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await createPiSession(service);
+
+    await service.sendMessage({ sessionId: session.id, text: "Go." }, { awaitDispatch: true });
+    const done = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+        event.event.type === "done" && event.sessionId === session.id,
+    );
+
+    expect(done.event.servedModel).toBe("openrouter/claude-sonnet-5");
+    expect(logger.warn).toHaveBeenCalledWith("agent_chat.served_model_mismatch", expect.objectContaining({
+      sessionId: session.id,
+      provider: "pi",
+      servedModel: "openrouter/claude-sonnet-5",
+    }));
+    service.forceDisposeAll();
   });
 });
 

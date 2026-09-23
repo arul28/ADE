@@ -160,6 +160,7 @@ export function normalizeTab(value: unknown): BrowserTab | null {
     isLoading: booleanField(value.isLoading, false),
     canGoBack: booleanField(value.canGoBack, false),
     canGoForward: booleanField(value.canGoForward, false),
+    groupLaneId: stringField(value.groupLaneId),
     ownerLaneId: stringField(value.ownerLaneId),
     ownerChatSessionId: stringField(value.ownerChatSessionId),
     ownerClaimedAt: stringField(value.ownerClaimedAt),

@@ -99,6 +99,17 @@ export function useChatRuntimeScope(): ChatRuntimeScope {
  * derivation cannot come from context. Inside a pane, prefer
  * `useChatRuntimeScope()`.
  */
+/**
+ * The lane list of the machine a pin names: that machine's slice when the chat
+ * is pinned, else the tab-bound lanes. Surfaces that show every lane of the
+ * chat's machine (the browser's lane groups) read this, not `state.lanes`.
+ */
+export function useChatMachineLanes(pin: OpenProjectBinding | null): LaneSummary[] {
+  const pinnedLanes = useLanesForPin(pin);
+  const boundLanes = useAppStore((state) => state.lanes);
+  return pinnedLanes ?? boundLanes;
+}
+
 export function useChatRuntimeScopeForPin(
   pin: OpenProjectBinding | null,
   laneId: string | null,
@@ -108,14 +119,12 @@ export function useChatRuntimeScopeForPin(
   // is absent from the tab-bound `lanes` array, so its worktree path — and
   // therefore the iOS / App Control project root — is only knowable from here.
   const pinnedMachine = useMachineEntryForBinding(pin);
-  const pinnedLanes = useLanesForPin(pin);
-  const boundLanes = useAppStore((state) => state.lanes);
+  const lanes = useChatMachineLanes(pin);
   const boundProjectRoot = useAppStore(selectActiveProjectRoot);
   const boundBinding = useAppStore((state) => state.projectBinding);
 
   return useMemo<ChatMachineScope>(() => {
     const binding = bindingOverride !== undefined ? bindingOverride : (pin ?? boundBinding ?? null);
-    const lanes = pinnedLanes ?? boundLanes;
     const lane = laneId ? lanes.find((entry) => entry.id === laneId) ?? null : null;
     return {
       pin,
@@ -133,11 +142,10 @@ export function useChatRuntimeScopeForPin(
   }, [
     bindingOverride,
     boundBinding,
-    boundLanes,
     boundProjectRoot,
     laneId,
+    lanes,
     pin,
-    pinnedLanes,
     pinnedMachine,
   ]);
 }

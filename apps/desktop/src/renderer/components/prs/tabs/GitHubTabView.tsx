@@ -19,9 +19,7 @@ import {
 } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import {
-  PR_OVERVIEW_CENTER_MIN_PX,
-  PR_OVERVIEW_RIGHT_RAIL_MIN_PX,
-  PR_OVERVIEW_SEPARATOR_PX,
+  PR_OVERVIEW_MIN_PX,
 } from "../detail/PrDetailTimelineRails";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
@@ -52,16 +50,12 @@ const GITHUB_PR_LIST_DEFAULT_PX = 380;
 /**
  * The detail pane's floor, in pixels — NOT a percentage.
  *
- * Summed from the detail pane's OWN minimums rather than written out, so moving
- * either rail constant can't silently invalidate this floor. A percentage floor
- * did not know about them at all: on a 1327px window a list dragged to its 560px
- * max left the detail pane 708px and squeezed BOTH inner panels under their
- * minimums — the right rail collapsed to 360 and started truncating reviewers,
- * checks, files and the merge box. The list may not take space the detail pane
- * needs to stay whole.
+ * Taken from the Overview's own minimum so the two cannot drift. A percentage
+ * floor did not know about it: a list dragged to its max could squeeze the
+ * thread and the floating dock card until both truncated. The list may not
+ * take space the detail pane needs to stay whole.
  */
-const GITHUB_PR_DETAIL_MIN_PX =
-  PR_OVERVIEW_CENTER_MIN_PX + PR_OVERVIEW_SEPARATOR_PX + PR_OVERVIEW_RIGHT_RAIL_MIN_PX;
+const GITHUB_PR_DETAIL_MIN_PX = PR_OVERVIEW_MIN_PX;
 
 function readPersistedGithubPrListPx(): number {
   try {
@@ -116,6 +110,9 @@ type GitHubTabViewList = {
   onSelect: (item: GitHubPrListItem) => void;
   onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
   onLoadOlderHistory: () => void;
+  /** A right-click menu action changed a PR; refresh it. */
+  onRowActionDone?: (prId: string) => void;
+  onRowActionError?: (message: string) => void;
 };
 
 type GitHubTabViewDetail = {
@@ -308,6 +305,8 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
                     selectedItemId={list.selectedItemId}
                     prsByIdMap={list.prsByIdMap}
                     onSelect={list.onSelect}
+                    onRowActionDone={list.onRowActionDone}
+                    onRowActionError={list.onRowActionError}
                     onHydrationItemsChange={list.onHydrationItemsChange}
                   />
                 ) : (
@@ -321,6 +320,8 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
                         selected={row.item.id === list.selectedItemId}
                         linkedPr={row.item.linkedPrId ? list.prsByIdMap.get(row.item.linkedPrId) ?? null : null}
                         onSelect={list.onSelect}
+                        onActionDone={list.onRowActionDone}
+                        onActionError={list.onRowActionError}
                       />
                     )
                   ))
@@ -456,6 +457,8 @@ function GitHubTabVirtualList({
   prsByIdMap,
   onSelect,
   onHydrationItemsChange,
+  onRowActionDone,
+  onRowActionError,
 }: {
   parentRef: React.RefObject<HTMLDivElement>;
   rows: PrListRow[];
@@ -463,6 +466,8 @@ function GitHubTabVirtualList({
   prsByIdMap: Map<string, PrSummary>;
   onSelect: (item: GitHubPrListItem) => void;
   onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
+  onRowActionDone?: (prId: string) => void;
+  onRowActionError?: (message: string) => void;
 }) {
   const headerIndices = React.useMemo(() => prListHeaderIndices(rows), [rows]);
 
@@ -527,6 +532,8 @@ function GitHubTabVirtualList({
                 selected={row.item.id === selectedItemId}
                 linkedPr={row.item.linkedPrId ? prsByIdMap.get(row.item.linkedPrId) ?? null : null}
                 onSelect={onSelect}
+                onActionDone={onRowActionDone}
+                onActionError={onRowActionError}
               />
             )}
           </div>

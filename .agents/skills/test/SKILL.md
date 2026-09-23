@@ -304,7 +304,7 @@ docs/
     ├── computer-use/        ├── pull-requests/
     ├── conflicts/           ├── sync-and-multi-device/
     ├── context-packs/       ├── terminals-and-sessions/
-    ├── cto/                 ├── workspace-graph/
+    ├── cto/
     ├── files-and-editor/
     ├── history/
     ├── lanes/

@@ -170,3 +170,28 @@ export function displayUrlForTunnel(
     return null;
   }
 }
+
+/**
+ * `scheme://host[:port]` of a URL, never its userinfo, path, or query, so an
+ * endpoint can be recorded without leaking a key that rides in the URL.
+ */
+export function urlOriginOnly(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    return url.origin && url.origin !== "null" ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `urlOriginOnly` of a URL whose host is loopback, else null. */
+export function loopbackOrigin(value: string | null | undefined): string | null {
+  const origin = urlOriginOnly(value);
+  if (!origin) return null;
+  try {
+    return isLoopbackHostname(new URL(origin).hostname) ? origin : null;
+  } catch {
+    return null;
+  }
+}

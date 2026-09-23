@@ -255,7 +255,6 @@ import type {
   ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileTreeNode,
@@ -311,8 +310,6 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
-  GitSyncStatuses,
-  GitSyncStatusesArgs,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
@@ -535,8 +532,6 @@ import type {
   ListSessionsArgs,
   DeleteSessionArgs,
   ListTestRunsArgs,
-  MergeSimulationArgs,
-  MergeSimulationResult,
   OperationRecord,
   ProjectConfigCandidate,
   ProjectConfigDiff,
@@ -744,7 +739,7 @@ import {
   releaseLaneRuntimeResources,
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
-import { mergeLaneEnvInitConfig, mergeLaneOverrides } from "../lanes/laneEnvInitMerge";
+import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
@@ -1523,6 +1518,18 @@ async function resolveLaneOverlayContextForCtx(ctx: AppContext, laneId: string) 
     portAllocationService: ctx.portAllocationService,
     laneEnvironmentService: ctx.laneEnvironmentService,
   }, laneId);
+}
+
+function laneEnvironmentSetupDepsForCtx(ctx: AppContext): LaneEnvironmentSetupDeps {
+  requireAppContextServices(ctx, ["laneService", "projectConfigService"] as const);
+  if (!ctx.laneEnvironmentService) throw new Error("Lane environment service not available");
+  return {
+    laneService: ctx.laneService,
+    projectConfigService: ctx.projectConfigService,
+    portAllocationService: ctx.portAllocationService,
+    laneEnvironmentService: ctx.laneEnvironmentService,
+    laneTemplateService: ctx.laneTemplateService,
+  };
 }
 
 async function buildLinearConnectionStatus(
@@ -6662,18 +6669,6 @@ export function registerIpc({
     ctx.logger.debug("tilingTree.set", { key });
   });
 
-  ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
-    const ctx = ensureDbContext();
-    const key = `graph_state:${arg.projectId}`;
-    return ctx.db.getJson<GraphPersistedState>(key);
-  });
-
-  ipcMain.handle(IPC.graphStateSet, async (_event, arg: { projectId: string; state: GraphPersistedState }): Promise<void> => {
-    const ctx = ensureDbContext();
-    const key = `graph_state:${arg.projectId}`;
-    ctx.db.setJson(key, arg.state);
-  });
-
   const ensureLaneContext = (): AppContextWith<"laneService"> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["laneService"] as const);
@@ -7045,11 +7040,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesInitEnv, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
-    if (!ctx.laneEnvironmentService) throw new Error("Lane environment service not available");
-    const { lane, overrides, envInitConfig } = await resolveLaneOverlayContextForCtx(ctx, args.laneId);
-
-    if (!envInitConfig) return { laneId: lane.id, steps: [], startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), overallStatus: "completed" };
-    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, envInitConfig, overrides);
+    return await runLaneEnvironmentSetup(laneEnvironmentSetupDepsForCtx(ctx), { laneId: args.laneId, includeArchived: false });
   });
 
   ipcMain.handle(IPC.lanesGetEnvStatus, async (_event, args: { laneId: string }) => {
@@ -7085,21 +7076,11 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesApplyTemplate, async (_event, args: { laneId: string; templateId: string }) => {
     const ctx = getCtx();
-    if (!ctx.laneTemplateService || !ctx.laneEnvironmentService) {
-      throw new Error("Lane template or environment service not available");
-    }
-    const { lane, overrides, envInitConfig } = await resolveLaneOverlayContextForCtx(ctx, args.laneId);
-    const template = ctx.laneTemplateService.getTemplate(args.templateId);
-    if (!template) throw new Error(`Template not found: ${args.templateId}`);
-    const templateEnvInit = ctx.laneTemplateService.resolveTemplateAsEnvInit(template);
-    const mergedOverrides = mergeLaneOverrides(overrides, {
-      ...(template.envVars ? { env: template.envVars } : {}),
-      ...(!overrides.portRange && template.portRange ? { portRange: template.portRange } : {}),
-      envInit: templateEnvInit
+    return await runLaneEnvironmentSetup(laneEnvironmentSetupDepsForCtx(ctx), {
+      laneId: args.laneId,
+      templateId: args.templateId,
+      includeArchived: false,
     });
-    const mergedEnvInitConfig =
-      mergeLaneEnvInitConfig(envInitConfig, templateEnvInit) ?? templateEnvInit;
-    return await ctx.laneEnvironmentService.initLaneEnvironment(lane, mergedEnvInitConfig, mergedOverrides);
   });
 
   ipcMain.handle(IPC.lanesSaveTemplate, async (_event, args: { template: LaneTemplate }) => {
@@ -10287,11 +10268,6 @@ export function registerIpc({
     return await ctx.gitService.getSyncStatus(arg);
   });
 
-  ipcMain.handle(IPC.gitGetSyncStatuses, async (_event, arg: GitSyncStatusesArgs): Promise<GitSyncStatuses> => {
-    const ctx = ensureGitContext();
-    return await ctx.gitService.getSyncStatuses(arg);
-  });
-
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
     const ctx = ensureGitLaneContext();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
@@ -10438,19 +10414,9 @@ export function registerIpc({
     return await ctx.conflictService.getRiskMatrix();
   });
 
-  ipcMain.handle(IPC.conflictsSimulateMerge, async (_event, arg: MergeSimulationArgs): Promise<MergeSimulationResult> => {
-    const ctx = ensureConflictContext();
-    return await ctx.conflictService.simulateMerge(arg);
-  });
-
   ipcMain.handle(IPC.conflictsRunPrediction, async (_event, arg: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.runPrediction(arg);
-  });
-
-  ipcMain.handle(IPC.conflictsGetBatchAssessment, async (): Promise<BatchAssessmentResult> => {
-    const ctx = ensureConflictContext();
-    return await ctx.conflictService.getBatchAssessment();
   });
 
   ipcMain.handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
@@ -11868,6 +11834,8 @@ export function registerIpc({
   ipcMain.handle(IPC.prsSubmitReview, (_e, args) => ensurePrReadContext().prService.submitReview(args));
   ipcMain.handle(IPC.prsClose, (_e, args) => ensurePrReadContext().prService.closePr(args));
   ipcMain.handle(IPC.prsReopen, (_e, args) => ensurePrReadContext().prService.reopenPr(args));
+  ipcMain.handle(IPC.prsSetDraft, (_e, args) => ensurePrReadContext().prService.setDraft(args));
+  ipcMain.handle(IPC.prsSetAutoMerge, (_e, args) => ensurePrReadContext().prService.setAutoMerge(args));
   ipcMain.handle(IPC.prsRerunChecks, (_e, args) => ensurePrReadContext().prService.rerunChecks(args));
   ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => ensurePrReadContext().prService.aiReviewSummary(args));
 
