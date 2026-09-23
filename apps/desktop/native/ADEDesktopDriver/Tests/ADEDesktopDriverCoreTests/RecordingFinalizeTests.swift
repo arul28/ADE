@@ -79,7 +79,7 @@ final class RecordingFinalizeTests: XCTestCase {
         let settled = CaptureEngine.finalizeRecordingWriter(
             writer: writer,
             input: input,
-            lastPresentationTime: first
+            endTime: first
         )
         let elapsed = Date().timeIntervalSince(start)
 
@@ -105,7 +105,7 @@ final class RecordingFinalizeTests: XCTestCase {
         let settled = CaptureEngine.finalizeRecordingWriter(
             writer: writer,
             input: input,
-            lastPresentationTime: nil
+            endTime: nil
         )
         let elapsed = Date().timeIntervalSince(start)
 
@@ -119,7 +119,7 @@ final class RecordingFinalizeTests: XCTestCase {
         let settled = CaptureEngine.finalizeRecordingWriter(
             writer: writer,
             input: input,
-            lastPresentationTime: nil
+            endTime: nil
         )
         XCTAssertFalse(settled, "an unstarted writer is not a completed recording")
         XCTAssertEqual(writer.status, .unknown)

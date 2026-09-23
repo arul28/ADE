@@ -788,11 +788,14 @@ final class DriverRuntime: NSObject {
         let fps = max(1, min(60, request.int("fps") ?? 30))
         let filePath = request.string("filePath")
             ?? Self.scratchPath(laneId: laneId, suffix: "recording", extension: "mp4")
+        // Idle cutting defaults on: a recording of an agent thinking is
+        // mostly a still display. `keepIdle: true` keeps wall-clock time.
         let startedAt = try capture.startRecording(
             laneId: laneId,
             displayId: handle.displayId,
             fps: fps,
-            filePath: filePath
+            filePath: filePath,
+            keepIdle: request.bool("keepIdle") ?? false
         )
         if let caption = request.string("caption") {
             recordingCaptions[laneId] = caption
@@ -818,6 +821,8 @@ final class DriverRuntime: NSObject {
             "running": .bool(false),
             "filePath": .string(finished.filePath),
             "durationMs": .int(finished.durationMs),
+            "wallDurationMs": .int(finished.wallDurationMs),
+            "idleCutMs": .int(finished.idleCutMs),
             "caption": caption.map(JSONValue.string) ?? .null,
         ]
         emit(DriverEvent(event: "recording-changed", fields: result))

@@ -230,8 +230,8 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `stream.setRate` | `laneId,fps` | `{fps}` |
 /// | `stream.setCursorVisible` | `laneId,visible` | `{visible}` |
 /// | `stream.stop` | `laneId` | `{stopped}` |
-/// | `record.start` | `laneId,fps?,filePath` | `{startedAt}` |
-/// | `record.stop` | `laneId` | `{filePath,durationMs}` |
+/// | `record.start` | `laneId,fps?,filePath,keepIdle?` | `{startedAt}` |
+/// | `record.stop` | `laneId` | `{filePath,durationMs,wallDurationMs,idleCutMs}` |
 public enum DriverOp: String, CaseIterable, Sendable {
     case health = "ping"
     case createDisplay = "display.create"

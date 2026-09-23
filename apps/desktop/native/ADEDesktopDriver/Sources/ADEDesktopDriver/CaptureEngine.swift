@@ -88,14 +88,17 @@ final class CaptureEngine {
         var sink: AnyObject
         var filePath: String
         var startedAt: Date
+        /// ScreenCaptureKit's timestamp for the first frame. Every later frame
+        /// is placed by its distance from this one.
         var firstPresentationTime: CMTime?
-        /// The last timestamp actually handed to the adaptor.
-        ///
-        /// `endSession(atSourceTime:)` needs it: without an explicit end the
-        /// container's duration runs to wherever the writer thinks the session
-        /// went, which is seconds past the final frame, and every player shows
-        /// a clip that ends in a freeze.
-        var lastPresentationTime: CMTime?
+        /// When the first frame arrived, by the wall clock. `record.stop`
+        /// measures the recording's real length from here.
+        var firstFrameAt: Date?
+        /// Where each frame goes in the file, with still stretches cut.
+        var idleCut: RecordingIdleCut
+        /// The newest frame the idle cut skipped, so a small change during a
+        /// final still (a clock tick) is still what the file ends on.
+        var pendingBuffer: CVPixelBuffer?
     }
 
     /// How long a reader may go without a picture on a screen where nothing is
@@ -841,7 +844,8 @@ final class CaptureEngine {
         laneId: String,
         displayId: CGDirectDisplayID,
         fps: Int,
-        filePath: String
+        filePath: String,
+        keepIdle: Bool = false
     ) throws -> Date {
         guard #available(macOS 12.3, *) else {
             throw CaptureError.failed("ScreenCaptureKit needs macOS 12.3 or newer.")
@@ -899,7 +903,9 @@ final class CaptureEngine {
                 guard let self, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
                 // Held across the state check and the append so a stop that
                 // removed the recording can never overlap an append the sample
-                // handler was already committed to.
+                // handler was already committed to. It also makes this handler
+                // the state's only writer until a stop takes it, so the
+                // thumbnail below can be made without holding `lock`.
                 self.appendLock.lock()
                 defer { self.appendLock.unlock() }
                 let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -908,11 +914,15 @@ final class CaptureEngine {
                     self.lock.unlock()
                     return
                 }
+                self.lock.unlock()
                 if state.firstPresentationTime == nil {
                     state.firstPresentationTime = time
-                    self.recordings[laneId] = state
+                    state.firstFrameAt = Date()
                     if writer.startWriting() {
-                        writer.startSession(atSourceTime: time)
+                        // The file's clock starts at zero: the idle cut places
+                        // each frame by its distance from the first, minus
+                        // whatever still time it has cut before it.
+                        writer.startSession(atSourceTime: .zero)
                     } else {
                         // Nothing can be appended after this, and `record.stop`
                         // is the request that has to say so; it reads the
@@ -924,15 +934,22 @@ final class CaptureEngine {
                         )
                     }
                 }
-                let willAppend = input.isReadyForMoreMediaData && writer.status == .writing
+                let first = state.firstPresentationTime ?? time
+                let elapsed = max(0, CMTimeGetSeconds(CMTimeSubtract(time, first)))
+                // ScreenCaptureKit sends a frame only when the display was
+                // redrawn, so each one is classified: a real change is
+                // activity, a caret blink or a clock tick is not.
+                let placed = state.idleCut.place(frameAt: elapsed) { Self.idleThumbnail(of: buffer) }
+                let willAppend = placed != nil && input.isReadyForMoreMediaData && writer.status == .writing
+                state.pendingBuffer = willAppend ? nil : buffer
+                self.lock.lock()
+                self.recordings[laneId] = state
                 if willAppend {
-                    state.lastPresentationTime = time
-                    self.recordings[laneId] = state
                     self.recordedFrameCounts[laneId] = (self.recordedFrameCounts[laneId] ?? 0) + 1
                 }
                 self.lock.unlock()
-                guard willAppend else { return }
-                adaptor.append(buffer, withPresentationTime: time)
+                guard willAppend, let placed else { return }
+                adaptor.append(buffer, withPresentationTime: CMTime(seconds: placed, preferredTimescale: 600))
             },
             onError: { [weak self] error in
                 self?.log("recording stream error on lane \(laneId): \(error)")
@@ -967,13 +984,25 @@ final class CaptureEngine {
             filePath: filePath,
             startedAt: startedAt,
             firstPresentationTime: nil,
-            lastPresentationTime: nil
+            firstFrameAt: nil,
+            idleCut: RecordingIdleCut(enabled: !keepIdle),
+            pendingBuffer: nil
         )
         lock.unlock()
         return startedAt
     }
 
-    func stopRecording(laneId: String) throws -> (filePath: String, durationMs: Int) {
+    /// A finished recording. `durationMs` is the file's length, after idle
+    /// cutting; `wallDurationMs` the real time from the first frame to the
+    /// stop; `idleCutMs` the difference, cut as dead time.
+    struct FinishedRecording {
+        var filePath: String
+        var durationMs: Int
+        var wallDurationMs: Int
+        var idleCutMs: Int
+    }
+
+    func stopRecording(laneId: String) throws -> FinishedRecording {
         // Taken before the state is removed and held through the finalize:
         // every append either finished before this line or will find its
         // recording gone and return without touching the adaptor.
@@ -1006,16 +1035,29 @@ final class CaptureEngine {
             )
         }
 
+        // The real length runs from the first frame to now. The file keeps
+        // what the idle cut leaves of it, and a still that runs to the stop is
+        // cut like any other.
+        var idleCut = state.idleCut
+        let wallSeconds = max(0, Date().timeIntervalSince(state.firstFrameAt ?? state.startedAt))
+        let finish = idleCut.finish(at: wallSeconds, pendingFrame: state.pendingBuffer != nil)
+        if let finalFrame = finish.finalFrame,
+           let buffer = state.pendingBuffer,
+           state.writer.status == .writing,
+           state.input.isReadyForMoreMediaData {
+            state.adaptor.append(buffer, withPresentationTime: CMTime(seconds: finalFrame, preferredTimescale: 600))
+        }
+
         if state.writer.status == .writing {
-            // Close the session at the last frame we appended. AVFoundation
-            // otherwise leaves the session open to the writer's own idea of
-            // "now", and the mp4 container ends up seconds longer than the
-            // pictures in it.
+            // Close the session where the idle cut says the file ends.
+            // AVFoundation otherwise leaves the session open to the writer's
+            // own idea of "now", and the mp4 container's length matches
+            // neither the pictures nor the report below.
             let writer = state.writer
             let settled = Self.finalizeRecordingWriter(
                 writer: writer,
                 input: state.input,
-                lastPresentationTime: state.lastPresentationTime,
+                endTime: CMTime(seconds: finish.end, preferredTimescale: 600),
                 onCompletion: { [weak self] in self?.releaseAbandonedWriter(writer) }
             )
             if !settled {
@@ -1044,18 +1086,34 @@ final class CaptureEngine {
                     + "\(state.writer.error.map { "\($0)" } ?? "AVAssetWriter gave no reason")."
             )
         }
-        // The reported duration is the span of frames when there are frames,
-        // so it matches the container the caller is about to open. Wall clock
-        // is the fallback for a recording that never received one.
-        let durationMs: Int
-        if let first = state.firstPresentationTime,
-           let last = state.lastPresentationTime,
-           CMTimeCompare(last, first) > 0 {
-            durationMs = Int(CMTimeGetSeconds(CMTimeSubtract(last, first)) * 1000)
-        } else {
-            durationMs = Int(Date().timeIntervalSince(state.startedAt) * 1000)
-        }
-        return (state.filePath, durationMs)
+        // The reported duration is the session's end, so it matches the
+        // container the caller is about to open.
+        let durationMs = Int((finish.end * 1000).rounded())
+        let wallDurationMs = Int((wallSeconds * 1000).rounded())
+        return FinishedRecording(
+            filePath: state.filePath,
+            durationMs: durationMs,
+            wallDurationMs: wallDurationMs,
+            idleCutMs: max(wallDurationMs - durationMs, 0)
+        )
+    }
+
+    /// A greyscale thumbnail of a captured BGRA frame, for the idle cut.
+    static func idleThumbnail(of buffer: CVPixelBuffer) -> ScreenChange.Thumbnail? {
+        guard
+            CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA,
+            CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess
+        else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let height = CVPixelBufferGetHeight(buffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+        return ScreenChange.thumbnail(
+            bgra: UnsafeRawBufferPointer(start: base, count: bytesPerRow * height),
+            width: CVPixelBufferGetWidth(buffer),
+            height: height,
+            bytesPerRow: bytesPerRow
+        )
     }
 
     /// The one finalize sequence `stopRecording` runs.
@@ -1069,7 +1127,7 @@ final class CaptureEngine {
     static func finalizeRecordingWriter(
         writer: AVAssetWriter,
         input: AVAssetWriterInput,
-        lastPresentationTime: CMTime?,
+        endTime: CMTime?,
         timeout: TimeInterval = CaptureEngine.recordingFinalizeBudget,
         onCompletion: (() -> Void)? = nil
     ) -> Bool {
@@ -1081,8 +1139,8 @@ final class CaptureEngine {
         // writer that never began.
         guard writer.status == .writing else { return writer.status == .completed }
         input.markAsFinished()
-        if let last = lastPresentationTime {
-            writer.endSession(atSourceTime: last)
+        if let endTime {
+            writer.endSession(atSourceTime: endTime)
         }
         let finished = SettledFlag()
         writer.finishWriting {
