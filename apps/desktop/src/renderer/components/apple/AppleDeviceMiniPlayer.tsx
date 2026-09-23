@@ -44,6 +44,20 @@ const RESIZE_ZONES: { direction: AppleMiniPlayerResizeDirection; className: stri
 ];
 
 /**
+ * How the box goes away while the device plays in a PiP window.
+ *
+ * Not `hidden` and not `opacity: 0`. The PiP window captures this box's
+ * canvas, and the stage has already learned (see `PARKED_CANVAS_STYLE` in
+ * `AppleDeviceStage`) that a canvas the compositor treats as not visible can
+ * hand a GPU reader a black surface. So the box keeps its place and size and
+ * stays composited at an opacity no eye can see, and takes no pointer input.
+ */
+const PIP_CONCEALED_STYLE = {
+  opacity: 0.002,
+  pointerEvents: "none" as const,
+};
+
+/**
  * The device, floating over the chat.
  *
  * This replaces the auto-appearing corner card, which showed up uninvited and
@@ -94,6 +108,10 @@ function AppleMiniPlayerFrameView({
    * back where it was, at the size it was. Staying mounted is what keeps the
    * position and width; the stream is what must not stay, and `hidden` below
    * gives this viewer's lease back exactly as an unmount would.
+   *
+   * Picture in picture overrides this. The PiP window is how you watch the
+   * device from somewhere else, so it keeps the stream while another surface
+   * is in front. The rule applies again once PiP closes.
    */
   visible: boolean;
   recording: boolean;
@@ -127,6 +145,16 @@ function AppleMiniPlayerFrameView({
    * it gets nothing rather than a photograph of an old session.
    */
   const [poster, setPoster] = useState<string | null>(() => takeAppleMiniPlayerPoster(target.deviceUdid));
+  /*
+   * The owner's 2026-09-23 ask: while the device is in a PiP window, the box
+   * inside ADE goes away, and it comes back when PiP closes.
+   *
+   * The PiP window is fed from this box's own canvas, so "away" cannot mean
+   * `hidden`: that drops the lease, and the stage unmounts the decoder when
+   * the URL goes, which freezes the PiP window. So the box stays mounted,
+   * laid out and streaming, and is only concealed (see `PIP_CONCEALED_STYLE`).
+   */
+  const streaming = visible || pipActive;
 
   const noop = useCallback(() => {}, []);
   const stream = useAppleDeviceStream({
@@ -135,8 +163,9 @@ function AppleMiniPlayerFrameView({
     chatSessionId: target.chatSessionId,
     enabled: true,
     // Hidden releases this viewer's lease (and stops the capture when it was
-    // the last one), so a player nobody can see is not encoding H.264.
-    hidden: !visible,
+    // the last one), so a player nobody can see is not encoding H.264. A PiP
+    // window is somebody seeing it.
+    hidden: !streaming,
     machineName: null,
     bitrateKbpsCap: null,
     runtimePinRef: pinRef,
@@ -152,14 +181,14 @@ function AppleMiniPlayerFrameView({
    * first would drop the count to zero between the two and stop the capture,
    * which is exactly the tear-down this whole mechanism exists to avoid.
    *
-   * Only while visible: a hidden player holds no lease of its own, and this
+   * Only while streaming: a hidden player holds no lease of its own, and this
    * release never stops a capture, so giving the hold back here would leave
    * the helper encoding for nobody. Left alone, the hold's own expiry stops it
    * — or, if the user comes back within the window, this runs then instead.
    */
   useEffect(() => {
-    if (visible) releaseAppleMiniPlayerHandoverHold();
-  }, [visible]);
+    if (streaming) releaseAppleMiniPlayerHandoverHold();
+  }, [streaming]);
 
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {
@@ -260,9 +289,17 @@ function AppleMiniPlayerFrameView({
     if (!canvas) return;
     try {
       const session = await enterCanvasPictureInPicture(canvas);
+      // The stage dropped this canvas while the window opened (the surface
+      // changed, or the player went): the window would get no frames.
+      if (!canvas.isConnected) {
+        session.stop();
+        return;
+      }
       pipRef.current?.stop();
       pipRef.current = session;
       setPipActive(true);
+      // The PiP window's close button and its "back to tab" button both end
+      // here, and so does `stopPip`'s exit. Clearing `pipActive` shows the box.
       session.video.addEventListener("leavepictureinpicture", () => {
         session.stop();
         if (pipRef.current === session) pipRef.current = null;
@@ -278,14 +315,21 @@ function AppleMiniPlayerFrameView({
     pipRef.current = null;
   }, []);
 
-  // Hiding stops the frames, so a picture-in-picture window would freeze on
-  // the last one; and a hidden box never sees the pointer leave it, so the
-  // hover bar would still be open when it comes back.
+  // A hidden or concealed box never sees the pointer leave it, so the hover
+  // bar would still be open when it comes back. Hiding no longer ends PiP:
+  // PiP keeps the stream (see `streaming`).
   useEffect(() => {
-    if (visible) return;
-    stopPip();
+    if (visible && !pipActive) return;
     setHovered(false);
-  }, [stopPip, visible]);
+  }, [pipActive, visible]);
+
+  // The device stopped or its stream ended. This player never redials, so the
+  // PiP window would sit on the last frame with the box still concealed. End
+  // PiP, which shows the box again (or leaves it hidden on another surface).
+  useEffect(() => {
+    if (!pipActive) return;
+    if (stream.state === "idle" || stream.state === "error") stopPip();
+  }, [pipActive, stopPip, stream.state]);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreen((value) => (
@@ -332,8 +376,10 @@ function AppleMiniPlayerFrameView({
   return (
     <div
       ref={hostRef}
-      hidden={!visible}
+      hidden={!streaming}
       data-apple-mini-player={target.deviceUdid}
+      data-apple-mini-pip={pipActive ? "" : undefined}
+      aria-hidden={pipActive || undefined}
       role="group"
       aria-label={`${target.deviceName}, floating`}
       onPointerEnter={() => setHovered(true)}
@@ -349,6 +395,7 @@ function AppleMiniPlayerFrameView({
         width: frame.width,
         height: frame.height,
         borderRadius: APPLE_MINI_PLAYER_CORNER_RADIUS,
+        ...(pipActive ? PIP_CONCEALED_STYLE : null),
       }}
     >
       {/*
@@ -395,7 +442,8 @@ function AppleMiniPlayerFrameView({
           deviceTypeName={target.deviceName}
           orientation="portrait"
           devicePointSize={stream.devicePointSize}
-          interactive
+          // Concealed, the screen must not take focus or keys you cannot see.
+          interactive={!pipActive}
           onDeviceInput={input.send}
           onDeviceScroll={input.scroll}
           onDeviceKey={input.key}

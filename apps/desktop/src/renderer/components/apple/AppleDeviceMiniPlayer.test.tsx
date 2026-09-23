@@ -4,8 +4,15 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./AppleDeviceStage", () => ({
-  AppleDeviceStage: (props: { className?: string }) => (
-    <div data-testid="apple-stage" data-stage-class={props.className ?? ""} />
+  AppleDeviceStage: (props: { className?: string; interactive?: boolean }) => (
+    <div
+      data-testid="apple-stage"
+      data-stage-class={props.className ?? ""}
+      data-stage-interactive={String(Boolean(props.interactive))}
+    >
+      {/* The decoder's canvas, which picture-in-picture captures. */}
+      <canvas />
+    </div>
   ),
   isWebCodecsAvailable: () => true,
 }));
@@ -13,6 +20,7 @@ vi.mock("./AppleDeviceStage", () => ({
 /** Mutable so a test can mount the player BEFORE its first frame. */
 const stream = {
   frameVersion: 1,
+  state: "live" as string,
   /** What the player last asked the stream for — `hidden` is the lease. */
   lastArgs: null as null | { hidden: boolean; enabled: boolean },
 };
@@ -21,7 +29,7 @@ vi.mock("./useAppleDeviceStream", () => ({
   useAppleDeviceStream: (args: { hidden: boolean; enabled: boolean }) => {
     stream.lastArgs = args;
     return {
-      state: "live",
+      state: stream.state,
       url: "http://127.0.0.1:1/stream",
       token: "t",
       reconnectNonce: 0,
@@ -39,6 +47,21 @@ vi.mock("./useAppleDeviceStream", () => ({
     };
   },
 }));
+
+/** The PiP window, faked: jsdom has none. Each entry is one session opened. */
+const pipSessions: { video: HTMLVideoElement; stop: ReturnType<typeof vi.fn> }[] = [];
+
+vi.mock("../work/workLiveIosPictureInPicture", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../work/workLiveIosPictureInPicture")>();
+  return {
+    ...actual,
+    enterCanvasPictureInPicture: vi.fn(async () => {
+      const session = { video: document.createElement("video"), stop: vi.fn() };
+      pipSessions.push(session);
+      return session;
+    }),
+  };
+});
 
 const { AppleDeviceMiniPlayer } = await import("./AppleDeviceMiniPlayer");
 const {
@@ -75,6 +98,8 @@ const SURFACE = { laneId: "lane-1", runtimePin: null, boundBinding: null };
 
 beforeEach(() => {
   stream.frameVersion = 1;
+  stream.state = "live";
+  pipSessions.length = 0;
   stream.lastArgs = null;
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
@@ -396,5 +421,143 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
     expect(player()).toBeTruthy();
     // The stream hook is mocked, so this is the hold alone going back.
     expect(appleStreamLeaseCount(key)).toBe(1);
+  });
+});
+
+/*
+ * The owner's 2026-09-23 ask: while the device plays in a PiP window, the box
+ * inside ADE goes away, and it comes back when PiP closes. The PiP window is
+ * fed from the box's own canvas, so "away" must keep the stream.
+ */
+describe("AppleDeviceMiniPlayer, picture in picture", () => {
+  const host = () => document.querySelector("[data-apple-mini-player='pro']") as HTMLElement;
+  const box = (node: HTMLElement) => ({
+    left: node.style.left,
+    top: node.style.top,
+    width: node.style.width,
+    height: node.style.height,
+  });
+
+  beforeEach(() => {
+    Object.defineProperty(document, "pictureInPictureEnabled", { value: true, configurable: true });
+    (HTMLVideoElement.prototype as unknown as { requestPictureInPicture: unknown })
+      .requestPictureInPicture = vi.fn();
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(document, "pictureInPictureEnabled");
+    Reflect.deleteProperty(HTMLVideoElement.prototype, "requestPictureInPicture");
+  });
+
+  async function enterPip() {
+    fireEvent.pointerEnter(host());
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Picture in picture" }));
+    });
+    expect(pipSessions).toHaveLength(1);
+  }
+
+  function leavePip() {
+    act(() => {
+      pipSessions[0]!.video.dispatchEvent(new Event("leavepictureinpicture"));
+    });
+  }
+
+  it("conceals the box on PiP start and keeps its stream", async () => {
+    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    const before = box(host());
+    await enterPip();
+
+    const node = host();
+    expect(node.hasAttribute("data-apple-mini-pip")).toBe(true);
+    expect(node.style.opacity).toBe("0.002");
+    expect(node.style.pointerEvents).toBe("none");
+    expect(node.getAttribute("aria-hidden")).toBe("true");
+    // Concealed, not hidden: `hidden` would drop the lease and the decoder.
+    expect(node.hasAttribute("hidden")).toBe(false);
+    expect(stream.lastArgs?.hidden).toBe(false);
+    expect(node.querySelector("canvas")).toBeTruthy();
+    // The concealed screen takes no input, and the hover bar is closed.
+    expect(screen.getByTestId("apple-stage").getAttribute("data-stage-interactive")).toBe("false");
+    expect(document.querySelector("[data-apple-mini-dot]")).toBeTruthy();
+    expect(box(node)).toEqual(before);
+    expect(pipSessions[0]!.stop).not.toHaveBeenCalled();
+  });
+
+  it("shows the box again, in the same place, when the PiP window closes", async () => {
+    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    const element = host();
+    const before = box(element);
+    await enterPip();
+
+    // The PiP window's close button and "back to tab" both arrive as this.
+    leavePip();
+    expect(host()).toBe(element);
+    expect(element.hasAttribute("data-apple-mini-pip")).toBe(false);
+    expect(element.style.opacity).toBe("");
+    expect(element.style.pointerEvents).toBe("");
+    expect(element.hasAttribute("aria-hidden")).toBe(false);
+    expect(box(element)).toEqual(before);
+    expect(screen.getByRole("group", { name: "iPhone 17 Pro, floating" })).toBe(element);
+    expect(screen.getByTestId("apple-stage").getAttribute("data-stage-interactive")).toBe("true");
+    expect(pipSessions[0]!.stop).toHaveBeenCalled();
+  });
+
+  it("keeps streaming into PiP while another lane or the new-chat screen is in front", async () => {
+    const view = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    await enterPip();
+
+    view.rerender(<AppleDeviceMiniPlayer surface={{ laneId: "lane-2", runtimePin: null, boundBinding: null }} onOpenInPane={vi.fn()} />);
+    expect(stream.lastArgs?.hidden).toBe(false);
+    expect(host().hasAttribute("hidden")).toBe(false);
+    expect(host().hasAttribute("data-apple-mini-pip")).toBe(true);
+
+    view.rerender(<AppleDeviceMiniPlayer surface={null} onOpenInPane={vi.fn()} />);
+    expect(stream.lastArgs?.hidden).toBe(false);
+    expect(host().querySelector("canvas")).toBeTruthy();
+    expect(pipSessions[0]!.stop).not.toHaveBeenCalled();
+    expect(getAppleMiniPlayerTarget()?.deviceUdid).toBe("pro");
+  });
+
+  it("hides the box and drops the stream when PiP closes over another surface", async () => {
+    const view = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    await enterPip();
+    view.rerender(<AppleDeviceMiniPlayer surface={null} onOpenInPane={vi.fn()} />);
+
+    leavePip();
+    expect(host().hasAttribute("hidden")).toBe(true);
+    expect(stream.lastArgs?.hidden).toBe(true);
+    expect(getAppleMiniPlayerTarget()?.deviceUdid).toBe("pro");
+
+    // Back on the lane, it is the ordinary visible box again.
+    view.rerender(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    expect(host().hasAttribute("hidden")).toBe(false);
+    expect(host().hasAttribute("data-apple-mini-pip")).toBe(false);
+    expect(stream.lastArgs?.hidden).toBe(false);
+  });
+
+  it("ends PiP and shows the box when the device's stream stops", async () => {
+    const view = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    await enterPip();
+
+    stream.state = "error";
+    view.rerender(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    expect(pipSessions[0]!.stop).toHaveBeenCalled();
+    expect(host().hasAttribute("data-apple-mini-pip")).toBe(false);
+    expect(host().hasAttribute("hidden")).toBe(false);
+  });
+
+  it("ends PiP when the player closes", async () => {
+    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    await enterPip();
+    act(() => closeAppleMiniPlayer("pro"));
+    expect(host()).toBeNull();
+    expect(pipSessions[0]!.stop).toHaveBeenCalled();
   });
 });
