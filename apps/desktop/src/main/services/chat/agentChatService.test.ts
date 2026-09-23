@@ -3287,6 +3287,120 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
+  // lane Apple device hint (`<ade-lane-tools>`) cadence
+  // --------------------------------------------------------------------------
+
+  describe("lane Apple device hint cadence", () => {
+    const HINT_OPEN = "<ade-lane-tools>";
+
+    function laneDeviceLookup(initial: { udid: string; name: string } | null) {
+      let device = initial;
+      const lookup = vi.fn((_laneId: string) => device);
+      return {
+        lookup,
+        set(next: { udid: string; name: string } | null) {
+          device = next;
+        },
+      };
+    }
+
+    it("names the device on the first turn only, and again when the bound udid changes", async () => {
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-apple-hint", responseText: "ok" });
+      const events: AgentChatEventEnvelope[] = [];
+      const device = laneDeviceLookup({ udid: "UDID-AAA", name: "iPhone 17 Pro" });
+      const { service } = createService({
+        lookupLaneAppleDevice: device.lookup,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "record opening safari" });
+      await settleDirectiveBookkeeping();
+      await service.runSessionTurn({ sessionId: session.id, text: "second" });
+      await settleDirectiveBookkeeping();
+      device.set({ udid: "UDID-BBB", name: "iPad Air" });
+      await service.runSessionTurn({ sessionId: session.id, text: "third" });
+
+      expect(device.lookup).toHaveBeenCalledWith("lane-1");
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      const first = prompts.find((text) => text.includes("record opening safari")) ?? "";
+      const second = prompts.find((text) => text.includes("second")) ?? "";
+      const third = prompts.find((text) => text.includes("third")) ?? "";
+      expect(first).toContain(HINT_OPEN);
+      expect(first).toContain("iPhone 17 Pro (UDID-AAA)");
+      expect(first).toContain("ade --socket apple record-start");
+      expect(second).not.toContain(HINT_OPEN);
+      expect(third).toContain(HINT_OPEN);
+      expect(third).toContain("iPad Air (UDID-BBB)");
+
+      // The transcript keeps the user's own words: the block rides the
+      // provider-bound prompt only.
+      const userRows = events
+        .filter((entry) => entry.sessionId === session.id && entry.event.type === "user_message")
+        .map((entry) => entry.event as { text?: string; displayText?: string });
+      expect(userRows.map((row) => row.text)).toEqual(["record opening safari", "second", "third"]);
+      expect(JSON.stringify(userRows)).not.toContain(HINT_OPEN);
+      service.forceDisposeAll();
+    });
+
+    it("sends nothing when the lane has no device", async () => {
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-apple-none", responseText: "ok" });
+      const device = laneDeviceLookup(null);
+      const { service } = createService({ lookupLaneAppleDevice: device.lookup });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "hello" });
+
+      expect(device.lookup).toHaveBeenCalled();
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      expect(prompts.some((text) => text.includes("hello"))).toBe(true);
+      expect(prompts.some((text) => text.includes(HINT_OPEN))).toBe(false);
+      service.forceDisposeAll();
+    });
+
+    it("never fails the send when the device lookup throws", async () => {
+      const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-apple-throw", responseText: "ok" });
+      const lookup = vi.fn(() => {
+        throw new Error("no such table: lane_apple_devices");
+      });
+      const { service, logger } = createService({ lookupLaneAppleDevice: lookup });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "still sends" });
+
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      expect(prompts.some((text) => text.includes("still sends"))).toBe(true);
+      expect(prompts.some((text) => text.includes(HINT_OPEN))).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.lane_apple_device_lookup_failed",
+        expect.objectContaining({ laneId: "lane-1" }),
+      );
+      service.forceDisposeAll();
+    });
+
+    it("reaches a provider with no system-prompt channel (Droid) the same way", async () => {
+      const device = laneDeviceLookup({ udid: "UDID-DROID", name: "iPhone 17" });
+      const { service } = createService({ lookupLaneAppleDevice: device.lookup });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "first" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(1); });
+      await settleDirectiveBookkeeping();
+      await service.sendMessage({ sessionId: session.id, text: "second" }, { awaitDispatch: true });
+      await vi.waitFor(() => { expect(mockState.droidPromptCalls.length).toBe(2); });
+
+      expect(JSON.stringify(mockState.droidPromptCalls[0])).toContain("iPhone 17 (UDID-DROID)");
+      expect(JSON.stringify(mockState.droidPromptCalls[1])).not.toContain(HINT_OPEN);
+      service.forceDisposeAll();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // createSession
   // --------------------------------------------------------------------------
 

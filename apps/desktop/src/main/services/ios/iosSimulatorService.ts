@@ -136,6 +136,7 @@ import { AppleDeviceExistsError, appleDeviceFamily, createLaneDeviceRegistry, ty
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
+  SIM_HELPER_EXITED_EVENT,
   SimHelperError,
   type SimHelperClient,
   type SimHelperTransport,
@@ -2328,6 +2329,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         screenshot: (shotArgs) => screenshot({ ...shotArgs, laneId: shotArgs.laneId ?? runtime.laneId, proof: false }),
         tap: (tapArgs) => tap({ ...tapArgs, laneId: runtime.laneId }),
         typeText: (textArgs) => typeText({ ...textArgs, laneId: runtime.laneId }),
+        resetHelperDevice: (deviceUdid) => resetHelperDevice(deviceUdid, "hub-power"),
         resolveBuildRoot: (scope) => resolveScopedRootForSession(scope, runtime),
         getAppSessionOwner: () => runtime.activeSession?.chatSessionId ?? null,
         getAppSessionDeviceUdid: () => runtime.activeSession?.deviceUdid ?? null,
@@ -2401,7 +2403,55 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return null;
   };
 
+  /**
+   * Publish a lane's stream as stopped, the way `stopStream` does, without
+   * asking the helper for anything: used when the helper already dropped the
+   * capture, or died with it.
+   */
+  const markStreamGone = (runtime: LaneRuntime): void => {
+    if (runtime.laneId) localViewerLanes.delete(runtime.laneId);
+    const status = setStreamStopped(runtime, null);
+    emit({ type: "stream-stopped", status });
+  };
+
+  /**
+   * The helper process died (the client restarts it on its own).
+   *
+   * Everything it held died with it: every capture socket, every recording,
+   * every HID client. Proven live on 2026-09-23: after a helper restart
+   * `getStreamStatus` still said `running: true` with the dead `helperPid`
+   * and `transport.port`, `startStream`'s "already running" fast path handed
+   * that dead port to every new viewer, and nothing recovered until someone
+   * called `stopStream` by hand. So every lane's stream is published stopped
+   * (the next `startStream` opens a real capture on the new helper) and the
+   * recording service forgets the recordings the dead helper was writing.
+   */
+  const handleHelperExited = (event: { type: string } & Record<string, unknown>): void => {
+    const deadPid = typeof event.pid === "number" ? event.pid : null;
+    let stopped = 0;
+    for (const runtime of runtimes.values()) {
+      if (!runtime.streamStatus.running) continue;
+      markStreamGone(runtime);
+      stopped += 1;
+    }
+    // A lane that was not streaming can still carry a viewer mark from a
+    // renderer; with no capture behind it the mark describes nothing.
+    localViewerLanes.clear();
+    const endedRecordings = recordings.helperExited();
+    args.logger.warn("apple.sim_helper_exited", {
+      pid: deadPid,
+      code: event.code ?? null,
+      signal: event.signal ?? null,
+      streamsStopped: stopped,
+      recordingsEnded: endedRecordings.length,
+    });
+  };
+
   const handleHelperEvent = (event: { type: string } & Record<string, unknown>): void => {
+    if (event.type === SIM_HELPER_EXITED_EVENT) {
+      handleHelperExited(event);
+      return;
+    }
     if (event.type !== "capture-stopped") return;
     const udid = typeof event.udid === "string" ? event.udid : null;
     if (!udid) return;
@@ -2412,8 +2462,48 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // already published the stopped status and emitting again would make the
     // drawer flash an error on a clean stop.
     if (reason === "requested") return;
+    // "device-reset" is ADE's own `device-reset` around a power change: a
+    // clean stop ADE asked for, so it reads as stopped rather than as an error.
+    if (reason === "device-reset") {
+      markStreamGone(runtime);
+      return;
+    }
     const status = setStreamStopped(runtime, reason || "The simulator capture stopped.");
     emit({ type: "stream-error", status });
+  };
+
+  /**
+   * Tell the helper to forget everything it holds for a device, best effort.
+   *
+   * The helper builds a per-device session once — HID client, capture engine —
+   * and those are bound to the boot they were built against. Proven live on
+   * 2026-09-23: a lane simulator was powered off and booted again while the
+   * helper stayed up, and every tap afterwards answered `ok` in ~11 ms while
+   * the screen never changed; killing only the helper fixed it at once. So ADE
+   * resets the device's session right before it powers the device off and
+   * right after it boots one that was off, and the next command builds a
+   * fresh session against the new boot.
+   *
+   * Not covered: a reboot done outside ADE (Xcode, `simctl` in a terminal,
+   * Simulator.app's own menu). Nothing tells ADE about those; the fix there is
+   * a helper-side staleness check, which this does not attempt.
+   *
+   * Skipped when no helper is running: a fresh helper has no session to drop,
+   * and spawning one only to tell it to forget nothing is waste. Never throws
+   * — an older helper answers `unknown-command`, and neither that nor a dead
+   * helper may fail the power-off or boot the user asked for.
+   */
+  const resetHelperDevice = async (udid: string, reason: "power-off" | "boot" | "delete" | "hub-power"): Promise<void> => {
+    const client = helperClient;
+    if (!client || client.pid() == null) return;
+    await client.send({ type: "device-reset", udid }).catch((error: unknown) => {
+      args.logger.debug("apple.helper_device_reset_failed", {
+        udid,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+    });
   };
 
   /* ───────────────────────── per-lane devices ───────────────────────── */
@@ -2694,13 +2784,29 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * "Device not booted" the phone and the web tab used to see.
    */
   const ensureDeviceBooted = async (device: IosSimulatorDevice): Promise<void> => {
+    let booted = false;
     if (device.state !== "Booted") {
-      await run("xcrun", ["simctl", "boot", device.udid]).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!/Unable to boot device in current state|current state: Booted|already booted/i.test(message)) throw error;
-      });
+      booted = await bootSimulator(device);
     }
     await waitForSimulatorBootStatus(device);
+    // Only after a boot THIS call did: a device that was already up keeps the
+    // helper session it has, and dropping it would cost a stream for nothing.
+    if (booted) await resetHelperDevice(device.udid, "boot");
+  };
+
+  /**
+   * `simctl boot`, tolerating the "already booted" refusal two racing callers
+   * get. True only when this call actually booted the device.
+   */
+  const bootSimulator = async (device: IosSimulatorDevice): Promise<boolean> => {
+    try {
+      await run("xcrun", ["simctl", "boot", device.udid]);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/Unable to boot device in current state|current state: Booted|already booted/i.test(message)) throw error;
+      return false;
+    }
   };
 
   const installAppOnSimulator = (device: IosSimulatorDevice, appBundle: string) =>
@@ -4201,16 +4307,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       emitLaunchProgress(launchId, "resolve-device", "complete", `${device.name} selected.`, device.runtime, { deviceUdid: device.udid });
 
       currentStep = "boot-simulator";
+      let bootedForLaunch = false;
       if (device.state === "Booted") {
         emitLaunchProgress(launchId, "boot-simulator", "running", "Checking simulator readiness...", device.name, { deviceUdid: device.udid });
       } else {
         emitLaunchProgress(launchId, "boot-simulator", "running", "Booting simulator...", device.name, { deviceUdid: device.udid });
-        await run("xcrun", ["simctl", "boot", device.udid]).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          if (!/Unable to boot device in current state|current state: Booted|already booted/i.test(message)) throw error;
-        });
+        bootedForLaunch = await bootSimulator(device);
       }
       await waitForSimulatorBootStatus(device);
+      // Same rule as `ensureDeviceBooted`: a fresh boot gets a fresh helper session.
+      if (bootedForLaunch) await resetHelperDevice(device.udid, "boot");
       emitLaunchProgress(launchId, "boot-simulator", "complete", "Simulator services are ready.", device.name, { deviceUdid: device.udid });
 
       currentStep = "open-simulator";
@@ -5088,16 +5194,53 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (
       runtime.streamStatus.running
       && runtime.streamStatus.deviceUdid === device.udid
-      && runtime.streamStatus.targetFps === requestedFps
-      // A running capture is reusable only if it already honors the requested
-      // cap. `null` means the caller asked for no cap, which must not downgrade
-      // a capped stream a remote viewer already started; a non-null cap that
-      // differs restarts so the encoder actually picks it up.
-      && (bitrateKbps == null || (runtime.streamStatus.bitrateKbps ?? null) === bitrateKbps)
+      // Only a capture the LIVE helper owns. A status stamped by a helper that
+      // has since died points at a dead port; the exit hook normally clears it
+      // first, and this is the guard for any path that did not.
+      && runtime.streamStatus.helperPid === (helperClient?.pid() ?? null)
     ) {
-      // Already running for this device: a renderer joining an existing capture
-      // still counts as a local viewer.
+      // Already running for this device: join it. Never restart a shared
+      // capture for a viewer's settings. A restart hands out a new address,
+      // and every reader on the old one (the Mac's own view, another
+      // machine's) freezes on its last frame while taps still land: the
+      // owner's 2026-09-23 report of a phone that froze the MacBook's view.
+      //
+      // fps is not a reason either: the helper takes the framebuffer's own
+      // rate, and the desktop asks for 30 where the relay asks for the default.
+      //
+      // A new cap goes to the live encoder instead. `capture-start` on a
+      // running device keeps its server, its address and its readers; a helper
+      // that knows caps rebuilds only the encoder, and an older one ignores
+      // the cap. `null` asks for no cap, which must not lift a cap a remote
+      // viewer set, so it never gets here.
       if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
+      if (bitrateKbps != null && (runtime.streamStatus.bitrateKbps ?? null) !== bitrateKbps) {
+        const payload = await helper().send({
+          type: "capture-start",
+          udid: device.udid,
+          fps: requestedFps,
+          scale,
+          bitrateKbps,
+        });
+        const url = typeof payload.url === "string" ? payload.url : null;
+        const token = typeof payload.token === "string" ? payload.token : null;
+        const transport = runtime.streamStatus.transport;
+        if (url && token && transport && (url !== transport.url || token !== transport.token)) {
+          // The helper must answer with the address it already had. If it did
+          // not, the old readers are gone anyway: record the new address and
+          // announce it as a new stream so viewers attach to it.
+          args.logger.warn("apple.stream_cap_changed_address", { laneId: runtime.laneId, deviceUdid: device.udid });
+          runtime.streamStatus = {
+            ...runtime.streamStatus,
+            bitrateKbps,
+            streamUrl: url,
+            transport: { ...transport, url, token, port: Number(new URL(url).port) || 0 },
+          };
+          emit({ type: "stream-started", status: runtime.streamStatus });
+          return runtime.streamStatus;
+        }
+        runtime.streamStatus = { ...runtime.streamStatus, bitrateKbps };
+      }
       return runtime.streamStatus;
     }
     // A capture already running on this lane for another device has to go
@@ -5765,6 +5908,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       .then((device) => device.state)
       .catch(() => null);
     await stopDeviceRecording(udid, "device-off");
+    // After the recording is finished (so the helper has nothing left to
+    // write) and before the power goes: the helper's session for this device
+    // is bound to the boot that is about to end.
+    await resetHelperDevice(udid, "power-off");
     let poweredOff = false;
     await run("xcrun", ["simctl", "shutdown", udid], { timeoutMs: 60_000 })
       .then(() => {
@@ -5848,7 +5995,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     await shutdown({ laneId: runtime.laneId, chatSessionId: deviceArgs.chatSessionId, ignoreOwnership: true })
       .catch(() => ({ released: false, previousSession: null }));
     const deletedUdid = laneDevices.get(runtime.key)?.udid;
-    if (deletedUdid) await stopDeviceRecording(deletedUdid, "device-off");
+    if (deletedUdid) {
+      await stopDeviceRecording(deletedUdid, "device-off");
+      // The registry shuts the device down before deleting it.
+      await resetHelperDevice(deletedUdid, "delete");
+    }
     await laneDevices.deviceDelete({ laneId: runtime.key, force: deviceArgs.force });
     invalidateStatus(runtime);
   };

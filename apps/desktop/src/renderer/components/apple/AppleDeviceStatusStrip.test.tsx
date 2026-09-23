@@ -102,6 +102,26 @@ describe("AppleDeviceNoticeStrip", () => {
     expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
   });
 
+  it("offers a second, separate choice only when one is given", () => {
+    const onAction = vi.fn();
+    const onSecondaryAction = vi.fn();
+    render(
+      <AppleDeviceNoticeStrip
+        sentence="iPhone 17 Pro is off."
+        actionLabel="Start"
+        onAction={onAction}
+        secondaryActionLabel="Choose another device"
+        onSecondaryAction={onSecondaryAction}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
+    expect(onSecondaryAction).toHaveBeenCalledOnce();
+    expect(onAction).not.toHaveBeenCalled();
+    cleanup();
+    render(<AppleDeviceNoticeStrip sentence="Video stopped." actionLabel="Reconnect" onAction={vi.fn()} />);
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+  });
+
   it("has no dismiss X when the state cannot be dismissed", () => {
     render(
       <AppleDeviceNoticeStrip sentence="Video stopped." actionLabel="Reconnect" onAction={vi.fn()} />,

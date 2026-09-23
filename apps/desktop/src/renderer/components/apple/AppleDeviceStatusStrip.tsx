@@ -70,16 +70,24 @@ export function AppleDeviceStatusStrip({
  * "Video stopped." A dead device is a fact about the device, not an error the
  * user caused, so it gets the same one line and the same one button without
  * the red.
+ *
+ * A strip may carry ONE quieter second choice after the first — "is off." has
+ * two honest answers, turn it back on or pick another device, and a person
+ * should not have to find the second one in the rail's overflow menu.
  */
 export function AppleDeviceNoticeStrip({
   sentence,
   actionLabel,
   onAction,
+  secondaryActionLabel,
+  onSecondaryAction,
   onDismiss,
 }: {
   sentence: string;
   actionLabel: string;
   onAction: () => void;
+  secondaryActionLabel?: string | undefined;
+  onSecondaryAction?: (() => void) | undefined;
   onDismiss?: (() => void) | undefined;
 }) {
   return (
@@ -88,7 +96,14 @@ export function AppleDeviceNoticeStrip({
       sentence={sentence}
       detail={null}
       onDismiss={onDismiss}
-      actions={<StripAction label={actionLabel} onClick={onAction} />}
+      actions={(
+        <>
+          <StripAction label={actionLabel} onClick={onAction} />
+          {secondaryActionLabel && onSecondaryAction ? (
+            <StripAction label={secondaryActionLabel} muted onClick={onSecondaryAction} />
+          ) : null}
+        </>
+      )}
     />
   );
 }
@@ -125,8 +140,10 @@ function StripShell({
           : "border-border bg-surface text-fg/85",
       )}
     >
-      <div className="flex min-w-0 items-start gap-2">
-        <p className="min-w-0 flex-1 break-words leading-5">{sentence}</p>
+      {/* Wraps, so a strip with two buttons in a narrow pane moves the buttons
+          to a second line instead of squeezing the sentence to nothing. */}
+      <div className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1">
+        <p className="min-w-0 flex-[1_1_10rem] break-words leading-5">{sentence}</p>
         {actions}
         {onDismiss ? (
           <PaneTooltip label="Dismiss this message" side="bottom">

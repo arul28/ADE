@@ -503,6 +503,21 @@ vi.mock("./SessionContextMenu", () => ({
   },
 }));
 
+/**
+ * The floating device's own tests own its visibility rule; here the question
+ * is only what surface the page hands it.
+ */
+const miniPlayerProps = vi.hoisted(() => ({
+  latest: undefined as undefined | { surface?: unknown },
+}));
+
+vi.mock("../apple/AppleDeviceMiniPlayer", () => ({
+  AppleDeviceMiniPlayer: (props: { surface?: unknown }) => {
+    miniPlayerProps.latest = props;
+    return null;
+  },
+}));
+
 vi.mock("./SessionInfoPopover", () => ({
   SessionInfoPopover: () => null,
 }));
@@ -585,6 +600,7 @@ describe("TerminalsPage chat session activation", () => {
     sidebarProps.latest = null;
     sessionListPaneProps.latest = null;
     workViewAreaProps.latest = null;
+    miniPlayerProps.latest = undefined;
     forgetWorkPtyLaunchPin({ sessionId: "shell-foreign", ptyId: "pty-shell-foreign" });
     forgetWorkPtyLaunchPin({ sessionId: "shell-now-active", ptyId: "pty-shell-now-active" });
     forgetWorkPtyLaunchPin({ sessionId: "chat-foreign" });
@@ -1568,6 +1584,62 @@ describe("TerminalsPage chat session activation", () => {
       toolType: "codex",
     });
     expect(sidebarProps.latest?.contextDisabledReason).toBeNull();
+  });
+
+  /*
+   * The owner's 2026-09-23 report: a lane's simulator floated over the
+   * new-chat screen. That screen resolves `activeLaneId` to the composer's
+   * draft lane, so a surface built from it would call the new chat "the same
+   * lane" — the surface must come from the session in front, and there is none.
+   */
+  it("hands the floating device no surface on the new-chat screen, even with a lane in the composer", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      activeItemId: null,
+      draftLaneId: "lane-background",
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    await screen.findByTestId("work-view-area");
+    expect(miniPlayerProps.latest).toBeDefined();
+    expect(miniPlayerProps.latest?.surface).toBeNull();
+  });
+
+  it("hands the floating device the lane and machine of the session in front", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    const bound: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    workMocks.projectBinding = bound;
+    const chatSession = workMocks.makeTerminalSession("chat-1", "lane-background", "codex-chat");
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [chatSession],
+      visibleSessions: [chatSession],
+      activeItemId: "chat-1",
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    await screen.findByTestId("work-view-area");
+    expect(miniPlayerProps.latest?.surface).toEqual({
+      laneId: "lane-background",
+      runtimePin: null,
+      boundBinding: bound,
+    });
   });
 
   it("resolves a foreign active session from the union and routes the tools pane at its machine", async () => {

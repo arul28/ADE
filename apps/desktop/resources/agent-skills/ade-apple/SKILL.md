@@ -14,6 +14,20 @@ keep open, and no backend to choose. If you find advice about `idb`, window
 capture, `live-start` or a `--backend` flag, it is describing a version of this
 feature that no longer exists.
 
+## Three rules before your first command
+
+- **"Unknown command 'apple'" means the wrong `ade`.** Your shell's PATH points
+  at an older ADE CLI, usually because a shell rc rebuilt PATH. Run the same
+  command as `"$ADE_CLI_PATH" --socket apple status --text`, and keep using
+  `"$ADE_CLI_PATH"` for the rest of the session.
+- **Never open or script the Simulator app.** No `open -a Simulator`, no
+  AppleScript or System Events. ADE drives the device directly; the Simulator
+  window is not needed and adds nothing.
+- **Never capture proof with `xcrun simctl io … screenshot` or
+  `recordVideo`.** `ade apple screenshot` and `ade apple record-start` /
+  `record-stop` file proof to the lane automatically. See below for why the
+  owner matters.
+
 ## Start here: ask what you can do
 
 ```bash

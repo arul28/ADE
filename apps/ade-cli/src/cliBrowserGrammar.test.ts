@@ -607,8 +607,12 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * only sees cli.ts, which is still the whole browser plan; the moved readers
  * are launch-surface readers no browser subcommand reaches, so nothing they
  * read needs a `BROWSER_VALUE_FLAGS` entry.
+ *
+ * 108 → 110: the CLI hand-off to $ADE_CLI_PATH (f004e42c2) wraps the entry in
+ * `runMainAndExit` and `runMainUnlessDelegated`. Both reach argv only through
+ * `main()` and read no browser flag of their own.
  */
-const ARGV_READER_COUNT = 108;
+const ARGV_READER_COUNT = 110;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

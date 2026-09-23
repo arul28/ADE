@@ -499,10 +499,10 @@ struct WorkToolsSheet: View {
       return
     }
     #endif
-    // Same gate the row uses. The sheet is only reachable from a row that has
-    // already checked this, but a reconnect to an older brain can drop the
-    // action while the sheet is open — and a 3s timer must not keep putting an
-    // unknown command on the wire.
+    // Same gate the lane tool chips use. The sheet is only reachable from a
+    // chip that has already checked this, but a reconnect to an older brain can
+    // drop the action while the sheet is open — and a 3s timer must not keep
+    // putting an unknown command on the wire.
     guard syncService.supportsWorkToolsState else {
       loaded = true
       return

@@ -627,7 +627,7 @@ export const WORK_TOOLS_PANE_NOTE = WORK_TOOLS_CONTROL_HINT;
 
 /**
  * Human label for a `WorkToolId`. Mirrors `workToolsDisplayName` in
- * `apps/ios/ADE/Views/Work/WorkToolsRow.swift`, including its rule for ids this
+ * `apps/ios/ADE/Views/Work/WorkLaneToolChips.swift`, including its rule for ids this
  * build has no name for: a newer desktop's tool is printed verbatim rather than
  * dropped, because the terminal should not decide a tool does not exist just
  * because it has not shipped a name for it.

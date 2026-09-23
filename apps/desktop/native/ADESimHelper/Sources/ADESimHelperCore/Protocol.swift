@@ -68,6 +68,11 @@ public enum SimHelperCommand: Equatable, Sendable {
     case recordStop(id: String, udid: String)
     case overlayTap(id: String, udid: String, point: DevicePoint)
     case overlayText(id: String, udid: String, text: String, secure: Bool)
+    /// Forget everything the helper holds for one device: finish its
+    /// recording, stop its capture, drop its HID client. ADE sends it around a
+    /// power cycle, because a session built against one boot keeps talking to
+    /// that boot — see `SimHelperRuntime.resetDevice`.
+    case deviceReset(id: String, udid: String)
     case quit(id: String)
 
     /// The `id` every reply to this command must echo.
@@ -90,6 +95,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .recordStop(id, _): return id
         case let .overlayTap(id, _, _): return id
         case let .overlayText(id, _, _, _): return id
+        case let .deviceReset(id, _): return id
         case let .quit(id): return id
         }
     }
@@ -114,6 +120,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .recordStop(_, udid): return udid
         case let .overlayTap(_, udid, _): return udid
         case let .overlayText(_, udid, _, _): return udid
+        case let .deviceReset(_, udid): return udid
         }
     }
 }
@@ -332,6 +339,9 @@ public enum SimHelperCommandParser {
                 // slipped is a helper with the wrong default.
                 let secure = (dictionary["secure"] as? NSNumber)?.boolValue ?? false
                 return .success(.overlayText(id: id, udid: udid, text: text, secure: secure))
+
+            case "device-reset":
+                return .success(.deviceReset(id: id, udid: try requireUdid()))
 
             case "quit":
                 return .success(.quit(id: id))

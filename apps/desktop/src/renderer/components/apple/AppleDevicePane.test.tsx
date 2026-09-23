@@ -370,6 +370,59 @@ describe("AppleDevicePane states", () => {
     expect(screen.queryByRole("complementary", { name: "Device controls" })).toBeNull();
   });
 
+  describe("stopped: an off device looks off and offers two ways on", () => {
+    const off = () => setup({
+      lane: LANE_DEVICE,
+      installed: [{ ...PRO, state: "Shutdown" }],
+      stream: "idle",
+    });
+
+    it("dims the body and labels it Off, with no boot-style Apple logo", async () => {
+      off();
+      renderPane();
+      await waitFor(() => expect(paneState()).toBe("stopped"));
+      const offScreen = document.querySelector("[data-apple-off-screen]");
+      expect(offScreen?.textContent).toBe("Off");
+      // The Apple mark is what a BOOTING device shows; none may be drawn
+      // anywhere in the viewport of one that is off.
+      expect(document.querySelector("[data-apple-pane] svg path[d^='M17.02']")).toBeNull();
+      expect(String(stage.props?.className ?? "")).toContain("opacity-40");
+    });
+
+    it("Start boots the lane's device through the existing restart path", async () => {
+      const { deviceStart } = off();
+      renderPane();
+      await waitFor(() => expect(paneState()).toBe("stopped"));
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+      expect(deviceStart).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" },
+        null,
+      );
+    });
+
+    it("Choose another device on an off device goes straight to the picker", async () => {
+      // The owner's 2026-09-23 report: after a shut down, a second "Give up
+      // this device?" bar was a double confirmation.
+      const { iosSimulator } = off();
+      renderPane();
+      await waitFor(() => expect(paneState()).toBe("stopped"));
+      fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
+      expect(screen.queryByText("Give up this device and pick another?")).toBeNull();
+      expect(iosSimulator.deviceDelete).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", force: true },
+        null,
+      );
+    });
+
+    it("a live device has neither the Off label nor the second choice", async () => {
+      setup({ lane: LANE_DEVICE, stream: "live" });
+      renderPane();
+      await waitFor(() => expect(paneState()).toBe("live"));
+      expect(document.querySelector("[data-apple-off-screen]")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Choose another device" })).toBeNull();
+    });
+  });
+
   it("never renders a raw IPC string, whatever the service says", async () => {
     const { iosSimulator } = setup({ lane: null });
     iosSimulator.deviceList = vi.fn(async () => {

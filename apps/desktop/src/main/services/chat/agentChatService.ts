@@ -840,6 +840,11 @@ import { readOpenCodeSessionStatuses, withOpenCodeIdleProbe } from "../opencode/
 import type { OpenCodeRuntimeEvent } from "../opencode/openCodeRuntime";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
 import {
+  createLaneAppleDeviceLookup,
+  resolveLaneAppleDeviceDirective,
+  type LaneAppleDeviceLookup,
+} from "./laneAppleDeviceDirective";
+import {
   buildOpenCodePromptParts,
   buildOpenCodeV2PromptAttachments,
   mapPermissionModeToOpenCodeAgent,
@@ -4023,6 +4028,12 @@ type ManagedChatSession = {
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
   lastComputerUseDirectiveKey: string | null;
+  /**
+   * udid of the lane Apple device this session's provider thread was last told
+   * about (`<ade-lane-tools>`). In memory only: a brain restart re-announces
+   * once, which is cheaper than persisting it.
+   */
+  lastAppleDeviceDirectiveKey: string | null;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -4216,6 +4227,7 @@ type PreparedSendMessage = {
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
   computerUseDirectiveKey?: string | null;
+  appleDeviceDirectiveKey?: string | null;
   providerSlashCommand?: boolean;
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
@@ -9158,6 +9170,11 @@ export function createAgentChatService(args: {
     Pick<AdeDb, "getJson" | "setJson">
     & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
   ) | null;
+  /**
+   * Which Apple device a lane holds, for the `<ade-lane-tools>` hint. Defaults
+   * to a `lane_apple_devices` row read on `db` (macOS only); tests inject it.
+   */
+  lookupLaneAppleDevice?: LaneAppleDeviceLookup | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   /**
@@ -9287,6 +9304,7 @@ export function createAgentChatService(args: {
     processRegistry,
     projectConfigService,
     db,
+    lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
     aiIntegrationService,
     logger,
     appVersion,
@@ -9317,6 +9335,13 @@ export function createAgentChatService(args: {
   const browserActorCapabilityIssuer =
     args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
+  // `undefined` means "use the lanes DB"; an explicit `null` turns the hint off.
+  const laneAppleDeviceLookup: LaneAppleDeviceLookup | null = injectedLaneAppleDeviceLookup !== undefined
+    ? injectedLaneAppleDeviceLookup
+    : createLaneAppleDeviceLookup({
+        platform: process.platform,
+        store: db?.get ? { get: db.get } : null,
+      });
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
@@ -21943,6 +21968,7 @@ export function createAgentChatService(args: {
       // Deliberately in-memory only: after a restart the directive is re-sent
       // once, which is the safe direction to fail.
       lastComputerUseDirectiveKey: null,
+      lastAppleDeviceDirectiveKey: null,
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -22088,13 +22114,14 @@ export function createAgentChatService(args: {
   /**
    * Forget what this session's provider threads have been told, so a
    * replacement runtime (model switch, thread recycle, resume) is re-announced
-   * to. Both the lane directive and the computer-use directive are epoch-scoped
+   * to. The lane, computer-use and Apple-device directives are epoch-scoped
    * and would otherwise be suppressed for the new thread by a key the old one
    * set.
    */
   const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
     managed.lastComputerUseDirectiveKey = null;
+    managed.lastAppleDeviceDirectiveKey = null;
     persistChatState(managed);
   };
 
@@ -37164,6 +37191,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       lastComputerUseDirectiveKey: null,
+      lastAppleDeviceDirectiveKey: null,
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -38362,6 +38390,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       lastComputerUseDirectiveKey: null,
+      lastAppleDeviceDirectiveKey: null,
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -41424,6 +41453,27 @@ export function createAgentChatService(args: {
       : null;
     const shouldInjectComputerUseDirective = computerUseDirectiveKey != null
       && managed.lastComputerUseDirectiveKey !== computerUseDirectiveKey;
+    // The lane's Apple device, named at turn time so the agent drives it with
+    // `ade apple` instead of `simctl` / `open -a Simulator` without first
+    // having to find the `ade-apple` skill. Sent on the first turn after a
+    // device is bound and again only when the bound udid changes; a lookup
+    // failure means no hint, never a failed send. A Cursor cloud turn runs on
+    // Cursor's VM, which cannot reach this Mac's simulator, so it gets none.
+    const cursorCloudTurn = managed.session.provider === "cursor"
+      && (runtime ?? managed.session.cursorRuntime ?? "local") === "cloud";
+    const appleDevice = personalSession || cursorCloudTurn
+      ? null
+      : resolveLaneAppleDeviceDirective({
+          laneId: executionContext.laneId,
+          lookup: laneAppleDeviceLookup,
+          onLookupError: (error) => logger.warn("agent_chat.lane_apple_device_lookup_failed", {
+            sessionId,
+            laneId: executionContext.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        });
+    const shouldInjectAppleDeviceDirective = appleDevice != null
+      && managed.lastAppleDeviceDirectiveKey !== appleDevice.key;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
@@ -41488,6 +41538,7 @@ export function createAgentChatService(args: {
             : buildMacDesktopDirective(
                 macDesktopTurnRecorder?.hasDisplaySync(executionContext.laneId ?? null) === true,
               ),
+          shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -41533,6 +41584,11 @@ export function createAgentChatService(args: {
       computerUseDirectiveKey: providerSlashCommand && !personalSession
         ? null
         : shouldInjectComputerUseDirective ? computerUseDirectiveKey : null,
+      // Same rule as the computer-use key: no key for a turn whose prompt did
+      // not carry the block.
+      appleDeviceDirectiveKey: providerSlashCommand && !personalSession
+        ? null
+        : shouldInjectAppleDeviceDirective ? appleDevice.key : null,
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
@@ -46161,6 +46217,7 @@ export function createAgentChatService(args: {
       reasoningEffort,
       laneDirectiveKey,
       computerUseDirectiveKey,
+      appleDeviceDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
       steerId,
@@ -46202,9 +46259,14 @@ export function createAgentChatService(args: {
     //
     // Marking after the run returns is the safe direction: a duplicate delivery
     // is wasted tokens, a missed one leaves the agent unaware of a capability.
-    const markComputerUseDirectiveDelivered = (): void => {
+    //
+    // The Apple-device hint (`<ade-lane-tools>`) follows the same rule.
+    const markEpochDirectivesDelivered = (): void => {
       if (computerUseDirectiveKey) {
         managed.lastComputerUseDirectiveKey = computerUseDirectiveKey;
+      }
+      if (appleDeviceDirectiveKey) {
+        managed.lastAppleDeviceDirectiveKey = appleDeviceDirectiveKey;
       }
     };
 
@@ -46244,7 +46306,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -46282,7 +46344,7 @@ export function createAgentChatService(args: {
           onBackendDispatched,
           ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
         });
-        markComputerUseDirectiveDelivered();
+        markEpochDirectivesDelivered();
         return;
       }
       await runCursorSdkTurn(managed, {
@@ -46299,7 +46361,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -46324,7 +46386,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -46347,7 +46409,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -46391,7 +46453,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -46512,7 +46574,7 @@ export function createAgentChatService(args: {
         optimisticCodexTurnStart,
         onDispatched: onBackendDispatched ?? onDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -46561,7 +46623,7 @@ export function createAgentChatService(args: {
       onDispatched,
       onBackendDispatched,
     });
-    markComputerUseDirectiveDelivered();
+    markEpochDirectivesDelivered();
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
