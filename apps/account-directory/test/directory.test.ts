@@ -555,6 +555,27 @@ describe("machine directory", () => {
     })]);
   });
 
+  it("never follows a relay redirect with the caller's token on it", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const relay = activityRelayStub(() => new Response(null, {
+      status: 302,
+      headers: { location: "https://elsewhere.example/steal" },
+    }));
+
+    const deleted = await handleRequest(
+      request("DELETE", "/account/machines/machine-a", token),
+      env,
+      relay.options,
+    );
+
+    // One call to the relay, no second hop, and the removal reports the relay
+    // as failed rather than as done.
+    expect(relay.calls.map((call) => call.url)).toEqual([`${RELAY_URL}/attention/account/machines/machine-a`]);
+    expect(deleted.status).not.toBe(200);
+  });
+
   it("reports a failed Activity purge instead of a clean removal", async () => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });
