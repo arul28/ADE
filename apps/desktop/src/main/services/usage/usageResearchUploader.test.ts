@@ -245,7 +245,7 @@ describe("sending", () => {
       appVersion: "1.2.78",
       platform: "darwin",
       arch: "arm64",
-      utcOffsetMinutes: -new Date(2026, 8, 19, 12).getTimezoneOffset(),
+      utcOffsetMinutes: -new Date(2026, 8, 19, 12).getTimezoneOffset() || 0,
     });
     expect(first!.body.installId).toMatch(USAGE_RESEARCH_INSTALL_ID_PATTERN);
     expect(http.calls[1]!.body.report.totals.turns).toBe(2);

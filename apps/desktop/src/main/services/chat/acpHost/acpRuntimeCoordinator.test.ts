@@ -296,7 +296,7 @@ function testLogger() {
 async function openRuntime(args: {
   dialect: AcpDialect;
   session: ReturnType<typeof fakeSession>;
-  modelToken?: string | null;
+  model?: string | null;
   reasoningEffort?: string | null;
   logger?: ReturnType<typeof testLogger>;
   spawnArgs?: string[];
@@ -320,7 +320,7 @@ async function openRuntime(args: {
     spawnPlan,
     invocationKey: acpInvocationKey(spawnPlan),
     permissionMode: "default",
-    modelToken: args.modelToken ?? null,
+    modelToken: args.model ?? null,
     existingSessionId: args.session.entryPlan.mode === "new" ? null : "acp-session-1",
     supervisionPreflight: null,
     supervisionAlreadyNotified: false,
@@ -366,7 +366,7 @@ describe("model and effort selection", () => {
     const { onConfigOptions, onReady } = await openRuntime({
       dialect: grokDialect,
       session,
-      modelToken: "grok-4.7-build-fast",
+      model: "grok-4.7-build-fast",
       reasoningEffort: "low",
     });
 
@@ -388,7 +388,7 @@ describe("model and effort selection", () => {
     // A model switch in the UI reopens the runtime. `session/resume` brings
     // back the model and effort the session last ran with, whatever `-m` says.
     const session = fakeSession(grokDialect, { entry: "resume", options: grokOptions("grok-4.6", "low") });
-    await openRuntime({ dialect: grokDialect, session, modelToken: "grok-4.7", reasoningEffort: "high" });
+    await openRuntime({ dialect: grokDialect, session, model: "grok-4.7", reasoningEffort: "high" });
     expect(session.configCalls).toEqual([
       { configId: "model", value: "grok-4.7" },
       { configId: "reasoning_effort", value: "high" },
@@ -401,7 +401,7 @@ describe("model and effort selection", () => {
     const { onReady } = await openRuntime({
       dialect: grokDialect,
       session,
-      modelToken: "grok-9",
+      model: "grok-9",
       // ADE's ladder runs past Grok's; the top tier lands on xhigh.
       reasoningEffort: "ultracode",
       logger,
@@ -415,14 +415,14 @@ describe("model and effort selection", () => {
 
   it("sends nothing the Grok session already runs, and no effort when the chat picked none", async () => {
     const session = fakeSession(grokDialect, { options: grokOptions("grok-4.6", "medium") });
-    await openRuntime({ dialect: grokDialect, session, modelToken: "grok-4.6", reasoningEffort: null });
+    await openRuntime({ dialect: grokDialect, session, model: "grok-4.6", reasoningEffort: null });
     expect(session.configCalls).toEqual([]);
   });
 
   it("sends Qwen's own suffixed id for the chat's model, and nothing for a model Qwen does not offer", async () => {
     const qwenModels = ["gpt-5.5(openai)", "qwen3-coder-plus(openai)"];
     const offered = fakeSession(qwenDialect, { options: [selectOption("model", "gpt-5.5(openai)", qwenModels)] });
-    await openRuntime({ dialect: qwenDialect, session: offered, modelToken: "qwen3-coder-plus" });
+    await openRuntime({ dialect: qwenDialect, session: offered, model: "qwen3-coder-plus" });
     expect(offered.configCalls.filter((call) => call.configId === "model")).toEqual([
       { configId: "model", value: "qwen3-coder-plus(openai)" },
     ]);
@@ -430,7 +430,7 @@ describe("model and effort selection", () => {
     // Live 0.22.3 answers an unconfigured model with -32603 and stays put.
     const logger = testLogger();
     const missing = fakeSession(qwenDialect, { options: [selectOption("model", "gpt-5.5(openai)", qwenModels)] });
-    await openRuntime({ dialect: qwenDialect, session: missing, modelToken: "qwen3.7-plus", logger });
+    await openRuntime({ dialect: qwenDialect, session: missing, model: "qwen3.7-plus", logger });
     expect(missing.configCalls.map((call) => call.configId)).toEqual(["mode", "reasoning_effort"]);
     expect(warningsNamed(logger, "agent_chat.acp_model_not_offered")).toHaveLength(1);
   });
@@ -451,14 +451,14 @@ describe("model and effort selection", () => {
   it("routes Copilot's model through session/set_model, checked against a model list when Copilot sends one", async () => {
     // A plan that includes only Auto lists no `model` option; ADE still asks.
     const autoOnly = fakeSession(copilotDialect);
-    await openRuntime({ dialect: copilotDialect, session: autoOnly, modelToken: "claude-haiku-4.5" });
+    await openRuntime({ dialect: copilotDialect, session: autoOnly, model: "claude-haiku-4.5" });
     expect(autoOnly.requests).toEqual([
       { method: "session/set_model", params: { sessionId: "acp-session-1", modelId: "claude-haiku-4.5" } },
     ]);
 
     const logger = testLogger();
     const picker = fakeSession(copilotDialect, { options: [selectOption("model", "auto", ["auto", "gpt-5.4"])] });
-    await openRuntime({ dialect: copilotDialect, session: picker, modelToken: "claude-opus-4.6", logger });
+    await openRuntime({ dialect: copilotDialect, session: picker, model: "claude-opus-4.6", logger });
     expect(picker.requests).toEqual([]);
     expect(warningsNamed(logger, "agent_chat.acp_model_not_offered")).toHaveLength(1);
   });
@@ -480,7 +480,7 @@ describe("model and effort selection", () => {
 
   it("applies a live Grok effort change to the open session", async () => {
     const session = fakeSession(grokDialect, { options: grokOptions("grok-4.7", "medium") });
-    const { runtime } = await openRuntime({ dialect: grokDialect, session, modelToken: "grok-4.7" });
+    const { runtime } = await openRuntime({ dialect: grokDialect, session, model: "grok-4.7" });
     const update = (effort: string | null) =>
       setAcpReasoningEffort(runtime, effort, { sessionId: "chat-1", logger: testLogger() as unknown as Logger });
 
@@ -556,7 +556,7 @@ describe("model and effort selection", () => {
     // Copilot's `session/set_model` answers `{}`, so nothing else would tell
     // the turn telemetry the session moved off the entry call's model.
     const copilot = fakeSession(copilotDialect, { options: [selectOption("model", "auto", ["auto", "gpt-5.4"])] });
-    const { runtime } = await openRuntime({ dialect: copilotDialect, session: copilot, modelToken: "gpt-5.4" });
+    const { runtime } = await openRuntime({ dialect: copilotDialect, session: copilot, model: "gpt-5.4" });
     expect(copilot.notedModels).toEqual(["gpt-5.4"]);
     expect(runtime.configOptions.find((option) => option.id === "model")?.value).toBe("gpt-5.4");
 
@@ -564,12 +564,12 @@ describe("model and effort selection", () => {
       options: [selectOption("model", "kimi-k2-turbo-preview", ["kimi-k2-turbo-preview", "kimi-k2-thinking"])],
       silentReplies: true,
     });
-    await openRuntime({ dialect: kimiDialect, session: kimi, modelToken: "kimi-k2-thinking" });
+    await openRuntime({ dialect: kimiDialect, session: kimi, model: "kimi-k2-thinking" });
     expect(kimi.notedModels).toEqual(["kimi-k2-thinking"]);
 
     // A model the agent does not offer is not recorded: the session kept its own.
     const refused = fakeSession(grokDialect, { options: grokOptions("grok-4.7", "medium") });
-    await openRuntime({ dialect: grokDialect, session: refused, modelToken: "grok-9" });
+    await openRuntime({ dialect: grokDialect, session: refused, model: "grok-9" });
     expect(refused.notedModels).toEqual([]);
   });
 

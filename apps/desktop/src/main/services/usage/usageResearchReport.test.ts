@@ -145,7 +145,7 @@ describe("ids", () => {
   });
 
   it("states the UTC offset at local noon of the day, east positive", () => {
-    expect(usageResearchUtcOffsetMinutes(DAY)).toBe(-new Date(2026, 8, 22, 12).getTimezoneOffset());
+    expect(usageResearchUtcOffsetMinutes(DAY)).toBe(-new Date(2026, 8, 22, 12).getTimezoneOffset() || 0);
     expect(usageResearchUtcOffsetMinutes("not-a-day")).toBe(0);
   });
 });
