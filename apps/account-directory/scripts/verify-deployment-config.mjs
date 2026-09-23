@@ -12,8 +12,11 @@ import { dirname, resolve } from "node:path";
  * "directory relay authentication is not configured", so in an environment
  * missing either half EVERY machine removal answers 502 and every re-pair 503.
  * `PUSH_RELAY_URL` is asserted alongside it because it fails the same way — the
- * relay hand-off has no URL to call, and an `ACTIVITY_RELAY` service binding
- * cannot supply one (it is only the transport).
+ * relay hand-off has no URL to call. The `ACTIVITY_RELAY` service binding is
+ * asserted too: it is the transport, and without it the call goes through
+ * workers.dev, where Cloudflare refuses a same-account Worker-to-Worker fetch
+ * with a 404 (error 1042) that the relay never sees. That is how every re-pair
+ * answered 503 in production until 2026-09-23.
  *
  * The Clerk trio is checked for exactly the same reason, one failure shape
  * further in: `resolveCallerToken` throws "authentication unavailable" when any
@@ -48,6 +51,7 @@ export const REQUIRED_SECRETS = [
   "CLERK_OAUTH_CLIENT_ID",
 ];
 export const REQUIRED_VARS = ["PUSH_RELAY_URL", "WEB_CLIENT_ORIGIN"];
+export const REQUIRED_SERVICE_BINDINGS = [{ binding: "ACTIVITY_RELAY", service: "ade-push-relay" }];
 /** Have code defaults: missing (or unparseable) is a warning, never a failure. */
 export const DEFAULTED_VARS = [
   { name: "ONLINE_WINDOW_MS", codeDefault: "90000" },
@@ -100,6 +104,13 @@ export function parseJsonc(source) {
   return JSON.parse(stripped.replace(/,(\s*[}\]])/g, "$1"));
 }
 
+function servicesForEnvironment(config, environment) {
+  const services = environment === "production"
+    ? config?.env?.production?.services
+    : config?.services;
+  return Array.isArray(services) ? services : [];
+}
+
 function varsForEnvironment(config, environment) {
   const vars = environment === "production"
     ? config?.env?.production?.vars
@@ -140,6 +151,15 @@ export function verifyDirectoryDeploymentConfig(args) {
     if (missingVars.length > 0) {
       throw new DeploymentConfigError(
         `missing Worker vars for the ${environment} environment: ${missingVars.join(", ")}`,
+      );
+    }
+    const services = servicesForEnvironment(config, environment);
+    const missingServices = REQUIRED_SERVICE_BINDINGS.filter(
+      ({ binding, service }) => !services.some((entry) => entry?.binding === binding && entry?.service === service),
+    );
+    if (missingServices.length > 0) {
+      throw new DeploymentConfigError(
+        `missing Worker service bindings for the ${environment} environment: ${missingServices.map(({ binding, service }) => `${binding} → ${service}`).join(", ")}`,
       );
     }
     for (const { name, codeDefault } of DEFAULTED_VARS) {

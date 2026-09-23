@@ -26,11 +26,10 @@
     // Activity is purged and it cannot publish again; a machine removal fails
     // loudly (502) when this is unset or unreachable.
     //
-    // Optional alternative transport: add an `ACTIVITY_RELAY` service binding
-    // (`"services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }]`)
-    // to skip the public edge. PUSH_RELAY_URL is still required — it is what
-    // builds the request URL — and DIRECTORY_AUTH_SECRET is still required,
-    // because a service binding carries no provenance the relay can verify.
+    // PUSH_RELAY_URL builds the request URL; the `ACTIVITY_RELAY` service
+    // binding below carries it. Both are required, and so is
+    // DIRECTORY_AUTH_SECRET, because a service binding carries no provenance
+    // the relay can verify.
     "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
     // Fleet-wide diagnostic uploads STORED per UTC day. This Worker is the only
     // writer the diagnostics bucket has, so this number is the storage bill:
@@ -41,6 +40,12 @@
     // deploy; unset or unparseable falls back to the same 400.
     "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
   },
+  // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
+  // Worker of the same account through its workers.dev URL (error 1042): the
+  // edge answers 404 and the relay never sees the request. Without this
+  // binding, every re-pair answered 503 and every machine removal failed
+  // (2026-09-23). Environments do not inherit it, so production repeats it.
+  "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
   "d1_databases": [
     {
       "binding": "DB",
@@ -73,6 +78,7 @@
         // fall back to the code default rather than to the value above.
         "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
       },
+      "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [
         {
           "binding": "DB",
