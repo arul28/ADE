@@ -59,7 +59,7 @@ import { isTypingTarget } from "../../lib/typingTarget";
 import { claimAppZoomCommands } from "../../lib/appZoomCommands";
 import { getLinkOpenMode, refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
-import { useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
+import { useChatMachineLanes, useChatRuntimeScope, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import {
   consumeMatchingRemoteBrowserOpen,
   markRemoteBrowserOpenHandled,
@@ -305,7 +305,8 @@ export function ChatBuiltInBrowserPanel({
   // no lane and the grant falls back to the project scope.
   const contextLaneId = useChatRuntimeScope().laneId;
   const activeGroupLaneId = groupLaneId ?? contextLaneId;
-  const lanes = useAppStore((state) => state.lanes);
+  // The chat machine's lanes: a pinned chat groups tabs by that machine's lanes.
+  const lanes = useChatMachineLanes(runtimePin);
   const laneColorById = useMemo(() => {
     const colors = new Map<string, string>();
     for (const lane of lanes) {
