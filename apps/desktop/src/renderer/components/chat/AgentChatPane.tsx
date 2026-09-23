@@ -7461,14 +7461,37 @@ export function AgentChatPane({
     }
   }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
 
-  const { proofDrawerRef, appleDrawerRef } = useChatPaneShowRequests({
+  // `ade ui show proof` shows the proof section even when the chat has none
+  // yet (the drawer otherwise leaves it out), and it re-reads the proof first:
+  // a visible grid tile that is not focused keeps no snapshot, and a proof
+  // filed just before the show may not be in this one yet.
+  const [proofShowRequested, setProofShowRequested] = useState(false);
+  const openProofDrawerForShow = useCallback(() => {
+    setChatActionsOpen(true);
+    setProofShowRequested(true);
+    void refreshComputerUseSnapshot(selectedSessionIdRef.current, { force: true });
+  }, [refreshComputerUseSnapshot]);
+  useEffect(() => {
+    if (!chatActionsOpen) setProofShowRequested(false);
+  }, [chatActionsOpen]);
+  const { proofDrawerRef: registerProofDrawer, appleDrawerRef } = useChatPaneShowRequests({
     chatSessionId: selectedSessionId,
     visible: isTileVisible,
     laneToolDrawersHidden: hideLaneToolDrawers,
     laneId: laneId ?? null,
-    openProofDrawer,
+    openProofDrawer: openProofDrawerForShow,
     openAppleDrawer: openIosSimulatorDrawer,
   });
+  const proofSectionRef = useRef<HTMLDivElement | null>(null);
+  const proofDrawerRef = useCallback((element: HTMLDivElement | null) => {
+    proofSectionRef.current = element;
+    registerProofDrawer(element);
+  }, [registerProofDrawer]);
+  // The drawer is one scroll: a long agents list can put the proof below it,
+  // and "shown" has to mean the user can see it.
+  useEffect(() => {
+    if (proofShowRequested) proofSectionRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [proofShowRequested, computerUseSnapshot]);
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
@@ -7783,6 +7806,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     setChatActionsOpen(false);
+    setProofShowRequested(false);
     setHandoffBusy(false);
     setModelPickerOpenRequest(undefined);
     optimisticOutgoingMessageRef.current = null;
@@ -12792,6 +12816,9 @@ export function AgentChatPane({
   );
   const proofTabContent = (
     <div ref={proofDrawerRef} className="border-t border-white/[0.06] px-4 py-3">
+      {proofArtifactCount === 0 ? (
+        <p className="font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
+      ) : null}
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
@@ -13073,7 +13100,7 @@ export function AgentChatPane({
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       agentsContent={agentsTabContent}
-      proofContent={proofArtifactCount > 0 ? proofTabContent : null}
+      proofContent={proofArtifactCount > 0 || proofShowRequested ? proofTabContent : null}
       extras={(
         <>
           {selectedMission ? (

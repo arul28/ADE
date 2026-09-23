@@ -2094,6 +2094,94 @@ describe("AgentChatPane companion drawers", () => {
     layout.mockRestore();
   });
 
+  it("regression: ade ui show proof shows a chat's proof in a visible tile that is not focused, and says so when there is none", async () => {
+    setDocumentVisibleForTests(true);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    const show = async (requestId: string) => {
+      let status: string | null = null;
+      void answerWorkToolShowRequest({
+        requestId,
+        surface: "proof",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+      }).then((next) => { status = next?.status ?? null; });
+      await waitFor(() => expect(status).not.toBeNull(), { timeout: 5_000 });
+      return status;
+    };
+    const snapshotWith = (sessionId: string, artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnapshot => ({
+      owner: { kind: "chat_session", id: sessionId },
+      backendStatus: {
+        backends: [],
+        localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+      },
+      summary: `${artifacts.length} proof items`,
+      activeBackend: null,
+      artifacts,
+      recentArtifacts: artifacts,
+      activity: [],
+    });
+    const proof: ComputerUseArtifactView = {
+      id: "proof-tile",
+      kind: "screenshot",
+      backendStyle: "local_fallback",
+      backendName: "ADE",
+      sourceToolName: "capture",
+      originalType: "image",
+      title: "Proof in a quiet tile",
+      description: null,
+      uri: ".ade/artifacts/proof-tile.png",
+      storageKind: "file",
+      mimeType: "image/png",
+      metadata: {},
+      createdAt: "2026-07-28T12:00:00.000Z",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+      reviewNote: null,
+      availability: "available",
+    };
+
+    // A grid tile the user can see but has not clicked into keeps no snapshot.
+    const session = buildSession("session-1", { title: "Quiet tile chat" });
+    installAdeMocks({ sessions: [session] });
+    vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, [proof]));
+    seedDrawerStore();
+    const view = render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          onSessionCreated={vi.fn()}
+          isTileActive={false}
+          isTileVisible
+        />
+      </MemoryRouter>,
+    );
+    expect(await show("wts-quiet-tile")).toBe("shown");
+    expect(await screen.findByText("Proof in a quiet tile")).toBeTruthy();
+    view.unmount();
+    resetWorkToolShowRequestsForTests();
+
+    // A chat with no proof: the drawer says so, rather than waiting and
+    // blaming a window that is in front.
+    installAdeMocks({ sessions: [session] });
+    vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, []));
+    seedDrawerStore();
+    renderPane(session);
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+    expect(await show("wts-no-proof")).toBe("shown");
+    expect(screen.getByText("This chat has no proof yet.")).toBeTruthy();
+
+    resetWorkToolShowRequestsForTests();
+    setDocumentVisibleForTests(null);
+    layout.mockRestore();
+  }, 15_000);
+
   /* Regression (A2-4): the Apple drawer answered "shown" before its commit
    * and in a hidden window. It now waits for the drawer to be on screen. */
   it("answers held, not shown, for the Apple drawer in a hidden window", async () => {
