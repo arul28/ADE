@@ -229,6 +229,19 @@ describe("laneDeviceRegistry device lifecycle", () => {
     expect(store.rows["lane-1"]).toBeDefined();
   });
 
+  it("regression: a delete that names a udid resolves when the lane attached another device since", async () => {
+    // Not the "attached, pass force" refusal: the caller passed force for a
+    // clone it read, and this device is one it never named.
+    const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const { registry, store } = registryWith(run);
+    await registry.deviceAttach({ laneId: "lane-1", simulator: "iPhone 17 Pro" });
+
+    await expect(registry.deviceDelete({ laneId: "lane-1", udid: "some-older-clone" })).resolves.toBeUndefined();
+
+    expect(run).not.toHaveBeenCalled();
+    expect(store.rows["lane-1"]).toBeDefined();
+  });
+
   it("regression: never picks a booted device as the clone template", async () => {
     // `simctl clone` fails on a booted device with error 405, "Unable to clone
     // device in current state: Booted". Nothing looked at state, so on a Mac
