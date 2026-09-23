@@ -322,6 +322,8 @@ export type AdeRuntime = {
   projectId: string;
   project: { rootPath: string; displayName: string; baseRef: string };
   paths: AdeRuntimePaths;
+  /** Whether this runtime serves the RPC endpoint needed by activity reports. */
+  sessionActivityReportingEnabled: boolean;
   logger: Logger;
   db: AdeDb;
   keybindingsService?: ReturnType<typeof createKeybindingsService> | null;
@@ -744,6 +746,7 @@ export async function createAdeRuntime(args: {
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
     : paths.socketPath;
+  const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
@@ -1304,6 +1307,8 @@ export async function createAdeRuntime(args: {
 
     const ptyService = createPtyService({
       projectRoot,
+      runtimeSocketPath,
+      sessionActivityReportingEnabled,
       transcriptsDir: paths.transcriptsDir,
       laneService,
       sessionService,
@@ -1640,6 +1645,7 @@ export async function createAdeRuntime(args: {
         browserActorCapabilityIssuer,
         projectRoot,
         runtimeSocketPath,
+        sessionActivityReportingEnabled,
         adeDir: paths.adeDir,
         transcriptsDir: paths.transcriptsDir,
         fileService: headlessLinearServices.fileService,
@@ -2390,6 +2396,7 @@ export async function createAdeRuntime(args: {
         projectRoot,
         appVersion: syncRuntimeOptions.appVersion ?? "ade-cli",
         runtimeKind: syncRuntimeOptions.runtimeKind ?? "headless",
+        sessionActivityReportingEnabled,
         localDeviceIdPath: syncRuntimeOptions.localDeviceIdPath,
         phonePairingStateDir: syncRuntimeOptions.phonePairingStateDir,
         fileService: headlessLinearServices.fileService,
@@ -2552,6 +2559,7 @@ export async function createAdeRuntime(args: {
       projectId,
       project,
       paths,
+      sessionActivityReportingEnabled,
       logger,
       db,
       keybindingsService,

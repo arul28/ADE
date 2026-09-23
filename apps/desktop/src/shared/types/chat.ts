@@ -1747,6 +1747,8 @@ export type AgentChatEvent =
       // and backward-compatible; a title-only emit carries none of them.
       permissionMode?: AgentChatPermissionMode;
       interactionMode?: AgentChatInteractionMode | null;
+      /** Accepted mode for the active Codex turn; null clears the prior turn's mode. */
+      codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode | null;
       claudePermissionMode?: AgentChatClaudePermissionMode;
       codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
       codexSandbox?: AgentChatCodexSandbox;
@@ -2423,6 +2425,8 @@ export type AgentChatSessionSummary = {
   codexServiceTier?: string | null;
   /** Collaboration mode accepted with the active Codex app-server turn/start. */
   codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
+  /** True when a live Codex runtime confirms there is no accepted turn mode. */
+  codexEffectiveCollaborationModeWasCleared?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;

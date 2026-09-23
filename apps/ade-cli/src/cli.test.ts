@@ -2964,6 +2964,26 @@ describe("ADE CLI", () => {
     // provider happened to emit three seconds ago.
     expect(text).toMatch(/^status\s+Background work \u00d72 2h$/mu);
     expect(text).toContain("pid 59213 (2h)");
+
+    const activityText = formatOutput(
+      {
+        sessionId: "chat-1",
+        status: "running",
+        runtimeState: "running",
+        toolType: "claude-chat",
+        currentTurnStartedAt: new Date(now - 60_000).toISOString(),
+        lastActivityAt: new Date(now - 1_000).toISOString(),
+        activityStatus: {
+          value: "testing",
+          source: "agent",
+          updatedAt: new Date(now - 30_000).toISOString(),
+        },
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    expect(activityText).toMatch(/^status\s+Testing\b/mu);
+    expect(activityText).not.toMatch(/^status\s+Working\b/mu);
   });
 
   it("ade session show mutation acks carry no activity lines", () => {
@@ -6351,12 +6371,13 @@ describe("ADE CLI", () => {
       sessionId: "chat-1",
       provider: "codex",
       model: "gpt-5.6",
+      codexEffectiveCollaborationMode: "plan",
       activityStatus: {
         value: "testing",
         source: "agent",
         updatedAt: "2026-09-22T12:00:00.000Z",
       },
-    }, { text: true } as any, inferFormatter(show))).toMatch(/activity\s+Testing/);
+    }, { text: true } as any, inferFormatter(show))).toMatch(/collaboration mode\s+plan\s+activity\s+Testing/);
 
     const status = buildCliPlan(["chat", "status", "--session-id", "chat-2"]);
     expect(status.kind).toBe("execute");

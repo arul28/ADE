@@ -491,8 +491,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   session: {
     setSessionActivity: {
       description:
-        "Report one fixed activity label for this agent's current turn. It is a detail inside the existing parent phase, not a board-state change; "
-        + "ADE stamps the source and update time, and null clears the report.",
+        "Agent callers must use an ADE-bound tracked session. The target may be the caller's chat or a tracked terminal owned by that chat; "
+        + "`--session` cannot target another session. Report one fixed activity label for the current turn. This is a detail inside the existing parent phase, "
+        + "not a board-state change; ADE stamps the source and update time, and null clears the report.",
       input: `object { sessionId: string, value: ${sessionActivityValueInput} | null }`,
       example: "ade actions run session.setSessionActivity --input-json '{\"sessionId\":\"chat-123\",\"value\":\"testing\"}' --text",
     },

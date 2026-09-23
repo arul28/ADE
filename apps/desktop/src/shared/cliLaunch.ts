@@ -30,7 +30,8 @@ import {
 import {
   buildAdeCliAgentGuidance,
   buildAdeCliInlineGuidance,
-  buildAdeTrackedCliActivityGuidance,
+  buildAdePosixTrackedCliActivityGuidance,
+  buildAdeWindowsTrackedCliActivityGuidance,
 } from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
@@ -873,6 +874,8 @@ export function buildTrackedCliLaunchCommand(args: {
    * alias rewrite.
    */
   preset?: TrackedCliPresetLaunch | null;
+  /** False when this runtime has no RPC endpoint that can accept agent reports. */
+  sessionActivityReportingEnabled?: boolean;
 }): TrackedCliLaunchCommand {
   const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -899,6 +902,7 @@ export function buildTrackedCliLaunchCommand(args: {
     permissionMode,
     droidPermissionMode: args.droidPermissionMode,
     hasInitialPrompt: Boolean(initialPrompt),
+    sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
   });
 
   if (args.provider === "claude") {
@@ -1234,7 +1238,9 @@ export function buildTrackedCliSessionActivityGuidance(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   droidPermissionMode?: AgentChatDroidPermissionMode | null;
   hasInitialPrompt?: boolean;
+  sessionActivityReportingEnabled?: boolean;
 }): string | null {
+  if (args.sessionActivityReportingEnabled === false) return null;
   const mode = args.permissionMode;
   if (!mode || mode === "plan") return null;
 
@@ -1270,7 +1276,9 @@ export function buildTrackedCliSessionActivityGuidance(args: {
   }
   if (!supported) return null;
 
-  return buildAdeTrackedCliActivityGuidance({ windows: currentPlatform() === "win32" });
+  return currentPlatform() === "win32"
+    ? buildAdeWindowsTrackedCliActivityGuidance()
+    : buildAdePosixTrackedCliActivityGuidance();
 }
 
 /**

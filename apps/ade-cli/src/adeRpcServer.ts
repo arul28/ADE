@@ -4449,6 +4449,7 @@ async function runTool(args: {
       return buildTrackedCliLaunchCommand({
         provider,
         permissionMode,
+        sessionActivityReportingEnabled: runtime.sessionActivityReportingEnabled,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         sessionId: preassignedSessionId,
         model,

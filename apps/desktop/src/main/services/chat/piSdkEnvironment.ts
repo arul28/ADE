@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 
 const PI_STANDARD_ENVIRONMENT_KEYS = [
   "PATH", "Path", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
@@ -121,7 +122,9 @@ export function buildPiWorkerEnvironment(
     result.ADE_CHAT_SESSION_ID = chatSessionId;
     result.ADE_DEFAULT_ROLE = "agent";
     const runtimeSocketPath = activityScope?.runtimeSocketPath?.trim();
-    if (runtimeSocketPath) result.ADE_RUNTIME_SOCKET_PATH = runtimeSocketPath;
+    if (runtimeSocketPath) {
+      Object.assign(result, buildAdeRuntimeSocketEnv(runtimeSocketPath));
+    }
   }
   return result;
 }

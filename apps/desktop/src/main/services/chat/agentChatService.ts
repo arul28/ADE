@@ -661,7 +661,7 @@ import {
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode } from "../../../shared/cliLaunch";
-import { pathsEqual } from "../shared/pathCompare";
+import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
 import {
   buildProviderGroupBlocks,
@@ -770,6 +770,8 @@ import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordina
 import {
   buildAdeCliAgentGuidance,
   buildAdeSessionActivityGuidance,
+  buildAdeRuntimeSocketEnv,
+  type AdeSessionActivityTarget,
 } from "../../../shared/adeCliGuidance";
 import {
   adePromptAgentSkillRoots,
@@ -9003,6 +9005,8 @@ export function createAgentChatService(args: {
   projectRoot: string;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
   runtimeSocketPath?: string | null;
+  /** Activity reports require an RPC endpoint that this process actually serves. */
+  sessionActivityReportingEnabled?: boolean;
   adeDir?: string;
   transcriptsDir: string;
   fileService?: ReturnType<typeof createFileService> | null;
@@ -9240,6 +9244,7 @@ export function createAgentChatService(args: {
   const runtimeSocketPath = typeof injectedRuntimeSocketPath === "string"
     ? injectedRuntimeSocketPath.trim() || null
     : null;
+  const sessionActivityReportingEnabled = args.sessionActivityReportingEnabled !== false;
   const claudeResumeDialogPreference = args.claudeResumeDialogPreference ?? null;
   const browserActorCapabilityIssuer =
     args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
@@ -9639,7 +9644,7 @@ export function createAgentChatService(args: {
     session: Pick<AgentChatSession, "id" | "surface">,
     enabled: boolean,
   ): { cliPath: string; runtimeSocketPath: string } | null => {
-    if (!enabled || isPersonalSession(session)) return null;
+    if (!sessionActivityReportingEnabled || !enabled || isPersonalSession(session)) return null;
     // Only trust ADE_CLI_PATH when the launch-time ADE CLI resolver supplied
     // it. A PATH entry or an inherited user-provided value is not proof that
     // this agent can reach this ADE runtime.
@@ -9670,12 +9675,14 @@ export function createAgentChatService(args: {
   const sessionActivityGuidanceForRuntime = (
     session: Pick<AgentChatSession, "id">,
     runtime: { cliPath: string; runtimeSocketPath: string } | null,
+    target: AdeSessionActivityTarget = { type: "environment" },
   ): string | null => {
     if (!runtime) return null;
     return buildAdeSessionActivityGuidance({
       sessionId: session.id,
       cliPath: runtime.cliPath,
       shell: process.platform === "win32" ? "powershell" : "posix",
+      target,
     });
   };
 
@@ -9686,6 +9693,17 @@ export function createAgentChatService(args: {
     session,
     resolveSessionActivityRuntime(session, enabled),
   );
+
+  const buildOpenCodeSessionActivityGuidance = (
+    session: Pick<AgentChatSession, "id" | "surface">,
+    enabled: boolean,
+  ): string | null => {
+    const runtime = resolveSessionActivityRuntime(session, enabled);
+    const target: AdeSessionActivityTarget = runtime
+      ? { type: "inline", runtimeSocketPath: runtime.runtimeSocketPath }
+      : { type: "environment" };
+    return sessionActivityGuidanceForRuntime(session, runtime, target);
+  };
 
   const buildCodexSessionActivityGuidance = (
     managed: ManagedChatSession,
@@ -9768,6 +9786,16 @@ export function createAgentChatService(args: {
     const presetPlan = resolveSessionLaunchPlan(managed);
     if (presetPlan) {
       Object.assign(env, presetPlan.env);
+    }
+    // `ade chat activity` is executed by the agent's child CLI, so its runtime
+    // selection must match this service even when the launcher environment or
+    // a provider preset still carries another ADE channel's socket.
+    const activityRuntime = resolveSessionActivityRuntime(managed.session, true);
+    if (activityRuntime) {
+      // Different ADE CLI entry points prefer different socket environment
+      // variables. Pin every selector so child commands cannot follow a stale
+      // channel URL or RPC socket from the provider preset.
+      Object.assign(env, buildAdeRuntimeSocketEnv(activityRuntime.runtimeSocketPath));
     }
     return env;
   };
@@ -14401,7 +14429,13 @@ export function createAgentChatService(args: {
       : null;
     const piExtensionsEnabled = piChatExtensionsEnabled(managed);
     const piActivityScopeKey = piActivityScope
-      ? createHash("sha256").update(JSON.stringify(piActivityScope), "utf8").digest("hex").slice(0, 12)
+      ? createHash("sha256").update(JSON.stringify({
+          cliPath: pathKey(piActivityScope.cliPath),
+          chatSessionId: piActivityScope.chatSessionId,
+          ...(piActivityScope.runtimeSocketPath
+            ? { runtimeSocketPath: pathKey(piActivityScope.runtimeSocketPath) }
+            : {}),
+        }), "utf8").digest("hex").slice(0, 12)
       : "no-activity";
     const toolPolicyKey = [
       piToolPolicy.tools.join(","),
@@ -22367,6 +22401,10 @@ export function createAgentChatService(args: {
     );
     if (!skipTurnStartForActiveComposerCommand) {
       runtime.effectiveCollaborationMode = null;
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        codexEffectiveCollaborationMode: null,
+      });
       setSessionActive(managed);
       if (!args.optimisticCodexTurnStart) {
         emitPreparedUserMessage(managed, {
@@ -22857,6 +22895,10 @@ export function createAgentChatService(args: {
         ...(collaborationMode ? { collaborationMode } : {}),
       });
       runtime.effectiveCollaborationMode = collaborationMode?.mode ?? null;
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        codexEffectiveCollaborationMode: runtime.effectiveCollaborationMode,
+      });
     } catch (error) {
       const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
       runtime.awaitingTurnStart = false;
@@ -28534,7 +28576,7 @@ export function createAgentChatService(args: {
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
         spawnGuidance: spawnSelfReportOpts(managed.session),
-        sessionActivityGuidance: buildSessionActivityGuidance(
+        sessionActivityGuidance: buildOpenCodeSessionActivityGuidance(
           managed.session,
           runtime.permissionMode !== "plan"
             && runtime.permissionMode !== "config-toml"
@@ -50207,11 +50249,12 @@ export function createAgentChatService(args: {
       : hasPersistedCodexServiceTier
         ? persisted?.codexServiceTier ?? null
         : undefined;
-    const codexEffectiveCollaborationMode = provider === "codex"
+    const liveCodexRuntime = provider === "codex"
       && liveSession?.status === "active"
       && liveManaged?.runtime?.kind === "codex"
-      ? liveManaged.runtime.effectiveCollaborationMode
+      ? liveManaged.runtime
       : null;
+    const codexEffectiveCollaborationMode = liveCodexRuntime?.effectiveCollaborationMode ?? null;
     const claudeTag = provider === "claude"
       ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
       : undefined;
@@ -50333,6 +50376,9 @@ export function createAgentChatService(args: {
       fastMode: (liveSession?.fastMode ?? persisted?.fastMode) === true,
       ...(codexServiceTier !== undefined ? { codexServiceTier } : {}),
       ...(codexEffectiveCollaborationMode ? { codexEffectiveCollaborationMode } : {}),
+      ...(liveCodexRuntime && codexEffectiveCollaborationMode === null
+        ? { codexEffectiveCollaborationModeWasCleared: true }
+        : {}),
       executionMode: liveSession?.executionMode ?? persisted?.executionMode ?? null,
       interactionMode: liveSession?.interactionMode ?? persisted?.interactionMode ?? null,
         ...(liveSession?.claudePermissionMode || persisted?.claudePermissionMode

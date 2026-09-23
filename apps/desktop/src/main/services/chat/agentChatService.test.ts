@@ -10063,6 +10063,95 @@ describe("createAgentChatService", () => {
       expect(secondUserContent).not.toContain("CLI controls ADE state");
     });
 
+    it("gives OpenCode activity guidance an explicit per-chat CLI and runtime target", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
+      const { service } = createService({
+        runtimeSocketPath,
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
+          ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
+          ADE_RPC_URL: staleRuntimeSocketPath,
+        }),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
+
+      let promptBody: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
+        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
+        expect(promptBody).toBeDefined();
+      });
+      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
+      for (const selector of ["ADE_RPC_URL", "ADE_RPC_SOCKET_PATH", "ADE_RUNTIME_SOCKET_PATH"]) {
+        expect(systemPromptArgs?.sessionActivityGuidance)
+          .toContain(`${selector}='${runtimeSocketPath}'`);
+      }
+      expect(systemPromptArgs?.sessionActivityGuidance).toContain("ADE_DEFAULT_ROLE='agent'");
+      expect(systemPromptArgs?.sessionActivityGuidance).toContain(`ADE_CHAT_SESSION_ID='${session.id}'`);
+      expect(systemPromptArgs?.sessionActivityGuidance)
+        .toContain(`'${cliPath}' chat activity testing --session '${session.id}'`);
+      expect(systemPromptArgs?.sessionActivityGuidance).not.toContain(staleRuntimeSocketPath);
+      await service.dispose({ sessionId: session.id });
+    });
+
+    it("withholds SDK activity guidance for an embedded runtime without RPC", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const { service } = createService({
+        runtimeSocketPath: "/runtime/unserved.sock",
+        sessionActivityReportingEnabled: false,
+        getAdeCliAgentEnv: () => ({
+          PATH: path.dirname(cliPath),
+          ADE_CLI_PATH: cliPath,
+          ADE_RUNTIME_SOCKET_PATH: "/runtime/stable.sock",
+        }),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
+
+      let promptBody: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
+        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
+        expect(promptBody).toBeDefined();
+      });
+      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
+      expect(systemPromptArgs?.sessionActivityGuidance).toBeNull();
+      await service.dispose({ sessionId: session.id });
+    });
+
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
@@ -10384,6 +10473,51 @@ describe("createAgentChatService", () => {
       expect(spawnArgs).not.toContain("--disable");
       expect(spawnArgs).not.toContain("browser_use");
       expect(spawnArgs).not.toContain("computer_use");
+    });
+
+    it("routes Codex activity reports through the runtime that owns the chat", async () => {
+      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+      fs.chmodSync(cliPath, 0o755);
+      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
+      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: path.dirname(cliPath),
+        ADE_CLI_PATH: cliPath,
+        ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
+        ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
+        ADE_RPC_URL: staleRuntimeSocketPath,
+      }));
+      const { service } = createService({ getAdeCliAgentEnv, runtimeSocketPath });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      try {
+        await service.sendMessage(
+          { sessionId: session.id, text: "Run the checks." },
+          { awaitDispatch: true },
+        );
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+        });
+
+        const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
+          call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
+        );
+        const spawnEnv = (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+        expect(spawnEnv).toMatchObject({
+          ADE_RPC_URL: runtimeSocketPath,
+          ADE_RPC_SOCKET_PATH: runtimeSocketPath,
+          ADE_RUNTIME_SOCKET_PATH: runtimeSocketPath,
+        });
+      } finally {
+        await service.dispose({ sessionId: session.id });
+      }
     });
 
     it("passes raw CLI access env to the Cursor SDK pool for worker sanitization", async () => {
@@ -37799,7 +37933,21 @@ describe("createAgentChatService", () => {
     });
 
     it("sends Codex plan collaboration mode on turn start for plan sessions", async () => {
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      let readSessionSummary: ((sessionId: string) => Promise<unknown>) | null = null;
+      let summaryReadAtClear: Promise<unknown> | null = null;
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+          if (
+            event.event.type === "session_meta_updated"
+            && event.event.codexEffectiveCollaborationMode === null
+            && readSessionSummary
+          ) {
+            summaryReadAtClear = readSessionSummary(event.sessionId);
+          }
+        },
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -37809,6 +37957,7 @@ describe("createAgentChatService", () => {
         codexConfigSource: "flags",
       });
       expect(session.permissionMode).toBe("plan");
+      readSessionSummary = (sessionId) => service.getSessionSummary(sessionId);
 
       await service.sendMessage({
         sessionId: session.id,
@@ -37845,6 +37994,19 @@ describe("createAgentChatService", () => {
       await vi.waitFor(async () => {
         expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("plan");
       });
+      expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationModeWasCleared)
+        .toBeUndefined();
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === null,
+      )).toBe(true);
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === "plan",
+      )).toBe(true);
+      const clearedSummary = summaryReadAtClear;
+      if (!clearedSummary) throw new Error("Expected a summary read while Codex mode was cleared");
+      expect(await clearedSummary).toMatchObject({
+        codexEffectiveCollaborationModeWasCleared: true,
+      });
       expect(textInputs).toHaveLength(1);
       expect(textInputs.at(-1)?.text).toContain("User request:");
       expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");
@@ -37858,6 +38020,7 @@ describe("createAgentChatService", () => {
           runtime: "codex-app-server",
         }),
       );
+
     });
 
     it("turns native Codex plan items into an implementation approval request", async () => {
@@ -43857,7 +44020,10 @@ describe("createAgentChatService", () => {
 
     it("falls back to default collaboration mode when plan is not advertised", async () => {
       mockState.codexCollaborationModes = [{ mode: "default" }];
-      const { service } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -43885,6 +44051,9 @@ describe("createAgentChatService", () => {
       await vi.waitFor(async () => {
         expect((await service.getSessionSummary(session.id))?.codexEffectiveCollaborationMode).toBe("default");
       });
+      expect(events.some(({ event }) =>
+        event.type === "session_meta_updated" && event.codexEffectiveCollaborationMode === "default",
+      )).toBe(true);
     });
   });
 

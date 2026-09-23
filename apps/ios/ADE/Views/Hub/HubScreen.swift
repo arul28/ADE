@@ -625,7 +625,7 @@ struct HubScreen: View {
     var chatIndexById = Dictionary(uniqueKeysWithValues: merged.chats.enumerated().map { ($0.element.id, $0.offset) })
     for localChat in local.chats {
       if let index = chatIndexById[localChat.id] {
-        merged.chats[index] = mergedHubChat(remote: merged.chats[index], local: localChat)
+        merged.chats[index] = merged.chats[index].merging(local: localChat)
       } else {
         chatIndexById[localChat.id] = merged.chats.count
         merged.chats.append(localChat)
@@ -637,37 +637,6 @@ struct HubScreen: View {
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     return merged.excludingIdentityChats()
-  }
-
-  private func mergedHubChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
-    var merged = remote
-    let localFreshness = local.activityFreshness
-    let localIsAtLeastAsFresh = (localFreshness?.date ?? .distantPast)
-      >= (remote.activityFreshness?.date ?? .distantPast)
-
-    if localIsAtLeastAsFresh {
-      merged.status = local.status
-      merged.awaitingInput = local.awaitingInput ?? remote.awaitingInput
-      merged.pinned = local.pinned ?? remote.pinned
-      merged.archived = local.archived ?? remote.archived
-      merged.lastActivityAt = localFreshness?.timestamp ?? remote.lastActivityAt
-      merged.title = nonEmpty(local.title) ?? remote.title
-      merged.preview = nonEmpty(local.preview) ?? remote.preview
-      merged.activityStatus = local.activityStatus
-    }
-
-    merged.provider = nonEmpty(remote.provider) ?? local.provider
-    merged.model = nonEmpty(remote.model) ?? local.model
-    merged.toolType = nonEmpty(remote.toolType) ?? local.toolType
-    merged.chatSessionId = nonEmpty(remote.chatSessionId) ?? local.chatSessionId
-    merged.identityKey = nonEmpty(remote.identityKey) ?? local.identityKey
-    merged.applyLocalSnoozeOverlay(local)
-    return merged
-  }
-
-  private func nonEmpty(_ value: String?) -> String? {
-    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-    return value
   }
 
   private func toggle(_ set: inout Set<String>, _ id: String) {

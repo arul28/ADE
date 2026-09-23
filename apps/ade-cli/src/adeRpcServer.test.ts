@@ -15,6 +15,7 @@ import {
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
+import { buildTrackedCliSessionActivityGuidance } from "../../desktop/src/shared/cliLaunch";
 import { CTO_VOICE_ACTIONS } from "../../desktop/src/shared/types/ctoVoice";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
@@ -94,6 +95,7 @@ function createRuntime() {
     projectRoot,
     workspaceRoot: projectRoot,
     projectId: "project-1",
+    sessionActivityReportingEnabled: true,
     project: { rootPath: projectRoot, displayName: "project", baseRef: "main" },
     paths: {
       adeDir: path.join(projectRoot, ".ade"),
@@ -2546,6 +2548,102 @@ describe("adeRpcServer", () => {
       sessionId: "session-1",
       initialInputWritten: true,
     });
+  });
+
+  it("omits activity guidance when the runtime cannot accept activity reports", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionActivityReportingEnabled = false;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "agent" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "edit",
+      initialInput: "run the checks",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall).toBeDefined();
+    expect(JSON.stringify(createCall)).not.toContain("Activity detail for this tracked ADE CLI session");
+  });
+
+  it.each([
+    {
+      name: "Claude",
+      args: { provider: "claude", permissionMode: "default" },
+      available: false,
+    },
+    {
+      name: "Codex",
+      args: { provider: "codex", permissionMode: "edit" },
+      available: true,
+    },
+    {
+      name: "Cursor with an initial prompt",
+      args: { provider: "cursor", permissionMode: "edit", hasInitialPrompt: true },
+      available: true,
+    },
+    {
+      name: "blank Cursor",
+      args: { provider: "cursor", permissionMode: "edit", hasInitialPrompt: false },
+      available: false,
+    },
+    {
+      name: "write-capable Droid",
+      args: { provider: "droid", permissionMode: "default", droidPermissionMode: "auto-medium" },
+      available: true,
+    },
+    {
+      name: "AGI Droid",
+      args: { provider: "droid", permissionMode: "default", droidPermissionMode: "agi" },
+      available: false,
+    },
+    {
+      name: "OpenCode",
+      args: { provider: "opencode", permissionMode: "edit" },
+      available: true,
+    },
+    {
+      name: "OpenCode with external config",
+      args: { provider: "opencode", permissionMode: "config-toml" },
+      available: false,
+    },
+    {
+      name: "full-auto Pi",
+      args: { provider: "pi", permissionMode: "full-auto" },
+      available: true,
+    },
+    {
+      name: "non-full-auto Pi",
+      args: { provider: "pi", permissionMode: "edit" },
+      available: false,
+    },
+    { name: "Qwen", args: { provider: "qwen", permissionMode: "edit" }, available: false },
+    { name: "Kimi", args: { provider: "kimi", permissionMode: "edit" }, available: false },
+    { name: "Grok", args: { provider: "grok", permissionMode: "edit" }, available: false },
+    { name: "Copilot", args: { provider: "copilot", permissionMode: "edit" }, available: false },
+    {
+      name: "Codex in Plan mode",
+      args: { provider: "codex", permissionMode: "plan" },
+      available: false,
+    },
+  ] satisfies Array<{
+    name: string;
+    args: Parameters<typeof buildTrackedCliSessionActivityGuidance>[0];
+    available: boolean;
+  }>)("gates tracked CLI activity guidance for $name", ({ args, available }) => {
+    const guidance = buildTrackedCliSessionActivityGuidance({
+      ...args,
+      sessionActivityReportingEnabled: true,
+    });
+
+    expect(guidance !== null).toBe(available);
+    if (available) {
+      expect(guidance).toContain("ADE_ACTIVITY_SESSION_ID");
+      expect(guidance).toContain("chat activity testing");
+    }
   });
 
   it("persists a requested preset id in resume metadata even when resolution is unavailable", async () => {

@@ -737,6 +737,8 @@ describe("Cursor SDK pool paths", () => {
         ADE_HOME: "/Users/admin/.ade-beta",
         ADE_PACKAGE_CHANNEL: "beta",
         ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade/sock/ade.sock",
+        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade/sock/ade.sock",
+        ADE_RPC_URL: "/Users/admin/.ade/sock/ade.sock",
       },
       userHomeDir: "/Users/admin",
       stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
@@ -746,7 +748,11 @@ describe("Cursor SDK pool paths", () => {
       activityRuntimeSocketPath: "/Users/admin/.ade-beta/sock/ade.sock",
     });
 
-    expect(env.ADE_RUNTIME_SOCKET_PATH).toBe("/Users/admin/.ade-beta/sock/ade.sock");
+    expect(env).toMatchObject({
+      ADE_RPC_URL: "/Users/admin/.ade-beta/sock/ade.sock",
+      ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+      ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+    });
     expect(env.ADE_HOME).toBeUndefined();
     expect(env.ADE_PACKAGE_CHANNEL).toBeUndefined();
   });
@@ -796,6 +802,8 @@ describe("Cursor SDK pool paths", () => {
         ADE_PACKAGE_CHANNEL: "beta",
         ADE_HOME: "/Users/admin/.ade-beta",
         ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_RPC_URL: "/Users/admin/.ade-beta/sock/ade.sock",
         ADE_CLI_ENTRY_PATH: stableEntry,
         ADE_CLI_BIN_DIR: betaBinDir,
         ADE_CLI_PATH: betaCommand,
@@ -810,6 +818,8 @@ describe("Cursor SDK pool paths", () => {
     expect(env.ADE_CLI_ENTRY_PATH).toBeUndefined();
     expect(env.ADE_PACKAGE_CHANNEL).toBeUndefined();
     expect(env.ADE_HOME).toBeUndefined();
+    expect(env.ADE_RPC_URL).toBeUndefined();
+    expect(env.ADE_RPC_SOCKET_PATH).toBeUndefined();
     expect(env.ADE_RUNTIME_SOCKET_PATH).toBeUndefined();
     expect(env.ADE_CLI_BIN_DIR).toBe(betaBinDir);
     expect(env.ADE_CLI_PATH).toBe(betaCommand);
@@ -877,6 +887,39 @@ describe("Cursor SDK pool paths", () => {
     expect(second.pooled).not.toBe(first.pooled);
     expect(forkMock).toHaveBeenCalledTimes(2);
     releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
+  it.skipIf(process.platform === "linux")("reuses a live worker for equivalent case-insensitive runtime socket paths", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-equivalent-activity-socket:${Date.now()}:${Math.random()}`;
+    const runtimeSocketPath = process.platform === "win32"
+      ? "C:\\runtime\\alpha.sock"
+      : "/runtime/alpha.sock";
+    const equivalentRuntimeSocketPath = process.platform === "win32"
+      ? "c:/RUNTIME/ALPHA.SOCK"
+      : "/RUNTIME/ALPHA.SOCK";
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+      activityRuntimeSocketPath: runtimeSocketPath,
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    const equivalent = await acquireCursorSdkConnection({
+      ...args,
+      activityRuntimeSocketPath: equivalentRuntimeSocketPath,
+    });
+
+    expect(equivalent.pooled).toBe(first.pooled);
+    expect(equivalent.generation).toBe(first.generation);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    releaseCursorSdkConnection(poolKey, first.generation);
+    releaseCursorSdkConnection(poolKey, equivalent.generation);
   });
 
   it("evicts a poisoned worker even while another lease is still held", async () => {

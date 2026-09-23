@@ -237,6 +237,7 @@ create table if not exists terminal_sessions (
       woke_reason text,
       chat_session_id text,
       activity_status_json text,
+      activity_status_changed_at text,
       owner_process_started_at text,
       foreign key(lane_id) references lanes(id)
     );

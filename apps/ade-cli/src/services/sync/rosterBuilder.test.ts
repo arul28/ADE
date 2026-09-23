@@ -51,6 +51,7 @@ function seedDatabase(): void {
         tool_type text,
         title text,
         status text,
+        ended_at text,
         last_output_preview text,
         last_output_at text,
         pinned integer,
@@ -60,6 +61,7 @@ function seedDatabase(): void {
         settled_at text,
         status_note text,
         activity_status_json text,
+        activity_status_changed_at text,
         attention_requested_at text,
         attention_message text,
         last_turn_failed_at text,
@@ -106,13 +108,14 @@ function seedDatabase(): void {
   db.prepare(
     `
       update terminal_sessions
-      set settled_at = ?, status_note = ?, activity_status_json = ?
+      set settled_at = ?, status_note = ?, activity_status_json = ?, activity_status_changed_at = ?
       where id = ?
     `,
   ).run(
     "2026-01-02T00:01:00Z",
     "Indexing complete and waiting for final review now",
     JSON.stringify({ value: "testing", source: "agent", updatedAt: "2026-01-02T00:02:00Z" }),
+    "2026-01-02T00:02:00.000Z",
     "chat-run",
   );
   db.prepare(
@@ -125,6 +128,8 @@ function seedDatabase(): void {
   db.prepare(
     "update terminal_sessions set last_turn_failed_at = ? where id = ?",
   ).run("2026-01-01T12:01:00Z", "cli-fail");
+  db.prepare("update terminal_sessions set ended_at = ? where id = ?")
+    .run("2026-01-01T07:00:00Z", "cli-end");
 
   db.close();
 
@@ -270,6 +275,8 @@ describe("buildRosterSnapshot", () => {
       // Eight words survive: the note only truncates past 72 characters.
       statusNote: "Indexing complete and waiting for final review now",
       activityStatus: { value: "testing", source: "agent", updatedAt: "2026-01-02T00:02:00.000Z" },
+      activityStatusChangedAt: "2026-01-02T00:02:00.000Z",
+      lifecycleUpdatedAt: "2026-01-02T00:01:00Z",
       lastActivityAt: "2026-01-02T00:02:00.000Z",
       exitCode: null,
     });
@@ -283,7 +290,27 @@ describe("buildRosterSnapshot", () => {
       lastTurnFailedAt: "2026-01-01T12:01:00Z",
       exitCode: 1,
     });
-    expect(byId.get("cli-end")!.exitCode).toBe(0);
+    expect(byId.get("cli-end")).toMatchObject({
+      exitCode: 0,
+      lifecycleUpdatedAt: "2026-01-01T07:00:00Z",
+    });
+  });
+
+  it("preserves an explicit activity clear timestamp in the roster", async () => {
+    const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
+    db.prepare(
+      `update terminal_sessions
+       set activity_status_json = null, activity_status_changed_at = ?
+       where id = ?`,
+    ).run("2026-01-02T00:03:00Z", "chat-run");
+    db.close();
+
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const chat = projects[0]!.chats.find((row) => row.id === "chat-run")!;
+    expect(chat.activityStatus).toBeNull();
+    expect(chat.activityStatusChangedAt).toBe("2026-01-02T00:03:00Z");
+    expect(chat.lifecycleUpdatedAt).toBe("2026-01-02T00:01:00Z");
+    expect(chat.lastActivityAt).toBe("2026-01-02T00:03:00Z");
   });
 
   it("tolerates legacy project databases that omit settled lifecycle columns", async () => {
@@ -292,6 +319,7 @@ describe("buildRosterSnapshot", () => {
       "settled_at",
       "status_note",
       "activity_status_json",
+      "activity_status_changed_at",
       "attention_requested_at",
       "attention_message",
       "last_turn_failed_at",

@@ -348,7 +348,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       Case(
         name: "planning chat",
         session: makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now)),
-        summary: makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan"),
+        summary: makeChatSummary(status: "active", awaitingInput: false, codexEffectiveCollaborationMode: "plan"),
         kind: .planning,
         label: "Planning",
         tone: .violet
@@ -683,6 +683,22 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       workSessionRowPresentation(session: running, summary: summary, now: now).status?.label,
       "Working"
     )
+
+    var backgroundSession = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+    backgroundSession.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: iso(now.addingTimeInterval(-30))
+    )
+    var backgroundSummary = makeChatSummary(status: "active", awaitingInput: false)
+    backgroundSummary.activeBackgroundTaskCount = 1
+    let backgroundStatus = workSessionRowPresentation(
+      session: backgroundSession,
+      summary: backgroundSummary,
+      now: now
+    ).status
+    XCTAssertEqual(backgroundStatus?.label, "Working")
+    XCTAssertEqual(backgroundStatus?.glyph, .working)
   }
 
   func testCodexSteeringInputStaysWorkingInsteadOfNeedsYou() {
@@ -754,11 +770,11 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(status?.kind)
   }
 
-  /// Planning is a presentation fact derived from the chat's interaction mode,
-  /// exactly as on desktop — it never becomes a canonical phase.
+  /// Planning is a presentation fact derived from the provider's current
+  /// structured mode, exactly as on desktop — it never becomes a canonical phase.
   func testPlanningNeverBecomesACanonicalPhase() {
     let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now))
-    let summary = makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan")
+    let summary = makeChatSummary(status: "active", awaitingInput: false, codexEffectiveCollaborationMode: "plan")
 
     XCTAssertEqual(workCanonicalSessionState(session: session, summary: summary, now: now).phase, .running)
     XCTAssertEqual(
@@ -776,12 +792,81 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       toolType: "codex-chat",
       pendingInputItemId: "approval-1"
     )
-    let summary = makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan")
+    let summary = makeChatSummary(status: "active", awaitingInput: false, codexEffectiveCollaborationMode: "plan")
 
     XCTAssertEqual(
       workSessionRowPresentation(session: session, summary: summary, now: now).badge?.kind,
       .needsYou
     )
+  }
+
+  func testCodexPlanningRequiresTheModeAcceptedByTheActiveTurn() {
+    let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now))
+    let requestedPlanAcceptedDefault = makeChatSummary(
+      status: "active",
+      awaitingInput: false,
+      interactionMode: "plan",
+      codexEffectiveCollaborationMode: "default"
+    )
+    let requestedPlanBeforeAcceptance = makeChatSummary(
+      status: "active",
+      awaitingInput: false,
+      interactionMode: "plan"
+    )
+    let acceptedPlan = makeChatSummary(
+      status: "active",
+      awaitingInput: false,
+      interactionMode: "default",
+      codexEffectiveCollaborationMode: "plan"
+    )
+
+    XCTAssertEqual(workSessionRowPresentation(session: session, summary: requestedPlanAcceptedDefault, now: now).status?.label, "Working")
+    XCTAssertEqual(workSessionRowPresentation(session: session, summary: requestedPlanBeforeAcceptance, now: now).status?.label, "Working")
+    XCTAssertEqual(workSessionRowPresentation(session: session, summary: acceptedPlan, now: now).status?.label, "Planning")
+  }
+
+  func testPlanningUsesTheSameProviderSpecificSignalsAsDesktop() {
+    let acpModePlan = RemoteJSONValue.object(["currentModeId": .string("plan")])
+    let acpConfigOptionPlan = RemoteJSONValue.object([
+      "configOptions": .array([
+        .object(["id": .string("mode"), "currentValue": .string("plan")]),
+      ]),
+    ])
+    let copilotPlan = RemoteJSONValue.object([
+      "currentModeId": .string("https://agentclientprotocol.com/protocol/session-modes#plan"),
+    ])
+    let acpBooleanMode = RemoteJSONValue.object([
+      "configOptions": .array([
+        .object(["id": .string("mode"), "currentValue": .bool(true)]),
+      ]),
+    ])
+    let cursorSnapshotPlan = RemoteJSONValue.object(["currentModeId": .string("plan")])
+    let cursorSnapshotNonCanonical = RemoteJSONValue.object(["currentModeId": .string(" plan ")])
+    let cases: [(String, AgentChatSessionSummary, Bool)] = [
+      ("Claude interaction mode", makeChatSummary(status: "active", awaitingInput: false, provider: "claude", interactionMode: "plan"), true),
+      ("Claude permission posture", makeChatSummary(status: "active", awaitingInput: false, provider: "claude", interactionMode: "default", permissionMode: "plan"), false),
+      ("Codex accepted mode", makeChatSummary(status: "active", awaitingInput: false, provider: "codex", codexEffectiveCollaborationMode: "plan"), true),
+      ("Cursor current mode id", makeChatSummary(status: "active", awaitingInput: false, provider: "cursor", cursorModeId: "plan"), true),
+      ("Cursor explicit plan id wins over snapshot", makeChatSummary(status: "active", awaitingInput: false, provider: "cursor", cursorModeSnapshot: .object(["currentModeId": .string("agent")]), cursorModeId: "plan"), true),
+      ("Cursor current snapshot", makeChatSummary(status: "active", awaitingInput: false, provider: "cursor", cursorModeSnapshot: cursorSnapshotPlan), true),
+      ("Cursor snapshot mode id is exact", makeChatSummary(status: "active", awaitingInput: false, provider: "cursor", cursorModeSnapshot: cursorSnapshotNonCanonical), false),
+      ("Cursor explicit agent id suppresses stale plan snapshot", makeChatSummary(status: "active", awaitingInput: false, provider: "cursor", cursorModeSnapshot: cursorSnapshotPlan, cursorModeId: "agent"), false),
+      ("Cursor explicit clear suppresses stale plan snapshot", makeChatSummary(status: "active", awaitingInput: false, provider: "cursor", cursorModeSnapshot: cursorSnapshotPlan, cursorModeIdWasCleared: true), false),
+      ("Droid interaction mode", makeChatSummary(status: "active", awaitingInput: false, provider: "droid", interactionMode: "plan"), true),
+      ("Droid read-only permission", makeChatSummary(status: "active", awaitingInput: false, provider: "droid", droidPermissionMode: "read-only"), false),
+      ("OpenCode native permission mode", makeChatSummary(status: "active", awaitingInput: false, provider: "opencode", opencodePermissionMode: "plan"), true),
+      ("OpenCode legacy permission", makeChatSummary(status: "active", awaitingInput: false, provider: "opencode", interactionMode: "plan", permissionMode: "plan"), false),
+      ("Qwen native mode", makeChatSummary(status: "active", awaitingInput: false, provider: "qwen", acpConfigSnapshot: acpModePlan), true),
+      ("Kimi mode option", makeChatSummary(status: "active", awaitingInput: false, provider: "kimi", acpConfigSnapshot: acpConfigOptionPlan), true),
+      ("Copilot protocol mode", makeChatSummary(status: "active", awaitingInput: false, provider: "copilot", acpConfigSnapshot: copilotPlan), true),
+      ("ACP boolean option", makeChatSummary(status: "active", awaitingInput: false, provider: "qwen", acpConfigSnapshot: acpBooleanMode), false),
+      ("Grok has no trustworthy mode", makeChatSummary(status: "active", awaitingInput: false, provider: "grok", acpConfigSnapshot: acpModePlan), false),
+      ("Pi has no provider mode", makeChatSummary(status: "active", awaitingInput: false, provider: "pi", interactionMode: "plan"), false),
+    ]
+
+    for (name, summary, expected) in cases {
+      XCTAssertEqual(workSessionIsPlanning(summary: summary), expected, name)
+    }
   }
 
   func testCanonicalPhasesMapOntoTheSharedVocabulary() {
@@ -1198,12 +1283,22 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     status: String,
     awaitingInput: Bool?,
     pendingInputItemId: String? = nil,
-    interactionMode: String? = nil
+    provider: String = "codex",
+    interactionMode: String? = nil,
+    permissionMode: String? = nil,
+    codexEffectiveCollaborationMode: String? = nil,
+    opencodePermissionMode: String? = nil,
+    droidPermissionMode: String? = nil,
+    cursorModeSnapshot: RemoteJSONValue? = nil,
+    cursorModeId: String? = nil,
+    cursorModeIdWasCleared: Bool? = nil,
+    acpConfigSnapshot: RemoteJSONValue? = nil,
+    acpConfigSnapshotWasCleared: Bool? = nil
   ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: "chat-1",
       laneId: "lane-1",
-      provider: "codex",
+      provider: provider,
       model: "gpt-5.4",
       modelId: nil,
       sessionProfile: nil,
@@ -1213,17 +1308,21 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       codexFastMode: nil,
       fastMode: nil,
       executionMode: nil,
-      permissionMode: nil,
+      permissionMode: permissionMode,
       interactionMode: interactionMode,
       claudePermissionMode: nil,
       codexApprovalPolicy: nil,
       codexSandbox: nil,
       codexConfigSource: nil,
-      opencodePermissionMode: nil,
-      droidPermissionMode: nil,
-      cursorModeSnapshot: nil,
-      cursorModeId: nil,
+      codexEffectiveCollaborationMode: codexEffectiveCollaborationMode,
+      opencodePermissionMode: opencodePermissionMode,
+      droidPermissionMode: droidPermissionMode,
+      cursorModeSnapshot: cursorModeSnapshot,
+      cursorModeId: cursorModeId,
+      cursorModeIdWasCleared: cursorModeIdWasCleared,
       cursorConfigValues: nil,
+      acpConfigSnapshot: acpConfigSnapshot,
+      acpConfigSnapshotWasCleared: acpConfigSnapshotWasCleared,
       identityKey: nil,
       surface: nil,
       automationId: nil,

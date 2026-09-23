@@ -938,12 +938,13 @@ export const SessionCard = React.memo(function SessionCard({
      (PR state, red for a broken exit). */
   const lanePrList = lanePr ? (lanePrs.length > 0 ? lanePrs : [lanePr]) : [];
   const hoverRows: SessionHoverCardRow[] = [];
-  /* Board rows put the parent phase in the column. A distinct activity detail
-     stays on the card face; when there is no detail, the full phase copy lands
-     in the hover card so Stale / Failed are not lost. `SessionStatusLabel`
+  /* Board rows put the parent phase in the column. At rest, a distinct activity
+     detail stays on the card face. Once hover actions hide that face label, the
+     hover card carries the detail and its provenance; when there is no detail,
+     it carries the full phase so Stale / Failed are not lost. `SessionStatusLabel`
      renders both from the shared presentation, with one hue and glyph per
      visible status. */
-  if (suppressStatusLabel && presentation && !presentation.activityDetail) {
+  if (suppressStatusLabel && presentation) {
     hoverRows.push({
       id: "status",
       icon: (

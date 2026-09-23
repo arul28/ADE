@@ -58,6 +58,8 @@ describe("buildPiWorkerEnvironment", () => {
       ADE_CHAT_SESSION_ID: "other-chat",
       ADE_DEFAULT_ROLE: "cto",
       ADE_RUNTIME_SOCKET_PATH: "/other/runtime.sock",
+      ADE_RPC_SOCKET_PATH: "/other/rpc.sock",
+      ADE_RPC_URL: "/other/url.sock",
       ADE_ACTIVITY_SESSION_ID: "terminal-row",
       ADE_BROWSER_ACTOR_TOKEN: "browser-token",
       ADE_PARENT_CHAT_SESSION_ID: "parent-chat",
@@ -73,6 +75,8 @@ describe("buildPiWorkerEnvironment", () => {
       ADE_CLI_PATH: "/resolved/ade",
       ADE_CHAT_SESSION_ID: "chat-1",
       ADE_DEFAULT_ROLE: "agent",
+      ADE_RPC_URL: "/runtime/ade.sock",
+      ADE_RPC_SOCKET_PATH: "/runtime/ade.sock",
       ADE_RUNTIME_SOCKET_PATH: "/runtime/ade.sock",
     });
     expect(env).not.toHaveProperty("ADE_ACTIVITY_SESSION_ID");

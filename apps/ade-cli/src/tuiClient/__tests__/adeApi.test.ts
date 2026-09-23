@@ -239,6 +239,7 @@ describe("session lifecycle parity", () => {
       model: "gpt-5.5",
       status: "idle",
       startedAt: "2026-07-26T11:00:00.000Z",
+      currentTurnStartedAt: "2026-07-26T11:25:00.000Z",
       endedAt: null,
       lastActivityAt: "2026-07-26T11:30:00.000Z",
       lastOutputPreview: null,
@@ -252,7 +253,26 @@ describe("session lifecycle parity", () => {
       snoozedAt: "2026-07-26T12:00:00.000Z",
       wokeAt: "2026-07-26T13:00:00.000Z",
       wokeReason: "needs_you",
+      currentTurnStartedAt: "2026-07-26T11:25:00.000Z",
     });
+  });
+
+  it("does not synthesize a current-turn anchor when neither source has one", () => {
+    const [chat] = enrichChatSessionsWithLifecycle([{
+      sessionId: "session-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-07-26T11:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-26T11:30:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt: null,
+    }], [{ id: "session-1" } as TerminalSessionSummary]);
+
+    expect(chat).not.toHaveProperty("currentTurnStartedAt");
   });
 });
 

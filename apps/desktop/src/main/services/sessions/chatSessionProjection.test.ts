@@ -99,6 +99,7 @@ describe("chatSessionProjection", () => {
       { provider: "claude", interactionMode: "plan" },
       { provider: "codex", codexEffectiveCollaborationMode: "plan" },
       { provider: "cursor", cursorModeId: "plan" },
+      { provider: "cursor", cursorModeId: "plan", cursorModeSnapshot: { currentModeId: "agent", availableModeIds: ["agent", "plan"] } },
       { provider: "cursor", cursorModeSnapshot: {
         currentModeId: "plan",
         availableModeIds: ["agent", "plan"],
@@ -143,6 +144,9 @@ describe("chatSessionProjection", () => {
         codexSandbox: "read-only",
       },
       { provider: "cursor", cursorModeId: "agent", interactionMode: "plan" },
+      { provider: "cursor", cursorModeId: "agent", cursorModeSnapshot: { currentModeId: "plan", availableModeIds: ["agent", "plan"] } },
+      { provider: "cursor", cursorModeId: null, cursorModeSnapshot: { currentModeId: "plan", availableModeIds: ["agent", "plan"] } },
+      { provider: "cursor", cursorModeIdWasCleared: true, cursorModeSnapshot: { currentModeId: "plan", availableModeIds: ["agent", "plan"] } },
       { provider: "droid", droidPermissionMode: "read-only" },
       { provider: "droid", permissionMode: "plan" },
       { provider: "opencode", permissionMode: "plan", interactionMode: "plan" },

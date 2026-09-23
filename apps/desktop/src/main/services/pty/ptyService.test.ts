@@ -426,6 +426,8 @@ function createHarness(overrides: {
     canPerform: ReturnType<typeof vi.fn>;
   } | null;
   getAdeCliAgentEnv?: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+  runtimeSocketPath?: string | null;
+  sessionActivityReportingEnabled?: boolean;
   projectConfigService?: {
     get: ReturnType<typeof vi.fn>;
   };
@@ -587,6 +589,10 @@ function createHarness(overrides: {
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     ...(overrides.diskPressureMonitor !== undefined ? { diskPressureMonitor: overrides.diskPressureMonitor as any } : {}),
     ...(overrides.getAdeCliAgentEnv ? { getAdeCliAgentEnv: overrides.getAdeCliAgentEnv } : {}),
+    ...(overrides.runtimeSocketPath !== undefined ? { runtimeSocketPath: overrides.runtimeSocketPath } : {}),
+    ...(overrides.sessionActivityReportingEnabled !== undefined
+      ? { sessionActivityReportingEnabled: overrides.sessionActivityReportingEnabled }
+      : {}),
     ...(overrides.projectConfigService ? { projectConfigService: overrides.projectConfigService as any } : {}),
     ...(overrides.browserActorCapabilityIssuer
       ? { browserActorCapabilityIssuer: overrides.browserActorCapabilityIssuer }
@@ -1597,7 +1603,14 @@ describe("ptyService", () => {
 
     it("enables OpenCode activity guidance only with ADE CLI and a writable launch mode", async () => {
       const { service, loadPty } = createHarness({
-        getAdeCliAgentEnv: (env = {}) => ({ ...env, ADE_CLI_PATH: "/runtime/ade" }),
+        runtimeSocketPath: "/runtime/beta.sock",
+        getAdeCliAgentEnv: (env = {}) => ({
+          ...env,
+          ADE_CLI_PATH: "/runtime/ade",
+          ADE_RUNTIME_SOCKET_PATH: "/runtime/stable.sock",
+          ADE_RPC_SOCKET_PATH: "/runtime/stable.sock",
+          ADE_RPC_URL: "/runtime/stable.sock",
+        }),
       });
 
       const created = await service.create({
@@ -1617,12 +1630,47 @@ describe("ptyService", () => {
 
       expect(opts?.env).toMatchObject({
         ADE_CLI_PATH: "/runtime/ade",
+        ADE_RPC_URL: "/runtime/beta.sock",
+        ADE_RPC_SOCKET_PATH: "/runtime/beta.sock",
+        ADE_RUNTIME_SOCKET_PATH: "/runtime/beta.sock",
         ADE_CHAT_SESSION_ID: created.sessionId,
         ADE_ACTIVITY_SESSION_ID: created.sessionId,
       });
       expect(config.instructions?.[0]).toMatch(/-activity\.md$/);
       expect(instructions).toContain('"$ADE_CLI_PATH" chat activity testing');
       expect(instructions).toContain("ADE scopes this command to the tracked terminal row");
+    });
+
+    it("withholds activity guidance when the runtime cannot accept RPC reports", async () => {
+      const { service, loadPty } = createHarness({
+        runtimeSocketPath: "/runtime/unserved.sock",
+        sessionActivityReportingEnabled: false,
+        getAdeCliAgentEnv: (env = {}) => ({
+          ...env,
+          ADE_CLI_PATH: "/runtime/ade",
+          ADE_RUNTIME_SOCKET_PATH: "/runtime/stable.sock",
+          ADE_RPC_SOCKET_PATH: "/runtime/stable.sock",
+          ADE_RPC_URL: "/runtime/stable.sock",
+        }),
+      });
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Embedded OpenCode",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        runtimeCliLaunch: { provider: "opencode", permissionMode: "full-auto" },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const config = JSON.parse(opts?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as { instructions?: string[] };
+      const instructions = fs.readFileSync(config.instructions![0]!, "utf8");
+
+      expect(opts?.env).not.toHaveProperty("ADE_ACTIVITY_SESSION_ID");
+      expect(instructions).not.toContain("chat activity testing");
     });
 
     it("resumes an OpenCode session with the permission mode it was launched under", async () => {

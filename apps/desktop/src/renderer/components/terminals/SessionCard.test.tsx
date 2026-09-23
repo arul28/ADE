@@ -511,6 +511,34 @@ describe("SessionCard lineage", () => {
     expect(statusRow.querySelector("[data-session-status]")).toBeTruthy();
   });
 
+  it("keeps agent activity and its provenance available while a Kanban row is hovered", () => {
+    vi.useFakeTimers();
+    const reportUpdatedAt = "2026-09-22T11:59:30.000Z";
+    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
+    const { container } = render(
+      <SessionCard
+        {...props}
+        suppressStatusLabel
+        session={makeSession({
+          runtimeState: "running",
+          currentTurnStartedAt: "2026-09-22T11:59:00.000Z",
+          activityStatus: { value: "testing", source: "agent", updatedAt: reportUpdatedAt },
+        })}
+      />,
+    );
+
+    expect(container.querySelector("[data-session-status]")?.getAttribute("data-session-status"))
+      .toBe("Testing");
+    fireEvent.mouseEnter(container.querySelector("[data-session-row]") as HTMLElement);
+    act(() => { vi.advanceTimersByTime(SESSION_HOVER_CARD_DELAY_MS + 10); });
+
+    const statusRow = screen.getByTestId("session-hover-status");
+    const hoveredStatus = statusRow.querySelector("[data-session-status]");
+    expect(hoveredStatus?.getAttribute("data-session-status")).toBe("Testing");
+    expect(hoveredStatus?.getAttribute("title")).toContain("Agent-reported activity");
+    expect(hoveredStatus?.getAttribute("title")).toContain(new Date(reportUpdatedAt).toLocaleString());
+  });
+
   it("keeps the status word on the row face by default", () => {
     const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
     const { container } = render(<SessionCard {...props} session={makeSession()} />);

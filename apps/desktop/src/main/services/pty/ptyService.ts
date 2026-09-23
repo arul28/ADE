@@ -138,6 +138,7 @@ import {
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
+import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 import { resolveTrackedCliPreset } from "../chat/harnessPresetLaunch";
 import {
   commandArrayToLine,
@@ -198,6 +199,7 @@ function normalizeStartupCommandDelayMs(value: unknown): number {
 export function materializeRuntimeCliLaunch(
   runtimeCliLaunch: NonNullable<PtyCreateArgs["runtimeCliLaunch"]>,
   laneWorktreePath: string,
+  options: { sessionActivityReportingEnabled?: boolean } = {},
 ): TrackedCliLaunchCommand {
   const provider = String(runtimeCliLaunch.provider);
   if (!isLaunchProfile(provider) || provider === "shell") {
@@ -225,6 +227,7 @@ export function materializeRuntimeCliLaunch(
         ...(trackedPreset.model ? { model: trackedPreset.model } : {}),
       }
       : {}),
+    sessionActivityReportingEnabled: options.sessionActivityReportingEnabled,
   });
 }
 
@@ -2172,6 +2175,8 @@ export function createPtyService({
   getLaneRuntimeEnv,
   getSessionLinearEnv,
   getAdeCliAgentEnv,
+  runtimeSocketPath,
+  sessionActivityReportingEnabled,
   logger,
   broadcastData,
   broadcastExit,
@@ -2199,6 +2204,10 @@ export function createPtyService({
    */
   getSessionLinearEnv?: (args: { sessionId: string; chatSessionId: string | null }) => Record<string, string> | null;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+  /** Exact RPC endpoint served by this runtime; absent endpoints disable activity reporting. */
+  runtimeSocketPath?: string | null;
+  /** Embedded runtimes without a served RPC socket cannot accept agent activity reports. */
+  sessionActivityReportingEnabled?: boolean;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -5688,7 +5697,10 @@ export function createPtyService({
       const { cols, rows } = clampDims(args.cols, args.rows);
       const runtimeCliLaunch = args.runtimeCliLaunch;
       const materializedRuntimeLaunch = runtimeCliLaunch
-        ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath)
+        ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath, {
+            sessionActivityReportingEnabled:
+              sessionActivityReportingEnabled !== false && Boolean(runtimeSocketPath?.trim()),
+          })
         : null;
       let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
         ? {
@@ -6070,7 +6082,13 @@ export function createPtyService({
       );
       if (isTrackedAgentCliToolType(toolTypeHint)) {
         launchEnv.ADE_DEFAULT_ROLE = "agent";
-        if (tracked) launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV] = sessionId;
+        const activitySocketPath = sessionActivityReportingEnabled !== false
+          ? runtimeSocketPath?.trim() || null
+          : null;
+        if (tracked && activitySocketPath) {
+          launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV] = sessionId;
+          Object.assign(launchEnv, buildAdeRuntimeSocketEnv(activitySocketPath));
+        }
         else delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
       } else {
         delete launchEnv[SESSION_ACTIVITY_SESSION_ID_ENV];
@@ -6303,7 +6321,10 @@ export function createPtyService({
             ?? initialResumeMetadata?.launch?.permissionMode
             ?? existingSession?.resumeMetadata?.launch?.permissionMode
             ?? null;
-          const sessionActivityGuidance = launchEnv.ADE_CLI_PATH?.trim()
+          const sessionActivityGuidance = tracked
+            && sessionActivityReportingEnabled !== false
+            && runtimeSocketPath?.trim()
+            && launchEnv.ADE_CLI_PATH?.trim()
             ? buildTrackedCliSessionActivityGuidance({
                 provider: "opencode",
                 permissionMode: openCodePermissionMode,

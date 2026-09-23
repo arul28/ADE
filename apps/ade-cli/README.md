@@ -624,7 +624,7 @@ ade chat steer session-id --text "active-turn context" --dispatch interrupt   # 
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
 ade chat activity testing                                  # set one fixed detail: planning|implementing|testing|reviewing|debugging|monitoring; `clear` removes it; add --session <id> to target explicitly
-ade session show session-id --text                          # status + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
+ade session show session-id --text                          # status/activity detail + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
 ade --role cto session move session-id --to done             # file the row under a Work-board column: needs-you|working|done ('needs_you' spelling also accepted)
                                                             # CTO-only, like every other settle-column writer: a move tells the agent the USER moved it, so a session-bound agent must not move its own card
                                                             # 'waiting' is refused — a row sits there because it is snoozed or its PR is mid-CI, so it is derived, never a target

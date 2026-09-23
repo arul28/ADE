@@ -361,8 +361,11 @@ Shared types and IPC:
   Parent phases use the same host lifecycle rules for every provider. Provider
   adapters contribute **Needs you** only from structured input/permission
   requests; tracked PTY CLIs also get explicit `ade chat ask`. PTY text is never
-  parsed into a status. Native Plan and agent-reported activity have narrower
-  capability gates:
+  parsed into a status. Agent-reported activity requires both the
+  runtime-resolved ADE CLI executable and this runtime's RPC socket, and is
+  disabled for embedded runtimes. Each provider path is advertised only when
+  its command/tool and permission route is verified. Native Plan and
+  agent-reported activity have narrower capability gates:
 
   | Provider path | Structured Plan signal | Agent-reported activity detail |
   | --- | --- | --- |

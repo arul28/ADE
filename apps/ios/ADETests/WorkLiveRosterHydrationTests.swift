@@ -2,33 +2,111 @@ import XCTest
 @testable import ADE
 
 final class WorkLiveRosterHydrationTests: XCTestCase {
-  func testRosterActivityReportTimestampParticipatesInLocalRowFreshness() throws {
+  func testNewerLocalActivityDoesNotReplaceNewerRemoteAwaitingLifecycle() {
+    var remote = makeRosterChat(id: "chat-1", laneId: "lane-1")
+    remote.title = "Remote title"
+    remote.status = .awaiting
+    remote.awaitingInput = true
+    remote.lastActivityAt = "2026-07-22T12:04:00.000Z"
+    remote.lifecycleUpdatedAt = "2026-07-22T12:04:00.000Z"
+    remote.preview = "Remote preview"
+    remote.attentionRequestedAt = "2026-07-22T12:04:00.000Z"
+
     var local = makeRosterChat(id: "chat-1", laneId: "lane-1")
-    local.lastActivityAt = "2026-07-22T12:00:00.000Z"
+    local.title = "Stale title"
+    local.status = .running
+    local.awaitingInput = false
+    local.lastActivityAt = "2026-07-22T12:05:00.000Z"
+    local.lifecycleUpdatedAt = "2026-07-22T12:00:00.000Z"
+    local.preview = "Stale preview"
     local.activityStatus = SessionActivityReport(
       value: "testing",
       source: "agent",
       updatedAt: "2026-07-22T12:05:00.000Z"
     )
-    var remote = makeRosterChat(id: "chat-1", laneId: "lane-1")
-    remote.lastActivityAt = "2026-07-22T12:03:00.000Z"
 
-    XCTAssertEqual(local.activityFreshness?.timestamp, "2026-07-22T12:05:00.000Z")
-    XCTAssertGreaterThan(
-      try XCTUnwrap(local.activityFreshness?.date),
-      try XCTUnwrap(remote.activityFreshness?.date)
-    )
+    let merged = remote.merging(local: local)
+
+    XCTAssertEqual(merged.status, .awaiting)
+    XCTAssertEqual(merged.awaitingInput, true)
+    XCTAssertEqual(merged.title, "Remote title")
+    XCTAssertEqual(merged.preview, "Remote preview")
+    XCTAssertEqual(merged.attentionRequestedAt, "2026-07-22T12:04:00.000Z")
+    XCTAssertEqual(merged.activityStatus?.value, "testing")
+    XCTAssertEqual(merged.lastActivityAt, "2026-07-22T12:05:00.000Z")
   }
 
-  func testRosterActivityFreshnessAcceptsWholeSecondTimestamps() {
-    var session = makeRosterChat(id: "chat-1", laneId: "lane-1")
-    session.activityStatus = SessionActivityReport(
+  func testExplicitLocalActivityClearBeatsStaleRemoteReport() {
+    var remote = makeRosterChat(id: "chat-1", laneId: "lane-1")
+    remote.title = "Remote title"
+    remote.status = .awaiting
+    remote.awaitingInput = true
+    remote.lastActivityAt = "2026-07-22T12:04:00.000Z"
+    remote.lifecycleUpdatedAt = "2026-07-22T12:04:00.000Z"
+    remote.activityStatus = SessionActivityReport(
       value: "monitoring",
       source: "agent",
-      updatedAt: "2026-07-22T12:05:00Z"
+      updatedAt: "2026-07-22T12:02:00.000Z"
+    )
+    remote.activityStatusChangedAt = "2026-07-22T12:02:00.000Z"
+
+    var local = makeRosterChat(id: "chat-1", laneId: "lane-1")
+    local.title = "Older local title"
+    local.status = .running
+    local.awaitingInput = false
+    local.lastActivityAt = "2026-07-22T12:05:00.000Z"
+    local.lifecycleUpdatedAt = "2026-07-22T12:03:00.000Z"
+    local.activityStatus = nil
+    local.activityStatusChangedAt = "2026-07-22T12:05:00.000Z"
+
+    let merged = remote.merging(local: local)
+
+    XCTAssertEqual(merged.status, .awaiting)
+    XCTAssertEqual(merged.awaitingInput, true)
+    XCTAssertEqual(merged.title, "Remote title")
+    XCTAssertNil(merged.activityStatus)
+    XCTAssertEqual(merged.activityStatusChangedAt, "2026-07-22T12:05:00.000Z")
+    XCTAssertEqual(merged.lastActivityAt, "2026-07-22T12:05:00.000Z")
+  }
+
+  func testActivityReportOnlyFreshnessDoesNotBecomeLifecycleWhenMaterialized() {
+    var chat = makeRosterChat(id: "chat-1", laneId: "lane-1")
+    chat.lastActivityAt = "2026-07-22T12:05:00.000Z"
+    chat.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: "2026-07-22T12:05:00.000Z"
     )
 
-    XCTAssertEqual(session.activityFreshness?.timestamp, "2026-07-22T12:05:00Z")
+    let session = chat.asTerminalSessionSummary(laneName: "Lane")
+
+    XCTAssertEqual(session.startedAt, "")
+    XCTAssertNil(session.endedAt)
+    XCTAssertNil(session.lastActivityAt)
+    XCTAssertEqual(session.activityStatus?.updatedAt, "2026-07-22T12:05:00.000Z")
+  }
+
+  @MainActor
+  func testActiveProjectLocalRosterUsesLastActivityForLifecycleFreshness() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+      values ('project-1', '/tmp/project-1', 'Project', 'main', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');
+    """)
+
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-1", rootPath: "/tmp/project-1")
+    let lane = makeLane(id: "lane-1", name: "Feature")
+    try database.replaceLaneSnapshots([lane])
+
+    var session = makeSession(id: "chat-1", laneId: lane.id, laneName: lane.name)
+    session.lastActivityAt = "2026-07-22T12:05:00.000Z"
+    try database.replaceTerminalSessions([session])
+
+    let chat = try XCTUnwrap(service.buildActiveProjectLocalRoster()?.chats.first)
+    XCTAssertEqual(chat.lifecycleUpdatedAt, "2026-07-22T12:05:00.000Z")
+    XCTAssertEqual(chat.lastActivityAt, "2026-07-22T12:05:00.000Z")
   }
 
   func testAuthoritativeRosterChatLaneBeatsEarlierStaleLaneAndBranchHints() {

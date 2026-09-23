@@ -364,10 +364,13 @@ describe("runtime domain services behind the allowlist", () => {
       input: expect.stringContaining("restart_resume_thread"),
     });
     expect(getAdeActionInputContract("session", "setSessionActivity")).toMatchObject({
-      description: expect.stringContaining("fixed activity label"),
       input: expect.stringContaining("monitoring"),
       example: expect.stringContaining("session.setSessionActivity"),
     });
+    const activityDescription = getAdeActionInputContract("session", "setSessionActivity")?.description;
+    expect(activityDescription).toContain("fixed activity label");
+    expect(activityDescription).toContain("ADE-bound tracked session");
+    expect(activityDescription).toContain("tracked terminal owned by that chat");
   });
 
   it("documents lane reclaim contracts for safe CLI action discovery", () => {

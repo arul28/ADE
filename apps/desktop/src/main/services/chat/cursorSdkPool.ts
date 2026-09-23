@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { buildAdeRuntimeSocketEnv } from "../../../shared/adeCliGuidance";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 import { pathKey } from "../shared/pathCompare";
 import { CURSOR_SDK_KILL_ESCALATION_MS, CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
@@ -174,6 +175,11 @@ const moduleDir =
 
 function hashKey(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function activityRuntimeSocketKey(value: string | null | undefined): string | null {
+  const socketPath = value?.trim();
+  return socketPath ? pathKey(socketPath) : null;
 }
 
 function resolveWorkerPath(): string {
@@ -513,8 +519,16 @@ export function buildCursorSdkWorkerEnv(args: {
     ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
   };
   applyCurrentAdeCliEnv(env, baseEnv);
+  // Keep the worker's RPC target out of inherited channel configuration. The
+  // ADE CLI has several socket selectors, and its chat commands prefer RPC_URL
+  // / RPC_SOCKET_PATH over RUNTIME_SOCKET_PATH.
+  delete env.ADE_RPC_URL;
+  delete env.ADE_RPC_SOCKET_PATH;
+  delete env.ADE_RUNTIME_SOCKET_PATH;
   const activityRuntimeSocketPath = args.activityRuntimeSocketPath?.trim();
-  if (activityRuntimeSocketPath) env.ADE_RUNTIME_SOCKET_PATH = activityRuntimeSocketPath;
+  if (activityRuntimeSocketPath) {
+    Object.assign(env, buildAdeRuntimeSocketEnv(activityRuntimeSocketPath));
+  }
   delete env.ADE_CLI_ENTRY_PATH;
   return env;
 }
@@ -554,7 +568,7 @@ export async function acquireCursorSdkConnection(args: {
       const activityRuntimeSocketPath = args.activityRuntimeSocketPath?.trim() || null;
       if (
         sameSkillDirs(existing.agentSkillDirs, args.agentSkillDirs)
-        && existing.activityRuntimeSocketPath === activityRuntimeSocketPath
+        && activityRuntimeSocketKey(existing.activityRuntimeSocketPath) === activityRuntimeSocketKey(activityRuntimeSocketPath)
       ) {
         clearCursorSdkIdleTimer(existing);
         existing.ref += 1;
@@ -579,7 +593,7 @@ export async function acquireCursorSdkConnection(args: {
     const entry = pools.get(args.poolKey);
     const live = entry?.pooled === pooled
       && isCursorSdkPooledAlive(pooled)
-      && entry.activityRuntimeSocketPath === (args.activityRuntimeSocketPath?.trim() || null);
+      && activityRuntimeSocketKey(entry.activityRuntimeSocketPath) === activityRuntimeSocketKey(args.activityRuntimeSocketPath);
     if (!entry || !live) {
       if (initOwner) {
         throw new Error("Cursor SDK worker was disposed during initialization.");

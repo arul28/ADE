@@ -25061,6 +25061,7 @@ function formatChatSummary(value: unknown): string {
     ["title", record.title],
     ["provider", record.provider],
     ["model", record.model],
+    ["collaboration mode", record.codexEffectiveCollaborationMode],
     ["activity", activityLabel],
     ["reported at", activity?.updatedAt],
   ]);

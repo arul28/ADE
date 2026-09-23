@@ -871,6 +871,10 @@ export type SyncRosterChat = {
   archived?: boolean;
   lastActivityAt?: string | null;
   preview?: string | null; // last-output preview, hard-truncated (~120 chars)
+  /** Latest lifecycle event, excluding agent activity reports. */
+  lifecycleUpdatedAt?: string | null;
+  /** Host timestamp of the latest activity report set or explicit clear. */
+  activityStatusChangedAt?: string | null;
   /**
    * Additive settled-lifecycle projection. Optional so current phones remain
    * compatible with older hosts and current hosts remain compatible with older

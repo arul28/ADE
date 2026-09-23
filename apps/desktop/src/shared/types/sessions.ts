@@ -340,6 +340,8 @@ export type TerminalSessionSummary = {
   statusNote?: string | null;
   /** Optional for older peers and project databases that predate this report. */
   activityStatus?: SessionActivityReport | null;
+  /** Host timestamp of the latest activity report set or explicit clear. */
+  activityStatusChangedAt?: string | null;
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;
   /** Auditable owner of the current explicit attention declaration. */

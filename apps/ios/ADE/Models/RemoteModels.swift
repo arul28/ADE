@@ -1121,6 +1121,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var codexApprovalPolicy: String?
   var codexSandbox: String?
   var codexConfigSource: String?
+  /// Collaboration mode accepted by the active Codex turn/start. Older hosts omit it.
+  var codexEffectiveCollaborationMode: String? = nil
+  /// True when the host explicitly confirms that no accepted turn mode remains.
+  /// Older hosts omit this marker, so an absent key is not a clear.
+  var codexEffectiveCollaborationModeWasCleared: Bool? = nil
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
@@ -1130,6 +1135,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// distinction for the current host.
   var cursorModeIdWasCleared: Bool? = nil
   var cursorConfigValues: [String: RemoteJSONValue]?
+  /// ACP's structured, provider-owned session modes. Older hosts omit it.
+  var acpConfigSnapshot: RemoteJSONValue? = nil
+  /// True when a live metadata event explicitly cleared the ACP snapshot.
+  var acpConfigSnapshotWasCleared: Bool? = nil
   /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
   var cursorCloudAgentId: String? = nil
   /// `"cloud"` or `"local"`. Older hosts omit it; when present it wins over a
@@ -1222,12 +1231,16 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.codexApprovalPolicy == rhs.codexApprovalPolicy
       && lhs.codexSandbox == rhs.codexSandbox
       && lhs.codexConfigSource == rhs.codexConfigSource
+      && lhs.codexEffectiveCollaborationMode == rhs.codexEffectiveCollaborationMode
+      && lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
+      && lhs.acpConfigSnapshot == rhs.acpConfigSnapshot
+      && lhs.acpConfigSnapshotWasCleared == rhs.acpConfigSnapshotWasCleared
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.computerUse == rhs.computerUse
@@ -1280,6 +1293,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var codexApprovalPolicy: String?
   var codexSandbox: String?
   var codexConfigSource: String?
+  var codexEffectiveCollaborationMode: String?
+  /// Distinguishes an explicit null clear from an absent field in a partial event.
+  var codexEffectiveCollaborationModeWasCleared: Bool = false
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var cursorModeId: String?
@@ -1290,6 +1306,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var cursorModeIdWasCleared: Bool = false
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorConfigValues: [String: RemoteJSONValue]?
+  var acpConfigSnapshot: RemoteJSONValue?
+  /// Distinguishes an explicit null clear from an absent field in a partial event.
+  var acpConfigSnapshotWasCleared: Bool = false
   /// True when the event carried `cursorConfigValues: null` (an intentional
   /// clear the host emits to drop the cursor config) rather than omitting the
   /// key. Symmetric with `cursorModeIdWasCleared`: absent-key still means "no
@@ -1314,11 +1333,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case codexSandbox
     case codexSandboxMode
     case codexConfigSource
+    case codexEffectiveCollaborationMode
     case opencodePermissionMode
     case droidPermissionMode
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
+    case acpConfigSnapshot
     case spawnKind
     case subagentTakeoverPromptShownAt
     case usageLimitResume
@@ -1339,6 +1360,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       codexSandbox = try c.decodeIfPresent(String.self, forKey: .codexSandboxMode)
     }
     codexConfigSource = try c.decodeIfPresent(String.self, forKey: .codexConfigSource)
+    if c.contains(.codexEffectiveCollaborationMode) {
+      codexEffectiveCollaborationMode = try c.decodeIfPresent(String.self, forKey: .codexEffectiveCollaborationMode)
+      codexEffectiveCollaborationModeWasCleared = codexEffectiveCollaborationMode == nil
+    } else {
+      codexEffectiveCollaborationMode = nil
+      codexEffectiveCollaborationModeWasCleared = false
+    }
     opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
     // Distinguish `cursorModeId: null` (an intentional clear) from an absent
@@ -1352,6 +1380,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       cursorModeIdWasCleared = false
     }
     cursorModeSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
+    if c.contains(.acpConfigSnapshot) {
+      acpConfigSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .acpConfigSnapshot)
+      acpConfigSnapshotWasCleared = acpConfigSnapshot == nil
+    } else {
+      acpConfigSnapshot = nil
+      acpConfigSnapshotWasCleared = false
+    }
     // Same null-vs-absent distinction as cursorModeId: decodeIfPresent collapses
     // `cursorConfigValues: null` (an explicit clear) into absent, so gate on
     // `contains` to record the clear.
@@ -1388,6 +1423,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || codexApprovalPolicy != nil
       || codexSandbox != nil
       || codexConfigSource != nil
+      || codexEffectiveCollaborationMode != nil
+      || codexEffectiveCollaborationModeWasCleared
       || opencodePermissionMode != nil
       || droidPermissionMode != nil
       || cursorModeId != nil
@@ -1395,6 +1432,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || cursorModeSnapshot != nil
       || cursorConfigValues != nil
       || cursorConfigValuesWasCleared
+      || acpConfigSnapshot != nil
+      || acpConfigSnapshotWasCleared
       || spawnKind != nil
       || subagentTakeoverPromptShownAt != nil
       || subagentTakeoverPromptShownAtWasCleared
@@ -1414,6 +1453,13 @@ extension AgentChatSessionSummary {
     if let v = update.codexApprovalPolicy { codexApprovalPolicy = v }
     if let v = update.codexSandbox { codexSandbox = v }
     if let v = update.codexConfigSource { codexConfigSource = v }
+    if let v = update.codexEffectiveCollaborationMode {
+      codexEffectiveCollaborationMode = v
+      codexEffectiveCollaborationModeWasCleared = false
+    } else if update.codexEffectiveCollaborationModeWasCleared {
+      codexEffectiveCollaborationMode = nil
+      codexEffectiveCollaborationModeWasCleared = true
+    }
     if let v = update.opencodePermissionMode { opencodePermissionMode = v }
     if let v = update.droidPermissionMode { droidPermissionMode = v }
     if let v = update.cursorModeId {
@@ -1426,6 +1472,13 @@ extension AgentChatSessionSummary {
       cursorModeIdWasCleared = true
     }
     if let v = update.cursorModeSnapshot { cursorModeSnapshot = v }
+    if let v = update.acpConfigSnapshot {
+      acpConfigSnapshot = v
+      acpConfigSnapshotWasCleared = false
+    } else if update.acpConfigSnapshotWasCleared {
+      acpConfigSnapshot = nil
+      acpConfigSnapshotWasCleared = true
+    }
     if let v = update.cursorConfigValues {
       cursorConfigValues = v
     } else if update.cursorConfigValuesWasCleared {
@@ -1476,6 +1529,13 @@ extension AgentChatSessionSummary {
     if let v = other.codexApprovalPolicy { codexApprovalPolicy = v }
     if let v = other.codexSandbox { codexSandbox = v }
     if let v = other.codexConfigSource { codexConfigSource = v }
+    if other.codexEffectiveCollaborationModeWasCleared == true {
+      codexEffectiveCollaborationMode = nil
+      codexEffectiveCollaborationModeWasCleared = true
+    } else if let v = other.codexEffectiveCollaborationMode {
+      codexEffectiveCollaborationMode = v
+      codexEffectiveCollaborationModeWasCleared = false
+    }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
     if other.cursorModeIdWasCleared == true {
@@ -1487,6 +1547,13 @@ extension AgentChatSessionSummary {
     }
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
     cursorConfigValues = other.cursorConfigValues
+    if other.acpConfigSnapshotWasCleared == true {
+      acpConfigSnapshot = nil
+      acpConfigSnapshotWasCleared = true
+    } else if let v = other.acpConfigSnapshot {
+      acpConfigSnapshot = v
+      acpConfigSnapshotWasCleared = false
+    }
     if let v = other.spawnKind { spawnKind = v }
     if let v = other.subagentTakeoverPromptShownAt { subagentTakeoverPromptShownAt = v }
     // Mirrored unconditionally, nil included: the cache is authoritative for the
@@ -4658,10 +4725,15 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var status: String
   var startedAt: String
   var endedAt: String?
+  /// Latest terminal output timestamp (`terminal_sessions.last_output_at`).
+  /// Separate from `activityStatusChangedAt`, which tracks agent-authored detail.
+  var lastActivityAt: String? = nil
   var archivedAt: String? = nil
   var settledAt: String? = nil
   var statusNote: String? = nil
   var activityStatus: SessionActivityReport? = nil
+  /// Host timestamp of the latest activity report set or explicit clear.
+  var activityStatusChangedAt: String? = nil
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var attentionSource: String? = nil
@@ -4744,10 +4816,12 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.status == rhs.status
       && lhs.startedAt == rhs.startedAt
       && lhs.endedAt == rhs.endedAt
+      && lhs.lastActivityAt == rhs.lastActivityAt
       && lhs.archivedAt == rhs.archivedAt
       && lhs.settledAt == rhs.settledAt
       && lhs.statusNote == rhs.statusNote
       && lhs.activityStatus == rhs.activityStatus
+      && lhs.activityStatusChangedAt == rhs.activityStatusChangedAt
       && lhs.attentionRequestedAt == rhs.attentionRequestedAt
       && lhs.attentionMessage == rhs.attentionMessage
       && lhs.attentionSource == rhs.attentionSource
@@ -4800,10 +4874,12 @@ extension TerminalSessionSummary {
     case status
     case startedAt
     case endedAt
+    case lastActivityAt
     case archivedAt
     case settledAt
     case statusNote
     case activityStatus
+    case activityStatusChangedAt
     case attentionRequestedAt
     case attentionMessage
     case attentionSource
@@ -4849,10 +4925,12 @@ extension TerminalSessionSummary {
     status = try container.decode(String.self, forKey: .status)
     startedAt = try container.decode(String.self, forKey: .startedAt)
     endedAt = try container.decodeIfPresent(String.self, forKey: .endedAt)
+    lastActivityAt = try container.decodeIfPresent(String.self, forKey: .lastActivityAt)
     archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
     settledAt = try container.decodeIfPresent(String.self, forKey: .settledAt)
     statusNote = try container.decodeIfPresent(String.self, forKey: .statusNote)
     activityStatus = try container.decodeIfPresent(SessionActivityReport.self, forKey: .activityStatus)
+    activityStatusChangedAt = try container.decodeIfPresent(String.self, forKey: .activityStatusChangedAt)
     attentionRequestedAt = try container.decodeIfPresent(String.self, forKey: .attentionRequestedAt)
     attentionMessage = try container.decodeIfPresent(String.self, forKey: .attentionMessage)
     attentionSource = try container.decodeIfPresent(String.self, forKey: .attentionSource)

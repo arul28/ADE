@@ -134,6 +134,8 @@ type SyncServiceArgs = {
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
+  /** False when this runtime has no RPC endpoint that accepts activity reports. */
+  sessionActivityReportingEnabled?: boolean;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
@@ -735,6 +737,7 @@ export function createSyncService(args: SyncServiceArgs) {
     prService: args.prService,
     prSummaryService: args.prSummaryService,
     ptyService: args.ptyService,
+    sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
     sessionService: args.sessionService,
     sessionDeltaService: args.sessionDeltaService,
     fileService: args.fileService,
@@ -891,6 +894,7 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionService: args.sessionService,
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
+      sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
       agentChatService: args.agentChatService,
       chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,

@@ -710,6 +710,20 @@ describe("tracked CLI activity guidance", () => {
     },
   );
 
+  it("omits activity reporting when the runtime has no RPC endpoint", () => {
+    expect(buildTrackedCliSessionActivityGuidance({
+      provider: "codex",
+      permissionMode: "default",
+      sessionActivityReportingEnabled: false,
+    })).toBeNull();
+    const launch = buildTrackedCliLaunchCommand({
+      provider: "codex",
+      permissionMode: "default",
+      sessionActivityReportingEnabled: false,
+    });
+    expect(JSON.stringify(launch)).not.toContain("chat activity testing");
+  });
+
   it("requires a write-capable Droid mode and Pi full-auto Bash", () => {
     expect(buildTrackedCliSessionActivityGuidance({
       provider: "droid",

@@ -62,6 +62,7 @@ type SessionRow = {
   settledAt: string | null;
   statusNote: string | null;
   activityStatusJson: string | null;
+  activityStatusChangedAt: string | null;
   attentionRequestedAt: string | null;
   attentionMessage: string | null;
   attentionSource: string | null;
@@ -135,6 +136,7 @@ const SESSION_COLUMNS = `
   s.settled_at as settledAt,
   s.status_note as statusNote,
   s.activity_status_json as activityStatusJson,
+  s.activity_status_changed_at as activityStatusChangedAt,
   s.attention_requested_at as attentionRequestedAt,
   s.attention_message as attentionMessage,
   s.attention_source as attentionSource,
@@ -484,6 +486,26 @@ export function createSessionService({
     return true;
   };
 
+  const writeSessionActivity = (sessionId: string, value: unknown): boolean => {
+    if (value !== null && !isSessionActivityValue(value)) {
+      throw new Error("setSessionActivity requires a supported activity value or null.");
+    }
+    return mutateSessionMeta(sessionId, (id) => {
+      const changedAt = new Date().toISOString();
+      const report = value === null
+        ? null
+        : {
+            value,
+            source: "agent" as const,
+            updatedAt: changedAt,
+          };
+      db.run(
+        "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
+        [report ? JSON.stringify(report) : null, changedAt, id],
+      );
+    });
+  };
+
   /**
    * Move a session row back to `running`, restricted to the given scope.
    *
@@ -697,6 +719,7 @@ export function createSessionService({
 
   const mapRow = (row: SessionRow) => {
     const { activityStatusJson, ...summaryRow } = row;
+    const activityStatus = normalizeSessionActivityReport(activityStatusJson);
     const toolType = inferToolTypeFromResumeCommand(
       normalizeToolType(row.toolType),
       row.resumeCommand ?? null,
@@ -724,7 +747,8 @@ export function createSessionService({
       archivedAt: row.archivedAt ?? null,
       settledAt: normalizeIsoTimestamp(row.settledAt),
       statusNote: normalizeSessionStatusNote(row.statusNote),
-      activityStatus: normalizeSessionActivityReport(activityStatusJson),
+      activityStatus,
+      activityStatusChangedAt: normalizeIsoTimestamp(row.activityStatusChangedAt) ?? activityStatus?.updatedAt ?? null,
       attentionRequestedAt: normalizeIsoTimestamp(row.attentionRequestedAt),
       attentionMessage: normalizeOptionalText(row.attentionMessage, 500),
       attentionSource: normalizeAttentionSource(row.attentionSource),
@@ -2204,22 +2228,7 @@ export function createSessionService({
 
     /** Store one host-timestamped, fixed-value activity report for this session. */
     setSessionActivity(sessionId: string, value: unknown): boolean {
-      if (value !== null && !isSessionActivityValue(value)) {
-        throw new Error("setSessionActivity requires a supported activity value or null.");
-      }
-      return mutateSessionMeta(sessionId, (id) => {
-        const report = value === null
-          ? null
-          : {
-              value,
-              source: "agent" as const,
-              updatedAt: new Date().toISOString(),
-            };
-        db.run(
-          "update terminal_sessions set activity_status_json = ? where id = ?",
-          [report ? JSON.stringify(report) : null, id],
-        );
-      });
+      return writeSessionActivity(sessionId, value);
     },
 
     getStatusNoteUpdatedAt(sessionId: string): string | null {
@@ -2291,9 +2300,7 @@ export function createSessionService({
 
     /** Clear an agent activity report at a real turn boundary, not on PTY keystrokes. */
     clearSessionActivity(sessionId: string): boolean {
-      return mutateSessionMeta(sessionId, (id) => {
-        db.run("update terminal_sessions set activity_status_json = null where id = ?", [id]);
-      });
+      return writeSessionActivity(sessionId, null);
     },
 
     clearTurnStartMarkers(sessionId: string): boolean {

@@ -280,7 +280,9 @@ function lifecycleFields(
     wokeReason: summary?.wokeReason ?? null,
     runtimeState: summary?.runtimeState,
     toolType: summary?.toolType,
-    currentTurnStartedAt: summary?.currentTurnStartedAt ?? null,
+    ...(summary?.currentTurnStartedAt != null
+      ? { currentTurnStartedAt: summary.currentTurnStartedAt }
+      : {}),
     attentionSource: summary?.attentionSource ?? null,
     exitCode: summary?.exitCode ?? null,
     laneName: summary?.laneName,

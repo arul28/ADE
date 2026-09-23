@@ -158,6 +158,7 @@
 		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
 		E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */; };
 		FB000000000000000000C1C1 /* WorkSessionCanonicalState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C1C1 /* WorkSessionCanonicalState.swift */; };
+		FB000000000000000000CA01 /* WorkSessionActivityPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000CA01 /* WorkSessionActivityPresentation.swift */; };
 		E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */; };
 		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
 		E10000000000000000000F0A /* WorkCardExpansion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0A /* WorkCardExpansion.swift */; };
@@ -512,6 +513,7 @@
 		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
 		D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkStatusAndFormattingHelpers.swift; path = ADE/Views/Work/WorkStatusAndFormattingHelpers.swift; sourceTree = "<group>"; };
 		FA000000000000000000C1C1 /* WorkSessionCanonicalState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionCanonicalState.swift; path = ADE/Views/Work/WorkSessionCanonicalState.swift; sourceTree = "<group>"; };
+		FA000000000000000000CA01 /* WorkSessionActivityPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionActivityPresentation.swift; path = ADE/Views/Work/WorkSessionActivityPresentation.swift; sourceTree = "<group>"; };
 		D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Timeline.swift"; path = "ADE/Views/Work/WorkChatSessionView+Timeline.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003A /* WorkReasoningCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkReasoningCard.swift"; path = "ADE/Views/Work/WorkReasoningCard.swift"; sourceTree = "<group>"; };
 		D10000000000000000000F0A /* WorkCardExpansion.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkCardExpansion.swift"; path = "ADE/Views/Work/WorkCardExpansion.swift"; sourceTree = "<group>"; };
@@ -1077,6 +1079,7 @@
 				D10000000000000000000037 /* WorkEventMapping.swift */,
 				D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */,
 				FA000000000000000000C1C1 /* WorkSessionCanonicalState.swift */,
+				FA000000000000000000CA01 /* WorkSessionActivityPresentation.swift */,
 			);
 			name = Work;
 			sourceTree = "<group>";
@@ -1896,6 +1899,7 @@
 				E10000000000000000000037 /* WorkEventMapping.swift in Sources */,
 				E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */,
 				FB000000000000000000C1C1 /* WorkSessionCanonicalState.swift in Sources */,
+				FB000000000000000000CA01 /* WorkSessionActivityPresentation.swift in Sources */,
 				H10000000000000000000001 /* CtoRootScreen.swift in Sources */,
 				H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */,
 				H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */,

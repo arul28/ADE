@@ -383,8 +383,10 @@ adapter, with its own provenance.
 Agent activity detail is a separate typed report (`planning`, `implementing`,
 `testing`, `reviewing`, `debugging`, or `monitoring`), set through
 `ade chat activity` only when session guidance confirms that provider can
-invoke ADE's CLI. It refines a running card's single status label, never
-changes the parent lifecycle phase, and clears when a new user turn is accepted.
+invoke the runtime-resolved ADE CLI against this runtime's exact RPC socket; an
+executable path alone is not enough, and embedded runtimes omit the guidance.
+It refines a running card's single status label, never changes the parent
+lifecycle phase, and clears when a new user turn is accepted.
 Tracked CLI guidance is enabled for Codex and OpenCode outside Plan
 and external `config-toml`, write-capable non-AGI Droid, Pi full-auto, and
 Cursor launches with an initial prompt. It calls the host-resolved
