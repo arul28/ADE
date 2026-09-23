@@ -7318,6 +7318,41 @@ describe("per-chat runtime routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetComments, expect.anything());
   });
 
+  it("keeps sync-status reads on a legacy bound runtime through Electron IPC error wrapping", async () => {
+    const status = { hasUpstream: true, upstreamState: "tracking", ahead: 1, behind: 0 };
+    const { bridge, invoke } = await mountBridge(machineB, async (request) => {
+      if (request.action === "getSyncStatuses") {
+        throw new Error(
+          `Error invoking remote method 'ade.remoteRuntime.callAction': Error: Action '${request.domain}.${request.action}' is not callable.`,
+        );
+      }
+      if (request.domain === "git" && request.action === "getSyncStatus") return status;
+      throw new Error(`unexpected legacy git action: ${request.domain}.${request.action}`);
+    });
+
+    await expect(bridge.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual({
+      "lane-1": status,
+      "lane-2": status,
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.gitGetSyncStatuses, expect.anything());
+    expect(invoke.mock.calls.filter(([channel, payload]) =>
+      channel === IPC.remoteRuntimeCallAction
+      && (payload as { request?: { action?: string } })?.request?.action === "getSyncStatus",
+    )).toHaveLength(2);
+  });
+
+  it("surfaces sync-status runtime outages instead of treating them as missing actions", async () => {
+    const { bridge, invoke } = await mountBridge(machineB, async (request) => {
+      if (request.action === "getSyncStatuses") {
+        throw new Error("Sync service is not available.");
+      }
+      throw new Error(`unexpected fallback action: ${request.domain}.${request.action}`);
+    });
+
+    await expect(bridge.git.getSyncStatuses({ laneIds: ["lane-1"] })).rejects.toThrow("Sync service is not available");
+    expect(invoke).not.toHaveBeenCalledWith(IPC.gitGetSyncStatus, expect.anything());
+  });
+
   it("routes pinned lane and session lists to This computer without rebinding the window", async () => {
     const { bridge, invoke } = await mountBridge();
 
