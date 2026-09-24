@@ -82,6 +82,15 @@ skill enforces them on the branch.
   must fail only when behavior breaks, never when a refactor keeps behavior.
 - **No regression test without a gap.** A bug fix gets a new test only under
   rule 3 above.
+- **No test-only production seam.** Do not add an export, flag, wrapper, or
+  hook that no production caller needs. Test through the real boundary, or do
+  not add the test.
+- **One contract, one owner.** A second test of the same contract needs a
+  failure the owner cannot reach, such as a transport or lifecycle break.
+  Otherwise extend the owner. `/quality` records a coverage gap and does not
+  add the test. This skill adds one only when it can name the behavior, the
+  failure that turns the test red, and why no existing test already catches
+  that.
 - **Combine before you add.** Trivial cases of one contract are one
   `it.each` table. Extend an existing test before you write a new one.
 - **Double-check every test you wrote.** Revert the fix locally or break the

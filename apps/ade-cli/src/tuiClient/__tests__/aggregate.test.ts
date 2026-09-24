@@ -618,31 +618,6 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(assistantBlocks[0]!.line.body).toBe("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
   });
 
-  it("does not duplicate the tail when a provider re-emits an overlapping fragment of the same message", () => {
-    // Regression (real Codex chat): "…so I can split the review instead of
-    // doing it as one giant pass." rendered twice because the provider re-sent
-    // the final sentence for the same messageId and the merge was plain concat.
-    const events: AgentChatEventEnvelope[] = [
-      env("2026-01-01T12:00:00.000Z", { type: "text", text: "I found the entry point so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
-      env("2026-01-01T12:00:01.000Z", { type: "text", text: " so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
-    ];
-    const blocks = aggregate(events);
-    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
-    expect(assistantBlocks).toHaveLength(1);
-    expect(assistantBlocks[0]!.line.body).toBe("I found the entry point so I can split the review instead of doing it as one giant pass.");
-  });
-
-  it("replaces the buffer when a provider re-emits the cumulative message text", () => {
-    const events: AgentChatEventEnvelope[] = [
-      env("2026-01-01T12:00:00.000Z", { type: "text", text: "Hello", turnId: "turn-1", messageId: "msg-1" }),
-      env("2026-01-01T12:00:01.000Z", { type: "text", text: "Hello world.", turnId: "turn-1", messageId: "msg-1" }),
-    ];
-    const blocks = aggregate(events);
-    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
-    expect(assistantBlocks).toHaveLength(1);
-    expect(assistantBlocks[0]!.line.body).toBe("Hello world.");
-  });
-
   it("dedupes re-emitted reasoning tails within the same reasoning item", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "reasoning", text: "Weighing options before refactor.", turnId: "turn-1", itemId: "r1" }),

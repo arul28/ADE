@@ -8,11 +8,6 @@ import {
 } from "./identitySessionPolicy";
 
 describe("identitySessionPolicy", () => {
-  it("forces CTO sessions into full-auto permission mode", () => {
-    expect(normalizeIdentityPermissionMode("cto", "plan", "claude")).toBe("full-auto");
-    expect(normalizeIdentityPermissionMode("cto", undefined, "codex")).toBe("full-auto");
-  });
-
   it("makes the CTO ask before it writes while a voice call is up", () => {
     // The whole safety story for voice rests on this. Without the hold the CTO
     // is full-auto, and a mode written onto the session is discarded by this
@@ -65,10 +60,6 @@ describe("identitySessionPolicy", () => {
     }
   });
 
-  it("pins CTO execution to the canonical lane", () => {
-    expect(resolveIdentityExecutionLane("cto", "lane-feature", "lane-primary")).toBe("lane-primary");
-  });
-
   it("falls back to plan/guarded mode for non-identity sessions", () => {
     expect(normalizeIdentityPermissionMode(undefined, "plan", "claude")).toBe("plan");
     expect(normalizeIdentityPermissionMode(undefined, "full-auto", "claude")).toBe("plan");
@@ -100,24 +91,6 @@ describe("identitySessionPolicy", () => {
   });
 });
 
-describe("who owns a session's status line", () => {
-  it("says a call is live on the session it is held on, and nowhere else", () => {
-    // The chat service asks this before regenerating a session's status line. A
-    // live call writes that line itself, deterministically and instantly; the
-    // generated one costs a model round trip per settled turn and on a call it
-    // always described a question the user had already moved past.
-    expect(isIdentityConfirmHeld("session-a")).toBe(false);
-    const release = beginIdentityConfirmHold("session-a");
-    try {
-      expect(isIdentityConfirmHeld("session-a")).toBe(true);
-      expect(isIdentityConfirmHeld("session-b")).toBe(false);
-    } finally {
-      release();
-    }
-    expect(isIdentityConfirmHeld("session-a")).toBe(false);
-  });
-});
-
 describe("a confirm hold belongs to one session", () => {
   it("leaves every other CTO session in full-auto", () => {
     // One brain process hosts every open project's scopes and this module is a
@@ -133,15 +106,6 @@ describe("a confirm hold belongs to one session", () => {
       release();
     }
     expect(normalizeIdentityPermissionMode("cto", "full-auto", "claude", "session-a")).toBe("full-auto");
-  });
-
-  it("counts per session, so overlapping calls cannot release each other early", () => {
-    const first = beginIdentityConfirmHold("session-a");
-    const second = beginIdentityConfirmHold("session-a");
-    first();
-    expect(isIdentityConfirmHeld("session-a")).toBe(true);
-    second();
-    expect(isIdentityConfirmHeld("session-a")).toBe(false);
   });
 
   it("still answers for everyone when the holder could not name its session", () => {

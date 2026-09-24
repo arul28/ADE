@@ -130,7 +130,7 @@ describe("ctoStateService", () => {
    * An unusable stored pick has exactly one honest outcome on this branch —
    * null, which is what shows the picker.
    */
-  it("nulls a stored model preference whose model id no longer resolves", async () => {
+  it("clears a stored model preference when its model ID is unknown", async () => {
     const fixture = await createStateFixture();
     const service = createCtoStateService({
       db: fixture.db,

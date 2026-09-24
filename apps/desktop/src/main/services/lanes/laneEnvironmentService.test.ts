@@ -756,7 +756,7 @@ describe("laneEnvironmentService", () => {
       expect(service.wasLastInitIncomplete(lane.id)).toBe(false);
     });
 
-    it("skips a queued init whose precondition no longer holds when the queue reaches it", async () => {
+    it("rechecks queued init preconditions before running", async () => {
       // Ordering, not politeness: the caller's own "is this lane still active?"
       // check runs before it enqueues, so a teardown already queued ahead of it
       // runs first and the init would `compose up` a lane that is now archived.

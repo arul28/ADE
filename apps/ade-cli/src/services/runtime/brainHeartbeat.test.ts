@@ -358,7 +358,7 @@ describe("servesMachineRuntimeEndpoint", () => {
     expect(servesMachineRuntimeEndpoint(`${machineSocketPath}/`, machineSocketPath)).toBe(true);
   });
 
-  it("regression: a dev brain on its own socket must NOT publish it", () => {
+  it("a dev brain on its own socket must NOT publish it", () => {
     // `~/.ade/runtime` is shared by every brain on the box, and
     // `com.ade.watchdog` reads the heartbeat to tell a wedged brain from a busy one.
     expect(servesMachineRuntimeEndpoint("/tmp/ade-runtime-dev.sock", machineSocketPath)).toBe(false);

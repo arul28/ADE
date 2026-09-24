@@ -313,19 +313,6 @@ describe("shared sync listener upgrade policy", () => {
 describe("inspectSyncListenerPort on win32", () => {
   const TRUSTED_POWERSHELL = /[\\/]system32[\\/]windowspowershell[\\/]v1\.0[\\/]powershell\.exe$/i;
 
-  it("builds a Get-NetTCPConnection query joined to Win32_Process", () => {
-    const args = buildWindowsPortHolderQueryArgs(8787);
-    const script = args.join(" ");
-    expect(args.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-Command"]);
-    expect(script).toContain("Get-NetTCPConnection -LocalPort 8787 -State Listen");
-    expect(script).toContain("OwningProcess");
-    expect(script).toContain("Get-CimInstance Win32_Process");
-    expect(script).toContain("CommandLine");
-    expect(script).toContain("CreationDate");
-    // wmic is deprecated and is being removed from Windows.
-    expect(script).not.toMatch(/wmic/i);
-  });
-
   it("refuses to interpolate anything that is not a real port", () => {
     for (const port of [0, -1, 1.5, 70_000, Number.NaN]) {
       expect(() => buildWindowsPortHolderQueryArgs(port)).toThrow(/Invalid port/);

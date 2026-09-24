@@ -9,121 +9,66 @@ import {
   validatePiSdkWorkerRequest,
 } from "./piSdkProtocol";
 
+const base = { protocolVersion: PI_SDK_PROTOCOL_VERSION, requestId: "r1" };
+const ready = {
+  protocolVersion: PI_SDK_PROTOCOL_VERSION,
+  packageRoot: "/pkg",
+  packageEntry: "/pkg/dist/index.js",
+  version: "0.84.0",
+  sessionFile: null,
+  sessionId: null,
+  currentModel: null,
+  thinkingLevel: null,
+  availableModels: [],
+};
+
 describe("Pi SDK protocol", () => {
   it("rejects malformed and unsupported worker messages without throwing", () => {
     expect(validatePiSdkWorkerRequest(null)).toContain("object");
     expect(validatePiSdkWorkerRequest({ type: "send", requestId: "x" })).toContain("protocol version");
-    expect(validatePiSdkWorkerRequest({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "send",
-      requestId: "x",
-      payload: { prompt: "" },
-    })).toContain("non-empty prompt");
+    expect(validatePiSdkWorkerRequest({ ...base, type: "send", payload: { prompt: "" } })).toContain("non-empty prompt");
   });
 
-  it("accepts path images on send without inlined screenshot bytes", () => {
-    expect(validatePiSdkWorkerRequest({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "send",
-      requestId: "send-images",
-      payload: {
-        prompt: "look",
-        images: [{ path: "/repo/.ade/attachments/shot.png", mimeType: "image/png", rootPath: "/repo" }],
-      },
-    })).toBeNull();
-    expect(validatePiSdkWorkerRequest({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "steer",
-      requestId: "steer-images",
-      payload: {
-        prompt: "look",
-        images: [{ data: "abc", mimeType: "image/jpeg" }],
-      },
-    })).toBeNull();
-    expect(validatePiSdkWorkerRequest({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "send",
-      requestId: "send-url",
-      payload: {
-        prompt: "look",
-        images: [{ url: "https://example.com/ui.png", mimeType: "image/png" }],
-      },
-    })).toMatch(/path or data/u);
-    expect(validatePiSdkWorkerRequest({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "follow_up",
-      requestId: "follow-both",
-      payload: {
-        prompt: "look",
-        images: [{ path: "/shot.png", data: "abc", mimeType: "image/png" }],
-      },
-    })).toMatch(/path or data/u);
-    expect(validatePiSdkWorkerRequest({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "send",
-      requestId: "send-no-root",
-      payload: {
-        prompt: "look",
-        images: [{ path: "/repo/.ade/attachments/shot.png", mimeType: "image/png" }],
-      },
-    })).toMatch(/path or data/u);
+  // Path images carry the attachment root so the worker re-opens them; bytes
+  // are only inlined for data images.
+  it.each([
+    ["send", { path: "/repo/.ade/attachments/shot.png", mimeType: "image/png", rootPath: "/repo" }, null],
+    ["steer", { data: "abc", mimeType: "image/jpeg" }, null],
+    ["send", { url: "https://example.com/ui.png", mimeType: "image/png" }, /path or data/u],
+    ["follow_up", { path: "/shot.png", data: "abc", mimeType: "image/png" }, /path or data/u],
+    ["send", { path: "/repo/.ade/attachments/shot.png", mimeType: "image/png" }, /path or data/u],
+  ] as const)("validates a %s image %j", (type, image, expected) => {
+    const result = validatePiSdkWorkerRequest({ ...base, type, payload: { prompt: "look", images: [image] } });
+    if (expected === null) expect(result).toBeNull();
+    else expect(result).toMatch(expected);
   });
 
-  it("accepts an init message without requiring Pi types", () => {
-    expect(validatePiSdkWorkerRequest({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+  // The store root and the directory Pi writes into are separate fields; both
+  // must be validated, or a rename can silently unhook one of them. The tool
+  // options must not widen the tool surface through a malformed value.
+  it.each([
+    [{ sessionRoot: "/a/sessions", sessionStorageDir: "/pi-sessions", modelRef: "anthropic/claude", thinkingLevel: "medium" }, null],
+    [{ sessionRoot: 5 }, /sessionRoot/u],
+    [{ sessionStorageDir: 5 }, /sessionStorageDir/u],
+    [{ extensions: "yes" }, /extensions/u],
+    [{ askUserTool: 1 }, /askUserTool/u],
+    [{ approvalTools: ["bash", ""] }, /approvalTools/u],
+  ] as const)("validates init payload %j", (extra, expected) => {
+    const result = validatePiSdkWorkerRequest({
+      ...base,
       type: "init",
-      requestId: "init-1",
-      payload: {
-        packageRoot: "/Users/example/.npm/pi",
-        cwd: "/Users/example/project",
-        agentDir: "/Users/example/.pi/agent",
-        modelRef: "anthropic/claude-sonnet",
-        thinkingLevel: "medium",
-        sessionRoot: "/Users/example/.pi/agent/sessions",
-        sessionStorageDir: "/Users/example/pi-sessions",
-      },
-    })).toBeNull();
-
-    // The store root and the directory Pi writes into are separate fields;
-    // both must be validated, or a rename can silently unhook one of them.
-    const initBase = {
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "init" as const,
-      requestId: "init-2",
-      payload: { packageRoot: "/p", cwd: "/c", agentDir: "/a" },
-    };
-    expect(validatePiSdkWorkerRequest({
-      ...initBase,
-      payload: { ...initBase.payload, sessionRoot: 5 },
-    })).toMatch(/sessionRoot/u);
-    expect(validatePiSdkWorkerRequest({
-      ...initBase,
-      payload: { ...initBase.payload, sessionStorageDir: 5 },
-    })).toMatch(/sessionStorageDir/u);
+      payload: { packageRoot: "/p", cwd: "/c", agentDir: "/a", ...extra },
+    });
+    if (expected === null) expect(result).toBeNull();
+    else expect(result).toMatch(expected);
   });
 
   it("rejects malformed worker responses before they reach the pool", () => {
-    expect(validatePiSdkWorkerResponse({
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      type: "response",
-      requestId: "request-1",
-      ok: false,
-    })).toContain("missing error");
+    expect(validatePiSdkWorkerResponse({ ...base, type: "response", ok: false })).toContain("missing error");
     expect(validatePiSdkWorkerResponse({
       protocolVersion: PI_SDK_PROTOCOL_VERSION,
       type: "ready",
-      ready: {
-        protocolVersion: PI_SDK_PROTOCOL_VERSION,
-        packageRoot: "/pi",
-        packageEntry: "/pi/index.js",
-        version: null,
-        sessionFile: null,
-        sessionId: null,
-        currentModel: null,
-        thinkingLevel: null,
-        availableModels: "bad",
-      },
+      ready: { ...ready, availableModels: "bad" },
     })).toContain("availableModels");
     expect(validatePiSdkWorkerResponse({
       protocolVersion: PI_SDK_PROTOCOL_VERSION,
@@ -136,17 +81,18 @@ describe("Pi SDK protocol", () => {
     expect(validatePiSdkWorkerResult("models", {})).toContain("array");
     expect(validatePiSdkWorkerResult("auth", [{ id: "openai" }])).toBeNull();
     expect(validatePiSdkWorkerResult("set_thinking", { protocolVersion: PI_SDK_PROTOCOL_VERSION })).toContain("package paths");
-    expect(validatePiSdkWorkerResult("init", {
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      packageRoot: "/pi",
-      packageEntry: "/pi/index.js",
-      version: null,
-      sessionFile: null,
-      sessionId: null,
-      currentModel: null,
-      thinkingLevel: null,
-      availableModels: [],
-    })).toBeNull();
+    expect(validatePiSdkWorkerResult("init", ready)).toBeNull();
+    expect(validatePiSdkWorkerResult("init", { ...ready, account: { kind: "subscription", upstream: "openai-codex", accountId: "acct-1" } })).toBeNull();
+    expect(validatePiSdkWorkerResult("init", { ...ready, account: { kind: "subscription", upstream: "openai-codex", accountId: 4 } })).toMatch(/account/u);
+    expect(validatePiSdkWorkerResult("init", { ...ready, extensions: [{ id: "/a/b.js", name: "b" }] })).toBeNull();
+    expect(validatePiSdkWorkerResult("init", { ...ready, extensions: [{ name: "b" }] })).toMatch(/extensions/u);
+    expect(validatePiSdkWorkerResult("init", { ...ready, extensionsError: 3 })).toMatch(/extensionsError/u);
+    expect(validatePiSdkWorkerResult("login", { ok: true, providerId: "anthropic" })).toBeNull();
+    expect(validatePiSdkWorkerResult("login", { providerId: "anthropic" })).toMatch(/ok/u);
+    expect(validatePiSdkWorkerResult("context_usage", { tokens: 120, contextWindow: 1_000, percent: 12 })).toBeNull();
+    // "No sample": Pi has no reading right after a compaction or for a model with no window.
+    expect(validatePiSdkWorkerResult("context_usage", null)).toBeNull();
+    expect(validatePiSdkWorkerResult("context_usage", { tokens: "120", contextWindow: 1_000, percent: 12 })).toMatch(/context_usage/u);
   });
 
   it("normalizes model references and makes hostile SDK values JSON-safe", () => {
@@ -160,54 +106,16 @@ describe("Pi SDK protocol", () => {
       bigint: "3",
     });
   });
-});
 
-describe("protocol v2 message validation", () => {
-  const base = { protocolVersion: PI_SDK_PROTOCOL_VERSION, requestId: "r1" };
-
-  it("accepts the new worker requests and rejects malformed ones", () => {
+  it("accepts the login, ui_response, and context_usage requests and rejects malformed ones", () => {
     expect(validatePiSdkWorkerRequest({ ...base, type: "login", payload: { providerId: "anthropic" } })).toBeNull();
     expect(validatePiSdkWorkerRequest({ ...base, type: "login_cancel" })).toBeNull();
     expect(validatePiSdkWorkerRequest({ ...base, type: "ui_response", payload: { ok: true, value: "x" } })).toBeNull();
-
+    expect(validatePiSdkWorkerRequest({ ...base, type: "context_usage" })).toBeNull();
     expect(validatePiSdkWorkerRequest({ ...base, type: "login", payload: { providerId: "  " } })).toMatch(/providerId/u);
     expect(validatePiSdkWorkerRequest({ ...base, type: "login", payload: { providerId: "a", method: "" } })).toMatch(/method/u);
     expect(validatePiSdkWorkerRequest({ ...base, type: "ui_response", payload: { value: "x" } })).toMatch(/ok/u);
     expect(validatePiSdkWorkerRequest({ ...base, type: "ui_response", payload: { ok: true, value: 5 } })).toMatch(/value/u);
-    expect(validatePiSdkWorkerRequest({ ...base, type: "context_usage" })).toBeNull();
-  });
-
-  it("validates context usage snapshots and non-secret account metadata", () => {
-    expect(validatePiSdkWorkerResult("context_usage", { tokens: 120, contextWindow: 1_000, percent: 12 })).toBeNull();
-    // "No sample": Pi has no reading right after a compaction or for a model with no window.
-    expect(validatePiSdkWorkerResult("context_usage", null)).toBeNull();
-    expect(validatePiSdkWorkerResult("context_usage", { tokens: "120", contextWindow: 1_000, percent: 12 })).toMatch(/context_usage/u);
-    const ready = {
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      packageRoot: "/pkg",
-      packageEntry: "/pkg/dist/index.js",
-      version: "0.84.0",
-      sessionFile: null,
-      sessionId: null,
-      currentModel: null,
-      thinkingLevel: null,
-      availableModels: [],
-      account: { kind: "subscription", upstream: "openai-codex", accountId: "acct-1" },
-    };
-    expect(validatePiSdkWorkerResult("init", ready)).toBeNull();
-    expect(validatePiSdkWorkerResult("init", { ...ready, account: { kind: "subscription", upstream: "openai-codex", accountId: 4 } })).toMatch(/account/u);
-  });
-
-  it("rejects init options that would widen the tool surface", () => {
-    const init = {
-      ...base,
-      type: "init",
-      payload: { protocolVersion: PI_SDK_PROTOCOL_VERSION, packageRoot: "/pkg", cwd: "/w", agentDir: "/a" },
-    };
-    expect(validatePiSdkWorkerRequest(init)).toBeNull();
-    expect(validatePiSdkWorkerRequest({ ...init, payload: { ...init.payload, extensions: "yes" } })).toMatch(/extensions/u);
-    expect(validatePiSdkWorkerRequest({ ...init, payload: { ...init.payload, askUserTool: 1 } })).toMatch(/askUserTool/u);
-    expect(validatePiSdkWorkerRequest({ ...init, payload: { ...init.payload, approvalTools: ["bash", ""] } })).toMatch(/approvalTools/u);
   });
 
   it("validates ui_request and ui_notice coming back from the worker", () => {
@@ -232,36 +140,16 @@ describe("protocol v2 message validation", () => {
     expect(validatePiSdkWorkerResponse(notice)).toBeNull();
     expect(validatePiSdkWorkerResponse({ ...notice, payload: { ...notice.payload, level: "fatal" } })).toMatch(/level/u);
   });
-
-  it("keeps extension metadata on ready payloads JSON-safe", () => {
-    const ready = {
-      protocolVersion: PI_SDK_PROTOCOL_VERSION,
-      packageRoot: "/pkg",
-      packageEntry: "/pkg/dist/index.js",
-      version: "0.84.0",
-      sessionFile: null,
-      sessionId: null,
-      currentModel: null,
-      thinkingLevel: null,
-      availableModels: [],
-    };
-    expect(validatePiSdkWorkerResult("init", { ...ready, extensions: [{ id: "/a/b.js", name: "b" }] })).toBeNull();
-    expect(validatePiSdkWorkerResult("init", { ...ready, extensions: [{ name: "b" }] })).toMatch(/extensions/u);
-    expect(validatePiSdkWorkerResult("init", { ...ready, extensionsError: 3 })).toMatch(/extensionsError/u);
-    expect(validatePiSdkWorkerResult("login", { ok: true, providerId: "anthropic" })).toBeNull();
-    expect(validatePiSdkWorkerResult("login", { providerId: "anthropic" })).toMatch(/ok/u);
-  });
 });
 
 describe("Pi thinking levels", () => {
-  const base = { protocolVersion: PI_SDK_PROTOCOL_VERSION, requestId: "r1", type: "set_thinking" };
-
   // Clearing the effort in ADE sends null: the session goes back to Pi's default.
   it("accepts null on set_thinking as a reset, and still rejects a blank level", () => {
-    expect(validatePiSdkWorkerRequest({ ...base, payload: { thinkingLevel: null } })).toBeNull();
-    expect(validatePiSdkWorkerRequest({ ...base, payload: { thinkingLevel: "high" } })).toBeNull();
-    expect(validatePiSdkWorkerRequest({ ...base, payload: { thinkingLevel: " " } })).toMatch(/thinkingLevel/u);
-    expect(validatePiSdkWorkerRequest({ ...base, payload: {} })).toMatch(/thinkingLevel/u);
+    const setThinking = (payload: Record<string, unknown>) => validatePiSdkWorkerRequest({ ...base, type: "set_thinking", payload });
+    expect(setThinking({ thinkingLevel: null })).toBeNull();
+    expect(setThinking({ thinkingLevel: "high" })).toBeNull();
+    expect(setThinking({ thinkingLevel: " " })).toMatch(/thinkingLevel/u);
+    expect(setThinking({})).toMatch(/thinkingLevel/u);
   });
 
   // Pi's own rule (pi-ai getSupportedThinkingLevels): these are the effort

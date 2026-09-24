@@ -143,6 +143,7 @@ describe("isSessionInPlanMode", () => {
     }))).toBe(false);
   });
 });
+
 describe("persistence round-trip", () => {
   it("restores the pre-plan mode after the session is rehydrated mid-plan", () => {
     // `claudePrePlanAccessMode` is persisted and rehydrated by

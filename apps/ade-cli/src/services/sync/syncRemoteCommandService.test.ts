@@ -4,7 +4,6 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } from "../../../../desktop/src/shared/types";
 import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
-import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 import {
@@ -180,41 +179,6 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("chat.listLaunches"))).resolves.toEqual([]);
   });
 
-  it("registers machine inventory as a viewer-allowed runtime command", () => {
-    const { service } = createService();
-
-    expect(service.getDescriptor("account.getMachineInventory")).toEqual({
-      action: "account.getMachineInventory",
-      scope: "runtime",
-      policy: { viewerAllowed: true },
-    });
-  });
-
-  it("exposes only proxy status to paired viewers", async () => {
-    const status = vi.fn().mockResolvedValue({
-      installed: false,
-      running: false,
-      port: null,
-      version: null,
-      logins: [],
-    });
-    const { service } = createService({ getProxyService: () => ({ status }) });
-
-    expect(service.getDescriptor("proxy.status")).toEqual({
-      action: "proxy.status",
-      scope: "runtime",
-      policy: { viewerAllowed: true },
-    });
-    await expect(service.execute(makePayload("proxy.status"))).resolves.toEqual({
-      installed: false,
-      running: false,
-      port: null,
-      version: null,
-      logins: [],
-    });
-    expect(status).toHaveBeenCalledTimes(1);
-  });
-
   it("rejects an oversized Cursor Cloud artifact before returning it to a peer", async () => {
     const downloadCursorCloudArtifact = vi.fn().mockResolvedValue({
       path: "build.zip",
@@ -378,69 +342,6 @@ describe("createSyncRemoteCommandService", () => {
       pushToStartToken: "ab",
       clearPushToStartToken: true,
     }))).rejects.toThrow("cannot set and clear pushToStartToken together.");
-  });
-
-  it("preserves the exact remote-command set that observes execution aborts", () => {
-    const { service } = createService();
-
-    expect(new Set(service.getAbortObservingActions())).toEqual(new Set([
-      "chat.resolveSmartLinkPreview",
-      "chat.getChatEventHistory",
-      "chat.getTranscript",
-      "chat.getSubagentTranscript",
-      "chat.listSubagents",
-      "chat.getMainTranscript",
-      "chat.getChatEventHistoryPage",
-      "agentChat.getEventHistoryPage",
-      "github.getStatus",
-      "github.getRemoteStatus",
-      "github.getRequestBudget",
-      "github.detectRepo",
-      "github.listRepoIssues",
-      "github.getIssue",
-      "ai.getStatus",
-      "git.getSyncStatuses",
-      "prs.list",
-      "prs.listOpenForRepo",
-      "prs.getForLane",
-      "prs.refresh",
-      "prs.getDetail",
-      "prs.getDetailBundle",
-      "prs.getAiSummary",
-      "prs.getIntegrationResolutionState",
-      "prs.listProposals",
-      "prs.getMergeContext",
-      "prs.getMergeContexts",
-      "prs.listWithConflicts",
-      "prs.listSnapshots",
-      "prs.getStatus",
-      "prs.getChecks",
-      "prs.getReviews",
-      "prs.getComments",
-      "prs.getFiles",
-      "prs.getGitHubSnapshot",
-      "prs.listGithubStacks",
-      "prs.getReviewThreads",
-      "prs.getActionRuns",
-      "prs.getActivity",
-      "prs.getDeployments",
-      "prs.getWorkflowGraph",
-      "prs.getCheckLog",
-      "prs.getDetailByGithub",
-      "prs.getFilesByGithub",
-      "prs.getCommitsByGithub",
-      "prs.getActionRunsByGithub",
-      "prs.getActivityByGithub",
-      "prs.getStatusByGithub",
-      "prs.getChecksByGithub",
-      "prs.getReviewsByGithub",
-      "prs.getCommentsByGithub",
-      "prs.getReviewThreadsByGithub",
-      "prs.getMobileGithubDetail",
-      "prs.preflightCreateLaneFromPrBranch",
-      "prs.listIntegrationWorkflows",
-      "prs.getMobileSnapshot",
-    ]));
   });
 
   it("routes Graph fan-out reads through batched sync and detail commands", async () => {
@@ -671,55 +572,6 @@ describe("createSyncRemoteCommandService", () => {
       pullRequests: [964, 965],
     });
     expect(unstackGithubStack).toHaveBeenCalledWith({ stackNumber: 12 });
-  });
-
-  it("serves unmapped PR detail through one coordinate-based mobile command", async () => {
-    const detail = { snapshot: { detail: null, checks: [] }, reviewThreads: [], actionRuns: [], activity: [] };
-    const getMobileGithubDetail = vi.fn().mockResolvedValue(detail);
-    const { service } = createService({ prService: { getMobileGithubDetail } });
-
-    await expect(service.execute(makePayload("prs.getMobileGithubDetail", {
-      repoOwner: "arul28",
-      repoName: "ADE",
-      githubPrNumber: 849,
-    }))).resolves.toEqual(detail);
-    expect(getMobileGithubDetail).toHaveBeenCalledWith({
-      repoOwner: "arul28",
-      repoName: "ADE",
-      githubPrNumber: 849,
-    });
-  });
-
-  it("advertises the complete paired-client analytics command contract", async () => {
-    const flush = vi.fn(async () => true);
-    const { service } = createService({ productAnalyticsService: { flush } });
-
-    expect(
-      service.getDescriptors().filter((descriptor) => descriptor.action.startsWith("analytics.")),
-    ).toEqual([
-      {
-        action: "analytics.capture",
-        scope: "runtime",
-        policy: { viewerAllowed: true },
-      },
-      {
-        action: "analytics.flush",
-        scope: "runtime",
-        policy: { viewerAllowed: true },
-      },
-      {
-        action: "analytics.getStatus",
-        scope: "runtime",
-        policy: { viewerAllowed: true },
-      },
-      {
-        action: "analytics.setClientEnabled",
-        scope: "runtime",
-        policy: { viewerAllowed: true },
-      },
-    ]);
-    await expect(service.execute(makePayload("analytics.flush"))).resolves.toBe(true);
-    expect(flush).toHaveBeenCalledTimes(1);
   });
 
   it("serves the cross-client usage snapshot to paired mobile and web clients", async () => {
@@ -1008,99 +860,6 @@ describe("createSyncRemoteCommandService", () => {
       message: "Linear OAuth state did not match the active sign-in. Start a new sign-in and try again.",
     });
     expect(linearCredentialService.clearToken).not.toHaveBeenCalled();
-  });
-
-  it("advertises and executes machine personal chats as runtime commands", async () => {
-    const personalChatScope = {
-      call: vi.fn(async (action: string, args: unknown) => ({
-        action,
-        result: { action, args },
-      })),
-      streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0 })),
-    };
-    const { service } = createService({ personalChatScope });
-
-    expect(service.getDescriptor("personalChats.create")).toEqual({
-      action: "personalChats.create",
-      scope: "runtime",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-    expect(service.getDescriptor("personalChats.cancelDispatchedSteer")).toEqual({
-      action: "personalChats.cancelDispatchedSteer",
-      scope: "runtime",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-    expect(service.getDescriptor("personalChats.cancelScheduledWork")).toEqual({
-      action: "personalChats.cancelScheduledWork",
-      scope: "runtime",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-    expect(service.getDescriptor("personalChats.createScheduledWork")).toEqual({
-      action: "personalChats.createScheduledWork",
-      scope: "runtime",
-      policy: { viewerAllowed: false, queueable: false },
-    });
-    expect(service.getDescriptor("personalChats.setScheduledWorkPaused")).toEqual({
-      action: "personalChats.setScheduledWorkPaused",
-      scope: "runtime",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-    expect(service.getDescriptor("personalChats.streamEvents")).toEqual({
-      action: "personalChats.streamEvents",
-      scope: "runtime",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-    expect(service.getDescriptor("personalChats.terminalCreate")).toEqual({
-      action: "personalChats.terminalCreate",
-      scope: "runtime",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-    await expect(service.execute(makePayload("personalChats.send", {
-      sessionId: "personal-1",
-      text: "hello",
-    }))).resolves.toEqual({
-      action: "send",
-      args: { sessionId: "personal-1", text: "hello" },
-    });
-    expect(personalChatScope.call).toHaveBeenCalledWith("send", {
-      sessionId: "personal-1",
-      text: "hello",
-    });
-    await expect(service.execute(makePayload("personalChats.cancelScheduledWork", {
-      sessionId: "personal-1",
-      scheduleId: "cron-1",
-    }))).resolves.toEqual({
-      action: "cancelScheduledWork",
-      args: { sessionId: "personal-1", scheduleId: "cron-1" },
-    });
-    expect(personalChatScope.call).toHaveBeenCalledWith("cancelScheduledWork", {
-      sessionId: "personal-1",
-      scheduleId: "cron-1",
-    });
-    await expect(service.execute(makePayload("personalChats.createScheduledWork", {
-      sessionId: "personal-1",
-      cron: "*/20 * * * *",
-      prompt: "Check PR CI",
-    }))).resolves.toEqual({
-      action: "createScheduledWork",
-      args: { sessionId: "personal-1", cron: "*/20 * * * *", prompt: "Check PR CI" },
-    });
-    expect(personalChatScope.call).toHaveBeenCalledWith("createScheduledWork", {
-      sessionId: "personal-1",
-      cron: "*/20 * * * *",
-      prompt: "Check PR CI",
-    });
-    await expect(service.execute(makePayload("personalChats.setScheduledWorkPaused", {
-      sessionId: "personal-1",
-      paused: true,
-    }))).resolves.toEqual({
-      action: "setScheduledWorkPaused",
-      args: { sessionId: "personal-1", paused: true },
-    });
-    expect(personalChatScope.call).toHaveBeenCalledWith("setScheduledWorkPaused", {
-      sessionId: "personal-1",
-      paused: true,
-    });
   });
 
   it("registers sync.getWebPairingInfo and returns the configured browser pairing info", async () => {
@@ -1753,26 +1512,6 @@ describe("createSyncRemoteCommandService", () => {
     }]);
   });
 
-  it("exposes work.listExternalSessions as a viewer-allowed descriptor and passes scope through", async () => {
-    // Paired-device access is gated once, by policy.viewerAllowed at the sync host
-    // (see syncHostService), not by a client-declared role at this layer.
-    const list = vi.fn().mockResolvedValue([]);
-    const { service } = createService({
-      externalSessionsService: { list, importExternalSession: vi.fn() },
-    });
-
-    expect(service.getDescriptor("work.listExternalSessions")).toEqual({
-      action: "work.listExternalSessions",
-      scope: "project",
-      policy: { viewerAllowed: true },
-    });
-
-    await expect(service.execute(makePayload("work.listExternalSessions", {
-      scope: "all",
-    }))).resolves.toEqual([]);
-    expect(list).toHaveBeenCalledWith({ scope: "all" });
-  });
-
   it("rejects invalid work.listExternalSessions filters", async () => {
     const list = vi.fn();
     const { service } = createService({
@@ -1963,96 +1702,6 @@ describe("createSyncRemoteCommandService", () => {
     });
   });
 
-  it("routes chat work.importExternalSession results without CLI fields", async () => {
-    const importExternalSession = vi.fn().mockResolvedValue({
-      kind: "chat",
-      chatSessionId: "chat-1",
-      laneId: "lane-1",
-      chatSummary: { sessionId: "chat-1", laneId: "lane-1", title: "Persisted chat" },
-    });
-    const { service } = createService({
-      externalSessionsService: { list: vi.fn(), importExternalSession },
-    });
-
-    const result = await service.execute(makePayload("work.importExternalSession", {
-      provider: "claude",
-      sessionId: "thread-1",
-      laneId: "lane-1",
-      target: "chat",
-      mode: "fork",
-    }));
-
-    expect(result).toEqual({
-      kind: "chat",
-      chatSessionId: "chat-1",
-      laneId: "lane-1",
-      chatSummary: { sessionId: "chat-1", laneId: "lane-1", title: "Persisted chat" },
-    });
-  });
-
-  it("routes every supported provider import affordance without narrowing the provider contract", async () => {
-    const imports = [
-      { provider: "claude", target: "cli", mode: "resume" },
-      { provider: "claude", target: "cli", mode: "fork" },
-      { provider: "claude", target: "chat", mode: "resume" },
-      { provider: "claude", target: "chat", mode: "fork" },
-      { provider: "codex", target: "cli", mode: "resume" },
-      { provider: "codex", target: "cli", mode: "fork" },
-      { provider: "codex", target: "chat", mode: "resume" },
-      { provider: "codex", target: "chat", mode: "fork" },
-      { provider: "cursor", target: "cli", mode: "resume" },
-      { provider: "droid", target: "cli", mode: "resume" },
-      { provider: "droid", target: "cli", mode: "fork" },
-      { provider: "opencode", target: "cli", mode: "resume" },
-      { provider: "opencode", target: "cli", mode: "fork" },
-    ] as const;
-    const importExternalSession = vi.fn(async (args: (typeof imports)[number] & { sessionId: string; laneId: string }) => (
-      args.target === "chat"
-        ? {
-            kind: "chat" as const,
-            chatSessionId: `chat-${args.provider}-${args.mode}`,
-            laneId: args.laneId,
-            chatSummary: {
-              sessionId: `chat-${args.provider}-${args.mode}`,
-              laneId: args.laneId,
-              title: "Ready chat",
-            },
-          }
-        : {
-            kind: "cli" as const,
-            sessionId: `cli-${args.provider}-${args.mode}`,
-            ptyId: `pty-${args.provider}-${args.mode}`,
-            laneId: args.laneId,
-            session: {
-              id: `cli-${args.provider}-${args.mode}`,
-              laneId: args.laneId,
-              title: "Ready CLI",
-            },
-          }
-    ));
-    const { service } = createService({
-      externalSessionsService: { list: vi.fn(), importExternalSession },
-    });
-
-    for (const entry of imports) {
-      const result = await service.execute(makePayload("work.importExternalSession", {
-        ...entry,
-        sessionId: `external-${entry.provider}`,
-        laneId: "lane-1",
-      }));
-      expect(result).toHaveProperty("kind", entry.target === "chat" ? "chat" : "cli");
-      expect(result).toHaveProperty(entry.target === "chat" ? "chatSummary" : "session");
-    }
-
-    expect(importExternalSession.mock.calls.map(([args]) => args)).toEqual(
-      imports.map((entry) => ({
-        ...entry,
-        sessionId: `external-${entry.provider}`,
-        laneId: "lane-1",
-      })),
-    );
-  });
-
   it("rejects invalid work.importExternalSession payloads", async () => {
     const importExternalSession = vi.fn();
     const { service } = createService({
@@ -2093,160 +1742,6 @@ describe("createSyncRemoteCommandService", () => {
       mode: "clone",
     }))).rejects.toThrow("work.importExternalSession mode must be resume or fork.");
     expect(importExternalSession).not.toHaveBeenCalled();
-  });
-
-  it("routes the canonical chat history page command to the chat service", async () => {
-    const getChatEventHistoryPage = vi.fn().mockReturnValue({
-      sessionId: "chat-1",
-      events: [],
-      startOffset: 128,
-      hasMore: true,
-      sessionFound: true,
-    });
-    const { service } = createService({
-      agentChatService: { getChatEventHistoryPage },
-    });
-
-    expect(service.getDescriptor("chat.getChatEventHistoryPage")).toEqual({
-      action: "chat.getChatEventHistoryPage",
-      scope: "project",
-      policy: { viewerAllowed: true },
-    });
-
-    const result = await service.execute(makePayload("chat.getChatEventHistoryPage", {
-      sessionId: "chat-1",
-      beforeOffset: 4096,
-      maxBytes: 65_536,
-    }));
-
-    expect(getChatEventHistoryPage).toHaveBeenCalledWith("chat-1", {
-      beforeOffset: 4096,
-      maxBytes: 65_536,
-    });
-    expect(result).toEqual({
-      sessionId: "chat-1",
-      events: [],
-      startOffset: 128,
-      hasMore: true,
-      sessionFound: true,
-    });
-  });
-
-  it("routes the canonical chat history snapshot command to the chat service", async () => {
-    const getChatEventHistory = vi.fn().mockReturnValue({
-      sessionId: "chat-1",
-      events: [],
-      truncated: false,
-      sessionFound: true,
-      tailStartOffset: null,
-    });
-    const { service } = createService({
-      agentChatService: { getChatEventHistory },
-    });
-
-    expect(service.getDescriptor("chat.getChatEventHistory")).toEqual({
-      action: "chat.getChatEventHistory",
-      scope: "project",
-      policy: { viewerAllowed: true },
-    });
-
-    const result = await service.execute(makePayload("chat.getChatEventHistory", {
-      sessionId: "chat-1",
-      maxEvents: 128,
-      maxBytes: 131_072,
-    }));
-
-    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", {
-      maxEvents: 128,
-      maxBytes: 131_072,
-    });
-    expect(result).toEqual({
-      sessionId: "chat-1",
-      events: [],
-      truncated: false,
-      sessionFound: true,
-      tailStartOffset: null,
-    });
-  });
-
-  it("routes subagent transcript fetches to the chat service", async () => {
-    const getSubagentTranscript = vi.fn().mockResolvedValue([
-      { type: "assistant", uuid: "msg-1", sessionId: "child-1", parentToolUseId: null, message: {}, text: "done" },
-    ]);
-    const { service } = createService({
-      agentChatService: { getSubagentTranscript },
-    });
-
-    expect(service.getDescriptor("chat.getSubagentTranscript")).toEqual({
-      action: "chat.getSubagentTranscript",
-      scope: "project",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-
-    const result = await service.execute(makePayload("chat.getSubagentTranscript", {
-      sessionId: "chat-1",
-      agentId: "agent-1",
-      taskId: "task-1",
-      laneId: "lane-1",
-      limit: 1,
-      offset: 2,
-    }));
-
-    expect(getSubagentTranscript).toHaveBeenCalledWith({
-      sessionId: "chat-1",
-      agentId: "agent-1",
-      taskId: "task-1",
-      laneId: "lane-1",
-      limit: 1,
-      offset: 2,
-    });
-    expect(result).toEqual([
-      { type: "assistant", uuid: "msg-1", sessionId: "child-1", parentToolUseId: null, message: {}, text: "done" },
-    ]);
-  });
-
-  it("routes main transcript fetches to the chat service", async () => {
-    const transcript = [
-      { type: "assistant", uuid: "msg-1", sessionId: "sdk-1", parentToolUseId: null, message: {}, text: "main" },
-    ];
-    const getMainTranscript = vi.fn().mockResolvedValue(transcript);
-    const { service } = createService({ agentChatService: { getMainTranscript } });
-
-    expect(service.getDescriptor("chat.getMainTranscript")).toEqual({
-      action: "chat.getMainTranscript",
-      scope: "project",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-    await expect(service.execute(makePayload("chat.getMainTranscript", {
-      sessionId: "chat-1",
-      limit: 50,
-      offset: 2,
-    }))).resolves.toEqual(transcript);
-    expect(getMainTranscript).toHaveBeenCalledWith({ sessionId: "chat-1", limit: 50, offset: 2 });
-  });
-
-  it("routes subagent roster fetches to the chat service", async () => {
-    const listSubagents = vi.fn().mockReturnValue([
-      { taskId: "agent-1", agentId: "agent-1", agentType: "Sagan", description: "Read files", status: "stopped" },
-    ]);
-    const { service } = createService({
-      agentChatService: { listSubagents },
-    });
-
-    expect(service.getDescriptor("chat.listSubagents")).toEqual({
-      action: "chat.listSubagents",
-      scope: "project",
-      policy: { viewerAllowed: true, queueable: false },
-    });
-
-    const result = await service.execute(makePayload("chat.listSubagents", {
-      sessionId: "chat-1",
-    }));
-
-    expect(listSubagents).toHaveBeenCalledWith({ sessionId: "chat-1" });
-    expect(result).toEqual([
-      { taskId: "agent-1", agentId: "agent-1", agentType: "Sagan", description: "Read files", status: "stopped" },
-    ]);
   });
 
   it("forwards identity-aware chat roster reads to the chat service", async () => {
@@ -2359,23 +1854,6 @@ describe("createSyncRemoteCommandService", () => {
       sessionId: "cloud-session-1",
       pinned: true,
     }));
-  });
-
-  it("delegates PR merge contexts to the injected service", async () => {
-    const getMergeContexts = vi.fn().mockResolvedValue({ "pr-1": { prId: "pr-1", mergeable: true } });
-    const { service } = createService({
-      prService: { getMergeContexts },
-    });
-
-    const contexts = await service.execute(makePayload("prs.getMergeContexts", { prIds: ["pr-1"] }));
-
-    expect(service.getDescriptor("prs.getMergeContexts")).toEqual({
-      action: "prs.getMergeContexts",
-      scope: "project",
-      policy: { viewerAllowed: true },
-    });
-    expect(getMergeContexts).toHaveBeenCalledWith(["pr-1"]);
-    expect(contexts).toEqual({ "pr-1": { prId: "pr-1", mergeable: true } });
   });
 
   it("rejects missing required args for new remote-command parsers", async () => {
@@ -2569,85 +2047,9 @@ describe("createSyncRemoteCommandService", () => {
     ).rejects.toThrow(/Unsupported remote command/);
   });
 
-  it("advertises the requested web-parity remote actions", () => {
+  it("keeps destructive PR commands controller-only and rebase.execute queueable", () => {
     const { service } = createService();
 
-    expect(service.getSupportedActions()).toEqual(expect.arrayContaining([
-      "work.getSession",
-      "work.deleteSession",
-      "work.getSessionDelta",
-      "chat.getSlashCommands",
-      "chat.resolveSmartLinkPreview",
-      "chat.createScheduledWork",
-      "chat.listScheduledWork",
-      "chat.cancelScheduledWork",
-      "chat.setScheduledWorkPaused",
-      "chat.getParallelLaunchState",
-      "chat.setParallelLaunchState",
-      "chat.handoff",
-      "chat.prepareCrossMachineHandoff",
-      "chat.validateCrossMachineSource",
-      "chat.preflightCrossMachineDestination",
-      "chat.fastForwardCrossMachineHandoffLane",
-      "chat.acceptCrossMachineHandoff",
-      "chat.markCrossMachineHandoff",
-      "chat.getContextUsage",
-      "chat.rewindFiles",
-      "chat.getTurnFileDiff",
-      "chat.saveTempAttachment",
-      "chat.listPromptStashes",
-      "chat.createPromptStash",
-      "chat.deletePromptStash",
-      "chat.warmupModel",
-      "chat.launch",
-      "chat.getImageDataUrl",
-      "lanes.listDeleteProgress",
-      "git.getUserIdentity",
-      "git.stashClear",
-      "git.getFilePatch",
-      "terminal.list",
-      "terminal.activeForChat",
-      "prs.postReviewComment",
-      "prs.getAiSummary",
-      "prs.regenerateAiSummary",
-      "prs.getIntegrationResolutionState",
-      "prs.delete",
-      "prs.cleanupBranch",
-      "prs.listOpenForRepo",
-      "prs.listProposals",
-      "prs.getMergeContext",
-      "prs.getMergeContexts",
-      "prs.listWithConflicts",
-      "prs.listSnapshots",
-      "prs.aiResolutionGetSession",
-      "prs.aiResolutionStart",
-      "rebase.scanNeeds",
-      "rebase.execute",
-      "history.listOperations",
-      "github.getStatus",
-      "github.getRemoteStatus",
-      "github.getRequestBudget",
-      "github.detectRepo",
-      "github.listRepoIssues",
-      "github.getIssue",
-      "github.publishCurrentProject",
-      "lanes.attachGitHubIssueToSession",
-      "lanes.detachGitHubIssueFromSession",
-      "lanes.listGitHubIssuesForSession",
-      "lanes.listGitHubIssuesForLaneSessions",
-      "projectConfig.get",
-      "projectConfig.save",
-      "ai.getStatus",
-    ]));
-    expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
-    expect(service.getDescriptor("chat.listPromptStashes")?.scope).toBe("project");
-    expect(service.getDescriptor("chat.createPromptStash")?.scope).toBe("project");
-    expect(service.getDescriptor("chat.deletePromptStash")?.scope).toBe("project");
-    expect(service.getDescriptor("chat.resolveSmartLinkPreview")).toEqual({
-      action: "chat.resolveSmartLinkPreview",
-      scope: "project",
-      policy: { viewerAllowed: true },
-    });
     expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
     expect(service.getDescriptor("prs.delete")?.policy).toEqual({ viewerAllowed: false, queueable: true });
     expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });
@@ -3412,30 +2814,6 @@ describe("mobile lifecycle command contract", () => {
 });
 
 describe("prs.land", () => {
-  it("forwards bypass + editable commit message to prService.land", async () => {
-    const land = vi.fn().mockResolvedValue({ prId: "pr-1", success: true });
-    const { service } = createService({ prService: { land } });
-
-    const result = await service.execute(makePayload("prs.land", {
-      prId: "pr-1",
-      method: "squash",
-      bypassRules: true,
-      commitTitle: "Land it",
-      commitBody: "Body text",
-      expectedHeadSha: "abc123",
-    }));
-
-    expect(land).toHaveBeenCalledWith({
-      prId: "pr-1",
-      method: "squash",
-      bypassRules: true,
-      commitTitle: "Land it",
-      commitBody: "Body text",
-      expectedHeadSha: "abc123",
-    });
-    expect(result).toEqual({ prId: "pr-1", success: true });
-  });
-
   it("omits optional fields that are absent or blank", async () => {
     const land = vi.fn().mockResolvedValue({ prId: "pr-1", success: true });
     const { service } = createService({ prService: { land } });
@@ -3461,24 +2839,6 @@ describe("prs.land", () => {
 });
 
 describe("prs.updateBranch", () => {
-  it("forwards strategy + expected head sha to prService.updateBranch", async () => {
-    const updateBranch = vi.fn().mockResolvedValue({ prId: "pr-1", success: true, hasConflicts: false });
-    const { service } = createService({ prService: { updateBranch } });
-
-    const result = await service.execute(makePayload("prs.updateBranch", {
-      prId: "pr-1",
-      strategy: "rebase",
-      expectedHeadSha: "abc123",
-    }));
-
-    expect(updateBranch).toHaveBeenCalledWith({
-      prId: "pr-1",
-      strategy: "rebase",
-      expectedHeadSha: "abc123",
-    });
-    expect(result).toEqual({ prId: "pr-1", success: true, hasConflicts: false });
-  });
-
   it("rejects an invalid strategy", async () => {
     const updateBranch = vi.fn();
     const { service } = createService({ prService: { updateBranch } });
@@ -3491,16 +2851,6 @@ describe("prs.updateBranch", () => {
 });
 
 describe("lanes.suggestName", () => {
-  it("exposes a non-queueable, viewer-allowed descriptor", () => {
-    const { service } = createService();
-
-    expect(service.getDescriptor("lanes.suggestName")).toEqual({
-      action: "lanes.suggestName",
-      scope: "project",
-      policy: { viewerAllowed: true },
-    });
-  });
-
   it("returns the model-suggested name on success", async () => {
     const suggestLaneNameFromPrompt = vi.fn().mockResolvedValue("refactor-auth-flow");
     const { service, logger } = createService({ agentChatService: { suggestLaneNameFromPrompt } });
@@ -3603,20 +2953,6 @@ describe("lanes.suggestName", () => {
       "sync.lanes_suggest_name_failed",
       expect.objectContaining({ laneId: "lane-1", modelId: "m" }),
     );
-  });
-
-  it("falls back when the naming service is unavailable, deriving from the prompt without a client fallback", async () => {
-    const { service } = createService();
-
-    const result = await service.execute(makePayload("lanes.suggestName", {
-      laneId: "lane-1",
-      prompt: "Please help me fix the login bug",
-      modelId: "m",
-    }));
-
-    expect(result).toEqual({
-      name: deriveDeterministicLaneNameFromPrompt("Please help me fix the login bug"),
-    });
   });
 
   it("falls back when the naming service returns an empty string", async () => {

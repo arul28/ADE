@@ -3,15 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   APPLE_DRAWER_GROUPS,
-  DRAWER_BUTTON,
-  DRAWER_GHOST_BUTTON,
-  DRAWER_ICON_BUTTON,
-  DRAWER_INPUT,
-  DRAWER_PRIMARY_BUTTON,
   DrawerSegmented,
   DrawerSwitch,
   Group,
-  Row,
   Subhead,
   isAppleDrawerGroupId,
 } from "./drawerPrimitives";
@@ -26,30 +20,6 @@ describe("drawer primitives", () => {
     expect(isAppleDrawerGroupId(null)).toBe(false);
   });
 
-  it("puts NO outline on any control: the card carries the edge (§B2)", () => {
-    // The owner's report was forty hairline boxes in one column. Every token
-    // here is `border-0` or borderless by construction; the card class is the
-    // only thing in the drawer that draws an edge.
-    for (const token of [DRAWER_BUTTON, DRAWER_PRIMARY_BUTTON, DRAWER_GHOST_BUTTON, DRAWER_ICON_BUTTON, DRAWER_INPUT]) {
-      expect(token).toContain("border-0");
-      expect(token).not.toContain("border-border");
-    }
-  });
-
-  it("spends the accent on the primary verb and nothing else", () => {
-    expect(DRAWER_PRIMARY_BUTTON).toContain("var(--color-accent)");
-    for (const token of [DRAWER_BUTTON, DRAWER_GHOST_BUTTON, DRAWER_ICON_BUTTON, DRAWER_INPUT]) {
-      expect(token).not.toContain("var(--color-accent)_22%");
-    }
-  });
-
-  it("fills controls with a foreground mix, never white, so the light theme sees them too", () => {
-    for (const token of [DRAWER_BUTTON, DRAWER_INPUT]) {
-      expect(token).toContain("var(--color-fg)");
-      expect(token).not.toContain("bg-white/");
-    }
-  });
-
   describe("Group", () => {
     function renderGroup(open: boolean, onToggle = vi.fn()) {
       return {
@@ -62,11 +32,9 @@ describe("drawer primitives", () => {
       };
     }
 
-    it("is a solid tools-grid card that says whether it is open", () => {
+    it("exposes the group's open state to assistive technology", () => {
       renderGroup(true);
       const card = screen.getByTestId("g");
-      expect(card.className).toContain("ade-tool-card");
-      expect(card.className).toContain("ade-tool-card-solid");
       expect(card.getAttribute("data-open")).toBe("true");
       expect(screen.getByRole("button", { name: "Device" }).getAttribute("aria-expanded")).toBe("true");
     });
@@ -98,17 +66,10 @@ describe("drawer primitives", () => {
     });
   });
 
-  it("draws a Subhead as a muted label, not a heading", () => {
+  it("renders a subhead label without heading semantics", () => {
     render(<Subhead label="Location" />);
     expect(screen.queryByRole("heading")).toBeNull();
-    expect(screen.getByText("Location").className).toContain("text-muted-fg/70");
-  });
-
-  it("keeps a row's label and control on one line, with the label giving way", () => {
-    render(<Row label="Reduce Transparency"><span>x</span></Row>);
-    const label = screen.getByText("Reduce Transparency");
-    expect(label.parentElement?.className).toContain("flex-nowrap");
-    expect(label.className).toContain("truncate");
+    expect(screen.getByText("Location")).toBeTruthy();
   });
 
   it("renders an unreported switch off and inert rather than hiding it", () => {

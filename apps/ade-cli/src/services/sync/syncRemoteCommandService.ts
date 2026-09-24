@@ -6717,12 +6717,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       return [...registry.values()].map((entry) => entry.descriptor);
     },
 
-    getAbortObservingActions(): SyncRemoteCommandAction[] {
-      return [...registry.values()]
-        .filter((entry) => entry.observesAbort)
-        .map((entry) => entry.descriptor.action as SyncRemoteCommandAction);
-    },
-
     getPolicy(action: string): SyncRemoteCommandPolicy | null {
       return registry.get(action as SyncRemoteCommandAction)?.descriptor.policy ?? null;
     },

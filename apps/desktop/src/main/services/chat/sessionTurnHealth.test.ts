@@ -54,38 +54,23 @@ describe("shouldAdviseSessionRotation", () => {
     ...overrides,
   });
 
-  it("says nothing about a thread that is merely busy", () => {
-    expect(shouldAdviseSessionRotation(null, context({
-      occupancyPct: AGENT_CHAT_CONTEXT_ROTATION_PCT - 1,
-    }))).toBe(false);
-    expect(shouldAdviseSessionRotation(null, context({ occupancyPct: 12 }))).toBe(false);
-    expect(shouldAdviseSessionRotation(null, null)).toBe(false);
-  });
+  const overflow = { kind: "context_overflow" as const, message: "Prompt is too long", at: "2026-09-16T00:00:00.000Z" };
+  const transient = { kind: "error" as const, message: "ECONNRESET", at: "2026-09-16T00:00:00.000Z" };
 
-  it("waits for a trend, not a spike", () => {
-    expect(shouldAdviseSessionRotation(null, context({ aboveHighWaterTurns: 1 }))).toBe(false);
-    expect(shouldAdviseSessionRotation(null, context())).toBe(true);
-  });
-
-  it("stays quiet until a compaction has actually run", () => {
-    // Before compaction the occupancy number is not the thread's floor: the
-    // next compaction may win most of it back, so advising a rotation then
-    // would be advising it for nothing.
-    expect(shouldAdviseSessionRotation(null, context({ compactionSeen: false }))).toBe(false);
-  });
-
-  it("is past advice once the thread has already failed on overflow", () => {
-    expect(shouldAdviseSessionRotation(
-      { kind: "context_overflow", message: "Prompt is too long", at: "2026-09-16T00:00:00.000Z" },
-      null,
-    )).toBe(true);
-  });
-
-  it("does not treat one bad turn as a reason to throw the thread away", () => {
-    expect(shouldAdviseSessionRotation(
-      { kind: "error", message: "ECONNRESET", at: "2026-09-16T00:00:00.000Z" },
-      context({ occupancyPct: 10, aboveHighWaterTurns: 0 }),
-    )).toBe(false);
+  // Advise only once the thread has sat above the high-water mark for the full
+  // streak AFTER a compaction ran (before it, the next compaction may win the
+  // occupancy back), or once it has already failed on overflow. One bad turn is
+  // never a reason to throw the thread away.
+  it.each([
+    ["a busy thread below the high-water mark", null, context({ occupancyPct: AGENT_CHAT_CONTEXT_ROTATION_PCT - 1 }), false],
+    ["no context at all", null, null, false],
+    ["a spike rather than a trend", null, context({ aboveHighWaterTurns: 1 }), false],
+    ["a sustained streak after compaction", null, context(), true],
+    ["a streak before any compaction", null, context({ compactionSeen: false }), false],
+    ["an overflow failure", overflow, null, true],
+    ["one transient failure", transient, context({ occupancyPct: 10, aboveHighWaterTurns: 0 }), false],
+  ])("for %s: %s", (_label, failure, health, expected) => {
+    expect(shouldAdviseSessionRotation(failure, health)).toBe(expected);
   });
 });
 

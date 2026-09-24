@@ -32,7 +32,7 @@ describe("laneBaseResolution", () => {
     ).toBe(false);
   });
 
-  it("falls back to the stored base when a primary parent is no longer tracked", () => {
+  it("falls back to the stored base when the primary parent is missing", () => {
     expect(
       resolveStableLaneBaseBranch({
         lane: {

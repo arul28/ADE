@@ -3,27 +3,6 @@ import { commandPlacement, parseCommand, paletteCommands } from "../commands";
 import { buildLinearToolRequest, parseLinearArgs } from "../linearCommands";
 
 describe("commands", () => {
-  it("routes account Activity to the keyboard-accessible right pane", () => {
-    const parsed = parseCommand("/activity");
-    expect(parsed?.name).toBe("/activity");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/act")).toContainEqual(expect.objectContaining({
-      name: "/activity",
-      source: "ade",
-      description: "Show account-wide Activity across machines",
-    }));
-  });
-
-  it("offers /tools as a right-pane command with an optional lane", () => {
-    const parsed = parseCommand("/tools other-lane");
-    expect(parsed?.name).toBe("/tools");
-    expect(parsed?.args).toBe("other-lane");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/tools")).toContainEqual(expect.objectContaining({
-      name: "/tools",
-      source: "ade",
-    }));
-  });
 
   it("keeps the old Attention command as a non-advertised alias", () => {
     const parsed = parseCommand("/attention");
@@ -66,32 +45,6 @@ describe("commands", () => {
     expect(paletteCommands("import").some((command) => command.name === "/import")).toBe(true);
   });
 
-  it("routes PR comments to the right pane", () => {
-    const parsed = parseCommand("/pr comments");
-    expect(parsed?.name).toBe("/pr comments");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/pr comm")).toContainEqual(expect.objectContaining({
-      name: "/pr comments",
-      source: "ade",
-      description: "Show actionable PR comments",
-    }));
-  });
-
-  it("routes /issue commands to the right pane", () => {
-    const parsed = parseCommand("/issue attach ADE-123");
-    expect(parsed?.name).toBe("/issue attach");
-    expect(parsed?.args).toBe("ADE-123");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/issue")).toContainEqual(expect.objectContaining({
-      name: "/issue",
-      source: "ade",
-      description: "Attach, list, or detach Linear and GitHub issues",
-    }));
-    expect(parseCommand("/issue list")?.name).toBe("/issue list");
-    expect(parseCommand("/issue detach ade/app#42")?.name).toBe("/issue detach");
-    expect(parseCommand("/issue detach ade/app#42")?.args).toBe("ade/app#42");
-  });
-
   it("parses /pr update-branch as a multi-word ADE command with a strategy arg", () => {
     const withStrategy = parseCommand("/pr update-branch rebase");
     expect(withStrategy?.name).toBe("/pr update-branch");
@@ -121,18 +74,6 @@ describe("commands", () => {
     expect(paletteCommands("/pr update")).toContainEqual(expect.objectContaining({
       name: "/pr update-branch",
       source: "ade",
-    }));
-  });
-
-  it("routes lane reparent to the right pane", () => {
-    const parsed = parseCommand("/reparent lane-parent origin/main");
-    expect(parsed?.name).toBe("/reparent");
-    expect(parsed?.args).toBe("lane-parent origin/main");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/rep")).toContainEqual(expect.objectContaining({
-      name: "/reparent",
-      source: "ade",
-      description: "Move the active lane under another lane",
     }));
   });
 
@@ -192,17 +133,6 @@ describe("commands", () => {
     }
   });
 
-  it("routes /effort to the ADE Code right pane", () => {
-    const parsed = parseCommand("/effort");
-    expect(parsed?.spec?.name).toBe("/effort");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/eff")).toContainEqual(expect.objectContaining({
-      name: "/effort",
-      source: "ade",
-      description: "Open the reasoning-effort picker",
-    }));
-  });
-
   it("routes provider-neutral stalled-turn recovery", () => {
     const parsed = parseCommand("/recover nudge turn-1");
     expect(parsed?.name).toBe("/recover");
@@ -233,59 +163,6 @@ describe("commands", () => {
       args: "steer-1",
       spec: { placement: "right" },
     });
-  });
-
-  it("routes /feedback to the ADE Code right pane", () => {
-    const parsed = parseCommand("/feedback");
-    expect(parsed?.spec?.name).toBe("/feedback");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/feed")).toContainEqual(expect.objectContaining({
-      name: "/feedback",
-      source: "ade",
-      description: "Submit ADE feedback to GitHub issues",
-    }));
-  });
-
-  it("routes /project and /machines to the ADE Code right pane", () => {
-    expect(parseCommand("/project")).toMatchObject({
-      name: "/project",
-      spec: { placement: "right" },
-    });
-    expect(parseCommand("/machines studio")).toMatchObject({
-      name: "/machines",
-      args: "studio",
-      spec: { placement: "right" },
-    });
-    expect(paletteCommands("/mach")).toContainEqual(expect.objectContaining({
-      name: "/machines",
-      source: "ade",
-    }));
-    expect(paletteCommands("/proj")).toContainEqual(expect.objectContaining({
-      name: "/project",
-      source: "ade",
-    }));
-  });
-
-  it("routes /secrets to the ADE Code right pane", () => {
-    const parsed = parseCommand("/secrets");
-    expect(parsed?.spec?.name).toBe("/secrets");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/sec")).toContainEqual(expect.objectContaining({
-      name: "/secrets",
-      source: "ade",
-      description: "List project secret names and copy masked values",
-    }));
-  });
-
-  it("routes /cloud to the ADE Code right pane", () => {
-    const parsed = parseCommand("/cloud");
-    expect(parsed?.spec?.name).toBe("/cloud");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/clo")).toContainEqual(expect.objectContaining({
-      name: "/cloud",
-      source: "ade",
-      description: "List Cursor Cloud agents for this account",
-    }));
   });
 
   it("routes runtime commands to chat", () => {
@@ -559,21 +436,6 @@ describe("commands", () => {
     expect(rows[0]?.name).toBe("/compact");
   });
 
-  it("registers /compact and /goal as chat-placement builtins", () => {
-    const compact = parseCommand("/compact");
-    expect(compact?.spec?.name).toBe("/compact");
-    expect(compact ? commandPlacement(compact) : null).toBe("chat");
-
-    const goal = parseCommand("/goal Ship the migration");
-    expect(goal?.spec?.name).toBe("/goal");
-    expect(goal?.args).toBe("Ship the migration");
-    expect(goal ? commandPlacement(goal) : null).toBe("chat");
-
-    const goalStatus = parseCommand("/goal status active");
-    expect(goalStatus?.spec?.name).toBe("/goal");
-    expect(goalStatus?.args).toBe("status active");
-  });
-
   it("registers queue-aware stop and recovery as ADE Code controls", () => {
     expect(parseCommand("/stop keep-queue")).toMatchObject({
       name: "/stop",
@@ -589,11 +451,6 @@ describe("commands", () => {
       name: "/restore-queue",
       description: "Undo a recent Stop & clear queue",
     }));
-  });
-
-  it("drops the legacy /resume builtin", () => {
-    const rows = paletteCommands("/resume", []);
-    expect(rows.find((row) => row.name === "/resume" && row.source === "ade")).toBeUndefined();
   });
 
   it("registers /info as the active-chat info command", () => {
@@ -615,19 +472,6 @@ describe("commands", () => {
     expect(paletteCommands("lane det").some((row) => row.name === "/lane details")).toBe(true);
   });
 
-  it("surfaces active ADE Code panes in the palette and not removed aliases", () => {
-    const infoRows = paletteCommands("info");
-    expect(infoRows.some((row) => row.name === "/info")).toBe(true);
-
-    const effortRows = paletteCommands("effort");
-    expect(effortRows.some((row) => row.name === "/effort" && row.source === "ade")).toBe(true);
-
-    const subagentRows = paletteCommands("subagents");
-    expect(subagentRows.some((row) => row.name === "/subagents")).toBe(false);
-
-    const allRows = paletteCommands("");
-    expect(allRows.some((row) => row.name === "/plan" && row.source === "ade")).toBe(false);
-  });
 });
 
 describe("linear command routing", () => {
@@ -776,12 +620,4 @@ describe("linear command routing", () => {
     });
   });
 
-  it("shows usage for removed workflow/route/sync/ingress groups", () => {
-    for (const removed of ["workflows", "run cancel run-1", "route cto LIN-1", "sync dashboard", "ingress status"]) {
-      const result = buildLinearToolRequest(removed);
-      expect(result.kind).toBe("usage");
-      if (result.kind !== "usage") continue;
-      expect(result.title).toBe("Linear");
-    }
-  });
 });

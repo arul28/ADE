@@ -694,7 +694,7 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
   // The trust gate that used to guard the committed file is gone with the file
   // itself: nothing arrives from a repository that could run on your computer,
   // so there is no approval left to grant or revoke.
-  it("no longer gates execution on approving a committed config", () => {
+  it("reads committed configuration without an approval gate", () => {
     const { root, adeDir } = makeProjectFixture("config-trust-retired");
     writeLegacySharedConfig(adeDir);
     const service = makeService(root, adeDir);

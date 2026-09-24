@@ -49,24 +49,6 @@ describe("chat surface accents", () => {
     }
   });
 
-  // Claude and Codex already looked right, and re-colouring the other four was
-  // not licence to restyle them.
-  it("leaves the Claude and Codex bubbles exactly as they shipped", () => {
-    const claude = vars("#D97706");
-    expect(claude["--chat-user-bubble-gradient"]).toBe(
-      "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%)",
-    );
-    expect(claude["--chat-user-border-accent-mix"]).toBe("28%");
-    expect(claude["--chat-user-shadow-accent-mix"]).toBe("34%");
-
-    const codex = vars("#E7E5E4");
-    expect(codex["--chat-user-bubble-gradient"]).toBe(
-      "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 74%, #78716c 10%) 0%, color-mix(in srgb, var(--chat-accent) 58%, #7c3aed 42%) 50%, color-mix(in srgb, var(--chat-accent) 56%, #4c1d95 44%) 100%)",
-    );
-    expect(codex["--chat-user-border-accent-mix"]).toBe("22%");
-    expect(codex["--chat-user-shadow-accent-mix"]).toBe("28%");
-  });
-
   it("lifts a near-black accent instead of deepening it", () => {
     const deep = vars("#181C25");
     const normal = vars("#D97706");

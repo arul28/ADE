@@ -222,7 +222,7 @@ describe("projectContextStore", () => {
     expect(ids).toContain("chat-40");
   });
 
-  it("pushes an archived fact so the account copy is no longer live", async () => {
+  it("syncs archived facts to the account copy", async () => {
     const adeDir = tempAdeDir();
     let tick = 0;
     const account = fakeAccount();

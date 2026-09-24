@@ -549,7 +549,7 @@ describe("TerminalPane", () => {
     expect(metrics.some((m) => m.visibleText.includes("line three"))).toBe(true);
   });
 
-  it("advances the write cursor past 500 chunks (desync regression) without dropping later output", async () => {
+  it("advances the write cursor past 500 chunks without dropping later output", async () => {
     // Feed > 500 incremental chunks; every chunk must land in the xterm buffer.
     // The old slice(-500) on every chunk pinned the buffer and froze the write
     // cursor at 500, so later rows were silently dropped.

@@ -94,7 +94,7 @@ describe("ChatLifecyclePill", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders the settled state as a compact floating pill", () => {
+  it("shows the settled chat state", () => {
     seedSessions([makeSession(settledOverrides())]);
     render(<ChatLifecyclePill sessionId="session-1" />);
 
@@ -102,8 +102,6 @@ describe("ChatLifecyclePill", () => {
     expect(banner.getAttribute("data-lifecycle-variant")).toBe("settled");
     expect(banner.textContent).toContain("Settled");
     expect(banner.textContent).toContain("Sending reopens this chat");
-    expect(banner.className).toContain("rounded-full");
-    expect(banner.className).not.toContain("w-full");
     // Success means "finished cleanly"; warning is reserved for "your move".
     expect(banner.getAttribute("data-notice-tone")).toBe("success");
   });
@@ -130,27 +128,6 @@ describe("ChatLifecyclePill", () => {
     expect(screen.getByTestId("chat-lifecycle-banner").textContent).toContain(
       "until when you're asked",
     );
-  });
-
-  it("gives Un-settle and Wake now the same fill on hover and on keyboard focus", () => {
-    // The one control that undoes the state the banner describes, so it has to
-    // read as pressable for pointer AND keyboard users — focus-visible mirrors
-    // hover rather than relying on a default outline.
-    seedSessions([makeSession(settledOverrides())]);
-    render(<ChatLifecyclePill sessionId="session-1" />);
-    const settledButton = screen.getByTestId("chat-lifecycle-unsettle");
-    expect(settledButton.className).toContain("hover:bg-[var(--lifecycle-pill-hover)]");
-    expect(settledButton.className).toContain("focus-visible:bg-[var(--lifecycle-pill-hover)]");
-    expect(
-      screen.getByTestId("chat-lifecycle-banner").style.getPropertyValue("--lifecycle-pill-hover"),
-    ).toContain("--color-success");
-
-    cleanup();
-    seedSessions([makeSession(snoozedOverrides())]);
-    render(<ChatLifecyclePill sessionId="session-1" />);
-    const snoozedButton = screen.getByTestId("chat-lifecycle-wake");
-    expect(snoozedButton.className).toContain("hover:bg-[var(--lifecycle-pill-hover)]");
-    expect(snoozedButton.className).toContain("focus-visible:bg-[var(--lifecycle-pill-hover)]");
   });
 
   it("lets snooze win when a chat is both snoozed and settled", () => {

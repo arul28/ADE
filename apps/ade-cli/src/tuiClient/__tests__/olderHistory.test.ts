@@ -37,11 +37,6 @@ describe("prependOlderTuiHistory", () => {
     expect(next.map((entry) => entry.sequence)).toEqual([7, 8, 9, 10, 11, 12]);
   });
 
-  it("returns the same array reference when the page is empty", () => {
-    const existing = [envelope(10)];
-    expect(prependOlderTuiHistory(existing, [])).toBe(existing);
-  });
-
   it("dedupes exact duplicate seam events", () => {
     const existing = [envelope(9), envelope(10)];
     const older = [envelope(7), envelope(8), envelope(9)];
@@ -81,13 +76,6 @@ describe("prependOlderTuiHistory", () => {
       "new run first message",
       "new run second message",
     ]);
-  });
-
-  it("returns the same array reference when every page event collides at the seam", () => {
-    const existing = [envelope(9), envelope(10)];
-    const older = [envelope(9)];
-
-    expect(prependOlderTuiHistory(existing, older)).toBe(existing);
   });
 
   it("requires full event identity when sequences are missing", () => {

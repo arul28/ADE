@@ -1831,8 +1831,9 @@ describe("gitOperationsService.listBranches annotations", () => {
     const { service } = makeServiceWithLanes({});
 
     const branches = await service.listBranches({ laneId: "lane-1" });
-    expect(branches.find((b) => b.name === "feature/untracked")).toBeDefined();
-    expect(branches.find((b) => b.name === "origin/feature/untracked")).toBeDefined();
+    expect(branches.map((b) => b.name)).toEqual(
+      expect.arrayContaining(["feature/untracked", "origin/feature/untracked"]),
+    );
   });
 
   it("filters refs/remotes/.../HEAD entries out of the result", async () => {

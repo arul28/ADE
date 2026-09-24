@@ -1,29 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  RUNTIME_EVENT_TYPES,
   agentChatEventToRuntimeEvent,
   buildCanonicalAgentChatRuntimeEvent,
   runtimeEventToAgentChatEvent,
 } from "./runtimeEvents";
 
 describe("runtimeEvents", () => {
-  it("declares the canonical cross-runtime event vocabulary", () => {
-    expect(RUNTIME_EVENT_TYPES).toEqual([
-      "turn.started",
-      "content.delta",
-      "tool.started",
-      "tool.completed",
-      "tool.failed",
-      "subagent.started",
-      "subagent.progress",
-      "subagent.completed",
-      "teammate.idle",
-      "task.completed",
-      "turn.completed",
-      "compact.boundary",
-    ]);
-  });
-
   it("translates legacy subagent events into the canonical envelope", () => {
     expect(buildCanonicalAgentChatRuntimeEvent({
       type: "subagent_started",

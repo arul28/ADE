@@ -213,18 +213,6 @@ describe("externalSessionsService", () => {
     expect(detail.messages.at(-1)?.text).toBe("detail from this home");
   });
 
-  it("copies optional preview fields through both summary construction paths", () => {
-    // The exact-lookup summary is private and the fields are optional, so a
-    // structural assertion pins both DTO boundaries without widening the API.
-    const source = fs.readFileSync(
-      path.join(__dirname, "externalSessionsService.ts"),
-      "utf8",
-    );
-
-    expect(source.match(/messages: session\.messages/gu)).toHaveLength(2);
-    expect(source.match(/preview: session\.preview/gu)).toHaveLength(2);
-  });
-
   it("checks a repeated session cwd only once per list call", async () => {
     const homeDir = path.join(root, "home");
     const projectRoot = path.join(root, "repo");

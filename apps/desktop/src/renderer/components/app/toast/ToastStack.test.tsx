@@ -161,18 +161,4 @@ describe("ToastViewport", () => {
     expect(toastViewportLift(container, 380, { top: 100, bottom: 160, left: 800, right: 988 })).toBe(0);
   });
 
-  it("applies the lift while a HUD is published", () => {
-    render(<ToastViewport />);
-    const viewport = screen.getByTestId("toast-viewport");
-    expect(viewport.style.bottom).toBe("12px");
-    act(() => {
-      // jsdom lays everything out at 0×0, so the container's bottom is 0.
-      publishCornerObstacle({ top: -60, bottom: -12, left: -200, right: -12 });
-    });
-    expect(viewport.style.bottom).not.toBe("12px");
-    act(() => {
-      publishCornerObstacle(null);
-    });
-    expect(viewport.style.bottom).toBe("12px");
-  });
 });

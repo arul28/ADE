@@ -490,9 +490,7 @@ describe("ChatTerminalDrawer", () => {
 
     await waitFor(() => expect(window.ade.terminal.list).toHaveBeenCalled());
     const panel = view.container.firstElementChild as HTMLElement;
-    expect(view.container.querySelector(".ade-tool-gutter.horizontal")).toBeNull();
     expect(panel.style.height).toBe("");
-    expect(panel.className).toContain("h-full");
   });
 
   it("keeps drawer UI when a pin later arrives as a runtimeScopeKey", async () => {

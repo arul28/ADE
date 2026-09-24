@@ -518,7 +518,7 @@ describe("scanCopilotLogs dedupe", () => {
   // turns from the START. A session that began before Copilot wrote
   // session-store.db has rows only for its newest turns, so the old turns were
   // dropped and the newest ones counted twice.
-  it("regression: a session that predates the store keeps its oldest turns and counts its newest once", async () => {
+  it("a session that predates the store keeps its oldest turns and counts its newest once", async () => {
     const tmpDir = makeTmpDir();
     try {
       const sessionStateDir = path.join(tmpDir, "home", "session-state");
@@ -576,7 +576,7 @@ describe("scanCopilotLogs dedupe", () => {
 describe("scanDroidLogs", () => {
   // Droid's `thinkingTokens` are inside `outputTokens` (no local session has
   // more thinking than output), so adding them billed every reasoning token twice.
-  it("regression: bills output alone and never adds thinking on top of it", async () => {
+  it("bills output alone and never adds thinking on top of it", async () => {
     const tmpDir = makeTmpDir();
     try {
       const sessionPath = path.join(tmpDir, "sessions", "project-a", "session-1.jsonl");

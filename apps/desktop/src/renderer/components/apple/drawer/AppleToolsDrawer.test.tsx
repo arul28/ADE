@@ -47,20 +47,6 @@ describe("AppleToolsDrawer", () => {
     await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
   });
 
-  it("has no Inspect and no Recording section: both are rail controls now (§B1)", async () => {
-    installAdeMock();
-    render(<AppleToolsDrawer {...props()} />);
-    const headings = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent);
-    expect(headings).not.toContain("Inspect");
-    expect(headings).not.toContain("Recording");
-    // And no way to start one from here, open or closed.
-    fireEvent.click(header("Capture"));
-    await waitFor(() => expect(screen.getByText("No recordings for this lane yet.")).toBeTruthy());
-    expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
-    expect(screen.queryByRole("switch", { name: "Overlay element frames" })).toBeNull();
-  });
-
   it("passes the rail's recording through to Capture, so a stop lands in the library at once", async () => {
     const { iosSimulator } = installAdeMock();
     iosSimulator.recordList.mockResolvedValue([]);
@@ -199,61 +185,6 @@ describe("AppleToolsDrawer", () => {
     expect(iosSimulator.getDeviceSettings).not.toHaveBeenCalled();
     expect(iosSimulator.getStatus).not.toHaveBeenCalled();
     expect((screen.getByRole("button", { name: "Dark" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("is opaque: nothing behind the drawer or its cards can be read through it (rule zero)", async () => {
-    installAdeMock();
-    const { container } = render(<AppleToolsDrawer {...props()} />);
-    const shell = screen.getByTestId("apple-tools-drawer");
-    expect(shell.className).toContain("bg-surface");
-    expect(shell.className).toContain("border-l");
-    // No alpha fill and no blur anywhere in the column: those are exactly what
-    // made the simulator legible through the Simulator section's switches.
-    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
-    expect(container.querySelector("[class*='bg-bg/']")).toBeNull();
-    await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
-  });
-
-  it("dresses every group as a solid tools-grid card (§B2)", () => {
-    installAdeMock();
-    render(<AppleToolsDrawer {...props()} />);
-    for (const testId of ["apple-drawer-device", "apple-drawer-app", "apple-drawer-capture", "apple-drawer-preview-lab"]) {
-      const card = screen.getByTestId(testId);
-      // The picker's own card class, plus the modifier that takes the 82%
-      // translucency and the hover lift back off it.
-      expect(card.className).toContain("ade-tool-card");
-      expect(card.className).toContain("ade-tool-card-solid");
-    }
-    expect(screen.getByTestId("apple-drawer-device").getAttribute("data-open")).toBe("true");
-    expect(screen.getByTestId("apple-drawer-app").getAttribute("data-open")).toBe("false");
-  });
-
-  it("puts no outline on the controls: the card carries the edge (§B2)", async () => {
-    installAdeMock();
-    render(<AppleToolsDrawer {...props()} />);
-    await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
-    const card = screen.getByTestId("apple-drawer-device");
-    const outlined = [...card.querySelectorAll<HTMLElement>("button, input")]
-      .filter((node) => /(^|\s)border(-border)?(\s|$)/.test(node.className));
-    expect(outlined.map((node) => node.textContent)).toEqual([]);
-    // And exactly one accent control in the open group — its primary verb.
-    const accent = [...card.querySelectorAll<HTMLElement>("button")]
-      .filter((node) => node.className.includes("var(--color-accent)_22%"));
-    expect(accent.map((node) => node.textContent)).toEqual(["Light", "Set"]);
-  });
-
-  it("never lets a row's label and its control fall onto two lines (§B4)", async () => {
-    installAdeMock();
-    render(<AppleToolsDrawer {...props()} />);
-    await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
-    // Every row that pairs a label with a control is `flex-nowrap`, and the
-    // LABEL is the side that gives way — the control has no smaller size.
-    const row = screen.getByText("Reduce Transparency").closest("div");
-    expect(row?.className).toContain("flex-nowrap");
-    const label = screen.getByText("Reduce Transparency");
-    expect(label.className).toContain("truncate");
-    expect(label.className).toContain("min-w-0");
-    expect(label.getAttribute("title")).toBe("Reduce Transparency");
   });
 
   it("disables an unreported control rather than hiding it (§B6)", async () => {

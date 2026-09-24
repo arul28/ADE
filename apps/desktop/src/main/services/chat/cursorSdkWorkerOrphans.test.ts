@@ -189,7 +189,7 @@ describe("recoverCursorSdkWorkerOrphans", () => {
     expect(result).toEqual({ recoveredPids: [51], failedPids: [], skippedPids: [] });
   });
 
-  it("does not escalate against a pid that no longer names the orphan", async () => {
+  it("avoids killing a PID after it belongs to another process", async () => {
     // The orphan survives SIGTERM, but by the recheck the pid belongs to
     // something else, so SIGKILL must not go out.
     let listed = 0;

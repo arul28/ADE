@@ -378,7 +378,7 @@ describe("githubCredentialHealth", () => {
       expect(githubRequestBudget(Date.now(), [ghCandidate]).failureKind).toBeNull();
     });
 
-    it("stops reporting a failure kind once it is no longer recent", () => {
+    it("expires a failure kind after its recency window", () => {
       // A failure is otherwise cleared only by a success on the SAME credential
       // and resource, so a permanently-bad one (revoked PAT, stale
       // GITHUB_TOKEN) would keep its kind for the life of the process while

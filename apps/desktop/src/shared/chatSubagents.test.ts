@@ -369,7 +369,7 @@ describe("chatSubagents timeline helpers", () => {
     }));
   });
 
-  it("keeps one spawn through interleaved progress and ignores placeholder regressions", () => {
+  it("keeps the latest subagent progress across placeholder updates", () => {
     const events: AgentChatEvent[] = [
       {
         type: "subagent_started",

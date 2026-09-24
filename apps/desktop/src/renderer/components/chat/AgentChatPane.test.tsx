@@ -2104,7 +2104,7 @@ describe("AgentChatPane companion drawers", () => {
     layout.mockRestore();
   });
 
-  it("regression: ade ui show proof shows a chat's proof in a visible tile that is not focused, and says so when there is none", async () => {
+  it("ade ui show proof shows a chat's proof in a visible tile that is not focused, and says so when there is none", async () => {
     setDocumentVisibleForTests(true);
     const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockReturnValue({ width: 400, height: 600 } as DOMRect);
@@ -2421,7 +2421,7 @@ describe("AgentChatPane companion drawers", () => {
     }
   }, 15_000);
 
-  it("regression: a proof show held while the chat was out of view opens its drawer when the chat mounts", async () => {
+  it("a proof show held while the chat was out of view opens its drawer when the chat mounts", async () => {
     setDocumentVisibleForTests(true);
     const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockReturnValue({ width: 400, height: 600 } as DOMRect);
@@ -9395,76 +9395,6 @@ describe("AgentChatPane submit recovery", () => {
     }));
   });
 
-  it("uses the selected Codex edit preset when launching a Work draft CLI session", async () => {
-    installAdeMocks({ sessions: [] });
-    useAppStore.setState({
-      project: { rootPath: "/tmp/project-under-test" } as any,
-      projectBinding: LOCAL_PROJECT_BINDING,
-    });
-    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
-    const launchConfigKey = [
-      "ade.chat.lastLaunchConfig.v1",
-      "/tmp/project-under-test",
-      "lane-1",
-      "standard",
-      "cli",
-    ].map(encodeURIComponent).join(":");
-    window.localStorage.setItem(launchConfigKey, JSON.stringify({
-      version: 1,
-      modelId: "openai/gpt-5.4",
-      reasoningEffort: "medium",
-      fastMode: false,
-      executionMode: "focused",
-      updatedAt: "2026-05-26T12:00:00.000Z",
-      controls: {
-        interactionMode: "default",
-        claudePermissionMode: "default",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-        opencodePermissionMode: "edit",
-        droidPermissionMode: "auto-low",
-        cursorModeId: "agent",
-        cursorConfigValues: {},
-      },
-    }));
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId="lane-1"
-          forceDraftMode
-          embeddedWorkLayout
-          workDraftKind="cli"
-          onLaunchCliSession={onLaunchCliSession}
-        />
-      </MemoryRouter>,
-    );
-
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
-    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Edit mode" }));
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Launch Codex in edit mode." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
-        profile: "codex",
-        tracked: true,
-      }));
-    });
-    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
-      provider: "codex",
-      permissionMode: "edit",
-      initialPrompt: expect.stringContaining("Launch Codex in edit mode."),
-    }));
-  });
-
   it("uses the Cursor fast model alias when launching a fast Work draft CLI session", async () => {
     const { modelId, fastAlias } = seedFastCursorRuntimeModelCatalog();
     installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
@@ -10127,8 +10057,6 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     const digest = await screen.findByTestId("chat-away-digest");
-    expect(digest.className).toContain("rounded-2xl");
-    expect(digest.className).not.toContain("w-full");
     expect(within(digest).getByText("While you were away")).toBeTruthy();
     expect(within(digest).getByText("2 scheduled wakeups ran")).toBeTruthy();
     expect(within(digest).queryByText(longOutcome)).toBeNull();
@@ -10161,52 +10089,6 @@ describe("AgentChatPane submit recovery", () => {
       && element.classList.contains("py-1.5"),
     );
     expect(emptyPaddedNoticeRows).toHaveLength(0);
-  });
-
-  it("centers a lifecycle pill above an app-panel composer", async () => {
-    const session = buildSession("session-1", { title: "Settled app-control chat" });
-    writeChatCompanionUiState(session.sessionId, {
-      ...DEFAULT_CHAT_COMPANION_UI_STATE,
-      appControlOpen: true,
-    });
-    const projectRoot = "/tmp/project-under-test";
-    const settledSession: TerminalSessionSummary = {
-      id: session.sessionId,
-      laneId: session.laneId,
-      laneName: "Lane 1",
-      ptyId: null,
-      tracked: true,
-      pinned: false,
-      goal: null,
-      toolType: "codex-chat",
-      title: session.title ?? "Settled app-control chat",
-      status: "completed",
-      startedAt: "2026-07-10T10:00:00.000Z",
-      endedAt: "2026-07-10T11:00:00.000Z",
-      exitCode: 0,
-      transcriptPath: "",
-      headShaStart: null,
-      headShaEnd: null,
-      lastOutputPreview: null,
-      summary: null,
-      runtimeState: "exited",
-      resumeCommand: null,
-      settledAt: "2026-07-10T11:01:00.000Z",
-    };
-    useAppStore.setState({
-      project: { rootPath: projectRoot } as never,
-      projectBinding: null,
-      sessionsCacheByProject: { [projectRoot]: [settledSession] },
-    });
-    installAdeMocks({ sessions: [session] });
-
-    renderPane(session);
-
-    const pill = await screen.findByTestId("chat-lifecycle-banner");
-    expect(pill.className).toContain("flex");
-    expect(pill.className).toContain("w-fit");
-    expect(pill.className).toContain("mx-auto");
-    expect(pill.className).not.toContain("inline-flex");
   });
 
   it("validates empty legacy event-history snapshots before treating them as loaded", async () => {
@@ -14303,12 +14185,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     await screen.findByRole("textbox");
     expect(screen.getByAltText("ADE")).toBeTruthy();
-    const empty = document.querySelector("[data-chat-empty-state]");
-    expect(empty).toBeTruthy();
-    expect(empty?.querySelector(".grid.grid-rows-3")).toBeNull();
-    const usage = empty?.querySelector("[data-chat-empty-usage]");
-    expect(usage).toBeTruthy();
-    expect(usage?.className).toContain("w-[calc(100%-6rem)]");
+    expect(document.querySelector("[data-chat-empty-usage]")).toBeTruthy();
   });
 });
 

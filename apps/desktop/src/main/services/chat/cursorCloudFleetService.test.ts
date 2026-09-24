@@ -91,7 +91,6 @@ function buildHarness(overrides?: {
     sessionId: `session-for-${args.cloudAgentId}`,
   }));
   const cancelCursorCloudRun = vi.fn(async () => undefined);
-  const gitCommands: string[][] = [];
   const service = createCursorCloudFleetService({
     projectRoot: "/proj",
     logger,
@@ -103,7 +102,7 @@ function buildHarness(overrides?: {
     cancelCursorCloudRun,
     getIngressStatus: () => ({ state: "ready", lastEventAt: null }),
   });
-  return { service, listCursorCloudAgents, listCursorCloudRuns, laneService, lanes, sessionLinks, openCursorCloudChat, cancelCursorCloudRun, gitCommands };
+  return { service, listCursorCloudAgents, listCursorCloudRuns, laneService, lanes, sessionLinks, openCursorCloudChat, cancelCursorCloudRun };
 }
 
 describe("cursorCloudFleetService", () => {
@@ -132,14 +131,6 @@ describe("cursorCloudFleetService", () => {
   });
 
   describe("account-wide fleet ownership", () => {
-    it("keeps agents whose repo matches the project origin", async () => {
-      const harness = buildHarness({ agents: [agent({ agentId: "bc-1" })] });
-      const result = await harness.service.getFleet();
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0].matchedBy).toBe("repo");
-      expect(result.items[0].ownership.laneId).toBeNull();
-    });
-
     it("keeps unlinked foreign-repo agents when a project session links them", async () => {
       const harness = buildHarness({
         agents: [agent({ agentId: "bc-2", repos: ["https://github.com/other/repo"] })],
@@ -152,7 +143,7 @@ describe("cursorCloudFleetService", () => {
       expect(result.items[0].ownership.laneName).toBe("lane-1");
     });
 
-    it("keeps agents that are neither linked nor repo-matched as account rows", async () => {
+    it("keeps repo-matched agents, and agents that are neither linked nor repo-matched as account rows", async () => {
       const harness = buildHarness({
         agents: [
           agent({ agentId: "bc-3", repos: ["https://github.com/other/repo"] }),
@@ -189,7 +180,11 @@ describe("cursorCloudFleetService", () => {
           id: "run-9",
           agentId: "bc-run",
           status: "RUNNING",
-          git: { branches: [{ repoUrl: "github.com/arul/ade", branch: "cursor/fix-1", prUrl: "https://github.com/arul/ade/pull/7" }] },
+          // A multi-repo agent: the row shows this project's branch and PR, not the first one pushed.
+          git: { branches: [
+            { repoUrl: "github.com/other/repo", branch: "cursor/foreign", prUrl: "https://github.com/other/repo/pull/1" },
+            { repoUrl: "github.com/arul/ade", branch: "cursor/fix-1", prUrl: "https://github.com/arul/ade/pull/7" },
+          ] },
         }],
       });
       const result = await harness.service.getFleet({ includeArchived: false });
@@ -207,17 +202,11 @@ describe("cursorCloudFleetService", () => {
 
   describe("isCursorCloudFleetEntryActive", () => {
     const base = { agent: agent({ agentId: "x" }), latestRunId: null, branch: null, prUrl: null, modelId: null, matchedBy: "repo" as const };
-    it("treats archived or terminal rows as inactive even if the list lagged", () => {
+    it("treats archived or terminal rows as inactive, and an unknown run status on a live agent as active", () => {
       expect(isCursorCloudFleetEntryActive({ ...base, runStatus: "running" })).toBe(true);
       expect(isCursorCloudFleetEntryActive({ ...base, runStatus: "finished" })).toBe(false);
       expect(isCursorCloudFleetEntryActive({ ...base, agent: agent({ agentId: "x", archived: true, status: "running" }) })).toBe(false);
-    });
-    it("reads an unknown run status on a live agent as creating (active)", () => {
-      expect(isCursorCloudFleetEntryActive({
-        ...base,
-        runStatus: undefined,
-        agent: agent({ agentId: "x" }),
-      })).toBe(true);
+      expect(isCursorCloudFleetEntryActive({ ...base, runStatus: undefined })).toBe(true);
     });
   });
 
@@ -311,25 +300,9 @@ describe("cursorCloudFleetService", () => {
       const result = await harness.service.pullIntoLane("bc-case");
       expect(result.status).toBe("created_lane");
       expect(result.mergedBranch).toBe("Feature/X");
-    });
-
-    it("shows the project's own branch on enriched rows for multi-repo agents", async () => {
-      const harness = buildHarness({
-        agents: [agent({ agentId: "bc-row", status: "running" })],
-        runs: [{
-          id: "run-row",
-          agentId: "bc-row",
-          status: "RUNNING",
-          git: { branches: [
-            { repoUrl: "github.com/other/repo", branch: "cursor/foreign", prUrl: "https://github.com/other/repo/pull/1" },
-            { repoUrl: "github.com/arul/ade", branch: "cursor/mine", prUrl: "https://github.com/arul/ade/pull/2" },
-          ] },
-        }],
-      });
-      const result = await harness.service.getFleet({ includeArchived: false });
-      const row = result.items.find((entry) => entry.agent.agentId === "bc-row");
-      expect(row?.branch).toBe("cursor/mine");
-      expect(row?.prUrl).toBe("https://github.com/arul/ade/pull/2");
+      expect(harness.laneService.importBranch).toHaveBeenCalledWith(
+        expect.objectContaining({ branchRef: "Feature/X" }),
+      );
     });
   });
 
@@ -402,19 +375,6 @@ describe("cursorCloudFleetService", () => {
       expect(harness.laneService.importBranch).not.toHaveBeenCalled();
       expect(harness.openCursorCloudChat).toHaveBeenCalledWith(
         expect.objectContaining({ cloudAgentId: "bc-z", laneId: "lane-1" }),
-      );
-    });
-
-    it("creates a new lane when no local lane matches the branch", async () => {
-      const harness = buildHarness({
-        agents: finishedAgent("bc-new"),
-        runs: [{ id: "run-3", agentId: "bc-new", status: "FINISHED", git: { branches: [{ branch: "cursor/fresh" }] } }],
-      });
-      const result = await harness.service.pullIntoLane("bc-new");
-      expect(result.status).toBe("created_lane");
-      expect(result.mergedBranch).toBe("cursor/fresh");
-      expect(harness.laneService.importBranch).toHaveBeenCalledWith(
-        expect.objectContaining({ branchRef: "cursor/fresh" }),
       );
     });
   });

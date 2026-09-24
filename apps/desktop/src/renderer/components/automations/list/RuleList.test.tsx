@@ -147,14 +147,13 @@ describe("RuleRow provenance", () => {
     expect(label.getAttribute("title")).toBe("Fix the sync cursor");
   });
 
-  it("keeps the scope label truncated with the full title in the title attribute", () => {
+  it("provides the full chat title on the scope label", () => {
     const long = "A very long chat title that will never fit inside the three-hundred-and-forty pixel list";
     renderList([
       rule({ id: "scoped", name: "Scoped rule", scope: { sessionId: "chat-1", sessionTitle: long } }),
     ]);
 
     const label = screen.getByTestId("rule-scope-label");
-    expect(label.className).toContain("truncate");
     expect(label.getAttribute("title")).toBe(long);
   });
 

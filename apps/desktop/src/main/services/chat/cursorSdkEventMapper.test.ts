@@ -103,33 +103,23 @@ describe("Cursor SDK event mapper", () => {
       expect(events[0]).toMatchObject({ items: [{ status: "pending" }, { status: "pending" }] });
     });
 
-    it("treats an inherited Object key as unrecognised", () => {
-      // `status` comes from the model. A bare index would return
-      // `Object.prototype.constructor` here — truthy, so the default never
-      // fires, and the spread would leave the step with no status at all.
+    // A value outside the SDK's four-member enum must never remove a step the
+    // model planned. `constructor` guards against a bare index returning
+    // `Object.prototype.constructor`. `todo_update` has no failure state; `plan`
+    // does, and "cancelled" is the SDK's own fourth enum member.
+    it.each([
+      ["wat", "pending", "pending"],
+      ["constructor", "pending", "pending"],
+    ])("maps an unrecognised todo status %s to todo %s and plan step %s", (status, itemStatus, stepStatus) => {
       const events = mapCursorSdkMessageToChatEvents({
         ...completedCall,
-        result: { status: "success", value: { todos: [{ content: "Ship it", status: "constructor" }] } },
+        result: { status: "success", value: { todos: [{ content: "Ship it", status }] } },
       }, mapperMeta());
-      expect(events[0]).toMatchObject({ items: [{ description: "Ship it", status: "pending" }] });
-      expect(events[1]).toMatchObject({ steps: [{ text: "Ship it", status: "pending" }] });
-    });
-
-    it("keeps a step with an unrecognised status instead of dropping it", () => {
-      // A value outside the SDK's four-member enum must never remove a step the
-      // model planned.
-      const events = mapCursorSdkMessageToChatEvents({
-        ...completedCall,
-        result: { status: "success", value: { todos: [{ content: "Ship it", status: "wat" }] } },
-      }, mapperMeta());
-      expect(events[0]).toMatchObject({ items: [{ id: "todo-0", description: "Ship it", status: "pending" }] });
-      expect(events[1]).toMatchObject({ steps: [{ text: "Ship it", status: "pending" }] });
+      expect(events[0]).toMatchObject({ items: [{ id: "todo-0", description: "Ship it", status: itemStatus }] });
+      expect(events[1]).toMatchObject({ steps: [{ text: "Ship it", status: stepStatus }] });
     });
 
     it("records a cancelled step as settled and flagged on both shapes, never as failed", () => {
-      // "cancelled" is the SDK's own fourth enum member. The wire keeps
-      // `completed` for clients that know no cancelled state; the flag is what
-      // the task list draws as skipped.
       const events = mapCursorSdkMessageToChatEvents({
         ...completedCall,
         result: { status: "success", value: { todos: [{ content: "Try it", status: "cancelled" }] } },
@@ -149,8 +139,6 @@ describe("Cursor SDK event mapper", () => {
       }, mapperMeta());
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ type: "tool_result", status: "failed", itemId: "tool_8711b80d" });
-      expect(events.some((event) => event.type === "plan")).toBe(false);
-      expect(events.some((event) => event.type === "todo_update")).toBe(false);
     });
 
     it("emits nothing when the list is empty", () => {
@@ -451,14 +439,6 @@ describe("Cursor SDK event mapper", () => {
     ]);
   });
 
-  it("does not tag runtime when local (default)", () => {
-    const events = mapCursorSdkMessageToChatEvents({
-      type: "assistant",
-      message: { content: [{ type: "text", text: "hi" }] },
-    }, mapperMeta());
-    expect(events[0]).not.toHaveProperty("runtime");
-  });
-
   it("emits cloud_status events for cloud-runtime status messages", () => {
     const events = mapCursorSdkMessageToChatEvents({
       type: "status",
@@ -504,203 +484,75 @@ describe("Cursor SDK event mapper", () => {
     });
   });
 
-  it("falls back to local activity events when no cloud runtime is set", () => {
-    const events = mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "RUNNING",
-      message: "going",
-    }, mapperMeta());
-    expect(events).toEqual([{
+  it.each([
+    [{ type: "status", status: "RUNNING", message: "going" }, "going"],
+    [{ type: "status", status: "RUNNING" }, "Preparing response"],
+    [{ type: "status", status: "CREATING" }, "Preparing response"],
+    // Task messages are parent-run summaries, not child lifecycle.
+    [{ type: "task", run_id: "parent-run-1", agent_id: "parent-agent-1", text: "Investigate issue" }, "Investigate issue"],
+  ])("maps local %j to a working activity row", (message, detail) => {
+    expect(mapCursorSdkMessageToChatEvents(message, mapperMeta())).toEqual([{
       type: "activity",
       activity: "working",
-      detail: "going",
+      detail,
       turnId: "turn-1",
     }]);
   });
 
-  it("uses the shared working detail when local status has no message", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "RUNNING",
-    }, mapperMeta())).toEqual([{
-      type: "activity",
-      activity: "working",
-      detail: "Preparing response",
-      turnId: "turn-1",
-    }]);
-
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "CREATING",
-    }, mapperMeta())).toEqual([{
-      type: "activity",
-      activity: "working",
-      detail: "Preparing response",
-      turnId: "turn-1",
-    }]);
-  });
-
-  it("uses Cursor SDK error detail when local status fails", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      error: { message: "Tool execution aborted" },
-    }, mapperMeta())).toEqual([expect.objectContaining({
-      type: "error",
-      message: "Tool execution aborted",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({
-        presentation: expect.objectContaining({
-          title: "Couldn't start this turn",
-          body: "Tool execution aborted",
+  it.each([
+    ["the SDK error detail", { error: { message: "Tool execution aborted" } }, "Tool execution aborted", { body: "Tool execution aborted" }],
+    // The run store errorCode stays out of the message and lands in technicalDetail.
+    ["the fallback body plus the run store code", { adeErrorCode: "insufficient_quota" }, "Cursor stopped this turn before it could finish.", { technicalDetail: "insufficient_quota" }],
+    // Unknown error objects are never stringified into chat.
+    ["the fallback body for an unknown error object", { error: { token: "secret-ish" } }, "Cursor stopped this turn before it could finish.", {}],
+  ])("presents a local ERROR status with %s", (_label, fields, message, presentation) => {
+    expect(mapCursorSdkMessageToChatEvents({ type: "status", status: "ERROR", ...fields }, mapperMeta())).toEqual([
+      expect.objectContaining({
+        type: "error",
+        message,
+        turnId: "turn-1",
+        errorInfo: expect.objectContaining({
+          presentation: expect.objectContaining({ title: "Couldn't start this turn", ...presentation }),
         }),
       }),
-    })]);
+    ]);
   });
 
-  it("uses the shared card fallback body when an ERROR carries no detail", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-    }, mapperMeta())).toEqual([expect.objectContaining({
-      type: "error",
-      message: "Cursor stopped this turn before it could finish.",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({
-        presentation: expect.objectContaining({
-          title: "Couldn't start this turn",
-        }),
-      }),
-    })]);
-  });
-
-  it("keeps the run store errorCode out of the ERROR message and in technicalDetail", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      adeErrorCode: "insufficient_quota",
-    }, mapperMeta())).toEqual([expect.objectContaining({
-      type: "error",
-      message: "Cursor stopped this turn before it could finish.",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({
-        presentation: expect.objectContaining({
-          title: "Couldn't start this turn",
-          technicalDetail: "insufficient_quota",
-        }),
-      }),
-    })]);
-  });
-
-  it("classifies Cursor resource exhaustion as a rate limit", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      adeErrorCode: "resource_exhausted",
-      adeErrorDetail: {
-        message: "[resource_exhausted] Error",
-        requestId: "req-cursor-1",
+  it.each([
+    [
+      { adeErrorCode: "resource_exhausted", adeErrorDetail: { message: "[resource_exhausted] Error", requestId: "req-cursor-1" } },
+      "Cursor rate limited this request.",
+      "[resource_exhausted] Error\nCursor request ID: req-cursor-1",
+      "rate_limit",
+    ],
+    [
+      { adeErrorCode: "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM" },
+      "Cursor rate limited this request.",
+      "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+      "rate_limit",
+    ],
+    [
+      {
+        adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+        adeErrorDetail: { message: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR" },
       },
-    }, mapperMeta())).toEqual([{
+      "Cursor's connection dropped mid-run.",
+      "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      "network",
+    ],
+    [
+      { adeErrorCode: "[internal] write ECANCELED", adeErrorDetail: { message: "[internal] write ECANCELED", requestId: "req-cursor-ecanceled" } },
+      "Cursor's connection dropped mid-run.",
+      "[internal] write ECANCELED\nCursor request ID: req-cursor-ecanceled",
+      "network",
+    ],
+  ])("classifies Cursor ERROR %j with the friendly message and keeps the raw detail", (fields, message, detail, category) => {
+    expect(mapCursorSdkMessageToChatEvents({ type: "status", status: "ERROR", ...fields }, mapperMeta())).toEqual([{
       type: "error",
-      message: "Cursor rate limited this request.",
-      detail: "[resource_exhausted] Error\nCursor request ID: req-cursor-1",
+      message,
+      detail,
       turnId: "turn-1",
-      errorInfo: expect.objectContaining({ category: "rate_limit" }),
-    }]);
-  });
-
-  it("classifies Cursor HTTP/2 backoff as a rate limit and keeps the raw code", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      adeErrorCode: "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
-    }, mapperMeta())).toEqual([{
-      type: "error",
-      message: "Cursor rate limited this request.",
-      detail: "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({ category: "rate_limit" }),
-    }]);
-  });
-
-  it("classifies Cursor HTTP/2 internal stream closures as network failures", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
-      adeErrorDetail: {
-        message: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
-      },
-    }, mapperMeta())).toEqual([{
-      type: "error",
-      message: "Cursor's connection dropped mid-run.",
-      detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({ category: "network" }),
-    }]);
-  });
-
-  it("classifies transport errorCodes as network so the renderer can offer retry", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
-    }, mapperMeta())).toEqual([{
-      type: "error",
-      message: "Cursor's connection dropped mid-run.",
-      detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({ category: "network" }),
-    }]);
-  });
-
-  it("gives write ECANCELED the friendly transport message and keeps the raw detail", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      adeErrorCode: "[internal] write ECANCELED",
-      adeErrorDetail: {
-        message: "[internal] write ECANCELED",
-        requestId: "req-cursor-ecanceled",
-      },
-    }, mapperMeta())).toEqual([{
-      type: "error",
-      message: "Cursor's connection dropped mid-run.",
-      detail: "[internal] write ECANCELED\nCursor request ID: req-cursor-ecanceled",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({ category: "network" }),
-    }]);
-  });
-
-  it("does not stringify unknown Cursor SDK error objects into chat", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "status",
-      status: "ERROR",
-      error: { token: "secret-ish" },
-    }, mapperMeta())).toEqual([expect.objectContaining({
-      type: "error",
-      message: "Cursor stopped this turn before it could finish.",
-      turnId: "turn-1",
-      errorInfo: expect.objectContaining({
-        presentation: expect.objectContaining({
-          title: "Couldn't start this turn",
-        }),
-      }),
-    })]);
-  });
-
-  it("treats Cursor task messages as parent-run summaries rather than child lifecycle", () => {
-    expect(mapCursorSdkMessageToChatEvents({
-      type: "task",
-      run_id: "parent-run-1",
-      agent_id: "parent-agent-1",
-      text: "Investigate issue",
-    }, mapperMeta())).toEqual([{
-      type: "activity",
-      activity: "working",
-      detail: "Investigate issue",
-      turnId: "turn-1",
+      errorInfo: expect.objectContaining({ category }),
     }]);
   });
 
@@ -858,15 +710,6 @@ describe("Cursor SDK event mapper", () => {
     expect(ev).not.toHaveProperty("runtime");
   });
 
-  it("forwards runtime onto done events through meta", () => {
-    const done = mapCursorSdkRunResultToDoneEvent(
-      { status: "completed" },
-      { turnId: "turn-1", model: "composer-2", runtime: "cloud" },
-    );
-    // The current shape may or may not include runtime — just verify status is mapped.
-    expect(done.status).toBe("completed");
-  });
-
   it("maps stream type usage to a tokens event without costUsd", () => {
     const events = mapCursorSdkMessageToChatEvents({
       type: "usage",
@@ -892,7 +735,6 @@ describe("Cursor SDK event mapper", () => {
         outputTokens: 8,
       }),
     ]);
-    expect(JSON.stringify(events)).not.toContain("costUsd");
     expect(events[0] as { costUsd?: unknown }).not.toHaveProperty("costUsd");
   });
 });

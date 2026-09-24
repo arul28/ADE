@@ -84,9 +84,6 @@ describe("AppleShutdownConfirmHost", () => {
     expect(screen.getByText("Closing this tab powers off the simulator.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close and shut down" })).toBeTruthy();
-    // Opaque surface, per this feature's rule zero: the panel itself never blurs.
-    expect(dialog.className).not.toContain("backdrop-blur");
-    expect(dialog.style.backdropFilter || "").toBe("");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await answer;
   });

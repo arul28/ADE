@@ -160,7 +160,7 @@ describe("device authorization bridge", () => {
     expect(env.DB.deviceRows[0]?.status).toBe("consumed");
   });
 
-  it("regression: calls the runtime fetch with the global scope as its receiver", async () => {
+  it("uses the global fetch receiver for OAuth token exchange", async () => {
     // Production, 2026-09-22: every "Confirm it's you" ended as "Sign-in
     // failed", with "OAuth token exchange failed." in the row. The default
     // `fetchImpl` was the bare global `fetch`, called as a method of the
