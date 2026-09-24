@@ -2177,9 +2177,14 @@ partitions rather than re-deriving from the raw roster, and assembles Waiting
 predicates that have to agree. The PR half is `lanePrWaitingReason`: only
 `open`/`draft` PRs count, a pending checks status is `"ci"`, a requested review
 is `"review"`, and `none`/`not_run` deliberately are not a wait (nobody has
-looked yet) while `failing` is the agent's problem rather than a wait. The lane's
-PRs are read from the **bound** machine's set, so a foreign lane's CI cannot
-park a local row in Waiting. The reason surfaces as the card's chip.
+looked yet) while `failing` is the agent's problem rather than a wait. The hook's PR lookup is the **bound** machine's set, so a foreign lane's CI
+cannot park a local row in Waiting. The board the pane paints is the sidebar's
+union: those bound-machine columns, then every other connected machine's chats,
+each filed with that machine's own PR wait. A foreign card carries the same
+machine glyph and runtime pin as its sidebar row, and a drag moves it on that
+machine. The reason surfaces as the card's chip. New chat leaves the board and
+opens the list-mode draft, because the board occupies the surface the draft
+draws on.
 
 The host keeps its own, deliberately narrower derivation in
 `deriveWorkBoardColumn`: snooze alone puts a row in Waiting there, because the

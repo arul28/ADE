@@ -110,7 +110,9 @@ The pane renders one of two views, chosen by `workViewMode` (`"list"` or
 returns to the grouping you left. In board mode the pane's body is
 `WorkKanbanBoard` and `TerminalsPage` gives it the whole Work content area
 rather than driving the splitter, because moving the splitter would overwrite
-the user's list-mode layout. See
+the user's list-mode layout. The columns include the same cross-machine chats
+the sidebar lists. New chat switches back to the list and opens the draft.
+See
 [The Work board](README.md#the-work-board) for the columns and the move
 contract.
 

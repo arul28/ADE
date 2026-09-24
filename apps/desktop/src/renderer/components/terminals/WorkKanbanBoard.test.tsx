@@ -12,6 +12,7 @@ import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import type { WorkBoardWaitingReason } from "./useWorkSessions";
+import { rootAppStoreApi } from "../../state/appStore";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The board is mounted through `SessionListPane`, never in isolation.
@@ -687,6 +688,68 @@ describe("WorkKanbanBoard", () => {
     expect(column("done").getAttribute("data-column-active")).toBeNull();
     fireDrag(column("done"), "drop", dt);
     expect(settle).not.toHaveBeenCalled();
+  });
+
+  it("leaves the board and opens the new-chat draft from the toolbar", () => {
+    const setWorkViewMode = vi.fn();
+    const onShowDraftKind = vi.fn();
+    renderBoard({ setWorkViewMode, onShowDraftKind });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a new chat" }));
+
+    expect(setWorkViewMode).toHaveBeenCalledWith("list");
+    expect(onShowDraftKind).toHaveBeenCalledWith("chat");
+  });
+
+  it("files a chat from another connected machine into the board", () => {
+    const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+    const foreignLane = makeLane({
+      id: "lane-studio",
+      name: "Studio lane",
+      branchRef: "ade/studio",
+      worktreePath: "/tmp/studio",
+    });
+    rootAppStoreApi.setState({
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Studio",
+          targetId: "studio",
+          projectId: "project-studio",
+          online: true,
+          lanes: [foreignLane],
+          sessions: [makeSession({
+            id: "foreign-chat",
+            laneId: "lane-studio",
+            laneName: "Studio lane",
+            title: "Chat on Studio",
+            status: "running",
+            runtimeState: "running",
+          })],
+          prs: [],
+          lastSyncedAtMs: 1,
+          lanesSyncedAtMs: 1,
+          error: null,
+          binding: {
+            kind: "remote",
+            key: "studio-binding",
+            targetId: "studio",
+            runtimeName: "Studio",
+            projectId: "project-studio",
+            rootPath: "/tmp/studio-project",
+            displayName: "ADE",
+          },
+        },
+      },
+    });
+    try {
+      renderBoard();
+      const card = screen.getByTestId("work-board-card-foreign-chat");
+      expect(column("working").contains(card)).toBe(true);
+      expect(column("needs_you").contains(card)).toBe(false);
+    } finally {
+      rootAppStoreApi.setState({ crossMachineLanesByMachineId: previous });
+    }
   });
 
   it("falls back to the list when board columns were never supplied", () => {
