@@ -1,19 +1,23 @@
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
+import type { NoticeTone } from "../../ui/notice/noticeTones";
+import type { ToastCardAction, ToastChip } from "../../ui/notice/ToastCard";
 
 /**
- * Reusable, renderer-only toast store. Bespoke bottom-right notices in
- * `AppShell` (PR notifications, auto-link, remote/stale banners) predate this
- * and are intentionally left alone; this is the shared primitive new product
- * code should push through. Timers (auto-dismiss + hover pause/resume) live in
- * the store so rendering components stay dumb; see `ToastStack`.
+ * ADE's one toast store. Every bottom-right notice — lane events, PR
+ * notifications, auto-link undo, the idle-sessions nudge, batch launches —
+ * goes through `showToast` and renders as the shared `ToastCard` in
+ * `ToastStack`. Timers (auto-dismiss + hover pause/resume) live in the store so
+ * rendering components stay dumb.
  */
 
-export type ToastTone = "info" | "success" | "error";
+export type ToastTone = NoticeTone;
 
 export type ToastAction = {
   label: string;
   onClick: () => void;
 };
+
+export type { ToastCardAction, ToastChip };
 
 export type ToastInput = {
   id?: string;
@@ -28,6 +32,30 @@ export type ToastInput = {
    * both "look at this" and "stop doing this"; most toasts want neither or one.
    */
   secondaryAction?: ToastAction;
+  /**
+   * Full action list (pill buttons). When set it replaces `action` /
+   * `secondaryAction`. Actions dismiss the toast unless `keepOpen`.
+   */
+  actions?: ToastCardAction[];
+  /** Logo or feature glyph for the icon tile; defaults to the tone icon. */
+  icon?: ReactNode;
+  /** Short tone pill above the title ("Checks failing"). */
+  badge?: string;
+  /** Quiet text beside the badge ("#1287"). */
+  eyebrow?: ReactNode;
+  chips?: ToastChip[];
+  /** Live custom body under the message (a per-item progress list). */
+  content?: ReactNode;
+  /** Inline failure line under the body. */
+  error?: string;
+  /** Spinner in the icon tile. */
+  busy?: boolean;
+  /** Default true. `false` hides the close button (the toast closes itself). */
+  dismissible?: boolean;
+  /** Tooltip on the close button ("Dismiss for an hour"). */
+  closeTitle?: string;
+  /** Runs when the user closes the toast with × (not on auto-dismiss). */
+  onClose?: () => void;
   /** Auto-dismiss delay; <= 0 or non-finite keeps the toast until dismissed. */
   durationMs?: number;
   /**
@@ -44,23 +72,17 @@ export type ToastInput = {
   onRendered?: () => void;
 };
 
-export type Toast = {
+export type Toast = Omit<ToastInput, "id" | "tone" | "durationMs"> & {
   id: string;
-  title: string;
-  message?: string;
   tone: ToastTone;
-  colorDot?: string;
-  action?: ToastAction;
-  secondaryAction?: ToastAction;
   durationMs: number;
-  onRendered?: () => void;
 };
 
 /** Merge-patch shape for {@link updateToast}. */
 export type ToastPatch = Partial<Omit<ToastInput, "id">>;
 
 const DEFAULT_DURATION_MS = 6000;
-const MAX_TOASTS = 4;
+const MAX_TOASTS = 5;
 
 type TimerEntry = {
   handle: ReturnType<typeof setTimeout> | null;
@@ -127,15 +149,10 @@ export function showToast(input: ToastInput): string {
   const id = input.id ?? generateId();
   const durationMs = input.durationMs ?? DEFAULT_DURATION_MS;
   const toast: Toast = {
+    ...input,
     id,
-    title: input.title,
-    message: input.message,
     tone: input.tone ?? "info",
-    colorDot: input.colorDot,
-    action: input.action,
-    secondaryAction: input.secondaryAction,
     durationMs,
-    onRendered: input.onRendered,
   };
 
   const existingIndex = toasts.findIndex((t) => t.id === id);
