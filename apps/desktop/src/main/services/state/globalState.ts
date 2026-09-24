@@ -9,6 +9,11 @@ import type {
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
 } from "../../../shared/types";
+import type {
+  BuiltInBrowserAgentAccessMode,
+  BuiltInBrowserAgentChatGrant,
+  BuiltInBrowserAgentLaneGrant,
+} from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 
@@ -94,6 +99,16 @@ export type GlobalState = {
    * is set, which is what makes the CLI stop emitting it.
    */
   claudeResumeReturnDismissed?: boolean;
+  /**
+   * "Agents can use the ADE browser" and the lanes and chats the user allowed.
+   * Machine-wide because the browser's signed-in profile is one per install.
+   * Absent: every agent may use it (the default).
+   */
+  builtInBrowserAgentAccess?: {
+    mode?: BuiltInBrowserAgentAccessMode;
+    laneGrants?: BuiltInBrowserAgentLaneGrant[];
+    chatGrants?: BuiltInBrowserAgentChatGrant[];
+  };
 };
 
 export function readGlobalState(filePath: string): GlobalState {

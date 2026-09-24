@@ -879,6 +879,7 @@ export function formatMacDesktopWindows(value: unknown): string {
       window.onDisplayId,
     ]),
     "(no windows)",
+    { fullColumns: ["id", "lane"] },
   );
 }
 

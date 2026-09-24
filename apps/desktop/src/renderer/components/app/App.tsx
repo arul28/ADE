@@ -20,6 +20,7 @@ import {
 } from "./InboundDeeplinkModal";
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
+import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
@@ -1405,6 +1406,8 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          {/* "May this agent use the ADE browser?" — only when the setting asks. */}
+          <BrowserAgentAccessPromptHost />
         </div>
       </Router>
     </LaunchGate>

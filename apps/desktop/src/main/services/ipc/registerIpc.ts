@@ -9619,6 +9619,51 @@ export function registerIpc({
     );
   });
 
+  // "Agents can use the ADE browser". Trusted-renderer only, and never on the
+  // desktop bridge: an agent must not be able to answer its own prompt.
+  ipcMain.handle(IPC.builtInBrowserAgentAccessGet, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessGet, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().getAgentAccess();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetMode, { windowMs: 10_000, max: 20 });
+    const mode = isRecord(arg) ? arg.mode : arg;
+    if (mode !== "all" && mode !== "lanes" && mode !== "chats") {
+      throw new Error(`${IPC.builtInBrowserAgentAccessSetMode}: mode must be all, lanes or chats.`);
+    }
+    return ensureBuiltInBrowser().setAgentAccessMode(mode);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessAnswer, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessAnswer, { windowMs: 10_000, max: 30 });
+    const promptId = isRecord(arg) && typeof arg.promptId === "string" ? arg.promptId.trim() : "";
+    const answer = isRecord(arg) ? arg.answer : null;
+    if (!promptId || (answer !== "all" && answer !== "lane" && answer !== "chat" && answer !== "block")) {
+      throw new Error(`${IPC.builtInBrowserAgentAccessAnswer}: expected { promptId, answer: all | lane | chat | block }.`);
+    }
+    return ensureBuiltInBrowser().answerAgentAccessPrompt(promptId, answer);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessRevoke, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessRevoke, { windowMs: 10_000, max: 30 });
+    const kind = isRecord(arg) ? arg.kind : null;
+    const text = (value: unknown): string | null =>
+      typeof value === "string" && value.trim() ? value.trim() : null;
+    if (kind === "all") return ensureBuiltInBrowser().revokeAgentAccess({ kind: "all" });
+    if (kind === "lane" && isRecord(arg) && text(arg.laneId)) {
+      return ensureBuiltInBrowser().revokeAgentAccess({
+        kind: "lane",
+        laneId: text(arg.laneId)!,
+        projectRoot: text(arg.projectRoot),
+      });
+    }
+    if (kind === "chat" && isRecord(arg) && text(arg.chatSessionId)) {
+      return ensureBuiltInBrowser().revokeAgentAccess({ kind: "chat", chatSessionId: text(arg.chatSessionId)! });
+    }
+    throw new Error(`${IPC.builtInBrowserAgentAccessRevoke}: expected { kind: all } or a lane or chat to remove.`);
+  });
+
   // ── Login import (human-only) ──────────────────────────────────────────────
   // Deliberately not routed through `ensureBuiltInBrowser()`: nothing here is
   // reachable from the desktop bridge or a daemon action domain, and keeping it

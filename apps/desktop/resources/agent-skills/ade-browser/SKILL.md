@@ -22,9 +22,12 @@ credential, import a login, or claim a tab owned by another chat.
 
 ### 1. Open or claim one tab
 
-List tabs first. Reuse a tab owned by the current chat. Plain `open` reuses
-that tab for an ADE-launched agent; use `--new-tab` only when the task needs a
-second tab, and use `--active-tab` when same-tab navigation is intentional.
+List tabs first. Reuse a tab owned by the current chat. Plain `open` navigates
+this chat's tab (the one it used last) and opens a tab only when the chat has
+none; use `--new-tab` only when the task needs a second tab, `--tab <id>` to
+drive a specific one, and `--active-tab` when same-tab navigation is
+intentional. `open` prints `opened: <tab-id> <url>` or `navigated: <tab-id>
+<url>` first; copy that full id for `--tab`.
 Claim an unowned tab with its id and lane. `--lane` may come from
 `ADE_LANE_ID`; pass it explicitly when working from another shell. Keep one
 tab per task and do not claim a tab another chat owns.
@@ -34,6 +37,14 @@ ade --socket browser tabs --text
 ade --socket browser claim --tab <tab-id> --lane <lane-id> --text
 ade --socket browser open https://example.com --text
 ```
+
+By default every agent may use the ADE browser without asking. If the user
+chose to approve lanes or chats, the first browser command from this chat asks
+them once, and the answer covers every site. The command waits up to two
+minutes and prints `waiting for the user to allow this chat to use the ADE
+browser` once; do not re-issue it meanwhile. A Block fails with
+`approval_blocked`; do not retry, ask the user. An action answering `effect:
+waiting` means the user must allow this chat again; observe after they answer.
 
 Use `--panel` only when the user should see the Browser tool opened. Use
 `--no-panel` when preparing a tab without taking the user's focus. Close your

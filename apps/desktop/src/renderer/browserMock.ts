@@ -30,6 +30,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import type { BuiltInBrowserAgentAccessSnapshot } from "../shared/types/builtInBrowser";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
@@ -121,6 +122,76 @@ const resolved =
   <T>(v: T) =>
   async () =>
     v;
+/**
+ * In-memory "Agents can use the ADE browser" for the browser-mock renderer.
+ * `window.__adeMockBrowserAgentPrompt()` opens a sample prompt so the dialog
+ * can be looked at without a live agent.
+ */
+function createMockBrowserAgentAccess() {
+  type Snapshot = BuiltInBrowserAgentAccessSnapshot;
+  let snapshot: Snapshot = { mode: "all", laneGrants: [], chatGrants: [], prompts: [] };
+  const listeners = new Set<(next: Snapshot) => void>();
+  const emit = () => {
+    for (const listener of listeners) listener(snapshot);
+    return snapshot;
+  };
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__adeMockBrowserAgentPrompt = (mode: "lanes" | "chats" = "lanes") => {
+      snapshot = {
+        ...snapshot,
+        mode,
+        prompts: [...snapshot.prompts, {
+          id: `mock-${Date.now()}`,
+          chatSessionId: "3f1c2a9e-0000-4000-8000-000000000001",
+          chatTitle: "Fix the sign-in redirect",
+          laneId: "7b2d4e10-0000-4000-8000-000000000002",
+          laneName: "auth-refactor",
+          projectRoot: "/Users/me/Projects/web-app",
+          canAllowLane: mode === "lanes",
+          canAllowChat: true,
+          requestedAt: new Date().toISOString(),
+        }],
+      };
+      emit();
+    };
+  }
+  return {
+    get: async () => snapshot,
+    setMode: async (mode: Snapshot["mode"]) => {
+      snapshot = { ...snapshot, mode, prompts: mode === "all" ? [] : snapshot.prompts };
+      return emit();
+    },
+    answer: async (promptId: string, answer: string) => {
+      const prompt = snapshot.prompts.find((entry) => entry.id === promptId);
+      if (!prompt) return snapshot;
+      const now = new Date().toISOString();
+      snapshot = {
+        mode: answer === "all" ? "all" : snapshot.mode,
+        laneGrants: answer === "lane" && prompt.laneId
+          ? [{ projectRoot: prompt.projectRoot, laneId: prompt.laneId, laneName: prompt.laneName, grantedAt: now }, ...snapshot.laneGrants]
+          : snapshot.laneGrants,
+        chatGrants: answer === "chat" && prompt.chatSessionId
+          ? [{ chatSessionId: prompt.chatSessionId, chatTitle: prompt.chatTitle, laneName: prompt.laneName, grantedAt: now }, ...snapshot.chatGrants]
+          : snapshot.chatGrants,
+        prompts: snapshot.prompts.filter((entry) => entry.id !== promptId),
+      };
+      return emit();
+    },
+    revoke: async (args: { kind: string; laneId?: string; chatSessionId?: string }) => {
+      snapshot = {
+        ...snapshot,
+        laneGrants: args.kind === "all" ? [] : snapshot.laneGrants.filter((grant) => !(args.kind === "lane" && grant.laneId === args.laneId)),
+        chatGrants: args.kind === "all" ? [] : snapshot.chatGrants.filter((grant) => !(args.kind === "chat" && grant.chatSessionId === args.chatSessionId)),
+      };
+      return emit();
+    },
+    onChange: (cb: (next: Snapshot) => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}
+
 const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
@@ -6038,6 +6109,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listPermissions: resolved({ permissions: [] }),
       clearPermissions: resolvedArg({ removed: 0, permissions: [] }),
+      agentAccess: createMockBrowserAgentAccess(),
       loginImport: {
         capabilities: resolved({ platform: "other" as const, anySupported: false, browsers: [] }),
         listSources: resolved({

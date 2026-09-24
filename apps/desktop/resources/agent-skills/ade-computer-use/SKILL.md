@@ -32,7 +32,10 @@ fill, scroll, drag) reports two lines:
 
 - `hit:` — the element the command actually hit.
 - `effect:` — `observed` (ADE saw the screen change), `unconfirmed` (ADE
-  looked and saw no change), or `not_checked` (ADE did not look).
+  looked and saw no change), `not_checked` (ADE did not look), or, in the
+  browser, `waiting` (the action started a navigation that waits for the
+  user to allow this chat to use the ADE browser; observe again after they
+  answer).
 
 When the effect is `unconfirmed`, observe again before you act again or report
 the step. Do not repeat the action blindly.

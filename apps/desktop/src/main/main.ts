@@ -1655,6 +1655,49 @@ app.whenReady().then(async () => {
       }
       return getActiveContext().projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true;
     },
+    // The origin-approval prompt names the chat and lane the way the person
+    // knows them. A chat belongs to one project context; its session row
+    // carries both its title and its lane's name.
+    // A runtime-backed project keeps its chats in the brain, so the local
+    // session row can be missing; the chat service and the lane still answer.
+    describeAgent: async ({ laneId, chatSessionId }) => {
+      for (const [projectRoot, ctx] of projectContexts) {
+        const session = chatSessionId ? ctx.sessionService?.get(chatSessionId) ?? null : null;
+        if (session && session.title && session.laneName) {
+          return { chatTitle: session.title, laneName: session.laneName, projectRoot };
+        }
+        const summary = chatSessionId
+          ? await ctx.agentChatService?.getSessionSummary(chatSessionId).catch(() => null) ?? null
+          : null;
+        const chatTitle = session?.title || summary?.title || null;
+        const resolvedLaneId = laneId || summary?.laneId || null;
+        const lane = resolvedLaneId
+          ? await ctx.laneService?.getSummary(resolvedLaneId, { includeStatus: false }).catch(() => null) ?? null
+          : null;
+        if (session || summary || lane) {
+          return { chatTitle, laneName: session?.laneName || lane?.name || null, projectRoot };
+        }
+        // A runtime-backed context has neither service here: ask its brain.
+        if (!shouldUseInProcessProjectRuntime()) {
+          const fromBrain = await describeAgentFromRuntime(projectRoot, laneId, chatSessionId);
+          if (fromBrain) return fromBrain;
+        }
+      }
+      return null;
+    },
+    // "Agents can use the ADE browser" is machine-wide, like the browser
+    // profile it protects, so it lives in the desktop's global state. Electron
+    // main owns the browser, so main is where every caller — a local chat, the
+    // brain's desktop bridge, a remote runtime forwarding to this Mac — is
+    // checked against it.
+    agentAccessStore: {
+      read: () => readGlobalState(globalStatePath).builtInBrowserAgentAccess ?? null,
+      write: (next) => {
+        const current = readGlobalState(globalStatePath);
+        writeGlobalState(globalStatePath, { ...current, builtInBrowserAgentAccess: next });
+      },
+    },
+    onAgentAccessChange: (snapshot) => broadcast(IPC.builtInBrowserAgentAccessEvent, snapshot),
     onHandoff: createBuiltInBrowserHandoffSessionListener({
       getLogger: () => getActiveContext().logger,
       // A chat session belongs to exactly one project context, and a handoff can
@@ -1935,6 +1978,37 @@ app.whenReady().then(async () => {
 
   const shouldUseInProcessProjectRuntime = (): boolean =>
     process.env.NODE_ENV === "test";
+
+  /**
+   * The chat title and lane name for the browser agent-access prompt, read
+   * from the project's brain. A runtime-backed project keeps its chats and
+   * lanes there, not in this process. Best-effort: on any failure the prompt
+   * falls back to short ids.
+   */
+  const describeAgentFromRuntime = async (
+    projectRoot: string,
+    laneId: string | null,
+    chatSessionId: string | null,
+  ): Promise<{ chatTitle: string | null; laneName: string | null; projectRoot: string } | null> => {
+    const read = async (request: { domain: string; action: string; args?: Record<string, unknown>; argsList?: unknown[] }) => {
+      try {
+        const response = await localRuntimePool.callActionForRoot(projectRoot, request);
+        return response.result && typeof response.result === "object" ? response.result as Record<string, unknown> : null;
+      } catch {
+        return null;
+      }
+    };
+    const summary = chatSessionId
+      ? await read({ domain: "chat", action: "getSessionSummary", argsList: [chatSessionId] })
+      : null;
+    const resolvedLaneId = laneId || (typeof summary?.laneId === "string" ? summary.laneId : null);
+    const lane = resolvedLaneId
+      ? await read({ domain: "lane", action: "getSummary", args: { laneId: resolvedLaneId, includeStatus: false } })
+      : null;
+    const chatTitle = typeof summary?.title === "string" && summary.title.trim() ? summary.title : null;
+    const laneName = typeof lane?.name === "string" && lane.name.trim() ? lane.name : null;
+    return chatTitle || laneName ? { chatTitle, laneName, projectRoot } : null;
+  };
 
   const projectForRoot = (projectRoot: string | null): ProjectInfo | null => {
     if (!projectRoot) return null;

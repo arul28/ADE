@@ -370,146 +370,74 @@ describe("built-in browser navigation policy", () => {
 });
 
 describe("built-in browser agent access", () => {
-  it("allows unbound humans and local development origins without prompting", async () => {
-    const prompt = vi.fn(async () => ({ granted: false }));
-    const controller = createBuiltInBrowserAgentAccessController({
-      resolveParentWindow: () => null,
-      prompt,
-    });
+  /** A controller in `mode` whose open prompts are answered with `answer`. */
+  function answeringController(
+    mode: "all" | "lanes" | "chats",
+    answer: "all" | "lane" | "chat" | "block",
+  ) {
+    const asked: string[] = [];
+    const controller: ReturnType<typeof createBuiltInBrowserAgentAccessController> =
+      createBuiltInBrowserAgentAccessController({
+        initialMode: mode,
+        onChange: (snapshot) => {
+          for (const prompt of snapshot.prompts) {
+            if (asked.includes(prompt.id)) continue;
+            asked.push(prompt.id);
+            queueMicrotask(() => controller.answerPrompt(prompt.id, answer));
+          }
+        },
+      });
+    return { controller, asked };
+  }
 
+  it("never asks for unbound callers, or for any agent under the default setting", async () => {
+    const { controller, asked } = answeringController("chats", "block");
     await expect(controller.requireUrlAccess("https://github.com", {}, "test")).resolves.toBeUndefined();
-    await expect(controller.requireUrlAccess("http://localhost:5173", { chatSessionId: "chat-1" }, "test"))
+    const byDefault = createBuiltInBrowserAgentAccessController({});
+    await expect(byDefault.requireUrlAccess("https://github.com", { chatSessionId: "chat-1" }, "test"))
       .resolves.toBeUndefined();
-    expect(prompt).not.toHaveBeenCalled();
+    expect(asked).toHaveLength(0);
   });
 
-  it("requires one chat-scoped human approval for every remote origin", async () => {
-    const prompt = vi.fn(async () => ({ granted: true }));
-    const controller = createBuiltInBrowserAgentAccessController({
-      resolveParentWindow: () => null,
-      prompt,
-    });
+  it("asks once per chat, and one answer covers every site", async () => {
+    const { controller, asked } = answeringController("chats", "chat");
 
     await expect(controller.requireUrlAccess(
       "https://github.com/settings/tokens",
       { laneId: "lane-1", chatSessionId: "chat-1" },
       "navigate",
     )).resolves.toBeUndefined();
-    controller.assertUrlAccessSync("https://github.com/settings/tokens", { chatSessionId: "chat-1" });
+    controller.assertUrlAccessSync("https://example.test", { chatSessionId: "chat-1" });
     expect(() => controller.assertUrlAccessSync(
       "https://github.com/settings/tokens",
       { chatSessionId: "chat-2" },
-    )).toThrow(/human-approval check/);
-    expect(prompt).toHaveBeenCalledTimes(1);
+    )).toThrow(/has not allowed this chat to use the ADE browser/);
+    expect(asked).toHaveLength(1);
   });
 
-  it("requires first-use approval before synchronous access to a remote origin", async () => {
-    const prompt = vi.fn(async () => ({ granted: true }));
-    const controller = createBuiltInBrowserAgentAccessController({
-      resolveParentWindow: () => null,
-      prompt,
-    });
+  it("requires the first answer before synchronous access", async () => {
+    const { controller, asked } = answeringController("chats", "chat");
     const identity = { chatSessionId: "chat-1" };
 
     expect(() => controller.assertUrlAccessSync("https://example.test", identity)).toThrow();
     await expect(controller.requireUrlAccess("https://example.test", identity, "navigate")).resolves.toBeUndefined();
     expect(() => controller.assertUrlAccessSync("https://example.test", identity)).not.toThrow();
-    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveLength(1);
   });
 
-  it("requires approval for local origins with a remembered privileged permission", async () => {
-    const prompt = vi.fn(async () => ({ granted: false }));
-    const controller = createBuiltInBrowserAgentAccessController({
-      hasAllowedPermissionForOrigin: (origin) => origin === "http://localhost:5173",
-      resolveParentWindow: () => null,
-      prompt,
-    });
+  it("names a Block as the user's answer", async () => {
+    const { controller, asked } = answeringController("chats", "block");
 
     await expect(controller.requireUrlAccess(
       "http://localhost:5173/account",
       { chatSessionId: "chat-1" },
       "navigate",
-    )).rejects.toThrow(/Human approval was denied/);
-    expect(prompt).toHaveBeenCalledTimes(1);
+    )).rejects.toThrow(/approval_blocked: the user blocked this chat from using the ADE browser/);
+    expect(asked).toHaveLength(1);
   });
 
-  it("treats HTTP-authenticated origins as sensitive and grants only the prompting agent", async () => {
-    const controller = createBuiltInBrowserAgentAccessController({
-      resolveParentWindow: () => null,
-      prompt: vi.fn(),
-    });
-    const owner = { laneId: "lane-1", chatSessionId: "chat-1" };
-
-    controller.recordHumanAuthentication("https://basic.example.com/private", owner);
-
-    expect(() => controller.assertUrlAccessSync("https://basic.example.com/private", owner)).not.toThrow();
-    expect(() => controller.assertUrlAccessSync(
-      "https://basic.example.com/private",
-      { laneId: "lane-1", chatSessionId: "chat-2" },
-    )).toThrow(/requires a browser human-approval check/);
-  });
-
-  it("does not let one tunnel inherit another tunnel's approval on the same local port", async () => {
-    // Port-forward local ports are ephemeral and recycled: the same
-    // `127.0.0.1:52413` can stand for a different machine, or a different
-    // remote port, minutes later. Keying on origin alone would carry the
-    // human's approval straight across that boundary.
+  it("forgets a machine's tunnel origins once its forwards are torn down", () => {
     resetRemoteTunnelOrigins();
-    const prompt = vi.fn(async () => ({ granted: true }));
-    const controller = createBuiltInBrowserAgentAccessController({
-      hasAllowedPermissionForOrigin: (origin) => origin === "http://127.0.0.1:52413",
-      resolveParentWindow: () => null,
-      prompt,
-    });
-    const identity = { chatSessionId: "chat-1" };
-
-    recordRemoteTunnelOrigin({
-      localHost: "127.0.0.1",
-      localPort: 52413,
-      machineKey: "studio",
-      remotePort: 3000,
-    });
-    await controller.requireUrlAccess("http://127.0.0.1:52413/app", identity, "navigate");
-    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity)).not.toThrow();
-
-    // Same local port, now forwarding a different remote port.
-    recordRemoteTunnelOrigin({
-      localHost: "127.0.0.1",
-      localPort: 52413,
-      machineKey: "studio",
-      remotePort: 8080,
-    });
-    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity))
-      .toThrow(/human-approval check/);
-
-    // Same local port and remote port, but a different machine.
-    recordRemoteTunnelOrigin({
-      localHost: "127.0.0.1",
-      localPort: 52413,
-      machineKey: "laptop",
-      remotePort: 3000,
-    });
-    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity))
-      .toThrow(/human-approval check/);
-
-    resetRemoteTunnelOrigins();
-  });
-
-  it("forgets a machine's tunnel origins once its forwards are torn down", async () => {
-    // The registry used to outlive the tunnel it described. After a
-    // disconnect the local listener is gone and the OS can hand that port to
-    // an unrelated local server, so a surviving entry would keep asserting
-    // that `127.0.0.1:52413` is Studio's port 3000 — and the approval the
-    // human granted for the tunnel would be inherited by that other page.
-    resetRemoteTunnelOrigins();
-    const prompt = vi.fn(async () => ({ granted: true }));
-    const controller = createBuiltInBrowserAgentAccessController({
-      hasAllowedPermissionForOrigin: (origin) => origin === "http://127.0.0.1:52413",
-      resolveParentWindow: () => null,
-      prompt,
-    });
-    const identity = { chatSessionId: "chat-1" };
-
     recordRemoteTunnelOrigin({
       localHost: "127.0.0.1",
       localPort: 52413,
@@ -522,8 +450,6 @@ describe("built-in browser agent access", () => {
       machineKey: "laptop",
       remotePort: 3000,
     });
-    await controller.requireUrlAccess("http://127.0.0.1:52413/app", identity, "navigate");
-    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity)).not.toThrow();
 
     forgetRemoteTunnelOrigins("studio");
     expect(lookupRemoteTunnelOrigin("http://127.0.0.1:52413")).toBeNull();
@@ -532,9 +458,6 @@ describe("built-in browser agent access", () => {
       machineKey: "laptop",
       remotePort: 3000,
     });
-    // The approval was keyed to the tunnel, so it does not survive it.
-    expect(() => controller.assertUrlAccessSync("http://127.0.0.1:52413/app", identity))
-      .toThrow(/human-approval check/);
 
     resetRemoteTunnelOrigins();
   });

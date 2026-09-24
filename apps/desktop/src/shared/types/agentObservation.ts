@@ -65,8 +65,8 @@ export type AgentDomSnapshot = {
  * action: which element it hit, and whether the screen changed after it.
  */
 export type ComputerUseActionEffect = {
-  /** "observed": the screen/DOM visibly changed after the action. "unconfirmed": the input was sent, but nothing ADE can see changed. "not_checked": this action/surface did not compare (say why in `reason`). */
-  status: "observed" | "unconfirmed" | "not_checked";
+  /** "observed": the screen/DOM visibly changed after the action. "unconfirmed": the input was sent, but nothing ADE can see changed. "not_checked": this action/surface did not compare (say why in `reason`). "waiting_for_approval": the action started a navigation that is held until the user allows this agent to use the ADE browser. */
+  status: "observed" | "unconfirmed" | "not_checked" | "waiting_for_approval";
   /** One short plain-English sentence, e.g. "the focused element changed", "the URL changed", "3 elements changed", "nothing on screen changed". */
   reason: string;
 };

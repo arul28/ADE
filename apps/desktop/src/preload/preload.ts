@@ -928,6 +928,10 @@ import type {
   BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserOriginAccessResult,
   BuiltInBrowserPermissionsResult,
+  BuiltInBrowserAgentAccessAnswer,
+  BuiltInBrowserAgentAccessMode,
+  BuiltInBrowserAgentAccessRevokeArgs,
+  BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -4124,6 +4128,8 @@ const builtInBrowserEventFanout =
     IPC.builtInBrowserEvent,
     () => builtInBrowserStatusCache.clear(),
   );
+const builtInBrowserAgentAccessEventFanout =
+  createIpcEventFanout<BuiltInBrowserAgentAccessSnapshot>(IPC.builtInBrowserAgentAccessEvent);
 const projectStateEventFanout = createIpcEventFanout<AdeProjectEvent>(
   IPC.projectStateEvent,
 );
@@ -9021,6 +9027,22 @@ const adeBridge = {
       args: BuiltInBrowserClearPermissionsArgs = {},
     ): Promise<BuiltInBrowserClearPermissionsResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
+    // "Agents can use the ADE browser". Machine-local and human-only: no `pin`
+    // overload, because the answer belongs to the person at this machine.
+    agentAccess: {
+      get: async (): Promise<BuiltInBrowserAgentAccessSnapshot> =>
+        ipcRenderer.invoke(IPC.builtInBrowserAgentAccessGet),
+      setMode: async (mode: BuiltInBrowserAgentAccessMode): Promise<BuiltInBrowserAgentAccessSnapshot> =>
+        ipcRenderer.invoke(IPC.builtInBrowserAgentAccessSetMode, { mode }),
+      answer: async (
+        promptId: string,
+        answer: BuiltInBrowserAgentAccessAnswer,
+      ): Promise<BuiltInBrowserAgentAccessSnapshot> =>
+        ipcRenderer.invoke(IPC.builtInBrowserAgentAccessAnswer, { promptId, answer }),
+      revoke: async (args: BuiltInBrowserAgentAccessRevokeArgs): Promise<BuiltInBrowserAgentAccessSnapshot> =>
+        ipcRenderer.invoke(IPC.builtInBrowserAgentAccessRevoke, args),
+      onChange: builtInBrowserAgentAccessEventFanout,
+    },
     // Human-only, like `getProfileDiagnostics` / `listPermissions` above: no
     // `pin` overload, so there is no path from a pinned runtime action — and
     // therefore from an agent — into someone's cookie jar.

@@ -260,6 +260,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Links",
   },
   {
+    id: "general.browser-agent-access",
+    label: "Agents can use the ADE browser",
+    keywords: ["browser", "agent", "approve", "approval", "allow", "block", "lane", "chat", "permission", "consent", "signed in"],
+    tab: "general",
+    anchor: "browser-agent-access",
+    scope: "machine",
+    // The ADE browser and its signed-in profile live in the desktop main
+    // process; a hosted tab has neither.
+    web: "hidden",
+    group: "ADE browser",
+  },
+  {
     id: "general.analytics",
     label: "Product analytics",
     keywords: ["telemetry", "posthog", "tracking", "privacy", "opt out"],

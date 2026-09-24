@@ -826,6 +826,10 @@ import type {
   BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserOriginAccessResult,
   BuiltInBrowserPermissionsResult,
+  BuiltInBrowserAgentAccessAnswer,
+  BuiltInBrowserAgentAccessMode,
+  BuiltInBrowserAgentAccessRevokeArgs,
+  BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -2948,6 +2952,20 @@ declare global {
         ) => Promise<BuiltInBrowserOriginAccessResult>;
         getProfileDiagnostics: () => Promise<BuiltInBrowserProfileDiagnostics>;
         listPermissions: () => Promise<BuiltInBrowserPermissionsResult>;
+        /**
+         * "Agents can use the ADE browser": the setting, the saved lane and
+         * chat grants, and the open prompts. Machine-local and human-only.
+         */
+        agentAccess: {
+          get: () => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          setMode: (mode: BuiltInBrowserAgentAccessMode) => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          answer: (
+            promptId: string,
+            answer: BuiltInBrowserAgentAccessAnswer,
+          ) => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          revoke: (args: BuiltInBrowserAgentAccessRevokeArgs) => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          onChange: (cb: (snapshot: BuiltInBrowserAgentAccessSnapshot) => void) => () => void;
+        };
         clearPermissions: (
           args?: BuiltInBrowserClearPermissionsArgs,
         ) => Promise<BuiltInBrowserClearPermissionsResult>;

@@ -170,6 +170,106 @@ export type BuiltInBrowserHandoffWaitResult = {
  */
 export const BUILT_IN_BROWSER_HANDOFF_ACTIVE_CODE = "handoff_active";
 
+/**
+ * Error-message prefixes for an agent call that needs the human's OK to use the
+ * ADE browser. `pending`: the prompt is open and nobody has answered inside one
+ * call's budget; the same call run again joins the same prompt, so the CLI
+ * keeps re-running it for up to {@link BUILT_IN_BROWSER_APPROVAL_WAIT_MS}.
+ * `blocked`: the human pressed Block.
+ *
+ * Match these as substrings: an older desktop said `origin_approval_pending:`,
+ * which still contains `approval_pending:`, so a newer CLI keeps waiting on it.
+ */
+export const BUILT_IN_BROWSER_APPROVAL_PENDING_CODE = "approval_pending";
+export const BUILT_IN_BROWSER_APPROVAL_BLOCKED_CODE = "approval_blocked";
+/** How long one agent command waits in total for a human to answer the prompt. */
+export const BUILT_IN_BROWSER_APPROVAL_WAIT_MS = 2 * 60_000;
+/**
+ * How long ONE desktop call waits for the answer before it says "pending".
+ * Well under the daemon's 30 s bridge budget, so the bridge keeps its own
+ * liveness timeout and still never reports a timeout for a waiting human.
+ */
+export const BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS = 15_000;
+
+/**
+ * What an `approval_pending: …` message is waiting for, as a phrase that reads
+ * after "waiting for the user to" (e.g. "allow this chat to use the ADE
+ * browser"), or null for any other error.
+ */
+export function parseBuiltInBrowserApprovalPending(message: string): { waitingFor: string } | null {
+  const index = message.indexOf(`${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}:`);
+  if (index < 0) return null;
+  const tail = message.slice(index);
+  const current = /waiting for the user to (allow this (?:chat|lane) to use the ADE browser)/.exec(tail);
+  if (current) return { waitingFor: current[1]! };
+  // An older desktop's per-site prompt.
+  const legacy = /approve (\S+) in ADE/.exec(tail);
+  return { waitingFor: legacy ? `approve ${legacy[1]} in ADE` : "answer the ADE browser prompt" };
+}
+
+/**
+ * Who may drive the ADE browser without asking. Machine-wide: the browser's
+ * signed-in profile is one per ADE install, so the answer is too.
+ *
+ * - `all`: every agent in every lane. The default; nothing is ever asked.
+ * - `lanes`: agents in a lane the user allowed. Asked once per lane.
+ * - `chats`: chats the user allowed. Asked once per chat.
+ */
+export type BuiltInBrowserAgentAccessMode = "all" | "lanes" | "chats";
+export const BUILT_IN_BROWSER_AGENT_ACCESS_MODES: readonly BuiltInBrowserAgentAccessMode[] = ["all", "lanes", "chats"];
+export const BUILT_IN_BROWSER_AGENT_ACCESS_DEFAULT_MODE: BuiltInBrowserAgentAccessMode = "all";
+
+export function normalizeBuiltInBrowserAgentAccessMode(value: unknown): BuiltInBrowserAgentAccessMode {
+  return value === "lanes" || value === "chats" || value === "all"
+    ? value
+    : BUILT_IN_BROWSER_AGENT_ACCESS_DEFAULT_MODE;
+}
+
+/** A lane the user allowed. Keyed by project + lane; the names are for display. */
+export type BuiltInBrowserAgentLaneGrant = {
+  projectRoot: string | null;
+  laneId: string;
+  laneName: string | null;
+  grantedAt: string;
+};
+
+/** A chat the user allowed. The names are for display. */
+export type BuiltInBrowserAgentChatGrant = {
+  chatSessionId: string;
+  chatTitle: string | null;
+  laneName: string | null;
+  grantedAt: string;
+};
+
+/** One open "may this agent use the ADE browser?" question. */
+export type BuiltInBrowserAgentAccessPrompt = {
+  id: string;
+  chatSessionId: string | null;
+  chatTitle: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  projectRoot: string | null;
+  /** The answers this caller can be given: a lane-less chat has no lane to allow, a chat-less shell no chat. */
+  canAllowLane: boolean;
+  canAllowChat: boolean;
+  requestedAt: string;
+};
+
+export type BuiltInBrowserAgentAccessAnswer = "all" | "lane" | "chat" | "block";
+
+export type BuiltInBrowserAgentAccessSnapshot = {
+  mode: BuiltInBrowserAgentAccessMode;
+  laneGrants: BuiltInBrowserAgentLaneGrant[];
+  chatGrants: BuiltInBrowserAgentChatGrant[];
+  /** Oldest first. The renderer shows the first. */
+  prompts: BuiltInBrowserAgentAccessPrompt[];
+};
+
+export type BuiltInBrowserAgentAccessRevokeArgs =
+  | { kind: "lane"; projectRoot: string | null; laneId: string }
+  | { kind: "chat"; chatSessionId: string }
+  | { kind: "all" };
+
 export type BuiltInBrowserSession = {
   id: string;
   tabId: string;
@@ -214,6 +314,14 @@ export type BuiltInBrowserStatus = {
    * "nobody is browsing" is the right reading of an absent field.
    */
   agentPresence?: BuiltInBrowserAgentPresence[];
+  /**
+   * The tab an `open`/`navigate` or `new-tab` call drove. Set only on those
+   * calls' answers: an agent's open does not take the human's focus, so the
+   * active tab is usually not the one it just opened.
+   */
+  targetTabId?: string | null;
+  /** True when that call created the tab rather than navigating an existing one. */
+  targetTabCreated?: boolean;
 };
 
 export type BuiltInBrowserPermissionDecision = {
@@ -326,6 +434,14 @@ export type BuiltInBrowserObservationArgs = BuiltInBrowserTabTargetArgs & {
   includeElementMap?: boolean;
   includeDiagnostics?: boolean;
   maxElements?: number | null;
+  /**
+   * Fail the observation when no screenshot can be captured. Off by default:
+   * an observation of a tab whose pixels are unavailable (host window
+   * minimised, no host window) still returns its DOM, with `filePath: null`
+   * and `screenshotUnavailable` naming why. Proof sets it, because proof
+   * without pixels is not proof.
+   */
+  requireScreenshot?: boolean;
 };
 
 export type BuiltInBrowserObservationCleanup = {
@@ -341,11 +457,14 @@ export type BuiltInBrowserObservation = {
   url: string | null;
   title: string | null;
   capturedAt: string;
-  width: number;
-  height: number;
-  mimeType: string;
-  filePath: string;
+  /** Null, with `filePath`/`mimeType`, when the screenshot was unavailable. */
+  width: number | null;
+  height: number | null;
+  mimeType: string | null;
+  filePath: string | null;
   relativePath: string | null;
+  /** Why there is no image, when there is none: "Browser screenshot is unavailable for tab …". */
+  screenshotUnavailable?: string;
   dataUrl?: string;
   dom?: BuiltInBrowserDomSnapshot | null;
   elementMap?: BuiltInBrowserObservationElementMap | null;

@@ -188,6 +188,11 @@ import {
   credentialStorageKey,
 } from "../../desktop/src/main/services/ai/apiKeyStore";
 import { DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
+import {
+  BUILT_IN_BROWSER_APPROVAL_PENDING_CODE,
+  BUILT_IN_BROWSER_APPROVAL_WAIT_MS,
+  parseBuiltInBrowserApprovalPending,
+} from "../../desktop/src/shared/types/builtInBrowser";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
@@ -2528,10 +2533,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   tab switching are passive view operations; use
   "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
   ADE-launched agents should list tabs first and use only a tab/session owned
-  by their current chat. Plain "browser open <url>" reuses that owned tab for
-  ADE-launched agents and creates one only when none exists, without revealing
-  the Browser panel unless --panel is passed. Use --new-tab only when the task
-  truly needs another tab; --active-tab and --tab stay explicit. The runtime
+  by their current chat. Plain "browser open <url>" navigates that chat's tab
+  (the one it used last) and creates one only when none exists, without
+  revealing the Browser panel unless --panel is passed. It prints
+  "opened: <tab-id> <url>" or "navigated: <tab-id> <url>" first. Use --new-tab
+  only when the task truly needs another tab; --active-tab and --tab stay
+  explicit. By default every agent may use the ADE browser without asking. If
+  the user set "Agents can use the ADE browser" to lanes or chats they approve,
+  the first browser command from a new lane or chat asks them once: the command
+  waits up to 2 minutes, printing "waiting for the user to allow this chat to
+  use the ADE browser" once, and a Block fails with "approval_blocked: the user
+  blocked this chat from using the ADE browser". One answer covers every site.
+  The runtime
   accepts browser commands only from ADE-launched chat/terminal sessions with
   a browser capability, validates lane/chat identity, and rejects agent force
   takeovers. Profile diagnostics and remembered-permission administration stay
@@ -2539,7 +2552,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
-    $ ade --socket browser authorize --tab <id>    Request human access to an authenticated origin
+    $ ade --socket browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
@@ -2650,7 +2663,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                          with a dash: "browser open -- --weird-url",
                          "browser key -- --", "browser fill --selector x -- --literal".
     --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
-    --new-tab           Always open navigation in a new tab.
+    --new-tab           Open in a new tab instead of this chat's tab.
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
     --background         Create a new tab without activating it.
     --panel, --show-panel
@@ -13948,6 +13961,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       ...harTargetArgs,
       ...readBrowserObservationOnlyArgs(args),
       includeDom: false,
+      // Proof without pixels is not proof: fail with the capture's own reason
+      // instead of the observation's DOM-only fallback.
+      requireScreenshot: true,
     });
     return {
       kind: "execute",
@@ -23957,8 +23973,21 @@ export function renderTable(
   headers: string[],
   rows: unknown[][],
   emptyMessage: string,
+  options: {
+    /**
+     * Headers whose cells are never shortened: ids and handles an agent copies
+     * into its next command. A truncated `tab-6db46434-…` is not a shorter id,
+     * it is a wrong one ("Browser tab not found").
+     */
+    fullColumns?: readonly string[];
+  } = {},
 ): string {
   if (rows.length === 0) return emptyMessage;
+  const fullColumns = new Set(options.fullColumns ?? []);
+  const cellWidth = (index: number): number =>
+    fullColumns.has(headers[index] ?? "")
+      ? Number.POSITIVE_INFINITY
+      : index === headers.length - 1 ? 64 : 28;
   // Column widths and padding are measured in terminal cells so a wide
   // (CJK/emoji) value cannot shift the columns to its right.
   const widths = headers.map((header, index) =>
@@ -23966,7 +23995,7 @@ export function renderTable(
       terminalDisplayWidth(header),
       ...rows.map(
         (row) =>
-          terminalDisplayWidth(cell(row[index], index === headers.length - 1 ? 64 : 28)),
+          terminalDisplayWidth(cell(row[index], cellWidth(index))),
       ),
     ),
   );
@@ -23974,7 +24003,7 @@ export function renderTable(
     row
       .map((entry, index) =>
         padDisplayEnd(
-          cell(entry, index === headers.length - 1 ? 64 : 28),
+          cell(entry, cellWidth(index)),
           widths[index] ?? 0,
         ),
       )
@@ -25044,6 +25073,7 @@ function formatIosSimDevices(value: unknown): string {
       device.state,
     ]),
     "ADE iOS simulators\n(no installed simulators)",
+    { fullColumns: ["udid"] },
   );
 }
 
@@ -25060,6 +25090,7 @@ function formatIosSimApps(value: unknown): string {
       target.bundleId ?? target.detail,
     ]),
     "ADE iOS launchable apps\n(no apps)",
+    { fullColumns: ["target"] },
   );
 }
 
@@ -25209,6 +25240,7 @@ function formatIosSimSnapshot(value: unknown): string {
                 : "",
             ]),
           "",
+          { fullColumns: ["id"] },
         )
       : "",
   ]
@@ -25404,9 +25436,24 @@ function formatBrowserStatus(value: unknown): string {
     }
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);
+    // The caller's own tab says so in words; anyone else's shows full ids,
+    // never a truncated one that looks copyable and is not.
+    if (chat && chat === callerChatSessionId) return "this chat";
     return [lane, chat].filter(Boolean).join(" / ");
   };
+  const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  // `open` / `new-tab` name the tab they drove in one line, so the agent does
+  // not have to pick it out of the table (an agent's tab is not the active
+  // one: agent opens do not take the human's focus).
+  const targetTabId = asString(status.targetTabId);
+  const targetTab = targetTabId ? tabs.find((tab) => asString(tab.id) === targetTabId) ?? null : null;
+  const targetLine = targetTabId
+    ? `${status.targetTabCreated === true ? "opened" : "navigated"}: ${targetTabId}${
+      asString(targetTab?.url) ? ` ${asString(targetTab?.url)}` : ""
+    }`
+    : null;
   return [
+    ...(targetLine ? [targetLine, ""] : []),
     renderKeyValues("ADE browser", [
       ["visible", status.visible],
       ["attached", status.attached],
@@ -25433,6 +25480,7 @@ function formatBrowserStatus(value: unknown): string {
         tab.url,
       ]),
       "Browser tabs\n(no browser tabs)",
+      { fullColumns: ["tab", "owner"] },
     ),
   ].join("\n");
 }
@@ -25459,6 +25507,7 @@ function formatBrowserDevServers(value: unknown): string {
       ];
     }),
     "ADE dev servers\n(no dev servers detected in ADE terminals for this chat)",
+    { fullColumns: ["lane", "terminal"] },
   );
 }
 
@@ -25534,6 +25583,7 @@ function formatWorkToolsState(value: unknown): string {
         tab.url,
       ]),
       "Browser tabs\n(no browser tabs)",
+      { fullColumns: ["tab", "owner chat"] },
     ),
   ].join("\n");
 }
@@ -25572,6 +25622,7 @@ function formatBrowserSessions(value: unknown): string {
         entry.updatedAt,
       ]),
       "Browser sessions\n(no browser sessions)",
+      { fullColumns: ["session", "tab", "owner", "last observation", "last trace"] },
     ),
   ].join("\n");
 }
@@ -25632,6 +25683,8 @@ export function formatActionAnswerLines(
   if (status === "observed") effectLine = `effect: observed — ${reason || "the screen changed"}`;
   else if (status === "unconfirmed") {
     effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}; observe again before you continue`;
+  } else if (status === "waiting_for_approval") {
+    effectLine = `effect: waiting — ${reason || "a navigation is waiting for the user's approval in ADE"}; observe again after they answer`;
   } else if (status === "not_checked") effectLine = `effect: not checked — ${reason || "this action did not compare"}`;
   else effectLine = "effect: not checked — this ADE did not report an effect";
   return [hit, effectLine];
@@ -25656,6 +25709,7 @@ function domElementTable(elements: JsonObject[]): string {
     ["#", "handle", "role/tag", "label", "center", "selector"],
     rows,
     "(no DOM elements)",
+    { fullColumns: ["handle"] },
   );
 }
 
@@ -25746,6 +25800,7 @@ function formatBrowserObservation(value: unknown): string {
     ["url", observation.url ?? status?.url],
     ["title", observation.title ?? status?.title],
     ["image", observation.filePath ?? observation.relativePath],
+    ["screenshot unavailable", observation.screenshotUnavailable],
     ["element map", elementMap?.filePath ?? elementMap?.relativePath],
     [
       "size",
@@ -25891,6 +25946,7 @@ function formatAppControlSnapshot(value: unknown): string {
               element.selector,
             ]),
           "",
+          { fullColumns: ["ref"] },
         )
       : "",
   ]
@@ -28056,8 +28112,10 @@ async function executePlan(
               },
             }
           : resolvedParams;
-        const raw = await connection.request(step.method, params);
-        values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
+        values[step.key] = await waitThroughBrowserApproval(async () => {
+          const raw = await connection.request(step.method, params);
+          return step.unwrapToolResult ? unwrapToolResult(raw) : raw;
+        });
       } catch (error) {
         if (!step.optional) {
           const createdSessionId = (
@@ -28120,6 +28178,56 @@ async function executePlan(
     });
   } finally {
     await connection.close();
+  }
+}
+
+/**
+ * Run one plan step, waiting for a human who has not yet answered "may this
+ * chat use the ADE browser?".
+ *
+ * The desktop answers a call that needs approval within its own budget
+ * (`approval_pending`) instead of holding it past the daemon bridge's liveness
+ * timeout, and keeps the prompt open. Running the same call again joins that
+ * prompt, so this re-runs it until the human answers or
+ * {@link BUILT_IN_BROWSER_APPROVAL_WAIT_MS} passes, telling the caller once on
+ * stderr what it is waiting for. A Block comes back as its own error and is
+ * never retried.
+ */
+async function waitThroughBrowserApproval<T>(
+  run: () => Promise<T>,
+  deps: {
+    now?: () => number;
+    notify?: (line: string) => void;
+    pause?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<T> {
+  const now = deps.now ?? Date.now;
+  const notify = deps.notify ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const pause = deps.pause ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let deadline: number | null = null;
+  for (;;) {
+    const startedAt = now();
+    try {
+      return await run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const pending = parseBuiltInBrowserApprovalPending(message);
+      if (!pending) throw error;
+      const minutes = Math.round(BUILT_IN_BROWSER_APPROVAL_WAIT_MS / 60_000);
+      if (deadline == null) {
+        deadline = startedAt + BUILT_IN_BROWSER_APPROVAL_WAIT_MS;
+        notify(`ade: waiting for the user to ${pending.waitingFor} (up to ${minutes} min)…`);
+      }
+      if (now() >= deadline) {
+        throw new CliToolError(
+          `${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}: the user has not answered the prompt to ${pending.waitingFor} after ${minutes} minutes. The prompt is still open in ADE; run the command again once they answer, or ask them to.`,
+          { code: BUILT_IN_BROWSER_APPROVAL_PENDING_CODE, waitingFor: pending.waitingFor },
+        );
+      }
+      // The desktop normally holds each call for its whole budget; an older
+      // or short-circuiting one must not turn this into a hot loop.
+      if (now() - startedAt < 1_000) await pause(1_000);
+    }
   }
 }
 
