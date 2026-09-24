@@ -359,11 +359,9 @@ private struct PersonalChatDestination: View {
       initialOpeningPrompt: nil,
       initialSession: makePersonalChatSessionStub(summary),
       initialChatSummary: summary,
-      initialTranscript: nil,
       transitionNamespace: nil,
       isLive: summary.archivedAt == nil,
       navigationChrome: .pushedDetail,
-      forceFreshTranscriptOnOpen: true,
       showsLaneActions: false,
       navigationTitleOverride: summary.title,
       lanes: [],
@@ -420,7 +418,7 @@ struct PersonalChatNewScreen: View {
   @State private var reasoningEffort = ""
   @State private var codexFastMode = false
   @State private var draft = ""
-  @State private var composerHeight: CGFloat = 88
+  @State private var attachments: [WorkChatInputAttachment] = []
   @State private var composerFocused = true
   @State private var modelPickerPresented = false
   @State private var selectedModelOption: WorkModelOption?
@@ -518,19 +516,45 @@ struct PersonalChatNewScreen: View {
     }
   }
 
+  /// The app's shared glass prompt box. A personal chat has no project, so
+  /// there is nothing to attach or stash; the ⋯ menu carries the model.
   private var composer: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      WorkPlainComposerTextView(
-        text: $draft,
-        isFocused: $composerFocused,
-        measuredHeight: $composerHeight,
-        placeholder: "Message ADE…",
-        acceptsPastedImages: false,
-        onPasteImages: { _ in }
-      )
-      .frame(minHeight: 54, idealHeight: composerHeight, maxHeight: min(180, composerHeight))
-
-      HStack(spacing: 10) {
+    ADEPlainGlassComposer(
+      text: $draft,
+      isFocused: $composerFocused,
+      attachments: $attachments,
+      placeholder: "Message ADE…",
+      acceptsPastedImages: false,
+      sendEnabled: canCreateChat && !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      sending: busy,
+      sendAccessibilityLabel: "Start chat",
+      disabledSendAccessibilityLabel: canCreateChat
+        ? "Enter a message to start"
+        : "Connect to a compatible ADE machine to start a chat",
+      dictationTargetId: "personal-new-chat",
+      onSend: { Task { await create() } },
+      menu: { startDictation in
+        Menu {
+          Button { modelPickerPresented = true } label: {
+            Label("Model · \(workKnownModelDisplayName(modelId) ?? modelId)", systemImage: "cpu")
+          }
+          .disabled(!canChooseModel || busy)
+          if SpeechDictationService.isAvailable {
+            Button(action: startDictation) {
+              Label("Dictate", systemImage: "mic")
+            }
+          }
+        } label: {
+          Image(systemName: "ellipsis")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 36, height: 36)
+            .contentShape(Circle())
+            .frame(minWidth: 44, minHeight: 44)
+        }
+        .accessibilityLabel("Composer options")
+      },
+      controls: {
         Button { modelPickerPresented = true } label: {
           HStack(spacing: 7) {
             WorkProviderBareLogo(
@@ -542,12 +566,12 @@ struct PersonalChatNewScreen: View {
             Text(workKnownModelDisplayName(modelId) ?? modelId)
               .font(.caption.weight(.semibold))
               .lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .bold))
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
           }
-          .foregroundStyle(ADEColor.textSecondary)
+          .foregroundStyle(ADEColor.textPrimary)
           .padding(.horizontal, 10)
-          .frame(minHeight: 44)
-          .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule())
+          .frame(minHeight: workChatComposerChipRowHeight)
+          .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .disabled(!canChooseModel || busy)
@@ -555,22 +579,8 @@ struct PersonalChatNewScreen: View {
         .accessibilityHint(canChooseModel
           ? "Opens the model picker."
           : "Connect to a compatible ADE machine to choose a model.")
-        Spacer(minLength: 8)
-        ADEComposerSendButton(
-          enabled: canCreateChat && !busy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          sending: busy,
-          accessibilityLabelText: "Start chat",
-          disabledAccessibilityLabel: canCreateChat
-            ? "Enter a message to start"
-            : "Connect to a compatible ADE machine to start a chat"
-        ) {
-          Task { await create() }
-        }
       }
-    }
-    .padding(14)
-    .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 1))
+    )
     .padding(.horizontal, 16)
     .padding(.bottom, 10)
   }

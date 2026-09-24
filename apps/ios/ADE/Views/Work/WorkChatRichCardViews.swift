@@ -2779,17 +2779,17 @@ struct WorkComposerBadgeCapsule<Content: View>: View {
       HStack(spacing: spacing) {
         content()
         Image(systemName: "chevron.up")
-          .font(.system(size: 10, weight: .bold))
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
       }
       .foregroundStyle(tint)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.cardBackground.opacity(0.76), in: Capsule(style: .continuous))
+      .padding(.horizontal, 10)
+      .frame(minHeight: workChatComposerChipRowHeight)
+      .workChatGlass(in: Capsule(style: .continuous), interactive: true)
       .overlay(
         Capsule(style: .continuous)
-          .stroke(tint.opacity(strokeOpacity), lineWidth: 1)
+          .stroke(tint.opacity(strokeOpacity), lineWidth: 0.75)
       )
-      .frame(minHeight: 44)
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
@@ -2819,9 +2819,7 @@ struct WorkChatInfoActivePopup: View {
         .font(.system(size: 13, weight: .semibold))
       Text("\(count)")
         .font(.caption2.weight(.bold).monospacedDigit())
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
+        .foregroundStyle(ADEColor.textPrimary)
     }
   }
 }

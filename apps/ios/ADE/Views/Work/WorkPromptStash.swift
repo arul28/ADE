@@ -46,6 +46,10 @@ struct WorkComposerOverflowButton: View {
   let scope: WorkPromptStashScope
   let provider: String?
   let modelId: String?
+  /// Rows placed above the attach/dictate/stash items. The chat composer's
+  /// folded state puts its model, access, send-mode and stop-mode controls
+  /// here, since the row that normally shows them is hidden.
+  var extraMenuContent: AnyView? = nil
 
   private var hasContent: Bool {
     workComposerHasStashableContent(text: draft, attachments: attachments)
@@ -79,6 +83,7 @@ struct WorkComposerOverflowButton: View {
       hasComposerContent: hasContent,
       stashBusy: promptStash.busy,
       stashCount: promptStash.entries.count,
+      extraMenuContent: extraMenuContent,
       onStashOrView: {
         Task {
           await promptStash.handleMenuAction(
@@ -130,6 +135,7 @@ struct WorkChatComposerOverflowMenu: View {
   let hasComposerContent: Bool
   let stashBusy: Bool
   let stashCount: Int
+  var extraMenuContent: AnyView? = nil
   let onStashOrView: () -> Void
 
   private var attachDisabled: Bool {
@@ -140,6 +146,10 @@ struct WorkChatComposerOverflowMenu: View {
 
   var body: some View {
     Menu {
+      if let extraMenuContent {
+        extraMenuContent
+      }
+
       Section {
         Button {
           presentedPicker = .photos

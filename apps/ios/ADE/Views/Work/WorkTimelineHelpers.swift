@@ -57,17 +57,48 @@ func buildWorkChatTimelineSnapshot(
     localEchoMessages: localEchoMessages,
     usageLimitTurnId: usageLimitTurnId
   )
-  let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
-
-  return WorkChatTimelineSnapshot(
+  return makeWorkChatTimelineSnapshot(
     signature: signature,
-    pendingInputs: pendingInputs,
     pendingInputQueue: pendingInputQueue,
     pendingSteers: pendingSteers,
     toolCards: toolCards,
     eventCards: eventCards,
-    commandCards: commandCards,
-    fileChangeCards: fileChangeCards,
+    subagentSnapshots: subagentSnapshots,
+    scheduledWorkSnapshots: scheduledWorkSnapshots,
+    transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
+    transcriptLatestTurnEnded: transcriptLatestTurnEnded,
+    transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
+    latestTranscriptTimestamp: latestTranscriptTimestamp,
+    timeline: timeline
+  )
+}
+
+/// The snapshot from its parts. Shared by `buildWorkChatTimelineSnapshot` and
+/// the thread engine's resumed fold.
+func makeWorkChatTimelineSnapshot(
+  signature: Int,
+  pendingInputQueue: WorkPendingInputQueue,
+  pendingSteers: [WorkPendingSteerModel],
+  toolCards: [WorkToolCardModel],
+  eventCards: [WorkEventCardModel],
+  subagentSnapshots: [WorkSubagentSnapshot],
+  scheduledWorkSnapshots: [WorkScheduledWorkSnapshot],
+  transcriptIndicatesActiveTurn: Bool,
+  transcriptLatestTurnEnded: Bool,
+  transcriptHasInterruptibleActivity: Bool,
+  latestTranscriptTimestamp: String?,
+  timeline: [WorkTimelineEntry]
+) -> WorkChatTimelineSnapshot {
+  let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
+  return WorkChatTimelineSnapshot(
+    signature: signature,
+    pendingInputs: pendingInputQueue.liveItems,
+    pendingInputQueue: pendingInputQueue,
+    pendingSteers: pendingSteers,
+    toolCards: toolCards,
+    eventCards: eventCards,
+    commandCards: [],
+    fileChangeCards: [],
     subagentSnapshots: subagentSnapshots,
     scheduledWorkSnapshots: scheduledWorkSnapshots,
     transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
@@ -93,10 +124,28 @@ private func workChatTimelineSnapshotSignature(
   /// would never flip between "Failed" and the quiet pause.
   usageLimitTurnId: String?
 ) -> Int {
-  var hasher = Hasher()
-  combineOptional(usageLimitTurnId, into: &hasher)
-  hasher.combine(transcript.count)
+  var fold = WorkTimelineSignatureFold()
   for envelope in transcript {
+    fold.combine(envelope)
+  }
+  return fold.finalize(
+    fallbackEntries: fallbackEntries,
+    artifacts: artifacts,
+    localEchoMessages: localEchoMessages,
+    usageLimitTurnId: usageLimitTurnId
+  )
+}
+
+/// The snapshot signature as a left fold over the transcript, so the thread
+/// engine can keep the hasher state after a prefix and combine only what came
+/// after. Per-envelope content first; the count and every non-transcript input
+/// are combined at `finalize`.
+struct WorkTimelineSignatureFold {
+  private var hasher = Hasher()
+  private(set) var count = 0
+
+  mutating func combine(_ envelope: WorkChatEnvelope) {
+    count += 1
     hasher.combine(envelope.sessionId)
     hasher.combine(envelope.timestamp)
     hasher.combine(envelope.sequence ?? Int.min)
@@ -111,58 +160,69 @@ private func workChatTimelineSnapshotSignature(
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 
-  if transcript.isEmpty {
-    hasher.combine(fallbackEntries.count)
-    for entry in fallbackEntries {
-      hasher.combine(entry.role)
-      combineLongTextSignature(entry.text, into: &hasher)
-      hasher.combine(entry.timestamp)
-      combineOptional(entry.turnId, into: &hasher)
-      combineOptional(entry.messageId, into: &hasher)
-      combineOptional(entry.itemId, into: &hasher)
+  func finalize(
+    fallbackEntries: [AgentChatTranscriptEntry],
+    artifacts: [ComputerUseArtifactSummary],
+    localEchoMessages: [WorkLocalEchoMessage],
+    usageLimitTurnId: String?
+  ) -> Int {
+    var hasher = self.hasher
+    hasher.combine(count)
+    combineOptional(usageLimitTurnId, into: &hasher)
+
+    if count == 0 {
+      hasher.combine(fallbackEntries.count)
+      for entry in fallbackEntries {
+        hasher.combine(entry.role)
+        combineLongTextSignature(entry.text, into: &hasher)
+        hasher.combine(entry.timestamp)
+        combineOptional(entry.turnId, into: &hasher)
+        combineOptional(entry.messageId, into: &hasher)
+        combineOptional(entry.itemId, into: &hasher)
+      }
+    } else {
+      hasher.combine(0)
     }
-  } else {
-    hasher.combine(0)
-  }
 
-  hasher.combine(artifacts.count)
-  for artifact in artifacts {
-    hasher.combine(artifact.id)
-    hasher.combine(artifact.artifactKind)
-    hasher.combine(artifact.backendStyle)
-    hasher.combine(artifact.backendName)
-    combineOptional(artifact.sourceToolName, into: &hasher)
-    combineOptional(artifact.originalType, into: &hasher)
-    hasher.combine(artifact.title)
-    combineOptional(artifact.description, into: &hasher)
-    hasher.combine(artifact.uri)
-    hasher.combine(artifact.storageKind)
-    combineOptional(artifact.mimeType, into: &hasher)
-    combineOptional(artifact.metadataJson, into: &hasher)
-    hasher.combine(artifact.createdAt)
-    hasher.combine(artifact.ownerKind)
-    hasher.combine(artifact.ownerId)
-    hasher.combine(artifact.relation)
-    combineOptional(artifact.reviewState, into: &hasher)
-    combineOptional(artifact.workflowState, into: &hasher)
-    combineOptional(artifact.reviewNote, into: &hasher)
-  }
-
-  hasher.combine(localEchoMessages.count)
-  for echo in localEchoMessages {
-    hasher.combine(echo.id)
-    combineLongTextSignature(echo.text, into: &hasher)
-    hasher.combine(echo.timestamp)
-    combineOptional(echo.deliveryState, into: &hasher)
-    hasher.combine(echo.attachments?.count ?? 0)
-    for attachment in echo.attachments ?? [] {
-      hasher.combine(attachment.path)
-      hasher.combine(attachment.type)
-      combineOptional(attachment.url, into: &hasher)
+    hasher.combine(artifacts.count)
+    for artifact in artifacts {
+      hasher.combine(artifact.id)
+      hasher.combine(artifact.artifactKind)
+      hasher.combine(artifact.backendStyle)
+      hasher.combine(artifact.backendName)
+      combineOptional(artifact.sourceToolName, into: &hasher)
+      combineOptional(artifact.originalType, into: &hasher)
+      hasher.combine(artifact.title)
+      combineOptional(artifact.description, into: &hasher)
+      hasher.combine(artifact.uri)
+      hasher.combine(artifact.storageKind)
+      combineOptional(artifact.mimeType, into: &hasher)
+      combineOptional(artifact.metadataJson, into: &hasher)
+      hasher.combine(artifact.createdAt)
+      hasher.combine(artifact.ownerKind)
+      hasher.combine(artifact.ownerId)
+      hasher.combine(artifact.relation)
+      combineOptional(artifact.reviewState, into: &hasher)
+      combineOptional(artifact.workflowState, into: &hasher)
+      combineOptional(artifact.reviewNote, into: &hasher)
     }
-  }
 
-  return hasher.finalize()
+    hasher.combine(localEchoMessages.count)
+    for echo in localEchoMessages {
+      hasher.combine(echo.id)
+      combineLongTextSignature(echo.text, into: &hasher)
+      hasher.combine(echo.timestamp)
+      combineOptional(echo.deliveryState, into: &hasher)
+      hasher.combine(echo.attachments?.count ?? 0)
+      for attachment in echo.attachments ?? [] {
+        hasher.combine(attachment.path)
+        hasher.combine(attachment.type)
+        combineOptional(attachment.url, into: &hasher)
+      }
+    }
+
+    return hasher.finalize()
+  }
 }
 
 private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: inout Hasher) {
@@ -512,12 +572,15 @@ private func combineCompletionArtifacts(_ artifacts: [WorkCompletionArtifactMode
 private func latestWorkTranscriptTimestamp(_ transcript: [WorkChatEnvelope]) -> String? {
   var latest: String?
   for envelope in sortedWorkChatEnvelopes(transcript) {
-    guard !envelope.timestamp.isEmpty else { continue }
-    if latest.map({ envelope.timestamp > $0 }) ?? true {
-      latest = envelope.timestamp
-    }
+    latest = workLatestTranscriptTimestamp(latest, envelope.timestamp)
   }
   return latest
+}
+
+/// One step of `latestWorkTranscriptTimestamp`: the later non-empty timestamp.
+func workLatestTranscriptTimestamp(_ latest: String?, _ timestamp: String) -> String? {
+  guard !timestamp.isEmpty else { return latest }
+  return latest.map({ timestamp > $0 }) ?? true ? timestamp : latest
 }
 
 private struct WorkTimelineAssistantTail {
@@ -639,7 +702,18 @@ func isRealSubagentTimelineRow(taskType: String?, agentType: String?) -> Bool {
 /// low-signal lifecycle tick never replaces a real result description.
 func isWorkSubagentPlaceholderSummary(_ value: String?) -> Bool {
   guard let value = nonEmptyWorkTimelineText(value) else { return false }
-  return value.range(
+  // The pattern reads at most the first ~8 characters (`status:` + one
+  // whitespace), and its `task updated$` branch only matches a string of at
+  // most 13 characters, so a 32-character prefix answers exactly what the
+  // whole string would, and keeps memo keys short.
+  let key = value.utf8.count <= 32 ? value : String(value.prefix(32))
+  return workSubagentPlaceholderSummaryMemo(key)
+}
+
+/// Called for every subagent progress/result row on every timeline rebuild;
+/// the regex compile was most of `buildWorkSubagentSnapshots`.
+private let workSubagentPlaceholderSummaryMemo = WorkPureStringMemo<Bool>(capacity: 4_096) { value in
+  value.range(
     of: #"^(status:\s|task updated$)"#,
     options: [.regularExpression, .caseInsensitive]
   ) != nil
@@ -1634,44 +1708,91 @@ func buildWorkTimeline(
         )
       }
     : buildWorkChatMessages(from: transcript)
+  let turnEndMarkers = workTurnEndMarkers(from: transcript, usageLimitTurnId: usageLimitTurnId)
+  return assembleWorkTimeline(
+    stampedMessages: messages.map(workTimelineStampedMessage),
+    pendingSteers: localEchoMessages.isEmpty ? [] : derivePendingWorkSteers(from: transcript),
+    toolCards: toolCards,
+    commandCards: commandCards,
+    fileChangeCards: fileChangeCards,
+    subagentRows: subagentRows,
+    eventCards: eventCards,
+    adeCards: buildWorkAdeCards(from: transcript),
+    turnEndMarkers: turnEndMarkers,
+    doneEnvelopes: transcript,
+    artifacts: artifacts,
+    localEchoMessages: localEchoMessages
+  )
+}
 
+/// A folded message with its derived markdown metadata stamped. Stamped at the
+/// end of the fold rather than at construction: the builders merge streaming
+/// fragments by mutating `markdown` in place, so this is the first point where
+/// a message's text is final. A pure function of the message.
+func workTimelineStampedMessage(_ message: WorkChatMessage) -> WorkChatMessage {
+  var message = message
+  message.markdownDigest = workStableDigest(message.markdown)
+  message.markdownUTF8Count = message.markdown.utf8.count
+  let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
+  let normalizedMarkdown = hasCarriageReturn
+    ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
+    : message.markdown
+  message.markdownCharacterCount = normalizedMarkdown.count
+  message.markdownLineCount = workAssistantMessageLineCount(normalizedMarkdown)
+  message.markdownHasCarriageReturn = hasCarriageReturn
+  message.markdownContainsFence = normalizedMarkdown.contains("```")
+  message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalizedMarkdown)
+  let classifier = WorkStreamingMonospacedClassifierState(text: normalizedMarkdown)
+  message.markdownMonospacedClassifier = classifier
+  message.markdownOpenFenceMarker = classifier.openFenceMarker
+  return message
+}
+
+/// Everything `buildWorkTimeline` does after the per-source builders: ranks,
+/// echo suppression, usage and turn-end rows, the sort, the id dedupe and the
+/// collapse passes. Shared by the full build and the thread engine's resumed
+/// fold so the two cannot drift.
+///
+/// - `pendingSteers` is only read when `localEchoMessages` is non-empty.
+/// - `doneEnvelopes` is any in-order subsequence of the transcript that holds
+///   every `done` envelope (the whole transcript qualifies).
+func assembleWorkTimeline(
+  stampedMessages messages: [WorkChatMessage],
+  pendingSteers: [WorkPendingSteerModel],
+  toolCards: [WorkToolCardModel],
+  commandCards: [WorkCommandCardModel],
+  fileChangeCards: [WorkFileChangeCardModel],
+  subagentRows: [WorkSubagentTimelineRow],
+  eventCards: [WorkEventCardModel],
+  adeCards: [WorkAdeCardModel],
+  turnEndMarkers: [WorkTurnEndMarker],
+  doneEnvelopes: [WorkChatEnvelope],
+  artifacts: [ComputerUseArtifactSummary],
+  localEchoMessages: [WorkLocalEchoMessage]
+) -> [WorkTimelineEntry] {
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
-    // Stamped here, at the end of the fold, rather than at construction: the
-    // builders above merge streaming fragments by mutating `markdown` in place,
-    // so this is the first point where a message's text is final.
-    var message = message
-    message.markdownDigest = workStableDigest(message.markdown)
-    message.markdownUTF8Count = message.markdown.utf8.count
-    let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
-    let normalizedMarkdown = hasCarriageReturn
-      ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
-      : message.markdown
-    message.markdownCharacterCount = normalizedMarkdown.count
-    message.markdownLineCount = workAssistantMessageLineCount(normalizedMarkdown)
-    message.markdownHasCarriageReturn = hasCarriageReturn
-    message.markdownContainsFence = normalizedMarkdown.contains("```")
-    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalizedMarkdown)
-    let classifier = WorkStreamingMonospacedClassifierState(text: normalizedMarkdown)
-    message.markdownMonospacedClassifier = classifier
-    message.markdownOpenFenceMarker = classifier.openFenceMarker
-    return WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
+    WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
   // Counted, not set-membership: two identical echoes must not both vanish on
   // one matching row. Built from `messages` rather than the transcript so the
-  // fallback-entry path (empty transcript) still suppresses correctly.
-  var representedEchoKeyCounts: [String: Int] = [:]
-  for steer in derivePendingWorkSteers(from: transcript) {
-    guard let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments) else { continue }
-    representedEchoKeyCounts[key, default: 0] += 1
+  // fallback-entry path (empty transcript) still suppresses correctly. With no
+  // echoes there is nothing to suppress, so the counts are skipped.
+  var visibleLocalEchoMessages: [WorkLocalEchoMessage] = []
+  if !localEchoMessages.isEmpty {
+    var representedEchoKeyCounts: [String: Int] = [:]
+    for steer in pendingSteers {
+      guard let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments) else { continue }
+      representedEchoKeyCounts[key, default: 0] += 1
+    }
+    for message in messages where message.role.lowercased() == "user" {
+      guard let key = workLocalEchoDedupeKey(text: message.markdown, attachments: message.attachments) else { continue }
+      representedEchoKeyCounts[key, default: 0] += 1
+    }
+    visibleLocalEchoMessages = workUnrepresentedLocalEchoMessages(
+      localEchoMessages,
+      representedKeyCounts: representedEchoKeyCounts
+    )
   }
-  for message in messages where message.role.lowercased() == "user" {
-    guard let key = workLocalEchoDedupeKey(text: message.markdown, attachments: message.attachments) else { continue }
-    representedEchoKeyCounts[key, default: 0] += 1
-  }
-  let visibleLocalEchoMessages = workUnrepresentedLocalEchoMessages(
-    localEchoMessages,
-    representedKeyCounts: representedEchoKeyCounts
-  )
 
   entries.append(contentsOf: toolCards.enumerated().map { index, card in
     WorkTimelineEntry(id: "tool-\(card.id)", timestamp: card.startedAt, rank: 1_000 + index, payload: .toolCard(card))
@@ -1700,7 +1821,7 @@ func buildWorkTimeline(
 
   // Derived from the transcript rather than passed in: `ade_card` merges by
   // `cardId`, so there is no per-envelope card list for a caller to hold.
-  entries.append(contentsOf: buildWorkAdeCards(from: transcript).enumerated().map { index, card in
+  entries.append(contentsOf: adeCards.enumerated().map { index, card in
     WorkTimelineEntry(
       id: "ade-card-\(card.id)",
       timestamp: card.timestamp,
@@ -1719,10 +1840,9 @@ func buildWorkTimeline(
 
   // Computed before the usage rows so a usage-limit turn's numbers can be folded
   // into its footer instead of rendered as their own row beside it.
-  let turnEndMarkers = workTurnEndMarkers(from: transcript, usageLimitTurnId: usageLimitTurnId)
   let usageLimitTurnKeys = Set(turnEndMarkers.compactMap { $0.usageLimitPaused ? $0.turnId : nil })
 
-  let turnUsageSummaries = transcript.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
+  let turnUsageSummaries = doneEnvelopes.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
     guard case .done(_, _, let usage, let turnId, _, _, _) = envelope.event, let usage else { return nil }
     if let key = normalizedWorkTurnId(turnId), usageLimitTurnKeys.contains(key) { return nil }
     return (envelope.id, envelope.timestamp, usage)
@@ -2033,13 +2153,16 @@ func workFormatTurnWorkSummaryLabel(toolCount: Int, fileCount: Int) -> String? {
 /// remains a mobile transcript presentation choice rather than a sync change.
 func workPresentedTimelineEntries(
   _ timeline: [WorkTimelineEntry],
-  provider: String? = nil
+  provider: String? = nil,
+  /// The caller's already-built index for this exact timeline. Passing it
+  /// skips a second full tool-activity walk; nil keeps the old behavior.
+  toolActivity: WorkTurnToolActivityIndex? = nil
 ) -> [WorkTimelineEntry] {
   let hidesPromptSuggestions = provider.map { providerFamilyKey($0) == "claude" } == true
   // Hide only the exact inline groups flushed into a completed turn's sheet.
   // Member ids and file paths are not identities — the same path in a later
   // completed turn must not erase an earlier markerless cluster.
-  let claimedInlineGroupIds = workTurnToolActivityIndex(from: timeline).claimedInlineGroupIds
+  let claimedInlineGroupIds = (toolActivity ?? workTurnToolActivityIndex(from: timeline)).claimedInlineGroupIds
   return timeline.filter { entry in
     switch entry.payload {
     case .toolGroup, .changedFiles:
@@ -2254,17 +2377,21 @@ private func aggregateChangedFiles(from members: [WorkToolGroupMember]) -> [Work
 /// The argsText is pretty-printed JSON so a regex over the canonical key form
 /// is good enough — we're only using it to surface the path on the row, not
 /// for any execution-critical decision.
+private let workCodeChangeFilePathRegexes: [NSRegularExpression] = [
+  #""file_path"\s*:\s*"([^"]+)""#,
+  #""path"\s*:\s*"([^"]+)""#,
+].compactMap { try? NSRegularExpression(pattern: $0) }
+
 private func extractCodeChangeFilePath(fromArgsText argsText: String?) -> String? {
   guard let argsText, !argsText.isEmpty else { return nil }
-  let patterns = [#""file_path"\s*:\s*"([^"]+)""#, #""path"\s*:\s*"([^"]+)""#]
-  for pattern in patterns {
-    if let regex = try? NSRegularExpression(pattern: pattern) {
-      let range = NSRange(argsText.startIndex..<argsText.endIndex, in: argsText)
-      if let match = regex.firstMatch(in: argsText, range: range), match.numberOfRanges >= 2,
-         let pathRange = Range(match.range(at: 1), in: argsText) {
-        let value = String(argsText[pathRange])
-        if !value.isEmpty { return value }
-      }
+  // Compiled once: this runs for every code-change tool card on every
+  // timeline rebuild. `NSRegularExpression` matching is thread-safe.
+  let range = NSRange(argsText.startIndex..<argsText.endIndex, in: argsText)
+  for regex in workCodeChangeFilePathRegexes {
+    if let match = regex.firstMatch(in: argsText, range: range), match.numberOfRanges >= 2,
+       let pathRange = Range(match.range(at: 1), in: argsText) {
+      let value = String(argsText[pathRange])
+      if !value.isEmpty { return value }
     }
   }
   return nil
@@ -4115,13 +4242,29 @@ func workTurnEndMarkers(
   from transcript: [WorkChatEnvelope],
   usageLimitTurnId: String? = nil
 ) -> [WorkTurnEndMarker] {
-  let limitTurnKey = normalizedWorkTurnId(usageLimitTurnId)
-  var startByTurn: [String: String] = [:]
-  var markers: [WorkTurnEndMarker] = []
-  var seenEndedTurns = Set<String>()
-  var fallbackStart: String?
-
+  var fold = WorkTurnEndMarkerFold(usageLimitTurnId: usageLimitTurnId)
   for envelope in sortedWorkChatEnvelopes(transcript) {
+    fold.consume(envelope)
+  }
+  return fold.markers
+}
+
+/// `workTurnEndMarkers` as a left fold over the time-sorted transcript, so
+/// the thread engine can resume it from a prefix.
+struct WorkTurnEndMarkerFold {
+  let usageLimitTurnId: String?
+  private let limitTurnKey: String?
+  private var startByTurn: [String: String] = [:]
+  private(set) var markers: [WorkTurnEndMarker] = []
+  private var seenEndedTurns = Set<String>()
+  private var fallbackStart: String?
+
+  init(usageLimitTurnId: String?) {
+    self.usageLimitTurnId = usageLimitTurnId
+    self.limitTurnKey = normalizedWorkTurnId(usageLimitTurnId)
+  }
+
+  mutating func consume(_ envelope: WorkChatEnvelope) {
     if fallbackStart == nil {
       fallbackStart = envelope.timestamp
     }
@@ -4130,20 +4273,20 @@ func workTurnEndMarkers(
       // A new visible user turn is also the fallback boundary for providers or
       // imported transcripts that omit turn ids and terminal events.
       fallbackStart = envelope.timestamp
-      guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { continue }
+      guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { return }
       startByTurn[key] = envelope.timestamp
     case .status(let turnStatus, _, let turnId):
       switch turnStatus.lowercased() {
       case "started", "active", "running", "inprogress", "in_progress", "in-progress":
-        guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { continue }
+        guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { return }
         startByTurn[key] = envelope.timestamp
       default:
-        continue
+        return
       }
     case .done(let status, _, let usage, let turnId, let model, let modelId, let terminalReason):
       let explicitKey = normalizedWorkTurnId(turnId)
       let key = explicitKey ?? "fallback-\(envelope.id)"
-      guard !seenEndedTurns.contains(key) else { continue }
+      guard !seenEndedTurns.contains(key) else { return }
       let start = explicitKey.flatMap { startByTurn[$0] } ?? fallbackStart ?? envelope.timestamp
       seenEndedTurns.insert(key)
       let metadata = workTurnModelMetadata(model: model, modelId: modelId, fallbackProvider: "")
@@ -4163,12 +4306,10 @@ func workTurnEndMarkers(
       ))
       fallbackStart = nil
     default:
-      guard let key = normalizedWorkTurnId(workTurnId(for: envelope.event)), startByTurn[key] == nil else { continue }
+      guard let key = normalizedWorkTurnId(workTurnId(for: envelope.event)), startByTurn[key] == nil else { return }
       startByTurn[key] = envelope.timestamp
     }
   }
-
-  return markers
 }
 
 /// Keep this map aligned with the desktop renderer's terse terminal-reason
@@ -4264,7 +4405,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
   }
 }
 
-struct WorkTurnModelMetadata {
+struct WorkTurnModelMetadata: Equatable {
   let provider: String
   let modelLabel: String
   let modelId: String?
@@ -4768,87 +4909,4 @@ func workErrorCategory(message: String, detail: String?) -> String {
     return "permission"
   }
   return "general"
-}
-
-// MARK: - Idle live-event prune
-
-/// How many *structural* envelopes the idle window keeps, on top of the heavy
-/// content tail. These rows are a few dozen bytes each, so several hundred of
-/// them cost far less than a single tool result — but the budget still exists,
-/// because a long-running chat can emit subagent progress indefinitely.
-let workChatIdleStructuralEventCap = 400
-
-/// A tiny lifecycle envelope that produces a timeline row the canonical *text*
-/// transcript can never regenerate.
-///
-/// The idle prune keeps the last N events and the reopen rebuild back-fills
-/// text from the canonical transcript. That combination made the thread look
-/// complete while every subagent card from an earlier turn was gone. These
-/// kinds are therefore exempt from the tail cut: the budget applies to heavy
-/// content events (assistant text, tool calls/results, diffs, command output)
-/// which the canonical transcript *can* restore.
-///
-/// `todoUpdate` is deliberately NOT structural: it is superseded wholesale by
-/// the next one, and it carries a list, so keeping every historical copy would
-/// spend the structural budget on rows nobody can scroll back to.
-func workChatEventIsStructuralEnvelope(_ event: AgentChatEvent) -> Bool {
-  switch event {
-  case .subagentStarted, .subagentProgress, .subagentResult:
-    return true
-  case .scheduledWorkUpdate:
-    return true
-  // Not a row of its own, but it *suppresses* rows — dropping it silently
-  // un-retracts a retracted message on reopen.
-  case .transcriptRetraction:
-    return true
-  case .userMessageResolution:
-    return true
-  // The resolution receipt for an approval / question / plan card. It is not a
-  // row of its own once folded inline — it is the card's *outcome*. Dropping it
-  // while the card itself is restored (an older history page re-fetches the
-  // request, but nothing re-fetches the pruned band after it) leaves an
-  // answered gate rendering as if it were still waiting.
-  case .pendingInputResolved:
-    return true
-  case .contextCompact, .codexContextCompaction:
-    return true
-  case .claudeGoalUpdated, .claudeGoalCleared:
-    return true
-  case .conversationReset:
-    return true
-  default:
-    return false
-  }
-}
-
-/// Structure-aware idle prune. Keeps the last `heavyTailLimit` heavy content
-/// envelopes plus (up to `structuralCap`) structural ones, in their original
-/// order. Returns the retained events.
-func workPrunedIdleChatEventHistory(
-  _ events: [AgentChatEventEnvelope],
-  keepingHeavyTail heavyTailLimit: Int,
-  structuralCap: Int = workChatIdleStructuralEventCap
-) -> [AgentChatEventEnvelope] {
-  // Explicit fast path: the reverse stride below is empty for an empty input
-  // and the trailing guard already returns `events`, but say so up front.
-  guard !events.isEmpty else { return events }
-  let heavyLimit = max(0, heavyTailLimit)
-  let structuralLimit = max(0, structuralCap)
-  var keptHeavy = 0
-  var keptStructural = 0
-  var keepFlags = [Bool](repeating: false, count: events.count)
-  // Walk from the tail so "keep the last N" falls out of the same pass for
-  // both budgets.
-  for index in stride(from: events.count - 1, through: 0, by: -1) {
-    if workChatEventIsStructuralEnvelope(events[index].event) {
-      guard keptStructural < structuralLimit else { continue }
-      keptStructural += 1
-    } else {
-      guard keptHeavy < heavyLimit else { continue }
-      keptHeavy += 1
-    }
-    keepFlags[index] = true
-  }
-  guard keptHeavy + keptStructural < events.count else { return events }
-  return zip(events, keepFlags).compactMap { $1 ? $0 : nil }
 }

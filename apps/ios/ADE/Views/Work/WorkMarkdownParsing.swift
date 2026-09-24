@@ -188,11 +188,90 @@ func workMarkdownTrailingBacktickRun(_ text: String) -> Int {
   return count
 }
 
+/// The marker column a list row reserves, shared by every sibling of one list
+/// level so item text starts at one x. Ordered columns are sized to the widest
+/// number of that sibling group (in monospaced digits); bullet columns are a
+/// fixed one-glyph slot whose glyph varies by depth.
+enum WorkMarkdownListMarkerColumn: Equatable {
+  case bullet(depth: Int)
+  case ordered(digits: Int)
+
+  var cacheKey: String {
+    switch self {
+    case .bullet(let depth): return "b\(depth)"
+    case .ordered(let digits): return "o\(digits)"
+    }
+  }
+}
+
+/// One rendered row of a (possibly nested) Markdown list.
+///
+/// Lists are stored flat, in reading order, rather than as a tree: a long list
+/// must still split into bounded render blocks (`workMarkdownListItemsPerRenderBlock`),
+/// and a flat row carries everything it needs to draw itself — the marker
+/// columns of its ancestors (for indentation that lines up exactly under each
+/// parent's text) and its own column — no matter which chunk it lands in.
+struct WorkMarkdownListItem: Equatable {
+  enum Marker: Equatable {
+    case bullet
+    case ordered(Int)
+    /// A continuation paragraph of the item above it at the same level: drawn
+    /// aligned with that item's text, with no marker of its own.
+    case continuation
+  }
+
+  let marker: Marker
+  /// This row's own marker column (for a continuation, its owning item's).
+  let column: WorkMarkdownListMarkerColumn
+  /// Marker columns of the enclosing items, outermost first.
+  let ancestors: [WorkMarkdownListMarkerColumn]
+  let text: String
+
+  var depth: Int { ancestors.count }
+
+  /// The visible marker, or nil for a continuation row.
+  var markerLabel: String? {
+    switch marker {
+    case .bullet: return workMarkdownBulletGlyph(depth: depth)
+    case .ordered(let number): return "\(number)."
+    case .continuation: return nil
+    }
+  }
+
+  var cacheKey: String {
+    let markerKey: String
+    switch marker {
+    case .bullet: markerKey = "-"
+    case .ordered(let number): markerKey = "\(number)."
+    case .continuation: markerKey = "+"
+    }
+    let path = (ancestors + [column]).map(\.cacheKey).joined(separator: ",")
+    return "\(path)\u{001D}\(markerKey)\u{001D}\(text)"
+  }
+}
+
+/// Bullet glyph for a nesting depth: filled and hollow discs, alternating.
+/// (The small square U+25AA has no glyph in the system text font on iOS and
+/// rendered as a missing-glyph box.)
+func workMarkdownBulletGlyph(depth: Int) -> String {
+  depth.isMultiple(of: 2) ? "\u{2022}" : "\u{25E6}"
+}
+
+/// Invisible text that sizes a marker column: the widest marker the column
+/// can hold, so every sibling's text starts at the same x under Dynamic Type.
+func workMarkdownListMarkerPlaceholder(_ column: WorkMarkdownListMarkerColumn) -> String {
+  switch column {
+  case .bullet: return "0"
+  case .ordered(let digits): return String(repeating: "0", count: max(1, digits)) + "."
+  }
+}
+
 enum WorkMarkdownBlockKind: Equatable {
   case paragraph(String)
   case heading(Int, String)
-  case unorderedList([String])
-  case orderedList(start: Int, items: [String])
+  /// A list run (ordered, unordered, or mixed when nested), flattened into
+  /// rows. See `WorkMarkdownListItem`.
+  case list([WorkMarkdownListItem])
   case blockquote([String])
   case table(headers: [String], rows: [[String]])
   case code(language: String?, code: String)
@@ -204,10 +283,8 @@ enum WorkMarkdownBlockKind: Equatable {
       return "paragraph|\(text)"
     case .heading(let level, let text):
       return "heading|\(level)|\(text)"
-    case .unorderedList(let items):
-      return "unorderedList|\(items.joined(separator: "\u{001F}"))"
-    case .orderedList(let start, let items):
-      return "orderedList|\(start)|\(items.joined(separator: "\u{001F}"))"
+    case .list(let items):
+      return "list|\(items.map(\.cacheKey).joined(separator: "\u{001F}"))"
     case .blockquote(let lines):
       return "blockquote|\(lines.joined(separator: "\u{001F}"))"
     case .table(let headers, let rows):
@@ -476,16 +553,16 @@ let workMarkdownProseRowCharacterLimit = 1_600
 let workMarkdownListItemsPerRenderBlock = 16
 
 /// Splits a list into bounded render blocks without dropping or reordering
-/// items. Ordered-list numbering is applied by the parser from each chunk's
-/// offset, so the helper only needs to preserve item order.
-func workBoundedListItemChunks(
-  _ items: [String],
+/// rows. Every row carries its own marker and indentation, so a chunk may
+/// begin anywhere — even among the children of an item in the previous chunk.
+func workBoundedListItemChunks<Item>(
+  _ items: [Item],
   limit: Int = workMarkdownListItemsPerRenderBlock
-) -> [[String]] {
+) -> [[Item]] {
   guard !items.isEmpty else { return [] }
   guard limit > 0, items.count > limit else { return [items] }
 
-  var chunks: [[String]] = []
+  var chunks: [[Item]] = []
   chunks.reserveCapacity((items.count + limit - 1) / limit)
   var offset = 0
   while offset < items.count {
@@ -757,15 +834,9 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
     }
   }
 
-  func appendListBlocks(_ items: [String], orderedStart: Int? = nil) {
-    var itemOffset = 0
+  func appendListBlocks(_ items: [WorkMarkdownListItem]) {
     for chunk in workBoundedListItemChunks(items) {
-      if let orderedStart {
-        appendBlock(.orderedList(start: orderedStart + itemOffset, items: chunk))
-      } else {
-        appendBlock(.unorderedList(chunk))
-      }
-      itemOffset += chunk.count
+      appendBlock(.list(chunk))
     }
   }
 
@@ -829,14 +900,10 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
       continue
     }
 
-    if let unordered = parseList(startingAt: index, in: lines, ordered: false) {
-      appendListBlocks(unordered.items)
-      index = unordered.nextIndex
-      continue
-    }
-
-    if let ordered = parseList(startingAt: index, in: lines, ordered: true) {
-      if ordered.items.count == 1, workLooksLikeInlineNumberedProse(trimmed) {
+    if let list = parseMarkdownListRun(startingAt: index, in: lines) {
+      if list.items.count == 1,
+         case .ordered = list.items[0].marker,
+         workLooksLikeInlineNumberedProse(trimmed) {
         // A model sometimes emits a numbered narrative on one physical line:
         // `1. First sentence. 2. Second sentence.` Markdown sees that as one
         // ordered-list item, but rendering it as one item recreates the giant
@@ -844,9 +911,9 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
         // markers and let the prose splitter turn it into stable rows.
         appendParagraph([trimmed])
       } else {
-        appendListBlocks(ordered.items, orderedStart: ordered.startNumber ?? 1)
+        appendListBlocks(list.items)
       }
-      index = ordered.nextIndex
+      index = list.nextIndex
       continue
     }
 
@@ -908,22 +975,188 @@ func workLooksLikeInlineNumberedProse(_ line: String) -> Bool {
   return false
 }
 
-func parseList(startingAt index: Int, in lines: [String], ordered: Bool) -> (items: [String], nextIndex: Int, startNumber: Int?)? {
-  guard index < lines.count else { return nil }
-  guard let regex = workMarkdownListRegex(ordered: ordered) else { return nil }
-  var cursor = index
-  var items: [String] = []
-  var startNumber: Int?
-  while cursor < lines.count {
-    let line = lines[cursor].trimmingCharacters(in: .whitespaces)
-    guard let item = markdownListItemText(line, regex: regex) else { break }
-    if ordered, startNumber == nil {
-      startNumber = markdownOrderedListItemNumber(line)
+/// Leading indentation of a source line in columns (a tab counts as four).
+func workMarkdownLineIndent(_ line: String) -> Int {
+  var width = 0
+  for character in line {
+    if character == " " {
+      width += 1
+    } else if character == "\t" {
+      width += 4
+    } else {
+      break
     }
-    items.append(item)
+  }
+  return width
+}
+
+/// A list-item line, already trimmed: its kind, source number, and text.
+private func workMarkdownListLineItem(_ trimmed: String) -> (ordered: Bool, number: Int?, text: String)? {
+  if let regex = workMarkdownListRegex(ordered: false),
+     let text = markdownListItemText(trimmed, regex: regex) {
+    return (false, nil, text)
+  }
+  if let regex = workMarkdownListRegex(ordered: true),
+     let text = markdownListItemText(trimmed, regex: regex) {
+    return (true, markdownOrderedListItemNumber(trimmed), text)
+  }
+  return nil
+}
+
+/// A bare marker with no text yet (`-`, `*`, `12`, `12.`). Streaming snapshots
+/// routinely end on one while the next sub-item is being typed; treating it as
+/// continuation text would flash a stray "-" line under the parent item.
+private func workMarkdownIsBareListMarker(_ trimmed: String) -> Bool {
+  if trimmed == "-" || trimmed == "*" || trimmed == "+" { return true }
+  let digits = trimmed.hasSuffix(".") ? trimmed.dropLast() : Substring(trimmed)
+  return !digits.isEmpty && digits.count <= 9 && digits.allSatisfy(\.isNumber)
+}
+
+/// Parses one list run starting at `index`: the top-level items of one kind,
+/// plus everything nested under them — sub-lists of either kind to any depth,
+/// indented continuation lines (joined to their item), and indented
+/// continuation paragraphs after a blank line (their own `.continuation` rows).
+///
+/// Indentation is read leniently because models are not consistent: a line is
+/// a child of the item above when it is indented at least two columns past
+/// that item's marker, and a sibling within one column of it. A blank line
+/// followed by an unindented item ends the run, so loose top-level items stay
+/// separate blocks as before; a blank line followed by an indented line keeps
+/// the run going, so a blank-separated sub-list still nests under its parent.
+func parseMarkdownListRun(startingAt index: Int, in lines: [String]) -> (items: [WorkMarkdownListItem], nextIndex: Int)? {
+  guard index < lines.count,
+        workMarkdownListLineItem(lines[index].trimmingCharacters(in: .whitespaces)) != nil
+  else { return nil }
+
+  struct Group {
+    let ordered: Bool
+    let depth: Int
+    var nextNumber: Int
+    var maxDigits: Int
+  }
+  struct Level {
+    var group: Int
+    var markerIndent: Int
+    /// Group ids from the outermost level down to this one.
+    var path: [Int]
+  }
+  struct RawRow {
+    let path: [Int]
+    let marker: WorkMarkdownListItem.Marker
+    var text: String
+  }
+
+  let baseIndent = workMarkdownLineIndent(lines[index])
+  var groups: [Group] = []
+  var stack: [Level] = []
+  var rows: [RawRow] = []
+  var sawBlank = false
+  var cursor = index
+
+  func openGroup(ordered: Bool, number: Int?, depth: Int) -> Int {
+    groups.append(Group(ordered: ordered, depth: depth, nextNumber: number ?? 1, maxDigits: 0))
+    return groups.count - 1
+  }
+
+  func appendItem(ordered: Bool, text: String, level: Level) {
+    let marker: WorkMarkdownListItem.Marker
+    if ordered {
+      let number = groups[level.group].nextNumber
+      groups[level.group].nextNumber = number + 1
+      groups[level.group].maxDigits = max(groups[level.group].maxDigits, String(number).count)
+      marker = .ordered(number)
+    } else {
+      marker = .bullet
+    }
+    rows.append(RawRow(path: level.path, marker: marker, text: text))
+  }
+
+  while cursor < lines.count {
+    let line = lines[cursor]
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+    if trimmed.isEmpty {
+      var next = cursor + 1
+      while next < lines.count, lines[next].trimmingCharacters(in: .whitespaces).isEmpty {
+        next += 1
+      }
+      guard next < lines.count,
+            workMarkdownLineIndent(lines[next]) >= baseIndent + 2,
+            !lines[next].trimmingCharacters(in: .whitespaces).hasPrefix("```")
+      else { break }
+      sawBlank = true
+      cursor = next
+      continue
+    }
+
+    let indent = workMarkdownLineIndent(line)
+    if let item = workMarkdownListLineItem(trimmed) {
+      if stack.isEmpty {
+        let group = openGroup(ordered: item.ordered, number: item.number, depth: 0)
+        stack.append(Level(group: group, markerIndent: indent, path: [group]))
+      } else if indent >= stack[stack.count - 1].markerIndent + 2, !rows.isEmpty {
+        let parent = stack[stack.count - 1]
+        let group = openGroup(ordered: item.ordered, number: item.number, depth: stack.count)
+        stack.append(Level(group: group, markerIndent: indent, path: parent.path + [group]))
+      } else {
+        while stack.count > 1, indent < stack[stack.count - 1].markerIndent - 1 {
+          stack.removeLast()
+        }
+        let top = stack.count - 1
+        if groups[stack[top].group].ordered != item.ordered {
+          // A different marker kind at the top level is a new list, exactly as
+          // before nesting existed; nested, it is a new sibling list under the
+          // same parent.
+          guard top > 0 else { break }
+          let group = openGroup(ordered: item.ordered, number: item.number, depth: top)
+          stack[top].group = group
+          stack[top].path = stack[top - 1].path + [group]
+        }
+        stack[top].markerIndent = indent
+      }
+      appendItem(ordered: item.ordered, text: item.text, level: stack[stack.count - 1])
+      sawBlank = false
+      cursor += 1
+      continue
+    }
+
+    // Unindented prose, or a fence at any indent, ends the list (a fenced
+    // block keeps its own renderer).
+    guard indent > baseIndent, !trimmed.hasPrefix("```") else { break }
+    if cursor == lines.count - 1, workMarkdownIsBareListMarker(trimmed) {
+      cursor += 1
+      break
+    }
+    var popped = false
+    while stack.count > 1, indent <= stack[stack.count - 1].markerIndent {
+      stack.removeLast()
+      popped = true
+    }
+    let level = stack[stack.count - 1]
+    if !sawBlank, !popped, !rows.isEmpty {
+      rows[rows.count - 1].text += "\n" + trimmed
+    } else {
+      rows.append(RawRow(path: level.path, marker: .continuation, text: trimmed))
+    }
+    sawBlank = false
     cursor += 1
   }
-  return items.isEmpty ? nil : (items, cursor, startNumber)
+
+  guard !rows.isEmpty else { return nil }
+
+  func column(_ group: Int) -> WorkMarkdownListMarkerColumn {
+    let value = groups[group]
+    return value.ordered ? .ordered(digits: max(1, value.maxDigits)) : .bullet(depth: value.depth)
+  }
+  let items = rows.map { row in
+    WorkMarkdownListItem(
+      marker: row.marker,
+      column: column(row.path[row.path.count - 1]),
+      ancestors: row.path.dropLast().map(column),
+      text: row.text
+    )
+  }
+  return (items, cursor)
 }
 
 func isMarkdownListItem(_ line: String, ordered: Bool) -> Bool {
@@ -1106,9 +1339,10 @@ func markdownAttributedString(_ text: String, intermediate: Bool = false) -> Att
     return fallback
   }
 
-  // Give inline code runs the desktop "pill" look: tinted background,
-  // monospaced font, and a slight accent on the foreground color so
-  // identifiers / branch names / file paths visually pop from prose.
+  // Inline code stays quiet: monospaced one text style below the body (mono
+  // glyphs run wide, so this keeps the same visual weight and never grows the
+  // line height), regular weight, body color, and a faint neutral wash. No
+  // padding or pill shape — a long path must wrap exactly like prose.
   // Strikethrough intent is mapped explicitly — SwiftUI does not reliably
   // draw it from the presentation intent alone, which left ~~text~~ looking
   // like plain prose on mobile while desktop (remark-gfm) struck it through.
@@ -1119,9 +1353,8 @@ func markdownAttributedString(_ text: String, intermediate: Bool = false) -> Att
       attributed[range].strikethroughStyle = .single
     }
     guard intent.contains(.code) else { continue }
-    attributed[range].backgroundColor = ADEColor.accent.opacity(0.14)
-    attributed[range].foregroundColor = ADEColor.accent
-    attributed[range].font = Font.system(.caption, design: .monospaced).weight(.semibold)
+    attributed[range].backgroundColor = WorkChatTypography.inlineCodeBackground
+    attributed[range].font = WorkChatTypography.inlineCode
   }
 
   // GFM autolinks: desktop linkifies bare URLs via remark-gfm; Apple's

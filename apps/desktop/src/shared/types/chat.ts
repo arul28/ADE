@@ -1863,6 +1863,12 @@ export type AgentChatEvent =
       claudeTag?: string | null;
       /** Signals that persisted envelope history changed and open views must refetch. */
       historyInvalidated?: boolean;
+      /**
+       * The chat's new `historyGeneration`, sent alongside `historyInvalidated`
+       * when an in-place rewrite bumped it. A client holding a cache for an
+       * older generation must drop it.
+       */
+      historyGeneration?: number;
       // Permission/interaction mode fields — emitted when a client (e.g. iOS)
       // changes the mode via updateSession so other renderers patch their
       // composer state without waiting for a turn-lifecycle event. All optional
@@ -2017,6 +2023,13 @@ export type AgentChatEventEnvelope = {
   timestamp: string;
   event: AgentChatEvent;
   sequence?: number;
+  /**
+   * Set only on a folded replay row (a run of adjacent streaming deltas
+   * collapsed into one envelope by the snapshot fold): the `sequence` of the
+   * first delta in the run. `sequence` carries the last one, so the row covers
+   * `[sequenceStart, sequence]`. Absent means the row covers `sequence` alone.
+   */
+  sequenceStart?: number;
   provenance?: {
     messageId?: string;
     providerMessageId?: string;
@@ -2091,6 +2104,12 @@ export type AgentChatEventHistorySnapshot = {
    * transcript was not truncated at the file level (nothing older on disk).
    */
   tailStartOffset?: number | null;
+  /**
+   * Unresolved `approval_request` envelopes older than the window, reported
+   * separately instead of re-admitted into `events`. Only set when the caller
+   * asked for `separatePinnedEvents`.
+   */
+  pinnedEvents?: AgentChatEventEnvelope[];
 };
 
 export type AgentChatEventHistoryPage = {
@@ -2119,6 +2138,24 @@ export type AgentChatEventHistoryPage = {
    * clients must not clear or tombstone the chat on it.
    */
   unavailable?: boolean;
+  /**
+   * The chat's `historyGeneration` when this page was read. A page whose
+   * generation differs from the client's cached one belongs to a rewritten
+   * history. Omitted by hosts that predate it and for scopes that do not track
+   * one (personal and cross-project quick looks).
+   */
+  historyGeneration?: number;
+};
+
+/**
+ * Freshness of a chat's persisted event log. `historyGeneration` starts at 1
+ * and increases whenever the persisted history is rewritten in place, so
+ * sequences from an older generation cannot be trusted. `maxSequence` is the
+ * chat's durable envelope `sequence` high-water.
+ */
+export type AgentChatLogState = {
+  historyGeneration: number;
+  maxSequence: number;
 };
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";

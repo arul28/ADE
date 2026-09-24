@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import ADE
 
@@ -522,6 +523,39 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
     XCTAssertEqual(service.status(for: .prs), previousPrStatus)
     XCTAssertNotEqual(service.status(for: .prs).phase, .hydrating)
     XCTAssertEqual(database.fetchPullRequests().map(\.id), [baselinePullRequest.id])
+  }
+
+  /// A `roster_delta` that re-sends a project unchanged must not publish:
+  /// every SyncService publish re-evaluates every observer, and unconditional
+  /// writes here were a steady ~6 publishes a second on a connected phone.
+  @MainActor
+  func testRosterDeltaWithUnchangedContentDoesNotPublish() {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    let service = SyncService(database: database)
+    defer { database.close() }
+    let chat = makeRosterChat(id: "chat-a", laneId: "lane-a")
+    let roster = makeRoster(
+      projectId: "p",
+      name: "P",
+      lanes: [makeRosterLane(id: "lane-a", name: "A", branch: "main")],
+      chats: [chat]
+    )
+    service.applyRosterSnapshot(RemoteRosterSnapshotPayload(seq: 1, projects: [roster]))
+    let revision = service.rosterRevision
+
+    var publishes = 0
+    let cancellable = service.objectWillChange.sink { _ in publishes += 1 }
+    defer { cancellable.cancel() }
+    service.applyRosterDelta(RemoteRosterDeltaPayload(seq: 2, changed: [roster], removed: nil))
+    XCTAssertEqual(publishes, 0)
+    XCTAssertEqual(service.rosterRevision, revision)
+
+    var renamed = roster
+    renamed.displayName = "Renamed"
+    service.applyRosterDelta(RemoteRosterDeltaPayload(seq: 3, changed: [renamed], removed: nil))
+    XCTAssertGreaterThan(publishes, 0)
+    XCTAssertEqual(service.rosterProjects.first?.displayName, "Renamed")
+    XCTAssertEqual(service.rosterRevision, revision + 1)
   }
 
   @MainActor

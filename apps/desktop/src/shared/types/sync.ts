@@ -723,6 +723,18 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   /**
+   * Durable chat log protocol: `chat_subscribe` accepts `sinceSequence` +
+   * `generation` (durable resume) and `chatLogV2` (turn-aligned snapshot with
+   * `pinnedEvents`); acks, `chat_history` pages and roster chat rows carry
+   * `historyGeneration` (and `maxSequence` where noted); folded replay rows
+   * carry `sequenceStart`. Absent on older hosts.
+   */
+  chatLogV2?: {
+    enabled: true;
+    /** Largest persisted byte span a durable resume will replay. */
+    resumeMaxBytes: number;
+  };
+  /**
    * Streamed HTTP attachment upload. When present, a client may mint a ticket
    * with `chat.createAttachmentUpload` and POST the file body to `path` on this
    * host's sync HTTP port instead of base64-ing it through the command channel,
@@ -894,6 +906,13 @@ export type SyncRosterChat = {
    */
   snoozedUntil?: string | null;
   snoozedAt?: string | null;
+  /**
+   * Agent chats only (`chatLogV2` hosts): the chat's durable envelope
+   * `sequence` high-water and `historyGeneration`, so a client can tell which
+   * cached chat logs are current without subscribing to each one.
+   */
+  maxSequence?: number;
+  historyGeneration?: number;
 };
 
 export type SyncRosterLane = {
@@ -1628,6 +1647,26 @@ export type SyncChatSubscribePayload = {
    */
   sinceSeq?: number;
   /**
+   * Durable resume marker (`chatLogV2` hosts): the highest envelope `sequence`
+   * the client holds for this chat. Unlike `sinceSeq` it survives host
+   * restarts. When `generation` matches the chat's current `historyGeneration`
+   * and the host can serve every persisted event with `sequence >
+   * sinceSequence` within its resume cap, the ack is `{resumed: true,
+   * resumeKind: "sequence"}` and those events follow as ordinary `chat_event`
+   * envelopes in sequence order. Otherwise the host answers with a normal
+   * snapshot marked `gap: true`. Takes precedence over `sinceSeq`.
+   */
+  sinceSequence?: number;
+  /** The `historyGeneration` the client's cached log belongs to. */
+  generation?: number;
+  /**
+   * Opt in to the `chatLogV2` snapshot shape: the snapshot cut is moved back to
+   * the nearest turn boundary (`user_message` or turn `status: started`), and
+   * unresolved approval requests older than the window arrive in
+   * `pinnedEvents` instead of being spliced into `events`.
+   */
+  chatLogV2?: boolean;
+  /**
    * Cross-project "quick look" override. When present and identifying a
    * registered project OTHER than the one this sync socket is scoped to, the
    * host serves this session's transcript + live events from that foreign
@@ -1669,6 +1708,32 @@ export type SyncChatSubscribeSnapshotPayload = {
    * the host has no live summary for the session.
    */
   turnActive?: boolean;
+  /**
+   * How a `resumed: true` ack was served: `"seq"` from the host's in-memory
+   * replay ring (`sinceSeq`), `"sequence"` from the persisted log
+   * (`sinceSequence`). Absent on snapshots and on hosts that predate it.
+   */
+  resumeKind?: "seq" | "sequence";
+  /**
+   * True when the client asked for a durable resume (`sinceSequence`) and the
+   * host could not serve it (generation changed, gap larger than the resume
+   * cap, unknown sequence, or a scope without a durable log). This snapshot is
+   * authoritative: the client must drop cached rows it cannot place.
+   */
+  gap?: boolean;
+  /** The chat's `historyGeneration`. Absent for scopes that do not track one. */
+  historyGeneration?: number;
+  /**
+   * The chat's durable `sequence` high-water at ack time. Events after it
+   * follow on the live stream.
+   */
+  maxSequence?: number;
+  /**
+   * `chatLogV2` snapshots only: unresolved `approval_request` envelopes older
+   * than the snapshot window. They are still pending and answerable; they are
+   * not part of the contiguous `events` range.
+   */
+  pinnedEvents?: AgentChatEventEnvelope[];
 };
 
 export type SyncChatUnsubscribePayload = {
@@ -1682,6 +1747,14 @@ export type SyncChatUnsubscribePayload = {
 
 export type SyncChatHistoryRequestPayload = SyncChatUnsubscribePayload & {
   beforeOffset: number;
+  /**
+   * `chatLogV2` sequence cursor, used instead of `beforeOffset` when present:
+   * the page holds the persisted events with `sequence < beforeSequence`
+   * (newest window within the byte cap, returned oldest first), with the same
+   * `hasMore` and a `historyGeneration`. A client whose cached log trims its
+   * oldest rows pages older history by its oldest cached sequence.
+   */
+  beforeSequence?: number;
   maxBytes?: number;
 };
 

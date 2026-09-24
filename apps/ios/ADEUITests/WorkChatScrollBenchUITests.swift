@@ -195,6 +195,49 @@ final class WorkChatScrollBenchUITests: XCTestCase {
     sleep(5)
   }
 
+  // (i) Field-diagnostics run: the reader scrolls through history with real
+  // drags and flings (up, then back down) while `ScrollDiagnostics` writes
+  // Documents/scroll-diagnostics.jsonl. `ADE_BENCH_EXTRA` (space-separated
+  // launch arguments, e.g. streaming flags) varies the case.
+  func testCaseI_diagnosticsScroll() {
+    let extra = (ProcessInfo.processInfo.environment["ADE_BENCH_EXTRA"] ?? "")
+      .split(separator: " ").map(String.init)
+    let app = launch(extra: ["-adeScrollDiagnostics", "1", "-adeBenchSyncPublishHz", "15"] + extra)
+    sleep(6)
+    for _ in 0..<8 {
+      slowDrag(app, fromY: 0.25, toY: 0.72, velocity: 600)
+      usleep(300_000)
+    }
+    for _ in 0..<5 {
+      drag(app, fromY: 0.2, toY: 0.8, duration: 0.02)
+      sleep(2)
+    }
+    for _ in 0..<6 {
+      slowDrag(app, fromY: 0.72, toY: 0.25, velocity: 600)
+      usleep(300_000)
+    }
+    for _ in 0..<3 {
+      drag(app, fromY: 0.8, toY: 0.2, duration: 0.02)
+      sleep(2)
+    }
+    sleep(2)
+  }
+
+  // (j) New Chat usage panel: the Limits list is taller than the panel and
+  // scrolls inside it. Drags inside the panel, then holds still so a shell
+  // screenshot can catch the scrolled state.
+  func testCaseJ_newChatUsagePanelScroll() {
+    let app = XCUIApplication()
+    app.launchArguments = ["-adePreviewScreen", "new-chat", "-ade.work.activityTab.v1", "limits"]
+    app.launch()
+    sleep(4)
+    let window = app.windows.firstMatch
+    let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
+    let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+    start.press(forDuration: 0.05, thenDragTo: end, withVelocity: XCUIGestureVelocity(rawValue: 400), thenHoldForDuration: 0.3)
+    sleep(10)
+  }
+
   // (h) Cold open: where does the transcript land.
   func testCaseH_initialLanding() {
     _ = launch()

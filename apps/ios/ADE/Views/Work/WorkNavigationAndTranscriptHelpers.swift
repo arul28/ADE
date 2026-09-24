@@ -835,9 +835,31 @@ func buildWorkToolCards(
   from transcript: [WorkChatEnvelope],
   suppressedPendingItemIds: Set<String> = []
 ) -> [WorkToolCardModel] {
-  var cards: [String: WorkToolCardModel] = [:]
-  var orderedIds: [String] = []
-  func resolveToolName(_ existing: String?, _ incoming: String) -> String {
+  var fold = WorkToolCardFold(suppressedPendingItemIds: suppressedPendingItemIds)
+  for envelope in transcript {
+    fold.consume(envelope)
+  }
+  return fold.cards
+}
+
+/// `buildWorkToolCards` as a left fold keyed by item id, so the thread engine
+/// can resume it from a transcript prefix. The suppressed ids are an input
+/// derived from the whole transcript; a resumed fold is only valid while they
+/// are unchanged.
+struct WorkToolCardFold {
+  let suppressedPendingItemIds: Set<String>
+  private var cardsById: [String: WorkToolCardModel] = [:]
+  private var orderedIds: [String] = []
+
+  init(suppressedPendingItemIds: Set<String>) {
+    self.suppressedPendingItemIds = suppressedPendingItemIds
+  }
+
+  var cards: [WorkToolCardModel] {
+    orderedIds.compactMap { cardsById[$0] }
+  }
+
+  private func resolveToolName(_ existing: String?, _ incoming: String) -> String {
     let trimmedExisting = existing?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !trimmedExisting.isEmpty { return existing! }
     let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -848,44 +870,44 @@ func buildWorkToolCards(
     return "tool"
   }
 
-  for envelope in transcript {
+  mutating func consume(_ envelope: WorkChatEnvelope) {
     switch envelope.event {
     case .toolCall(let tool, let argsText, let itemId, _, _):
       if suppressedPendingItemIds.contains(itemId) {
-        continue
+        return
       }
       // Suppress only when the structured-question payload parses cleanly. If
       // parsing fails (malformed args), fall through and render the raw tool
       // card so the user can see what the model emitted.
       if isQuestionInputToolName(tool),
          pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
-        continue
+        return
       }
-      if cards[itemId] == nil {
+      if cardsById[itemId] == nil {
         orderedIds.append(itemId)
       }
-      cards[itemId] = WorkToolCardModel(
+      cardsById[itemId] = WorkToolCardModel(
         id: itemId,
-        toolName: resolveToolName(cards[itemId]?.toolName, tool),
+        toolName: resolveToolName(cardsById[itemId]?.toolName, tool),
         status: .running,
         startedAt: envelope.timestamp,
         completedAt: nil,
         argsText: nonEmpty(argsText),
-        resultText: cards[itemId]?.resultText
+        resultText: cardsById[itemId]?.resultText
       )
     case .toolResult(let tool, let resultText, let itemId, _, _, let status):
       // Skip results only when the corresponding call was intentionally
       // suppressed as a structured-question card (no fallback card exists).
       // If a fallback tool card was kept (malformed args), let the result
       // update it.
-      if isQuestionInputToolName(tool), cards[itemId] == nil {
-        continue
+      if isQuestionInputToolName(tool), cardsById[itemId] == nil {
+        return
       }
-      let existing = cards[itemId]
+      let existing = cardsById[itemId]
       if existing == nil {
         orderedIds.append(itemId)
       }
-      cards[itemId] = WorkToolCardModel(
+      cardsById[itemId] = WorkToolCardModel(
         id: itemId,
         toolName: resolveToolName(existing?.toolName, tool),
         status: status,
@@ -907,7 +929,7 @@ func buildWorkToolCards(
       // timeline, mirroring the desktop `work_log_group` behavior. Without
       // this they fall through to `eventCard(for:)` and break tool clusters
       // by appearing as standalone rows outside the group.
-      let existing = cards[itemId]
+      let existing = cardsById[itemId]
       if existing == nil {
         orderedIds.append(itemId)
       }
@@ -919,7 +941,7 @@ func buildWorkToolCards(
             .first { !$0.isEmpty } ?? action.type
         }
         .joined(separator: "\n")
-      cards[itemId] = WorkToolCardModel(
+      cardsById[itemId] = WorkToolCardModel(
         id: itemId,
         toolName: "web_search",
         status: status,
@@ -931,11 +953,9 @@ func buildWorkToolCards(
         webSearchResults: results ?? existing?.webSearchResults
       )
     default:
-      continue
+      return
     }
   }
-
-  return orderedIds.compactMap { cards[$0] }
 }
 
 func buildWorkMobileTimelineToolCards(

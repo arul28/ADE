@@ -44,19 +44,74 @@ struct WorkChatTranscriptGeometry: Equatable {
   let contentFitsViewport: Bool
 }
 
-// MARK: - Height cache
+// MARK: - Cell environment
 
-struct WorkChatTranscriptHeightKey: Hashable {
-  let rowId: String
-  let width: CGFloat
-  /// The row's own content revision and the transcript-wide one, kept apart
-  /// rather than summed: they move independently, and a sum lets one change
-  /// cancel the other out and restore a height measured for different content.
-  let revision: Int
-  let contentRevision: Int
+/// SyncService for transcript cells, without the subscription.
+///
+/// `@EnvironmentObject` re-renders every view that declares it on every
+/// SyncService publish (~15/s on a connected phone), and inside a
+/// `UIHostingConfiguration` cell that re-render lands mid-scroll. Cells only
+/// need SyncService to *do* something (fetch a full tool result, spend a reset
+/// credit, open an attachment), so they hold a plain reference that never
+/// invalidates them. What a cell draws arrives through its row, whose
+/// revision reconfigures the cell when it changes.
+struct WorkSyncServiceReference: Equatable {
+  private weak var explicit: SyncService?
+
+  init(_ service: SyncService? = nil) {
+    explicit = service
+  }
+
+  /// Falls back to the process-wide instance, so a view that renders both in a
+  /// cell and in an ordinary SwiftUI hierarchy (the composer's attachment
+  /// tray) needs no second injection.
+  @MainActor var service: SyncService? {
+    explicit ?? SyncService.shared
+  }
+
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.explicit === rhs.explicit
+  }
 }
 
-/// Measured row heights, keyed by row id + width + content revision.
+private struct WorkSyncServiceReferenceKey: EnvironmentKey {
+  static let defaultValue = WorkSyncServiceReference()
+}
+
+extension EnvironmentValues {
+  /// Read with `@Environment(\.workSyncService)` in any view that can render
+  /// inside a transcript cell, instead of `@EnvironmentObject SyncService`.
+  var workSyncService: WorkSyncServiceReference {
+    get { self[WorkSyncServiceReferenceKey.self] }
+    set { self[WorkSyncServiceReferenceKey.self] = newValue }
+  }
+}
+
+// MARK: - Height cache
+
+/// `(rowId, revision, width)`. `revision` is the row's effective revision:
+/// its own content revision combined with the transcript-wide one (card
+/// expansion, bubble width, live/offline) — both move independently, so they
+/// are hashed together rather than summed. Streaming state, in-flight actions
+/// and the viewport height are per-row inputs already folded into the row's
+/// own revision, so a keyboard show/hide re-measures only the rows that read
+/// the viewport height.
+struct WorkChatTranscriptHeightKey: Hashable {
+  let rowId: String
+  let revision: Int
+  let width: CGFloat
+
+  init(rowId: String, width: CGFloat, rowRevision: Int, contentRevision: Int) {
+    self.rowId = rowId
+    self.width = width
+    var hasher = Hasher()
+    hasher.combine(rowRevision)
+    hasher.combine(contentRevision)
+    self.revision = hasher.finalize()
+  }
+}
+
+/// Measured row heights, keyed by row id + effective revision + width.
 ///
 /// The cache is what keeps a re-measurement off the screen. A row that scrolls
 /// back into view at the same width and revision is restored to the height the
@@ -79,16 +134,21 @@ final class WorkChatTranscriptHeightCache {
 
   /// Drop every entry no live row can ask for again.
   ///
-  /// Filtering on the row id alone was not enough: `revision` and
-  /// `contentRevision` are part of the key and both move on live state, card
-  /// expansion, and width changes, so a row that simply stays in the
-  /// transcript kept one entry per revision it was ever measured at — the
-  /// cache grew for the whole session. An entry survives only while its row is
-  /// still present AND still at that revision pair.
+  /// Filtering on the row id alone was not enough: the revision is part of the
+  /// key and moves on live state, card expansion, and width changes, so a row
+  /// that simply stays in the transcript kept one entry per revision it was
+  /// ever measured at — the cache grew for the whole session. An entry
+  /// survives only while its row is still present AND still at that revision.
   func prune(keeping live: [String: Int], contentRevision: Int) {
     guard heights.count > 4096 else { return }
     heights = heights.filter { key, _ in
-      key.contentRevision == contentRevision && live[key.rowId] == key.revision
+      guard let rowRevision = live[key.rowId] else { return false }
+      return WorkChatTranscriptHeightKey(
+        rowId: key.rowId,
+        width: key.width,
+        rowRevision: rowRevision,
+        contentRevision: contentRevision
+      ).revision == key.revision
     }
   }
 }
@@ -99,21 +159,78 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
   var cacheKey: WorkChatTranscriptHeightKey?
   weak var heightCache: WorkChatTranscriptHeightCache?
 
+  /// The hosted SwiftUI content changed size on its own — an attachment
+  /// thumbnail landed, a badge appeared, the text reflowed — with no new row
+  /// revision. `UIHostingConfiguration` reports that by invalidating the
+  /// cell's intrinsic size, and UIKit then re-asks for the cell's height.
+  /// That re-ask must measure: answering it from the cache (same key, old
+  /// height) left the row drawing over its neighbour until something else
+  /// re-measured it.
+  private(set) var contentSizeInvalidated = false
+
+  /// See the cell registration: a transcript row never pads for the window's
+  /// safe area.
+  override var safeAreaInsets: UIEdgeInsets { .zero }
+
+  /// True from a configure until the run loop turns: the hosting view
+  /// invalidates its size while it renders freshly configured content, and
+  /// that content is exactly what the cache entry for this key measured. In a
+  /// bench run every one of those re-measures (135 of 135) returned the cached
+  /// height; tripling the measure count for nothing.
+  private var settlingConfiguration = false
+
+  override func invalidateIntrinsicContentSize() {
+    if !settlingConfiguration {
+      contentSizeInvalidated = true
+    }
+    super.invalidateIntrinsicContentSize()
+  }
+
+  /// A fresh configuration is looked up in the cache by its own key; any
+  /// invalidation the configure itself raises is about that same content.
+  func didConfigure() {
+    contentSizeInvalidated = false
+    guard !settlingConfiguration else { return }
+    settlingConfiguration = true
+    DispatchQueue.main.async { [weak self] in
+      self?.settlingConfiguration = false
+    }
+  }
+
   override func preferredLayoutAttributesFitting(
     _ layoutAttributes: UICollectionViewLayoutAttributes
   ) -> UICollectionViewLayoutAttributes {
-    if let cacheKey,
+    if !contentSizeInvalidated,
+       let cacheKey,
        cacheKey.width == layoutAttributes.frame.width,
        let cached = heightCache?.height(for: cacheKey) {
+      ScrollDiagnostics.shared.count(.transcriptCellCacheHit)
+      Self.noteResize(from: layoutAttributes.frame.height, to: cached)
       let attributes = layoutAttributes
       attributes.frame.size.height = cached
       return attributes
     }
-    let measured = super.preferredLayoutAttributesFitting(layoutAttributes)
+    if contentSizeInvalidated { ScrollDiagnostics.shared.count(.transcriptCellRemeasure) }
+    contentSizeInvalidated = false
+    let measured = ScrollDiagnostics.shared.measure(.transcriptCellMeasure) {
+      super.preferredLayoutAttributesFitting(layoutAttributes)
+    }
     if let cacheKey, cacheKey.width == measured.frame.width {
       heightCache?.store(measured.frame.height, for: cacheKey)
     }
+    Self.noteResize(from: layoutAttributes.frame.height, to: measured.frame.height)
     return measured
+  }
+
+  /// Bumped whenever a cell answers self-sizing with a height other than the
+  /// one the layout had: the only event UIKit compensates in `contentOffset`.
+  /// The visible-jump probe reads it to tell that compensation apart from the
+  /// reader's own momentum.
+  static private(set) var resizeCount = 0
+
+  private static func noteResize(from old: CGFloat, to new: CGFloat) {
+    guard abs(old - new) > 0.5 else { return }
+    resizeCount &+= 1
   }
 }
 
@@ -124,9 +241,11 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
 /// changing the controller's view bounds, and that pass is exactly the one
 /// that can move a row above the reader.
 final class WorkChatTranscriptCollectionViewBody: UICollectionView {
+  var onWillLayout: (() -> Void)?
   var onDidLayout: (() -> Void)?
 
   override func layoutSubviews() {
+    onWillLayout?()
     super.layoutSubviews()
     onDidLayout?()
   }
@@ -164,6 +283,19 @@ final class WorkChatTranscriptScroller {
   func noteDisclosureSettled() {
     controller?.noteDisclosureSettled()
   }
+
+  #if DEBUG
+  /// Scroll-bench fixture only: drives the same delegate sequence a finger
+  /// drag does, so the follow latch releases exactly as it would for a reader.
+  func benchSimulateUserScroll(by deltaY: CGFloat) {
+    guard let controller, let collectionView = controller.collectionView else { return }
+    controller.scrollViewWillBeginDragging(collectionView)
+    let minOffset = -collectionView.contentInset.top
+    collectionView.contentOffset.y = max(minOffset, collectionView.contentOffset.y - deltaY)
+    controller.scrollViewDidScroll(collectionView)
+    controller.scrollViewDidEndDragging(collectionView, willDecelerate: false)
+  }
+  #endif
 }
 
 // MARK: - Representable
@@ -181,13 +313,27 @@ struct WorkChatTranscriptCollectionView: UIViewControllerRepresentable {
   /// Bumped when anything shared by every row changes (card expansion, live
   /// state, bubble width). Part of every row's height-cache key.
   let contentRevision: Int
+  /// Bumped when live interaction state that rows draw changes (host live,
+  /// host unreachable, an action in flight). Reconfigures only the visible
+  /// cells and is deliberately NOT part of any height-cache key: these flip
+  /// enabled/disabled states, not layout, so no row is re-measured for them.
+  var interactionRevision: Int = 0
   let topInset: CGFloat
   let bottomInset: CGFloat
   let scroller: WorkChatTranscriptScroller
-  let rowContent: (WorkChatTranscriptRow) -> AnyView
+  /// The row's view, or nil when the row is not in the model the SwiftUI side
+  /// holds right now (a layout pass can dequeue a cell between the thread
+  /// publishing a new frame and the next `apply`). A nil row draws nothing and
+  /// is neither measured into the height cache nor left stale: the next apply
+  /// reconfigures it.
+  let rowContent: (WorkChatTranscriptRow) -> AnyView?
   let onFollowChange: (Bool) -> Void
   let onGeometryChange: (WorkChatTranscriptGeometry) -> Void
   let onViewportChange: (CGSize) -> Void
+  /// Called after every snapshot apply that changed something, with the row
+  /// count now on screen. Feeds the `thread.open.firstPaint` and
+  /// `thread.delta.onScreen` signposts.
+  var onRowsApplied: ((Int) -> Void)? = nil
 
   func makeUIViewController(context: Context) -> WorkChatTranscriptController {
     let controller = WorkChatTranscriptController()
@@ -195,6 +341,7 @@ struct WorkChatTranscriptCollectionView: UIViewControllerRepresentable {
     controller.onFollowChange = onFollowChange
     controller.onGeometryChange = onGeometryChange
     controller.onViewportChange = onViewportChange
+    controller.onRowsApplied = onRowsApplied
     scroller.controller = controller
     return controller
   }
@@ -205,9 +352,22 @@ struct WorkChatTranscriptCollectionView: UIViewControllerRepresentable {
     controller.onFollowChange = onFollowChange
     controller.onGeometryChange = onGeometryChange
     controller.onViewportChange = onViewportChange
+    controller.onRowsApplied = onRowsApplied
     controller.setContentInsets(top: topInset, bottom: bottomInset)
-    controller.apply(rows: rows, contentRevision: contentRevision)
+    Self.isApplyingRows = true
+    defer { Self.isApplyingRows = false }
+    controller.apply(
+      rows: rows,
+      contentRevision: contentRevision,
+      interactionRevision: interactionRevision
+    )
   }
+
+  /// True while `updateUIViewController` applies rows. Row content read here
+  /// (cells configure synchronously inside the apply) must not register
+  /// observation dependencies on the representable; see
+  /// `WorkChatSessionView.frame`.
+  @MainActor static var isApplyingRows = false
 
   static func dismantleUIViewController(
     _ controller: WorkChatTranscriptController,
@@ -229,14 +389,19 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
 
   private(set) var follow = WorkChatFollowState.initial
 
-  var rowContent: ((WorkChatTranscriptRow) -> AnyView)?
+  var rowContent: ((WorkChatTranscriptRow) -> AnyView?)?
+  /// Rows whose cell was configured while the row was unresolvable; the next
+  /// apply reconfigures them even if nothing else changed.
+  private var unresolvedRowIds = Set<String>()
   var onFollowChange: ((Bool) -> Void)?
   var onGeometryChange: ((WorkChatTranscriptGeometry) -> Void)?
   var onViewportChange: ((CGSize) -> Void)?
+  var onRowsApplied: ((Int) -> Void)?
 
   private var rowsById: [String: WorkChatTranscriptRow] = [:]
   private var orderedRowIds: [String] = []
   private var contentRevision = 0
+  private var interactionRevision = 0
   private var hasAppliedFirstNonEmptySnapshot = false
 
   /// Set whenever the content changed while following; consumed by the next
@@ -265,6 +430,19 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
   /// Gap between rows, matching the transcript's former `LazyVStack` spacing.
   private let rowSpacing: CGFloat = 14
 
+  private var diagnosticsScrollKey: String { "thread-\(ObjectIdentifier(self).hashValue)" }
+
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    ScrollDiagnostics.shared.enter(.thread)
+  }
+
+  override func viewDidDisappear(_ animated: Bool) {
+    super.viewDidDisappear(animated)
+    ScrollDiagnostics.shared.scrollEnded(diagnosticsScrollKey)
+    ScrollDiagnostics.shared.leave(.thread)
+  }
+
   override func viewDidLoad() {
     super.viewDidLoad()
     var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
@@ -283,7 +461,12 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     collectionView.keyboardDismissMode = .interactive
     collectionView.contentInsetAdjustmentBehavior = .never
     collectionView.delegate = self
-    collectionView.onDidLayout = { [weak self] in self?.handleLayoutPass() }
+    collectionView.onWillLayout = { [weak self] in self?.layoutWorkDepth += 1 }
+    collectionView.onDidLayout = { [weak self] in
+      guard let self else { return }
+      self.handleLayoutPass()
+      self.layoutWorkDepth -= 1
+    }
     collectionView.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(collectionView)
     NSLayoutConstraint.activate([
@@ -293,26 +476,19 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
     ])
     self.collectionView = collectionView
+    installEdgeFades()
 
     let registration = UICollectionView.CellRegistration<WorkChatTranscriptCell, String> {
       [weak self] cell, _, rowId in
-      guard let self, let row = self.rowsById[rowId] else { return }
-      // The list layout gives every item the full container width, so the
-      // collection view's own width is the measurement width — the cell's is
-      // still zero the first time it is configured.
-      let width = self.collectionView.bounds.width
-      cell.heightCache = self.heightCache
-      cell.cacheKey = WorkChatTranscriptHeightKey(
-        rowId: rowId,
-        width: width,
-        revision: row.revision,
-        contentRevision: self.contentRevision
-      )
-      cell.backgroundConfiguration = .clear()
-      let content = self.rowContent?(row) ?? AnyView(EmptyView())
-      cell.contentConfiguration = UIHostingConfiguration { content }
-        .margins(.horizontal, 16)
-        .margins(.vertical, self.rowSpacing / 2)
+      guard let self else { return }
+      let configureStart = CACurrentMediaTime()
+      defer { ScrollDiagnostics.shared.record(.transcriptCellConfigure, since: configureStart) }
+      guard let resolved = self.configure(cell, rowId: rowId) else { return }
+      if resolved {
+        self.unresolvedRowIds.remove(rowId)
+      } else {
+        self.unresolvedRowIds.insert(rowId)
+      }
     }
 
     dataSource = UICollectionViewDiffableDataSource<Section, String>(
@@ -326,10 +502,194 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     }
   }
 
+  /// Configures `cell` for `rowId`. Nil when the row is not in the model;
+  /// otherwise whether its content resolved (see `rowContent`).
+  @discardableResult
+  private func configure(_ cell: WorkChatTranscriptCell, rowId: String) -> Bool? {
+    guard let row = rowsById[rowId] else { return nil }
+    // The list layout gives every item the full container width, so the
+    // collection view's own width is the measurement width — the cell's is
+    // still zero the first time it is configured.
+    let width = collectionView.bounds.width
+    let resolved = rowContent?(row)
+    cell.heightCache = heightCache
+    // A cell drawn without its row's content must not teach the cache a
+    // height for that row: the key would outlive the placeholder.
+    cell.cacheKey = resolved == nil ? nil : WorkChatTranscriptHeightKey(
+      rowId: rowId,
+      width: width,
+      rowRevision: row.revision,
+      contentRevision: contentRevision
+    )
+    cell.backgroundConfiguration = .clear()
+    let content = resolved ?? AnyView(EmptyView())
+    // The transcript runs edge to edge under the status bar, the floating
+    // header and the keyboard, and a hosted cell pads its content by
+    // whatever part of it overlaps the window's safe area: a row measured
+    // up to 62 pt taller while it passed under the Dynamic Island, so rows
+    // changed height as they scrolled past the top edge (the "paragraphs
+    // jitter" symptom) and a row measured there drew over its neighbour.
+    // The transcript's own content insets already reserve the chrome. The
+    // cell reports no safe area (see `WorkChatTranscriptCell`); ignoring it
+    // here as well keeps SwiftUI's own keyboard region out of the row.
+    cell.contentConfiguration = UIHostingConfiguration { content.ignoresSafeArea() }
+      .margins(.horizontal, 16)
+      .margins(.vertical, rowSpacing / 2)
+    cell.didConfigure()
+    return resolved != nil
+  }
+
   func teardown() {
     settleWorkItem?.cancel()
     settleWorkItem = nil
     heightCache.removeAll()
+    sizingCell?.removeFromSuperview()
+    sizingCell = nil
+  }
+
+  // MARK: Idle pre-measurement
+
+  /// Rows the reader has not seen yet appear at the layout's estimate and
+  /// measure themselves as they scroll in: that measure (up to ~18 ms for a
+  /// long markdown answer on an iPhone 16 Pro) is the largest main-thread cost
+  /// inside a scroll. While the reader is idle, the rows around the viewport
+  /// are measured one per run-loop turn into the same height cache the cells
+  /// read, keyed by (rowId, revision, width), so they scroll in as cache hits.
+  private var sizingCell: WorkChatTranscriptCell?
+  private var premeasureScheduled = false
+  /// Rows whose content did not resolve for the sizing cell; retried after the
+  /// next apply.
+  private var premeasureSkipped = Set<String>()
+  /// Keys already measured off screen, whatever the result: a row the cache
+  /// declines to store (zero height) must not be measured again every turn.
+  private var premeasureAttempted = Set<WorkChatTranscriptHeightKey>()
+  /// Rows the last apply changed. Below the viewport these are the live turn's
+  /// rows, which change again on the next event: measuring them off screen
+  /// would be thrown away 15 times a second.
+  private var lastChangedRowIds = Set<String>()
+  /// Rows above the viewport to have measured (history the reader scrolls
+  /// up into), and below it.
+  private let premeasureRadiusAbove = 150
+  private let premeasureRadiusBelow = 40
+  /// Tests compare a pre-measured transcript against one that measures only
+  /// on screen.
+  var premeasureEnabled = true
+
+  private var isReaderScrolling: Bool {
+    collectionView.isTracking || collectionView.isDragging || collectionView.isDecelerating
+  }
+
+  private func schedulePremeasure() {
+    guard premeasureEnabled, !premeasureScheduled else { return }
+    premeasureScheduled = true
+    DispatchQueue.main.async { [weak self] in self?.premeasureStep() }
+  }
+
+  private func premeasureStep() {
+    premeasureScheduled = false
+    guard isViewLoaded, view.window != nil, !isReaderScrolling, !animatingToLatest else { return }
+    let width = collectionView.bounds.width
+    guard width > 0, let rowId = nextRowToPremeasure(width: width) else { return }
+    let cell = sizingCell ?? makeSizingCell()
+    if configure(cell, rowId: rowId) == true {
+      cell.frame = CGRect(x: 0, y: 0, width: width, height: 44)
+      // The same fit the list layout asks a cell for: width fixed at the
+      // column, height free. (A bare `preferredLayoutAttributesFitting` on a
+      // cell outside the layout fits the width too.)
+      let size = ScrollDiagnostics.shared.measure(.transcriptPremeasure) {
+        cell.systemLayoutSizeFitting(
+          CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+          withHorizontalFittingPriority: .required,
+          verticalFittingPriority: .fittingSizeLevel
+        )
+      }
+      if let key = cell.cacheKey {
+        heightCache.store(size.height, for: key)
+      }
+    } else {
+      premeasureSkipped.insert(rowId)
+    }
+    schedulePremeasure()
+  }
+
+  private func makeSizingCell() -> WorkChatTranscriptCell {
+    let cell = WorkChatTranscriptCell(frame: .zero)
+    // In the hierarchy (hidden) so it measures with the transcript's traits:
+    // Dynamic Type, dark mode, display scale.
+    cell.isHidden = true
+    cell.isUserInteractionEnabled = false
+    view.insertSubview(cell, at: 0)
+    sizingCell = cell
+    return cell
+  }
+
+  /// Nearest unmeasured row to the viewport, above first (the reader scrolls
+  /// up into history far more than down).
+  private func nextRowToPremeasure(width: CGFloat) -> String? {
+    let visible = collectionView.indexPathsForVisibleItems.map(\.item)
+    guard let first = visible.min(), let last = visible.max() else { return nil }
+    func needsMeasure(_ index: Int, below: Bool) -> String? {
+      guard index >= 0, index < orderedRowIds.count else { return nil }
+      let rowId = orderedRowIds[index]
+      guard let row = rowsById[rowId], !premeasureSkipped.contains(rowId) else { return nil }
+      if below, lastChangedRowIds.contains(rowId) { return nil }
+      let key = WorkChatTranscriptHeightKey(
+        rowId: rowId,
+        width: width,
+        rowRevision: row.revision,
+        contentRevision: contentRevision
+      )
+      guard heightCache.height(for: key) == nil, premeasureAttempted.insert(key).inserted else {
+        return nil
+      }
+      return rowId
+    }
+    for distance in 1...premeasureRadiusAbove {
+      if let rowId = needsMeasure(first - distance, below: false) { return rowId }
+      if distance <= premeasureRadiusBelow,
+         let rowId = needsMeasure(last + distance, below: true) { return rowId }
+    }
+    return nil
+  }
+
+  // MARK: Edge fades
+
+  private var topEdgeBandHeight: NSLayoutConstraint?
+  private var bottomEdgeBandHeight: NSLayoutConstraint?
+  private var topEdgeFade: WorkChatEdgeFadeView?
+  private var bottomEdgeFade: WorkChatEdgeFadeView?
+
+  /// The thread runs edge to edge under the floating header and composer.
+  /// Text passing under the clock and the title capsule is softened by a
+  /// progressive canvas-coloured fade over exactly the band each chrome
+  /// reserves (its content inset) — still visible, never a solid band.
+  ///
+  /// Not the native `UIScrollEdgeElementContainerInteraction`: the chrome is
+  /// SwiftUI floating above this representable, and stand-in containers
+  /// registered for it produced no visible effect. A gradient layer is also
+  /// cheaper than a mask: it blends once and adds no offscreen pass while
+  /// the transcript scrolls under it.
+  private func installEdgeFades() {
+    let top = WorkChatEdgeFadeView(edge: .top)
+    let bottom = WorkChatEdgeFadeView(edge: .bottom)
+    view.addSubview(top)
+    view.addSubview(bottom)
+    let topHeight = top.heightAnchor.constraint(equalToConstant: collectionView.contentInset.top)
+    let bottomHeight = bottom.heightAnchor.constraint(equalToConstant: collectionView.contentInset.bottom)
+    NSLayoutConstraint.activate([
+      top.topAnchor.constraint(equalTo: view.topAnchor),
+      top.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      top.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      topHeight,
+      bottom.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+      bottom.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      bottom.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      bottomHeight,
+    ])
+    topEdgeBandHeight = topHeight
+    bottomEdgeBandHeight = bottomHeight
+    topEdgeFade = top
+    bottomEdgeFade = bottom
   }
 
   func setContentInsets(top: CGFloat, bottom: CGFloat) {
@@ -339,6 +699,8 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     let wasFollowing = follow.following
     collectionView.contentInset = insets
     collectionView.verticalScrollIndicatorInsets = insets
+    topEdgeBandHeight?.constant = top
+    bottomEdgeBandHeight?.constant = bottom
     if wasFollowing {
       followPinNeeded = true
     }
@@ -346,8 +708,14 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
 
   // MARK: Snapshot
 
-  func apply(rows incoming: [WorkChatTranscriptRow], contentRevision revision: Int) {
+  func apply(
+    rows incoming: [WorkChatTranscriptRow],
+    contentRevision revision: Int,
+    interactionRevision nextInteractionRevision: Int = 0
+  ) {
     guard isViewLoaded else { return }
+    let diagnosticsStart = CACurrentMediaTime()
+    defer { ScrollDiagnostics.shared.record(.transcriptApply, since: diagnosticsStart) }
     // Both `Dictionary(uniqueKeysWithValues:)` below and the diffable snapshot
     // trap on a repeated id, and one split assistant message mints row ids by
     // string concatenation (`<entryId>-<blockId>`), so uniqueness is a property
@@ -363,7 +731,18 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       return previous.revision == row.revision ? nil : row.id
     }
     let orderChanged = nextIds != orderedRowIds
-    guard orderChanged || revisionChanged || !changedRowIds.isEmpty else { return }
+    let unresolved = unresolvedRowIds.intersection(nextIds)
+    let interactionChanged = nextInteractionRevision != interactionRevision
+    guard orderChanged || revisionChanged || interactionChanged
+      || !changedRowIds.isEmpty || !unresolved.isEmpty else {
+      return
+    }
+    layoutWorkDepth += 1
+    isApplyingSnapshot = true
+    defer {
+      isApplyingSnapshot = false
+      layoutWorkDepth -= 1
+    }
 
     // Against the row order that is still on screen: the anchor is a row the
     // reader can see, and resolving it after the list is replaced would map
@@ -372,6 +751,7 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     let previousContentHeight = collectionView.contentSize.height
 
     contentRevision = revision
+    interactionRevision = nextInteractionRevision
     rowsById = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
     orderedRowIds = nextIds
     heightCache.prune(
@@ -382,12 +762,35 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     var snapshot = NSDiffableDataSourceSnapshot<Section, String>()
     snapshot.appendSections([.main])
     snapshot.appendItems(nextIds, toSection: .main)
-    let reconfigure = revisionChanged ? nextIds : changedRowIds
+    var reconfigure = revisionChanged ? nextIds : changedRowIds
+    if !revisionChanged, !unresolved.isEmpty {
+      reconfigure.append(contentsOf: unresolved.subtracting(changedRowIds))
+    }
+    if !revisionChanged, interactionChanged {
+      // Visible cells only: an off-screen cell configures fresh when it scrolls
+      // in, and its height key is unchanged, so its cached height still holds.
+      let alreadyReconfigured = Set(reconfigure)
+      let liveIds = Set(nextIds)
+      let visibleIds = collectionView.indexPathsForVisibleItems.compactMap { indexPath in
+        dataSource.itemIdentifier(for: indexPath)
+      }
+      reconfigure.append(contentsOf: visibleIds.filter {
+        liveIds.contains($0) && !alreadyReconfigured.contains($0)
+      })
+    }
+    unresolvedRowIds.removeAll()
     if !reconfigure.isEmpty {
       snapshot.reconfigureItems(reconfigure)
+      if ScrollDiagnostics.shared.isRunning {
+        for _ in reconfigure { ScrollDiagnostics.shared.count(.transcriptReconfigure) }
+      }
     }
-    dataSource.apply(snapshot, animatingDifferences: false)
-    collectionView.layoutIfNeeded()
+    ScrollDiagnostics.shared.measure(.transcriptSnapshotApply) {
+      dataSource.apply(snapshot, animatingDifferences: false)
+    }
+    ScrollDiagnostics.shared.measure(.transcriptApplyLayout) {
+      collectionView.layoutIfNeeded()
+    }
 
     let isFirstContent = !hasAppliedFirstNonEmptySnapshot && !nextIds.isEmpty
     if isFirstContent {
@@ -417,11 +820,19 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       // Content inserted or resized above the reader. Put the anchored row
       // back where it was; UIKit already compensated whatever it measured
       // itself, and this covers the rest.
-      if !restoreAnchorIfMoved(anchor, reason: "anchor-restore") {
+      if !restoreAnchorIfMoved(anchor, reason: "anchor-restore", shiftDuringUserScroll: true) {
         liveAnchor = captureAnchor()
       }
     }
     lastContentHeight = collectionView.contentSize.height
+    // Judged once the apply's own restore has run: the layout pass inside it
+    // is an intermediate state, never composited.
+    checkJumpProbe()
+    premeasureSkipped.removeAll()
+    if premeasureAttempted.count > 4096 { premeasureAttempted.removeAll() }
+    lastChangedRowIds = Set(changedRowIds)
+    schedulePremeasure()
+    onRowsApplied?(nextIds.count)
   }
 
   // MARK: Anchoring
@@ -436,12 +847,36 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     let offsetFromViewportTop: CGFloat
   }
 
+  /// The first row whose top edge the reader can actually see.
+  ///
+  /// The transcript runs under the floating header, so "first visible item"
+  /// is usually a row behind the glass, and often one straddling the top edge.
+  /// That is a bad anchor twice over: it is not the reader's place, and a row
+  /// crossing the top edge is exactly the one UIKit compensates itself when it
+  /// re-measures — anchoring on it made the restore fight that compensation.
+  /// Falls back to the first visible row when none starts below the chrome
+  /// (one row taller than the viewport).
+  private func readerAnchorIndexPath() -> (IndexPath, UICollectionViewLayoutAttributes)? {
+    // Reading layout attributes can resolve a pending self-sizing pass, and
+    // UIKit's compensation for it lands here as a `didScroll`.
+    layoutWorkDepth += 1
+    defer { layoutWorkDepth -= 1 }
+    let visibleTop = collectionView.contentOffset.y + collectionView.contentInset.top
+    var fallback: (IndexPath, UICollectionViewLayoutAttributes)?
+    for indexPath in collectionView.indexPathsForVisibleItems.sorted() {
+      guard indexPath.item < orderedRowIds.count,
+            let attributes = collectionView.layoutAttributesForItem(at: indexPath)
+      else { continue }
+      if fallback == nil { fallback = (indexPath, attributes) }
+      if attributes.frame.minY >= visibleTop - 0.5 {
+        return (indexPath, attributes)
+      }
+    }
+    return fallback
+  }
+
   private func captureAnchor() -> Anchor? {
-    let visible = collectionView.indexPathsForVisibleItems.sorted()
-    guard let indexPath = visible.first,
-          let attributes = collectionView.layoutAttributesForItem(at: indexPath),
-          indexPath.item < orderedRowIds.count
-    else { return nil }
+    guard let (indexPath, attributes) = readerAnchorIndexPath() else { return nil }
     return Anchor(
       rowId: orderedRowIds[indexPath.item],
       rowMinY: attributes.frame.minY,
@@ -455,7 +890,11 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
   /// next pass compares against what this restore settled on rather than
   /// re-deciding from a sample the restore already answered.
   @discardableResult
-  private func restoreAnchorIfMoved(_ anchor: Anchor, reason: String) -> Bool {
+  private func restoreAnchorIfMoved(
+    _ anchor: Anchor,
+    reason: String,
+    shiftDuringUserScroll: Bool = false
+  ) -> Bool {
     guard !isRestoringAnchor else { return false }
     guard let index = orderedRowIds.firstIndex(of: anchor.rowId),
           let attributes = collectionView.layoutAttributesForItem(
@@ -463,6 +902,12 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
           )
     else { return false }
     let currentRowMinY = attributes.frame.minY
+    if shiftDuringUserScroll, collectionView.isDragging || collectionView.isDecelerating {
+      // On-screen displacement, not the row's content move: UIKit already
+      // compensated the part of that move its own self-sizing caused.
+      let screenDelta = currentRowMinY - collectionView.contentOffset.y - anchor.offsetFromViewportTop
+      return shiftOffsetUnderReader(by: screenDelta, anchor: anchor, rowMinY: currentRowMinY)
+    }
     guard workChatShouldRestoreAnchor(
       anchorRowMinY: anchor.rowMinY,
       currentRowMinY: currentRowMinY,
@@ -482,6 +927,45 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     liveAnchor = Anchor(
       rowId: anchor.rowId,
       rowMinY: currentRowMinY,
+      offsetFromViewportTop: anchor.offsetFromViewportTop
+    )
+    return true
+  }
+
+  /// Rows went in or changed height above the reader in a snapshot apply
+  /// while a finger or a fling owns the offset (older history paged in as the
+  /// reader nears the top, a card above re-measuring). UIKit compensates its
+  /// own self-sizing but not a snapshot's inserts, so without this the whole
+  /// page under the reader jumped by the inserted height — the multi-thousand
+  /// point jumps in the field data.
+  ///
+  /// A relative shift of the live offset, not a `setContentOffset` to an
+  /// absolute target: the pan keeps tracking the finger from the shifted
+  /// offset and a running fling keeps its velocity, so the reader's gesture is
+  /// not cancelled. Not clamped to the scroll range: a reader in the top
+  /// rubber band stays exactly where they are relative to the content.
+  private func shiftOffsetUnderReader(by rawDelta: CGFloat, anchor: Anchor, rowMinY: CGFloat) -> Bool {
+    let scale = max(1, collectionView.traitCollection.displayScale)
+    let delta = (rawDelta * scale).rounded() / scale
+    guard abs(delta) > 0.5 / scale else { return false }
+    let before = collectionView.contentOffset.y
+    WorkChatScrollTrace.write(
+      reason: "anchor-shift-user-scroll",
+      target: "dy=\(delta)",
+      site: "WorkChatTranscriptCollectionView.swift:shiftOffsetUnderReader",
+      offsetBefore: before,
+      contentHeight: collectionView.contentSize.height,
+      containerHeight: collectionView.bounds.height,
+      scrollableHeight: max(0, maxContentOffsetY - minContentOffsetY),
+      following: follow.following,
+      userDrivenPhase: follow.inUserSession
+    )
+    layoutWorkDepth += 1
+    collectionView.contentOffset.y = before + delta
+    layoutWorkDepth -= 1
+    liveAnchor = Anchor(
+      rowId: anchor.rowId,
+      rowMinY: rowMinY,
       offsetFromViewportTop: anchor.offsetFromViewportTop
     )
     return true
@@ -513,7 +997,7 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     let minOffset = minContentOffsetY
     let maxOffset = maxContentOffsetY
 
-    let target: CGFloat
+    var target: CGFloat
     var animated = false
     switch write {
     case .pinToBottom(let isAnimated):
@@ -533,6 +1017,19 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       animated = true
     }
 
+    // On a device pixel. A fractional offset (an anchor restore lands on
+    // `rowMinY - offsetFromViewportTop`, both fractional) puts every glyph
+    // between pixels, and the next write rounding the other way makes text
+    // shimmer by a pixel as rows re-measure.
+    let scale = max(1, collectionView.traitCollection.displayScale)
+    let rounded = (target * scale).rounded() / scale
+    if rounded > maxOffset {
+      target = (maxOffset * scale).rounded(.down) / scale
+    } else if rounded < minOffset {
+      target = (minOffset * scale).rounded(.up) / scale
+    } else {
+      target = rounded
+    }
     guard animated || abs(target - before) > 0.5 else { return }
 
     WorkChatScrollTrace.write(
@@ -546,7 +1043,9 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       following: follow.following,
       userDrivenPhase: follow.inUserSession
     )
+    layoutWorkDepth += 1
     collectionView.setContentOffset(CGPoint(x: 0, y: target), animated: animated)
+    layoutWorkDepth -= 1
     if !animated {
       stableOffsetY = target
     }
@@ -583,7 +1082,9 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
 
   func resetForNewSession() {
     guard isViewLoaded else { return }
-    heightCache.removeAll()
+    // The height cache survives: its keys are row ids + content revisions, so
+    // another session's rows can never hit, and a re-seed of this one (same
+    // rows, same revisions) should not pay to measure every row again.
     hasAppliedFirstNonEmptySnapshot = false
     animatingToLatest = false
     settleWorkItem?.cancel()
@@ -675,6 +1176,7 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       if abs(bounds.width - previous.width) > 0.5 {
         // Every cached height was measured at the old width.
         heightCache.removeAll()
+        schedulePremeasure()
       }
       let size = bounds
       emit { [weak self] in self?.onViewportChange?(size) }
@@ -713,17 +1215,140 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       // correctly writes nothing at all.
       restoreAnchorIfMoved(liveAnchor, reason: "anchor-relayout")
     }
+    if !isApplyingSnapshot { checkJumpProbe() }
     traceViewportAnchor()
     publishGeometry()
+  }
+
+  // MARK: Visible-jump probe (diagnostics only)
+
+  /// The reader's row and where it sat on screen at the end of the last
+  /// layout pass — a state that was composited.
+  private struct JumpProbe {
+    let rowId: String
+    let screenY: CGFloat
+  }
+
+  private var jumpProbe: JumpProbe?
+  /// Offset the reader moved since `jumpProbe` was taken (see
+  /// `noteObservedOffset`).
+  private var userScrollSinceProbe: CGFloat = 0
+  private var lastObservedOffsetY: CGFloat = .nan
+  /// > 0 while the transcript itself is laying out, applying, or writing the
+  /// offset: a `didScroll` raised in there is UIKit compensating a self-sizing
+  /// row or one of our writes, never the reader.
+  private var layoutWorkDepth = 0
+  private var isApplyingSnapshot = false
+
+  /// Between two composited states the reader's row may move on screen by
+  /// exactly what the reader scrolled, and nothing else. Anything more is a
+  /// jump the reader did not make.
+  ///
+  /// The former probe compared cell frames at the *start* of a pass with the
+  /// layout at its end. When UIKit had already compensated a self-sizing row
+  /// above the reader (moving the offset) but not yet repositioned the cells,
+  /// that start state was never on screen, and each compensation was
+  /// reported as a jump of its own height — 18 of the 19 jumps one bench run
+  /// logged.
+  private func checkJumpProbe() {
+    guard ScrollDiagnostics.shared.isRunning else { return }
+    defer {
+      userScrollSinceProbe = 0
+      momentumEstimatedSinceProbe = false
+      if let (indexPath, attributes) = readerAnchorIndexPath() {
+        jumpProbe = JumpProbe(
+          rowId: orderedRowIds[indexPath.item],
+          screenY: attributes.frame.minY - collectionView.contentOffset.y
+        )
+      } else {
+        jumpProbe = nil
+      }
+    }
+    guard let probe = jumpProbe,
+          !follow.following || follow.inUserSession,
+          let index = orderedRowIds.firstIndex(of: probe.rowId),
+          let attributes = collectionView.layoutAttributesForItem(
+            at: IndexPath(item: index, section: 0)
+          )
+    else { return }
+    let screenY = attributes.frame.minY - collectionView.contentOffset.y
+    let delta = screenY - (probe.screenY - userScrollSinceProbe)
+    let pixel = 1 / max(1, collectionView.traitCollection.displayScale)
+    // A momentum frame whose share was estimated (see `noteObservedOffset`)
+    // carries a few points of estimate error; anything a reader would call a
+    // jump is far larger.
+    let threshold = momentumEstimatedSinceProbe ? 3 : pixel + 0.01
+    if abs(delta) > threshold {
+      ScrollDiagnostics.shared.noteVisibleJump(points: delta)
+      WorkChatScrollTrace.note("visible-jump row=\(probe.rowId) delta=\(delta)")
+    }
+  }
+
+  private var lastFingerY: CGFloat?
+  /// Offset points per millisecond of the running fling, seeded by UIKit's
+  /// release velocity and followed frame by frame.
+  private var momentumVelocity: CGFloat = 0
+  private var lastObservedAt: CFTimeInterval = 0
+  private var lastSeenResizeCount = 0
+  private var momentumEstimatedSinceProbe = false
+
+  /// How far the reader moved the content since the last probe, from what the
+  /// reader actually did rather than from `contentOffset`: UIKit folds its
+  /// compensation for a self-sizing row into the same `didScroll` a pan or a
+  /// momentum frame raises, so an offset delta cannot tell the two apart.
+  ///
+  /// - Finger down: the content follows the finger, so the finger's window position
+  ///   is the reader's movement (except in the rubber band, where the offset
+  ///   is).
+  /// - Momentum: the whole delta is the reader's unless a cell re-sized since
+  ///   the last frame (the only thing UIKit compensates). Then the fling's
+  ///   running velocity times the frame time is, and a delta far off that is
+  ///   not the reader.
+  /// - Otherwise the reader is not moving anything.
+  private func noteObservedOffset(_ scrollView: UIScrollView) {
+    let offsetY = scrollView.contentOffset.y
+    defer { lastObservedOffsetY = offsetY }
+    guard ScrollDiagnostics.shared.isRunning, !lastObservedOffsetY.isNaN, layoutWorkDepth == 0 else { return }
+    let offsetDelta = offsetY - lastObservedOffsetY
+    let now = CACurrentMediaTime()
+    defer {
+      lastObservedAt = now
+      lastSeenResizeCount = WorkChatTranscriptCell.resizeCount
+    }
+    let inRubberBand = offsetY < minContentOffsetY - 0.5 || offsetY > maxContentOffsetY + 0.5
+    if scrollView.isTracking {
+      let fingerY = scrollView.panGestureRecognizer.location(in: nil).y
+      let fingerDelta = lastFingerY.map { fingerY - $0 } ?? -offsetDelta
+      lastFingerY = fingerY
+      userScrollSinceProbe += inRubberBand ? offsetDelta : -fingerDelta
+    } else if scrollView.isDecelerating {
+      lastFingerY = nil
+      let elapsedMs = max(0.5, (now - lastObservedAt) * 1000)
+      let predicted = momentumVelocity * elapsedMs
+      let resized = WorkChatTranscriptCell.resizeCount != lastSeenResizeCount
+      let userDelta: CGFloat
+      momentumEstimatedSinceProbe = momentumEstimatedSinceProbe || resized
+      if !resized || inRubberBand || abs(offsetDelta - predicted) <= 2 + abs(predicted) * 0.35 {
+        userDelta = offsetDelta
+        momentumVelocity = offsetDelta / elapsedMs
+      } else {
+        userDelta = predicted
+      }
+      userScrollSinceProbe += userDelta
+    } else {
+      lastFingerY = nil
+    }
   }
 
   // MARK: UIScrollViewDelegate
 
   func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+    ScrollDiagnostics.shared.scrollBegan(diagnosticsScrollKey)
     WorkChatScrollTrace.phase(userDriven: true, raw: "willBeginDragging")
     settleWorkItem?.cancel()
     settleWorkItem = nil
     animatingToLatest = false
+    lastFingerY = nil
     applyFollowEvent(.userScrollBegin, reason: "drag-begin")
   }
 
@@ -735,11 +1360,7 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
   /// moves the offset by exactly the amount needed to leave the screen still.
   /// This is the ground truth the bench reduces to "did anything move".
   private func traceViewportAnchor() {
-    let visible = collectionView.indexPathsForVisibleItems.sorted()
-    guard let indexPath = visible.first,
-          indexPath.item < orderedRowIds.count,
-          let attributes = collectionView.layoutAttributesForItem(at: indexPath)
-    else { return }
+    guard let (indexPath, attributes) = readerAnchorIndexPath() else { return }
     WorkChatScrollTrace.viewport(
       rowId: orderedRowIds[indexPath.item],
       offsetInViewport: attributes.frame.minY - collectionView.contentOffset.y,
@@ -749,6 +1370,7 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
   }
 
   func scrollViewDidScroll(_ scrollView: UIScrollView) {
+    noteObservedOffset(scrollView)
     if !follow.inUserSession, !scrollView.isDragging, !scrollView.isDecelerating {
       stableOffsetY = scrollView.contentOffset.y
     }
@@ -776,12 +1398,23 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
     publishGeometry()
   }
 
+  func scrollViewWillEndDragging(
+    _ scrollView: UIScrollView,
+    withVelocity velocity: CGPoint,
+    targetContentOffset: UnsafeMutablePointer<CGPoint>
+  ) {
+    // Points per millisecond, in offset direction.
+    momentumVelocity = velocity.y
+  }
+
   func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+    if !decelerate { ScrollDiagnostics.shared.scrollEnded(diagnosticsScrollKey) }
     guard !decelerate else { return }
     scheduleUserScrollSettle()
   }
 
   func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+    ScrollDiagnostics.shared.scrollEnded(diagnosticsScrollKey)
     endUserScrollSession(reason: "momentum-end")
   }
 
@@ -816,5 +1449,58 @@ final class WorkChatTranscriptController: UIViewController, UICollectionViewDele
       followPinNeeded = true
       view.setNeedsLayout()
     }
+    schedulePremeasure()
+  }
+}
+
+// MARK: - Edge fade
+
+/// A touch-transparent gradient of the transcript canvas colour, strongest at
+/// the screen edge and clear where the chrome's band ends. Reduce
+/// Transparency makes it close to opaque, so controls sit on a calm surface.
+final class WorkChatEdgeFadeView: UIView {
+  private let edge: UIRectEdge
+  private let gradient = CAGradientLayer()
+
+  init(edge: UIRectEdge) {
+    self.edge = edge
+    super.init(frame: .zero)
+    isUserInteractionEnabled = false
+    translatesAutoresizingMaskIntoConstraints = false
+    layer.addSublayer(gradient)
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(refreshColors),
+      name: UIAccessibility.reduceTransparencyStatusDidChangeNotification,
+      object: nil
+    )
+    registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: WorkChatEdgeFadeView, _) in
+      view.refreshColors()
+    }
+    refreshColors()
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    gradient.frame = bounds
+    CATransaction.commit()
+  }
+
+  @objc private func refreshColors() {
+    let canvas = UIColor(workChatCanvasBackground).resolvedColor(with: traitCollection)
+    let strong: CGFloat = UIAccessibility.isReduceTransparencyEnabled ? 0.97 : 0.86
+    let middle: CGFloat = UIAccessibility.isReduceTransparencyEnabled ? 0.9 : 0.55
+    // Listed from the screen edge inward.
+    let stops: [(CGFloat, CGFloat)] = [(0, strong), (0.45, middle), (1, 0)]
+    let ordered = edge == .top ? stops : stops.reversed().map { (1 - $0.0, $0.1) }
+    gradient.colors = ordered.map { canvas.withAlphaComponent($0.1).cgColor }
+    gradient.locations = ordered.map { NSNumber(value: Double($0.0)) }
+    gradient.startPoint = CGPoint(x: 0.5, y: 0)
+    gradient.endPoint = CGPoint(x: 0.5, y: 1)
   }
 }

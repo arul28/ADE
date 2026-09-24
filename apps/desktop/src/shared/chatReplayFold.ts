@@ -163,6 +163,8 @@ export type FoldedChatReplay = {
  * position of its FIRST event, because that is where both clients place the
  * message, and carries the LAST event's `sequence` and `timestamp` so a
  * consumer that watermarks on the snapshot cannot land inside a collapsed run.
+ * The FIRST event's `sequence` rides along as `sequenceStart`, so the row
+ * names the whole range it replaces.
  */
 export function foldChatEventEnvelopesForReplay(
   envelopes: readonly AgentChatEventEnvelope[],
@@ -214,8 +216,12 @@ export function foldChatEventEnvelopesForReplay(
     }
     const merged = openRun.text + incoming;
     const previous = events[openRun.index]!;
+    // The first delta's sequence, so a consumer keyed on sequence knows the
+    // folded row covers [sequenceStart, sequence] and not just its last delta.
+    const sequenceStart = previous.sequenceStart ?? previous.sequence;
     events[openRun.index] = {
       ...previous,
+      ...(typeof sequenceStart === "number" ? { sequenceStart } : {}),
       // The last delta's identity: a snapshot consumer that tracks progress on
       // sequence must not stop inside the run.
       sequence: envelope.sequence ?? previous.sequence,

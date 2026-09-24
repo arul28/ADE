@@ -244,11 +244,9 @@ private struct HubChatCover: View {
             // here so the destination hydrates their real PTY-backed row.
             initialSession: sessionStub,
             initialChatSummary: nil,
-            initialTranscript: nil,
             transitionNamespace: nil,
             isLive: true,
             navigationChrome: .pushedDetail,
-            forceFreshTranscriptOnOpen: false,
             lanes: target.lane.map { [$0.asLaneSummary()] } ?? [],
             crossProjectContext: hubChatCrossProjectContext(
               project: target.project,

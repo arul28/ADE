@@ -63,6 +63,12 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   /// ordinary project roster. The field is optional so older hosts remain
   /// decodable; clients use it to reject stale or legacy leaked rows.
   var identityKey: String? = nil
+  /// `chatLogV2` hosts: newest durable envelope `sequence` in this chat's log,
+  /// so the phone can tell which cached threads are current without asking.
+  var maxSequence: Int? = nil
+  /// `chatLogV2` hosts: bumped whenever the host rewrites this chat's history
+  /// in place; a cached thread with another generation must be dropped.
+  var historyGeneration: Int? = nil
   /// Client-only: the setup rail of a chat launch that still owns this row
   /// (`hubRosterOverlayingChatLaunches`). Hosts never send it.
   var launchRail: [ChatLaunchRailSegment]? = nil

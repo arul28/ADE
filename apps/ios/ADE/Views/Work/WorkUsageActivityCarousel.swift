@@ -212,6 +212,7 @@ struct WorkUsageActivityCarousel: View {
   @State private var loadedRange: String?
   @State private var loading = false
   @State private var selection: WorkUsageBucketDetail?
+  @Namespace private var tabNamespace
 
   private var tab: WorkUsageTab { WorkUsageTab(rawValue: tabRaw) ?? .activity }
   private var range: WorkUsageRange { WorkUsageRange(rawValue: rangeRaw) ?? .all }
@@ -219,8 +220,31 @@ struct WorkUsageActivityCarousel: View {
     "\(tabRaw):\(rangeRaw):\(syncService.connectionState.rawValue):\(refreshRevision)"
   }
 
-  init(refreshRevision: Int = 0) {
+  #if DEBUG
+  /// Fixture stats for `-adePreviewScreen new-chat`; nil in every real run.
+  @MainActor static var previewStats: MobileAdeUsageStats?
+  #endif
+
+  /// The most height the whole panel may take. The New Chat page fits on one
+  /// screen, so it hands the panel whatever is left between the header and
+  /// the floating lane bubble; content taller than that scrolls inside the
+  /// panel under a pinned tab row. Nil: the panel takes its natural height.
+  let maxHeight: CGFloat?
+  @State private var tabControlHeight: CGFloat = 34
+  @State private var contentHeight: CGFloat = 0
+
+  init(refreshRevision: Int = 0, maxHeight: CGFloat? = nil) {
     self.refreshRevision = refreshRevision
+    self.maxHeight = maxHeight
+  }
+
+  /// Vertical chrome around the scrolling content: the panel's top and bottom
+  /// padding and the gap under the tab row.
+  private static let panelChrome: CGFloat = 12 + 10 + 12
+
+  private var contentLimit: CGFloat? {
+    guard let maxHeight else { return nil }
+    return max(44, maxHeight - tabControlHeight - Self.panelChrome)
   }
 
   private var summary: MobileAdeUsageSummary? {
@@ -235,33 +259,22 @@ struct WorkUsageActivityCarousel: View {
   }
 
   var body: some View {
-    VStack(spacing: 10) {
-      header
+    VStack(spacing: 12) {
+      tabControl
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { tabControlHeight = $0 }
 
-      ZStack(alignment: .top) {
-        // Limits needs more room than a chart: it is one card per provider
-        // account with a row per window, not a single plot.
-        chartArea
-          .frame(height: tab == .limits ? 148 : 84, alignment: .top)
-        if let selection {
-          WorkUsageTooltip(detail: selection)
-            .padding(.top, -6)
-            .transition(.opacity)
-        }
-      }
-
-      footer
+      boundedContent
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
+    .padding(.horizontal, 14)
+    .padding(.top, 12)
+    .padding(.bottom, 10)
     .background {
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.9))
+      RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .fill(ADEColor.textPrimary.opacity(0.035))
     }
-    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay {
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+      RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .stroke(ADEColor.textPrimary.opacity(0.08), lineWidth: 0.5)
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel(accessibilitySummary)
@@ -273,6 +286,46 @@ struct WorkUsageActivityCarousel: View {
     .onChange(of: tabRaw) { _, _ in selection = nil }
   }
 
+  /// The tab's content, scrolling inside the panel when it is taller than the
+  /// panel may be. Sized to the content when it fits, so a short tab leaves no
+  /// empty band and does not bounce.
+  @ViewBuilder
+  private var boundedContent: some View {
+    if let contentLimit {
+      ScrollView(.vertical) {
+        panelContent
+          .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+      }
+      .scrollBounceBehavior(.basedOnSize)
+      .scrollIndicators(.automatic)
+      .frame(height: contentHeight > 0 ? min(contentHeight, contentLimit) : contentLimit)
+    } else {
+      panelContent
+    }
+  }
+
+  private var panelContent: some View {
+    VStack(spacing: 12) {
+      ZStack(alignment: .top) {
+        // Limits sizes to its accounts (one meter per window); the charts
+        // share one fixed plot height so switching tabs does not jump.
+        if tab == .limits {
+          chartArea
+        } else {
+          chartArea
+            .frame(height: 84, alignment: .top)
+        }
+        if let selection {
+          WorkUsageTooltip(detail: selection)
+            .padding(.top, -6)
+            .transition(.opacity)
+        }
+      }
+
+      footer
+    }
+  }
+
   private var accessibilitySummary: String {
     if tab == .limits { return "Live Claude and Codex limits from the connected machine." }
     guard let summary else { return "Activity for \(range.title). Loading." }
@@ -280,44 +333,41 @@ struct WorkUsageActivityCarousel: View {
     return "Activity for \(range.title): \(adeUsageCompact(summary.totalTokens ?? 0)) tokens, \(sessions) sessions, \(summary.activeDays ?? 0) active days."
   }
 
-  private var header: some View {
-    HStack(spacing: 8) {
-      tabControl
-      Spacer(minLength: 6)
-      if tab != .limits { rangeControl }
-    }
-  }
-
-  /// A menu keeps the full chart switcher available without forcing five labels
-  /// to share a narrow phone-width header.
+  /// Desktop `TabRow`: every view the module offers, one tap away, as a
+  /// segmented track. The selection slides between segments.
   private var tabControl: some View {
-    Menu {
+    HStack(spacing: 2) {
       ForEach(WorkUsageTab.allCases) { option in
+        let selected = tab == option
         Button {
-          withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { tabRaw = option.rawValue }
+          guard !selected else { return }
+          withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { tabRaw = option.rawValue }
         } label: {
-          if tab == option {
-            Label(option.title, systemImage: "checkmark")
-          } else {
-            Text(option.title)
-          }
+          Text(option.title)
+            .font(ADEUsageType.microFont(selected ? .semibold : .medium))
+            .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, minHeight: 28)
+            .background {
+              if selected {
+                Capsule(style: .continuous)
+                  .fill(ADEColor.cardBackground)
+                  .shadow(color: Color.black.opacity(0.12), radius: 3, y: 1)
+                  .matchedGeometryEffect(id: "usage-tab", in: tabNamespace)
+              }
+            }
+            .contentShape(Capsule(style: .continuous))
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
       }
-    } label: {
-      HStack(spacing: 5) {
-        Text(tab.title)
-          .lineLimit(1)
-        Image(systemName: "chevron.down")
-          .font(ADEUsageType.microFont(.semibold))
-      }
-      .font(ADEUsageType.detailFont(.semibold))
-      .foregroundStyle(ADEColor.textPrimary)
-      .padding(.horizontal, 10)
-      .frame(minHeight: 32)
-      .background(ADEColor.recessedBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .fixedSize(horizontal: true, vertical: false)
     }
-    .accessibilityLabel("Activity chart, \(tab.title)")
+    .padding(3)
+    .background(ADEColor.textPrimary.opacity(0.06), in: Capsule(style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Usage view")
   }
 
   private var rangeControl: some View {
@@ -328,18 +378,20 @@ struct WorkUsageActivityCarousel: View {
         }
       }
     } label: {
-      HStack(spacing: 4) {
+      HStack(spacing: 3) {
         Text(range.title)
           .lineLimit(1)
-          .font(ADEUsageType.detailFont(.medium))
-        Image(systemName: "chevron.down")
-          .font(ADEUsageType.microFont(.semibold))
+        Image(systemName: "chevron.up.chevron.down")
+          .font(.system(size: 8, weight: .bold))
       }
+      .font(ADEUsageType.microFont(.semibold))
       .foregroundStyle(ADEColor.textSecondary)
       .padding(.horizontal, 9)
-      .frame(minHeight: 32)
-      .background(ADEColor.recessedBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      .fixedSize(horizontal: true, vertical: false)
+      .frame(minHeight: 24)
+      .background(ADEColor.textPrimary.opacity(0.06), in: Capsule(style: .continuous))
+      .fixedSize()
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
     }
     .accessibilityLabel("Time range, \(range.title)")
   }
@@ -380,12 +432,9 @@ struct WorkUsageActivityCarousel: View {
           if quotaStore.refreshing { ProgressView().controlSize(.mini) }
         } else if let summary {
           let sessions = (summary.chatSessions ?? 0) + (summary.terminalSessions ?? 0)
-          Text("\(adeUsageCompact(summary.totalTokens ?? 0)) tokens")
-          Text("·")
-          Text("\(adeUsageCompact(sessions)) sessions")
+          Text("\(Text(adeUsageCompact(summary.totalTokens ?? 0)).foregroundStyle(ADEColor.textSecondary)) tokens · \(Text(adeUsageCompact(sessions)).foregroundStyle(ADEColor.textSecondary)) sessions")
           if let activeDays = summary.activeDays, activeDays > 0 {
-            Text("·")
-            Text("\(activeDays) active \(activeDays == 1 ? "day" : "days")")
+            Text("· \(activeDays)d active")
           }
         } else if loading {
           Text("Loading activity…")
@@ -393,14 +442,14 @@ struct WorkUsageActivityCarousel: View {
           Text("No activity yet")
         }
       }
-      .font(ADEUsageType.microFont())
+      .font(ADEUsageType.microFont().monospacedDigit())
       .foregroundStyle(ADEColor.textMuted)
       .lineLimit(1)
 
       Spacer(minLength: 0)
+      if tab != .limits { rangeControl }
     }
-    .overlay(alignment: .top) { Divider().opacity(0.12) }
-    .padding(.top, 2)
+    .frame(minHeight: 24)
   }
 
   private func select(_ detail: WorkUsageBucketDetail) {
@@ -416,6 +465,14 @@ struct WorkUsageActivityCarousel: View {
       return
     }
     let requestedRange = range.rawValue
+    #if DEBUG
+    if let preview = Self.previewStats {
+      stats = preview
+      loadedRange = requestedRange
+      loading = false
+      return
+    }
+    #endif
     guard syncService.supportsRemoteAction("usage.getAdeStats") else {
       stats = nil
       loadedRange = nil

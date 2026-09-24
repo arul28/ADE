@@ -1054,7 +1054,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
   }
 }
 
-enum WorkTimelinePayload: Equatable {
+/// `indirect`: each payload lives in one heap box, so copying an entry (the
+/// timeline sort, dedupe, collapse passes and presentation all copy every
+/// entry) is one retain instead of one per field of the model inside.
+indirect enum WorkTimelinePayload: Equatable {
   case message(WorkChatMessage)
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)

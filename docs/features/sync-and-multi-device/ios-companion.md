@@ -1843,7 +1843,8 @@ Implemented envelope types on iOS:
 | `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions. `terminal_data.offset` is the lifetime logical UTF-8 end offset (null only for untracked/no-transcript or failed-write streams), so physical transcript rollover does not rewind it. The phone drops duplicates, trims UTF-8 overlap, and on a gap launches one guarded resubscribe from its watermark instead of rendering out of order. `terminal_subscribe.sinceOffset` returns an append-only `delta: true` snapshot when the retained logical window still covers the request; otherwise a full snapshot replaces local state even when its end offset equals the watermark. The host's bounded snapshot barrier queues live data/exits during capture and recaptures rather than flushing a gap. Snapshots also report `startOffset`/`endOffset`, plus `live: false` when no PTY backs the session so the phone shows a resume bar instead of accepting keystrokes |
 | `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns retained transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC and UTF-8 boundary; `atStart: true` means the oldest **retained logical offset**, which may be greater than zero after rollover). Requires an active `terminal_subscribe` |
 | `terminal_input` / `terminal_input_ack` / `terminal_resize` | Phone ↔ runtime | Input is queued in order only after the terminal snapshot is ready. ACK-capable hosts receive a stable `inputId`; the phone sends one item at a time, waits 8 seconds, and retries with 0.5/1/2-second backoff within the host-advertised lease (four total attempts). The host dedupes `(device, session, inputId)` before writing, so a lost ack cannot type twice. `not_subscribed` is the only retryable rejection: iOS re-subscribes through the snapshot barrier and resends the same id. Other errors fail that item and continue the queue. Legacy hosts receive one-shot input without an id or ambiguous retry. Mobile resizes are non-authoritative: the runtime restores the last desktop size when the final phone detaches |
-| `chat_subscribe` / `chat_event` / `chat_history` | Phone → runtime / runtime → phone | Agent chat transcript streaming and cursor-paged scrollback. `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. Explicit full-snapshot subscribes omit `sinceSeq`; rapid duplicates are coalesced for five seconds or until the snapshot ack arrives. A full-snapshot request starts a five-second acknowledgement watchdog; unanswered requests are resent twice regardless of project scope, then the chat renders an explicit error with Retry instead of an empty transcript. The initial tail is capped at 256 KiB and the ack carries `cursorKind: "byte"`, `tailStartOffset`, and `hasOlderHistory`; near-top scroll requests continuous 256 KiB `chat_history` pages against the existing subscription until the transcript head, preserving the visible scroll anchor as pages prepend. Ordinary project-chat subscriptions stay warm for 120 seconds after leaving a detail screen (at most four pending inactive chats), and reopening synchronously cancels eviction even while offline. Personal and cross-project scopes still unsubscribe immediately so their routing scope can be cleared safely. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. On strained relay connections, the Work detail view stays subscribed to `chat_event` but skips heavyweight `chat.getChatEventHistory` and fallback transcript fetches while the turn is active; idle refresh reconciles the canonical transcript. Cross-project transcript scope remains an additive protocol capability for controller reads, but Hub navigation always activates the tapped chat's owning project before opening it. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
+| `chat_subscribe` / `chat_event` / `chat_history` | Phone → runtime / runtime → phone | Agent chat transcript streaming and cursor-paged scrollback. `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. Explicit full-snapshot subscribes omit `sinceSeq`; rapid duplicates are coalesced for five seconds or until the snapshot ack arrives. A full-snapshot request starts a five-second acknowledgement watchdog; unanswered requests are resent twice regardless of project scope, then the chat renders an explicit error with Retry instead of an empty transcript. The initial tail is capped at 256 KiB and the ack carries `cursorKind: "byte"`, `tailStartOffset`, and `hasOlderHistory`; near-top scroll requests continuous 256 KiB `chat_history` pages against the existing subscription until the transcript head, preserving the visible scroll anchor as pages prepend. Ordinary project-chat subscriptions stay warm for 120 seconds after leaving a detail screen (at most four pending inactive chats), and reopening synchronously cancels eviction even while offline. Personal and cross-project scopes still unsubscribe immediately so their routing scope can be cleared safely. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The chat's thread engine keeps the hint current from live `status` / `done` events and drops it when a full ack omits the flag (older host / no live summary). Chat frames never touch `SyncService`'s published state: they are decoded off the main actor and routed to `ChatThreadRegistry`, whose engines fold them and hand the view at most one frame per display frame (turn-state flips, pending-input changes and local echoes apply immediately). Cross-project transcript scope remains an additive protocol capability for controller reads, but Hub navigation always activates the tapped chat's owning project before opening it. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
+| `chat_subscribe` / `chat_history` (`chatLogV2` fields) | Phone → runtime / runtime → phone | Hosts advertising `features.chatLogV2` accept `sinceSequence` + `generation` on `chat_subscribe` (durable resume across host restarts; ack `{resumed: true, resumeKind: "sequence", historyGeneration, maxSequence}` followed by the missed events in order, or a snapshot with `gap: true`), `chatLogV2: true` (snapshot cut aligned to the turn start, old unresolved approvals in `pinnedEvents`), and `beforeSequence` on `chat_history` (page by the oldest cached sequence; pages carry `historyGeneration`). Folded replay rows carry `sequenceStart`; roster chat rows carry `maxSequence` and `historyGeneration`. A client whose cached generation differs from the host's drops that chat's cache |
 | `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle and scheduled-work Cancel/Pause calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
 | `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended. Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. Additive lifecycle fields carry `settledAt`, `statusNote`, `attentionRequestedAt`, `attentionMessage`, `lastTurnFailedAt`, and `exitCode`; disk readers return nulls against legacy databases that do not have those columns. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
 | `envelope_chunk` | Bidirectional after negotiation | Slice of an oversized encoded envelope (>720 KiB). The phone sends chunks only after `hello_ok.features.chunkedEnvelopes.enabled`; both sides reassemble by `chunkId`/`index` before normal decompression/decode. `SyncEnvelopeChunkAssembler` allows at most eight sets / 512 parts, a 128-byte id, and 32 MiB aggregate decoded buffering; it rejects inconsistent totals and expires incomplete sets after 30 seconds |
@@ -3821,73 +3822,45 @@ the stats and shows update guidance.
   to the sequence-derived id and a reply rendered mid-word). The envelope id
   now includes the timestamp, so a genuine redelivery — identical timestamp
   *and* sequence — still collapses while cross-epoch collisions are broken
-  apart. Blocking gates go further and dedupe on their host-assigned
-  session-unique `itemId` in `SyncService.chatEventContentDedupeKey`
-  (`approval_request`, `structured_question`, `pending_input_resolved`),
-  because a dropped gate is not a cosmetic loss — it is a card the user never
-  sees and can never answer. Host-side, `readTranscriptHydrationState`
+  apart. The thread engine keys its log on
+  the durable envelope `sequence` (the transport `seq` is only the legacy
+  resume watermark). Host-side, `readTranscriptHydrationState`
   (`agentChatService.ts`) now seeds a rehydrated session's `eventSequence`
   from the transcript's maximum instead of restarting at 0, while
   `syncHostService.ts` carries its wire-sequence high-water marks through host
   handoff. Current hosts therefore keep `(sessionId, seq)` pairs unique across
   rehydration. Phone-side identity remains timestamp-qualified so old
   transcripts and older hosts stay compatible.
-- **Transcript history pages through an opaque cursor.**
-  `chat.getTranscript` responses carry `nextCursor`; the phone's
-  `fetchChatTranscriptPage` requests strictly-older history with it.
-  Current full agent runtimes also return `cursorKind: "byte"` for their
-  append-stable logical JSONL offsets; the phone merges those pages locally
-  rather than treating the cursor as a dense array index. Older hosts and the
-  minimal headless fallback retain the legacy index merge. The default fetch
-  budget is 500 messages / 600k chars.
-- **Chat subscribe requests a 256 KiB snapshot window.** The phone sends
-  `chat_subscribe` with `maxBytes: 262_144`
-  (`syncChatSubscriptionMaxBytes`) so chat switches stay fast; the ack's byte
-  cursor and automatic `chat_history` pages make the full transcript reachable
-  without putting it all on the critical path. When the
-  runtime responds with `truncated: true`, the phone calls
-  `mergeChatEventHistory` instead of `replaceChatEventHistory`: the
-  existing cached events are unioned with the truncated snapshot,
-  deduplicated by `id`, and re-sorted by `(timestamp, sequence)`.
-  The host installs a hydration barrier before reading the snapshot and
-  resumes its live transcript pump from the pre-capture byte offset only after
-  sending the ack, so an event appended during a slow snapshot cannot arrive
-  before the ack or disappear between the snapshot and live stream.
-  Non-truncated snapshots take the replace path. Both paths run through
-  `deduplicatedChatEventHistory` and then through `trimChatEventHistory`,
-  which caps retained events at `chatEventHistoryMaxEvents = 1_000`
-  (up from the previous 500-event cap) so very long chats don't evict
-  their own recent turns on reconnect.
-- **The idle prune is structure-aware, not a tail cut.** When a chat goes
-  quiet, `workPrunedIdleChatEventHistory` compacts that session's cached live
-  events through `SyncService.pruneChatEventHistory`, keeping the last
-  `workChatIdleLiveEventTailLimit` (48) **heavy content** envelopes. Heavy means
-  assistant text, tool calls and results, diffs, command output — everything the
-  canonical transcript can restore on reopen. A plain tail cut also ate the tiny
-  lifecycle envelopes that produce rows the canonical *text* transcript can never
-  regenerate, so the thread looked complete while every subagent card from an
-  earlier turn was gone. Those kinds (`workChatEventIsStructuralEnvelope`:
-  subagent started/progress/result, scheduled-work updates, transcript
-  retractions, user-message resolutions, context compactions, Claude goal
-  set/clear, conversation resets) are exempt from the tail cut and get their own
-  budget, `workChatIdleStructuralEventCap` (400) — they are a few dozen bytes
-  each, but a long-running chat can emit subagent progress indefinitely.
-  `todoUpdate` is deliberately *not* structural: each one supersedes the last
-  wholesale, so keeping the history would spend the budget on rows nobody can
-  scroll back to. Dropping a `transcriptRetraction` is the sharp edge the rule
-  exists for — it is not a row, it *suppresses* rows, so losing it silently
-  un-retracts a retracted message on reopen. The prune runs only on the live
-  event path while the chat is idle, never at the end of a transcript refresh,
-  and it latches: once it has actually dropped heavy content, what is on screen
-  is a tail, and the latch is retired only when the event-page cursor becomes
-  authoritative.
-- **The capped live-event ring advances from the previous tail.**
-  `WorkLiveTranscriptCache` treats the previously rendered tail envelope as
-  the continuity anchor and maps only the newer suffix when the 1,000-event
-  ring slides. Count/head equality is not a continuity check once the ring is
-  full. A missing tail or out-of-order replacement forces a rebuild; ordinary
-  one-event slides must remain O(delta) so old streaming text is not replayed
-  and duplicated on every tick.
+- **One thread engine per warm chat is the only transcript on the phone.**
+  `ChatThreadRegistry` (owned by `SyncService`) keeps an actor-isolated
+  `ChatThreadEngine` for each open chat, the 8 most recently used, and every
+  chat with a live turn; `ChatLogStore` caches each chat's sequenced envelopes on
+  disk per (machine, session, scope). Opening a chat attaches its model
+  synchronously in the destination's `init`/`onAppear` (a warm engine's frame is
+  on the first render; a cold one paints from disk) and sends `chat_subscribe`
+  in the same run-loop turn: `sinceSequence` resume on a `chatLogV2` host when
+  the engine already holds history, otherwise a full snapshot (authoritative for
+  its range, extending the cached rows). Summary, session row and proof
+  artifacts load in parallel and never gate rows. Older history pages from disk
+  first, then `chat_history` (`beforeSequence`, or the byte cursor on older
+  hosts). The Work list warms engines for its top rows and every live turn, and
+  launch warms the 5 most recently opened chats. The legacy fallback transcript
+  fetch (`chat.getTranscript`), the terminal-buffer parse, the presentation
+  cache, the `chatEventEnvelopesBySession` ring and its idle prune are gone.
+  Forgetting a machine purges its cache; sign-out and account switches purge
+  everything; backgrounding flushes pending writes. Offline, a cached chat shows
+  its rows under the existing connection indicator; the skeleton appears only
+  when the engine has neither disk rows nor a snapshot.
+- **Transcript rows reconfigure only for what they draw.** The transcript's
+  shared content revision holds rarely-changing values (card expansion, bubble
+  width, live/offline). The streaming message id, an in-flight action and the
+  viewport height are folded only into the revisions of the rows that read them
+  (`workChatTranscriptRowRevision(_:base:inputs:)`), and the height cache is keyed
+  on (row, effective revision, width), so a keyboard show/hide re-measures only
+  pending-question rows. Signposts `thread.open.firstPaint` and
+  `thread.delta.onScreen` (category `thread`) measure open and live-delta
+  latency; the scroll bench drives its fixture through a store-less engine and
+  logs both.
 - **Chat-event snapshot decode is element-lossy, not all-or-nothing.**
   The `events` array on every chat snapshot payload
   (`AgentChatEventHistorySnapshot`, `SyncChatSubscribeSnapshotPayload`,
@@ -4226,12 +4199,9 @@ the stats and shows update guidance.
   a calm "N agents stopped when you interrupted" line that expands to a
   per-agent list, and tapping a row reopens that subagent's detail.
 - **Long Work chats must keep row work and root polling cheap.** The
-  destination seeds its render-ready presentation cache synchronously before
-  the first SwiftUI body; the async opening load fills only missing state unless
-  a force-fresh open was requested, and “Session unavailable” appears only
-  after that authoritative load completes. Cached mapped transcript rows and
-  canonical fallback rows are mutually exclusive, avoiding duplicate retained
-  arrays. Work-list rows render their preview and activity timestamp from the
+  destination renders the thread engine's frame from its first body; “Session
+  unavailable” appears only after the authoritative session-row load
+  completes. Work-list rows render their preview and activity timestamp from the
   equatable render signature instead of recomputing them in `body`. The
   Work chat detail keeps the full timeline snapshot preview-free, then
   attaches cached initial assistant-message previews only to the visible
@@ -4245,8 +4215,8 @@ the stats and shows update guidance.
   terminal-buffer invalidation when structured chat events exist; terminal
   fallback cache keys use per-session terminal-buffer revisions, and any
   needed transcript cache entries are built on a utility task. Detail
-  screens still fetch full history through `chat.getTranscript` cursor
-  paging and `chat_subscribe` resume. Assistant preview classification is
+  screens page full history through the thread engine (disk, then
+  `chat_history`). Assistant preview classification is
   computed from the authoritative full message and stored with the preview:
   unfenced wireframe glyphs or layout-dominant aligned columns select the
   fixed-width renderer, while fenced code and Markdown table rows keep their
@@ -4282,21 +4252,13 @@ the stats and shows update guidance.
   neither is whole — keeping only the longer one silently dropped part of the
   answer. Fix disagreements on the host, not with a client rule that has to
   guess what a sequence-less envelope contains.
-- **A graduated steer is pruned before the idle rebuild filters anything.**
-  The host writes a steered message twice: a `deliveryState: "queued"` row when
-  it is staged and a non-queued row when the provider consumes it. An idle
-  session prefers the canonical `chat.getTranscript` text and keeps only tool /
-  notice / queued-steer envelopes from the live stream, so a stale queued row
-  that outlived its delivered twin would be the one row the filter kept — the
-  bubble disappeared from the thread and the message reappeared in the staged
-  strip after it had already been sent. `workChatIdleCanonicalEventTranscript`
-  runs `pruneResolvedQueuedSteerEnvelopes` first and filters second, and
-  `preferredWorkTranscript` prunes the merged live transcript before the
-  fallback backfill so `shouldSkipBackfillPlainUserMessage` never suppresses a
-  canonical bubble on the strength of a resolved queued row. A still-pending
-  queued steer has no graduating row, so both prunes leave it exactly where it
-  is. The host half of the same fix is in `transcriptEntriesFromEnvelopes`,
-  which now emits a graduated steer once.
+- **A graduated steer renders once.** The host writes a steered message
+  twice: a `deliveryState: "queued"` row when it is staged and a non-queued row
+  when the provider consumes it. The thread engine's full fold runs
+  `pruneResolvedQueuedSteerEnvelopes` over the merged log, and an incremental
+  append that carries a graduating row forces that full fold, so a stale queued
+  row never outlives its delivered twin. The host half of the same fix is in
+  `transcriptEntriesFromEnvelopes`, which now emits a graduated steer once.
 - **CLI launcher provider IDs are runtime-validated.** The Work
   new-session screen sends `provider` strings that
   `parseCliProvider` matches verbatim against
@@ -4475,19 +4437,6 @@ the stats and shows update guidance.
   routing the upload through it made the task await its own completion and every
   message carrying an image sat at "Sending" forever, with no error, no retry,
   and the draft already cleared.
-- **The fallback transcript is built lazily, and the guard order that makes
-  that work is load-bearing.** `WorkSessionDestinationView` keeps a
-  cached-entry fallback alongside the live event transcript, but materializing
-  it means re-parsing the whole fallback entry page (240–600 KB) through
-  `makeWorkChatTranscript`. That used to run on the main actor for every
-  streaming delta — roughly 6–7×/s — and on that path nothing consumed the
-  result: the delta-append merge branch never reads it, and
-  `workChatShouldPreferFallbackTranscript` rejects any actively-streaming tick
-  before it would. So the parameter is a **closure**, memoized per pass, and the
-  two cheap status guards (`sessionStatus != "active"`,
-  `!workTranscriptIndicatesActiveTurn(liveTranscript)`) must stay *ahead* of the
-  emptiness check that calls it. Reordering them — or passing a built array
-  back — silently restores the per-delta re-parse.
 - **Optimistic steers reconcile on the active-to-idle turn boundary.**
   A message the phone sends mid-turn is echoed as an optimistic "Sends
   after turn" row (`WorkQueuedSteerRow`) using the host-assigned steer id
@@ -4498,8 +4447,8 @@ the stats and shows update guidance.
   through `workChatTranscriptPreferenceStatus`, which downgrades a
   stale-active row to idle via the fresher `liveTurnActiveHint`) and, on the
   active-to-non-active transition, runs `reconcileOptimisticSteersAfterTurnEnd`:
-  a forced canonical transcript refresh, then drop any optimistic steer the
-  reachable host no longer lists as pending. It never drops while the host is
+  a fresh host snapshot into the thread engine, then drop any optimistic steer
+  the reachable host no longer lists as pending. It never drops while the host is
   unreachable or the refresh came back empty, so a transient gap cannot erase
   a genuinely queued message.
 - **`ActivityDrawerModel.dismissVisible(in:)` persists dismissals

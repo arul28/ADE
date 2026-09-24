@@ -180,16 +180,7 @@ struct WorkChatHeaderMenu: View, Equatable {
 
       sessionItems
     } label: {
-      Image(systemName: "ellipsis")
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 34, height: 34)
-        .background(ADEColor.surfaceBackground.opacity(0.9), in: Circle())
-        .overlay(
-          Circle()
-            .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.5)
-        )
-        .contentShape(Rectangle())
+      WorkChatGlassCircleLabel(systemName: "ellipsis", glyphSize: 17)
     }
     .buttonStyle(.plain)
     .accessibilityLabel("Chat actions")
@@ -613,7 +604,7 @@ func workChipAttributedMessage(
       var pill = AttributedString(workChipInlineLabel(chip))
       pill.foregroundColor = chipForeground
       pill.backgroundColor = chipBackground
-      pill.font = .body.weight(.semibold)
+      pill.font = WorkChatTypography.body.weight(.semibold)
       if let url = workChipNavigationURL(chip) {
         pill.link = url
       }
@@ -665,7 +656,7 @@ struct WorkChipMessageText: View {
         Text(text)
       }
     }
-    .font(.body)
+    .font(WorkChatTypography.body)
     .foregroundStyle(foreground)
     .lineSpacing(5)
     .multilineTextAlignment(.leading)
@@ -974,7 +965,9 @@ struct WorkModelHandoffDivider: View {
 struct WorkResetCreditNoticeView: View {
   let card: WorkEventCardModel
 
-  @EnvironmentObject private var syncService: SyncService
+  /// Not `@EnvironmentObject`: renders inside a transcript cell (see
+  /// `WorkSyncServiceReference`).
+  @Environment(\.workSyncService) private var syncReference
   @State private var spending = false
   @State private var outcome: String?
 
@@ -997,7 +990,7 @@ struct WorkResetCreditNoticeView: View {
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
-      } else if let accountId, syncService.canInvokeRemoteAction("usage.consumeResetCredit") {
+      } else if let accountId, syncReference.service?.canInvokeRemoteAction("usage.consumeResetCredit") == true {
         Button("Use reset") {
           Task { await spend(accountId: accountId) }
         }
@@ -1024,6 +1017,7 @@ struct WorkResetCreditNoticeView: View {
   /// dressed up as a reset — see `workResetCreditOutcomeText`.
   @MainActor
   private func spend(accountId: String) async {
+    guard let syncService = syncReference.service else { return }
     spending = true
     defer { spending = false }
     do {

@@ -7,6 +7,7 @@ import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessi
 import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
 import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
+  AgentChatLogState,
   SyncRosterChat,
   SyncRosterChatStatus,
   SyncRosterLane,
@@ -82,6 +83,8 @@ export type RosterAgentChatService = {
     laneId?: string,
     options?: { includeArchived?: boolean; includeIdentity?: boolean },
   ): Promise<RosterLiveSession[]>;
+  /** chatLogV2 freshness for a chat; live counter for loaded sessions. */
+  getChatLogState?(sessionId: string): AgentChatLogState | null;
 };
 
 export type RosterPtyService = {
@@ -345,7 +348,13 @@ type Sidecar = {
   awaitingInput?: boolean;
   /** Persisted CTO/identity marker; see `RosterLiveSession.identityKey`. */
   identityKey?: string | null;
+  /** Persisted chat log freshness (chatLogV2): sequence high-water + generation. */
+  eventSequence?: number | null;
+  historyGeneration?: number | null;
 };
+
+const positiveInteger = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
 
 // Best-effort read of a chat's persisted sidecar for provider/model/awaiting.
 // A missing or unparsable sidecar leaves those fields null — never throws.
@@ -358,6 +367,8 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
       model: typeof parsed.model === "string" ? parsed.model : null,
       awaitingInput: parsed.awaitingInput === true,
       identityKey: typeof parsed.identityKey === "string" ? parsed.identityKey.trim() || null : null,
+      eventSequence: positiveInteger(parsed.eventSequence),
+      historyGeneration: positiveInteger(parsed.historyGeneration),
     };
   } catch {
     return null;
@@ -440,6 +451,7 @@ async function buildRosterProject(
   const liveBySessionId = new Map<string, RosterLiveSession>();
   let booted = false;
   let livePtyService: RosterPtyService | null = null;
+  let liveChatLogState: ((sessionId: string) => AgentChatLogState | null) | null = null;
   try {
     const bootedPromise = scopeRegistry.getIfBooted(record.projectId);
     const scope = bootedPromise
@@ -454,6 +466,9 @@ async function buildRosterProject(
     livePtyService = scope?.runtime.ptyService ?? null;
     if (agentChatService) {
       booted = true;
+      if (typeof agentChatService.getChatLogState === "function") {
+        liveChatLogState = (sessionId) => agentChatService.getChatLogState?.(sessionId) ?? null;
+      }
       const liveSessions = await agentChatService
         .listSessions(undefined, { includeArchived: false, includeIdentity: true })
         .catch(() => [] as RosterLiveSession[]);
@@ -543,6 +558,20 @@ async function buildRosterProject(
       row.started_at,
     );
     const lastActivityAt = latestActivityTimestamp(lifecycleUpdatedAt, activityStatusChangedAt);
+    // chatLogV2 freshness: live counter when the project is booted, else the
+    // persisted sidecar. Agent chats only — CLI rows have neither.
+    let chatLog: AgentChatLogState | null = null;
+    try {
+      chatLog = liveChatLogState?.(row.id) ?? null;
+    } catch {
+      chatLog = null;
+    }
+    if (!chatLog && sidecar) {
+      chatLog = {
+        maxSequence: sidecar.eventSequence ?? 0,
+        historyGeneration: sidecar.historyGeneration ?? 1,
+      };
+    }
     chats.push({
       id: row.id,
       laneId: row.lane_id,
@@ -568,6 +597,9 @@ async function buildRosterProject(
       exitCode: row.exit_code,
       snoozedUntil: row.snoozed_until,
       snoozedAt: row.snoozed_at,
+      ...(chatLog
+        ? { maxSequence: chatLog.maxSequence, historyGeneration: chatLog.historyGeneration }
+        : {}),
     });
   }
 

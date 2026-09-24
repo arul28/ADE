@@ -973,6 +973,8 @@ final class AccountService: ObservableObject {
         accountPreferencesQueue.discardPending()
         cancelAttentionRefresh()
         LiveActivityService.shared.prepareForAccountSignOut()
+        // Cached chat logs belong to the previous account (edge case 19).
+        SyncService.shared?.chatThreadRegistry.purgeAll()
       }
       deviceOwnershipStore.transition(to: nextIdentity.userId)
       // A live signed-in owner has committed the account boundary, including
@@ -1038,6 +1040,10 @@ final class AccountService: ObservableObject {
     accountPreferencesQueue.discardPending()
     if let previousOwnerId {
       attentionPendingAckStore.clear(for: previousOwnerId)
+      // A signed-in owner is signing out: their cached chat logs go too
+      // (edge case 19). Repeated signed-out publishes have no owner and keep
+      // a LAN-only user's cache.
+      SyncService.shared?.chatThreadRegistry.purgeAll()
     }
     cancelAttentionRefresh()
     stopAttentionPolling()

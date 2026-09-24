@@ -22,7 +22,7 @@ private struct WorkPersistedProjectionLoad {
   let pullRequests: [PullRequestListItem]
 }
 
-extension WorkRootScreen {
+extension WorkRootListScreen {
   @MainActor
   func scheduleSessionPresentationRebuild() {
     sessionPresentationRebuildTask?.cancel()
@@ -125,6 +125,8 @@ extension WorkRootScreen {
         if sessionPresentation != nextPresentation {
           sessionPresentation = nextPresentation
         }
+        pruneSelection(toVisible: nextPresentation.mergedSessions)
+        prefetchChatThreads(for: nextPresentation.displaySessions)
         pruneStaleQuietOpenMarkers(sessions: nextPresentation.mergedSessions)
         sessionPresentationRebuildTask = nil
         // Re-arm unconditionally, even when the presentation was unchanged: the
@@ -133,6 +135,32 @@ extension WorkRootScreen {
         armSnoozeRegroupRefresh(sessions: nextPresentation.mergedSessions)
       }
     }
+  }
+
+  /// Drops selected rows that are no longer in the list. Runs where the
+  /// presentation is replaced, instead of an `.onChange` over every session id
+  /// that the body had to map and compare on each evaluation.
+  @MainActor
+  func pruneSelection(toVisible sessions: [TerminalSessionSummary]) {
+    guard !selectedSessionIds.isEmpty else { return }
+    let pruned = selectedSessionIds.intersection(sessions.map(\.id))
+    guard pruned.count != selectedSessionIds.count else { return }
+    selectedSessionIds = pruned
+    if pruned.isEmpty && isSelecting {
+      withAnimation(.snappy) { isSelecting = false }
+    }
+  }
+
+  /// Work list prefetch (thread engine I6): warm the engines for the chats the
+  /// list shows first and every chat with a live turn, at utility priority, so a
+  /// tap paints from a folded frame. Fires only when that set changes.
+  @MainActor
+  func prefetchChatThreads(for displaySessions: [TerminalSessionSummary]) {
+    let ids = workChatPrefetchSessionIds(displaySessions)
+    guard ids != bookkeeping.lastPrefetchSessionIds else { return }
+    bookkeeping.lastPrefetchSessionIds = ids
+    guard !ids.isEmpty else { return }
+    syncService.warmChatThreads(sessionIds: ids)
   }
 
   /// Snooze expiry is DERIVED from the clock (`isSessionSnoozed`) — there is no
@@ -221,8 +249,34 @@ extension WorkRootScreen {
     }
   }
 
+  #if DEBUG
+  /// `-adePreviewScreen work-list`: installs the fixture rows in place of the
+  /// replicated database, which is empty on a simulator with no machine. Returns
+  /// true when a fixture is active so the caller skips its database read.
+  @MainActor
+  func installPreviewFixtureIfActive() -> Bool {
+    guard let fixture = WorkRootPreviewFixture.active else { return false }
+    loadedProjectionProjectId = syncService.activeProjectId
+    if sessions != fixture.sessions { sessions = fixture.sessions }
+    if lanes != fixture.lanes { lanes = fixture.lanes }
+    if pullRequests != fixture.pullRequests { pullRequests = fixture.pullRequests }
+    if chatSummaries != fixture.chatSummaries { chatSummaries = fixture.chatSummaries }
+    if let sessionId = fixture.pushChatSessionId, let delay = fixture.pushChatAfter {
+      fixture.pushChatSessionId = nil
+      Task { @MainActor in
+        try? await Task.sleep(for: .seconds(delay))
+        path.append(WorkSessionRoute(sessionId: sessionId))
+      }
+    }
+    return true
+  }
+  #endif
+
   @MainActor
   func reload(refreshRemote: Bool = false) async {
+    #if DEBUG
+    if installPreviewFixtureIfActive() { return }
+    #endif
     guard let requestedProjectId = syncService.activeProjectId else {
       resetWorkProjectionForProjectChange(nil)
       return
@@ -263,16 +317,15 @@ extension WorkRootScreen {
   private func loadPersistedWorkProjection(
     for projectId: String
   ) async throws -> WorkPersistedProjectionLoad? {
-    async let sessionsTask = syncService.fetchSessions()
-    async let lanesTask = syncService.fetchLanes()
-    async let pullRequestsTask = syncService.fetchPullRequestListItems()
-    let projection = try await WorkPersistedProjectionLoad(
-      sessions: sessionsTask,
-      lanes: lanesTask,
-      pullRequests: pullRequestsTask
-    )
+    // Read off the main actor (see `fetchWorkListProjection`); the result
+    // lands in one install below.
+    let rows = await syncService.fetchWorkListProjection()
     guard projectId == syncService.activeProjectId else { return nil }
-    return projection
+    return WorkPersistedProjectionLoad(
+      sessions: rows.sessions,
+      lanes: rows.lanes,
+      pullRequests: rows.pullRequests
+    )
   }
 
   @MainActor
@@ -309,14 +362,21 @@ extension WorkRootScreen {
   /// Applies replicated SQLite rows to the Work list without fanning out per-lane host `listChatSessions` on every CRDT tick.
   @MainActor
   func reloadFromPersistedProjection() async {
+    #if DEBUG
+    if installPreviewFixtureIfActive() { return }
+    #endif
     guard let requestedProjectId = syncService.activeProjectId else {
       resetWorkProjectionForProjectChange(nil)
       return
     }
     do {
-      guard let projection = try await loadPersistedWorkProjection(for: requestedProjectId),
-            installPersistedWorkProjection(projection, for: requestedProjectId)
-      else { return }
+      guard let projection = try await loadPersistedWorkProjection(for: requestedProjectId) else { return }
+      // Main-thread time only: the reads above no longer run here, and the
+      // chat-summary refresh below awaits the network.
+      let installStart = CACurrentMediaTime()
+      let installed = installPersistedWorkProjection(projection, for: requestedProjectId)
+      ScrollDiagnostics.shared.record(.workListReload, since: installStart)
+      guard installed else { return }
       Task { await syncService.refreshLaneGithubPrItems() }
       if isLive {
         let now = Date()
