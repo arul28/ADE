@@ -104,15 +104,6 @@ type AttentionNotchHelperOptions = {
   platform?: NodeJS.Platform;
 };
 
-export function resolveAttentionNotchExecutablePath(input: {
-  isPackaged: boolean;
-  resourcesPath: string;
-  appPath: string;
-}): string {
-  return input.isPackaged
-    ? path.join(input.resourcesPath, "native", "ade-attention-notch")
-    : path.join(input.appPath, "resources", "native", "ade-attention-notch");
-}
 
 export class AttentionNotchHelper {
   private child: ChildProcessWithoutNullStreams | null = null;

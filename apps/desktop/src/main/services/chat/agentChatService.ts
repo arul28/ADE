@@ -750,6 +750,8 @@ import {
   CTO_MEMORY_GARDENER_TITLE,
 } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { buildMacDesktopDirective } from "../ai/tools/macDesktopPrompt";
+import type { MacDesktopRuntimeService } from "../macDesktop/macDesktopService";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   isExecutablePath,
@@ -887,6 +889,8 @@ import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
+import { readOpenCodeSessionStatuses, withOpenCodeIdleProbe } from "../opencode/openCodeIdleProbe";
+import type { OpenCodeRuntimeEvent } from "../opencode/openCodeRuntime";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
 import {
   createLaneAppleDeviceLookup,
@@ -2760,6 +2764,42 @@ async function rejectOpenCodePendingApproval(
   await replyToOpenCodePendingApproval(handle, pending, "reject");
 }
 
+/**
+ * Whether every external-directory pattern names somewhere inside the
+ * project's own `.ade` state.
+ *
+ * The blocked ask in the test drive was `external_directory:
+ * /Users/<user>/Projects/ADE/.ade/*` — the observations, artifacts and cache
+ * the mac-desktop commands read and write. Those paths are outside the lane
+ * worktree (the lane lives under `<project>/.ade/worktrees/<lane>`), so
+ * OpenCode's default asks, and full-auto never answered: the chat sat blocked
+ * on a prompt for its own workspace.
+ *
+ * Only literal paths with an optional trailing glob are accepted. A pattern
+ * with wildcards in the middle cannot be proven inside the root without a glob
+ * engine, and guessing it allowed is how a rule meant for `.ade/cache` ends up
+ * covering `~/.ssh`. Anything unproven keeps the approval card.
+ */
+export function isOpenCodeExternalDirectoryInsideAdeRoot(
+  projectRoot: string,
+  patterns: readonly string[],
+): boolean {
+  const adeRoot = path.resolve(projectRoot, ".ade");
+  const normalizedPatterns = patterns
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern.length > 0);
+  if (!normalizedPatterns.length) return false;
+  return normalizedPatterns.every((pattern) => {
+    const literal = pattern.replace(/\/\*\*$|\/\*$|\*$/, "");
+    if (/[*?[\]{}]/.test(literal)) return false;
+    const absolute = path.isAbsolute(literal)
+      ? path.resolve(literal)
+      : path.resolve(projectRoot, literal);
+    const relative = path.relative(adeRoot, absolute);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  });
+}
+
 type OpenCodeRuntime = {
   kind: "opencode";
   handle: OpenCodeSessionHandle;
@@ -4562,6 +4602,13 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 // can always interrupt manually if something is genuinely stuck.
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
+/**
+ * How long an OpenCode turn's event stream may stay silent before the server
+ * is asked whether the sessions it waits on are still busy. Long enough that a
+ * normal tool call never triggers it; short enough that a lost `session.idle`
+ * costs half a minute, not a turn that never ends.
+ */
+const OPENCODE_IDLE_PROBE_QUIET_MS = 30 * 1000;
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
@@ -7653,6 +7700,15 @@ export function computerUseDirectiveFingerprint(directive: string): string {
 
 export function buildComputerUseDirective(
   backendStatus: ComputerUseBackendStatus | null,
+  options: {
+    /**
+     * This host can give the lane a private macOS screen (Mac Desktop). The
+     * lane need not have one yet: an agent that is never told the lane screen
+     * exists reaches for the user's real screen instead (2026-09-23 baseline:
+     * a plain "record opening Safari" quit the user's own Safari).
+     */
+    macDesktopAvailable?: boolean;
+  } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
     ? backendStatus.backends.some((b) => b.available)
@@ -7679,12 +7735,31 @@ export function buildComputerUseDirective(
       "When the user asks for proof, capture visual proof first. Console logs and text files are supporting diagnostics only; do not use them as the only proof unless the user explicitly asks for logs or visual capture fails and you say so.",
       "ADE does not passively ingest computer-use output. When a capture is worth keeping as reviewer-visible proof, attach it intentionally with `ade proof ...` or `ingest_computer_use_artifacts`.",
       "",
-      "When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
+      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
+      options.macDesktopAvailable
+        ? "`mcp__computer_use` (and any Codex or OpenAI computer-use plugin) drives the user's real screen and apps. This lane has its own screen, so do not use it for task work; use it only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
+        : "When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
       "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
     ].join("\n"),
   );
+
+  // --- Mac Desktop (this host can give the lane its own screen) ---
+  if (options.macDesktopAvailable) {
+    sections.push(
+      [
+        "### Mac Desktop — this lane's own screen (use it for desktop apps)",
+        "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-desktop** skill before your first action.",
+        "For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default. Open Safari or another browser on the Mac Desktop only when the user names that app or asks for the Mac Desktop.",
+        "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened, unsaved work included; `release` gives an app the lane opened to the user, whole.",
+        "The loop: `ade mac-desktop start` (viewing the screen does not start it), `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`. To show the screen to the user, run `ade mac-desktop show`.",
+        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade mac-desktop observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
+        "If recording fails, say so. Never attach an older recording or a file you did not just record.",
+        "If the shell answers `Unknown command 'mac-desktop'`, it found an older `ade` on PATH: run the same command as `\"$ADE_CLI_PATH\" mac-desktop …` and keep using `\"$ADE_CLI_PATH\"`. Close or `release` only the windows you opened on the lane screen; do not quit apps yourself. If `ade mac-desktop` still refuses, stop and report it; do not fall back to the user's real screen.",
+      ].join("\n"),
+    );
+  }
 
   // --- Ghost OS section (only if a Ghost OS backend is detected) ---
   const ghostOsBackend = backendStatus?.backends.find(
@@ -7736,7 +7811,9 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      "Proof is intentional. Use `ade proof capture` for a reviewer-facing checkpoint, or `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them.",
+      options.macDesktopAvailable
+        ? "Proof is intentional. For work on the lane's Mac Desktop, record with `ade mac-desktop record` or file a still with `ade mac-desktop proof`. `ade proof capture` and `ade proof record` capture the user's whole real screen — use them only when the proof is of that screen. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
+        : "Proof is intentional. Use `ade proof capture` for a reviewer-facing checkpoint, or `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them.",
     ].join("\n"),
   );
 
@@ -9354,6 +9431,21 @@ export function createAgentChatService(args: {
   /** NAMES ONLY — the type carries no value accessor, so no tool can read a secret. */
   getProjectSecretService?: () => CtoOperatorToolDeps["projectSecretService"];
   getIosSimulatorService?: () => CtoOperatorToolDeps["iosSimulatorService"];
+  /**
+   * The Mac Desktop runtime, in the three calls this service makes.
+   *
+   * One dependency, not two: whether a lane has a display is the same question
+   * for the one-line prompt directive and for the turn clip, and asking it
+   * twice through two differently-shaped deps was a second answer that could
+   * disagree with the first. Synchronous on purpose — the answer costs one line
+   * of system prompt, so it must not make the send path wait on a service call
+   * — and an unwired runtime (`ade code`, the headless brain, any non-Mac host)
+   * leaves it undefined and emits nothing.
+   */
+  macDesktopTurnRecorder?: Pick<
+    MacDesktopRuntimeService,
+    "hasDisplaySync" | "beginTurn" | "noteTurnEnded"
+  > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync">> | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
@@ -9496,6 +9588,7 @@ export function createAgentChatService(args: {
     getBudgetService,
     getProjectSecretService,
     getIosSimulatorService,
+    macDesktopTurnRecorder,
     getAppControlService,
     getBuiltInBrowserService,
     getGitService,
@@ -18832,9 +18925,42 @@ export function createAgentChatService(args: {
     }
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
+    noteMacDesktopTurnBoundary(managed, normalizedEvent);
     if (normalizedEvent.type === "done") {
       notifyTurnSettled(managed, normalizedEvent);
     }
+  };
+
+  /**
+   * Opens and closes the lane's time-lapse clip around one agent turn.
+   *
+   * Hung off the one funnel every provider's events pass through, because
+   * there is no provider-agnostic turn object to hang it off: `status/started`
+   * and `done` are the only two edges Claude, Codex, Cursor, ACP and the rest
+   * all emit. Everything is behind `hasDisplaySync`, so a lane with no screen —
+   * which is nearly all of them — costs one map lookup per event.
+   */
+  const noteMacDesktopTurnBoundary = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+  ): void => {
+    const recorder = macDesktopTurnRecorder;
+    if (!recorder) return;
+    const laneId = managed.session.laneId;
+    if (!laneId || !recorder.hasDisplaySync(laneId)) return;
+    const isStart = event.type === "status" && event.turnStatus === "started";
+    if (!isStart && event.type !== "done") return;
+    const turnId = event.turnId?.trim();
+    if (!turnId) return;
+    const args = { laneId, chatSessionId: managed.session.id, turnId };
+    const call = isStart ? recorder.beginTurn(args) : recorder.noteTurnEnded(args);
+    void Promise.resolve(call).catch((error: unknown) => {
+      logger.debug("mac_desktop.turn_clip_hook_failed", {
+        sessionId: managed.session.id,
+        phase: isStart ? "begin" : "end",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const applyClaudeActiveGoal = (
@@ -21914,7 +22040,13 @@ export function createAgentChatService(args: {
       (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi"
         // Every ACP dialect can rejoin a session by id, so an idle or
         // shutdown teardown must keep the pointer it would resume from.
-        || managed.runtime.kind === "acp")
+        || managed.runtime.kind === "acp"
+        // OpenCode keeps its sessions in its own database, and `session.get`
+        // re-opens one by id on any later server. Left off this list, every
+        // idle teardown set `runtimeInvalidated`, the next persist dropped
+        // `providerSessionId`, and each follow-up message started a brand-new
+        // OpenCode session that had to rediscover the whole thread.
+        || managed.runtime.kind === "opencode")
       && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
@@ -22040,6 +22172,10 @@ export function createAgentChatService(args: {
       managed.runtime.handle.setBusy(false);
       settleOpenCodePendingApprovals(managed, managed.runtime);
       managed.runtime.handle.setEvictionHandler(null);
+      // Written while the handle is still here, so the pointer comes from the
+      // live session id and not from whatever the last persist happened to
+      // hold.
+      if (preserveProviderResumeState) persistChatState(managed);
       try { managed.runtime.handle.close(openCodeReason); } catch { /* ignore */ }
       managed.runtime = null;
     }
@@ -29151,11 +29287,21 @@ export function createAgentChatService(args: {
       if (!acc || acc.totalTokens <= 0) return undefined;
       return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
     };
+    // Children this turn has already settled. OpenCode keeps publishing
+    // `session.updated` for a finished child (its summary, its `time.updated`
+    // when the parent reads the result) AFTER that child's `session.idle`, and
+    // the "missed the created event" synthesis below used to re-add the child
+    // on that update. Nothing settles it a second time, so the parent's idle
+    // then waited on a child that had already reported, and the turn never
+    // ended: 2026-09-21, two dev-loop turns with start → result → start in the
+    // transcript and no `done`.
+    const settledOpenCodeSubagentKeys = new Set<string>();
     const settleOpenCodeSubagent = (
       childKey: string,
       status: "completed" | "failed" | "stopped",
       summaryOverride?: string,
     ): boolean => {
+      settledOpenCodeSubagentKeys.add(childKey);
       const child = runtime.subagentSessions.get(childKey);
       if (!child) return false;
       const summary = summaryOverride ?? child.summary;
@@ -29347,7 +29493,40 @@ export function createAgentChatService(args: {
         if (viewEvent) emitChatEvent(managed, viewEvent);
       };
       let parentSessionIdle = false;
-      for await (const event of eventStream) {
+      // The stream is not trusted alone for the end of the turn: an idle that
+      // lands while the socket is between connections is gone, and the loop
+      // used to wait forever with the chat showing "Working". While the stream
+      // is quiet the server is asked directly, and a session it reports idle
+      // gets its idle synthesized here. See `openCodeIdleProbe.ts`.
+      const probedStream = withOpenCodeIdleProbe<OpenCodeRuntimeEvent>(eventStream, {
+        quietMs: OPENCODE_IDLE_PROBE_QUIET_MS,
+        waitingOn: () => [
+          ...(parentSessionIdle ? [] : [runtime.handle.sessionId]),
+          ...runtime.subagentSessions.keys(),
+        ],
+        probe: async () => {
+          const status = runtime.handle.client.session.status;
+          if (typeof status !== "function") return null;
+          const reply = await status.call(
+            runtime.handle.client.session,
+            { directory: runtime.handle.directory },
+            { throwOnError: true },
+          );
+          return readOpenCodeSessionStatuses((reply as { data?: unknown }).data);
+        },
+        makeIdleEvent: (sessionID) => ({
+          type: "session.idle",
+          properties: { sessionID },
+        }) as OpenCodeRuntimeEvent,
+        onSynthesized: (sessionIDs) => {
+          logger.warn("agent_chat.opencode_idle_recovered_by_probe", {
+            sessionId: managed.session.id,
+            turnId,
+            sessionIDs: [...sessionIDs],
+          });
+        },
+      });
+      for await (const event of probedStream) {
         const resolveSessionId = (): string | null => {
           const legacyPermission = asLegacyOpenCodePermissionUpdated(event);
           if (legacyPermission) return legacyPermission.properties.sessionID;
@@ -29476,6 +29655,7 @@ export function createAgentChatService(args: {
             };
             const ensureSubagentStarted = (): void => {
               if (runtime.subagentSessions.has(childKey)) return;
+              if (settledOpenCodeSubagentKeys.has(childKey)) return;
               runtime.subagentSessions.set(childKey, {
                 summary: formatSummary(),
                 turnId,
@@ -29497,6 +29677,12 @@ export function createAgentChatService(args: {
             if (event.type === "session.created") {
               ensureSubagentStarted();
             } else if (event.type === "session.updated") {
+              // A finished child keeps publishing updates; they are not a new
+              // run and must not re-add it (see `settledOpenCodeSubagentKeys`).
+              if (settledOpenCodeSubagentKeys.has(childKey)) {
+                if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
+                continue;
+              }
               // Synthesize started first if we missed the created event so the
               // panel has a row to update.
               ensureSubagentStarted();
@@ -30001,6 +30187,33 @@ export function createAgentChatService(args: {
           const description = permission.patterns?.length
             ? `${normalizedType}: ${permission.patterns.join(", ")}`
             : normalizedType || "Approval required";
+          // Full access means no prompts, including for the project's own
+          // `.ade` state (`isOpenCodeExternalDirectoryInsideAdeRoot`). The
+          // reply goes out before any card exists, so there is no card for a
+          // later sweep to close while `chat status` still calls it blocked.
+          if (
+            runtime.permissionMode === "full-auto"
+            && normalizedType === "external_directory"
+            && isOpenCodeExternalDirectoryInsideAdeRoot(projectRoot, permission.patterns ?? [])
+          ) {
+            try {
+              await replyToOpenCodePendingApproval(
+                runtime.handle,
+                { category: "write", permissionId: permission.id, protocol: "v2" },
+                "always",
+              );
+              continue;
+            } catch (error) {
+              // Answering failed. Falling through re-raises the card rather
+              // than dropping an ask, which is the better of the two failures.
+              logger.warn("agent_chat.opencode_external_directory_auto_approve_failed", {
+                sessionId: managed.session.id,
+                turnId,
+                requestId: permission.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
           const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
             || normalizedType.includes("command")
             || description.toLowerCase().includes("command")
@@ -42447,7 +42660,9 @@ export function createAgentChatService(args: {
     // it is available on the next turn that re-announces.
     const computerUseDirective = personalSession
       ? null
-      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null);
+      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
+        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true,
+      });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
       : null;
@@ -42529,6 +42744,15 @@ export function createAgentChatService(args: {
               ))
             : null,
           shouldInjectComputerUseDirective ? computerUseDirective : null,
+          // Exactly one line, and only for a lane that has a screen. A lane
+          // with the tool off contributes `null` here, which
+          // `composeLaunchDirectives` drops — so its prompt is byte-identical
+          // to the pre-Mac-Desktop one.
+          personalSession
+            ? null
+            : buildMacDesktopDirective(
+                macDesktopTurnRecorder?.hasDisplaySync(executionContext.laneId ?? null) === true,
+              ),
           shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
         ]);

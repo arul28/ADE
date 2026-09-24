@@ -305,3 +305,16 @@ describe("workToolTabLayout", () => {
     expect(layout.overflow).toHaveLength(strip.length - 1);
   });
 });
+
+describe("WorkToolHeader has no float or maximize controls", () => {
+  afterEach(() => cleanup());
+
+  it("does not draw the float or maximize buttons the tool rows now own", () => {
+    renderHeader();
+    // Both moved onto each screen tool's own chrome row (see
+    // `workToolPreviewControls`); the strip is tabs only.
+    expect(screen.queryByLabelText("Show floating preview")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Maximize pane|Restore pane/ })).toBeNull();
+    expect(document.querySelector('[data-testid="work-tools-maximize"]')).toBeNull();
+  });
+});

@@ -6880,9 +6880,257 @@ struct WorkToolsLaneState: Codable, Equatable {
   /// than the field, and empty is the normal state; both read as "nobody".
   var agentBrowserPresence: [WorkToolsAgentBrowserPresence]?
   var appControl: WorkToolsAppControlState?
+  /// The lane's macOS desktop seat. Nil from any host without the feature, and
+  /// `supported: false` from one that has it on a machine that cannot hold a
+  /// display; the sheet hides the card on both.
+  var macDesktop: WorkToolsMacDesktopState?
+}
+
+/// A point on the host's global screen plane. `x` and `y` are display points,
+/// the same unit `CGEvent` posts in.
+struct MacDesktopPoint: Codable, Equatable {
+  var x: Double
+  var y: Double
+}
+
+/// The lane's private macOS screen, as the phone sees it.
+///
+/// The snapshot is still a description: display, windows, lease, stream, and
+/// the last frame. Taking the pointer is a separate set of commands
+/// (`macDesktop.takeControl` and the three beside it), announced by
+/// `hello_ok.features.macDesktopControl`. The display origin is decoded
+/// because a click without it would land on the person's real screen.
+///
+/// A host with no Mac Desktop service at all omits the whole `macDesktop` key,
+/// and a host that has one but cannot hold a display sends `supported: false`.
+/// Both hide the tool.
+struct WorkToolsMacDesktopDisplay: Codable, Equatable {
+  var name: String
+  var width: Int
+  var height: Int
+  /// `virtual` | `offscreen-region` | `unavailable`, kept as a raw string so a
+  /// newer mode renders verbatim instead of failing to decode.
+  var mode: String
+  /// Origin of the display on the host's global plane. Optional because an
+  /// older host omits it; a client that clicks without one would post the
+  /// event on the person's real screen, so control stays off until it arrives.
+  var origin: MacDesktopPoint?
+}
+
+/// One window parked on the lane's display. The host also sends a pid, a frame
+/// and a bundle id; nothing on the phone can act on any of them, so only what
+/// is shown is decoded.
+struct WorkToolsMacDesktopWindow: Codable, Equatable, Identifiable {
+  var id: Int
+  var appName: String
+  var title: String?
+}
+
+/// Who is driving the lane's screen. `holder` is `agent` or `user`; an unknown
+/// value from a newer host reads as neither and falls back to the neutral line.
+struct WorkToolsMacDesktopLease: Codable, Equatable {
+  var holder: String
+  var holderLabel: String?
+  /// Present when the host named who holds the lease. The phone compares it
+  /// with the id `takeControl` returned, so a poll can tell "still me" from
+  /// "someone else took it".
+  var holderId: String?
+}
+
+/// The lease `macDesktop.takeControl` / `renewLease` / `returnControl` return.
+///
+/// Separate from `WorkToolsMacDesktopLease` because those replies always carry
+/// the holder id the next call has to name, and a missing one is a failed
+/// decode rather than "an older snapshot".
+struct MacDesktopControlLease: Codable, Equatable {
+  var laneId: String
+  var holder: String
+  var holderId: String
+  var holderLabel: String?
+  var grantedAt: String
+  var expiresAt: String
+}
+
+/// Whether frames are flowing, and how hard. Never carries the stream token —
+/// the host redacts it before this ever leaves the Mac.
+struct WorkToolsMacDesktopStream: Codable, Equatable {
+  var running: Bool
+  var idle: Bool
+  /// The encoder's current rate and bitrate, and the host's own last capture
+  /// error. All optional: an older snapshot, or one from a test fixture, may
+  /// omit them, and none of them decides whether the tool is shown.
+  var fps: Double?
+  var bitrateKbps: Double?
+  var lastError: String?
+}
+
+/// Whether the lane's screen is being recorded right now. The host keeps the
+/// file path and caption to itself; `startedAt` is ISO-8601 when present.
+struct WorkToolsMacDesktopRecording: Codable, Equatable {
+  var running: Bool
+  var startedAt: String?
+}
+
+/// The newest frame captured on the lane's screen. `screenshotPath` is opaque
+/// and goes straight back to `workTools.readObservationPreview`, exactly like a
+/// `WorkToolsObservation.path`.
+struct WorkToolsMacDesktopObservation: Codable, Equatable {
+  var screenshotPath: String
+  var caption: String?
+  /// Optional on newer hosts; the phone can still show the frame when the
+  /// accessibility walk reports that it stopped early.
+  var truncatedReason: String?
+  var stalledApps: [String]?
+}
+
+/// A window the driver could not park, so it stayed on the human's own screen.
+///
+/// `at` is the host client's clock and is only used for ordering, so it is not
+/// decoded here — the host already sends the list newest first.
+struct WorkToolsMacDesktopNotParked: Codable, Equatable {
+  var windowId: Int
+  var reason: String
+}
+
+struct WorkToolsMacDesktopState: Codable, Equatable {
+  var supported: Bool
+  var display: WorkToolsMacDesktopDisplay?
+  /// Absent from a host that sends no list; both nil and empty read as "nothing
+  /// is parked here".
+  var windows: [WorkToolsMacDesktopWindow]?
+  var lease: WorkToolsMacDesktopLease?
+  var stream: WorkToolsMacDesktopStream?
+  var lastObservation: WorkToolsMacDesktopObservation?
+  /// Newest first, at most three. Absent from an older host, which is not the
+  /// same as "nothing is stranded" — it is "this host cannot say".
+  var notParked: [WorkToolsMacDesktopNotParked]?
+  /// Absent from an older host; nil reads as "not recording".
+  var recording: WorkToolsMacDesktopRecording?
 }
 
 struct WorkToolsObservationPreview: Codable, Equatable {
   var dataUrl: String
   var mimeType: String
+}
+
+// MARK: - Mac Desktop live stream (view-only)
+
+/// A redacted `macDesktop.getStatus` reply.
+///
+/// Only the fields the phone renders are modelled, exactly like
+/// `WorkToolsMacDesktopState`: a newer host sends the desktop's full status
+/// (driver health, permissions, lanes, recording) and `Codable` ignores what
+/// this type does not name. The stream token is deliberately absent — the host
+/// redacts it on this method and only `startStream` ever carries it.
+struct MacDesktopStatus: Codable, Equatable {
+  var supported: Bool
+  var display: WorkToolsMacDesktopDisplay?
+  var windows: [WorkToolsMacDesktopWindow]?
+  var lease: WorkToolsMacDesktopLease?
+  var stream: WorkToolsMacDesktopStream?
+}
+
+/// An app the lane opened that remained open when the display stopped.
+struct MacDesktopAppLeftOpen: Codable, Equatable {
+  var pid: Int
+  var appName: String
+  var message: String
+}
+
+/// The phone does not currently expose Stop, but this mirrors the sync reply
+/// so older hosts (which omit the new app lists) and newer hosts both decode.
+struct MacDesktopStopResult: Codable, Equatable {
+  var stopped: Bool
+  var releasedWindows: Int
+  var quitApps: [String]?
+  var appsLeftOpen: [MacDesktopAppLeftOpen]?
+}
+
+/// `macDesktop.streamSubscribe` reply: the picture's shape, then records flow.
+struct MacDesktopStreamSubscribeResult: Codable, Equatable {
+  var ok: Bool
+  var width: Int?
+  var height: Int?
+  var codec: String?
+}
+
+/// The `config` record's payload — JSON inside the record's `data` bytes.
+struct MacDesktopStreamConfig: Codable, Equatable {
+  var codec: String
+  var width: Int
+  var height: Int
+  var annexB: Bool
+}
+
+/// A pushed `macDesktop.streamRecord` before its base64 `data` is decoded.
+///
+/// Split from `MacDesktopStreamRecord` so the whole access unit's base64 can be
+/// decoded off the main actor: a keyframe on a 2560-wide display is hundreds of
+/// kilobytes of base64, and this lands on the socket's receive path.
+struct MacDesktopStreamRecordEnvelope: Equatable {
+  enum Kind: String {
+    case config
+    case frame
+  }
+
+  var subscriptionId: String
+  var seq: Int
+  var kind: Kind
+  var keyframe: Bool
+  var timestampUs: Int
+  var base64Data: String
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let kind = (payload["kind"] as? String).flatMap(Kind.init(rawValue:)),
+      let encoded = payload["data"] as? String
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.seq = (payload["seq"] as? NSNumber)?.intValue ?? 0
+    self.kind = kind
+    self.keyframe = (payload["keyframe"] as? Bool) ?? false
+    self.timestampUs = (payload["timestampUs"] as? NSNumber)?.intValue ?? 0
+    self.base64Data = encoded
+  }
+}
+
+/// One pushed stream record, its access unit decoded.
+struct MacDesktopStreamRecord: Equatable {
+  var subscriptionId: String
+  var seq: Int
+  var kind: MacDesktopStreamRecordEnvelope.Kind
+  var keyframe: Bool
+  var timestampUs: Int
+  /// `frame`: one Annex-B access unit. `config`: the `MacDesktopStreamConfig`
+  /// JSON object's bytes.
+  var data: Data
+
+  init(envelope: MacDesktopStreamRecordEnvelope, data: Data) {
+    self.subscriptionId = envelope.subscriptionId
+    self.seq = envelope.seq
+    self.kind = envelope.kind
+    self.keyframe = envelope.keyframe
+    self.timestampUs = envelope.timestampUs
+    self.data = data
+  }
+}
+
+/// A pushed `macDesktop.streamEnded`. `reason` stays a raw string so a reason a
+/// newer host invents degrades to the generic stopped sentence instead of
+/// failing to decode.
+struct MacDesktopStreamEnded: Equatable {
+  var subscriptionId: String
+  var reason: String
+  var message: String?
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let reason = payload["reason"] as? String
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.reason = reason
+    self.message = payload["message"] as? String
+  }
 }

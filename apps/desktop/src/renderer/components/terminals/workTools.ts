@@ -4,6 +4,7 @@ import {
   GitBranch,
   GithubLogo,
   Globe,
+  Monitor,
   Terminal,
   type Icon,
 } from "@phosphor-icons/react";
@@ -122,7 +123,18 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     label: "App Control",
     icon: Desktop,
     color: "#a78bfa",
-    hint: "Drive a desktop app",
+    hint: "Drive an Electron app",
+  },
+  {
+    id: "mac-desktop",
+    label: "Mac Desktop",
+    icon: Monitor,
+    color: "#f472b6",
+    // Only ever seen while the host's capability answer is still in flight or
+    // unreachable: on a Mac host the card's line is the lane's own screen
+    // state (`useMacDesktopToolStatus`). Phrased as the line it usually
+    // resolves to, so the card does not change its mind a beat later.
+    hint: "Mac Desktop is off",
   },
 ];
 
@@ -170,6 +182,23 @@ export type WorkToolContext = {
   supportsIosSimulator: boolean;
   /** Running as the hosted browser web client, where native namespaces are stubs. */
   isWebClient: boolean;
+  /**
+   * The lane's RUNTIME HOST can host a Mac Desktop display.
+   *
+   * Not a property of this computer, which is why it is a tri-state rather than
+   * a boolean: a Windows desktop watching a Mac-hosted lane must see the tool,
+   * and the answer arrives from `macDesktop.getStatus` a round-trip after the
+   * pane mounts. `null` means "not answered yet", and an unanswered capability
+   * shows the tool — hiding it and bringing it back a beat later is worse than
+   * showing it and letting the panel state its own error.
+   */
+  supportsMacDesktop?: boolean | null;
+  /**
+   * The host's own words for a `false` above, e.g. the driver is missing from
+   * this install. Shown in place of the generic "isn't a Mac" line, which is
+   * wrong on a Mac whose driver did not ship.
+   */
+  macDesktopUnsupportedReason?: string | null;
 };
 
 export type WorkToolAvailability =
@@ -186,8 +215,19 @@ const AVAILABLE: WorkToolAvailability = { available: true, reason: null };
  * read-only rather than a dead "Desktop app only" card. The iOS simulator is
  * absent from this set because it is not read-only on the web at all: the
  * hosted client drives the device for real over the brain's H.264 pipe.
+ *
+ * Mac Desktop IS here, and for the browser's reason: the lane's screen leaves a
+ * describable trail — a display, a window list, a lease holder, and a live
+ * stream the web client plays over the sync socket — so a web client shows
+ * that instead of a dead card. It may start and stop the lane's display, and
+ * when the host advertises `hello_ok.features.macDesktopControl` it may also
+ * take the input lease and drive the pointer from the browser. The membership
+ * here is therefore about the WATCHING fallback, not about a permanent
+ * no-control rule: a host without the control commands (or a browser that
+ * fails the capability check) still renders this read-only pane, and
+ * `WORK_TOOLS_CONTROL_HINT` says control stays on the desktop exactly then.
  */
-const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control"]);
+const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control", "mac-desktop"]);
 
 /*
  * There is deliberately no "local only" set any more.
@@ -207,7 +247,7 @@ const WEB_READ_ONLY_TOOL_IDS = new Set<WorkSidebarTab>(["browser", "app-control"
 /** Shown on the picker when the bound runtime reports `supported: false`. */
 export const IOS_RUNTIME_UNSUPPORTED_REASON = "The runtime for this project is not a Mac";
 
-/** True when this surface may only observe the tool, never operate it. */
+/** True when this surface may only watch the tool's live view, never drive it. */
 export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext): boolean {
   return context.isWebClient && WEB_READ_ONLY_TOOL_IDS.has(id);
 }
@@ -219,6 +259,12 @@ export function workToolAvailability(
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: IOS_RUNTIME_UNSUPPORTED_REASON };
+  }
+  // The HOST's platform, not this one. The reason says so, because "macOS only"
+  // on a Mac desktop watching a Linux runtime reads as a bug in ADE.
+  if (id === "mac-desktop" && context.supportsMacDesktop === false) {
+    const reason = context.macDesktopUnsupportedReason?.trim();
+    return { available: false, reason: reason || "This lane's host isn't a Mac" };
   }
   return AVAILABLE;
 }

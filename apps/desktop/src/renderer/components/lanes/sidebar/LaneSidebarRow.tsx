@@ -11,6 +11,7 @@ import { COLORS } from "../laneDesignTokens";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
+import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
 import {
   LANE_SIDEBAR_INDENT_PX,
   laneAgentToolType,
@@ -259,6 +260,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       }}
     >
       <IndentGuides indentLevel={indentLevel} />
+      <LaneMacDesktopPeek laneId={lane.id} />
 
       <div className="flex h-4 min-w-0 items-center gap-1.5">
         <span

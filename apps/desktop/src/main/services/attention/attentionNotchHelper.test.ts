@@ -18,10 +18,7 @@ vi.mock("node:fs", () => ({
   },
 }));
 
-import {
-  AttentionNotchHelper,
-  resolveAttentionNotchExecutablePath,
-} from "./attentionNotchHelper";
+import { AttentionNotchHelper } from "./attentionNotchHelper";
 
 function fakeChild(): ChildProcessWithoutNullStreams & EventEmitter {
   const child = new EventEmitter() as ChildProcessWithoutNullStreams & EventEmitter;
@@ -48,28 +45,6 @@ describe("AttentionNotchHelper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     existsSyncMock.mockReturnValue(true);
-  });
-
-  it("resolves packaged and development helper paths", () => {
-    expect(resolveAttentionNotchExecutablePath({
-      isPackaged: true,
-      resourcesPath: "/Applications/ADE.app/Contents/Resources",
-      appPath: "/repo/apps/desktop",
-    })).toBe(path.join(
-      "/Applications/ADE.app/Contents/Resources",
-      "native",
-      "ade-attention-notch",
-    ));
-    expect(resolveAttentionNotchExecutablePath({
-      isPackaged: false,
-      resourcesPath: "/unused",
-      appPath: "/repo/apps/desktop",
-    })).toBe(path.join(
-      "/repo/apps/desktop",
-      "resources",
-      "native",
-      "ade-attention-notch",
-    ));
   });
 
   it("publishes exact helper actions and rejects malformed output", () => {

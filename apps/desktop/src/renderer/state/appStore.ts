@@ -26,9 +26,8 @@ import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
 import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
 import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import {
-  normalizeWorkLiveCardDismissals,
   normalizeWorkLiveCardPosition,
-  type WorkLiveCardDismissals,
+  normalizeWorkLiveCardWidth,
   type WorkLiveCardPosition,
 } from "./workLiveCardState";
 import {
@@ -157,6 +156,7 @@ export type WorkSidebarTab =
   | "ios"
   | "app-control"
   | "browser"
+  | "mac-desktop"
   | "pr";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
@@ -244,13 +244,12 @@ export type WorkProjectViewState = {
    */
   workLiveCardPosition?: WorkLiveCardPosition | null;
   /**
-   * Per-tool "×" dismissals of that same card, keyed by tool id, valued with
-   * the activity stamp the card was showing when it was closed. Lane-scoped in
-   * practice (written through `setLaneWorkViewState`): dismissing the browser
-   * preview in one lane says nothing about the next one. Optional for the same
-   * reason as the position — absent means nobody has ever closed it.
+   * The width the user chose for that card, in CSS pixels. Project-scoped like
+   * the position: the layout preference belongs to the workspace, while the
+   * closed/floated state belongs to the chat. Optional because it is only
+   * written once somebody resizes the card; absent means the default width.
    */
-  workLiveCardDismissed?: WorkLiveCardDismissals | null;
+  workLiveCardWidth?: number | null;
   /** Per-lane custom tab ordering for the grouped Work tab strip. */
   laneSessionOrder: Record<string, string[]>;
   /** Session ids pinned to the front of their lane's tab group. */
@@ -343,7 +342,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarOpenTools: [],
     workSidebarWidthPct: 36,
     workLiveCardPosition: null,
-    workLiveCardDismissed: null,
+    workLiveCardWidth: null,
     laneSessionOrder: {},
     pinnedSessionIds: [],
     workPinnedLaneIds: [],
@@ -385,6 +384,7 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "ios"
     || value === "app-control"
     || value === "browser"
+    || value === "mac-desktop"
     || value === "pr"
   ) return value;
   return null;
@@ -458,7 +458,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     ),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
     workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
-    workLiveCardDismissed: normalizeWorkLiveCardDismissals(candidate.workLiveCardDismissed),
+    workLiveCardWidth: normalizeWorkLiveCardWidth(candidate.workLiveCardWidth),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
     // Deduped: a hand-edited or half-written blob must not be able to render the

@@ -69,6 +69,55 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
 
 ---
 
+## Step 2b — Before you start any brain (always check)
+
+ADE's brain is a singleton per `ADE_HOME` **by convention only**. Nothing
+refuses a second one, and two brains on one home share one database: a chat can
+be owned by only one of them, so the other's agents can be stopped without
+explanation.
+
+Before starting a dev brain, and before blaming anything for dead agents, list
+every brain **and its home**:
+
+```bash
+pgrep -alf "cli.cjs serve|/bin/ade serve"
+# then, for each pid:
+ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME    # no output = the shared ~/.ade
+```
+
+Five rules that cost hours when ignored:
+
+- **`--no-sync` is not isolation.** It stops a dev brain taking the machine-wide
+  sync lease. It does nothing about a second writer on the same database.
+- **A different `ADE_HOME` is not isolation either.** The home holds the machine
+  state; each PROJECT keeps its own database in `<project>/.ade/ade.db`. A brain
+  on `~/.ade-alpha` that opens `~/Projects/ADE` writes the same `ade.db` as the
+  installed brain. Any `ade` call run from inside a registered project opens it.
+  Real isolation is a different home AND a throwaway project that no other brain
+  has registered (check `<home>/projects.json`). On 2026-09-22 a "separate"
+  test brain held the main project's `ade.db` open for 12 hours.
+- **A dev brain outlives its app.** The launcher spawns it detached so it
+  survives Electron restarts. After stopping a dev desktop, confirm its brain
+  actually exited — one ran orphaned on the shared home for five hours.
+  Launcher-spawned brains now exit after 20 idle minutes
+  (`ADE_RUNTIME_IDLE_EXIT_MS`), but do not rely on it instead of checking.
+- **Starting a brain on a shared home now warns.** It names the other brains by
+  pid and endpoint on stderr and logs `brain.home_shared`. If you see that line,
+  you have two brains on one database — decide which one you meant to have.
+  There is no warning yet for two brains on one PROJECT; check with
+  `lsof <project>/.ade/ade.db`.
+- **A hand-started brain needs `--role cto`.** `ade serve` defaults to role
+  `agent`, which refuses desktop, phone and web clients. Start it as
+  `ade --role cto serve`. A brain started from an agent's shell drops that
+  agent's chat identity itself and says so on stderr.
+
+When you only need to read or drive a lane, prefer an isolated home
+(`ADE_HOME=$HOME/.ade-<name>` plus `--no-sync` on its own socket) with a
+throwaway project registered only there, over sharing `~/.ade` or a real
+project with the installed app.
+
+---
+
 ## Step 3 — Feature docs + perf skill
 
 Match changed paths / keywords against `references/doc-map.md` and load that doc

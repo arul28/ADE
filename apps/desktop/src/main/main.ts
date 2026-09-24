@@ -81,6 +81,7 @@ import { detectInstallSource } from "./services/analytics/installSource";
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureMacDesktopAnalytics,
   captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -175,9 +176,9 @@ import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
   AttentionNotchHelper,
-  resolveAttentionNotchExecutablePath,
   type AttentionNotchOutput,
 } from "./services/attention/attentionNotchHelper";
+import { resolveAttentionNotchExecutablePath } from "./services/native/nativeHelperPaths";
 import {
   CaptureHelper,
   resolveCaptureHelperExecutablePath,
@@ -367,6 +368,8 @@ import {
 import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
+import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
+import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
 import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
@@ -3970,6 +3973,14 @@ app.whenReady().then(async () => {
       // deliberately NOT reachable from any CTO tool.
       getProjectSecretService: () => ({ list: () => projectSecretService.list() }),
       getIosSimulatorService: () => iosSimulatorService,
+      // Lazy like the rest: `macDesktopService` is constructed further down
+      // this same bootstrap, and every call here is read per-turn.
+      macDesktopTurnRecorder: {
+        hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
+        supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
+        beginTurn: (args) => macDesktopService.beginTurn(args),
+        noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
+      },
       getAppControlService: () => appControlService,
       getBuiltInBrowserService: () => builtInBrowserService,
       getGitService: () => gitServiceRef,
@@ -4568,6 +4579,69 @@ app.whenReady().then(async () => {
         });
       });
     });
+
+    /**
+     * The lane's private macOS screen.
+     *
+     * Constructed on EVERY platform, next to the simulator and for the same
+     * reason: `getStatus` answers everywhere and says `supported: false` off
+     * macOS, which is how a Windows or Linux desktop hides the tab by reading
+     * rather than by catching a throw. A service that only existed on darwin
+     * would make that read itself the error.
+     *
+     * `onEvent` is the half the renderer's local event fan-out depends on: the
+     * service's own `subscribe` is for in-process readers constructed after it
+     * (the Work tools mirror), while this is what reaches a window.
+     */
+    const macDesktopService = createMacDesktopService({
+      projectRoot,
+      // Also `desktop-main.jsonl`: see `macDesktopLogger.ts`.
+      logger: createMacDesktopLogger(logger, getMachineMainLogger()),
+      onEvent: (payload) => emitProjectEvent(projectRoot, IPC.macDesktopEvent, payload),
+      resolveLaneWorktreePath: (laneId: string): string | null => {
+        try {
+          return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return null;
+        }
+      },
+      resolveLaneName: async (laneId: string): Promise<string | null> => {
+        const lane = await laneService.getSummary(laneId).catch(() => null);
+        return lane?.name ?? null;
+      },
+      // The lane's primary pull request becomes a `github_pr` proof owner with
+      // the existing `published_to` relation, as the browser and simulator
+      // proof paths already do.
+      resolvePrimaryPrUrl: (laneId: string): string | null =>
+        prService?.getForLane(laneId)?.githubUrl ?? null,
+      ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      // The real-input lease question rides the normal pending-input card, the
+      // same one `ade chat ask` and MCP elicitation resolve through.
+      requestChatInput: (input) => agentChatService.requestChatInput(input),
+      readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
+      writeSetting: (key: string, value: unknown) => db.setJson(key, value),
+      captureAnalytics: (properties) => captureMacDesktopAnalytics({
+        analytics: productAnalyticsService,
+        properties,
+      }),
+    });
+    // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
+    // teardown step never has to know what host it is on. Without this wiring a
+    // deleted lane left its display, its parked windows and its encoder behind
+    // on the desktop host — the CLI brain has had it since the feature landed.
+    laneTeardownDeps.macDesktopService = {
+      destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
+    };
+    // A chat that ends drops its lease on every platform — the one Mac Desktop
+    // call that is not macOS-only, because a lease must never outlive its chat.
+    agentChatService.registerChatSessionEndedListener((sessionId) => {
+      void macDesktopService.releaseIfOwnedBy(sessionId).catch((error) => {
+        logger.debug("mac_desktop.release_on_chat_end_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
     // `drawer-open-requested` is emitted by the service itself, not wrapped on
     // here: production launches go to the brain daemon, which has no wrapper, so
     // a wrapper-only emitter made `--open-drawer` and an agent's inspect/select
@@ -4700,6 +4774,7 @@ app.whenReady().then(async () => {
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
+      macDesktopService,
       usageTrackingService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,
@@ -5157,6 +5232,7 @@ app.whenReady().then(async () => {
       automationPlannerService,
       computerUseArtifactBrokerService,
       iosSimulatorService,
+      macDesktopService,
       appControlService,
       builtInBrowserService,
       syncHostService: syncService.getHostService(),
@@ -5337,6 +5413,7 @@ app.whenReady().then(async () => {
         ptyService,
         computerUseArtifactBrokerService,
         iosSimulatorService,
+        macDesktopService,
         appControlService,
         builtInBrowserService,
         automationService,
@@ -5399,6 +5476,7 @@ app.whenReady().then(async () => {
       prPollingService,
       computerUseArtifactBrokerService,
       iosSimulatorService,
+      macDesktopService,
       appControlService,
       prSummaryService,
       searchService,
@@ -5927,6 +6005,14 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.iosSimulatorService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      // Destroys this project's virtual displays and stops the driver. A leaked
+      // display outlives the process it was created by, so the teardown path
+      // matters more here than for a service that only holds memory.
+      ctx.macDesktopService?.dispose?.();
     } catch {
       // ignore
     }

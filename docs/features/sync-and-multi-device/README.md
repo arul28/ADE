@@ -120,6 +120,51 @@ stop and restart the machine's relay tunnel and tear down and rebuild the
 directory publisher (`ade doctor` would report "Account-directory publishing
 has not started" in the gap).
 
+#### Two ADE apps on one computer
+
+One machine has one sync host, so a second ADE app on the same computer — the
+release build plus an Alpha or Beta channel, each with its own `ADE_HOME` and
+its own brain — is idle for sync rather than fighting for it. The lease is
+machine-wide across channels (`$TMPDIR/ade-sync-host-<uid>.json` records the
+owning pid, channel, and home), and the non-owning brain takes no lease, binds
+no shared listener of its own, and never publishes itself to the account
+directory. It does not retry its way into ownership and it does not stop the
+running app.
+
+The idle brain says so instead of claiming a fault. When no publisher is running
+and the lock file names another process, `getStatus` reports the
+`no_active_sync_scope` publisher state with the owning app and pid in
+`skipReason`, and the Connections This-machine line reads "another ADE app on
+this computer owns sync for this machine (ADE Alpha, pid 9253)" with one
+instruction under it: "Quit that ADE to let this one host sync." A brain that
+does hold the lease and loses it mid-handoff reports the same state from the
+publisher itself, so the two paths cannot tell different stories. `ade doctor`
+shows the same sentence on its publish row.
+
+A brain that once hosted sync and then lost the lease does not stay a viewer.
+`runSyncHostStartupLoop` returns when the host is up, so on 2026-09-21 a
+dev-build brain that took the lease and then exited left the installed ADE as
+a viewer for over an hour: the Connections card said "sync hasn't started",
+Reconnect refused with a sentence about the brain "not publishing", and only a
+service restart fixed it. `watchSyncHostAuthorityForRehost` now re-runs the
+loop when a loss outlives the switch grace (`SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS`),
+with first-attempt conflicts treated as retryable, so a foreign owner's exit
+hands sync back on its own. The user has a button for the same thing: the
+`sync_not_started` state renders **Start sync** on the This-machine card
+(`thisComputerAction`), which calls `account.startSyncHost`, the same
+`recoverSyncHostConnection` the phone's "Fix connection" runs; the card's
+second line then reads "No ADE on this computer is hosting sync right now"
+instead of claiming the machine connects through a host that does not exist,
+and `repairMachinePairing` on a non-host says to start sync first.
+
+Because the second brain cannot host sync, testing it over the relay means
+quitting the app that currently owns the lease first — the phone and the
+account directory are both pointed at that owner, and no amount of restarting
+the idle brain changes that while the owner is still running. Sync-host startup
+conflicts are logged once with their full quit instructions and then restated at
+most once every ten minutes as a single line with an occurrence count, so an app
+left open for days no longer floods the log.
+
 ### Hosting sync, and publishing, with no project
 
 A project is not a precondition for anything machine-level. A brain that holds
@@ -613,12 +658,28 @@ Runtime support files outside `services/sync/`:
   once through `consumePairingGrant` and cleared on sign-out. That grant is the
   proof a removed machine needs to re-pair, which is why the desktop's Reconnect
   affordance and `ade machines reconnect` both run the device flow rather than
-  the loopback PKCE flow. The device flow also sends this computer's name with
-  its channel (`getMachineName`, for example "MacBook Pro · Alpha") as
-  `machine_name`, so the browser page can say which computer asked. The name
-  waits for the macOS ComputerName probe (`resolveDeviceDisplayNameSettled`),
-  so the page does not show the network hostname. A name that cannot be read
-  only drops the label; it never blocks the sign-in. A definitively rejected grant is **marked dead, not
+  the loopback PKCE flow. In the Connections popover that affordance lives in
+  exactly one place: `ThisComputerStatus`, rendered inside the "This machine"
+  card at the top of the popover (the Machines list renders nothing about this
+  computer). One sentence from the shared advice table, one button whose label
+  follows the brain's refusal code ("Sign in again" / "Reconnect this computer"
+  / "Retry" / "Repair"), and while a device sign-in is pending a prompt that
+  says to finish in the browser and always offers "Open sign-in page" again,
+  because the browser can open behind ADE or not at all. The Account page card,
+  the shell banner, and Settings → This machine share one window-wide flow
+  (`lib/reconnectThisComputer.ts` via `useReconnectThisComputer`), so a second
+  press joins the attempt already running. The device flow also sends this
+  computer's name with its channel (`getMachineName`, for example "MacBook Pro ·
+  Alpha") as `machine_name`, so the browser page can say which computer asked.
+  The name waits for the macOS ComputerName probe
+  (`resolveDeviceDisplayNameSettled`), so the page does not show the network
+  hostname. A name that cannot be read only drops the label; it never blocks the
+  sign-in. `apps/account-directory/src/deviceAuthorization.ts` branches only its
+  presentation on how the page was reached: a link carrying `user_code` (the
+  desktop app) renders **Confirm this sign-in** with the code read-only and a
+  hidden field, while the bare page (the CLI) keeps the typed form and says the
+  code is shown by `ade login` in the terminal. Validation, PKCE, and one-time
+  redemption are identical on both. A definitively rejected grant is **marked dead, not
   deleted** (`rejectedAt` / `needsReauth` / `rejectedReason` on the stored
   record) and `sessionState` reports `active | signed_out | expired |
   unreadable` so every surface can say which it is; see
@@ -1347,6 +1408,18 @@ Desktop connection UI:
   top-bar Connections surface with Machines, Phone, and Web tabs. The
   panel owns its header close control and passes the current in-app route to the
   Account page so signed-out users can return to the exact surface they left.
+- `apps/desktop/src/renderer/components/remoteTargets/RemoteTargetList.tsx` and
+  `remoteMachineModel.ts` — the Machines list's one **This computer** card, and
+  the only place publication state is worded. `describeThisComputerCard` renders
+  a single sentence from `describeUnpublishedAccountDirectory` and one button
+  whose label `thisComputerAction` decodes from the brain's refusal code
+  (`Reconnect this computer`, `Sign in again`, `Retry`, or `Repair`), with the
+  channel-prefixed brain version beneath it. The list no longer renders a second
+  banner under the Machines heading; the card is the only reconnect affordance.
+  A device sign-in it starts shows the browser-open confirmation (the code and a
+  lone **Cancel**) or, when the handoff failed, the URL with **Copy link**.
+  `ConnectionsPanel` passes `hideDirectorySummary` to `ThisMacCard` so the
+  popover's top identity card cannot repeat the same sentence.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
   shared **This computer** card. The card owns the pairing-PIN manager and the
@@ -1422,10 +1495,13 @@ Desktop connection UI:
   route-publish row, and Account `YourMacsCard` mount the same hook and button.
 - `apps/desktop/src/renderer/components/account/YourMacsCard.tsx` — Account
   **Your computers** directory UI (extracted from `AccountPage`). When this
-  computer is missing from the signed-in list it offers **Reconnect** (directory
-  re-pair via `repairMachinePairing` / device login) beside **Repair**, with
-  session-state-aware copy from `describeThisComputerMissing` that does not
-  treat absence as proven removal. See
+  computer is missing from the signed-in list — **or** the publisher health
+  reports a refusal (`machine_revoked` / `pairing_authentication_required`) while
+  the roster is stale — it offers the same button the Machines card renders
+  (`thisComputerAction`), beside **Repair**, with session-state-aware copy from
+  `describeThisComputerMissing` that does not treat absence as proven removal.
+  Its version line names the brain's channel-stamped version, falling back to the
+  package version only when the brain cannot answer and saying which it used. See
   [onboarding and settings](../onboarding-and-settings/README.md).
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,
@@ -3204,6 +3280,22 @@ the CTO included. It also refuses without `confirmation: "REMOVE"`
 so this stops the ordinary agent path, not a process that strips its
 environment. The desktop Account page and the web client remove through the
 directory directly, behind their own dialogs.
+
+A refusal must not read like an outage. When the directory reaches a decision it
+answers a `403` with a machine-readable code — `machine_revoked` or
+`pairing_authentication_required` — carried on the publisher health's
+`lastHttpReason`. The Connections popover decodes it with
+`readAccountRefusalCode` (in `shared/accountMachineRefusal.ts`) instead of
+showing "can't reach your ADE account right now": the This-machine line and the
+publish-failing banner say "this computer was removed from your ADE account" or
+"sign in again to reconnect this computer", and the banner offers a
+**Reconnect this computer** or **Sign in again** button that presses the same
+brain repair the Account page does. The shared copy table
+(`describeUnpublishedAccountDirectory` in `shared/types/sync.ts`) and the shared
+reconnect orchestration (`runMachinePairingReconnect`, which escalates to the
+device-flow sign-in only when the refusal demands it) keep the pane, the banner,
+and `ade setup` from drifting; a plain transport or `5xx` failure keeps the
+reachability wording.
 
 Every refusal the Worker issues is also logged with its wire code, a finer
 `reason`, the correlation id, and 8-character identifier prefixes, because by

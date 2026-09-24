@@ -9,6 +9,8 @@ import type {
   SyncFileRequest,
   SyncFileResponsePayload,
   SyncHelloOkPayload,
+  SyncMacDesktopStreamEndedPayload,
+  SyncMacDesktopStreamRecordPayload,
   SyncMobileProjectSummary,
   SyncProjectCatalogPayload,
   SyncProjectSwitchResultPayload,
@@ -158,6 +160,8 @@ type ClientEvents = {
   brainStatus: SyncBrainStatusPayload;
   tablesChanged: Set<string>;
   chatEvent: SyncChatEventPayload;
+  macDesktopStreamRecord: SyncMacDesktopStreamRecordPayload;
+  macDesktopStreamEnded: SyncMacDesktopStreamEndedPayload;
   chatLaunchEvent: ChatLaunchEvent;
   projectCatalog: SyncProjectCatalogPayload;
   activeProjectChanged: AdeSyncActiveProjectChange;
@@ -264,6 +268,8 @@ export class AdeSyncClient {
     brainStatus: new Set(),
     tablesChanged: new Set(),
     chatEvent: new Set(),
+    macDesktopStreamRecord: new Set(),
+    macDesktopStreamEnded: new Set(),
     chatLaunchEvent: new Set(),
     projectCatalog: new Set(),
     activeProjectChanged: new Set(),
@@ -967,6 +973,36 @@ export class AdeSyncClient {
     return this.on("chatEvent", listener);
   }
 
+  onMacDesktopStreamRecord(listener: (payload: SyncMacDesktopStreamRecordPayload) => void): () => void {
+    return this.on("macDesktopStreamRecord", listener);
+  }
+
+  onMacDesktopStreamEnded(listener: (payload: SyncMacDesktopStreamEndedPayload) => void): () => void {
+    return this.on("macDesktopStreamEnded", listener);
+  }
+
+  /**
+   * Both halves of the live Mac Desktop contract: the hello feature bit and
+   * the subscribe command the next call would invoke. Either one missing keeps
+   * the still-image fallback, which is the safe direction.
+   */
+  supportsMacDesktopStream(): boolean {
+    if (this.latestHello?.features.macDesktopStream !== true) return false;
+    return (this.latestHello.features.commandRouting?.actions ?? [])
+      .some((descriptor) => descriptor.action === "macDesktop.streamSubscribe");
+  }
+
+  /**
+   * Both halves of web takeover: the hello feature bit and the takeControl
+   * command the pane is about to invoke. Either one missing keeps the
+   * watch-only pane and its "control from the desktop" line.
+   */
+  supportsMacDesktopControl(): boolean {
+    if (this.latestHello?.features.macDesktopControl !== true) return false;
+    return (this.latestHello.features.commandRouting?.actions ?? [])
+      .some((descriptor) => descriptor.action === "macDesktop.takeControl");
+  }
+
   /** New-lane launch updates the host pushes as `chat_launch_event` envelopes. */
   onChatLaunchEvent(listener: (payload: ChatLaunchEvent) => void): () => void {
     return this.on("chatLaunchEvent", listener);
@@ -1092,6 +1128,12 @@ export class AdeSyncClient {
         break;
       case "chat_event":
         this.handleChatEvent(envelope.payload as SyncChatEventPayload);
+        break;
+      case "macDesktop.streamRecord":
+        this.emit("macDesktopStreamRecord", envelope.payload as SyncMacDesktopStreamRecordPayload);
+        break;
+      case "macDesktop.streamEnded":
+        this.emit("macDesktopStreamEnded", envelope.payload as SyncMacDesktopStreamEndedPayload);
         break;
       case "terminal_snapshot":
         this.handleTerminalSnapshot(envelope.payload as SyncTerminalSnapshotPayload);

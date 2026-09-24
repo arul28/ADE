@@ -494,11 +494,13 @@ function remoteRuntimeSupportOk(args: {
   nodePath?: string | null;
   nativeDepsReady?: boolean;
   ptyHostWorkerReady?: boolean;
+  macDesktopDriverReady?: boolean;
 } = {}): ReturnType<typeof ok> {
   return ok(remotePreflightOutput({
     node_path: args.nodePath === undefined ? "/usr/local/bin/node" : args.nodePath,
     native_deps_ready: args.nativeDepsReady ? "ok" : "",
     pty_host_worker_ready: args.ptyHostWorkerReady ? "ok" : "",
+    mac_desktop_driver_ready: args.macDesktopDriverReady ? "ok" : "",
   }));
 }
 
@@ -549,7 +551,7 @@ function createFakeSpawnProcess(options: { closeCode?: number; error?: Error; st
 
 function createTempResources(
   archLabel = "linux-x64",
-  options: { agentSkills?: boolean; nativeDeps?: boolean; ptyHostWorker?: boolean } = {},
+  options: { agentSkills?: boolean; nativeDeps?: boolean; ptyHostWorker?: boolean; macDesktopDriver?: boolean } = {},
 ): {
   resourcesPath: string;
   binaryPath: string;
@@ -558,6 +560,8 @@ function createTempResources(
   agentSkillSha256: string | null;
   ptyHostWorkerPath: string | null;
   ptyHostWorkerSha256: string | null;
+  macDesktopDriverPath: string | null;
+  macDesktopDriverSha256: string | null;
   cleanup: () => void;
 } {
   const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-"));
@@ -588,6 +592,15 @@ function createTempResources(
     fs.writeFileSync(ptyHostWorkerPath, "process.on('message', () => {});\n");
     ptyHostWorkerSha256 = crypto.createHash("sha256").update(fs.readFileSync(ptyHostWorkerPath)).digest("hex");
   }
+  let macDesktopDriverPath: string | null = null;
+  let macDesktopDriverSha256: string | null = null;
+  if (options.macDesktopDriver) {
+    const nativeDir = path.join(resourcesPath, "native");
+    fs.mkdirSync(nativeDir, { recursive: true });
+    macDesktopDriverPath = path.join(nativeDir, "ade-desktop-driver");
+    fs.writeFileSync(macDesktopDriverPath, "driver fixture\n");
+    macDesktopDriverSha256 = crypto.createHash("sha256").update(fs.readFileSync(macDesktopDriverPath)).digest("hex");
+  }
   const binarySha256 = crypto.createHash("sha256").update(fs.readFileSync(binaryPath)).digest("hex");
   return {
     resourcesPath,
@@ -597,6 +610,8 @@ function createTempResources(
     agentSkillSha256,
     ptyHostWorkerPath,
     ptyHostWorkerSha256,
+    macDesktopDriverPath,
+    macDesktopDriverSha256,
     cleanup: () => fs.rmSync(resourcesPath, { recursive: true, force: true }),
   };
 }
@@ -1222,6 +1237,104 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       arch: "linux-x64",
       version: APP_VERSION,
       projects: [{ projectId: "project-1", rootPath: "/srv/ade" }],
+    });
+  });
+
+  describe("Mac Desktop driver on a macOS remote", () => {
+    const DRIVER_TEMP = /\$HOME\/\.ade\/bin\/resources\/native\/ade-desktop-driver\.upload-/;
+
+    async function connectToMac(args: {
+      driverReady: boolean;
+      failVerify?: boolean;
+    }) {
+      const resources = createTempResources("darwin-arm64", { macDesktopDriver: true });
+      cleanupResources = resources.cleanup;
+      const fakeSsh = createFakeSsh();
+      const registry = createRegistry();
+      connectSshWithRouteMock.mockResolvedValue({
+        client: fakeSsh.ssh,
+        route: uploadRoute,
+        openSshConfig: {
+          host: "resolved-build-host.local",
+          port: 2222,
+          username: "builder",
+          identityFile: "/Users/ade/.ssh/id_ed25519",
+          knownHostsPath: "/Users/ade/.ssh/known_hosts.ade",
+          hostAliases: ["build-host.local", "resolved-build-host.local"],
+        },
+      });
+      const commands: string[] = [];
+      execSshMock.mockImplementation(async (_client: Client, command: string) => {
+        commands.push(command);
+        const remotePath = resolvedRemotePath(command);
+        if (remotePath) return remotePath;
+        if (command === "uname -sm") return ok("Darwin arm64\n");
+        if (command.startsWith("codesign --verify $HOME/.ade/bin/ade")) return ok("ok\n");
+        if (isRemoteRuntimeIdentityCommand(command)) {
+          return remoteRuntimeIdentityOk({
+            markerVersion: APP_VERSION,
+            sha256: resources.binarySha256,
+            executableVersion: `ade ${APP_VERSION}`,
+          });
+        }
+        if (isRemoteRuntimeSupportCommand(command)) {
+          return remoteRuntimeSupportOk({ macDesktopDriverReady: args.driverReady });
+        }
+        if (command === "mkdir -p $HOME/.ade/bin/resources/native") return ok("");
+        if (command.startsWith("rm -f ") && DRIVER_TEMP.test(command)) return ok("");
+        if (DRIVER_TEMP.test(command) && command.includes("wc -c <") && !command.includes("shasum")) {
+          return ok(`${fs.statSync(resources.macDesktopDriverPath!).size}\n`);
+        }
+        if (DRIVER_TEMP.test(command) && command.includes("shasum -a 256") && command.includes("mv -f")) {
+          return args.failVerify ? { stdout: "", stderr: "checksum mismatch", code: 1 } : ok("");
+        }
+        return defaultRemoteBootstrapCommand(command);
+      });
+      const connected = await bootstrapRemoteRuntime({
+        target: uploadTarget,
+        registry,
+        resourcesPath: resources.resourcesPath,
+        appVersion: APP_VERSION,
+      });
+      return { resources, fakeSsh, commands, connected };
+    }
+
+    it("installs the driver beside the remote brain when it is missing", async () => {
+      const { resources, fakeSsh, commands } = await connectToMac({ driverReady: false });
+
+      expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+        resources.macDesktopDriverPath,
+        expect.stringMatching(/^\/home\/ade\/\.ade\/bin\/resources\/native\/ade-desktop-driver\.upload-.*\.tmp$/),
+        expect.anything(),
+        expect.any(Function),
+      );
+      expect(commands.some((command) =>
+        command.includes("chmod 755 $HOME/.ade/bin/resources/native/ade-desktop-driver.upload-")
+        && command.includes("mv -f $HOME/.ade/bin/resources/native/ade-desktop-driver.upload-")
+        && command.includes(`printf '%s\\n' '${resources.macDesktopDriverSha256}' > $HOME/.ade/bin/resources/native/ade-desktop-driver.sha256`),
+      )).toBe(true);
+    });
+
+    it("leaves a matching driver alone, so the remote Mac keeps its permission grants", async () => {
+      const { resources, fakeSsh, commands } = await connectToMac({ driverReady: true });
+
+      expect(fakeSsh.sftpWrapper.fastPut).not.toHaveBeenCalledWith(
+        resources.macDesktopDriverPath,
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(commands.some((command) => command.includes(
+        `test "$(cat $HOME/.ade/bin/resources/native/ade-desktop-driver.sha256 2>/dev/null)" = '${resources.macDesktopDriverSha256}'`,
+      ))).toBe(true);
+    });
+
+    it("still connects when the driver cannot be installed, and says Mac Desktop is unavailable", async () => {
+      const { connected } = await connectToMac({ driverReady: false, failVerify: true });
+
+      expect((connected.result.compatibilityWarnings ?? []).join("\n")).toMatch(
+        /Mac Desktop is not available on this machine: ADE could not install its driver/,
+      );
     });
   });
 

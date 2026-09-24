@@ -4,6 +4,7 @@ import {
   type AppOpenSystemSettingsPaneResult,
   type SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
+import { createMacDesktopBridge } from "./macDesktopPreload";
 import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
@@ -384,6 +385,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSyncHostStartResult,
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
@@ -835,6 +837,36 @@ import type {
   AppleRecordStopArgs,
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
+  MacDesktopActionResult,
+  MacDesktopClaimArgs,
+  MacDesktopClickArgs,
+  MacDesktopDragArgs,
+  MacDesktopEventPayload,
+  MacDesktopGetStatusArgs,
+  MacDesktopObservation,
+  MacDesktopObserveArgs,
+  MacDesktopOpenArgs,
+  MacDesktopOpenResult,
+  MacDesktopPressArgs,
+  MacDesktopPresentArgs,
+  MacDesktopRecordStartArgs,
+  MacDesktopRecordingStatus,
+  MacDesktopReleaseArgs,
+  MacDesktopScreenshotArgs,
+  MacDesktopScreenshotResult,
+  MacDesktopScrollArgs,
+  MacDesktopStartArgs,
+  MacDesktopStartStreamArgs,
+  MacDesktopLeaseState,
+  MacDesktopStatus,
+  MacDesktopStopArgs,
+  MacDesktopStopResult,
+  MacDesktopStreamStatus,
+  MacDesktopTakeoverArgs,
+  MacDesktopTypeArgs,
+  MacDesktopWaitArgs,
+  MacDesktopWaitResult,
+  MacDesktopWindow,
   IosSimulatorStreamStatus,
   IosSimulatorAppLifecycleArgs,
   IosSimulatorAppState,
@@ -2247,6 +2279,22 @@ async function callIosSimulatorMutation<T>(
   }
 }
 
+/**
+ * The lane's macOS display lives on the machine that owns the lane, so every
+ * call is per-lane in exactly the way `callIosSimulatorActionOr` documents.
+ * The local arm is the Electron channel, which only answers in a dev build
+ * whose main process constructed the service; a runtime-backed build resolves
+ * through the `mac_desktop` action domain and never touches it.
+ */
+function callMacDesktopActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(pin, "mac_desktop", action, request, local);
+}
+
 function callAppControlActionOr<T>(
   pin: OpenProjectBinding | null | undefined,
   action: string,
@@ -2663,6 +2711,11 @@ const remoteIosSimulatorEventFanout = createRemoteRuntimeFanout<IosSimulatorEven
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
   invalidate: () => clearIosSimulatorStatusCaches(),
 });
+const remoteMacDesktopEventFanout = createRemoteRuntimeFanout<MacDesktopEventPayload>({
+  eventType: "mac_desktop_event",
+  label: "Mac Desktop",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 const remoteAppControlEventFanout = createRemoteRuntimeFanout<AppControlEventPayload>({
   eventType: "app_control_event",
   label: "App Control",
@@ -2717,6 +2770,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteFeedbackEventFanout,
   remoteComputerUseEventFanout,
   remoteIosSimulatorEventFanout,
+  remoteMacDesktopEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
   remoteWorkToolShowRequestFanout,
@@ -3669,6 +3723,71 @@ function subscribeIosSimulatorEvents(
   };
 }
 
+/**
+ * Mac Desktop events for whichever machine hosts the lane's display.
+ *
+ * Same three arms as the simulator, and for the same reason: a panel pinned to
+ * another machine has to hear THAT machine's display, and a project bound to a
+ * remote runtime hears it over the runtime event pump. A viewing client on
+ * Windows or Linux only ever uses the last two — there is no local service to
+ * fan out from — which is exactly what makes the tab work off macOS.
+ */
+function subscribeMacDesktopEvents(
+  cb: (payload: MacDesktopEventPayload) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<MacDesktopEventPayload>(payload, "mac_desktop_event"),
+    cb,
+    "Mac Desktop",
+  );
+  if (removePinned) return removePinned;
+  const removeLocal = macDesktopEventFanout(cb);
+  const removeRemote = remoteMacDesktopEventFanout.subscribe(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+/**
+ * Turns a Mac Desktop stream URL into one this desktop can open, exactly as the
+ * simulator's does — the URL names loopback on the Mac that owns the display,
+ * which is not this machine whenever the lane is remote.
+ */
+const resolveMacDesktopStreamUrl = async (
+  streamUrl: string | null,
+  pin?: OpenProjectBinding | null,
+): Promise<{ url: string | null; forwarded: boolean; error: string | null }> => {
+  const text = (streamUrl ?? "").trim();
+  if (!text) return { url: null, forwarded: false, error: null };
+  try {
+    const binding = pin ?? (await getProjectRuntimeBinding());
+    if (binding?.kind !== "remote") {
+      return { url: text, forwarded: false, error: null };
+    }
+    const parsed = parseLoopbackUrl(text);
+    if (!parsed) return { url: text, forwarded: false, error: null };
+    const forward = await ensureRemoteLoopbackForward(
+      binding,
+      parsed.port,
+      `${binding.displayName}:mac-desktop:${parsed.port}`,
+    );
+    return {
+      url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
+      forwarded: true,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      url: null,
+      forwarded: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
+
 function subscribeAppControlEvents(
   cb: (payload: AppControlEventPayload) => void,
   pin?: OpenProjectBinding | null,
@@ -4001,6 +4120,9 @@ const iosSimulatorEventFanout = createIpcEventFanout<IosSimulatorEventPayload>(
   IPC.iosSimulatorEvent,
   () => clearIosSimulatorStatusCaches(),
 );
+const macDesktopEventFanout = createIpcEventFanout<MacDesktopEventPayload>(
+  IPC.macDesktopEvent,
+);
 const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
   IPC.appControlEvent,
   () => appControlStatusCache.clear(),
@@ -4078,6 +4200,8 @@ const adeBridge = {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
+    setIgnoreMenuShortcuts: async (ignore: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appSetIgnoreMenuShortcuts, { ignore }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getInstalledEditors: async (): Promise<EditorTarget[]> => ipcRenderer.invoke(IPC.appGetInstalledEditors),
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
@@ -8721,6 +8845,29 @@ const adeBridge = {
     },
     onEvent: subscribeIosSimulatorEvents,
   },
+  /**
+   * The lane's private macOS screen.
+   *
+   * Every method takes an optional runtime pin, because the display is a
+   * property of the lane's host and not of this window: a Windows desktop
+   * viewing a Mac-hosted lane drives the whole surface through the pinned
+   * runtime. Nothing here is gated on this machine's platform — `getStatus`
+   * answers everywhere and reports `supported: false` when the HOST cannot
+   * host a display.
+   */
+  macDesktop: createMacDesktopBridge({
+    callAction: callMacDesktopActionOr,
+    invoke: (channel, args) => ipcRenderer.invoke(channel, args),
+    resolveStreamUrl: resolveMacDesktopStreamUrl,
+    setEscapeHotkey: (args) =>
+      ipcRenderer.invoke(IPC.macDesktopSetEscapeHotkey, args) as Promise<{ armed: boolean }>,
+    onEscapeHotkey: (cb) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.macDesktopEscapeHotkeyPressed, listener);
+      return () => ipcRenderer.removeListener(IPC.macDesktopEscapeHotkeyPressed, listener);
+    },
+    onEvent: subscribeMacDesktopEvents,
+  }),
   appControl: {
     getStatus: async (
       pin?: OpenProjectBinding | null,
@@ -11034,6 +11181,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.accountRemoveMachine, { machineKey }),
     repairMachinePairing: (): Promise<AdeAccountMachinePairingRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairMachinePairing),
+    startSyncHost: (): Promise<AdeAccountSyncHostStartResult> =>
+      ipcRenderer.invoke(IPC.accountStartSyncHost),
     repairSession: (): Promise<AdeAccountSessionRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairSession),
   },

@@ -1237,6 +1237,7 @@ import {
   parseCodexServerVersion,
   writeSessionLinearIssueContextFile,
   createAgentChatService,
+  isOpenCodeExternalDirectoryInsideAdeRoot,
   restartRecoveryStopAttribution,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
   CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
@@ -2798,6 +2799,50 @@ describe("buildComputerUseDirective", () => {
     const status = makeBackendStatus({});
     const result = buildComputerUseDirective(status);
     expect(result).toBeNull();
+  });
+
+  it("tells every agent the user's own apps are not its to close or reset", () => {
+    // 2026-09-23: a plain "record opening Safari" quit the user's own Safari
+    // with ⌘Q to get a "clean" start.
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
+    expect(result).toMatch(/Never close, quit, hide, minimize or reset an app or window you did not open/);
+  });
+
+  it("sends a Mac host's agent to the lane screen first, and fences the real-screen tools", () => {
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
+      macDesktopAvailable: true,
+    })!;
+    expect(result).toContain("### Mac Desktop — this lane's own screen (use it for desktop apps)");
+    // Web work goes to ADE's browser unless the user names a desktop browser.
+    expect(result).toContain("use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default");
+    expect(result).toContain("only when the user names that app or asks for the Mac Desktop");
+    // `open` is a blank copy that shares the app's data; `stop` quits what the lane opened.
+    expect(result).toContain("`open` starts a separate, blank copy of the app");
+    expect(result).toContain("shares that app's data (cookies, history) with the user");
+    expect(result).toContain("`ade mac-desktop stop` quits the apps the lane opened");
+    expect(result).toContain("ade mac-desktop record start --caption");
+    expect(result).toMatch(/do not fall back to the user's real screen/);
+    // Same words as the Apple lane hint: an ok result is not a confirmed step,
+    // and a failed recording is reported, never swapped for an older one.
+    expect(result).toContain("an ok result only means the input was sent");
+    expect(result).toContain("Confirm the final state before `record stop`");
+    expect(result).toContain("Never attach an older recording or a file you did not just record.");
+    expect(result).toContain("`type \"<text>\" --submit`");
+    expect(result).toContain("`ade mac-desktop show`");
+    // Viewing the screen no longer starts it.
+    expect(result).toContain("viewing the screen does not start it");
+    // A login shell can put an installed, older `ade` first on PATH.
+    expect(result).toContain("$ADE_CLI_PATH");
+    // The Codex/OpenAI computer-use plugin drives the real screen: only on request.
+    expect(result).toMatch(/`mcp__computer_use`[^\n]*drives the user's real screen/);
+    // `ade proof capture/record` is the real screen too, so it is not the default.
+    expect(result).toMatch(/`ade proof capture` and `ade proof record` capture the user's whole real screen/);
+  });
+
+  it("says nothing about a lane screen on a host that cannot give one", () => {
+    const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
+    expect(result).not.toContain("Mac Desktop");
+    expect(result).toContain("Use `ade proof capture` for a reviewer-facing checkpoint");
   });
 
   it("emits no directive when no artifact broker is attached", () => {
@@ -38172,6 +38217,143 @@ describe("createAgentChatService", () => {
       await sendPromise.catch(() => {});
     });
 
+    it("full-auto answers an external_directory ask under the project .ade root without a card", async () => {
+      // The test-drive block: a full-auto OpenCode chat waited eleven minutes
+      // on `external_directory: <project>/.ade/*` — the observations and
+      // artifacts the mac-desktop commands write. Full access has to include
+      // the project's own state root, and answering before a card exists is
+      // what keeps the card and `chat status` from disagreeing later.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+        opencodePermissionMode: "full-auto",
+        permissionMode: "full-auto",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Use mac-desktop." });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      state.events.push({
+        type: "permission.asked",
+        properties: {
+          id: "perm-ade-1",
+          sessionID: "opencode-session-1",
+          permission: "external_directory",
+          patterns: [`${tmpRoot}/.ade/*`],
+          metadata: {},
+        },
+      });
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await vi.waitFor(() => {
+        expect(state.permissionReply).toHaveBeenCalledWith(
+          expect.objectContaining({ requestID: "perm-ade-1", reply: "always" }),
+          expect.anything(),
+        );
+      });
+      // No card was raised, so nothing is left for a later sweep to close
+      // while the session summary still calls the chat blocked.
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.awaitingInput ?? false).toBe(false);
+
+      releaseStream();
+      await sendPromise.catch(() => {});
+    });
+
+    it("full-auto still raises a card for an external_directory ask outside .ade", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+        opencodePermissionMode: "full-auto",
+        permissionMode: "full-auto",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Read /etc." });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      state.events.push({
+        type: "permission.asked",
+        properties: {
+          id: "perm-etc-1",
+          sessionID: "opencode-session-1",
+          permission: "external_directory",
+          patterns: ["/etc/*"],
+          metadata: {},
+        },
+      });
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "approval_request" && event.event.itemId === "perm-etc-1",
+      );
+      expect(state.permissionReply).not.toHaveBeenCalled();
+
+      releaseStream();
+      await sendPromise.catch(() => {});
+    });
+
+    it("scopes the .ade auto-approval to literal paths inside the root", () => {
+      // A glob in the middle cannot be proven inside the root without a glob
+      // engine, and a pattern that escapes it must never be treated as the
+      // project's own state.
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/*`])).toBe(true);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade`])).toBe(true);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`.ade/artifacts/*`])).toBe(true);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, ["/etc/*"])).toBe(false);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/../secrets/*`])).toBe(false);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/**/../../*`])).toBe(false);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [])).toBe(false);
+      // One proven path does not vouch for an unproven sibling.
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/*`, "/etc/*"])).toBe(false);
+    });
+
     it("streams OpenCode assistant text from part deltas, without doubling it at the end", async () => {
       // OpenCode's processor calls updatePartDelta for every text-delta and
       // only calls updatePart at text-start and text-end. Ignoring
@@ -45944,6 +46126,44 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("keeps the OpenCode session pointer across idle_ttl so the next message resumes the same thread", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(streamText).mockImplementation(() => ({
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any));
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "opencode",
+          model: "",
+          modelId: "opencode/openai/gpt-5.4",
+        });
+
+        await service.runSessionTurn({ sessionId: session.id, text: "first" });
+        const firstStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)![0];
+        const pointer = readPersistedChatState(session.id).providerSessionId;
+        expect(pointer).toEqual(expect.any(String));
+
+        // The idle sweep tears the runtime down. OpenCode keeps its sessions in
+        // its own store and re-opens one by id, so this teardown must keep the
+        // pointer: before the fix it flagged the runtime invalidated, the next
+        // persist dropped the id, and every follow-up message opened a
+        // brand-new OpenCode session that had to rediscover the thread.
+        await vi.advanceTimersByTimeAsync(6 * 60_000);
+        expect(readPersistedChatState(session.id).providerSessionId).toBe(pointer);
+
+        await service.runSessionTurn({ sessionId: session.id, text: "second" });
+        const secondStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)![0];
+        expect(firstStart.sessionId).toBeUndefined();
+        expect(secondStart.sessionId).toBe(pointer);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("preserves Claude resume metadata across idle_ttl followed by shutdown", async () => {
       vi.useFakeTimers();
       try {
@@ -49864,6 +50084,77 @@ describe("createAgentChatService", () => {
       status: "completed",
       turnId: started.event.turnId,
     });
+    await sendPromise;
+  });
+
+  it("finishes an OpenCode turn when a settled child keeps publishing session.updated", async () => {
+    // 2026-09-21: a child reported (session.idle) and one millisecond later
+    // OpenCode published session.updated for that same finished child. The
+    // "missed the created event" synthesis re-added it, nothing settled it
+    // again, and the parent's idle waited forever: the transcript read
+    // subagent_started → subagent_result → subagent_started, with no done.
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run the dev loop." });
+    const started = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+    const child = (extra: Record<string, unknown> = {}) => ({
+      id: "opencode-child-1",
+      parentID: "opencode-session-1",
+      title: "Post-rebase quality revalidation",
+      ...extra,
+    });
+
+    pushEvents(
+      { type: "session.created", properties: { info: child() } },
+      { type: "session.idle", properties: { sessionID: "opencode-child-1" } },
+      // The late update for the finished child.
+      { type: "session.updated", properties: { info: child({ summary: { additions: 1, deletions: 0, files: 1 } }) } },
+    );
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "subagent_result" && event.event.taskId === "opencode-child-1",
+    );
+
+    releaseStream();
+    const done = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done" && event.event.turnId === started.event.turnId,
+    );
+    expect(done.event).toMatchObject({ status: "completed" });
+    // One row, started once, settled once: the late update did not resurrect it.
+    expect(events.filter((e) => e.event.type === "subagent_started" && e.event.taskId === "opencode-child-1")).toHaveLength(1);
     await sendPromise;
   });
 

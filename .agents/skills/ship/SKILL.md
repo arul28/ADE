@@ -1,7 +1,9 @@
 ---
 name: ship
 description: >-
-  Autonomous PR-to-merge loop. Polls CI and review bots, fixes failures, rebases
+  Autonomous PR-to-merge loop. Normally adopts the early PR that /quality
+  opened, with one CI and review round already harvested and fixed, so ship
+  mostly closes it out. Polls CI and review bots, fixes failures, rebases
   only on real conflicts, and lands the PR on main. Soft cap of 5 normal
   iterations plus one force-finalize iteration that bypasses review and fixes
   only CI. Pure loop — it does not replace the baseline /quality or /test runs;
@@ -17,8 +19,12 @@ description: >-
 
 Drive the current lane from "work is ready" to "merged on main" without manual
 shepherding. **Pure loop:** `/ship` assumes you already ran `/quality` and
-`/test` — it does not bundle them. It polls, fixes CI + review, rebases only when
-there's a real conflict, and merges. It does not exit until the PR is merged or
+`/test` — it does not bundle them. `/quality` opened the PR when it started, and
+`/quality` and `/test` each harvested and fixed whatever CI and the bots
+reported (playbook: **Early PR and harvests**). So `/ship` normally adopts an
+open PR in state `prepping`, skips PR creation and re-review, and closes the
+PR out. It polls, fixes CI + review, rebases only when there's a real conflict,
+and merges. It does not exit until the PR is merged or
 the merge is genuinely blocked by repo policy.
 
 Print a compact status line each iteration (no banner):
@@ -103,7 +109,10 @@ scheduling or mutating anything; when it is stale, external movement exits
 loop at Phase 1.
 
 The playbook's Phase 0 is **checkpoint → commit-bound quality revalidation →
-push → open PR**. Baseline test generation and the local-CI gate are NOT part
+push → open PR** when no early PR exists. With state `prepping`, it runs only
+**0.6 Adopt the early PR**: keep a current binding, mark held commits as fix
+work, and go to Phase 1. Every revalidation reviews only the delta since
+`qualityReviewedSha`; the full review ran once, in `/quality`. Baseline test generation and the local-CI gate are NOT part
 of ship — that's `/test` (and optionally `/finalize`) before you reach this
 skill.
 
@@ -171,7 +180,8 @@ only user-visible output is the per-iteration status line and the final summary.
   --fill` is the ordinary fallback; stack mode substitutes the persisted direct
   parent for `main`. See the playbook's discovery protocol.
 - **State file:** `.ade/shipLane/<branch-with-slashes-as-__>.json`. `status`:
-  `running` | `ready-stacked` | `done-clean` | `done-max` | `blocked`; it also
+  `prepping` (early PR open, before ship) | `running` | `ready-stacked` |
+  `done-clean` | `done-max` | `blocked`; it also
   records `mode` and the complete stack binding. Rebase rebates the iteration counter by 2
   (floor 0).
 
@@ -312,10 +322,11 @@ self-resume signal. Either:
 
 ## The loop (summary — full detail in the playbook)
 
-- **Phase 0 (first run):** safety rails (clean tree, GitHub origin, refuse
-  `main`) → checkpoint → canonical commit-bound quality revalidation → push →
-  open PR (`ade`, gh fallback) → verify the provisional binding → write state →
-  schedule first wake.
+- **Phase 0 (first run):** with state `prepping`, adopt the early PR (0.6) and
+  go to Phase 1. Otherwise: safety rails (clean tree, GitHub origin, refuse
+  `main`) → checkpoint → canonical commit-bound quality revalidation (delta
+  since `qualityReviewedSha`) → push → open PR (`ade`, gh fallback) → verify the
+  provisional binding → write state → schedule first wake.
 - **Phase 1 — Poll:** wait for CI terminal and every bot that actually started to
   become terminal. After one 12-minute grace window, classify bots with zero
   evidence as inactive/terminal-neutral. Return a structured summary (merged /

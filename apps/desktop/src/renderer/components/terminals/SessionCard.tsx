@@ -51,6 +51,7 @@ import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
+import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
 import type { LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { lanePrStateColor, lanePrStateLabel, openLanePr } from "../../lib/lanePrBadge";
@@ -406,6 +407,7 @@ export const SessionCard = React.memo(function SessionCard({
   lanePrForeign = false,
   machineMarker = null,
   laneAppleDevice = null,
+  laneMacDesktop = false,
   suppressMachineChip = false,
   suppressStatusLabel = false,
   nestedSubagent = false,
@@ -472,6 +474,8 @@ export const SessionCard = React.memo(function SessionCard({
    * with `showLaneIdentity`; elsewhere the lane header shows it.
    */
   laneAppleDevice?: LaneAppleDevice | null;
+  /** The card's lane holds a Mac Desktop display. Shown like `laneAppleDevice`. */
+  laneMacDesktop?: boolean;
   /**
    * The lane header above already names the machine, so the row's own chip
    * would just repeat it. Set by SessionListPane for children of a lane group
@@ -808,6 +812,7 @@ export const SessionCard = React.memo(function SessionCard({
           <LaneNamingLabel laneName={lane.name} naming={namingLane} />
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
+        {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
       </span>,
     );
   }

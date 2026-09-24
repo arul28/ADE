@@ -1,0 +1,103 @@
+{
+  "note": "The Mac Desktop live-stream wire contract. Both the TypeScript sync RPC test (apps/ade-cli/src/services/sync/syncMacDesktopContract.test.ts) and the Swift phone contract test (apps/ios/ADETests/MacDesktopStreamContractTests.swift) mirror these payloads so the two clients cannot drift from the host.",
+  "projectId": "project-1",
+  "laneId": "lane-1",
+  "subscriptionId": "sub-1",
+  "viewerLabel": "ADE Web (MacIntel)",
+  "subscribeResult": {
+    "ok": true,
+    "width": 2560,
+    "height": 1440,
+    "codec": "avc1.640032"
+  },
+  "config": {
+    "codec": "avc1.640032",
+    "width": 2560,
+    "height": 1440,
+    "annexB": true
+  },
+  "streamRecord": {
+    "subscriptionId": "sub-1",
+    "seq": 0,
+    "kind": "config",
+    "keyframe": false,
+    "timestampUs": 0,
+    "data": "eyJjb2RlYyI6ImF2YzEuNjQwMDMyIiwid2lkdGgiOjI1NjAsImhlaWdodCI6MTQ0MCwiYW5uZXhCIjp0cnVlfQ=="
+  },
+  "frameRecord": {
+    "subscriptionId": "sub-1",
+    "seq": 1,
+    "kind": "frame",
+    "keyframe": true,
+    "timestampUs": 33333,
+    "data": "AAAAAWdkADIAAAABZYiE"
+  },
+  "streamEnded": {
+    "subscriptionId": "sub-1",
+    "reason": "stopped"
+  },
+  "streamEndedWithMessage": {
+    "subscriptionId": "sub-1",
+    "reason": "error",
+    "message": "The desktop encoder failed."
+  },
+  "status": {
+    "platform": "darwin",
+    "supported": true,
+    "unsupportedReason": null,
+    "driver": {
+      "state": "running",
+      "title": "Driver",
+      "message": "",
+      "recovery": null,
+      "version": "1"
+    },
+    "permissions": {
+      "screenRecording": "granted",
+      "accessibility": "granted"
+    },
+    "displayMode": "virtual",
+    "display": {
+      "laneId": "lane-1",
+      "displayId": 7,
+      "name": "ADE · fix-header",
+      "mode": "virtual",
+      "width": 2560,
+      "height": 1440,
+      "scale": 2,
+      "origin": {
+        "x": 0,
+        "y": 0
+      },
+      "createdAt": "2026-09-18T10:00:00.000Z",
+      "windowCount": 1,
+      "lastActivityAt": "2026-09-18T10:01:00.000Z"
+    },
+    "windows": [],
+    "lease": {
+      "laneId": "lane-1",
+      "holder": "agent",
+      "holderId": "chat-7",
+      "holderLabel": "Fix the header",
+      "grantedAt": "2026-09-18T10:00:00.000Z",
+      "expiresAt": "2026-09-18T10:01:00.000Z"
+    },
+    "stream": {
+      "running": true,
+      "idle": false,
+      "fps": 30,
+      "bitrateKbps": 900,
+      "lastError": null
+    },
+    "recording": {
+      "laneId": "lane-1",
+      "running": false,
+      "startedAt": null,
+      "filePath": "/Users/someone/secret.mov",
+      "durationMs": null,
+      "caption": null
+    },
+    "lanes": [],
+    "hostIsLocal": false
+  }
+}

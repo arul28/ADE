@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AppleLogo,
   ArrowSquareOut,
@@ -14,6 +14,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
+import { formatThisComputerVersion } from "../remoteTargets/remoteMachineModel";
 import { QRCodeSVG } from "qrcode.react";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
@@ -173,15 +174,30 @@ function platformAccessibleName(platform: string | undefined): string {
 
 // One-shot fetch of the local build/platform. `platform` stays the raw Node
 // identifier because the glyph, not a label, is what consumes it.
-function useAppInfoLine(): { version: string; platform: string } | null {
-  const [info, setInfo] = useState<{ version: string; platform: string } | null>(null);
+function useAppInfoLine(): {
+  packageVersion: string | null;
+  channel: string | null;
+  brainVersion: string | null;
+  platform: string;
+} | null {
+  const [info, setInfo] = useState<{
+    packageVersion: string | null;
+    channel: string | null;
+    brainVersion: string | null;
+    platform: string;
+  } | null>(null);
   useEffect(() => {
     let cancelled = false;
     window.ade?.app
       ?.getInfo?.()
       ?.then((next) => {
         if (!cancelled && next) {
-          setInfo({ version: next.appVersion, platform: next.platform });
+          setInfo({
+            packageVersion: next.appVersion ?? null,
+            channel: next.packageChannel ?? null,
+            brainVersion: next.localRuntime?.versionSkew?.runtimeVersion ?? null,
+            platform: next.platform,
+          });
         }
       })
       .catch(() => {});
@@ -195,13 +211,29 @@ function useAppInfoLine(): { version: string; platform: string } | null {
 export function ThisMacCard({
   sync,
   sessionState,
+  statusSlot = null,
 }: {
   sync: SyncConnections;
   sessionState: AdeAccountSessionState;
+  /**
+   * The Connections popover puts this computer's account standing and its one
+   * button here (`ThisComputerStatus`), in place of the summary line, so the
+   * failure and the fix are in the same card and nowhere else. Settings passes
+   * nothing and keeps the summary.
+   */
+  statusSlot?: ReactNode;
 }) {
+  const hideDirectorySummary = statusSlot != null;
   const accountSignedIn = sessionState === "active";
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
+  const versionLine = appInfo
+    ? formatThisComputerVersion({
+        brainVersion: appInfo.brainVersion,
+        packageVersion: appInfo.packageVersion,
+        channel: appInfo.channel,
+      })
+    : null;
   // Restarting the brain is the fix when it cannot read the stored account
   // session; re-read the snapshot once it settles so the banner clears.
   // Forced: a repair is a user action, so it must not wait out the degraded
@@ -293,7 +325,7 @@ export function ThisMacCard({
             color: COLORS.textSecondary,
           }}
         >
-          {appInfo ? `This machine — ADE ${appInfo.version}` : "This machine"}
+          {versionLine ? `This machine — ${versionLine.text}` : "This machine"}
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
@@ -319,29 +351,36 @@ export function ThisMacCard({
               onSave={saveMachineName}
             />
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-              {accountSignedIn ? (
+              {!hideDirectorySummary && accountSignedIn ? (
                 <Cloud
                   size={13}
                   weight="fill"
                   color={directorySummary.healthy ? COLORS.accent : COLORS.warning}
                   style={{ flexShrink: 0 }}
                 />
-              ) : (
+              ) : null}
+              {!hideDirectorySummary && !accountSignedIn ? (
                 <CloudSlash size={13} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-              )}
-              <span
-                style={{
-                  ...helperTextStyle,
-                  lineHeight: 1.35,
-                  color: directorySummary.healthy || !accountSignedIn
-                    ? helperTextStyle.color
-                    : COLORS.warning,
-                }}
-              >
-                {directorySummary.label}
-              </span>
-              {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
-              {reconnectAction ? (
+              ) : null}
+              {!hideDirectorySummary ? (
+                <span
+                  style={{
+                    ...helperTextStyle,
+                    lineHeight: 1.35,
+                    color: directorySummary.healthy || !accountSignedIn
+                      ? helperTextStyle.color
+                      : COLORS.warning,
+                  }}
+                >
+                  {directorySummary.label}
+                </span>
+              ) : null}
+              {!hideDirectorySummary && showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
+              {/*
+                Settings only. In the Connections popover the status slot
+                (`ThisComputerStatus`) owns this computer's one button.
+              */}
+              {!hideDirectorySummary && reconnectAction ? (
                 <button
                   type="button"
                   disabled={reconnectAction.disabled}
@@ -352,7 +391,23 @@ export function ThisMacCard({
                 </button>
               ) : null}
             </div>
-            {reconnectAction?.detail ? (
+            {statusSlot}
+            {!hideDirectorySummary && directorySummary.detail ? (
+              // The one line that turns "another ADE app owns sync" into an
+              // action: the reader has to quit it. Indented under the icon so
+              // it reads as part of the same sentence.
+              <div
+                style={{
+                  ...helperTextStyle,
+                  paddingLeft: 19,
+                  lineHeight: 1.4,
+                  color: COLORS.warning,
+                }}
+              >
+                {directorySummary.detail}
+              </div>
+            ) : null}
+            {!hideDirectorySummary && reconnectAction?.detail ? (
               <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>{reconnectAction.detail}</div>
             ) : null}
             {problem ? (
@@ -425,6 +480,12 @@ export function ThisMacCard({
  */
 function connectionProblem(status: SyncRoleSnapshot, host: boolean): string | null {
   if (!host) {
+    // "Connects through your main host" is only true when a host exists. When
+    // the brain says sync has not started, nobody on this computer hosts it,
+    // and the line must say so: the card above carries the Start sync button.
+    if (status.routeHealth?.accountDirectory?.state === "sync_not_started") {
+      return "No ADE on this computer is hosting sync right now";
+    }
     return "This machine connects through your main ADE host";
   }
   // The CRDT failure renders as its own alert block below, with the runtime's

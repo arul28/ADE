@@ -81,6 +81,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { SyncHostSingletonConflict } from "./services/sync/syncHostSingleton";
@@ -210,6 +211,13 @@ import {
 } from "./services/projects/projectRoots";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
+import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
+import {
+  describeBrainRoleCeiling,
+  describeDroppedCallerIdentity,
+  dropInheritedCallerIdentity,
+} from "./services/runtime/brainInheritedIdentity";
+import { readProcessStartTimeMs } from "../../desktop/src/main/services/processes/processStartTime";
 import {
   JsonRpcError,
   JsonRpcErrorCode,
@@ -252,6 +260,21 @@ import {
   PERMISSION_MODE_ENUM_MESSAGE,
 } from "./launchArgs";
 import {
+  MAC_DESKTOP_VALUE_CARRIER_FLAGS,
+  MAC_DESKTOP_VALUE_FLAGS,
+  buildMacDesktopPlan,
+  formatMacDesktopAction,
+  formatMacDesktopObservation,
+  formatMacDesktopProofFiled,
+  formatMacDesktopRecording,
+  formatMacDesktopStatus,
+  formatMacDesktopStop,
+  formatMacDesktopWindows,
+  macDesktopErrorHint,
+  macDesktopRecordingDurationMs,
+  macDesktopSocketPlacementWarning,
+} from "./cliMacDesktop";
+import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
   SPAWN_TYPE_FLAGS,
@@ -262,7 +285,9 @@ import {
 } from "../../desktop/src/main/services/chat/harnessPresetLaunch";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
+  competingSyncHostSkipReason,
   createSyncAccountDirectoryHealth,
+  type CompetingSyncHostOwner,
   type SyncMobileProjectSummary,
   type SyncAccountDirectoryHealth,
   type SyncPairingConnectInfo,
@@ -409,7 +434,7 @@ type InvocationStep = {
   injectProjectRootIntoArgs?: boolean;
 };
 
-type FormatterId =
+export type FormatterId =
   | "status"
   | "doctor"
   | "brain-status"
@@ -458,6 +483,14 @@ type FormatterId =
   | "ios-sim-snapshot"
   | "ios-sim-selection"
   | "ios-sim-preview"
+  | "mac-desktop-status"
+  | "mac-desktop-stop"
+  | "mac-desktop-windows"
+  | "mac-desktop-observation"
+  | "mac-desktop-window-observation"
+  | "mac-desktop-action"
+  | "mac-desktop-recording"
+  | "mac-desktop-proof"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -503,7 +536,7 @@ type ChatWaitTarget =
   | "awaiting-input"
   | "terminal";
 
-type CliPlan =
+export type CliPlan =
   | { kind: "help"; text: string }
   | { kind: "static"; value: unknown; formatter?: FormatterId }
   | {
@@ -898,7 +931,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
-    $ ade desktop                                   Launch the installed desktop app
+    $ ade desktop                                   Launch the installed ADE desktop app
+    $ ade mac-desktop start | observe | click | proof
+                                                     Drive this lane's private macOS display
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -943,7 +978,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
-    $ ade ui show apple | floating-apple | browser | proof
+    $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
                                                     Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
@@ -1037,7 +1072,7 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
   return `${primaryKey} ${normalizedSubcommand}`;
 }
 
-const HELP_BY_COMMAND: Record<string, string> = {
+export const HELP_BY_COMMAND: Record<string, string> = {
   triage: `${ADE_BANNER}
   ADE Triage
 
@@ -1216,7 +1251,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   machine brain and starts it if needed.
 
     $ ade desktop
-    $ ade desktop open
+    $ ade desktop --app-name "ADE Beta"
 
   Flags:
     --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
@@ -2326,6 +2361,78 @@ const HELP_BY_COMMAND: Record<string, string> = {
   A coordinate tap is a guess that the layout did not move. Prefer
   tap-element and fill-element; fall back to tap when no query matches.
 `,
+  "mac-desktop": `${ADE_BANNER}
+  Mac Desktop
+
+  Each lane can own a private macOS screen. ADE creates a virtual display named
+  after the lane, parks the lane's windows on it, and drives them through the
+  Accessibility API — the user's real display and real pointer stay untouched.
+  Aliases: \`ade mac-desk\` and \`ade desk\`. NOTE: \`ade desktop\` is the
+  separate ADE desktop-app launcher, not this. macOS runtime hosts only;
+  everywhere else "status" answers supported=false and the rest refuse.
+
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID. A chat-bound
+  caller is pinned to its chat's lane: --lane naming a different lane is refused.
+
+  Display:
+    $ ade mac-desktop status --text                    Host support, display, windows, lease
+    $ ade mac-desktop start --text                     Create this lane's display
+    $ ade mac-desktop display --text                   Show the resolution
+    $ ade mac-desktop display 1440p --text             Set it (1080p, 1440p, 4k)
+    $ ade mac-desktop stop --text                      Quit the apps it opened (forced), return your windows
+    $ ade mac-desktop show --text                      Show it to the user in the tools pane
+    $ ade mac-desktop show --floating --text           ...or as the floating card over the chat
+
+  Windows:
+    $ ade mac-desktop open <app|path|url> --text       Launch an app onto the display
+    $ ade mac-desktop open Xcode -- --args here        Everything after -- is the app's argv
+    $ ade mac-desktop windows --text                   List windows
+    $ ade mac-desktop claim --window <id> --text       Move an existing window here
+    $ ade mac-desktop release --window <id> --text     Give it to you (a lane app goes whole)
+
+  Observe, then act by handle:
+    $ ade mac-desktop observe --text                   Screenshot + numbered elements
+    $ ade mac-desktop observe --map --limit 80 --text  Add a numbered element-map image
+    $ ade mac-desktop click <handle> --text            Click what you observed
+    $ ade mac-desktop click --text "Sign in" --text    Click by visible text
+    $ ade mac-desktop click --x 900 --y 420 --real     Click a point with real input
+    $ ade mac-desktop type "hello" --clear --text      Type into the focused element
+    $ ade mac-desktop type "reddit" --submit --text    Type, then press Return
+    $ ade mac-desktop press return --text              One key (return, tab, escape, f5…)
+    $ ade mac-desktop press return --cmd --shift --text Modifiers: --cmd --shift
+                                                       --alt (option) --control
+    $ ade mac-desktop scroll down --amount 5 --text    Scroll the display or a target
+    $ ade mac-desktop drag --from <handle> --to 900,420
+    $ ade mac-desktop wait --label "Done" --timeout 8000 --text
+
+  Every acting command re-observes and prints what the screen looks like now.
+  Accessibility input is the default and needs no approval; --real posts real
+  pointer/keyboard events and needs one lease per chat:
+
+    $ ade mac-desktop lease --reason "drag the file onto the dock" --text
+
+  Capture:
+    $ ade mac-desktop screenshot --out shot.png --text Capture without filing proof
+    $ ade mac-desktop record start --caption "<what>"  Record; a caption files it
+    $ ade mac-desktop record stop --text
+    $ ade mac-desktop proof --caption "<what>" --text  Capture, re-observe, file proof
+
+  Recording flags (record start):
+    --keep-idle            Keep still stretches at real length.
+    --max-seconds <n>      Stop after n seconds of real time (default 600).
+
+  Still time is cut: a still screen longer than 2 s keeps 0.75 s in the video.
+  record stop reports durationMs (video), wallDurationMs (real time) and
+  idleCutMs. A recording a chat owns stops itself after 10 minutes of real
+  time (stopReason "cap") and is filed as proof under the chat that started
+  it, with or without a caption.
+
+  "mac-desktop proof" refuses without --caption: a proof record nobody can judge is
+  not proof. It re-observes AFTER the capture, so check the state it returns
+  matches your claim before you rely on the record. "screenshot --out" and
+  "proof --out" write inside the lane worktree or the OS temp dir ($TMPDIR);
+  anywhere else is refused.
+`,
   "app-control": `${ADE_BANNER}
   App Control
 
@@ -2608,6 +2715,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ui show floating-apple   The floating device player over the chat
     $ ade ui show browser          The browser, in the tools pane
     $ ade ui show proof            The chat's proof drawer
+    $ ade ui show mac-desktop      The lane's Mac Desktop, in the tools pane
+    $ ade ui show floating-mac-desktop
+                                   The floating Mac Desktop card over the chat
 
   Results:
     shown       The surface is on screen now.
@@ -2626,7 +2736,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --json                 Structured JSON (default when piped).
 
   "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
-  is "ui show floating-apple".
+  is "ui show floating-apple". "ade mac-desktop show [--floating]" is the same
+  for the Mac Desktop.
 `,
   "work-tools": `${ADE_BANNER}
   ADE work tools
@@ -2931,11 +3042,11 @@ ${CURSOR_CLOUD_HELP.cloud}`,
 `,
 };
 
-function isRecord(value: unknown): value is JsonObject {
+export function isRecord(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function asString(value: unknown): string | null {
+export function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
@@ -3227,9 +3338,9 @@ function firstPositional(args: string[]): string | null {
  * cannot swallow the positional after it under `session`, `chat` or anything
  * else.
  */
-type ValueCarrierFlags = ReadonlySet<string>;
+export type ValueCarrierFlags = ReadonlySet<string>;
 
-function firstStandalonePositional(
+export function firstStandalonePositional(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): string | null {
@@ -3256,7 +3367,7 @@ function firstStandalonePositional(
 }
 
 /** Every remaining positional, flags and their values left behind. */
-function standalonePositionals(
+export function standalonePositionals(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): string[] {
@@ -3310,7 +3421,7 @@ function firstTerminatorIndex(
   return -1;
 }
 
-function takeArgsAfterTerminator(
+export function takeArgsAfterTerminator(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): string[] | null {
@@ -3501,7 +3612,7 @@ function detectUnmergedLaneCreateNudge(
   ].join("\n");
 }
 
-type ToolClaimArgs = {
+export type ToolClaimArgs = {
   laneId?: string;
   chatSessionId?: string;
 };
@@ -3557,7 +3668,7 @@ function normalizeUnprocessedMessageCliAction(
   );
 }
 
-function readToolClaimArgs(args: string[]): ToolClaimArgs {
+export function readToolClaimArgs(args: string[]): ToolClaimArgs {
   const laneId = asString(
     readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
   );
@@ -3853,7 +3964,7 @@ function readIntOption(
   return parsed;
 }
 
-function readNumberOption(
+export function readNumberOption(
   args: string[],
   names: string[],
   fallback?: number,
@@ -3949,7 +4060,7 @@ function readJsonPayloadOption(
   return inline ?? fromFile;
 }
 
-function requireValue(value: string | null, label: string): string {
+export function requireValue(value: string | null, label: string): string {
   if (value && value.trim().length > 0) return value.trim();
   throw new CliUsageError(`${label} is required.`);
 }
@@ -4425,7 +4536,7 @@ function actionCallStep(
   };
 }
 
-function actionStep(
+export function actionStep(
   key: string,
   domain: string,
   action: string,
@@ -4465,7 +4576,7 @@ function actionScalarStep(
 }
 
 
-function listActionsStep(key: string, domain?: string): InvocationStep {
+export function listActionsStep(key: string, domain?: string): InvocationStep {
   return actionCallStep(key, "list_ade_actions", domain ? { domain } : {});
 }
 
@@ -10112,7 +10223,7 @@ function buildFilesPlan(args: string[]): CliPlan {
   };
 }
 
-function readProofOwnerBase(args: string[]): JsonObject {
+export function readProofOwnerBase(args: string[]): JsonObject {
   const ownerKind = readValue(args, ["--owner-kind", "--owner"]);
   const ownerId = readValue(args, ["--owner-id"]);
   return {
@@ -12597,6 +12708,12 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
   browser: "browser",
   proof: "proof",
   "proof-drawer": "proof",
+  "mac-desktop": "mac-desktop",
+  mac: "mac-desktop",
+  desk: "mac-desktop",
+  "floating-mac-desktop": "floating-mac-desktop",
+  "floating-mac": "floating-mac-desktop",
+  "floating-desktop": "floating-mac-desktop",
 };
 
 /**
@@ -12607,7 +12724,7 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
  * human at a terminal. Exits 1 when no desktop answered, so a script cannot
  * mistake "nothing appeared" for success.
  */
-function workToolShowPlan(scope: ToolClaimArgs, surface: WorkToolShowSurface): CliPlan {
+export function workToolShowPlan(scope: ToolClaimArgs, surface: WorkToolShowSurface): CliPlan {
   if (!scope.chatSessionId) {
     // Some agent shells (OpenCode) carry no ADE_CHAT_SESSION_ID, so the daemon
     // cannot tell which chat to show. That case is a known gap, not a bug.
@@ -15973,6 +16090,8 @@ function buildCliPlan(
     "ios-sim": "apple",
     ios: "apple",
     simulator: "apple",
+    "mac-desk": "mac-desktop",
+    desk: "mac-desktop",
     app: "app-control",
     apps: "app-control",
     electron: "app-control",
@@ -16005,7 +16124,11 @@ function buildCliPlan(
   // The browser grammar carries values the global table does not, and a `--`
   // that belongs to one of them must not fence `--help` out of the scan.
   const helpCarriers =
-    primaryHelpKey === "browser" ? BROWSER_VALUE_CARRIER_FLAGS : VALUE_CARRIER_FLAGS;
+    primaryHelpKey === "browser"
+      ? BROWSER_VALUE_CARRIER_FLAGS
+      : primaryHelpKey === "mac-desktop"
+        ? MAC_DESKTOP_VALUE_CARRIER_FLAGS
+        : VALUE_CARRIER_FLAGS;
   // Remote ADE Code owns a dedicated, beginner-facing help surface in the TUI
   // client. Keep ordinary `ade code --help` on the established top-level help
   // page, but let the remote subcommand render its actual connection guidance.
@@ -16322,6 +16445,14 @@ function buildCliPlan(
     || primary === "simulator"
   )
     return buildIosSimulatorPlan(args, options.projectRoot ?? null);
+  // `ade desktop` is the ADE desktop-app launcher and stays that way; the Mac
+  // Desktop family is `ade mac-desktop`.
+  if (
+    primary === "mac-desktop" ||
+    primary === "mac-desk" ||
+    primary === "desk"
+  )
+    return buildMacDesktopPlan(args);
   if (
     primary === "app-control" ||
     primary === "app" ||
@@ -18946,6 +19077,13 @@ function machineRuntimeMismatchReason(
   expectedDefaultRole: GlobalOptions["role"],
   options: { enforceBuildCompatibility?: boolean } = {},
 ): string | null {
+  // Every check runs and every failure is named. Stopping at the first one
+  // turned a connection with three problems into three round trips, each
+  // looking like a new, unrelated error (2026-09-22: version, then build,
+  // then role). The passed checks are named too, so the reader can see how
+  // close the connection came.
+  const failed: string[] = [];
+  const passed: string[] = [];
   const enforceBuildCompatibility =
     options.enforceBuildCompatibility ?? true;
   if (enforceBuildCompatibility) {
@@ -18961,22 +19099,29 @@ function machineRuntimeMismatchReason(
         expectedBuildHash != null &&
         runtimeInfo.buildHash === expectedBuildHash;
       if (!versionMatches && !placeholderBuildMatches) {
-        return `version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`;
+        failed.push(`version ${runtimeVersion ?? "missing"} does not match CLI version ${VERSION}`);
+      } else {
+        passed.push("version");
       }
     }
 
-    if (
-      !sourceCliTalkingToReleasedRuntime &&
-      expectedBuildHash &&
-      runtimeInfo.buildHash !== expectedBuildHash
-    ) {
-      return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
+    if (!sourceCliTalkingToReleasedRuntime && expectedBuildHash) {
+      if (runtimeInfo.buildHash !== expectedBuildHash) {
+        failed.push(runtimeInfo.buildHash ? "build hash changed" : "build hash missing");
+      } else {
+        passed.push("build");
+      }
     }
   }
   if (!canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, expectedDefaultRole)) {
-    return `default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`;
+    failed.push(`default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`);
+  } else {
+    passed.push("role");
   }
-  return null;
+  if (failed.length === 0) return null;
+  return passed.length > 0
+    ? `${failed.join("; ")} (${passed.join(", ")} ok)`
+    : failed.join("; ");
 }
 
 export function shouldEnforceMachineRuntimeBuildCompatibility(
@@ -20544,6 +20689,14 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
+  // Before anything reads the env: a brain started from an agent's shell must
+  // not lend that agent's identity to every client it serves.
+  const droppedCallerIdentity = dropInheritedCallerIdentity(process.env);
+  const brainIdentityNotes = [
+    describeDroppedCallerIdentity(droppedCallerIdentity),
+    describeBrainRoleCeiling(options.role),
+  ].filter((note): note is string => note !== null);
+  for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
   if (process.platform === "darwin") {
     boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
   }
@@ -21062,11 +21215,43 @@ async function runServe(
   let brainSyncTunnelClient: SyncTunnelClientService | null = null;
   let brainRelayTunnelGate: RelayTunnelAuthorityGate | null = null;
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
-  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
-    accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
+  let stopSyncHostRehostWatch: (() => void) | null = null;
+  // Read only when no publisher is running, which is exactly the state of the
+  // second ADE on a machine: it cannot take the lease, so it never builds a
+  // publisher, and the popover used to be told "sync hasn't started here yet".
+  // The truthful state is that another ADE app owns sync, and it can name it.
+  // Wired inside the `syncEnabled` block below (that is where the singleton
+  // module is imported); absent means "unknown owner", never a guessed one.
+  let readCompetingSyncHostOwner: (() => CompetingSyncHostOwner | null) | null = null;
+  // When this brain first found no sync host on the machine. Carried as
+  // `failingSinceMs` on the synthesized health so the desktop can tell a
+  // boot-time blip (quiet) from a host that never came back (Start sync).
+  let syncHostMissingSinceMs: number | null = null;
+  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
+    const publisherHealth = accountMachinePublisher?.getPublisherHealth();
+    if (publisherHealth) {
+      syncHostMissingSinceMs = null;
+      return publisherHealth;
+    }
+    syncHostMissingSinceMs ??= Date.now();
+    let owner: CompetingSyncHostOwner | null = null;
+    try {
+      owner = readCompetingSyncHostOwner?.() ?? null;
+    } catch {
+      owner = null;
+    }
+    if (owner) {
+      return createSyncAccountDirectoryHealth(
+        "no_active_sync_scope",
+        competingSyncHostSkipReason(owner),
+      );
+    }
+    return createSyncAccountDirectoryHealth(
       "sync_not_started",
       "Account-directory publishing has not started.",
+      { failingSinceMs: syncHostMissingSinceMs },
     );
+  };
   /**
    * The desktop's OS-level suspend/resume beat, arriving over RPC.
    *
@@ -21297,6 +21482,13 @@ async function runServe(
       getAccountDirectoryHealth,
       getProjectlessSyncSnapshot: projectlessSyncSnapshot,
       repairMachinePairing,
+      // The desktop's "Start sync" button: the same repair the phone's "Fix
+      // connection" runs, so a brain that lost the lease can be re-hosted from
+      // the Connections card instead of a service restart.
+      startSyncHost: async () => {
+        const { recoverSyncHostConnection } = await import("./services/sync/syncHostRecovery");
+        return recoverSyncHostConnection();
+      },
       projectlessSyncControls: createProjectlessSyncControls({
         stores: brainMachineSyncStores,
         cloudRelayStore: machineCloudRelayStore,
@@ -21327,6 +21519,8 @@ async function runServe(
             state: publishHealth.state,
             failingSinceMs: publishHealth.failingSinceMs,
             lastLegDurations: { ...publishHealth.lastLegDurations },
+            lastHttpStatus: publishHealth.lastHttpStatus,
+            lastHttpReason: publishHealth.lastHttpReason,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
         };
@@ -21469,6 +21663,8 @@ async function runServe(
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    stopSyncHostRehostWatch?.();
+    stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();
     machinePairingAutoRecovery = null;
     accountMachinePublisher?.dispose();
@@ -21590,9 +21786,16 @@ async function runServe(
       return;
     }
     try {
-      const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
+      const [
+        { runSyncHostStartupLoop, watchSyncHostAuthorityForRehost },
+        { getRuntimeServiceMainPid },
+        { holdsSyncHostSingleton: holdsSyncHostLease, onSyncHostSingletonAuthorityChanged: onSyncHostAuthorityChanged },
+        { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS: syncHostAuthorityGraceMs },
+      ] = await Promise.all([
         import("./services/sync/syncHostStartupLoop"),
         import("./serviceManager"),
+        import("./services/sync/syncHostSingleton"),
+        import("./services/sync/relayTunnelAuthorityGate"),
       ]);
       // This loop no longer needs a socket-liveness abort. That abort guarded
       // against a rival brain taking the RPC socket while this one waited for
@@ -21614,7 +21817,7 @@ async function runServe(
           return true;
         },
       });
-      await runSyncHostStartupLoop({
+      const syncHostStartupLoopDeps: SyncHostStartupLoopDeps = {
         startSyncHost,
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
@@ -21654,11 +21857,29 @@ async function runServe(
             })
             .catch(() => undefined);
         },
-      });
+      };
+      await runSyncHostStartupLoop(syncHostStartupLoopDeps);
       // A recorded sync-host failure is cleared only once the sync host is
       // really up; clearing it on the bind would reset the crash-loop counter
       // on every restart of a brain that keeps dying right here.
       if (!done) clearLastFailure({ kind: "machine" });
+      // The loop is done, but the lease is not forever: another brain can take
+      // it and then exit. Re-host when a loss outlives the switch grace, so
+      // this brain does not sit as a viewer until someone restarts it.
+      if (!done) {
+        stopSyncHostRehostWatch = watchSyncHostAuthorityForRehost({
+          onAuthorityChanged: onSyncHostAuthorityChanged,
+          holds: holdsSyncHostLease,
+          isDone: () => done,
+          graceMs: syncHostAuthorityGraceMs,
+          log: (message) => process.stderr.write(`${message}\n`),
+          logEvent: (event, meta) => headlessProjectLogger.warn(event, meta),
+          rehost: async () => {
+            await runSyncHostStartupLoop({ ...syncHostStartupLoopDeps, retryFirstConflict: true });
+            if (!done) clearLastFailure({ kind: "machine" });
+          },
+        });
+      }
     } catch (error: unknown) {
       if (done) return;
       // Cross-channel conflict (another build's live brain owns mobile sync):
@@ -21775,11 +21996,37 @@ async function runServe(
     // here", so like the relay tunnel it belongs to whichever brain actually
     // holds the machine-wide sync host lease. A second brain publishing its own
     // endpoints points phones at a runtime that does not host sync.
-    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
+    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged, detectSyncHostSingletonConflict }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
       await Promise.all([
         import("./services/sync/syncHostSingleton"),
         import("./services/sync/relayTunnelAuthorityGate"),
       ]);
+    // The lock file is the authority on who owns sync on this machine, so read it
+    // (not the listener scan, which spawns lsof and would run on every status
+    // read) and report the owner only when it is someone else. Held in a
+    // try/catch because a status read must never fail over a diagnostic, and
+    // cached briefly: the winner only changes when an app quits or starts, while
+    // proving the owner's birth identity spawns `ps` on every uncached read.
+    const competingSyncHostOwnerCache: { value: CompetingSyncHostOwner | null; at: number } = {
+      value: null,
+      at: 0,
+    };
+    readCompetingSyncHostOwner = (): CompetingSyncHostOwner | null => {
+      const at = Date.now();
+      if (competingSyncHostOwnerCache.at > 0 && at - competingSyncHostOwnerCache.at < 10_000) {
+        return competingSyncHostOwnerCache.value;
+      }
+      let owner: CompetingSyncHostOwner | null = null;
+      try {
+        const conflict = detectSyncHostSingletonConflict({ skipListenerScan: true });
+        owner = conflict ? { appName: conflict.owner.appName, pid: conflict.owner.pid } : null;
+      } catch {
+        owner = null;
+      }
+      competingSyncHostOwnerCache.value = owner;
+      competingSyncHostOwnerCache.at = at;
+      return owner;
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -21817,6 +22064,10 @@ async function runServe(
             aiIntegrationService: activeScope?.runtime.aiIntegrationService ?? null,
           });
         },
+        // Only consulted on the `no_active_sync_scope` branch, but declared here
+        // so a publisher built during a lease handoff names the same owner the
+        // no-publisher health fallback above would.
+        readCompetingSyncHostOwner: () => readCompetingSyncHostOwner?.() ?? null,
         // The SAME store instance the machine key above comes from, so a
         // `supersededMachineKeys` answer is checked against the keys this brain
         // actually retired. The publisher used to build a private second store
@@ -21945,6 +22196,55 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  if (droppedCallerIdentity.length > 0) {
+    headlessProjectLogger.warn("brain.inherited_caller_identity_dropped", { keys: droppedCallerIdentity });
+  }
+  if (options.role !== "cto") {
+    headlessProjectLogger.warn("brain.role_ceiling_below_cto", { role: options.role });
+  }
+  /*
+   * Who else is on this ADE home.
+   *
+   * Sharing a home is supported — `npm run dev:desktop` from a lane worktree
+   * is the documented dev loop and deliberately shares `~/.ade` with the
+   * installed app — so this never refuses. It only says so out loud, because
+   * the alternative is what happened on 2026-09-22: three brains on one
+   * database, one of them an orphan five hours past its window, and the only
+   * way to learn that was reading `ps` by hand.
+   */
+  try {
+    const brainRegistry = createBrainHomeRegistry({
+      home: layout.adeDir,
+      readProcessStartTimeMs,
+      isPidAlive: (pid) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      },
+    });
+    const otherBrains = brainRegistry.join({
+      pid: process.pid,
+      endpoint: socketPath,
+      startedAtMs: readProcessStartTimeMs(process.pid),
+      label: process.env.ADE_PACKAGE_CHANNEL?.trim() || "dev",
+    });
+    const sharedHomeSentence = describeOtherBrains(otherBrains);
+    if (sharedHomeSentence) {
+      process.stderr.write(`ADE: ${sharedHomeSentence}\n`);
+      headlessProjectLogger.warn("brain.home_shared", {
+        home: layout.adeDir,
+        others: otherBrains.map((other) => ({
+          pid: other.pid,
+          endpoint: other.endpoint,
+          label: other.label,
+        })),
+      });
+    }
+    const leaveBrainRegistry = () => brainRegistry.leave(process.pid);
+    process.once("exit", leaveBrainRegistry);
+    process.once("SIGINT", leaveBrainRegistry);
+    process.once("SIGTERM", leaveBrainRegistry);
+  } catch {
+    // Diagnostics must never stop a brain from serving.
+  }
   serveStarted = true;
   // The RPC socket is up: any recorded startup failure that was NOT about the
   // sync host is over. Sync-host failures stay recorded until the sync host
@@ -22437,7 +22737,7 @@ function unwrapToolResult(result: unknown): unknown {
   return result;
 }
 
-function unwrapActionEnvelope(value: unknown): unknown {
+export function unwrapActionEnvelope(value: unknown): unknown {
   if (!isRecord(value)) return value;
   if (
     Object.prototype.hasOwnProperty.call(value, "result") &&
@@ -23561,7 +23861,7 @@ function formatLastFailureLine(report: AdeLastFailureReport): string {
   return `${report.code} (${report.component}${repeat}) at ${report.at}${scope} — ${report.message}`;
 }
 
-function renderKeyValues(
+export function renderKeyValues(
   title: string,
   entries: Array<[string, unknown]>,
 ): string {
@@ -23569,15 +23869,21 @@ function renderKeyValues(
     ([, value]) => value !== undefined && value !== null && value !== "",
   );
   const labelWidth = Math.max(0, ...rows.map(([label]) => label.length));
+  // An absolute path is the one value a caller copies rather than reads, so it
+  // is never clipped: a truncated artifact path is a path nobody can open.
+  const isAbsolutePathValue = (value: unknown): boolean =>
+    typeof value === "string"
+    && (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value));
   return [
     title,
     ...rows.map(
-      ([label, value]) => `${label.padEnd(labelWidth)}  ${cell(value, 96)}`,
+      ([label, value]) =>
+        `${label.padEnd(labelWidth)}  ${cell(value, isAbsolutePathValue(value) ? 4096 : 96)}`,
     ),
   ].join("\n");
 }
 
-function renderTable(
+export function renderTable(
   headers: string[],
   rows: unknown[][],
   emptyMessage: string,
@@ -23611,7 +23917,7 @@ function renderTable(
   ].join("\n");
 }
 
-function firstArray(value: unknown, keys: string[]): JsonObject[] {
+export function firstArray(value: unknown, keys: string[]): JsonObject[] {
   if (Array.isArray(value)) return value.filter(isRecord);
   if (!isRecord(value)) return [];
   for (const key of keys) {
@@ -23621,7 +23927,7 @@ function firstArray(value: unknown, keys: string[]): JsonObject[] {
   return [];
 }
 
-function firstRecord(value: unknown, keys: string[]): JsonObject | null {
+export function firstRecord(value: unknown, keys: string[]): JsonObject | null {
   if (!isRecord(value)) return null;
   for (const key of keys) {
     const entry = value[key];
@@ -25178,6 +25484,7 @@ function formatBrowserSessions(value: unknown): string {
   ].join("\n");
 }
 
+
 function formatBrowserObservation(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const observation = firstRecord(result, ["observation"]) ?? result;
@@ -26226,6 +26533,22 @@ function formatTextOutput(
       return formatIosSimSelection(value);
     case "ios-sim-preview":
       return formatIosSimPreview(value);
+    case "mac-desktop-status":
+      return formatMacDesktopStatus(value);
+    case "mac-desktop-stop":
+      return formatMacDesktopStop(value);
+    case "mac-desktop-windows":
+      return formatMacDesktopWindows(value);
+    case "mac-desktop-observation":
+      return formatMacDesktopObservation(value);
+    case "mac-desktop-window-observation":
+      return formatMacDesktopObservation(value, { windowCapture: true });
+    case "mac-desktop-action":
+      return formatMacDesktopAction(value);
+    case "mac-desktop-recording":
+      return formatMacDesktopRecording(value);
+    case "mac-desktop-proof":
+      return formatMacDesktopProofFiled(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":
@@ -28141,12 +28464,19 @@ async function main(): Promise<void> {
       return;
     }
     if (error instanceof CliToolError) {
-      await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
+      // Mac Desktop errors arrive as `MAC_DESKTOP_*: sentence`; the code is the
+      // hint table's key, not something a reader needs to see twice.
+      await writeProcessOutput(
+        process.stderr,
+        `ade: ${error.message.replace(/^MAC_DESKTOP_[A-Z0-9_]+:\s*/, "")}\n`,
+      );
       const iosHint = iosSimulatorErrorHint(
         error.message,
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
       );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
+      const desktopHint = macDesktopErrorHint(error.message);
+      if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
       if (error.details !== undefined) {
         await writeProcessOutput(
           process.stderr,
@@ -28209,6 +28539,7 @@ if (isCliMainArgv(process.argv[1])) {
 
 export {
   BROWSER_VALUE_FLAGS,
+  MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
   buildAdeCodeArgs,
@@ -28224,6 +28555,9 @@ export {
   inferFormatter,
   iosSimulatorErrorHint,
   iosSimulatorSubcommandFromArgv,
+  macDesktopErrorHint,
+  macDesktopRecordingDurationMs,
+  macDesktopSocketPlacementWarning,
   IOS_SIM_ALIAS_DEPRECATION,
   resetIosSimAliasDeprecationForTests,
   applySyncWebPairingFlags,

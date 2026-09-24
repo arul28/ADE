@@ -91,6 +91,12 @@ export type BrowserToolbarLayoutOptions = {
   recording?: boolean;
   urlMinWidth?: number;
   widths?: Partial<BrowserToolbarControlWidths>;
+  /**
+   * Fixed controls the row always draws at the far right, outside the shed
+   * order — the pane's own preview/maximize buttons. Priced so the omnibox is
+   * not squeezed to zero by controls the layout did not account for.
+   */
+  extraRightControlCount?: number;
 };
 
 type BrowserToolbarStep = Pick<
@@ -156,6 +162,9 @@ export function browserToolbarLayout(
       controls += widths.control;
       items += 1;
     }
+    const extra = Math.max(0, options.extraRightControlCount ?? 0);
+    controls += extra * (widths.control + widths.gap);
+    items += extra;
     const consumed = widths.padding + controls + widths.gap * (items - 1);
     const urlWidth = measured == null ? Number.POSITIVE_INFINITY : measured - consumed;
     return { step, showInspect, showAttach, showCamera, urlWidth };

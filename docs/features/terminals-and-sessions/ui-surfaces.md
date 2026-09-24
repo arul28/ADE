@@ -796,7 +796,10 @@ opens the picker, dropped while the picker is already showing, because two
 controls opening one page is one too many. Activity dots for tools with
 **no tab** that are usable here and not idle sit to the right of that, and
 the close ✕ keeps its place at the end. There is no centred title: the lit
-tab is the title.
+tab is the title. The strip carries no tool-level controls: Float and
+Maximize used to live at its right edge and now sit on each screen tool's
+own chrome row (`WorkToolPreviewControls`), where they act on the tool on
+screen instead of from inside the strip that switches tools.
 
 The `×` is a sibling of the tab button, never a child — a button inside a
 button is invalid and the browser resolves it by dropping one of the two
@@ -874,18 +877,34 @@ The browser is the one tool with an explicit obligation, since its
 parks it on every switch away, on close, when the pane goes inactive, on
 unmount, and when the Work route deactivates.
 
+Closing a tool's **tab** is the one close that stops the tool for real.
+`closeWorkToolForReal` (beside `useWorkSidebarTool`) dispatches, on the
+tool's own runtime pin: the built-in browser closes every tab it has open
+(`builtInBrowser.closeTab` per tab from `getStatus`), App Control calls
+`appControl.stop`, the simulator `iosSimulator.shutdown` (lane-scoped, so
+`ignoreOwnership`), and mac-desktop the `mac_desktop.stop` action for the
+lane. A failure is logged and never blocks the tab from leaving the strip.
+Closing the **pane** (the ✕ at the row's end) is not a stop: every tool keeps
+running. The corner card can preview the browser and App Control (subject to
+the per-chat “Show preview when minimized” toggle). The Mac Desktop comes back
+in its own floating player, and stays hidden while the pane is already showing
+it.
+
 ### Which tools are open is per lane
 
 `workSidebarTool` (`WorkSidebarTab | null`, null = picker) and
 `workSidebarOpenTools` (the strip, in order, with the active tool among
 it) are stored per lane in `laneWorkViewByScope` under
 `"<projectKey>::<laneId>"`, read and written through
-`useWorkSidebarTool(laneId, runtimePin)`. Picking a tool appends it, or activates the
-tab it already has without moving it; closing one hands the pane to the
-tab on its **right**, then its left, then the picker
-(`openWorkToolTab` / `closeWorkToolTab`, pure). The optional pin is the
+`useWorkSidebarTool(laneId, runtimePin, chatSessionId)`. Picking a tool
+appends it, or activates the tab it already has without moving it; closing
+one hands the pane to the tab on its **right**, then its left, then the
+picker (`openWorkToolTab` / `closeWorkToolTab`, pure) and stops the tool
+through `closeWorkToolForReal`. The optional pin is the
 focused chat's machine so `work_tools.setActiveTool` publishes there;
-a null pin is the tab's bound runtime. Going back to the picker
+a null pin is the tab's bound runtime. The third argument is the chat the
+pane's tools are attached to, so a tab close can stop the tool with the
+right owner (`chatSessionId` on App Control / iOS / mac-desktop calls). Going back to the picker
 keeps the strip — the tabs are still open, the pane is just showing the
 page you pick from. Persisted state written before the strip existed
 (`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab
@@ -1176,12 +1195,20 @@ agent starts driving the browser while you read a diff, the thing you
 most want to see is the thing you just navigated away from. The corner
 card is a live thumbnail of the most recently active screen tool that is
 **not** the one on screen, parked in a corner of the chat column and one
-click away from taking the pane back. Browser and App Control use a fixed
-288×180 landscape rectangle (16:10), smaller than the main pane; every frame
-uses `object-fit: cover` with `object-position: top`, so a portrait page shows
-its top. The simulator keeps a fixed 240×320 portrait card. It asks its source for frames at the card's width in
-*device* pixels, so a Retina card is not fed a thumbnail-sized image and
-upscaled into mush, nor a 5K panel a full-width one.
+click away from taking the pane back.
+
+The box follows the picture, not a fixed per-tool rectangle. The width is
+the user's (default 288 px, 200–560, never more than half the column); the
+height is `width / aspect`, capped at ~340 px, and the width is shrunk to keep
+the aspect when the cap hits. The aspect comes from the source's own natural
+size — the browser `<img>`'s `naturalWidth/Height`, the App Control frame, the
+simulator `<video>`'s `videoWidth/Height`, the `macDesktopFrame` — and falls
+back to the tool's default (16:10, or 3:4 for the simulator) until the first
+frame arrives. Every tool draws with `object-fit: contain`; nothing is cropped.
+A bottom-right handle resizes the width (the aspect stays locked) and the width
+is persisted project-scoped beside the position. It asks its source for frames
+at the card's width in *device* pixels, so a Retina card is not fed a
+thumbnail-sized image and upscaled into mush, nor a 5K panel a full-width one.
 
 Its chrome follows a mini-player: **nothing but an 8 px status dot at
 rest**, and a 32 px blurred pill — icon, name, last action, ✕ — that takes
@@ -1196,18 +1223,46 @@ the card stops its preview stream, which itself emits one, and a
 dismissal undone by the event it caused would never stick.
 
 - **Which tool.** `selectWorkLiveCardTool` in `workLiveCard.ts` picks the
-  available, live, non-active tool with the newest activity. Only
-  `browser`, `app-control`, and `ios` are previewable
-  (`WORK_LIVE_SCREEN_TOOLS` in `state/workLiveCardState.ts`, which the
-  store also imports so the list cannot fork); Git and Files have nothing
-  to look at.
-- **Dismissal is per tool and per lane.** The ✕ records the activity
-  stamp the card was showing, so the tool comes back only on strictly
-  newer activity — closing it silences the current burst, not the
-  feature, and never another tool. Stamps live in the lane's work-view
-  state; the card's position is project-scoped and stored as fractions of
-  the chat column (`workLiveCardPosition`) so resizing the column keeps it
-  in place instead of stranding it off an edge.
+  available, live, non-active tool with the newest activity. Activity is
+  seeded from the settled `getStatus`/session answers as well as from events,
+  so a tool that was already live when the card mounted — a tab opened before
+  the Work page, a display the pane already streamed — still counts instead of
+  being skipped for `lastActivityAt: 0` forever. A floated tool is shown even
+  before it has painted and outranks every non-floated activity, because the
+  “Show preview when minimized” toggle is an explicit ask and a blank card
+  with the tool's name is better feedback than a lit control that does
+  nothing.   The corner card's candidates are `browser` and `app-control`. The Apple
+  device and the Mac Desktop float in their own players (see below). Git and
+  Files have nothing to look at.
+- **It belongs to the chat you are reading.** The card is passed the selected
+  chat session id and shows only sessions that chat owns: a browser tab's
+  `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.
+  An unowned session (a tab opened by hand, an app attached without a chat)
+  belongs to no chat, so it may float only in a chat whose tools pane has
+  shown it: the card records `workLiveCardSeenByTool` (tool → session key) in
+  the chat's companion state while the pane is open on that tool, and an
+  unowned session is shown only where that marker matches. That is what keeps
+  a hand-opened browser tab from following you into every chat. When a floated tool's
+  session ends (tab closed, app exited, simulator shut down) the float is
+  dropped with it, so closing the tool never leaves a blank named frame.
+- **The ✕ and the toggle mean off until turned back on.** × records the
+  session it was showing — browser active tab id or App Control session id —
+  per chat, in
+  `chatCompanionUiState.ts`; the record is dropped when the chat is deleted.
+  The read is `isWorkLivePreviewEnabled`, which is **presence-based**: any
+  marker means this tool's preview is off for this chat, and a new session
+  does **not** reopen it (that is the change the per-tool toggle brought).
+  Each screen tool's chrome row carries a “Show preview when minimized”
+  toggle (`WorkToolPreviewControls`, default ON, `aria-pressed`); turning it
+  ON clears the marker and re-floats the tool
+  (`setWorkLivePreviewEnabledForChat`), turning it OFF writes the same marker
+  × does, so the two affordances cannot disagree. Frames, status refreshes,
+  open-requests, and remounts never reopen a card. Position and width stay
+  project-scoped (`workLiveCardPosition`, `workLiveCardWidth`) so resizing the
+  column keeps the card in place instead of stranding it off an edge, and a
+  width resize re-clamps and re-persists the position so a right-edge card
+  cannot reopen off-column. In a column narrower than the full-size floor the
+  card shrinks to its minimum width instead of being hidden.
 - **It costs nothing when nobody watches.** It subscribes to feeds that
   already exist — App Control's screencast, the browser's refcounted
   preview stream, the Apple-device H.264 stream keyed by device udid —
@@ -1220,6 +1275,35 @@ dismissal undone by the event it caused would never stick.
   preview subscriber is *parked* past the union of every display's bounds
   instead of being detached — see [Chat › the corner card and parked
   preview views](../chat/README.md#the-corner-card-and-parked-preview-views).
+
+### The shared floating player
+
+The floating Apple device and the floating Mac Desktop share one shell,
+`components/shared/FloatingPlayer.tsx`. The shell owns the box over the chat
+column: drag, resize from any edge, an 8 px status dot at rest, and a hover
+bar that takes the dot's place (Open in pane, picture in picture, Close).
+The picture inside is each tool's own. While picture in picture is up, the
+box stays composited at an opacity no eye can see and takes no pointer input,
+because a canvas the compositor treats as hidden can hand PiP a black surface.
+
+`MacDesktopMiniPlayer.tsx` is the Mac Desktop's player. `WorkLiveCornerCard`
+mounts it beside the corner card, because that is the Work page's host over
+the chat column. `macDesktopFloatState` shows it for the chat in front when
+that chat may see the lane's desktop (a stream viewer, the lease holder, or a
+grant from its agent), the preview is not dismissed, and there is a picture,
+the Off state, an explicit float, or a decoder the player already holds. It
+is not visible while the tools pane is showing Mac Desktop. Closing it records
+the display's identity (`display:<displayId>:<createdAt>`) per chat, so a
+destroyed-and-recreated display can show again. Place and width are one
+window-level choice (`ade.macDesktop.floatingPlayer.v1`), clamped into the
+column on every pass.
+
+The pane and the player share one decoder per lane through
+`macDesktopLiveViewLease.ts`. The first holder starts the stream, the last
+release stops it, and the pane outranks the player. While the pane is open the
+player keeps the stream up without decoding; when the pane switches tools the
+player is promoted. Hiding the pane is not an unsubscribe, and one lane never
+has two decoders.
 
 ### Tooltips and menus in the pane
 

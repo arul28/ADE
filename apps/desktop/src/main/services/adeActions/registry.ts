@@ -55,6 +55,7 @@ import type {
   AttentionPresence,
 } from "../../../shared/types/attention";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
+import { buildMacDesktopDomainService } from "../macDesktop/macDesktopActionDomain";
 import { normalizeExternalSessionDetailArgs } from "../externalSessions/externalSessionDetail";
 import type {
   ChatMentionSuggestArgs,
@@ -3477,6 +3478,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   };
 }
 
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -3529,6 +3531,9 @@ export function getAdeActionDomainServices(
     work_tools: toService(runtime.workToolsStateService),
     computer_use_artifacts: toService(buildComputerUseArtifactsDomainService(runtime)),
     ios_simulator: toService(runtime.iosSimulatorService),
+    // One private macOS screen per lane. The domain's own readers and its
+    // platform gate live beside the service in `macDesktopActionDomain.ts`.
+    mac_desktop: toService(buildMacDesktopDomainService(runtime)),
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,

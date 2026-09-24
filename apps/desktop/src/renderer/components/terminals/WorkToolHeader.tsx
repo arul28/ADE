@@ -399,6 +399,13 @@ export function WorkToolHeader({
             </DropdownMenu.Root>
       ) : null}
 
+      {/*
+        Float and Maximize used to live here, in the strip. Both moved onto the
+        tool's OWN chrome row: the strip is the tab strip, and the controls that
+        act on the tool on screen belong to that tool's header, beside the
+        controls that already act on it.
+      */}
+
       {/* Nothing to add while the picker is already up — that button IS the
           picker, and two controls opening one page is one too many. */}
       {activeTool !== null ? (

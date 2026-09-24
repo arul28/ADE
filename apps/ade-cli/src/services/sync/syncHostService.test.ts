@@ -6313,6 +6313,26 @@ describe("CTO-gated Linear sync commands", () => {
         readObservationPreview: vi.fn(async () => ({ ok: true })),
         setActiveTool: vi.fn(() => ({ ok: true })),
       },
+      // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
+      // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
+      // both. The handlers are never reached with valid args here; the loop
+      // only checks that each optional action clears the authorization gate.
+      macDesktopService: {
+        getStatus: vi.fn(async () => ({ supported: false })),
+        start: vi.fn(async () => ({ supported: true })),
+        stop: vi.fn(async () => ({ stopped: false, releasedWindows: 0 })),
+        getDisplay: vi.fn(async () => null),
+        takeControl: vi.fn(async () => ({ holder: "user" })),
+        returnControl: vi.fn(async () => null),
+        renewLease: vi.fn(async () => null),
+        click: vi.fn(async () => ({ ok: true })),
+        move: vi.fn(async () => ({ ok: true })),
+        startStreamForSubscription: vi.fn(async () => {
+          throw new Error("no display in this fixture");
+        }),
+        releaseStreamSubscription: vi.fn(async () => {}),
+        subscribe: vi.fn(() => () => {}),
+      },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
@@ -6389,6 +6409,15 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.deletePromptStash",
         "workTools.getLaneState",
         "workTools.readObservationPreview",
+        "macDesktop.getStatus",
+        "macDesktop.start",
+        "macDesktop.stop",
+        "macDesktop.streamSubscribe",
+        "macDesktop.streamUnsubscribe",
+        "macDesktop.takeControl",
+        "macDesktop.returnControl",
+        "macDesktop.renewLease",
+        "macDesktop.input",
         "apple.status",
         "apple.streamTicket",
         "apple.input",
@@ -6414,6 +6443,16 @@ describe("CTO-gated Linear sync commands", () => {
       const viewerBlockedActions = new Set<string>([
         "cto.setLinearToken",
         "cto.clearLinearToken",
+        // Creating or destroying the lane's display is a host mutation, and
+        // takeover posts real CGEvents there: a read-only viewer never gets to
+        // make either. A record-backed browser/phone controller may, which is
+        // what `controllerAllowed` is for.
+        "macDesktop.start",
+        "macDesktop.stop",
+        "macDesktop.takeControl",
+        "macDesktop.returnControl",
+        "macDesktop.renewLease",
+        "macDesktop.input",
         // Lane resolution can import a lane and pull mutates worktrees —
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
@@ -6447,6 +6486,12 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
         "ai.cursorCloudStopRun",
+        "macDesktop.start",
+        "macDesktop.stop",
+        "macDesktop.takeControl",
+        "macDesktop.returnControl",
+        "macDesktop.renewLease",
+        "macDesktop.input",
       ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
@@ -6511,6 +6556,51 @@ describe("CTO-gated Linear sync commands", () => {
     }
   });
 
+});
+
+describe("Mac Desktop lease release on socket close", () => {
+  it("tells the command service to return the closed connection's lease", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const releaseMacDesktopConnection = vi.fn();
+    // The host only ever reads descriptors and executes through this service;
+    // the release is the one new call, and it is what a closed tab depends on
+    // to give control back before the lease TTL.
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      remoteCommandService: {
+        getDescriptor: () => null,
+        getSupportedActions: () => [],
+        getDescriptors: () => [],
+        execute: vi.fn(),
+        releaseMacDesktopConnection,
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      peer = await connectPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "close-holds-lease",
+      );
+      peer.ws.close();
+      await waitForValue(
+        () => (releaseMacDesktopConnection.mock.calls.length > 0 ? true : null),
+        "macDesktop lease release on close",
+      );
+      expect(releaseMacDesktopConnection).toHaveBeenCalledWith(expect.stringMatching(/^[0-9a-f-]{8,}$/i));
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
 });
 
 describe("initial hydration priority", () => {

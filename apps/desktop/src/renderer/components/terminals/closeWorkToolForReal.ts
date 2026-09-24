@@ -1,4 +1,3 @@
-// Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge, take theirs.
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
 import {
@@ -6,15 +5,17 @@ import {
   suppressAppleMiniPlayerHandoff,
 } from "../apple/appleMiniPlayerStore";
 import { forgetAppleStreamLeasesForLane } from "../apple/appleStreamLease";
+import { stopMacDesktopLane } from "../chat/macDesktopStatusStore";
 
 /**
  * Closing a tool's TAB closes the tool, not just its tab.
  *
  * The tab strip used to be the whole story: closing the Browser tab parked the
- * native view but left every tab it had open running, closing the Apple
- * Development tab left the simulator booted with nothing on screen, and so on —
- * the tab came back to a tool that had never stopped. This is the one place
- * that turns a tab close into the tool's own shutdown call.
+ * native view but left every tab it had open running, closing the Mac Desktop
+ * tab left the lane's display alive, closing the Apple Development tab left the
+ * simulator booted with nothing on screen, and so on — the tab came back to a
+ * tool that had never stopped. This is the one place that turns a tab close
+ * into the tool's own shutdown call.
  *
  * Deliberately fire-and-forget: the tab must come off the strip whether or not
  * the runtime answers, so every call is dispatched here and its failure is
@@ -132,6 +133,16 @@ export function closeWorkToolForReal(
         // session has already been released still powers off the right
         // simulator rather than finding nothing to stop.
         .then(() => ios.deviceStop!({ laneId, chatSessionId, ignoreOwnership: true }, pin))
+        .catch((error) => logCloseFailure(tool, error));
+      return;
+    }
+    case "mac-desktop": {
+      const macDesktop = window.ade?.macDesktop;
+      if (!macDesktop?.stop || !laneId) return;
+      // Through the status store, so a pane reopened before the stop answers
+      // waits for it ("Stopping Mac Desktop…") instead of showing the display
+      // that is about to go.
+      void stopMacDesktopLane({ laneId, chatSessionId, runtimePin })
         .catch((error) => logCloseFailure(tool, error));
       return;
     }

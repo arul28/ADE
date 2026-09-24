@@ -1,6 +1,7 @@
 export const IPC = {
   appPing: "ade.app.ping",
   appSetDockBadgeCount: "ade.app.setDockBadgeCount",
+  appSetIgnoreMenuShortcuts: "ade.app.setIgnoreMenuShortcuts",
   appGetInfo: "ade.app.getInfo",
   appGetInstalledEditors: "ade.app.getInstalledEditors",
   appRuntimeStatusChanged: "ade.app.runtimeStatusChanged",
@@ -502,6 +503,42 @@ export const IPC = {
   iosSimulatorAssertVisible: "ade.iosSimulator.assertVisible",
   iosSimulatorCaptureProofBundle: "ade.iosSimulator.captureProofBundle",
   iosSimulatorEvent: "ade.iosSimulator.event",
+  // The lane's private macOS screen. One channel per `MacDesktopServiceApi`
+  // method the renderer drives, plus the event stream. A viewing client on
+  // Windows or Linux uses exactly these: the display lives on the runtime
+  // host, so nothing here is gated on this desktop's own platform.
+  macDesktopGetStatus: "ade.macDesktop.getStatus",
+  macDesktopRecheckPermissions: "ade.macDesktop.recheckPermissions",
+  macDesktopRequestPermission: "ade.macDesktop.requestPermission",
+  macDesktopStart: "ade.macDesktop.start",
+  macDesktopStop: "ade.macDesktop.stop",
+  macDesktopListWindows: "ade.macDesktop.listWindows",
+  macDesktopOpen: "ade.macDesktop.open",
+  macDesktopClaimWindow: "ade.macDesktop.claimWindow",
+  macDesktopReleaseWindow: "ade.macDesktop.releaseWindow",
+  macDesktopObserve: "ade.macDesktop.observe",
+  macDesktopClick: "ade.macDesktop.click",
+  macDesktopType: "ade.macDesktop.type",
+  macDesktopPress: "ade.macDesktop.press",
+  macDesktopScroll: "ade.macDesktop.scroll",
+  macDesktopDrag: "ade.macDesktop.drag",
+  macDesktopMove: "ade.macDesktop.move",
+  macDesktopWait: "ade.macDesktop.wait",
+  macDesktopScreenshot: "ade.macDesktop.screenshot",
+  macDesktopStartRecording: "ade.macDesktop.startRecording",
+  macDesktopStopRecording: "ade.macDesktop.stopRecording",
+  macDesktopStartStream: "ade.macDesktop.startStream",
+  macDesktopStopStream: "ade.macDesktop.stopStream",
+  macDesktopGetStreamStatus: "ade.macDesktop.getStreamStatus",
+  macDesktopTakeControl: "ade.macDesktop.takeControl",
+  macDesktopReturnControl: "ade.macDesktop.returnControl",
+  macDesktopRenewLease: "ade.macDesktop.renewLease",
+  macDesktopPresent: "ade.macDesktop.present",
+  /** Arms/disarms the machine-wide Escape while a takeover runs on this Mac. */
+  macDesktopSetEscapeHotkey: "ade.macDesktop.setEscapeHotkey",
+  macDesktopEvent: "ade.macDesktop.event",
+  /** Pushed to the renderer when that Escape fires. */
+  macDesktopEscapeHotkeyPressed: "ade.macDesktop.escapeHotkeyPressed",
   appControlGetStatus: "ade.appControl.getStatus",
   appControlLaunch: "ade.appControl.launch",
   appControlLaunchInTerminal: "ade.appControl.launchInTerminal",
@@ -868,6 +905,7 @@ export const IPC = {
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
   accountRepairMachinePairing: "ade.account.repairMachinePairing",
+  accountStartSyncHost: "ade.account.startSyncHost",
   accountRepairSession: "ade.account.repairSession",
 
   /**

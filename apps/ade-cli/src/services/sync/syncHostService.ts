@@ -18,7 +18,7 @@ import {
   readHistoryFileSize,
   resolveReadableHistoryPath,
 } from "../../../../desktop/src/main/services/storage/historyCompression";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
@@ -256,6 +256,12 @@ import {
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
+import {
+  createMacDesktopSyncStream,
+  type MacDesktopSyncStream,
+  type MacDesktopSyncStreamSink,
+} from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
@@ -851,6 +857,12 @@ type PendingTerminalSnapshotBarrier = {
 
 type PeerState = {
   ws: WebSocket;
+  /**
+   * This socket's identity for Mac Desktop stream subscriptions. Per socket,
+   * not per device: a reconnect is a new connection and must not inherit the
+   * previous socket's viewers.
+   */
+  macDesktopConnectionId: string;
   lifecycleGeneration: number;
   metadata: SyncPeerMetadata | null;
   negotiatedCompression: SyncApplicationCompressionCodec | null;
@@ -1174,6 +1186,20 @@ type SyncHostServiceArgs = {
    * optional action that is never advertised is one a phone can never adopt.
    */
   workToolsStateService?: WorkToolsStateService | null;
+  /**
+   * The runtime's Mac Desktop service, when this host can hold a display.
+   * Threaded for the same reason as `workToolsStateService`: the fallback
+   * remote-command service built below must advertise the same `macDesktop.*`
+   * action set production registers.
+   */
+  macDesktopService?: ReturnType<typeof createMacDesktopService> | null;
+  /**
+   * Subscription fan-out for the live Mac Desktop view. Production
+   * (`syncService.ts`) creates it next to the remote-command service and
+   * injects it here so both the command handlers and connection-close cleanup
+   * share one instance. When absent, the fallback path creates its own.
+   */
+  macDesktopSyncStream?: MacDesktopSyncStream | null;
   appleDeviceService?: AppleDeviceRemoteService | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
@@ -1647,6 +1673,19 @@ export function buildSyncHostHelloOkPayload(args: {
    */
   attachmentUploadEnabled?: boolean;
   /**
+   * Advertise the live Mac Desktop stream contract. Set only when the concrete
+   * command registry serves `macDesktop.streamSubscribe`, so a client that
+   * feature-detects on either half cannot mount a view the host will reject.
+   */
+  macDesktopStreamEnabled?: boolean;
+  /**
+   * Advertise the web takeover contract. Set only when the command registry
+   * serves `macDesktop.takeControl`, same rule as `macDesktopStreamEnabled`: a
+   * client that reads the bit and mounts the control affordance must be able
+   * to invoke the command. The phone ignores it.
+   */
+  macDesktopControlEnabled?: boolean;
+  /**
    * Whether this peer is authorized to use the paired runtime RPC channel and
    * loopback port-forwarding (paired AND a desktop runtime-host). Defaults to
    * false so non-desktop paired devices (phones/browsers) never see the
@@ -1709,6 +1748,16 @@ export function buildSyncHostHelloOkPayload(args: {
               path: ATTACHMENT_UPLOAD_PATH,
               maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
             },
+          }
+        : {}),
+      ...(args.macDesktopStreamEnabled
+        ? {
+            macDesktopStream: true as const,
+          }
+        : {}),
+      ...(args.macDesktopControlEnabled
+        ? {
+            macDesktopControl: true as const,
           }
         : {}),
       ...(isInvalidationOnlyBrowserPeer(args.peer)
@@ -2259,6 +2308,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const attachmentUploads: AttachmentUploadRegistry =
     args.sharedListener?.getAttachmentUploadRegistry()
     ?? createAttachmentUploadRegistry({ logger: args.logger });
+  // The live Mac Desktop stream fan-out. Production injects the instance
+  // `syncService.ts` built (so the registered command handlers and this host's
+  // connection-close cleanup share one map); the fallback path builds its own
+  // from the service the args carry.
+  const macDesktopService = args.macDesktopService ?? null;
+  const ownsMacDesktopSyncStream = !args.macDesktopSyncStream && Boolean(macDesktopService);
+  const macDesktopSyncStream = args.macDesktopSyncStream
+    ?? (macDesktopService
+      ? createMacDesktopSyncStream({
+          logger: args.logger,
+          startStream: async ({ laneId, ownerId }) => {
+            const status = await macDesktopService.startStreamForSubscription({
+              laneId,
+              subscriptionId: ownerId,
+            });
+            const transport = status.transport;
+            if (!transport?.url) {
+              throw new Error("The Mac Desktop stream did not hand back a loopback URL.");
+            }
+            return {
+              url: transport.url,
+              width: transport.width,
+              height: transport.height,
+              codec: transport.codec,
+            };
+          },
+          releaseOwner: (ownerId) => macDesktopService.releaseStreamSubscription(ownerId),
+          subscribeEvents: (listener) => macDesktopService.subscribe(listener),
+          noteActivity: (laneId) => macDesktopService.noteStreamActivity(laneId),
+        })
+      : null);
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
     attachmentUploads,
     db: args.db,
@@ -2288,6 +2368,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     workToolsStateService: args.workToolsStateService,
+    macDesktopService,
+    macDesktopSyncStream,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -2333,6 +2415,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const attachmentUploadEnabled = remoteCommandService
     .getSupportedActions()
     .includes("chat.createAttachmentUpload");
+  // The live Mac Desktop view advertises both halves the client reads: the
+  // `features.macDesktopStream` bit and the `macDesktop.streamSubscribe`
+  // command it is about to invoke. A feature bit without the command would
+  // mount a view whose first RPC the host rejects.
+  const macDesktopStreamEnabled = remoteCommandService
+    .getSupportedActions()
+    .includes("macDesktop.streamSubscribe");
+  // The control contract is advertised on its own command, not on the stream's:
+  // a host serves control whenever it serves the takeover commands, whether or
+  // not it also built the stream fan-out.
+  const macDesktopControlEnabled = remoteCommandService
+    .getSupportedActions()
+    .includes("macDesktop.takeControl");
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
   const backpressureTimeoutMs = Math.max(heartbeatIntervalMs * 3, 10_000);
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
@@ -3475,6 +3570,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   ): PeerState {
     const peer: PeerState = {
       ws,
+      macDesktopConnectionId: randomUUID(),
       lifecycleGeneration: 0,
       metadata: null,
       negotiatedCompression: null,
@@ -3680,6 +3776,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         broadcastBrainStatus();
       }
       peers.delete(peer);
+      // Every Mac Desktop viewer this socket owned is gone. The release stops
+      // the encoder when the set empties, same as a closing chat.
+      macDesktopSyncStream?.releaseConnection(peer.macDesktopConnectionId);
+      // A socket that was driving a lane's display gives the input lease back
+      // now rather than at the TTL. Fire and forget: the lease's own deadline
+      // is still the guarantee, and a return that loses a race with a new
+      // controller simply does not match. The command service holds this
+      // bookkeeping because the derived holder id never leaves the brain.
+      // Optional call because an embedding may inject a service built before
+      // this method existed; the TTL still covers that host.
+      remoteCommandService.releaseMacDesktopConnection?.(peer.macDesktopConnectionId);
       if (peer.rosterSubscribed && rosterSubscriberPeers().length === 0) {
         stopRosterSafetyPoll();
         clearRosterFlushTimers();
@@ -6819,11 +6926,40 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         : surfaceBoundPayload;
       const executionStartedAtMs = Date.now();
       const stopTrackingCommand = trackBrainLoopWatchdogCommand(payload.action);
+      // Only the Mac Desktop stream methods read the sink, and a subscription
+      // outlives the command that created it, so the sink closes over the peer
+      // rather than the command's own reply path. Every `macDesktop.*` command
+      // also gets the connection id, which the takeover handlers derive the
+      // lease's controller id from — the stream fan-out is not a requirement
+      // for control, so the id is passed independently of the sink.
+      const macDesktopConnectionId =
+        peer.authenticated && payload.action.startsWith("macDesktop.")
+          ? peer.macDesktopConnectionId
+          : undefined;
+      const macDesktopStreamSink: MacDesktopSyncStreamSink | undefined =
+        macDesktopSyncStream && macDesktopConnectionId
+          ? {
+              connectionId: macDesktopConnectionId,
+              // Hand the transport's own answer back: `send` refuses once the
+              // socket is over its 4 MiB gate, and the fan-out must then skip
+              // the picture to the next keyframe instead of pretending the
+              // record went out.
+              sendRecord: (record) => send(peer, "macDesktop.streamRecord", record),
+              sendEnded: (ended) => {
+                send(peer, "macDesktop.streamEnded", ended);
+              },
+              pendingBytes: () => peer.ws.bufferedAmount,
+            }
+          : undefined;
       let created: unknown;
       try {
         created = preparedAnalytics.captureDisabled
           ? { accepted: false, reason: "disabled" }
-          : await executor.execute(routedPayload, { signal });
+          : await executor.execute(routedPayload, {
+              signal,
+              ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
+              ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
+            });
       } finally {
         stopTrackingCommand();
         const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
@@ -8073,6 +8209,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         connectionTransport: syncConnectionTransportForOrigin(peer.transportOrigin),
         terminalInputAckEnabled: true,
         attachmentUploadEnabled,
+        macDesktopStreamEnabled,
+        macDesktopControlEnabled,
         // Runtime RPC channel + port-forward are desktop-runtime-host only,
         // even after successful pairing (phones/browsers stay on the mobile
         // command allowlist).
@@ -9464,6 +9602,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Never dispose a shared listener's registry: it outlives this host and
       // still serves the next project's uploads.
       if (ownsAttachmentUploadRegistry) attachmentUploads.dispose();
+      // An injected stream belongs to `syncService.ts`, which disposes it after
+      // this host; only the fallback-created one is ours to tear down.
+      if (ownsMacDesktopSyncStream) macDesktopSyncStream?.dispose();
       localActiveLaneIds = new Set<string>();
       lanePresenceByLaneId.clear();
       dropInFlightCommandRecordsForProject();

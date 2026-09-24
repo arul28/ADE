@@ -17,9 +17,11 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 `/context` → work → `/quality` → `/test` → `/ship`
 
 - **/context** — session primer: detects the lane's area and loads only the matching docs + perf skill (never a broad dump).
-- **/quality** — dual-track review (correctness/security + maintainability/code-judo); fixes every verified finding at every severity. It gates only a product decision the agent cannot make or a behavior change the branch was not authorized to make.
-- **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards; records a named regression test or exact alternate verification for every accepted correctness finding.
-- **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). Run baseline `/quality` and `/test` first; after any ship-loop mutation, ship reruns commit-bound `/quality` revalidation before pushing or merging. Wraps `docs/playbooks/ship-lane.md`.
+- **/quality** — opens the PR first so CI and the review bots run during the review; then a dual-track review (correctness/security + maintainability/code-judo) that fixes every verified finding at every severity; then harvests the PR's CI failures and bot comments and fixes those too. It gates only a product decision the agent cannot make or a behavior change the branch was not authorized to make.
+- **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards. Adds a test for a fixed bug only when no existing test would catch it, and never a tautological or change-detector test. Harvests the PR again before it finishes.
+- **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). It adopts the early PR with one round already fixed, so it mostly closes the PR out. After any ship-loop mutation it reruns commit-bound `/quality` revalidation on the delta only. Wraps `docs/playbooks/ship-lane.md`.
+
+The PR opens at the start of `/quality`, not at `/ship`. CI and the bots then work in parallel with quality and test, and each phase harvests their results (playbook: **Early PR and harvests**). Do not push while a review bot is in flight on the remote head — a push restarts Greptile.
 
 ### Running the dev app
 
@@ -43,7 +45,7 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
 
 ## Playbooks
 
-- `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge). Baseline `/quality` and `/test` run before it; mutation-specific commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
+- `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge), plus the **Early PR and harvests** procedure that `/quality` and `/test` run. Baseline `/quality` and `/test` run before ship; delta-only commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
 - `docs/playbooks/windows-signed-release.md` — maintainer handoff for taking the gated Windows x64 build through signing, clean-host and installed-update proof, draft verification, publication, and website enablement without changing the macOS or iOS release paths.
 
 ## Hit every ADE surface
@@ -86,7 +88,7 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
 1. **Killing by pattern.** Do not `pkill -f`, `pgrep | kill`, or kill a PID you found by matching a name or path. Your own agent process carries this worktree's path in its argv, `pgrep -f xcodebuild` also matches xcodebuildmcp and its wrapper shell, and this machine runs the real ADE brain plus other dev runtimes. Kill only a PID you captured at spawn time, after confirming its cwd is your worktree.
 2. **Writing to live state.** The project root's `.ade/` (database, secrets, artifacts) and the installed brain are the developer's real, in-use ADE instance. Read from them for realistic data; never point a dev server at them, never open them read-write, never "clean them up". Isolated dev state belongs under your worktree or a temp directory.
 3. **Editing outside the lane worktree.** Every edit targets `.ade/worktrees/<lane>/...`, never the project-root checkout. Search tools may print root-checkout paths — translate them before editing, or the change lands on the wrong branch.
-4. **Restarting shared runtimes casually.** `ensureRuntime`-style commands can restart a brain another session is using. Check what is running before starting or restarting sockets, brains, or dev servers.
+4. **Restarting shared runtimes casually.** `ensureRuntime`-style commands can restart a brain another session is using. Check what is running before starting or restarting sockets, brains, or dev servers: `pgrep -alf "cli.cjs serve|/bin/ade serve"`, then `ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME` for each — no `ADE_HOME` means it is on the shared `~/.ade`. `--no-sync` guards only the sync lease, not the database: two brains on one home share one database and a chat can be owned by just one of them, so the other's agents can stop unexplained. Starting a brain on an occupied home prints who else is there and logs `brain.home_shared`. Give a brain you start its own `ADE_HOME` unless you specifically need the shared one, and confirm it exited when you are done. A separate home is not enough on its own: each project keeps its database in `<project>/.ade/ade.db`, so a brain on another home that opens a real project shares that project's database with the installed brain. Test against a throwaway project registered only in your home (`lsof <project>/.ade/ade.db` shows every brain holding it). A brain a desktop will connect to must be started as `ade --role cto serve`: a plain `ade serve` serves at role `agent` and refuses the desktop.
 
 ## Work artifacts
 
@@ -114,8 +116,63 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
   - `npm --prefix apps/ade-cli run build`
 - **Smallest proof first.** Run the narrowest check that proves the change: the touched test files, a scoped typecheck, one shard. Do not run full local suites by default — CI owns the full matrix, and `/finalize` is the opt-in local full gate before a push.
 - Run full desktop tests with the root `npm run test:desktop:sharded` command; use single-file or single-shard Vitest commands for iteration.
-- Tests wait on events, receipts, and promises — never on wall-clock sleeps. A test that needs a `sleep` or a raised timeout to pass is wrong; fix the seam instead.
 - Installing deps: use `npm run install:apps` from the repo root, or `cd apps/<app> && npm install`. Never `npm --prefix apps/<app> install`. `--prefix` only redirects where npm writes `node_modules`; the package npm treats as "the one being installed" is still the one in the *current working directory*. From the repo root that is the root package `ade`, so npm installs the repo into the sub-app: it writes `"ade": "file:../.."` into the app's `package.json` and `package-lock.json` and leaves an `apps/<app>/node_modules/ade` symlink back to the root. Revert that churn if you hit it. `npm --prefix apps/<app> run <script>` and `npm --prefix apps/<app> exec` do not install anything and are unaffected -- but note `exec` runs Vitest with the *current* working directory, so run whole suites as `cd apps/<app> && npx vitest run` or the app's own `npm run test`.
+
+## Writing tests
+
+These are hard rules, not preferences. A test that breaks one of them is a
+defect, even when it passes.
+
+0. **Do not write new tests while you build.** First make the change work and
+   validate it by hand, in the running app, or with an agent-driven check
+   (App Control, the browser, the iOS simulator, the CLI). New tests come in
+   `/test`, after that validation, and they pin the behavior you proved.
+   - When the user asks for tests directly, write them; this rule covers tests
+     that nobody asked for.
+   - Run existing tests during the work as often as you want. This rule stops
+     writing new tests, not running old ones.
+   - When an existing test breaks because you changed behavior on purpose,
+     leave it for `/test`. Do not bend it during the work.
+   - **The one exception:** the behavior can only be validated by a test (a
+     race, a pure parser, a state machine with no UI or CLI surface). Then the
+     test is the validation tool, and you may write it during the work. Say
+     why in your report.
+1. **A test must fail only when behavior breaks.** It must never fail when a
+   refactor keeps the behavior. Test through the public seam: the exported
+   function, the IPC handler, the service API, what the user sees and does.
+2. **List the failure modes while you build.** Write down, as notes in your
+   report and not as test code, the ways the contract can fail for a caller.
+   `/test` tests those, not the lines you changed.
+3. **Never write a tautological test.** Do not assert that a mock returns what
+   you told it to return. Do not assert that arguments pass through unchanged
+   to a mock. Do not compute the expected value with the code under test. Do
+   not assert that a constant contains its own substrings.
+4. **Never write a change-detector test.** Do not read source files
+   (`readFileSync` of `.ts`, `.tsx`, `.swift`) to grep for code or statement
+   order. Do not pin CSS classes, pixel values, SVG paths, exact copy, or the
+   call order of internal helpers. Do not assert that a removed button, field,
+   or option stays removed.
+5. **No regression test without a gap.** A bug fix gets a new test only when no
+   existing test would fail on the pre-fix code. First, extend the existing
+   test for that contract or add a row to its `it.each` table.
+6. **Combine before you add.** Trivial cases of one contract are one `it.each`
+   table, not many small tests. Extend the existing test file for the module;
+   do not create a sibling file for one concern.
+7. **Prove that each new test can fail.** Break the behavior on purpose, run the
+   test, and see it fail. Then restore the code. A test that still passes
+   proves nothing; delete it.
+8. **Mock only at process boundaries:** file system, network, child processes,
+   Electron APIs, IPC. Never mock the module under test.
+9. **Wait on events, receipts, promises, or fake timers — never on wall-clock
+   sleeps.** A test that needs a `sleep` or a raised timeout to pass is wrong;
+   fix the seam instead.
+10. **Do not replace service tests with end-to-end tests.** The most valuable
+    tests here are service-level tests of races and seams (process-kill guards,
+    multi-brain claims, token refresh order). An end-to-end run cannot reach
+    them reliably.
+
+Keep this list the same as the copy in `CLAUDE.md` and the **Test value rules**
+in `.agents/skills/test/SKILL.md`. Change all three together.
 
 ## Terminology
 

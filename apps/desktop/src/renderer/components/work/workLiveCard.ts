@@ -1,23 +1,31 @@
 import type { WorkSidebarTab } from "../../state/appStore";
 import {
   WORK_LIVE_SCREEN_TOOLS,
-  isWorkLiveDismissalKey,
+  isWorkLiveCardClosed,
+  isWorkLiveCardSeen,
+  isWorkLivePreviewDisabled,
   isWorkLiveScreenTool,
-  normalizeWorkLiveCardDismissals,
+  normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
-  workLiveIosDismissalKey,
-  type WorkLiveCardDismissals,
+  normalizeWorkLiveCardWidth,
+  WORK_LIVE_CARD_DEFAULT_WIDTH,
+  WORK_LIVE_CARD_MAX_WIDTH,
+  WORK_LIVE_CARD_MIN_WIDTH,
+  type WorkLiveCardClosedByTool,
+  type WorkLiveCardFloatingTools,
   type WorkLiveCardPosition,
+  type WorkLiveCardSeenByTool,
   type WorkLiveScreenTool,
 } from "../../state/workLiveCardState";
 
 /**
  * The floating corner card's decisions, as pure functions.
  *
- * Two questions live here — "which tool should the card show?" and "which
- * remembered frame is the pointer over?" — because both are the kind of thing
- * that is obvious until it isn't (a dismissed card that never comes back, a
- * scrubber that shows frame 10 of 3), and neither needs a DOM to answer.
+ * Three questions live here — "which tool should the card show?", "how big is
+ * the box?", and "which remembered frame is the pointer over?" — because all
+ * three are the kind of thing that is obvious until it isn't (a dismissed card
+ * that never comes back, a scrubber that shows frame 10 of 3, a picture scaled
+ * into a fixed box and cropped), and none needs a DOM to answer.
  */
 
 /**
@@ -29,13 +37,24 @@ import {
  */
 export {
   WORK_LIVE_SCREEN_TOOLS,
-  isWorkLiveDismissalKey,
   isWorkLiveScreenTool,
-  normalizeWorkLiveCardDismissals,
+  isWorkLiveCardClosed,
+  isWorkLivePreviewDisabled,
+  isWorkLiveCardSeen,
+  normalizeWorkLiveCardClosedByTool,
   normalizeWorkLiveCardPosition,
-  workLiveIosDismissalKey,
+  normalizeWorkLiveCardWidth,
+  WORK_LIVE_CARD_DEFAULT_WIDTH,
+  WORK_LIVE_CARD_MAX_WIDTH,
+  WORK_LIVE_CARD_MIN_WIDTH,
 };
-export type { WorkLiveCardDismissals, WorkLiveCardPosition, WorkLiveScreenTool };
+export type {
+  WorkLiveCardClosedByTool,
+  WorkLiveCardFloatingTools,
+  WorkLiveCardPosition,
+  WorkLiveCardSeenByTool,
+  WorkLiveScreenTool,
+};
 export { isWorkLivePictureInPictureSupported, workLiveIosStreamRequestUrl } from "./workLiveIosPictureInPicture";
 
 /**
@@ -54,133 +73,166 @@ export type WorkLiveActivity = {
   available: boolean;
   /** Something of this tool's is running right now. */
   live: boolean;
+  /**
+   * The chat that owns this session, or null when it is unowned (a manually
+   * started browser tab, a display owned by the lane).
+   *
+   * The card follows the conversation you are reading: a session started by
+   * another chat must not float over this one. Only the owner's chat sees it.
+   */
+  ownerChatSessionId: string | null;
+  /**
+   * Identity of the CURRENT session, used for the "×" rule: a closed card stays
+   * closed while this key is unchanged, and a new key may show again.
+   */
+  sessionKey: string | null;
+  /**
+   * Whether a session with no owner may show in the chat on screen.
+   *
+   * The card computes this per chat: for browser, App Control and the
+   * simulator it is "this chat's pane has shown exactly this session"
+   * (`isWorkLiveCardSeen`), so a tab opened by hand floats where you opened it
+   * and nowhere else. Always false for mac-desktop, which is a lane resource
+   * gated on being a viewer or lease holder.
+   */
+  showWhenUnowned: boolean;
 };
 
-/* ── Dismissal ────────────────────────────────────────────────────────────── */
+/* ── Selection ────────────────────────────────────────────────────────────── */
 
-export function commitWorkLiveCardDismissal(
-  dismissals: WorkLiveCardDismissals | null | undefined,
-  key: string,
-  activityStamp: number,
-): WorkLiveCardDismissals {
-  const previous = dismissals?.[key] ?? 0;
-  return { ...(dismissals ?? {}), [key]: Math.max(previous, activityStamp) };
+/**
+ * Does this activity belong to the chat on screen?
+ *
+ * Owned sessions only show in their own chat. Unowned sessions show only where
+ * the caller says they may (`showWhenUnowned`): the card sets it to "this
+ * chat's pane has shown this session", and mac-desktop always to false.
+ */
+export function workLiveActivityBelongsToChat(
+  activity: Pick<WorkLiveActivity, "ownerChatSessionId" | "showWhenUnowned">,
+  activeChatSessionId: string | null,
+): boolean {
+  if (activity.ownerChatSessionId != null) {
+    return activeChatSessionId != null && activity.ownerChatSessionId === activeChatSessionId;
+  }
+  return activity.showWhenUnowned;
 }
 
 /**
  * Which tool the card shows, or null for "show nothing".
  *
  * The card exists to keep the screen you are NOT looking at in view, so the
- * active tool is always excluded — otherwise you would get a postage-stamp copy
- * of the pane next to the pane. Ties go to the most recent activity, which is
- * what "the thing that just happened" means to the person watching.
+ * active tool is normally excluded — otherwise you would get a postage-stamp
+ * copy of the pane next to the pane. Ties go to the most recent activity, which
+ * is what "the thing that just happened" means to the person watching.
  *
- * `dismissals` implements the "×" affordance: a dismissed tool stays hidden
- * until it does something strictly newer than the stamp it was dismissed at, so
- * closing it silences the current burst of activity rather than the feature —
- * and never silences a different tool.
+ * A tool the user explicitly FLOATED (`floatingTools`) suspends that exclusion
+ * for itself until it is closed again: the Float button is the one way to ask
+ * for the preview of the pane you are already on. A floated tool also skips the
+ * live and activity checks — the button was pressed, so the card is the
+ * feedback; a floated tool that has not painted yet is a blank frame with its
+ * name on it, not a lit button that silently does nothing — and it outranks
+ * every non-floated activity, so another tool's newer trace cannot quietly
+ * take the slot the user just asked for.
+ *
+ * `closed` implements the "×" affordance by tool, not by activity stamp:
+ * frames, status refreshes and remounts can never reopen a card. It is
+ * presence-based (`isWorkLivePreviewDisabled`), so the "Show preview when
+ * minimized" toggle — which clears the marker — is the only way back on.
  */
 export function selectWorkLiveCardTool(args: {
   activeTool: WorkSidebarTab | null;
+  /** The chat on screen, or null when none is selected. */
+  activeChatSessionId: string | null;
   activities: readonly WorkLiveActivity[];
-  /** Per-tool dismissal stamps for the current lane, or null. */
-  dismissals: WorkLiveCardDismissals | null;
+  /** Tools explicitly floated on for this chat. */
+  floatingTools?: readonly WorkLiveScreenTool[] | null;
+  /** Per-tool closed markers for this chat, keyed by tool id. */
+  closed?: WorkLiveCardClosedByTool | null;
 }): WorkLiveScreenTool | null {
-  const { activeTool, activities, dismissals } = args;
+  const { activeTool, activeChatSessionId, activities, floatingTools, closed } = args;
   let best: WorkLiveActivity | null = null;
+  let bestIsFloated = false;
   for (const activity of activities) {
-    if (!activity.available || !activity.live) continue;
-    if (activity.tool === activeTool) continue;
-    if (activity.lastActivityAt <= 0) continue;
-    const dismissedAt = dismissals?.[activity.tool];
-    if (dismissedAt != null && activity.lastActivityAt <= dismissedAt) continue;
-    if (!best || activity.lastActivityAt > best.lastActivityAt) best = activity;
+    if (!activity.available) continue;
+    const floated = Boolean(floatingTools?.includes(activity.tool));
+    // Float is per chat and an explicit ask, so it may show an unowned session
+    // this chat's pane has not (yet) shown — a pane with no tab, floated. It
+    // never overrides another chat's ownership.
+    if (
+      !workLiveActivityBelongsToChat(activity, activeChatSessionId)
+      && !(floated && activity.ownerChatSessionId == null)
+    ) continue;
+    if (!floated) {
+      if (!activity.live) continue;
+      if (activity.tool === activeTool) continue;
+      if (activity.lastActivityAt <= 0) continue;
+      if (isWorkLivePreviewDisabled(closed, activity.tool)) continue;
+    }
+    if (
+      !best
+      || (floated && !bestIsFloated)
+      || (floated === bestIsFloated && activity.lastActivityAt > best.lastActivityAt)
+    ) {
+      best = activity;
+      bestIsFloated = floated;
+    }
   }
   return best?.tool ?? null;
 }
 
 /**
- * One floating card to paint. Browser and App Control stay one-of; each live
- * Apple device is its own card, keyed by udid, so two lanes with devices are
- * two cards rather than a fight over the `ios` tool slot.
- */
-export type WorkLiveCardSelection =
-  | { kind: "tool"; tool: Exclude<WorkLiveScreenTool, "ios"> }
-  | { kind: "ios"; deviceUdid: string };
-
-/** One Apple device the card can picture. */
-export type WorkLiveIosDevice = {
-  udid: string;
-  laneId: string;
-  name: string;
-  appName: string | null;
-  chatSessionId: string | null;
-  /** Truthy while this device is recording; sourced from `status` / record list. */
-  recording: unknown;
-  lastActivityAt: number;
-};
-
-export function workLiveCardSelectionKey(selection: WorkLiveCardSelection): string {
-  switch (selection.kind) {
-    case "ios":
-      return workLiveIosDismissalKey(selection.deviceUdid);
-    case "tool":
-      return selection.tool;
-    default: {
-      const _exhaustive: never = selection;
-      return _exhaustive;
-    }
-  }
-}
-
-function iosDeviceDismissedAt(
-  dismissals: WorkLiveCardDismissals | null | undefined,
-  udid: string,
-): number | undefined {
-  return dismissals?.[workLiveIosDismissalKey(udid)] ?? dismissals?.ios;
-}
-
-/**
- * Every card that should be on screen right now.
+ * Whether the floating Mac Desktop is mounted, and whether it is in view.
  *
- * The Apple column is the one place an open device is already in view, so
- * `activeTool === "ios"` hides every device card. Browser and App Control still
- * share a single slot (most recent wins). Devices do not: one card per udid.
+ * The Mac Desktop floats in its own player (`MacDesktopMiniPlayer`), not in the
+ * corner card, so this is its whole selection rule. It WANTS to show for the
+ * chat in front when that chat may see the lane's desktop (a viewer, the lease
+ * holder, or granted by its agent), the chat has not turned the preview off,
+ * and there is something to show: a picture, the Off state of a display the
+ * agent was using, or an explicit float waiting for its first frame.
+ *
+ * It is never in view while the tools pane shows the Mac Desktop. A float does
+ * not override that, unlike the corner card's Float: a copy of the pane next to
+ * the pane is the "banner over the open pane" the owner reported. "Shows" is
+ * the tab id AND the pane's own element being mounted, so a tab state that
+ * reads otherwise for a moment cannot put a second picture beside the pane.
+ *
+ * A player that holds the lane's decoder is in view too, before its first
+ * frame. It used to mount hidden until a frame arrived, and a stream that sent
+ * no frame kept an encoder and a reader running behind a player nobody could
+ * see (the owner's 2026-09-24 report). Now the player shows the last frame, or
+ * "Connecting video", or says the display sent no picture.
  */
-export function selectWorkLiveCards(args: {
-  activeTool: WorkSidebarTab | null;
-  activities: readonly WorkLiveActivity[];
-  dismissals: WorkLiveCardDismissals | null;
-  iosDevices: readonly WorkLiveIosDevice[];
-  iosAvailable: boolean;
-}): WorkLiveCardSelection[] {
-  const { activeTool, activities, dismissals, iosDevices, iosAvailable } = args;
-  const cards: WorkLiveCardSelection[] = [];
-  const seen = new Set<string>();
-
-  if (activeTool !== "ios" && iosAvailable) {
-    const ranked = [...iosDevices]
-      .filter((device) => device.udid.trim().length > 0 && device.lastActivityAt > 0)
-      .sort((left, right) => right.lastActivityAt - left.lastActivityAt);
-    for (const device of ranked) {
-      const dismissedAt = iosDeviceDismissedAt(dismissals, device.udid);
-      if (dismissedAt != null && device.lastActivityAt <= dismissedAt) continue;
-      const key = workLiveIosDismissalKey(device.udid);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      cards.push({ kind: "ios", deviceUdid: device.udid });
-    }
-  }
-
-  const tool = selectWorkLiveCardTool({
-    activeTool,
-    activities: activities.filter((activity) => activity.tool !== "ios"),
-    dismissals,
-  });
-  if (tool && tool !== "ios") {
-    cards.push({ kind: "tool", tool });
-  }
-  return cards;
+export function macDesktopFloatState(args: {
+  active: boolean;
+  laneId: string | null;
+  chatSessionId: string | null;
+  /** False only once the host said it cannot host a display. */
+  supported: boolean;
+  authorized: boolean;
+  dismissed: boolean;
+  hasPicture: boolean;
+  off: boolean;
+  floated: boolean;
+  /** The player holds the lane's decoder: its stream is starting, playing or failed. */
+  decoding: boolean;
+  /** The tool filling the tools pane, or null when the pane is closed. */
+  paneTool: WorkSidebarTab | null;
+  /** The pane's Mac Desktop element for this lane is mounted. */
+  paneMounted?: boolean;
+}): { present: boolean; visible: boolean } {
+  const wanted = Boolean(
+    args.active
+    && args.laneId
+    && args.chatSessionId
+    && args.supported
+    && args.authorized
+    && !args.dismissed
+    && (args.hasPicture || args.off || args.floated || args.decoding),
+  );
+  return {
+    present: wanted || args.decoding,
+    visible: wanted && args.paneTool !== "mac-desktop" && !args.paneMounted,
+  };
 }
 
 /* ── Per-tool source adapters ─────────────────────────────────────────────── */
@@ -190,23 +242,28 @@ export function selectWorkLiveCards(args: {
  * one shape.
  *
  * The component used to answer these five questions with five consecutive
- * `if (tool === "browser") … if (tool === "app-control") … if (tool === "ios")`
- * ladders over the same three states, each with its own field-picking rule —
- * so a fourth previewable tool meant finding seven edit sites in one file.
- * One adapter per tool, in a map beside {@link WORK_LIVE_SCREEN_TOOLS}, keeps
- * the answers together and makes them testable without mounting the card.
+ * `if (tool === "browser") … if (tool === "app-control") …` ladders over the
+ * same three states, each with its own field-picking rule — so a fourth
+ * previewable tool meant finding seven edit sites in one file. One adapter per
+ * tool, in a map beside {@link WORK_LIVE_SCREEN_TOOLS}, keeps the answers
+ * together and makes them testable without mounting the card.
  */
 export type WorkLiveSource = {
   /** Something of this tool's is running right now. */
   live: boolean;
-  /** `"agent"` when an agent session owns it, else null. */
+  /**
+   * `"agent"` when an agent session owns it (for Mac Desktop, holds its input
+   * lease), `"you"` when a person holds the Mac Desktop lease, else null.
+   */
   ownerLabel: string | null;
   /** The tool's own idea of what it is showing, before any action caption. */
   caption: string | null;
   /** A login handoff or equivalent "needs you" state, or null. */
   handoff: WorkLiveHandoff;
-  /** Truthy while the tool is recording. Browser tabs and Apple devices can be. */
+  /** Truthy while the tool is recording. Browser tabs, Apple devices and Mac Desktop can be. */
   recording: unknown;
+  /** The current session identity, for the "×" rule. */
+  sessionKey: string | null;
 };
 
 export type WorkLiveHandoff = { label: string; detail: string | null } | null;
@@ -233,6 +290,7 @@ export function detectWorkLiveHandoff(value: unknown): WorkLiveHandoff {
 export type WorkLiveSourceState = {
   /** The browser's active tab, or null. */
   browserTab: {
+    id?: string | null;
     ownerChatSessionId?: string | null;
     title?: string | null;
     url?: string | null;
@@ -240,12 +298,14 @@ export type WorkLiveSourceState = {
     handoff?: unknown;
   } | null;
   appControlSession: {
+    id?: string | null;
     chatSessionId?: string | null;
     label?: string | null;
     status?: string | null;
     handoff?: unknown;
   } | null;
   iosSession: {
+    id?: string | null;
     chatSessionId?: string | null;
     appName?: string | null;
     deviceName?: string | null;
@@ -254,9 +314,65 @@ export type WorkLiveSourceState = {
     recording?: unknown;
     handoff?: unknown;
   } | null;
+  /**
+   * The lane's last desktop frame, straight from `macDesktopFrameStore`.
+   *
+   * The Mac Desktop source is the odd one out: the other three describe a
+   * SESSION and the picture arrives separately, while this one has only the
+   * picture. That is deliberate — a display is per lane and permanent-ish, so
+   * "is something happening on it" is answered by whether a frame has arrived
+   * recently and not by whether an object exists.
+   */
+  macDesktopFrame: {
+    laneId?: string | null;
+    at?: number | null;
+    caption?: string | null;
+    /**
+     * The display's own identity, from {@link workLiveMacDesktopSessionKey}.
+     *
+     * The × marker is keyed by session, and a lane's display is destroyed and
+     * recreated all the time — a stop, an idle release, a host restart. Keying
+     * on the lane id made a closed card stay closed for the lane's whole life;
+     * the display's id and creation time change with the display, so a new
+     * display is honestly a new session.
+     */
+    displayKey?: string | null;
+  } | null;
+  /**
+   * Who drives the lane's desktop and whether it is being recorded, from the
+   * status read and the `lease-changed` / `recording-changed` events. Optional:
+   * a caller with no Mac Desktop state leaves it out.
+   */
+  macDesktopControl?: {
+    /** The lease holder's kind, or null when nobody holds it. */
+    leaseHolder?: "agent" | "user" | null;
+    recording?: boolean | null;
+  } | null;
 };
 
+/**
+ * The mac-desktop card's session key: the display, not the lane.
+ *
+ * `display:<displayId>:<createdAt>` is stable for as long as one display
+ * exists — across frames, status refreshes and stream restarts — and changes
+ * when the display is destroyed and recreated. An off-screen-region fallback
+ * has no CoreGraphics id (`displayId: null`), so the creation time carries the
+ * identity there; null when nothing identifies the display at all.
+ */
+export function workLiveMacDesktopSessionKey(
+  display: { displayId?: number | null; createdAt?: string | null } | null | undefined,
+): string | null {
+  if (!display) return null;
+  const createdAt = typeof display.createdAt === "string" && display.createdAt.trim()
+    ? display.createdAt.trim()
+    : null;
+  if (display.displayId == null && !createdAt) return null;
+  return `display:${display.displayId ?? "offscreen"}:${createdAt ?? ""}`;
+}
+
 const AGENT_OWNER_LABEL = "agent";
+/** A person took over the lane's desktop. Lowercase to sit beside "agent". */
+const USER_OWNER_LABEL = "you";
 
 /**
  * `https://example.com/a/b?c` → `example.com`.
@@ -291,6 +407,7 @@ export const WORK_LIVE_SOURCES: Record<
     caption: browserTab?.title ?? workLiveHostLabel(browserTab?.url) ?? null,
     handoff: detectWorkLiveHandoff(browserTab),
     recording: browserTab?.recording ?? null,
+    sessionKey: browserTab?.id ?? null,
   }),
   "app-control": ({ appControlSession }) => ({
     // `stopped` and `exited` are terminal; `failed` is not — the session is
@@ -302,6 +419,24 @@ export const WORK_LIVE_SOURCES: Record<
     caption: appControlSession?.label ?? null,
     handoff: detectWorkLiveHandoff(appControlSession),
     recording: null,
+    sessionKey: appControlSession?.id ?? null,
+  }),
+  "mac-desktop": ({ macDesktopFrame, macDesktopControl }) => ({
+    live: Boolean(macDesktopFrame),
+    // The display belongs to the lane, so the owner is whoever holds its input
+    // lease right now, not a chat. Nobody holding it names nobody.
+    ownerLabel: macDesktopControl?.leaseHolder === "agent"
+      ? AGENT_OWNER_LABEL
+      : macDesktopControl?.leaseHolder === "user"
+        ? USER_OWNER_LABEL
+        : null,
+    caption: macDesktopFrame?.caption ?? null,
+    handoff: null,
+    recording: macDesktopControl?.recording ? true : null,
+    // A display is per lane and long-lived, so the display's own identity is
+    // the session key for the "×" rule: closing the preview hides it until
+    // this display is replaced (or the user floats it back).
+    sessionKey: macDesktopFrame?.displayKey ?? macDesktopFrame?.laneId ?? null,
   }),
   ios: ({ iosSession }) => ({
     live: Boolean(iosSession),
@@ -309,7 +444,20 @@ export const WORK_LIVE_SOURCES: Record<
     caption: iosSession?.appName ?? iosSession?.deviceName ?? null,
     handoff: detectWorkLiveHandoff(iosSession),
     recording: iosSession?.recording ?? null,
+    sessionKey: iosSession?.id ?? null,
   }),
+};
+
+/** One Apple device the card can picture. */
+export type WorkLiveIosDevice = {
+  udid: string;
+  laneId: string;
+  name: string;
+  appName: string | null;
+  chatSessionId: string | null;
+  /** Truthy while this device is recording; sourced from `status` / record list. */
+  recording: unknown;
+  lastActivityAt: number;
 };
 
 /** Caption for one Apple device card: foreground app, else the device name. */
@@ -516,56 +664,141 @@ export function formatWorkLiveAge(elapsedMs: number): string {
 /* ── Placement ────────────────────────────────────────────────────────────── */
 
 /**
- * The card's two fixed shapes, with a 12px gap to every edge of the column.
+ * The card's width is the user's, and its height follows the picture.
  *
- * Browser and App Control use a small 16:10 landscape rectangle. The simulator
- * is the one portrait exception, because its source is a phone-sized stream.
+ * A fixed per-tool box is exactly what cropped tall captures: a browser tab
+ * captured from a tall panel rect was scaled to a 288px-wide box and cut to its
+ * top band, so a person saw a zoomed-in fragment instead of a screen. The box
+ * now derives its height from the source's own aspect ratio, capped so a
+ * portrait phone or a full-height window does not become a full-column card.
  */
-/** The fixed browser/App Control width; the preview stream is sized against it. */
-export const WORK_LIVE_CARD_WIDTH = 288;
-/** The fixed browser/App Control height (16:10). */
-export const WORK_LIVE_CARD_HEIGHT = 180;
 export const WORK_LIVE_CARD_INSET = 12;
 /** Below either of these the card would cover the thing it sits next to. */
 export const WORK_LIVE_CARD_MIN_HOST_WIDTH = 380;
 export const WORK_LIVE_CARD_MIN_HOST_HEIGHT = 260;
 
+/**
+ * The tallest the card may grow before its width is shrunk to keep the aspect.
+ *
+ * ~340px is comfortably under half a typical chat column at 1x, and the cap is
+ * additionally bounded by the column's own height minus the composer reserve in
+ * {@link workLiveCardSize}, so a short window clamps it further.
+ */
+export const WORK_LIVE_CARD_MAX_HEIGHT = 340;
+
+/** The card never takes more than half the chat column's width. */
+export const WORK_LIVE_CARD_MAX_HOST_WIDTH_RATIO = 0.5;
+
+/** The aspect used before a source picture has reported its own. */
+export const WORK_LIVE_CARD_DEFAULT_ASPECT = 16 / 10;
+export const WORK_LIVE_CARD_IOS_ASPECT = 3 / 4;
+
 export type WorkLiveCardSize = { width: number; height: number };
 
-/** 288×180. */
-export const WORK_LIVE_CARD_LANDSCAPE_SIZE: WorkLiveCardSize = {
-  width: WORK_LIVE_CARD_WIDTH,
-  height: WORK_LIVE_CARD_HEIGHT,
+/** The aspect ratio (width / height) of each tool before its source reports one. */
+export const WORK_LIVE_TOOL_ASPECT: Record<WorkLiveScreenTool, number> = {
+  browser: WORK_LIVE_CARD_DEFAULT_ASPECT,
+  "app-control": WORK_LIVE_CARD_DEFAULT_ASPECT,
+  "mac-desktop": WORK_LIVE_CARD_DEFAULT_ASPECT,
+  ios: WORK_LIVE_CARD_IOS_ASPECT,
 };
-/** 240×320. */
-export const WORK_LIVE_CARD_PORTRAIT_SIZE: WorkLiveCardSize = { width: 240, height: 320 };
 
-/** The box this tool's card occupies. Only the simulator is portrait. */
-export function workLiveCardSize(tool: WorkLiveScreenTool | null): WorkLiveCardSize {
-  return tool === "ios" ? WORK_LIVE_CARD_PORTRAIT_SIZE : WORK_LIVE_CARD_LANDSCAPE_SIZE;
+/**
+ * The aspect to build the box from: the source's natural ratio when it is real
+ * and positive, else the tool's default. A zero/NaN/negative ratio happens
+ * while a frame is still decoding and must never divide the width by zero.
+ */
+export function workLiveCardAspect(
+  tool: WorkLiveScreenTool | null,
+  sourceAspect?: number | null,
+): number {
+  if (typeof sourceAspect === "number" && Number.isFinite(sourceAspect) && sourceAspect > 0) {
+    return sourceAspect;
+  }
+  return tool ? WORK_LIVE_TOOL_ASPECT[tool] : WORK_LIVE_CARD_DEFAULT_ASPECT;
 }
 
 /**
- * The frame treatment inside each fixed card.
+ * The width range available in a column of this width.
  *
- * Browser and App Control always cover the rectangle and stay anchored at the
- * top, so a portrait page shows its header instead of shrinking into bars. The
- * simulator remains contained inside its fixed portrait card.
+ * The user's chosen width is clamped into it, so a card dragged wide in a big
+ * column cannot cover half the conversation when the column narrows.
  */
-export function workLiveCardObjectFit(tool: WorkLiveScreenTool | null): "contain" | "cover" {
-  return tool === "ios" ? "contain" : "cover";
+export function workLiveCardWidthBounds(hostWidth: number): { min: number; max: number } {
+  const byRatio = hostWidth > 0 ? hostWidth * WORK_LIVE_CARD_MAX_HOST_WIDTH_RATIO : WORK_LIVE_CARD_MAX_WIDTH;
+  const max = Math.max(
+    WORK_LIVE_CARD_MIN_WIDTH,
+    Math.min(WORK_LIVE_CARD_MAX_WIDTH, Math.round(byRatio)),
+  );
+  return { min: WORK_LIVE_CARD_MIN_WIDTH, max };
 }
+
+/**
+ * The box this card occupies, from the chosen width and the picture's aspect.
+ *
+ * Width-first: height = width / aspect. If that height exceeds the cap (or the
+ * column's available height), the width is shrunk to keep the aspect exact
+ * rather than letting the height run away.
+ */
+export function workLiveCardSize(args: {
+  tool: WorkLiveScreenTool | null;
+  /** The user's chosen width; defaults inside the bounds. */
+  width?: number;
+  /** Natural width / height of the source picture, when known. */
+  aspect?: number | null;
+  host?: { width: number; height: number };
+  /** Space to leave at the bottom, e.g. the composer's height. */
+  bottomReserve?: number;
+}): WorkLiveCardSize {
+  const aspect = workLiveCardAspect(args.tool, args.aspect);
+  const host = args.host ?? { width: 0, height: 0 };
+  const reserve = Math.max(0, args.bottomReserve ?? 0);
+  const bounds = workLiveCardWidthBounds(host.width);
+  const requested = typeof args.width === "number" && Number.isFinite(args.width)
+    ? args.width
+    : WORK_LIVE_CARD_DEFAULT_WIDTH;
+  let width = Math.max(bounds.min, Math.min(bounds.max, Math.round(requested)));
+  let height = width / aspect;
+
+  const availableHeight = host.height > 0
+    ? host.height - reserve - WORK_LIVE_CARD_INSET * 2
+    : Number.POSITIVE_INFINITY;
+  const maxHeight = Math.max(
+    WORK_LIVE_CARD_MIN_WIDTH * WORK_LIVE_CARD_IOS_ASPECT,
+    Math.min(WORK_LIVE_CARD_MAX_HEIGHT, availableHeight),
+  );
+  if (height > maxHeight) {
+    height = maxHeight;
+    width = height * aspect;
+  }
+  // The user's floor is a hard one: for a source taller than
+  // `minWidth / maxHeight` (~0.59) the two constraints cannot both hold, and a
+  // 200px card that is taller than the soft cap is better than a 136px card
+  // nobody can see. The exact aspect is kept either way.
+  if (width < bounds.min) {
+    width = bounds.min;
+    height = width / aspect;
+  }
+  return { width: Math.round(width), height: Math.round(height) };
+}
+
+/** Every tool contains its picture; nothing is cropped. */
+export const WORK_LIVE_CARD_OBJECT_FIT = "contain" as const;
 
 /**
  * The frame width to ask the source for: the card's own width in DEVICE
  * pixels, so a Retina card is not fed a 260px image and upscaled into mush —
  * and a 5K panel is not fed a 1280px one for a thumbnail.
  */
-export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): number {
+export function workLivePreviewMaxWidth(
+  devicePixelRatio: number | undefined,
+  width: number = WORK_LIVE_CARD_DEFAULT_WIDTH,
+): number {
   const ratio = Number.isFinite(devicePixelRatio) && (devicePixelRatio ?? 0) > 0
     ? (devicePixelRatio as number)
     : 1;
-  return Math.max(WORK_LIVE_CARD_WIDTH, Math.min(960, Math.round(WORK_LIVE_CARD_WIDTH * ratio)));
+  const base = Math.max(WORK_LIVE_CARD_MIN_WIDTH, Math.round(width));
+  return Math.max(base, Math.min(960, Math.round(base * ratio)));
 }
 
 /**
@@ -575,14 +808,22 @@ export function workLivePreviewMaxWidth(devicePixelRatio: number | undefined): n
  * a column that clears the minimum only by borrowing the composer's rows has no
  * room. Without this term `workLiveCardTravel`'s `Math.max` silently gave up
  * and parked the card ON the composer it was measured to avoid.
+ *
+ * The 380px column floor applies to a FULL-SIZE card: it is the width at which
+ * a default card leaves the conversation room to breathe. A card the caller has
+ * already shrunk toward `WORK_LIVE_CARD_MIN_WIDTH` is measured by its own box
+ * instead — a narrow column shrinks the card rather than hiding it, and only a
+ * host that cannot hold the minimum card at all has no room.
  */
 export function workLiveCardFits(
   host: { width: number; height: number },
   bottomReserve = 0,
-  /** The box actually being placed; defaults to the landscape card. */
-  card: WorkLiveCardSize = WORK_LIVE_CARD_LANDSCAPE_SIZE,
+  /** The box actually being placed; defaults to the default card. */
+  card: WorkLiveCardSize = { width: WORK_LIVE_CARD_DEFAULT_WIDTH, height: WORK_LIVE_CARD_DEFAULT_WIDTH / WORK_LIVE_CARD_DEFAULT_ASPECT },
 ): boolean {
-  const minWidth = Math.max(WORK_LIVE_CARD_MIN_HOST_WIDTH, card.width + WORK_LIVE_CARD_INSET * 2);
+  const minWidth = card.width >= WORK_LIVE_CARD_DEFAULT_WIDTH
+    ? Math.max(WORK_LIVE_CARD_MIN_HOST_WIDTH, card.width + WORK_LIVE_CARD_INSET * 2)
+    : card.width + WORK_LIVE_CARD_INSET * 2;
   const minHeight = Math.max(WORK_LIVE_CARD_MIN_HOST_HEIGHT, card.height + WORK_LIVE_CARD_INSET * 2);
   return host.width >= minWidth && host.height >= minHeight + Math.max(0, bottomReserve);
 }
@@ -598,12 +839,12 @@ export function workLiveCardFits(
 export function workLiveCardTravel(args: {
   host: { width: number; height: number };
   cardHeight: number;
-  /** Defaults to the widest card, so a caller that omits it under-reaches. */
+  /** Defaults to the default card width, so a caller that omits it under-reaches. */
   cardWidth?: number;
   bottomReserve?: number;
 }): { minLeft: number; maxLeft: number; minTop: number; maxTop: number } {
   const bottomReserve = Math.max(0, args.bottomReserve ?? 0);
-  const cardWidth = args.cardWidth ?? WORK_LIVE_CARD_WIDTH;
+  const cardWidth = args.cardWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH;
   const minLeft = WORK_LIVE_CARD_INSET;
   const minTop = WORK_LIVE_CARD_INSET;
   return {
@@ -704,7 +945,7 @@ export function workLiveCardRect(args: {
   }
   return clampWorkLiveCardRect({
     ...args,
-    left: position.xPct * (host.width - (args.cardWidth ?? WORK_LIVE_CARD_WIDTH)),
+    left: position.xPct * (host.width - (args.cardWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH)),
     top: position.yPct * (host.height - cardHeight),
   });
 }
@@ -739,7 +980,7 @@ export function workLiveCardPositionFromRect(args: {
   cardHeight: number;
   cardWidth?: number;
 }): WorkLiveCardPosition {
-  const spanX = Math.max(1, args.host.width - (args.cardWidth ?? WORK_LIVE_CARD_WIDTH));
+  const spanX = Math.max(1, args.host.width - (args.cardWidth ?? WORK_LIVE_CARD_DEFAULT_WIDTH));
   const spanY = Math.max(1, args.host.height - args.cardHeight);
   return {
     xPct: Math.max(0, Math.min(1, args.left / spanX)),

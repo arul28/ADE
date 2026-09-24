@@ -50,6 +50,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "work_tools",
   "computer_use_artifacts",
   "ios_simulator",
+  "mac_desktop",
   "app_control",
   "built_in_browser",
   "automations",

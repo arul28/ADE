@@ -6042,6 +6042,61 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       resolveStreamUrl: resolvedArg({ url: null, forwarded: false, error: null }),
       onEvent: () => () => {},
     },
+    /**
+     * Mac Desktop in the hosted web client: `getStatus` answers honestly with
+     * `supported: false`, which is what hides the tab, and every other method
+     * is a stub nothing on this surface calls. The namespace has to EXIST —
+     * the Work pane reads the capability on mount, and an undefined namespace
+     * would throw there rather than hide a tool.
+     */
+    macDesktop: {
+      getStatus: resolvedArg({
+        platform: "browser" as unknown as NodeJS.Platform,
+        supported: false,
+        unsupportedReason: "The hosted web client cannot host a Mac display.",
+        driver: {
+          state: "unsupported" as const,
+          title: "Not available here",
+          message: "Mac Desktop runs on the machine that hosts the lane.",
+          recovery: null,
+          version: null,
+        },
+        permissions: { screenRecording: "unknown" as const, accessibility: "unknown" as const },
+        displayMode: "unavailable" as const,
+        display: null,
+        windows: [],
+        lease: null,
+        stream: null,
+        recording: null,
+        lanes: [],
+        hostIsLocal: false,
+      }),
+      start: resolvedArg(null as never),
+      stop: resolvedArg({ stopped: false, releasedWindows: 0 }),
+      listWindows: resolvedArg([]),
+      open: resolvedArg(null as never),
+      claimWindow: resolvedArg(null as never),
+      releaseWindow: resolvedArg({ released: 0 }),
+      observe: resolvedArg(null as never),
+      click: resolvedArg(null as never),
+      type: resolvedArg(null as never),
+      press: resolvedArg(null as never),
+      scroll: resolvedArg(null as never),
+      drag: resolvedArg(null as never),
+      wait: resolvedArg(null as never),
+      screenshot: resolvedArg(null as never),
+      startRecording: resolvedArg(null as never),
+      stopRecording: resolvedArg(null as never),
+      startStream: resolvedArg(null as never),
+      stopStream: resolvedArg(null as never),
+      getStreamStatus: resolvedArg(null as never),
+      takeControl: resolvedArg(null as never),
+      returnControl: resolvedArg(null),
+      renewLease: resolvedArg(null),
+      present: resolvedArg({ moved: 0 }),
+      resolveStreamUrl: resolvedArg({ url: null, forwarded: false, error: null }),
+      onEvent: () => () => {},
+    },
     builtInBrowser: {
       getStatus: resolved({
         attached: false,
