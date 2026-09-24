@@ -96,6 +96,7 @@ import {
   normalizeChatRuntimeOwner,
   resolveAdeHomeForOwnership,
   type ChatRuntimeOwner,
+  type ChatRuntimeOwnershipDecision,
 } from "./chatRuntimeOwnership";
 import {
   createChatScheduledWorkScheduler,
@@ -835,7 +836,12 @@ import {
   logSkillDelivery as recordSkillDelivery,
   type SkillDeliveryDetail,
 } from "../skills/skillDelivery";
-import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import {
+  isDroppedSteerDeliveryState,
+  isSettledSteerDeliveryState,
+  parseAgentChatTranscript,
+  steerReachedModel,
+} from "../../../shared/chatTranscript";
 import {
   SESSION_STALE_AFTER_MS,
   summarizeBackgroundWork,
@@ -4133,6 +4139,15 @@ type ManagedChatSession = {
     displayText?: string;
     turnId?: string;
   }>;
+  /**
+   * Steers whose row this process showed as `accepted` and that no one has
+   * moved on yet, keyed by steerId, with the turn that row was offered on.
+   * A refused steer stays here while it waits on the queue, so a drain can
+   * land it on that same row and a lost one can be told apart from one a
+   * drain or a cancel already took. Added by `emitSteerUserRow`; removed when
+   * the row settles, when a drain takes the steer, or when a cancel fails it.
+   */
+  acceptedSteerRows?: Map<string, { turnId: string | undefined }>;
   continuitySummary: string | null;
   /**
    * One-shot: the next Cursor send may expire a still-active persisted run
@@ -13536,6 +13551,9 @@ export function createAgentChatService(args: {
 
   const appendRecentConversationEntry = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     if (event.type !== "user_message" && event.type !== "text") return;
+    // A steer is one entry, on the row where the model read it: not its
+    // `queued` or `accepted` rows, and not at all when it was dropped.
+    if (event.type === "user_message" && event.steerId && !steerReachedModel(event.deliveryState)) return;
     const text = event.text.trim();
     if (!text.length) return;
 
@@ -16903,6 +16921,15 @@ export function createAgentChatService(args: {
     });
   };
 
+  const chatRuntimeOwnershipDecision = (
+    owner: ChatRuntimeOwner | null,
+  ): ChatRuntimeOwnershipDecision => decideChatRuntimeOwnership({
+    owner,
+    self: { brainId: brainInstanceId, pid: processRegistry?.pid ?? process.pid, startedAt: processRegistry?.startedAt ?? null, adeHome: brainAdeHome },
+    isProcessIdentityLive: (pid, startedAt) =>
+      processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
+  });
+
   const chatRuntimeAdoptable = (
     sessionId: string,
     persisted?: PersistedChatState | null,
@@ -16916,12 +16943,7 @@ export function createAgentChatService(args: {
     const owner = persisted === undefined
       ? readPersistedState(sessionId)?.runtimeOwner ?? null
       : persisted?.runtimeOwner ?? null;
-    const decision = decideChatRuntimeOwnership({
-      owner,
-      self: { brainId: brainInstanceId, pid: processRegistry?.pid ?? process.pid, startedAt: processRegistry?.startedAt ?? null, adeHome: brainAdeHome },
-      isProcessIdentityLive: (pid, startedAt) =>
-        processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
-    });
+    const decision = chatRuntimeOwnershipDecision(owner);
     if (!decision.adoptable && options?.quiet !== true) {
       logger.warn("agent_chat.runtime_owned_by_other_brain", {
         sessionId,
@@ -17433,8 +17455,12 @@ export function createAgentChatService(args: {
   ): void => {
     const provider = managed.session.provider;
     if (provider !== "cursor" && provider !== "opencode" && provider !== "pi") return;
-    // A sibling brain that owns the chat may be mid-steer on a live row.
-    if (!chatRuntimeAdoptable(managed.session.id, persisted, { quiet: true })) return;
+    // A brain that owns the chat may be mid-steer on a live row: a live
+    // sibling, or one under another ADE_HOME (whose pid we cannot probe, so
+    // it may still be awaiting `Run.steer()`). Only this brain's own, a dead
+    // owner's, or an unowned chat's rows are orphans.
+    const { verdict } = chatRuntimeOwnershipDecision(persisted?.runtimeOwner ?? null);
+    if (verdict !== "self" && verdict !== "dead-owner" && verdict !== "legacy") return;
     const latestBySteerId = new Map<string, Extract<AgentChatEvent, { type: "user_message" }>>();
     for (const envelope of mergeEnvelopeStreams(
       transcriptEvents,
@@ -17460,7 +17486,7 @@ export function createAgentChatService(args: {
     });
   };
 
-  const cursorDroidTurnStillActive =(managed: ManagedChatSession): boolean => {
+  const cursorDroidTurnStillActive = (managed: ManagedChatSession): boolean => {
     const runtime = managed.runtime;
     const runtimeBusy = (runtime?.kind === "cursor" || runtime?.kind === "droid")
       && (runtime.busy || runtime.activeTurnId !== null);
@@ -18208,7 +18234,18 @@ export function createAgentChatService(args: {
     }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
-    managed.session.lastActivityAt = nowIso();
+    // An `accepted` steer is moved on by a settled row, or taken by a cancel
+    // or delivery notice (see `ManagedChatSession.acceptedSteerRows`).
+    if (
+      (liveEvent.type === "user_message" && isSettledSteerDeliveryState(liveEvent.deliveryState))
+      || liveEvent.type === "system_notice"
+    ) {
+      if (liveEvent.steerId) managed.acceptedSteerRows?.delete(liveEvent.steerId);
+    }
+    // A steer that went nowhere is not activity: the chat did nothing new.
+    if (!(liveEvent.type === "user_message" && isDroppedSteerDeliveryState(liveEvent.deliveryState))) {
+      managed.session.lastActivityAt = nowIso();
+    }
     trackSubagentEvent(managed, liveEvent);
     appendRecentConversationEntry(managed, liveEvent);
 
@@ -37003,6 +37040,7 @@ export function createAgentChatService(args: {
 
     for (const steer of cancelled) {
       if (!claimSteerSettlement(managed, steer.steerId)) continue;
+      failCancelledAcceptedSteerRow(managed, steer);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -37407,6 +37445,14 @@ export function createAgentChatService(args: {
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
+    // A Cursor or OpenCode steer the live turn refused already has a row
+    // reading `accepted`. Its turn lands on that row as `delivered` instead of
+    // leaving it "Steering…" beside a second bubble. Claimed at the shift, so
+    // a refusal still awaiting its answer sees the steer as taken, not lost.
+    const acceptedRowSteerId = (runtime.kind === "cursor" || runtime.kind === "opencode")
+      && managed.acceptedSteerRows?.delete(nextSteer.steerId)
+      ? nextSteer.steerId
+      : undefined;
 
     const trimmed = nextSteer.text.trim();
     if (!trimmed.length) {
@@ -37496,6 +37542,7 @@ export function createAgentChatService(args: {
         promptText,
         userText: trimmed,
         displayText,
+        ...(acceptedRowSteerId ? { steerId: acceptedRowSteerId } : {}),
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -37529,6 +37576,7 @@ export function createAgentChatService(args: {
         promptText,
         userText: trimmed,
         displayText,
+        ...(acceptedRowSteerId ? { steerId: acceptedRowSteerId } : {}),
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -38325,13 +38373,26 @@ export function createAgentChatService(args: {
       || message === `Chat session '${parentSessionId}' was not found.`;
   };
 
-  const childHasNoticeStatus = (child: ManagedChatSession, status: string): boolean =>
+  /**
+   * With `failedChildTurnId`, only a delivery-failure notice for that child
+   * turn counts: each failed turn needs its own, because a later end report
+   * for that turn is allowed through only when one exists.
+   */
+  const childHasNoticeStatus = (
+    child: ManagedChatSession,
+    status: string,
+    failedChildTurnId?: string,
+  ): boolean =>
     mergeEnvelopeStreams(
       readTranscriptEnvelopes(child),
       eventHistoryBySession.get(child.session.id) ?? [],
-    ).some((envelope) =>
-      envelope.event.type === "system_notice" && envelope.event.status === status
-    );
+    ).some((envelope) => {
+      const event = envelope.event;
+      if (event.type !== "system_notice" || event.status !== status) return false;
+      if (failedChildTurnId == null) return true;
+      const detail = typeof event.detail === "object" ? event.detail : undefined;
+      return detail?.spawnCompletionDeliveryFailure?.childTurnId === failedChildTurnId;
+    });
 
   const noteUnreachableParent = (
     child: ManagedChatSession,
@@ -38506,6 +38567,7 @@ export function createAgentChatService(args: {
       recentEntryTurnId: [...child.recentConversationEntries].reverse().find((entry) => entry.turnId?.trim())?.turnId,
       fallbackId: `event-${child.eventSequence + 1}`,
     });
+    if (!resolvedTurnId) return;
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
@@ -38677,7 +38739,7 @@ export function createAgentChatService(args: {
           }
         }
       }
-      if (!child.deleted && !childHasNoticeStatus(child, "spawn_completion_delivery_failed")) {
+      if (!child.deleted && !childHasNoticeStatus(child, "spawn_completion_delivery_failed", resolvedTurnId)) {
         emitChatEvent(child, {
           type: "system_notice",
           noticeKind: "warning",
@@ -44772,6 +44834,10 @@ export function createAgentChatService(args: {
     deliveryState: "accepted" | "inline" | "queued" | "failed",
     turnId: string | undefined,
   ): void => {
+    // Removed again by `commitChatEvent` once the row settles.
+    if (deliveryState === "accepted") {
+      (managed.acceptedSteerRows ??= new Map()).set(steer.steerId, { turnId });
+    }
     emitChatEvent(managed, {
       type: "user_message",
       text: steer.text,
@@ -44788,15 +44854,30 @@ export function createAgentChatService(args: {
   /**
    * Move a steer row that already reads `accepted` to `failed`: nothing owns
    * the message any more. A deleted chat has no transcript left to correct.
+   * With no `turnId`, the row stays on the turn it was offered on, so the
+   * transcript shows the failure where the user saw the message.
    */
   const failAcceptedSteerRow = (
     managed: ManagedChatSession,
     row: SteerUserRowFields,
     turnId: string | undefined,
   ): void => {
+    const acceptedTurnId = managed.acceptedSteerRows?.get(row.steerId)?.turnId;
+    managed.acceptedSteerRows?.delete(row.steerId);
     if (managed.deleted) return;
-    emitSteerUserRow(managed, row, "failed", turnId);
+    emitSteerUserRow(managed, row, "failed", turnId ?? acceptedTurnId);
     persistChatState(managed);
+  };
+
+  /**
+   * A cancelled steer whose row this process showed as `accepted` (a refused
+   * inline steer waiting on the queue) moves that row to `failed`, so it does
+   * not stay "Steering…" beside the cancel notice. A plain queued steer has no
+   * such row and is left to the notice.
+   */
+  const failCancelledAcceptedSteerRow = (managed: ManagedChatSession, steer: QueuedSteer): void => {
+    if (!managed.acceptedSteerRows?.has(steer.steerId)) return;
+    failAcceptedSteerRow(managed, steer, undefined);
   };
 
   /**
@@ -45036,6 +45117,7 @@ export function createAgentChatService(args: {
   ): void => {
     for (const steer of steers) {
       if (!claimSteerSettlement(managed, steer.steerId)) continue;
+      failCancelledAcceptedSteerRow(managed, steer);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -49908,11 +49990,14 @@ export function createAgentChatService(args: {
           const live = !managed.closed && managed.runtime?.kind === "cursor" ? managed.runtime : null;
           const stillStaged = live?.pendingSteers.find((entry) => entry.steerId === steerId);
           if (!live || !stillStaged) {
-            // A Stop, a failed turn or a close cancelled the queue while the
-            // SDK was deciding. Nothing will send this message, so the row
-            // fails rather than promising a new message that never comes.
+            // Off the queue, but a replacement runtime's drain or cancel may
+            // have taken it meanwhile; that path owns its row (and took it out
+            // of `acceptedSteerRows`). Still listed means nothing will send
+            // this message, so the row fails rather than promising a new
+            // message that never comes.
+            if (!managed.acceptedSteerRows?.has(steerId)) return { dispatchedAt: null };
             failAcceptedSteerRow(managed, staged, undefined);
-            return { dispatchedAt: null };
+            return { dispatchedAt: null, reason: "dropped" };
           }
           // Still staged: the row reads queued again, so its chip returns.
           emitQueuedCursorSteerRow(managed, live, stillStaged);

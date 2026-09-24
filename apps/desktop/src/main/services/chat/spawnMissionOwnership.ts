@@ -1,5 +1,5 @@
 import { HOST_ONLY_CHAT_METADATA_KEYS } from "../../../shared/chatAutoResume";
-import { isDroppedSteerDeliveryState, isSettledSteerDeliveryState } from "../../../shared/chatTranscript";
+import { steerReachedModel } from "../../../shared/chatTranscript";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatEventMetadata } from "../../../shared/types/chat";
 
 /**
@@ -51,8 +51,7 @@ export const countHumanChildMessagesForTurn = (
     if (!isHumanChildMessage(event)) continue;
     const steerId = event.steerId?.trim();
     if (steerId) {
-      if (!isSettledSteerDeliveryState(event.deliveryState)) continue;
-      if (isDroppedSteerDeliveryState(event.deliveryState)) continue;
+      if (!steerReachedModel(event.deliveryState)) continue;
       if (countedSteerIds.has(steerId)) continue;
       countedSteerIds.add(steerId);
     }
@@ -148,15 +147,22 @@ export const messageClearsAttentionMarkers = (
 
 /**
  * The child turn a spawn-ended report is filed under when the end event
- * carried no turn id (a delete, or a done event that lost its id).
+ * carried no turn id (a delete, or a done event that lost its id), or `null`
+ * when there is nothing left to report.
  *
  * The id is the report's dedupe key, so it anchors on the child's latest real
- * turn: a report that turn's done path already delivered then dedupes, and one
- * whose delivery failed still lands. Recent conversation entries are not
- * enough on their own: Codex emits the user message before the server assigns
- * a turn id, so a child that never streamed text has no turn id there. The
- * lifecycle events (`status` / `done`) do.
+ * turn. Recent conversation entries are not enough on their own: Codex emits
+ * the user message before the server assigns a turn id, so a child that never
+ * streamed text has no turn id there. The lifecycle events (`status` /
+ * `done`) do.
  *
+ * - Idle, and the latest turn has a done event: that done path already
+ *   reported it, so skip. The parent's transcript cannot be the only guard —
+ *   compaction, the transcript cap, or a restart can lose the earlier report,
+ *   and the parent would hear "Stopped before finishing" for an old turn. The
+ *   exception is a turn whose delivery failed (the child carries a
+ *   `spawn_completion_delivery_failed` notice for it): that report still
+ *   lands.
  * - Mid-turn after a reported turn: that turn's id would dedupe this report
  *   away, so it takes the live turn's id, or `fallbackId` when it has none.
  * - No turn ever got an id: no done event could have reported it, so
@@ -169,13 +175,20 @@ export const resolveSpawnEndedTurnId = (args: {
   liveTurnId: string | null | undefined;
   recentEntryTurnId: string | null | undefined;
   fallbackId: string;
-}): string => {
+}): string | null => {
   let latestLifecycleTurnId: string | null = null;
   const doneTurnIds = new Set<string>();
+  const deliveryFailedTurnIds = new Set<string>();
   for (const envelope of args.history) {
+    const event = envelope.event;
+    if (event.type === "system_notice" && event.status === "spawn_completion_delivery_failed") {
+      const detail = typeof event.detail === "object" ? event.detail : undefined;
+      const failedTurnId = detail?.spawnCompletionDeliveryFailure?.childTurnId?.trim();
+      if (failedTurnId) deliveryFailedTurnIds.add(failedTurnId);
+      continue;
+    }
     // A Codex subagent thread's lifecycle is not the child chat's own.
     if (envelope.provenance?.targetKind === "codex_subagent") continue;
-    const event = envelope.event;
     if (event.type !== "status" && event.type !== "done") continue;
     const lifecycleTurnId = event.turnId?.trim();
     if (!lifecycleTurnId) continue;
@@ -183,9 +196,10 @@ export const resolveSpawnEndedTurnId = (args: {
     if (event.type === "done") doneTurnIds.add(lifecycleTurnId);
   }
   const liveTurnId = args.liveTurnId?.trim();
-  if (latestLifecycleTurnId && doneTurnIds.has(latestLifecycleTurnId)) {
-    if (!args.childMidTurn) return latestLifecycleTurnId;
-    return liveTurnId || args.fallbackId;
+  if (!latestLifecycleTurnId || !doneTurnIds.has(latestLifecycleTurnId)) {
+    return liveTurnId || latestLifecycleTurnId || args.recentEntryTurnId?.trim() || args.fallbackId;
   }
-  return liveTurnId || latestLifecycleTurnId || args.recentEntryTurnId?.trim() || args.fallbackId;
+  if (args.childMidTurn) return liveTurnId || args.fallbackId;
+  if (deliveryFailedTurnIds.has(latestLifecycleTurnId)) return latestLifecycleTurnId;
+  return null;
 };

@@ -4304,6 +4304,11 @@ export type AgentChatDispatchSteerArgs = {
 
 export type AgentChatDispatchSteerResult = {
   dispatchedAt: number | null;
+  /**
+   * Set with `dispatchedAt: null` when the message is gone rather than still
+   * queued: the live turn refused it and nothing is left to send it.
+   */
+  reason?: "dropped";
 };
 
 export type AgentChatCancelDispatchedSteerArgs = {

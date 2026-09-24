@@ -135,13 +135,24 @@ export function isDroppedSteerDeliveryState(
   }
 }
 
-function userMessageDeliveryState(envelope: AgentChatEventEnvelope): AgentChatUserMessageDeliveryState | undefined {
-  return envelope.event?.type === "user_message" ? envelope.event.deliveryState : undefined;
+/**
+ * True when a steer settled on a row the model read: settled, and not
+ * dropped. An `accepted` row alone never counts — the live turn may still
+ * refuse it.
+ */
+export function steerReachedModel(
+  state: AgentChatUserMessageDeliveryState | undefined,
+): boolean {
+  return isSettledSteerDeliveryState(state) && !isDroppedSteerDeliveryState(state);
 }
 
-function userMessageTurnId(envelope: AgentChatEventEnvelope): string {
-  return envelope.event?.type === "user_message" ? envelope.event.turnId?.trim() ?? "" : "";
-}
+export type UserMessageChatEvent = Extract<AgentChatEvent, { type: "user_message" }>;
+
+/**
+ * What to emit at a steer's place: the canonical row's event, stamped with
+ * the time of the row it is emitted at.
+ */
+export type CanonicalSteerRow = { event: UserMessageChatEvent; timestamp: string };
 
 /**
  * One steer is one message, but the host writes its row once per lifecycle
@@ -149,23 +160,25 @@ function userMessageTurnId(envelope: AgentChatEventEnvelope): string {
  * `inline`, Codex's `accepted` then `processed`). This picks the one row that
  * stands for each steer:
  *
- * - Content (turnId, messageId, timestamp, state) comes from the last settled
- *   row, else the latest row: that is where the message actually landed.
+ * - Content (turnId, messageId, text, state) comes from the last settled row,
+ *   else the latest row: that is where the message actually landed.
  * - Position is the first row on that row's turn, so an in-turn steer keeps
  *   the place it was shown at. `queued` rows are skipped once the steer left
  *   the queue — staging is not where the model saw it. A steer the live turn
  *   refused and then sent as its own turn sits at that turn, not where it was
  *   first offered.
+ * - The timestamp is the placement row's own, so entry times stay in order
+ *   and a `--since` read does not return the same steer twice.
  *
- * Returns, for every steer row index, the envelope to emit at that index, or
- * `null` when the row folds into its steer's canonical row. Rows without a
- * steerId (and, with `sessionId`, rows of other sessions) are not in the map.
+ * Returns, for every steer row index, what to emit at that index, or `null`
+ * when the row folds into its steer's canonical row. Rows without a steerId
+ * (and, with `sessionId`, rows of other sessions) are not in the map.
  */
-export function canonicalSteerRows<T extends AgentChatEventEnvelope>(
-  envelopes: readonly T[],
+export function canonicalSteerRows(
+  envelopes: readonly AgentChatEventEnvelope[],
   options?: { sessionId?: string },
-): Map<number, T | null> {
-  const rowsBySteerId = new Map<string, number[]>();
+): Map<number, CanonicalSteerRow | null> {
+  const rowsBySteerId = new Map<string, Array<{ index: number; event: UserMessageChatEvent }>>();
   for (let index = 0; index < envelopes.length; index += 1) {
     const envelope = envelopes[index]!;
     const event = envelope.event;
@@ -174,27 +187,30 @@ export function canonicalSteerRows<T extends AgentChatEventEnvelope>(
     const steerId = event.steerId?.trim();
     if (!steerId) continue;
     const rows = rowsBySteerId.get(steerId);
-    if (rows) rows.push(index);
-    else rowsBySteerId.set(steerId, [index]);
+    if (rows) rows.push({ index, event });
+    else rowsBySteerId.set(steerId, [{ index, event }]);
   }
-  const plan = new Map<number, T | null>();
+  const plan = new Map<number, CanonicalSteerRow | null>();
   for (const rows of rowsBySteerId.values()) {
-    let canonicalIndex = rows[rows.length - 1]!;
+    let canonical = rows[rows.length - 1]!;
     for (let k = rows.length - 1; k >= 0; k -= 1) {
-      if (isSettledSteerDeliveryState(userMessageDeliveryState(envelopes[rows[k]!]!))) {
-        canonicalIndex = rows[k]!;
+      if (isSettledSteerDeliveryState(rows[k]!.event.deliveryState)) {
+        canonical = rows[k]!;
         break;
       }
     }
-    const canonical = envelopes[canonicalIndex]!;
-    const stillQueued = userMessageDeliveryState(canonical) === "queued";
-    const turnId = userMessageTurnId(canonical);
-    const positionIndex = rows.find((index) => {
-      const envelope = envelopes[index]!;
-      if (!stillQueued && userMessageDeliveryState(envelope) === "queued") return false;
-      return userMessageTurnId(envelope) === turnId;
-    }) ?? canonicalIndex;
-    for (const index of rows) plan.set(index, index === positionIndex ? canonical : null);
+    const stillQueued = canonical.event.deliveryState === "queued";
+    const turnId = canonical.event.turnId?.trim() ?? "";
+    const position = rows.find((row) => {
+      if (!stillQueued && row.event.deliveryState === "queued") return false;
+      return (row.event.turnId?.trim() ?? "") === turnId;
+    }) ?? canonical;
+    for (const row of rows) {
+      plan.set(
+        row.index,
+        row === position ? { event: canonical.event, timestamp: envelopes[row.index]!.timestamp } : null,
+      );
+    }
   }
   return plan;
 }

@@ -1377,7 +1377,7 @@ private func duplicateWorkTextEnvelopeCount(_ transcript: [WorkChatEnvelope]) ->
 }
 
 /// Drop stale queued `user_message` rows once the same steerId has graduated
-/// to delivered/inline/failed, been resolved by a steer system notice, or has
+/// to a settled row, been resolved by a steer system notice, or has
 /// a non-queued Claude command lifecycle frame.
 func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !transcript.isEmpty else { return transcript }
@@ -1400,7 +1400,7 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
           queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
         }
       } else {
-        // A delivered/inline/failed row graduates at most ONE queued steer.
+        // A settled row graduates at most ONE queued steer.
         // Prefer the exact steerId match; only fall back to text (consuming a
         // single queued id) so duplicate prompts don't clear multiple pending
         // steers at once.

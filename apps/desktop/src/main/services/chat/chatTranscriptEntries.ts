@@ -190,10 +190,9 @@ export function transcriptEntriesFromEnvelopes(
       flushAssistantDraft();
       openStreamKey = null;
       assistantDraftsByKey.clear();
-      // Emitted at this row's place, with the content of the row the steer
-      // settled on (its turn, message id, and delivery time).
-      const source = steerRow?.event.type === "user_message" ? steerRow : entry;
-      const event = source.event.type === "user_message" ? source.event : entry.event;
+      // Emitted at this row's place and time, with the content of the row the
+      // steer settled on (its turn and message id).
+      const { event, timestamp } = steerRow ?? { event: entry.event, timestamp: entry.timestamp };
       const text = event.text.trim();
       if (!text.length) continue;
       const displayText = typeof event.displayText === "string" && event.displayText.trim().length > 0
@@ -203,7 +202,7 @@ export function transcriptEntriesFromEnvelopes(
         role: "user",
         text,
         ...(displayText ? { displayText } : {}),
-        timestamp: source.timestamp,
+        timestamp,
         turnId: event.turnId,
         ...(event.messageId ? { messageId: event.messageId } : {}),
       };
