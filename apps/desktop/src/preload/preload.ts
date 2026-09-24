@@ -5964,9 +5964,13 @@ const adeBridge = {
       clearGitReadCaches();
       return lane as LaneSummary;
     },
-    importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => {
+    importBranch: async (
+      args: ImportBranchLaneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
+        pin,
         "lane",
         "importBranch",
         { args },

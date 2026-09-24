@@ -10325,7 +10325,9 @@ export function AgentChatPane({
       if (configured?.mode === "import") {
         const branchRef = configured.branchRef?.trim() ?? "";
         if (!branchRef) throw new Error("Choose a branch to import.");
-        createdLane = await window.ade.lanes.importBranch({ branchRef, name: laneName });
+        createdLane = pin
+          ? await window.ade.lanes.importBranch({ branchRef, name: laneName }, pin)
+          : await window.ade.lanes.importBranch({ branchRef, name: laneName });
       } else if (configured?.mode === "child") {
         const parentLaneId = configured.parentLaneId?.trim() ?? "";
         if (!parentLaneId) throw new Error("Choose a parent lane for the child lane.");

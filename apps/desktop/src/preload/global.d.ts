@@ -1715,7 +1715,7 @@ declare global {
         createFromUnstaged: (
           args: CreateLaneFromUnstagedArgs,
         ) => Promise<LaneSummary>;
-        importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
+        importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         previewBranchSwitch: (
           args: LaneBranchSwitchArgs,
         ) => Promise<LaneBranchSwitchPreview>;
