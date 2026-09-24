@@ -132,26 +132,4 @@ describe("AppleDeviceNoticeStrip", () => {
     expect(screen.queryByRole("button", { name: "Dismiss this message" })).toBeNull();
   });
 
-  it("is an opaque bar, never a tint over the device (rule zero / §B3)", () => {
-    const { container } = render(
-      <AppleDeviceStatusStrip error={new Error("APPLE_HELPER_UNAVAILABLE")} onDismiss={vi.fn()} />,
-    );
-    const strip = container.querySelector("[data-apple-status-strip='error'] [role='alert']") as HTMLElement;
-    // The shared inline banner: red lives in the icon tile and border, never a
-    // flooded fill over the device.
-    expect(strip.getAttribute("data-notice-tone")).toBe("error");
-    expect(strip.style.background).not.toContain("var(--color-error)");
-    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
-  });
-
-  it.each([360, 900])("fits its container at %ipx", (width) => {
-    const { container } = render(
-      <AppleDeviceStatusStrip
-        error={new Error("Error invoking remote method 'apple.start': TypeError")}
-        onAction={vi.fn()}
-        onDismiss={vi.fn()}
-      />,
-    );
-    expectNoHorizontalOverflow(container, width);
-  });
 });

@@ -134,6 +134,25 @@ describe("decideOrphanSubagentTerminal", () => {
     expect(terminal).toMatchObject({ status: "completed", summary: "Shipped" });
   });
 
+  it.each(["Agent active", "Agent received input", "Status: running", "Task updated"])(
+    "never saves runtime filler (%s) as a report",
+    (filler) => {
+      // A plain row whose only summary is filler stops with the sweep's copy.
+      expect(decideOrphanSubagentTerminal({
+        row: row({ summary: filler }),
+        childState: null,
+        attribution: RESTART,
+      })?.summary).toBe("Stopped: the ADE brain restarted");
+      // An idle child chat whose "report" is filler did not report.
+      expect(decideOrphanSubagentTerminal({
+        row: row({ summary: filler }),
+        childState: "idle",
+        childReport: filler,
+        attribution: RESTART,
+      })).toMatchObject({ status: "stopped", summary: ORPHAN_SUBAGENT_NO_REPORT_SUMMARY });
+    },
+  );
+
   it("carries a foreign-brain takeover attribution through unchanged", () => {
     const terminal = decideOrphanSubagentTerminal({
       row: row(),

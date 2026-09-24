@@ -60,8 +60,12 @@ export function ImportFloatingBadge({
 
   return (
     // `shrink-0` because the draft column this sits in is a height-capped
-    // flex-col where the logo is the only row meant to absorb overflow.
-    <div className="flex w-full shrink-0 justify-center">
+    // flex-col where the logo is the only row meant to absorb overflow. The
+    // top margin sets the hint apart from the activity card above it, so it
+    // reads as a footnote to the column rather than part of that card. Short
+    // windows drop it: the column is already at its floor there, and the extra
+    // gap would only push the pill further past the bottom edge.
+    <div className="flex w-full shrink-0 justify-center [@media(min-height:760px)]:mt-6">
       <div
         // Fades out with the rest of the draft when a sent chat opens (`chatLaunchDock`).
         data-draft-depart="fade"

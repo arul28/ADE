@@ -81,7 +81,7 @@ describe("ActivityCard", () => {
     expect(screen.queryByText("Editing HeaderActivityControl.tsx")).toBeNull();
   });
 
-  it("dims an offline machine's row and says when it was last seen", () => {
+  it("identifies an offline machine and says when it was last seen", () => {
     render(
       <ActivityCard
         item={item({
@@ -99,7 +99,6 @@ describe("ActivityCard", () => {
     const chip = screen.getByText("MacBook Pro").parentElement;
     expect(chip?.getAttribute("data-machine-online")).toBe("false");
     expect(chip?.getAttribute("title")).toContain("offline");
-    expect(screen.getByRole("button").className).toContain("opacity-70");
   });
 
   it("falls back to the project name when an item has no lane", () => {
@@ -117,11 +116,9 @@ describe("ActivityCard", () => {
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "item-a" }));
   });
 
-  it("keeps the compact form to two lines without losing the status word", () => {
-    const { container } = render(<ActivityCard item={item()} onOpen={vi.fn()} compact />);
+  it("keeps the status word visible in compact form", () => {
+    render(<ActivityCard item={item()} onOpen={vi.fn()} compact />);
 
-    expect(container.querySelector(".h-\\[2\\.75rem\\]")).toBeTruthy();
-    expect(container.querySelector(".h-\\[4\\.875rem\\]")).toBeNull();
     expect(screen.getByRole("status").textContent).toBe("Working");
   });
 

@@ -620,6 +620,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listCodexPlugins",
     "listClaudeSessions",
     "listSessions",
+    // Tracked `--mode cli` children with their parent lineage: `ade chat list`
+    // merges them so an agent can find and poll its CLI children.
+    "listCliChildSessions",
     "listSubagents",
     "listPromptStashes",
     "createPromptStash",
@@ -640,6 +643,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "respondToInput",
     "dismissPendingInput",
     "resolveSmartLinkPreview",
+    // Sources favicons: a first-party fetch of the icon of a site the chat
+    // already visited, bounded and SSRF-guarded (chat/sourceFaviconService.ts).
+    "resolveSourceFavicons",
     "reloadClaudePlugins",
     "rewindFiles",
     "saveTempAttachment",

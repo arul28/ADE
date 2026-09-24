@@ -265,7 +265,7 @@ describe("pickCaptureGestureWindow", () => {
   });
 
   /** ...and the remembered window is only usable while it is still live. */
-  it("ignores a remembered window that is no longer in the live set", () => {
+  it("falls back when the remembered window is absent", () => {
     expect(
       pickCaptureGestureWindow({ liveWindows: windows, focused: null, lastFocusedId: 99 }),
     ).toBe(windows[0]);

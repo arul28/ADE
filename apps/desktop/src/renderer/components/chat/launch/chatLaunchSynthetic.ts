@@ -3,6 +3,7 @@ import type {
   ChatLaunchSnapshot,
   TerminalSessionSummary,
 } from "../../../../shared/types";
+import { LAUNCH_DELIVERY_ERROR_METADATA_KEY } from "../../../../shared/chatUserMessageStatus";
 import type { AdeCardPayload } from "../../../../shared/adeCard";
 import { getModelById, resolveProviderGroupForModel } from "../../../../shared/modelRegistry";
 import { buildLaneSetupCard, isChatLaunchPending, laneSetupCardId } from "../../../../shared/chatLaunch";
@@ -125,7 +126,7 @@ export function buildLaneSetupCardPayload(snapshot: ChatLaunchSnapshot, nowMs = 
 }
 
 /** `user_message.metadata` key carrying a queued launch message's delivery failure. */
-export const LAUNCH_DELIVERY_ERROR_METADATA_KEY = "launchDeliveryError";
+export { LAUNCH_DELIVERY_ERROR_METADATA_KEY };
 
 /**
  * Queued messages the thread shows. Before the agent starts, all of them.

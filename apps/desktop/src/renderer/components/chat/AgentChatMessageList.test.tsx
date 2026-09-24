@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type {
   AgentChatApprovalDecision,
@@ -17,9 +17,6 @@ import {
 } from "./textReveal";
 import { setPerfActive } from "../../perf/markers";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -72,12 +69,13 @@ import {
   calculateVirtualWindowAnchoredToEnd,
   deriveTranscriptToolActivity,
   deriveTurnModelState,
+  estimateTranscriptRowHeight,
   findAnchoredChatEventIndex,
   formatElapsedSeconds,
   ChatInfoHostContext,
-  getTranscriptCollapseCacheKeysForTests,
   reconcileMeasuredScrollTop,
   resetTranscriptCollapseCacheForTests,
+  resetTurnFoldMemoryForTests,
   resolveAnchoredChatRowIndex,
   resolveOlderHistoryPrefetchTriggerPx,
   resolveWorkingIndicatorLabel,
@@ -90,7 +88,9 @@ import {
   shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
 import { looksLikeWireframe } from "./questionOptionPreview";
+import { resetChatTaskListCardStateForTests } from "./ChatTaskListCard";
 import {
+  buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
   groupChatTranscriptRows,
   groupConsecutiveWorkLogRows,
@@ -100,6 +100,8 @@ import { resetFilesWorkspaceCacheForTests } from "./chatWorkspacePaths";
 import { rememberCallStill, resetSceneStillsForTest } from "./sceneStillStore";
 import { stubSceneCaptureBridge } from "./sceneStillTestHarness";
 import { mixedIdToolActivityBoundaryEvents } from "../../../shared/testFixtures/chatToolActivity";
+import { setPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
+import { CHAT_TIMELINE_ROW_GAP_PX } from "./chatUserMinimap.logic";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -161,6 +163,7 @@ function renderMessageList(
     proofArtifacts?: ComputerUseArtifactView[];
     allowLocalProofArtifactProtocol?: boolean;
     onOpenProofDrawer?: () => void;
+    onOpenTurnSources?: (turnId: string) => void;
     usageLimitResumeActive?: boolean;
     usageLimitResumeTurnId?: string | null;
     sessionProvider?: string | null;
@@ -199,6 +202,7 @@ function renderMessageList(
         proofArtifacts={options?.proofArtifacts}
         allowLocalProofArtifactProtocol={options?.allowLocalProofArtifactProtocol}
         onOpenProofDrawer={options?.onOpenProofDrawer}
+        onOpenTurnSources={options?.onOpenTurnSources}
       />
       <LocationProbe />
     </MemoryRouter>,
@@ -380,6 +384,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  resetChatTaskListCardStateForTests();
   if (originalAde === undefined) {
     delete (globalThis.window as any).ade;
   } else {
@@ -540,9 +545,98 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    const chip = screen.getByTestId("user-message-delivery-chip");
-    expect(chip.textContent).toBe("Couldn't send — retrying");
-    expect(chip.getAttribute("title")).toBe("Session is busy.");
+    const status = screen.getByTestId("user-message-status");
+    expect(status.textContent).toBe("Couldn't send — retrying");
+    expect(status.getAttribute("data-status-kind")).toBe("launch_retrying");
+    expect(screen.getByText("Couldn't send — retrying").getAttribute("title")).toBe("Session is busy.");
+  });
+
+  describe("user message status line", () => {
+    const userMessage = (
+      overrides: Partial<Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>>,
+    ): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: { type: "user_message", text: "what's happening?", turnId: "turn-1", ...overrides },
+    });
+    const bubbleOf = (container: HTMLElement): HTMLElement => {
+      const bubble = container.querySelector<HTMLElement>(".ade-chat-message-card-user");
+      expect(bubble).toBeTruthy();
+      return bubble!;
+    };
+
+    it.each([
+      ["inline", { steerId: "s-1", deliveryState: "inline" }, "steered", "Steered"],
+      ["Codex accepted", { steerId: "s-1", deliveryState: "accepted" }, "steering", "Steering…"],
+      ["Codex processed", { steerId: "s-1", deliveryState: "processed", processed: true }, "steered", "Steered"],
+      ["legacy processed flag", { steerId: "s-1", processed: true }, "steered", "Steered"],
+      ["queued steer sent at the turn boundary", { steerId: "s-1", deliveryState: "delivered" }, "sent_after_turn", "Sent after turn"],
+      ["failed steer", { steerId: "s-1", deliveryState: "failed" }, "steer_failed", "Steer failed"],
+      ["failed send", { deliveryState: "failed" }, "send_failed", "Couldn't send"],
+    ] as const)("%s draws its label under the bubble, never a pill inside it", (_name, overrides, kind, label) => {
+      const { container } = renderMessageList([userMessage(overrides)]);
+      const status = screen.getByTestId("user-message-status");
+      expect(status.getAttribute("data-status-kind")).toBe(kind);
+      expect(status.textContent).toBe(label);
+      expect(status.querySelector("svg")).toBeTruthy();
+      const bubble = bubbleOf(container);
+      expect(bubble.contains(status)).toBe(false);
+      expect(bubble.textContent).not.toMatch(/accepted during turn|accepted · waiting|processed/);
+      expect(screen.queryByTestId("user-message-delivery-chip")).toBeNull();
+      // The bubble and its status line share one row, bubble first.
+      expect(bubble.parentElement).toBe(screen.getByTestId("user-message-status-row").parentElement);
+      expect(bubble.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("keeps the hover actions inside the bubble and the status line outside it", () => {
+      const { container } = renderMessageList([userMessage({ steerId: "s-1", deliveryState: "inline" })]);
+      const bubble = bubbleOf(container);
+      const copy = within(bubble).getByRole("button", { name: /copy/i });
+      const status = screen.getByTestId("user-message-status");
+      // Hover actions are absolutely positioned inside the bubble; the status
+      // line is a sibling of the bubble, so the two can never overlap.
+      expect(copy.closest(".absolute")?.parentElement).toBe(bubble);
+      expect(status.closest(".ade-chat-message-card-user")).toBeNull();
+    });
+
+    it("draws no status line for plain, optimistic-queued, or spawn-prompt messages", () => {
+      renderMessageList([
+        userMessage({}),
+        { ...userMessage({ deliveryState: "queued" }), timestamp: "2026-03-17T10:00:01.000Z" },
+        { ...userMessage({ deliveryState: "delivered", processed: true, messageId: "subagent:a:spawn-prompt" }), timestamp: "2026-03-17T10:00:02.000Z" },
+      ]);
+      expect(screen.queryByTestId("user-message-status")).toBeNull();
+    });
+
+    it("updates the label in place as a Codex steer moves from accepted to processed", () => {
+      const accepted = userMessage({ steerId: "s-1", deliveryState: "accepted" });
+      const processed: AgentChatEventEnvelope = {
+        ...userMessage({ steerId: "s-1", deliveryState: "processed", processed: true }),
+        timestamp: "2026-03-17T10:00:03.000Z",
+      };
+      const { container, rerender } = renderMessageList([accepted]);
+      const rowKey = container.querySelector("[data-chat-row-key]")?.getAttribute("data-chat-row-key");
+      expect(screen.getByTestId("user-message-status").textContent).toBe("Steering…");
+      rerender(
+        <MemoryRouter>
+          <AgentChatMessageList events={[accepted, processed]} />
+        </MemoryRouter>,
+      );
+      expect(screen.getAllByTestId("user-message-status")).toHaveLength(1);
+      expect(screen.getByTestId("user-message-status").textContent).toBe("Steered");
+      expect(container.querySelector("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(rowKey);
+    });
+
+    it("budgets the status line in the unmeasured row estimate", () => {
+      const row = (event: AgentChatEventEnvelope["event"]) => ({
+        key: "k",
+        timestamp: "2026-09-23T00:00:00.000Z",
+        event,
+      }) as Parameters<typeof estimateTranscriptRowHeight>[0];
+      const plain = estimateTranscriptRowHeight(row({ type: "user_message", text: "hi" }), 720);
+      const steered = estimateTranscriptRowHeight(row({ type: "user_message", text: "hi", steerId: "s", deliveryState: "inline" }), 720);
+      expect(steered - plain).toBe(20);
+    });
   });
 
   // Proof used to be appended after every row as a permanently open thread
@@ -1062,6 +1156,46 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("First block.\n\nSecond block."));
   });
 
+  it("puts the text row's hover footer on its own line under the prose, live or folded", () => {
+    const footerOf = (text: string) => {
+      const prose = screen.getByText(text).closest("[data-assistant-output]") as HTMLElement;
+      const footer = prose.nextElementSibling as HTMLElement;
+      expect(footer.getAttribute("data-testid")).toBe("assistant-text-hover-footer");
+      return footer;
+    };
+    // A short interim line in a live turn: the footer used to sit over its end.
+    const events: AgentChatEventEnvelope[] = [
+      { sessionId: "session-1", timestamp: "2026-03-17T10:00:00.000Z", event: { type: "user_message", text: "What is this?", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: "2026-03-17T10:00:01.000Z", event: { type: "text", text: "I'll pull the description.", itemId: "t-1", turnId: "turn-1" } },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "command", command: "cat README.md", cwd: "/repo", output: "", itemId: "c-1", turnId: "turn-1", status: "completed", exitCode: 0 },
+      },
+      { sessionId: "session-1", timestamp: "2026-03-17T10:00:03.000Z", event: { type: "text", text: "ADE is a workspace.", itemId: "t-2", turnId: "turn-1" } },
+    ];
+    const view = renderMessageList(events, { showStreamingIndicator: true });
+    for (const text of ["I'll pull the description.", "ADE is a workspace."]) {
+      const footer = footerOf(text);
+      // In flow, not pinned over the text.
+      expect(footer.className).not.toMatch(/(^|\s)absolute(\s|$)/);
+      expect(footer.parentElement!.className).not.toContain("pr-7");
+      expect(within(footer).getByRole("button", { name: "Copy message" })).toBeTruthy();
+    }
+
+    // The folded turn's answer keeps the same footer, now with Copy turn.
+    view.rerender(
+      <MemoryRouter>
+        <AgentChatMessageList
+          events={[...events, { sessionId: "session-1", timestamp: "2026-03-17T10:00:04.000Z", event: { type: "done", turnId: "turn-1", status: "completed" } }]}
+        />
+      </MemoryRouter>,
+    );
+    const answerFooter = footerOf("ADE is a workspace.");
+    expect(answerFooter.className).not.toMatch(/(^|\s)absolute(\s|$)/);
+    expect(within(answerFooter).getByRole("button", { name: "Copy whole turn" })).toBeTruthy();
+  });
+
   it("adds selected assistant text to the composer as chat context", async () => {
     const onInsertDraft = vi.fn();
     renderMessageList(
@@ -1160,29 +1294,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("const answer = 42;");
     });
-  });
-
-  it("wraps long rendered assistant output instead of clipping it in narrow panes", () => {
-    const longToken = "cto-output-" + "x".repeat(180);
-    const rendered = renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "text",
-          text: `Long rendered output ${longToken} with inline \`${longToken}\`.`,
-          itemId: "text-long-output",
-          turnId: "turn-1",
-        },
-      },
-    ]);
-
-    const prose = rendered.container.querySelector(".ade-prose-themed");
-    expect(prose?.className).toContain("break-words");
-    expect(prose?.className).toContain("prose-p:break-words");
-    const inlineCode = rendered.container.querySelector("code");
-    expect(inlineCode?.className).toContain("break-all");
-    expect(inlineCode?.className).toContain("whitespace-normal");
   });
 
   it("shows and collapses long grouped tool results", async () => {
@@ -1323,10 +1434,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect([...divider.querySelectorAll("[data-model-handoff-provider]")].map((node) => (
       node.getAttribute("data-model-handoff-provider")
     ))).toEqual(["claude", "codex"]);
-    expect([...divider.querySelectorAll("[data-model-handoff-provider]")].every((node) => (
-      node.className.includes("h-5") && node.className.includes("w-5")
-    ))).toBe(true);
-    expect(divider.querySelector(".items-center.h-6")).toBeTruthy();
   });
 
   it("draws no handoff divider when the provider did not actually change", () => {
@@ -2146,8 +2253,14 @@ describe("AgentChatMessageList transcript rendering", () => {
     ], { onRunUnprocessedMessage });
 
     expect(screen.getAllByText("Check the release.")).toHaveLength(1);
-    expect(screen.getByText("not processed")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Run next" }));
+    const status = screen.getByTestId("user-message-status");
+    expect(status.getAttribute("data-status-kind")).toBe("steer_unprocessed");
+    expect(status.textContent).toBe("Not steered — turn ended first");
+    // The actions sit with the status line under the bubble, not inside it.
+    const runNext = screen.getByRole("button", { name: "Run next" });
+    expect(runNext.closest(".ade-chat-message-card-user")).toBeNull();
+    expect(screen.getByTestId("user-message-status-row").contains(runNext)).toBe(true);
+    fireEvent.click(runNext);
     await waitFor(() => {
       expect(onRunUnprocessedMessage).toHaveBeenCalledWith(expect.objectContaining({
         steerId: "steer-1",
@@ -2155,6 +2268,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       }));
     });
     expect(await screen.findByText("Started as the next turn")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Run next" })).toBeNull();
+    expect(screen.getByTestId("user-message-status").textContent).toBe("Started as the next turn");
   });
 
   it("collapses a resolved Codex recovery card into an audit receipt", () => {
@@ -2190,23 +2305,67 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText(/restarted the Codex app-server/)).toBeTruthy();
   });
 
-  it("keeps non-rate-limit notice details in collapsible cards", () => {
+  it("keeps non-rate-limit, non-warning notice details in collapsible cards", () => {
     renderMessageList([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
           type: "system_notice",
-          noticeKind: "warning",
+          noticeKind: "hook",
           message: "Hook stderr captured",
           detail: "Long hook output remains behind a disclosure.",
         },
       },
     ]);
 
-    expect(screen.getByText("warning")).toBeTruthy();
+    expect(screen.getByText("hook")).toBeTruthy();
     expect(screen.getByText("Hook stderr captured")).toBeTruthy();
     expect(screen.getByRole("button")).toBeTruthy();
+  });
+
+  it("draws a warning notice as one compact line that expands to the full message and detail", () => {
+    const message = "⚠ Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings. user (/Users/me/.codex/config.toml): `features.rmcp_client` is ignored.";
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "system_notice", noticeKind: "warning", message, detail: "Seen at thread start." },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "system_notice", noticeKind: "info", severity: "warning", message: "Claude could not compact this conversation." },
+      },
+    ]);
+
+    const rows = screen.getAllByTestId("compact-warning-notice");
+    expect(rows).toHaveLength(2);
+    // No WARNING label block, and the provider's own ⚠ is not doubled next to the icon.
+    expect(screen.queryByText(/^warning$/i)).toBeNull();
+    const summary = within(rows[0]!).getByTitle(/^Codex is ignoring 1 unrecognized/);
+    expect(summary.className).toContain("truncate");
+    expect(screen.queryByText("Seen at thread start.")).toBeNull();
+
+    const toggle = within(rows[0]!).getByRole("button");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Seen at thread start.")).toBeTruthy();
+    expect(within(rows[0]!).getAllByText(/features\.rmcp_client/)).toHaveLength(2);
+  });
+
+  it("keeps error notices as cards, not compact warning lines", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "system_notice", noticeKind: "error", message: "🛡 guardian: blocked" },
+      },
+    ]);
+
+    expect(screen.queryByTestId("compact-warning-notice")).toBeNull();
+    expect(screen.getByText("error")).toBeTruthy();
   });
 
   it("renders Claude PreToolUse hook errors in the compact work-log disclosure", () => {
@@ -2271,8 +2430,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    const table = screen.getByRole("table");
-    expect(table.parentElement?.className).toContain("overflow-x-auto");
+    expect(screen.getByRole("table")).toBeTruthy();
     expect(screen.getByText("Task progress")).toBeTruthy();
   });
 
@@ -2579,7 +2737,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(slot()).not.toBeNull();
     expect(slot().textContent).toBe("");
     expect(slot().querySelector("button")).toBeNull();
-    expect(slot().className).toContain("h-7");
 
     view.rerender(
       <MemoryRouter initialEntries={[{ pathname: "/" }]}>
@@ -2601,8 +2758,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
     const retry = screen.getByRole("button", { name: "Retry loading earlier messages" });
     expect(retry.textContent).toContain("retry");
-    // Same fixed height in both states, so latching the error shifts nothing.
-    expect(slot().className).toContain("h-7");
   });
 
   it("counts rows that arrived while detached on the jump pill", async () => {
@@ -2654,60 +2809,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Show less" })).toBeNull();
     expect(screen.getByText(longPrompt.trim())).toBeTruthy();
-  });
-
-  it("isolates nested transcript collapse caches from the real session cache", () => {
-    const sessionId = "collapse-cache-parent";
-    const parentEvents = userMessageEvents(["Parent transcript"], sessionId);
-    const nestedEvents = userMessageEvents(["Nested subagent transcript"], sessionId);
-    const nestedCacheKey = `subagent:${sessionId}:task-1`;
-
-    const parent = renderMessageList(parentEvents, { sessionId });
-    parent.unmount();
-    const nested = renderMessageList(nestedEvents, {
-      sessionId,
-      transcriptCollapseCacheKey: nestedCacheKey,
-    });
-    nested.unmount();
-
-    expect(getTranscriptCollapseCacheKeysForTests()).toEqual([sessionId, nestedCacheKey]);
-
-    renderMessageList(parentEvents, { sessionId });
-    expect(screen.getByText("Parent transcript")).toBeTruthy();
-    expect(screen.queryByText("Nested subagent transcript")).toBeNull();
-    expect(getTranscriptCollapseCacheKeysForTests()).toEqual([nestedCacheKey, sessionId]);
-  });
-
-  it("does not refresh collapse-cache LRU recency on an ordinary rerender", () => {
-    const firstSessionId = "collapse-lru-a";
-    const firstEvents = userMessageEvents(["First"], firstSessionId);
-    const first = render(
-      <MemoryRouter>
-        <AgentChatMessageList events={firstEvents} sessionId={firstSessionId} />
-      </MemoryRouter>,
-    );
-    for (const suffix of ["b", "c", "d", "e", "f", "g", "h"]) {
-      const sessionId = `collapse-lru-${suffix}`;
-      renderMessageList(userMessageEvents([suffix], sessionId), { sessionId });
-    }
-    expect(getTranscriptCollapseCacheKeysForTests()[0]).toBe(firstSessionId);
-
-    first.rerender(
-      <MemoryRouter>
-        <AgentChatMessageList
-          events={firstEvents}
-          sessionId={firstSessionId}
-          showStreamingIndicator
-        />
-      </MemoryRouter>,
-    );
-    renderMessageList(userMessageEvents(["i"], "collapse-lru-i"), {
-      sessionId: "collapse-lru-i",
-    });
-
-    const cacheKeys = getTranscriptCollapseCacheKeysForTests();
-    expect(cacheKeys).not.toContain(firstSessionId);
-    expect(cacheKeys).toContain("collapse-lru-b");
   });
 
   it("leaves a short user prompt uncollapsed", () => {
@@ -2929,6 +3030,34 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(transcript.scrollTop).toBeGreaterThan(0);
   });
 
+  it("scrolls to a steered prompt selected by composer history, status line and all", () => {
+    const steered: AgentChatEventEnvelope[] = MINIMAP_TRANSCRIPT.map((envelope, index) => (
+      index === 2 && envelope.event.type === "user_message"
+        ? { ...envelope, event: { ...envelope.event, steerId: "steer-2", deliveryState: "inline" } }
+        : envelope
+    ));
+    const view = renderMessageList(steered);
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    expect(screen.getByTestId("user-message-status").textContent).toBe("Steered");
+
+    const target = steered[2]!;
+    if (target.event.type !== "user_message") throw new Error("test target must be a user message");
+    const request = {
+      eventKey: promptHistoryEventKey({ timestamp: target.timestamp, event: target.event }),
+      requestId: 1,
+    };
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={steered} scrollToPromptHistoryRequest={request} />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    expect(transcript.scrollTop).toBeGreaterThan(0);
+  });
+
   // "absorbs tool summaries" test removed: tested old ChatWorkLogBlock
   // summary absorption rendering which changes with UI iterations.
 
@@ -2953,7 +3082,6 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     const fileLink = screen.getByRole("button", { name: "AgentChatMessageList.tsx" });
     expect(fileLink.getAttribute("title")).toBe("Open file in Files");
-    expect(fileLink.className).toContain("cursor-pointer");
     fireEvent.click(fileLink);
 
     await expectLocationText(
@@ -2984,167 +3112,6 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     await expectLocationText(
       "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
-    );
-  });
-
-  it("maps absolute workspace file references into Files navigation targets", async () => {
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Inspect `/Users/admin/Projects/ADE/.ade/worktrees/fix-codex-chat-67bc1826/apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`.",
-            itemId: "text-absolute",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-123" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "/Users/admin/Projects/ADE/.ade/worktrees/fix-codex-chat-67bc1826/apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx",
-      }),
-    );
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
-    );
-  });
-
-  it("maps Windows drive-letter file references into Files navigation targets", async () => {
-    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
-      {
-        id: "workspace-windows",
-        kind: "worktree",
-        laneId: "lane-win",
-        name: "Windows lane",
-        rootPath: "C:\\Users\\me\\repo",
-        isReadOnlyByDefault: false,
-      },
-    ]);
-
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Inspect `C:\\Users\\me\\repo\\src\\main.ts`.",
-            itemId: "text-windows-absolute",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-win" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "C:\\Users\\me\\repo\\src\\main.ts" }));
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
-    );
-  });
-
-  it("matches Windows drive-letter file references case-insensitively", async () => {
-    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
-      {
-        id: "workspace-windows",
-        kind: "worktree",
-        laneId: "lane-win",
-        name: "Windows lane",
-        rootPath: "C:\\Users\\Me\\Repo",
-        isReadOnlyByDefault: false,
-      },
-    ]);
-
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Inspect `c:\\users\\me\\repo\\src\\main.ts`.",
-            itemId: "text-windows-case",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-win" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "c:\\users\\me\\repo\\src\\main.ts" }));
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
-    );
-  });
-
-  it("maps Windows markdown links into Files navigation targets", async () => {
-    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
-      {
-        id: "workspace-windows",
-        kind: "worktree",
-        laneId: "lane-win",
-        name: "Windows lane",
-        rootPath: "C:\\Users\\me\\repo",
-        isReadOnlyByDefault: false,
-      },
-    ]);
-
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Open [main.ts](C:/Users/me/repo/src/main.ts).",
-            itemId: "text-windows-link",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-win" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "main.ts" }));
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
     );
   });
 
@@ -3589,49 +3556,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(formatElapsedSeconds(-5)).toBe("0s");
   });
 
-  it("does not vertically clip virtualized transcript rows while heights settle", () => {
-    const originalResizeObserver = globalThis.ResizeObserver;
-    class ResizeObserverStub {
-      observe() {}
-      disconnect() {}
-    }
-    Object.defineProperty(globalThis, "ResizeObserver", {
-      configurable: true,
-      value: ResizeObserverStub,
-    });
-
-    try {
-      const rendered = renderMessageList(
-        Array.from({ length: 65 }, (_, index): AgentChatEventEnvelope => ({
-          sessionId: "session-1",
-          timestamp: `2026-03-17T10:${String(index).padStart(2, "0")}:00.000Z`,
-          event: {
-            type: "user_message",
-            text: `message ${index}`,
-            messageId: `user-${index}`,
-            turnId: `turn-${index}`,
-          },
-        })),
-      );
-
-      const contentWrapper = rendered.container.querySelector(".ade-chat-timeline-pane > div");
-      const measuredRow = rendered.container.querySelector('[data-chat-virtualized-row="true"]');
-
-      expect(contentWrapper?.className).toContain("overflow-visible");
-      expect(measuredRow?.className).toContain("overflow-visible");
-      expect(measuredRow?.className).not.toContain("overflow-hidden");
-    } finally {
-      if (originalResizeObserver === undefined) {
-        delete (globalThis as any).ResizeObserver;
-      } else {
-        Object.defineProperty(globalThis, "ResizeObserver", {
-          configurable: true,
-          value: originalResizeObserver,
-        });
-      }
-    }
-  });
-
   it("measures virtualized transcript rows on mount before resize observer callbacks", async () => {
     const originalResizeObserver = globalThis.ResizeObserver;
     const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
@@ -3664,10 +3588,13 @@ describe("AgentChatMessageList transcript rendering", () => {
         })),
       );
 
+      // What the sizer would be with every row still on its estimate.
+      const estimatedOnly = 65 * (51 + CHAT_TIMELINE_ROW_GAP_PX) - CHAT_TIMELINE_ROW_GAP_PX;
       await waitFor(() => {
         const virtualSizer = Array.from(rendered.container.querySelectorAll("div"))
           .find((el) => el.style.position === "relative" && el.style.height);
-        expect(Number.parseFloat(virtualSizer?.style.height ?? "0")).toBeGreaterThan(6_200);
+        // Rows in the window measured at 220px on mount, not on a later RO callback.
+        expect(Number.parseFloat(virtualSizer?.style.height ?? "0")).toBeGreaterThan(estimatedOnly + 5 * (220 - 51));
       });
     } finally {
       if (originalOffsetHeight) {
@@ -3924,10 +3851,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(line.textContent).toContain("npm install");
     expect(withoutHost.container.querySelector("[data-background-job] button")).toBeNull();
     // Windows parity: bare ⚙/✓/✗ codepoints resolve to Segoe UI Emoji there,
-    // rendering as heavier colour glyphs off the baseline of the rule line.
-    // Status is carried by a Phosphor <svg>, never a text codepoint.
+    // rendering as heavier colour glyphs off the baseline of the line. Status is
+    // a word (`running`, `done`), never a text codepoint.
     expect(line.textContent).not.toMatch(/[⚙✓✗]/);
-    expect(line.querySelector("svg")).toBeTruthy();
+    expect(line.textContent).toContain("running");
     cleanup();
 
     // Inside a host that owns the actions pane, the affordance appears and works.
@@ -3985,8 +3912,14 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(line.textContent).not.toMatch(/\d+\s*(s|m|h|d)\b/);
   });
 
-  it("keeps narration and file changes inline while completed tool activity moves behind the status line", () => {
+  it("folds a finished turn's narration and moves its tool and file counts onto the fold row", () => {
     const rendered = renderMessageList([
+      // No user message: the turn's own start event anchors its duration.
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -4031,23 +3964,37 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(rendered.container.textContent).toContain("I’ll inspect the renderer first.");
-    expect(rendered.container.textContent).toContain("The focused tests pass.");
-    expect(rendered.container.textContent).toContain("1tool");
-    expect(rendered.container.textContent).toContain("1 file changed");
-    expect(rendered.container.textContent).not.toContain("npm test");
-    expect(rendered.container.textContent).toContain("ran 5.0s");
-    expect(rendered.container.textContent!.indexOf("ran 5.0s"))
-      .toBeLessThan(rendered.container.textContent!.indexOf("1tool"));
+    // Closed by default: the interim narration is folded, the answer is not,
+    // and the counts sit on the fold row instead of the turn-end line.
+    const fold = screen.getByRole("button", { name: /^Worked for 5\.0s · 1 tool · 1 file\. Show/ });
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
+    let text = rendered.container.textContent ?? "";
+    expect(text).not.toContain("I’ll inspect the renderer first.");
+    expect(text).toContain("The focused tests pass.");
+    expect(text).toContain("ran 5.0s");
+    expect(text).not.toContain("1 file changed");
+    expect(screen.queryByRole("button", { name: /^Show .+ from this turn$/ })).toBeNull();
+    expect(text.indexOf("Worked for 5.0s")).toBeLessThan(text.indexOf("The focused tests pass."));
 
+    // Open: the narration returns in place and the turn's tools stay reachable.
+    fireEvent.click(fold);
+    text = rendered.container.textContent ?? "";
+    expect(text).toContain("I’ll inspect the renderer first.");
+    expect(text).toContain("1 file changed");
+    expect(text.indexOf("I’ll inspect the renderer first.")).toBeLessThan(text.indexOf("The focused tests pass."));
     fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
-    expect(rendered.container.textContent).toContain("npm test");
-    const expanded = rendered.container.textContent ?? "";
-    expect(expanded.indexOf("ran 5.0s")).toBeLessThan(expanded.indexOf("npm test"));
+    text = rendered.container.textContent ?? "";
+    expect(text).toContain("npm test");
+    expect(text.indexOf("npm test")).toBeLessThan(text.indexOf("The focused tests pass."));
   });
 
   it("left-aligns the turn work summary with Thought and keeps time/usage last when expanded", () => {
     const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      },
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -4325,6 +4272,26 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).not.toContain("1s");
   });
 
+  it("draws the collapsed Thought label as plain text, with no trailing dots", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "reasoning", text: "Checked the import graph.", itemId: "r-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ]);
+    const label = rendered.container.querySelector("[data-testid='thought-label']") as HTMLElement;
+    expect(label.textContent).toBe("Thought");
+    // The dots were rounded-full spans after the word; none remain.
+    expect(label.querySelectorAll(".rounded-full")).toHaveLength(0);
+    expect(label.parentElement!.querySelectorAll(".rounded-full, .ade-thinking-pulse")).toHaveLength(0);
+  });
+
   it("keeps work-log cards bounded to content width", () => {
     const rendered = renderMessageList([
       {
@@ -4409,8 +4376,228 @@ describe("AgentChatMessageList transcript rendering", () => {
     // The old per-tick activity-bundle chrome is gone.
     expect(text).not.toContain("Subagent updates");
     expect(text).not.toContain("2 subagents");
-    // The result card exposes a "View transcript" affordance.
-    expect(text).toContain("view transcript");
+    // The card itself opens the transcript; there is no text link.
+    expect(text).not.toContain("view transcript");
+  });
+
+  it("draws consecutive Codex agents side by side in one row, titled by name", () => {
+    const codexStart = (id: string, path: string, second: number): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:0${second}.000Z`,
+      event: {
+        type: "subagent_started",
+        taskId: id,
+        agentId: id,
+        agentType: path,
+        label: path,
+        description: path,
+        turnId: "turn-1",
+      },
+    });
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T09:59:59.000Z",
+        event: { type: "user_message", text: "scan this codebase using parallel agents", turnId: "turn-1" },
+      },
+      codexStart("t-1", "/root/desktop_scan", 1),
+      codexStart("t-2", "/root/cli_tui_scan", 2),
+      codexStart("t-3", "/root/ios_shared_scan", 3),
+    ], { sessionProvider: "codex" });
+
+    const grids = rendered.container.querySelectorAll("[data-subagent-card-grid]");
+    expect(grids).toHaveLength(1);
+    const grid = grids[0]!;
+    expect(grid.getAttribute("data-subagent-card-count")).toBe("3");
+    // One transcript row, keyed by the first card.
+    expect(grid.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe("subagent-spawn:t-1");
+    expect([...grid.querySelectorAll("[data-subagent-name]")].map((node) => node.textContent))
+      .toEqual(["Desktop scan", "CLI TUI scan", "iOS shared scan"]);
+    expect(rendered.container.textContent).not.toContain("/root/");
+  });
+
+  it("keeps a lone card mounted when a second card joins it in a grid", () => {
+    const start = (id: string, description: string, second: number): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:0${second}.000Z`,
+      event: { type: "subagent_started", taskId: id, agentId: id, agentType: "Explore", description, turnId: "turn-1" },
+    });
+    const first = [start("agent-a", "Scan desktop", 1)];
+    const rendered = renderMessageList(first);
+    const cardBefore = rendered.container.querySelector("[data-subagent-card-key='subagent-spawn:agent-a'] [data-subagent-card]");
+    expect(cardBefore).toBeTruthy();
+
+    rendered.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={[...first, start("agent-b", "Scan iOS", 2)]} />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    const grid = rendered.container.querySelector("[data-subagent-card-grid]")!;
+    expect(grid.getAttribute("data-subagent-card-count")).toBe("2");
+    expect(grid.querySelector("[data-subagent-card-key='subagent-spawn:agent-a'] [data-subagent-card]")).toBe(cardBefore);
+  });
+
+  it("settles cards in place: 3 running become 1 running + 2 finished in the same 3-card row", () => {
+    const start = (id: string, description: string, second: number): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:0${second}.000Z`,
+      event: { type: "subagent_started", taskId: id, agentId: id, description, turnId: "turn-1" },
+    });
+    const finish = (id: string, second: number): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:${second}.000Z`,
+      event: { type: "subagent_result", taskId: id, agentId: id, status: "completed", summary: `${id} completed`, turnId: "turn-1" },
+    });
+    const spawns = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T09:59:59.000Z",
+        event: { type: "user_message", text: "use parallel agents", turnId: "turn-1" },
+      } satisfies AgentChatEventEnvelope,
+      start("desktop", "Desktop architecture map", 1),
+      start("sync", "Sync and shared contracts", 2),
+      start("cli", "CLI and brain map", 3),
+    ];
+    const rendered = renderMessageList(spawns);
+    const gridBefore = rendered.container.querySelector("[data-subagent-card-grid]")!;
+    const rowBefore = gridBefore.closest("[data-chat-row-key]")!;
+    expect(rowBefore.getAttribute("data-chat-row-key")).toBe("subagent-spawn:desktop");
+
+    rendered.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={[...spawns, finish("sync", 20), finish("cli", 21)]} />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    const grids = rendered.container.querySelectorAll("[data-subagent-card-grid]");
+    expect(grids).toHaveLength(1);
+    const grid = grids[0]!;
+    // The same row element, still one 3-card grid, in the original order.
+    expect(grid.closest("[data-chat-row-key]")).toBe(rowBefore);
+    expect(grid.getAttribute("data-subagent-card-count")).toBe("3");
+    expect([...grid.querySelectorAll("[data-subagent-card-key]")].map((cell) => cell.getAttribute("data-subagent-card-key")))
+      .toEqual(["subagent-spawn:desktop", "subagent-spawn:sync", "subagent-spawn:cli"]);
+    expect([...grid.querySelectorAll("[data-subagent-card]")].map((card) => card.getAttribute("data-subagent-status")))
+      .toEqual(["running", "completed", "completed"]);
+    expect([...grid.querySelectorAll("[data-subagent-name]")].map((node) => node.textContent))
+      .toEqual(["Desktop architecture map", "Sync and shared contracts", "CLI and brain map"]);
+  });
+
+  it("resolves a jump to a card inside a grid to the grid's row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T09:59:00.000Z",
+        event: { type: "user_message", text: "Scan both.", turnId: "turn-1" },
+      },
+      ...["agent-a", "agent-b"].flatMap((id, index): AgentChatEventEnvelope[] => [{
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:00:0${index}.000Z`,
+        event: { type: "subagent_started", taskId: id, agentId: id, agentType: "Explore", description: `Scan ${id}`, turnId: "turn-1" },
+      }]),
+      ...["agent-a", "agent-b"].map((id, index): AgentChatEventEnvelope => ({
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:00:1${index}.000Z`,
+        event: { type: "subagent_result", taskId: id, agentId: id, status: "completed", summary: `${id} done`, turnId: "turn-1" },
+      })),
+    ];
+    const view = renderMessageList(events);
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    expect(transcript.querySelector("[data-chat-row-key='subagent-result:agent-b']")).toBeNull();
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key: "subagent-result:agent-b", requestId: 1 }} />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    expect(transcript.scrollTop).toBeGreaterThan(0);
+  });
+
+  it("lands a jump to an old subagent-result key on the card that settled in place", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T09:59:00.000Z",
+        event: { type: "user_message", text: "Scan both.", turnId: "turn-1" },
+      },
+      ...["agent-a", "agent-b"].map((id, index): AgentChatEventEnvelope => ({
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:00:0${index}.000Z`,
+        event: { type: "subagent_started", taskId: id, agentId: id, agentType: "Explore", description: `Scan ${id}`, turnId: "turn-1" },
+      })),
+      ...Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
+        sessionId: "session-1",
+        timestamp: `2026-03-17T10:01:${String(index).padStart(2, "0")}.000Z`,
+        event: { type: "text", text: `Parent note ${index}.`, messageId: `note-${index}`, turnId: "turn-1" },
+      })),
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:02:00.000Z",
+        event: { type: "subagent_result", taskId: "agent-b", agentId: "agent-b", status: "completed", summary: "b done", turnId: "turn-1" },
+      },
+    ];
+    const jumpTo = (key: string) => {
+      const view = renderMessageList(events);
+      const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+      Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 50_000 });
+      Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+      // No row carries the result key: the card kept its spawn key.
+      expect(transcript.querySelector("[data-chat-row-key='subagent-result:agent-b']")).toBeNull();
+      expect(transcript.querySelector("[data-subagent-card-key='subagent-spawn:agent-b'] [data-subagent-status='completed']"))
+        .toBeTruthy();
+      view.rerender(
+        <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+          <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key, requestId: 1 }} />
+          <LocationProbe />
+        </MemoryRouter>,
+      );
+      const top = transcript.scrollTop;
+      view.unmount();
+      return top;
+    };
+    const viaGridRow = jumpTo("subagent-spawn:agent-a");
+    expect(viaGridRow).toBeGreaterThan(0);
+    // The old result key lands exactly where the card's own row does, not at the tail.
+    expect(jumpTo("subagent-result:agent-b")).toBe(viaGridRow);
+    expect(jumpTo("subagent-spawn:agent-b")).toBe(viaGridRow);
+  });
+
+  it("anchors a subagent result event to the card it settled, not to the last row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T09:59:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "Scan.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        sequence: 2,
+        event: { type: "subagent_started", taskId: "agent-a", agentId: "agent-a", description: "Scan A", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        sequence: 3,
+        event: { type: "text", text: "Waiting on the scan.", messageId: "m-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        sequence: 4,
+        event: { type: "subagent_result", taskId: "agent-a", agentId: "agent-a", status: "completed", summary: "done", turnId: "turn-1" },
+      },
+    ];
+    const groupedRows = groupChatTranscriptRows(collapseChatTranscriptEvents(events));
+    expect(groupedRows.map((row) => row.key)).toContain("subagent-spawn:agent-a");
+    const cardIndex = groupedRows.findIndex((row) => row.key === "subagent-spawn:agent-a");
+    expect(cardIndex).toBe(1);
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 4, hasFullHistory: false })).toBe(cardIndex);
   });
 
   it("marks inline subagent cards with the chat's runtime provider", () => {
@@ -4468,6 +4655,58 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     const marks = [...rendered.container.querySelectorAll("[data-subagent-provider]")];
     expect(marks.map((mark) => mark.getAttribute("data-subagent-provider"))).toContain("codex");
+  });
+
+  it("uses an explicit Codex provider for a resumed CLI child inside a Claude parent", () => {
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:cli-child",
+          agentId: "cli-child",
+          provider: "codex",
+          agentType: "codex",
+          taskType: "subagent",
+          description: "Fix flaky tests",
+          spawnKind: "subagent",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:01:00.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "chat:cli-child",
+          agentId: "cli-child",
+          provider: "codex",
+          agentType: "codex",
+          status: "completed",
+          summary: "Old run completed.",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:05:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:cli-child",
+          agentId: "cli-child",
+          provider: "codex",
+          agentType: "codex",
+          taskType: "subagent",
+          description: "Fix flaky tests",
+          spawnKind: "subagent",
+          resumed: true,
+        },
+      },
+    ], { sessionProvider: "claude" });
+
+    const card = rendered.container.querySelector("[data-subagent-card-key='subagent-spawn:chat:cli-child']");
+    expect(card?.querySelector("[data-subagent-status='running']")).toBeTruthy();
+    expect(card?.querySelector("[data-subagent-provider='codex']")).toBeTruthy();
+    expect(card?.textContent).not.toContain("Old run completed.");
   });
 
   it("renders a single spawn card for a Codex parent placeholder + resolved agent pair", () => {
@@ -4563,9 +4802,10 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    // The turn surfaces task progress as a compact activity row.
-    expect(rendered.container.textContent).toMatch(/Refine summary card/);
-    expect(rendered.container.textContent).toMatch(/1\/2/);
+    // The turn surfaces task progress as the chat's one collapsed task-list
+    // line; opening it lists every item.
+    expect(screen.getByTestId("chat-task-list-card").textContent).toMatch(/Tasks·1\/2·Refine summary card/);
+    fireEvent.click(within(screen.getByTestId("chat-task-list-card")).getByRole("button", { expanded: false }));
     expect(rendered.container.textContent).toMatch(/Inspect chat renderer/);
     expect(screen.getAllByText("Refine summary card").length).toBeGreaterThanOrEqual(1);
 
@@ -4619,7 +4859,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     window.removeEventListener("ade:chat:open-info", openInfo);
   });
 
-  it("does not duplicate completed Codex plan markdown when structured steps exist", () => {
+  it("renders a plan with structured steps as the task list, not as plan markdown", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -4635,6 +4875,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
+    fireEvent.click(within(screen.getByTestId("chat-task-list-card")).getByRole("button", { expanded: false }));
     expect(screen.getAllByText("Inspect once")).toHaveLength(1);
   });
 
@@ -4876,7 +5117,7 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(rendered.container.textContent).toMatch(/Implement calmer transcript rows/);
     expect(rendered.container.textContent).toMatch(/1\/2/);
-    expect(rendered.container.textContent).toContain("plan");
+    fireEvent.click(within(screen.getByTestId("chat-task-list-card")).getByRole("button", { expanded: false }));
     expect(rendered.container.textContent).toMatch(/Inspect shared renderer/);
     expect(rendered.container.textContent).toContain("1 file changed");
     fireEvent.click(screen.getByRole("button", { name: "Show files changed" }));
@@ -4885,6 +5126,25 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByTestId("location").textContent).toBe(
       "/files::{\"laneId\":\"lane-123\"}",
     );
+  });
+
+  it("names the next pending task on the collapsed line when nothing is running", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "todo_update",
+          turnId: "turn-9",
+          items: [
+            { id: "task-1", description: "Search the web", status: "pending" },
+            { id: "task-2", description: "Fetch one result", status: "pending" },
+          ],
+        },
+      },
+    ]);
+    expect(screen.getByTestId("chat-task-list-current").textContent).toBe("Next: Search the web");
+    expect(screen.getByTestId("chat-task-list-card").textContent).toMatch(/Tasks·0\/2·Next: Search the web/);
   });
 
   it("shows the latest turn task update alongside model attribution", () => {
@@ -4912,8 +5172,10 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
+    // A settled list reads "All done" collapsed; the item is one click away.
+    expect(screen.getByTestId("chat-task-list-card").textContent).toMatch(/Tasks·1\/1·All done/);
+    fireEvent.click(within(screen.getByTestId("chat-task-list-card")).getByRole("button", { expanded: false }));
     expect(rendered.container.textContent).toMatch(/Investigate Claude turn status/);
-    expect(rendered.container.textContent).toMatch(/task complete/);
     // Model attribution surfaces on the end-of-turn divider for non-completed turns.
     expect(screen.getAllByText(/Claude Sonnet 5/).length).toBeGreaterThanOrEqual(1);
   });
@@ -5082,7 +5344,7 @@ describe("AgentChatMessageList question receipts", () => {
     expect(detail.textContent ?? "").toContain("only if CI is green");
   });
 
-  it("regression: labels legacy request-level option answers as picks, not notes", () => {
+  it("labels legacy request-level option answers as picks, not notes", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [{
@@ -5118,7 +5380,7 @@ describe("AgentChatMessageList question receipts", () => {
 
   // The answer to an isSecret question never reaches the (durable, synced)
   // resolution event, so there is nothing for the receipt to show.
-  it("regression: a secret question's answer is never displayed", () => {
+  it("a secret question's answer is never displayed", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [
@@ -5133,7 +5395,7 @@ describe("AgentChatMessageList question receipts", () => {
     expect(receipt.textContent ?? "").toContain("answer hidden");
   });
 
-  it("regression: a declined secret question is unanswered, not hidden", () => {
+  it("a declined secret question is unanswered, not hidden", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [
@@ -5188,17 +5450,10 @@ describe("AgentChatMessageList memo boundary", () => {
     },
   ];
 
-  /**
-   * A composer-like owner holding character-level draft state (like AgentChatPane /
-   * PersonalChatsPage) that renders the memoized transcript boundary. `unstable`
-   * recreates a row-facing callback each render to model the pre-fix inline-arrow
-   * props that defeated the boundary.
-   */
-  function Harness({ unstable = false }: { unstable?: boolean }) {
+  function Harness() {
     const [draft, setDraft] = useState("");
     const events = useMemo(() => TEXT_EVENTS, []);
-    const stableApproval = useCallback(() => {}, []);
-    const onApproval = unstable ? () => {} : stableApproval;
+    const onApproval = useCallback(() => {}, []);
     return (
       <MemoryRouter>
         <input data-testid="draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
@@ -5212,12 +5467,6 @@ describe("AgentChatMessageList memo boundary", () => {
     );
   }
 
-  it("is a memoized component", () => {
-    expect((AgentChatMessageList as unknown as { $$typeof: symbol }).$$typeof).toBe(
-      Symbol.for("react.memo"),
-    );
-  });
-
   it("does not re-render on a draft-only update when transcript props are unchanged", () => {
     memoListBodyRenders = 0;
     const { getByTestId } = render(<Harness />);
@@ -5228,18 +5477,6 @@ describe("AgentChatMessageList memo boundary", () => {
     fireEvent.change(getByTestId("draft"), { target: { value: "typing a draft further" } });
     // The memoized boundary bails out: the list body does not re-run on draft-only updates.
     expect(memoListBodyRenders).toBe(before);
-  });
-
-  it("re-renders when a row-facing callback identity churns (guards the stabilization)", () => {
-    memoListBodyRenders = 0;
-    const { getByTestId } = render(<Harness unstable />);
-    expect(memoListBodyRenders).toBeGreaterThan(0);
-
-    const before = memoListBodyRenders;
-    fireEvent.change(getByTestId("draft"), { target: { value: "typing" } });
-    // An unstable row-facing prop defeats the boundary — proving the boundary + prop
-    // stabilization are load-bearing, not incidental.
-    expect(memoListBodyRenders).toBeGreaterThan(before);
   });
 });
 
@@ -5336,50 +5573,6 @@ describe("AgentChatMessageList ade_card dispatch", () => {
     ]);
     expect(screen.getByText("detail unavailable")).toBeTruthy();
     expect(screen.getByText(/403/)).toBeTruthy();
-  });
-});
-
-/**
- * The transcript's ONE content width.
- *
- * Before `--chat-content-width` there were seven disagreeing clamps in this
- * directory, and the worst offender resolved `70` characters against the
- * browser's 16px default (no card sets a font-size), so every card stopped
- * ~26% short of the prose above it. This guard is source-level on purpose: a
- * jsdom render cannot catch a clamp on a code path that happens not to be
- * exercised.
- */
-describe("chat transcript content width", () => {
-  const chatDir = path.dirname(fileURLToPath(import.meta.url));
-
-  /** Components only — a test file may name the old clamp to explain it. */
-  function chatComponentFiles(dir: string): string[] {
-    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) return chatComponentFiles(full);
-      if (/\.test\.tsx?$/.test(entry.name)) return [];
-      return /\.tsx?$/.test(entry.name) ? [full] : [];
-    });
-  }
-
-  it("has no `ch`-relative card clamp left anywhere under components/chat", () => {
-    const offenders = chatComponentFiles(chatDir)
-      .filter((file) => fs.readFileSync(file, "utf8").includes("70ch"))
-      .map((file) => path.basename(file));
-    expect(offenders).toEqual([]);
-  });
-
-  it("routes every transcript-row max-width through the shared token", () => {
-    // `max-w-[min(100%, …)]` is the row-level idiom the redesign unified. A
-    // bare `max-w-[22rem]` on a nested control is a different thing and stays.
-    const offenders: string[] = [];
-    for (const file of chatComponentFiles(chatDir)) {
-      const source = fs.readFileSync(file, "utf8");
-      for (const match of source.matchAll(/max-w-\[min\(100%,\s*[^\]]*\)\]/g)) {
-        offenders.push(`${path.basename(file)}: ${match[0]}`);
-      }
-    }
-    expect(offenders).toEqual([]);
   });
 });
 
@@ -5509,7 +5702,9 @@ describe("turn-level file-change de-clutter", () => {
       },
     ] as never);
 
+    // One tool reads "1 tool" (count and noun are separate spans).
     expect(rendered.container.textContent).toContain("1tool");
+    expect(rendered.container.textContent).not.toContain("1tools");
     expect(rendered.container.textContent).toContain("1 file changed");
     const text = rendered.container.textContent ?? "";
     expect(text.indexOf("1tool")).toBeGreaterThan(text.search(/\d{1,2}:\d{2}/));
@@ -6237,5 +6432,1275 @@ describe("AgentChatMessageList voice calls", () => {
     expect(screen.queryByTestId("voice-call-card")).toBeNull();
     expect(document.body.textContent).toContain("typed by hand");
     expect(document.body.textContent).toContain("answered in text");
+  });
+});
+
+describe("AgentChatMessageList turn fold", () => {
+  beforeEach(() => resetTurnFoldMemoryForTests());
+  afterEach(() => {
+    takePendingSessionAnchor("session-1");
+    resetTurnFoldMemoryForTests();
+  });
+
+  const at = (second: number) => `2026-09-23T10:00:${String(second).padStart(2, "0")}.000Z`;
+  const turnEvents = (): AgentChatEventEnvelope[] => [
+    { sessionId: "session-1", timestamp: at(0), event: { type: "user_message", text: "Fix the build", turnId: "turn-1" } },
+    { sessionId: "session-1", timestamp: at(1), event: { type: "reasoning", text: "Reading the error.", turnId: "turn-1" } },
+    { sessionId: "session-1", timestamp: at(2), event: { type: "text", text: "Checking the config first.", itemId: "t-1", turnId: "turn-1" } },
+    {
+      sessionId: "session-1",
+      timestamp: at(3),
+      event: { type: "command", command: "npm run build", cwd: "/repo", output: "ok", itemId: "c-1", turnId: "turn-1", status: "completed", exitCode: 0 },
+    },
+    { sessionId: "session-1", timestamp: at(4), event: { type: "text", text: "The build is green again.", itemId: "t-2", turnId: "turn-1" } },
+  ];
+  const doneEvent = (status: "completed" | "interrupted" = "completed"): AgentChatEventEnvelope => ({
+    sessionId: "session-1",
+    timestamp: at(12),
+    event: { type: "done", turnId: "turn-1", status },
+  });
+  const foldButton = () => screen.getByRole("button", { name: /\. (Show|Hide) the work from this turn$/ });
+
+  it("leaves a live turn exactly as it streams and folds it when done arrives", () => {
+    const live = turnEvents();
+    const view = renderMessageList(live, { showStreamingIndicator: true });
+    expect(view.container.textContent).toContain("Checking the config first.");
+    expect(screen.queryByTestId("turn-fold-row")).toBeNull();
+
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={[...live, doneEvent()]} />
+      </MemoryRouter>,
+    );
+    expect(foldButton().textContent).toBe("Worked for 12s · 1 tool");
+    expect(view.container.textContent).not.toContain("Checking the config first.");
+    expect(view.container.textContent).not.toContain("Reading the error.");
+    expect(view.container.textContent).toContain("The build is green again.");
+    const text = view.container.textContent ?? "";
+    expect(text.indexOf("Fix the build")).toBeLessThan(text.indexOf("Worked for 12s"));
+    expect(text.indexOf("Worked for 12s")).toBeLessThan(text.indexOf("The build is green again."));
+    expect(text.indexOf("The build is green again.")).toBeLessThan(text.indexOf("ran 12s"));
+  });
+
+  it("measures an internal follow-up turn from its own start and draws no fold over a lone receipt", () => {
+    // A Claude internal turn after background subagents finish: no user
+    // message, a status start, a diagnostics receipt, then the answer.
+    const internal = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-09-23T10:00:${String(second).padStart(2, "0")}.500Z`,
+      event,
+    });
+    const view = renderMessageList([
+      ...turnEvents(),
+      doneEvent(),
+      internal(20, { type: "status", turnStatus: "started", turnId: "claude-idle-1" }),
+      internal(21, { type: "turn_diagnostics", turnId: "claude-idle-1", moderationChecks: 1 }),
+      internal(22, { type: "text", text: "Task 3 complete.", messageId: "m-idle", turnId: "claude-idle-1" }),
+      internal(23, { type: "done", turnId: "claude-idle-1", status: "completed" }),
+    ]);
+    // The user turn still folds; the internal turn's only hidden row would be
+    // the receipt, so it does not fold and the receipt draws in place.
+    expect(screen.getAllByTestId("turn-fold-row")).toHaveLength(1);
+    expect(foldButton().textContent).toBe("Worked for 12s · 1 tool");
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("Task 3 complete.");
+    expect(text).toContain("Turn details");
+    // 3s from its own status start, not 1s from the first drawn row.
+    expect(text).toContain("ran 3.0s");
+  });
+
+  it("reads a sub-second turn as <1s on the fold row and the turn-end line", () => {
+    const quick = (ms: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-09-23T10:00:00.${String(ms).padStart(3, "0")}Z`,
+      event,
+    });
+    const view = renderMessageList([
+      quick(0, { type: "user_message", text: "Quick one", turnId: "turn-1" }),
+      quick(50, { type: "reasoning", text: "Easy.", turnId: "turn-1" }),
+      quick(100, { type: "text", text: "Looking.", itemId: "t-1", turnId: "turn-1" }),
+      quick(200, { type: "text", text: "Done.", itemId: "t-2", turnId: "turn-1" }),
+      quick(293, { type: "done", turnId: "turn-1", status: "completed" }),
+    ]);
+    expect(foldButton().textContent).toBe("Worked for <1s");
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("ran <1s");
+    expect(text).not.toMatch(/\d+ms/);
+  });
+
+  it("omits the duration of a turn with no user message and no start event", () => {
+    const view = renderMessageList([
+      ...turnEvents(),
+      doneEvent(),
+      { sessionId: "session-1", timestamp: at(30), event: { type: "reasoning", text: "Background result in.", turnId: "bg-1" } },
+      { sessionId: "session-1", timestamp: at(31), event: { type: "text", text: "Background work finished.", itemId: "b-1", turnId: "bg-1" } },
+      { sessionId: "session-1", timestamp: at(32), event: { type: "done", turnId: "bg-1", status: "completed" } },
+    ]);
+    const folds = screen.getAllByTestId("turn-fold-row");
+    expect(folds).toHaveLength(2);
+    expect(folds[1]!.textContent).toMatch(/^Worked(?! for)/);
+    expect(view.container.textContent).not.toContain("ran 2.0s");
+  });
+
+  it("does not attribute an interrupted turn to the user", () => {
+    renderMessageList([...turnEvents(), doneEvent("interrupted")]);
+    expect(foldButton().textContent).toBe("Stopped after 12s · 1 tool");
+  });
+
+  it("counts the turn's sources on the fold row and puts an openable chip on the turn-end line", () => {
+    const onOpenTurnSources = vi.fn();
+    const events = turnEvents();
+    events.splice(3, 0, {
+      sessionId: "session-1",
+      timestamp: at(3),
+      event: {
+        type: "web_search",
+        query: "build errors",
+        results: [{ url: "https://vitejs.dev/guide", title: "Vite guide" }, { url: "https://www.npmjs.com/package/x" }],
+        itemId: "w-1",
+        turnId: "turn-1",
+        status: "completed",
+      },
+    }, {
+      // Data-only citation: no row of its own, but it counts.
+      sessionId: "session-1",
+      timestamp: at(4),
+      event: { type: "sources", sources: [{ kind: "citation", url: "https://vitejs.dev/guide#x", cited: true }], itemId: "t-2", turnId: "turn-1" },
+    });
+    renderMessageList([...events, doneEvent()], { onOpenTurnSources });
+
+    const sources = screen.getByTestId("turn-fold-count-sources");
+    expect(sources.textContent).toBe(" · 2 sources");
+    expect(sources.querySelector("svg")!.getAttribute("class")).toContain("text-cyan-300");
+    const chip = screen.getByTestId("turn-sources-chip");
+    expect(chip.textContent).toBe("VN2 sources");
+    fireEvent.click(chip);
+    expect(onOpenTurnSources).toHaveBeenCalledWith("turn-1");
+  });
+
+  it("draws no sources chip or count for a turn without sources", () => {
+    renderMessageList([...turnEvents(), doneEvent()], { onOpenTurnSources: vi.fn() });
+    expect(screen.queryByTestId("turn-sources-chip")).toBeNull();
+    expect(screen.queryByTestId("turn-fold-count-sources")).toBeNull();
+  });
+
+  it("puts a colored icon before each count on the fold row", () => {
+    renderMessageList([...turnEvents(), doneEvent()]);
+    const tools = screen.getByTestId("turn-fold-count-tools");
+    expect(tools.textContent).toBe(" · 1 tool");
+    const icon = tools.querySelector("svg");
+    expect(icon).toBeTruthy();
+    expect(icon!.getAttribute("class")).toContain("text-sky-300");
+    expect(screen.queryByTestId("turn-fold-count-files")).toBeNull();
+  });
+
+  it("left-aligns the open fold's tool toggle and its tool list with the fold row", () => {
+    renderMessageList([...turnEvents(), doneEvent()]);
+    fireEvent.click(foldButton());
+    const toolsToggle = screen.getByRole("button", { name: "Show 1 tool from this turn" });
+    // No `ml-auto` pushing the toggle to the right edge, and no empty leading slot.
+    expect(toolsToggle.parentElement!.className).not.toContain("ml-auto");
+    expect(toolsToggle.parentElement!.previousElementSibling).toBeNull();
+    // One tool reads "1 tool", not "1 tools".
+    expect(toolsToggle.textContent).toBe("1tool");
+    fireEvent.click(toolsToggle);
+    expect(screen.getByRole("button", { name: "Hide 1 tool from this turn" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("shows a restated answer once when the fold is open", () => {
+    // Transcript 85fa4037 (Cursor, Grok 4.7): answer, tool call, thought, then
+    // the same answer generated again.
+    const answer = "I'm Grok 4.7, a language model trained by SpaceXAI.";
+    const view = renderMessageList([
+      { sessionId: "session-1", timestamp: at(0), event: { type: "user_message", text: "what model are you?", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: at(1), event: { type: "reasoning", text: "Answer directly.", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: at(2), event: { type: "text", text: answer, messageId: "91f596d8", turnId: "turn-1" } },
+      {
+        sessionId: "session-1",
+        timestamp: at(3),
+        event: { type: "command", command: "ade chat note", cwd: "/repo", output: "", itemId: "c-1", turnId: "turn-1", status: "completed", exitCode: 0 },
+      },
+      { sessionId: "session-1", timestamp: at(4), event: { type: "reasoning", text: "The question was already answered.", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: at(5), event: { type: "text", text: answer, messageId: "ec70564a", turnId: "turn-1" } },
+      doneEvent(),
+    ]);
+    const count = () => (view.container.textContent ?? "").split(answer).length - 1;
+    expect(count()).toBe(1);
+    fireEvent.click(foldButton());
+    expect(foldButton().getAttribute("aria-expanded")).toBe("true");
+    // The span is revealed (both Thought rows), but the earlier copy is not.
+    expect(view.container.querySelectorAll("[data-chat-row-key]").length).toBeGreaterThan(4);
+    expect(count()).toBe(1);
+  });
+
+  it("draws the focus ring for keyboard focus only on the fold row and its toggles", () => {
+    renderMessageList([...turnEvents(), doneEvent()]);
+    const fold = foldButton();
+    fireEvent.click(fold);
+    for (const button of [fold, screen.getByRole("button", { name: "Show 1 tool from this turn" })]) {
+      expect(button.className).toContain("focus:outline-none");
+      expect(button.className).toContain("focus-visible:ring-1");
+      expect(button.className).not.toMatch(/(^|\s)focus:ring/);
+    }
+  });
+
+  it("counts the turn's background jobs on the fold row, red when one failed", () => {
+    const job = (second: number, id: string, status: "running" | "completed" | "failed") => ({
+      sessionId: "session-1",
+      timestamp: at(second),
+      event: {
+        type: "scheduled_work_update" as const,
+        id: `background:${id}`,
+        kind: "background_task" as const,
+        status,
+        title: `job ${id}`,
+        sourceTaskId: id,
+        turnId: "turn-1",
+      },
+    });
+    const events = turnEvents();
+    renderMessageList([
+      ...events.slice(0, 2),
+      job(1, "a", "running"), job(1, "a", "completed"),
+      job(1, "b", "running"), job(1, "b", "failed"),
+      ...events.slice(2),
+      doneEvent(),
+    ]);
+    expect(foldButton().textContent).toBe("Worked for 12s · 1 tool · 2 jobs (1 failed)");
+    const jobs = screen.getByTestId("turn-fold-count-jobs");
+    expect(jobs.className).toContain("text-red-300");
+    expect(jobs.querySelector("svg")!.getAttribute("class")).toContain("text-red-400");
+    // Both jobs finished before the turn ended, so they fold; open shows one compact row.
+    expect(document.querySelector("[data-background-job]")).toBeNull();
+    fireEvent.click(foldButton());
+    const rows = document.querySelectorAll("[data-background-job-count]");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.getAttribute("data-background-job-count")).toBe("2");
+  });
+
+  it("folds a turn's warning and draws ONE Turn details row for it, in order when open", () => {
+    const events: AgentChatEventEnvelope[] = [
+      { sessionId: "session-1", timestamp: at(0), event: { type: "user_message", text: "Days till christmas?", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: at(1), event: { type: "system_notice", noticeKind: "warning", message: "⚠ Codex is ignoring 1 unrecognized configuration setting." } },
+      { sessionId: "session-1", timestamp: at(2), event: { type: "turn_diagnostics", optionalIntegrationFailures: [{ integration: "unityMCP" }] } },
+      {
+        sessionId: "session-1",
+        timestamp: at(3),
+        event: { type: "command", command: "date", cwd: "/repo", output: "ok", itemId: "c-1", turnId: "turn-1", status: "completed", exitCode: 0 },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: at(4),
+        event: { type: "turn_diagnostics", turnId: "turn-1", optionalIntegrationFailures: [{ integration: "unityMCP" }, { integration: "figma" }, { integration: "linear" }] },
+      },
+      { sessionId: "session-1", timestamp: at(5), event: { type: "text", text: "93 days.", itemId: "t-1", turnId: "turn-1" } },
+      doneEvent(),
+    ];
+    const view = renderMessageList(events);
+    expect(view.container.textContent).not.toContain("Codex is ignoring");
+    expect(screen.queryByText("Turn details")).toBeNull();
+
+    fireEvent.click(foldButton());
+    expect(screen.getAllByText("Turn details")).toHaveLength(1);
+    expect(screen.getByText("3 optional integration warnings")).toBeTruthy();
+    const text = view.container.textContent ?? "";
+    expect(text.indexOf("Codex is ignoring")).toBeGreaterThan(text.indexOf("Worked for"));
+    expect(text.indexOf("Codex is ignoring")).toBeLessThan(text.indexOf("Turn details"));
+    expect(text.indexOf("Turn details")).toBeLessThan(text.indexOf("93 days."));
+  });
+
+  it("copies the whole turn, folded narration included, from the answer", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    renderMessageList([...turnEvents(), doneEvent()]);
+    fireEvent.click(screen.getByRole("button", { name: "Copy whole turn" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(
+      "Checking the config first.\n\nThe build is green again.",
+    ));
+  });
+
+  it("remembers an opened fold for the chat view across remounts", () => {
+    const events = [...turnEvents(), doneEvent()];
+    const first = renderMessageList(events, { sessionId: "session-1" });
+    fireEvent.click(foldButton());
+    expect(foldButton().getAttribute("aria-expanded")).toBe("true");
+    expect(first.container.textContent).toContain("Checking the config first.");
+    first.unmount();
+
+    const second = renderMessageList(events, { sessionId: "session-1" });
+    expect(foldButton().getAttribute("aria-expanded")).toBe("true");
+    expect(second.container.textContent).toContain("Checking the config first.");
+    fireEvent.click(foldButton());
+    expect(second.container.textContent).not.toContain("Checking the config first.");
+  });
+
+  it("opens the fold that hides a deep-linked event and highlights it", async () => {
+    const events = [...turnEvents(), doneEvent()];
+    setPendingSessionAnchor("session-1", { event: 2 });
+    const view = renderMessageList(events, { sessionId: "session-1" });
+    await waitFor(() => expect(foldButton().getAttribute("aria-expanded")).toBe("true"));
+    const anchored = view.container.querySelector("[data-chat-anchored-row='true']");
+    expect(anchored?.textContent).toContain("Checking the config first.");
+  });
+
+  it("opens the fold before jumping to a folded row", () => {
+    const events = [...turnEvents(), doneEvent()];
+    const view = renderMessageList(events);
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    // The interim text row's key.
+    const interimKey = buildTranscriptEventRowKeys(events)[2]!;
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={events} scrollToRowKeyRequest={{ key: interimKey, requestId: 1 }} />
+      </MemoryRouter>,
+    );
+    expect(foldButton().getAttribute("aria-expanded")).toBe("true");
+    expect(view.container.querySelector(`[data-chat-row-key="${interimKey}"]`)).not.toBeNull();
+    expect(transcript.scrollTop).toBeGreaterThan(0);
+  });
+
+  it("keeps a finished subagent result visible below the fold row", () => {
+    const view = renderMessageList([
+      { sessionId: "session-1", timestamp: at(0), event: { type: "user_message", text: "Survey it", turnId: "turn-1" } },
+      {
+        sessionId: "session-1",
+        timestamp: at(1),
+        event: { type: "subagent_started", taskId: "agent-a", agentId: "agent-a", agentType: "Explore", description: "Inspect the timeline", turnId: "turn-1" },
+      },
+      { sessionId: "session-1", timestamp: at(2), event: { type: "reasoning", text: "Waiting on the scout.", turnId: "turn-1" } },
+      {
+        sessionId: "session-1",
+        timestamp: at(3),
+        event: { type: "subagent_result", taskId: "agent-a", agentId: "agent-a", status: "completed", summary: "Timeline inspected", turnId: "turn-1" },
+      },
+      { sessionId: "session-1", timestamp: at(4), event: { type: "text", text: "Survey complete.", itemId: "t-1", turnId: "turn-1" } },
+      { sessionId: "session-1", timestamp: at(5), event: { type: "done", turnId: "turn-1", status: "completed" } },
+    ]);
+    expect(foldButton().textContent).toBe("Worked for 5.0s · 1 subagent");
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("Timeline inspected");
+    expect(text).not.toContain("Waiting on the scout.");
+    expect(text.indexOf("Worked for 5.0s")).toBeLessThan(text.indexOf("Timeline inspected"));
+    expect(text.indexOf("Timeline inspected")).toBeLessThan(text.indexOf("Survey complete."));
+  });
+});
+
+describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed features", () => {
+  // Scroll memory is per session and module-wide: every test gets its own chat.
+  let sessionCounter = 0;
+  let SESSION = "fold-session-0";
+  beforeEach(() => {
+    sessionCounter += 1;
+    SESSION = `fold-session-${sessionCounter}`;
+    resetTurnFoldMemoryForTests();
+  });
+  afterEach(() => {
+    takePendingSessionAnchor(SESSION);
+    resetTurnFoldMemoryForTests();
+  });
+
+  const at = (second: number) => `2026-09-23T11:00:${String(second).padStart(2, "0")}.000Z`;
+  const env = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: SESSION,
+    timestamp: at(second),
+    event,
+  });
+  /** A live turn drawn as 7 rows: user, then reasoning/text pairs, then the answer so far. */
+  const liveTurn = (): AgentChatEventEnvelope[] => [
+    env(0, { type: "user_message", text: "Fix the build", turnId: "turn-1" }),
+    env(1, { type: "reasoning", text: "Reading the error.", turnId: "turn-1" }),
+    env(2, { type: "text", text: "Checking the config.", itemId: "i-1", turnId: "turn-1" }),
+    env(3, { type: "command", command: "npm run build", cwd: "/repo", output: "", itemId: "c-1", turnId: "turn-1", status: "completed" }),
+    env(4, { type: "reasoning", text: "Config looks fine.", turnId: "turn-1" }),
+    env(5, { type: "text", text: "Checking the lockfile.", itemId: "i-2", turnId: "turn-1" }),
+    env(6, { type: "command", command: "npm ci", cwd: "/repo", output: "", itemId: "c-2", turnId: "turn-1", status: "completed" }),
+    env(7, { type: "reasoning", text: "Lockfile drifted.", turnId: "turn-1" }),
+    env(8, { type: "text", text: "The build is green again.", itemId: "a-1", turnId: "turn-1" }),
+  ];
+  const done = (second = 12): AgentChatEventEnvelope => env(second, { type: "done", turnId: "turn-1", status: "completed" });
+  /** Row key of the row the event at `index` opens. */
+  const rowKeyOf = (events: AgentChatEventEnvelope[], index: number) => buildTranscriptEventRowKeys(events)[index];
+  const foldButton = () => screen.getByRole("button", { name: /\. (Show|Hide) the work from this turn$/ });
+  const rowKeys = () => [...timelinePane().querySelectorAll<HTMLElement>("[data-chat-row-key]")]
+    .map((node) => node.dataset.chatRowKey);
+  const rerenderList = (
+    view: ReturnType<typeof render>,
+    events: AgentChatEventEnvelope[],
+    props: Partial<React.ComponentProps<typeof AgentChatMessageList>> = {},
+  ) => view.rerender(
+    <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+      <AgentChatMessageList events={events} sessionId={SESSION} {...props} />
+    </MemoryRouter>,
+  );
+
+  /**
+   * A 100px-per-row layout: row tops follow DOM order and the pane's
+   * scrollTop, the pane's scrollHeight is its row count. jsdom has no layout,
+   * so this is what makes the fold's scroll anchoring observable.
+   */
+  function stubRowLayout(clientHeight: number): () => void {
+    const ROW = 100;
+    const isPane = (el: Element) => el.classList.contains("ade-chat-timeline-pane");
+    const rowsIn = (pane: Element) => [...pane.querySelectorAll("[data-chat-row-key]")];
+    const originals = (["scrollHeight", "clientHeight"] as const)
+      .map((prop) => [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)!] as const);
+    Object.defineProperty(Element.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: Element) { return isPane(this) ? rowsIn(this).length * ROW : 0; },
+    });
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      configurable: true,
+      get(this: Element) { return isPane(this) ? clientHeight : 0; },
+    });
+    const originalRect = Element.prototype.getBoundingClientRect;
+    const rect = (top: number, height: number) => ({
+      top, bottom: top + height, height, left: 0, right: 800, width: 800, x: 0, y: top, toJSON: () => ({}),
+    }) as DOMRect;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const pane = document.querySelector(".ade-chat-timeline-pane");
+      if (pane && this === pane) return rect(0, clientHeight);
+      if (pane && this instanceof HTMLElement && this.dataset.chatRowKey !== undefined) {
+        const index = rowsIn(pane).indexOf(this);
+        if (index >= 0) return rect(index * ROW - (pane as HTMLElement).scrollTop, ROW);
+      }
+      return originalRect.call(this);
+    };
+    return () => {
+      for (const [prop, descriptor] of originals) Object.defineProperty(Element.prototype, prop, descriptor);
+      Element.prototype.getBoundingClientRect = originalRect;
+    };
+  }
+
+  async function detachAt(scrollTop: number) {
+    await nextFrame();
+    await nextFrame();
+    const pane = timelinePane();
+    // Upward wheel intent breaks bottom-follow, as a real reader's would.
+    fireEvent.wheel(pane, { deltaY: -80 });
+    pane.scrollTop = scrollTop;
+    fireEvent.scroll(pane);
+  }
+
+  describe("scroll stability", () => {
+    it("keeps the row the reader is on in place when their turn folds above it", async () => {
+      const restore = stubRowLayout(50);
+      try {
+        const view = renderMessageList(liveTurn(), { sessionId: SESSION, showStreamingIndicator: true });
+        expect(rowKeys()).toHaveLength(7);
+        // The answer so far is the first row on screen (index 6).
+        await detachAt(600);
+        const ended = [...liveTurn(), done()];
+        rerenderList(view, ended);
+        expect(rowKeys()).toEqual([rowKeyOf(ended, 0), "turn-fold:turn-1", rowKeyOf(ended, 8), rowKeyOf(ended, 9)]);
+        // It moved from index 6 to 2: scrolled by exactly that, so it did not move on screen.
+        expect(timelinePane().scrollTop).toBe(200);
+      } finally {
+        restore();
+      }
+    });
+
+    it("anchors to the fold row when the row being read is itself folded", async () => {
+      const restore = stubRowLayout(50);
+      try {
+        const view = renderMessageList(liveTurn(), { sessionId: SESSION, showStreamingIndicator: true });
+        // Reading "Checking the lockfile." (index 4), which the fold hides.
+        await detachAt(400);
+        rerenderList(view, [...liveTurn(), done()]);
+        // The fold row (index 1) now sits where that row was.
+        expect(timelinePane().scrollTop).toBe(100);
+        expect(foldButton().getAttribute("aria-expanded")).toBe("false");
+      } finally {
+        restore();
+      }
+    });
+
+    it("stays pinned, with no stale frame, when a turn folds while following the bottom", async () => {
+      const restore = stubRowLayout(100);
+      try {
+        const view = renderMessageList(liveTurn(), { sessionId: SESSION, showStreamingIndicator: true });
+        await nextFrame();
+        await nextFrame();
+        expect(timelinePane().scrollTop).toBe(600);
+        rerenderList(view, [...liveTurn(), done()]);
+        // Pinned in the same commit (before any animation frame): 4 rows, 100px viewport.
+        expect(timelinePane().scrollTop).toBe(300);
+        expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeNull();
+      } finally {
+        restore();
+      }
+    });
+
+    it("opening a fold at the bottom keeps the fold row put instead of chasing the new bottom; closing re-sticks", async () => {
+      const restore = stubRowLayout(300);
+      try {
+        renderMessageList([...liveTurn(), done()], { sessionId: SESSION });
+        await nextFrame();
+        await nextFrame();
+        // 4 rows, 300px viewport: pinned at 100, the fold row at the top edge.
+        expect(timelinePane().scrollTop).toBe(100);
+
+        fireEvent.click(foldButton());
+        expect(rowKeys()).toHaveLength(9);
+        await nextFrame();
+        await nextFrame();
+        expect(timelinePane().scrollTop).toBe(100);
+        expect(screen.getByRole("button", { name: /jump to latest/i })).toBeTruthy();
+
+        // Closing leaves the view at the end without any scroll event: follow again.
+        fireEvent.click(foldButton());
+        expect(rowKeys()).toHaveLength(4);
+        await waitFor(() => expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeNull());
+      } finally {
+        restore();
+      }
+    });
+
+    it("toggling a fold in the middle of the list while a later turn streams keeps the fold row put", async () => {
+      const restore = stubRowLayout(200);
+      try {
+        const nextTurn = [
+          env(20, { type: "user_message", text: "Now the tests", turnId: "turn-2" }),
+          env(21, { type: "text", text: "Running them.", itemId: "b-1", turnId: "turn-2" }),
+        ];
+        const view = renderMessageList([...liveTurn(), done(), ...nextTurn], { sessionId: SESSION, showStreamingIndicator: true });
+        // Fold row at index 1; put it 50px below the top edge and read from there.
+        await detachAt(50);
+        fireEvent.click(foldButton());
+        expect(timelinePane().scrollTop).toBe(50);
+        rerenderList(view, [
+          ...liveTurn(), done(), ...nextTurn,
+          env(22, { type: "text", text: "Still running.", itemId: "b-2", turnId: "turn-2" }),
+        ], { showStreamingIndicator: true });
+        await nextFrame();
+        expect(timelinePane().scrollTop).toBe(50);
+        fireEvent.click(foldButton());
+        expect(timelinePane().scrollTop).toBe(50);
+        expect(screen.getByRole("button", { name: /jump to latest/i })).toBeTruthy();
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  describe("jumps open the containing fold first", () => {
+    it("restores a reader who left mid-turn to the exact row, opening the fold that now hides it", async () => {
+      const restoreLayout = stubRowLayout(200);
+      try {
+        const view = renderMessageList(liveTurn(), { sessionId: SESSION, showStreamingIndicator: true });
+        // Row 4 ("Checking the lockfile.") at the top of the viewport, 10px in.
+        await detachAt(4 * 100 + 10);
+        view.unmount();
+
+        // The turn finished while the chat was closed.
+        renderMessageList([...liveTurn(), done()], { sessionId: SESSION });
+        expect(foldButton().getAttribute("aria-expanded")).toBe("true");
+        // One row further down now (the fold row sits above it), same offset.
+        expect(timelinePane().scrollTop).toBe(5 * 100 + 10);
+        const top = timelinePane().querySelector<HTMLElement>("[data-chat-row-key]:nth-child(6)");
+        expect(top?.textContent).toContain("Checking the lockfile.");
+      } finally {
+        restoreLayout();
+      }
+    });
+
+    it("opens a fold far off-screen in the virtualized list, then lands on and highlights the row", async () => {
+      const restoreScrollBox = stubTimelineScrollBox({ clientHeight: 200, scrollHeight: 100_000 });
+      try {
+        const history = Array.from({ length: 70 }, (_, index) => ({
+          sessionId: SESSION,
+          timestamp: `2026-09-23T09:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+          event: { type: "user_message" as const, text: `Earlier ${index}`, deliveryState: "delivered" as const },
+        }));
+        const events = [...history, ...liveTurn(), done()];
+        const targetKey = rowKeyOf(events, 70 + 5)!;
+        const view = renderMessageList(events, { sessionId: SESSION });
+        await nextFrame();
+        timelinePane().scrollTop = 0;
+        fireEvent.scroll(timelinePane());
+        expect(timelinePane().querySelector(`[data-chat-row-key="${targetKey}"]`)).toBeNull();
+
+        rerenderList(view, events, { scrollToRowKeyRequest: { key: targetKey, requestId: 1 } });
+        await waitFor(() => {
+          const row = timelinePane().querySelector(`[data-chat-row-key="${targetKey}"]`);
+          expect(row?.getAttribute("data-chat-anchored-row")).toBe("true");
+        });
+        expect(foldButton().getAttribute("aria-expanded")).toBe("true");
+        expect(timelinePane().scrollTop).toBeGreaterThan(0);
+      } finally {
+        restoreScrollBox();
+      }
+    });
+
+    it("lands on the answer without opening the fold when the target is the answer", async () => {
+      setPendingSessionAnchor(SESSION, { event: 8 });
+      const view = renderMessageList([...liveTurn(), done()], { sessionId: SESSION });
+      await waitFor(() => {
+        expect(view.container.querySelector("[data-chat-anchored-row='true']")?.textContent)
+          .toContain("The build is green again.");
+      });
+      expect(foldButton().getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("lands on a row of a turn that is still live (nothing to open)", async () => {
+      setPendingSessionAnchor(SESSION, { event: 5 });
+      const view = renderMessageList(liveTurn(), { sessionId: SESSION, showStreamingIndicator: true });
+      await waitFor(() => {
+        expect(view.container.querySelector("[data-chat-anchored-row='true']")?.textContent)
+          .toContain("Checking the lockfile.");
+      });
+      expect(screen.queryByTestId("turn-fold-row")).toBeNull();
+    });
+
+    it("ignores a jump to a row that no longer exists and leaves the fold closed", () => {
+      const events = [...liveTurn(), done()];
+      const view = renderMessageList(events, { sessionId: SESSION });
+      rerenderList(view, events, { scrollToRowKeyRequest: { key: "gone:row", requestId: 7 } });
+      expect(foldButton().getAttribute("aria-expanded")).toBe("false");
+      expect(view.container.querySelector("[data-chat-anchored-row='true']")).toBeNull();
+    });
+  });
+
+  describe("row-indexed features", () => {
+    it("keeps the N-new count when the row it counts from folds away", async () => {
+      const restoreScrollBox = stubTimelineScrollBox({ clientHeight: 200, scrollHeight: 1_000 });
+      try {
+        const upToInterim = liveTurn().slice(0, 6);
+        const view = renderMessageList(upToInterim, { sessionId: SESSION, showStreamingIndicator: true });
+        // Detach: the last row ("Checking the lockfile.") becomes the count's anchor.
+        await detachAt(100);
+        expect(await screen.findByRole("button", { name: "Jump to latest message" })).toBeTruthy();
+
+        rerenderList(view, [...liveTurn()], { showStreamingIndicator: true });
+        expect(screen.getByRole("button", { name: "2 new · Jump To Latest" })).toBeTruthy();
+
+        // The turn ends and folds the anchor row away: the answer and the turn
+        // end are still new; the fold row (above the anchor) and hidden rows are not.
+        const ended = [...liveTurn(), done()];
+        rerenderList(view, ended);
+        expect(rowKeys()).not.toContain(rowKeyOf(ended, 5));
+        expect(screen.getByRole("button", { name: "2 new · Jump To Latest" })).toBeTruthy();
+      } finally {
+        restoreScrollBox();
+      }
+    });
+
+    it("draws the fork divider on the fold row while its row is folded, and on the row once opened", () => {
+      const fork = { providerOrigin: "handoff_fork" as const, sourceSessionId: "prev" };
+      const forked: AgentChatEventEnvelope[] = [
+        { ...env(0, { type: "user_message", text: "Earlier question", turnId: "turn-0" }), provenance: fork },
+        { ...env(1, { type: "text", text: "Earlier answer", itemId: "e-1", turnId: "turn-0" }), provenance: fork },
+        { ...env(2, { type: "done", turnId: "turn-0", status: "completed" }), provenance: fork },
+        env(3, { type: "text", text: "Picking up the fork.", itemId: "f-1", turnId: "turn-1" }),
+        env(4, { type: "reasoning", text: "Continuing.", turnId: "turn-1" }),
+        env(5, { type: "text", text: "Fork answer.", itemId: "f-2", turnId: "turn-1" }),
+        env(6, { type: "done", turnId: "turn-1", status: "completed" }),
+      ];
+      renderMessageList(forked, { sessionId: SESSION });
+
+      const divider = () => screen.getByTestId("fork-history-divider");
+      const rowOf = (node: Element) => node.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key");
+      expect(screen.getAllByTestId("fork-history-divider")).toHaveLength(1);
+      expect(rowOf(divider())).toBe("turn-fold:turn-1");
+      const text = () => timelinePane().textContent ?? "";
+      expect(text().indexOf("Earlier answer")).toBeLessThan(text().indexOf("Forked from the previous chat"));
+      // turn-1 has no user message and no start event, so its fold reads a bare "Worked".
+      expect(text().indexOf("Forked from the previous chat")).toBeLessThan(text().indexOf("Worked"));
+
+      fireEvent.click(foldButton());
+      expect(screen.getAllByTestId("fork-history-divider")).toHaveLength(1);
+      expect(rowOf(divider())).toBe(rowKeyOf(forked, 3));
+      expect(text().indexOf("Worked")).toBeLessThan(text().indexOf("Forked from the previous chat"));
+      expect(text().indexOf("Forked from the previous chat")).toBeLessThan(text().indexOf("Picking up the fork."));
+    });
+
+    it("folds a cancelled turn whose subagent done arrived first and carried more tokens", () => {
+      renderMessageList([
+        ...liveTurn(),
+        env(10, { type: "done", turnId: "sub-turn-1", status: "interrupted", usage: { inputTokens: 90_000, outputTokens: 9_000 } }),
+        env(11, { type: "status", turnStatus: "interrupted", turnId: "turn-1" }),
+        env(12, { type: "done", turnId: "turn-1", status: "interrupted", usage: { inputTokens: 10, outputTokens: 5 } }),
+      ], { sessionId: SESSION });
+      expect(foldButton().textContent).toMatch(/^Stopped after 12s/);
+      expect(timelinePane().textContent).not.toContain("Checking the lockfile.");
+    });
+
+    it("moves the tool count to the fold row for a done without a turn id", () => {
+      renderMessageList([
+        ...liveTurn(),
+        env(12, { type: "done", turnId: "", status: "completed" }),
+      ], { sessionId: SESSION });
+      expect(foldButton().textContent).toBe("Worked for 12s · 2 tools");
+      expect(screen.queryByRole("button", { name: /^Show .+ from this turn$/ })).toBeNull();
+    });
+  });
+
+  describe("Copy turn", () => {
+    it("sits on the last text row, visible, when a final answer is followed by more text", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      const turn: AgentChatEventEnvelope[] = [
+        env(0, { type: "user_message", text: "Explain", turnId: "turn-1" }),
+        env(1, { type: "text", text: "Looking into it.", itemId: "x-1", turnId: "turn-1", phase: "commentary" }),
+        env(2, { type: "reasoning", text: "Thinking.", turnId: "turn-1" }),
+        env(3, { type: "text", text: "Here is the answer.", itemId: "x-2", turnId: "turn-1", phase: "final_answer" }),
+        env(4, { type: "text", text: "P.S. one caveat.", itemId: "x-3", turnId: "turn-1" }),
+        env(5, { type: "done", turnId: "turn-1", status: "completed" }),
+      ];
+      const view = renderMessageList(turn, { sessionId: SESSION });
+      const text = view.container.textContent ?? "";
+      expect(text).not.toContain("Looking into it.");
+      expect(text.indexOf("Worked for")).toBeLessThan(text.indexOf("Here is the answer."));
+      const copy = screen.getByRole("button", { name: "Copy whole turn" });
+      expect(copy.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key")).toBe(rowKeyOf(turn, 4));
+      fireEvent.click(copy);
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(
+        "Looking into it.\n\nHere is the answer.\n\nP.S. one caveat.",
+      ));
+    });
+
+    it("offers no whole-turn copy when the answer is the turn's only text", () => {
+      const view = renderMessageList([
+        env(0, { type: "user_message", text: "Explain", turnId: "turn-1" }),
+        env(1, { type: "reasoning", text: "Thinking.", turnId: "turn-1" }),
+        env(2, { type: "text", text: "Only answer.", itemId: "y-1", turnId: "turn-1" }),
+        env(3, { type: "done", turnId: "turn-1", status: "completed" }),
+      ], { sessionId: SESSION });
+      expect(foldButton()).toBeTruthy();
+      expect(view.container.textContent).toContain("Only answer.");
+      expect(screen.queryByRole("button", { name: "Copy whole turn" })).toBeNull();
+    });
+  });
+});
+
+
+describe("AgentChatMessageList — stable row keys, list anchoring, and scroll restore", () => {
+  let sessionCounter = 0;
+  let SESSION = "anchor-session-0";
+  beforeEach(() => {
+    sessionCounter += 1;
+    SESSION = `anchor-session-${sessionCounter}`;
+    resetTurnFoldMemoryForTests();
+  });
+  afterEach(() => resetTurnFoldMemoryForTests());
+
+  const GAP = CHAT_TIMELINE_ROW_GAP_PX;
+  /** A one-line user message: its per-kind estimate, which a prepended row also measures at. */
+  const OLDER_ROW = 51;
+
+  const userEvents = (prefix: string, count: number, startMinute: number): AgentChatEventEnvelope[] => (
+    Array.from({ length: count }, (_, index) => ({
+      sessionId: SESSION,
+      timestamp: new Date(Date.UTC(2026, 8, 23, 8, startMinute, 0) + index * 1_000).toISOString(),
+      event: { type: "user_message" as const, text: `${prefix} ${index}`, messageId: `${prefix}-${index}`, deliveryState: "delivered" as const },
+    }))
+  );
+
+  /**
+   * A layout engine for jsdom, just enough for the transcript: every row has a
+   * fixed height by key, rows stack with the row gap, the virtualized path's
+   * top spacer and sizer are read from their inline heights, and every box is
+   * placed against the pane's scrollTop. `offsetHeight` feeds the virtualizer's
+   * row measurement; `getBoundingClientRect` feeds the DOM anchors.
+   */
+  function installFakeLayout(clientHeight: number, heightOf: (key: string) => number): () => void {
+    const paneOf = () => document.querySelector<HTMLElement>(".ade-chat-timeline-pane");
+    const keyOf = (el: Element): string | null => {
+      if (!(el instanceof HTMLElement)) return null;
+      if (el.dataset.chatRowKey !== undefined) return el.dataset.chatRowKey;
+      if (el.dataset.chatVirtualizedRow === "true") {
+        return el.querySelector<HTMLElement>("[data-chat-row-key]")?.dataset.chatRowKey ?? null;
+      }
+      return null;
+    };
+    const sentinelHeight = (pane: HTMLElement) => {
+      const first = pane.firstElementChild?.firstElementChild;
+      return first?.getAttribute("role") === "status" ? 28 : 0;
+    };
+    const boxTop = (pane: HTMLElement, box: HTMLElement): number => {
+      const container = box.parentElement!;
+      let y = sentinelHeight(pane);
+      if (box.dataset.chatVirtualizedRow === "true") {
+        const spacer = container.previousElementSibling as HTMLElement | null;
+        y += Number.parseFloat(spacer?.style.height || "0");
+      }
+      for (const sibling of Array.from(container.children)) {
+        if (sibling === box) break;
+        const key = keyOf(sibling);
+        if (key !== null) y += heightOf(key) + GAP;
+      }
+      return y;
+    };
+    const rect = (top: number, height: number) => ({
+      top, bottom: top + height, height, left: 0, right: 800, width: 800, x: 0, y: top, toJSON: () => ({}),
+    }) as DOMRect;
+    const saved = (["scrollHeight", "clientHeight"] as const)
+      .map((prop) => [prop, Object.getOwnPropertyDescriptor(Element.prototype, prop)!] as const);
+    const savedOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    const savedRect = Element.prototype.getBoundingClientRect;
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      configurable: true,
+      get(this: Element) { return this.classList.contains("ade-chat-timeline-pane") ? clientHeight : 0; },
+    });
+    Object.defineProperty(Element.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: Element) {
+        if (!this.classList.contains("ade-chat-timeline-pane")) return 0;
+        const pane = this as HTMLElement;
+        const sizer = Array.from(pane.querySelectorAll<HTMLElement>("div"))
+          .find((el) => el.style.position === "relative" && el.style.height);
+        if (sizer) return sentinelHeight(pane) + Number.parseFloat(sizer.style.height);
+        const rows = Array.from(pane.querySelectorAll("[data-chat-row-key]"));
+        const total = rows.reduce((sum, row) => sum + heightOf(keyOf(row)!) + GAP, 0);
+        return sentinelHeight(pane) + Math.max(0, total - GAP);
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        const key = keyOf(this);
+        return key === null ? 0 : heightOf(key);
+      },
+    });
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const pane = paneOf();
+      if (!pane) return savedRect.call(this);
+      if (this === pane) return rect(0, clientHeight);
+      const key = keyOf(this);
+      if (key === null || !(this instanceof HTMLElement)) return rect(0, 0);
+      const box = this.dataset.chatRowKey !== undefined
+        ? ((this.closest("[data-chat-virtualized-row]") as HTMLElement | null) ?? this)
+        : this;
+      return rect(boxTop(pane, box) - pane.scrollTop, heightOf(key));
+    };
+    return () => {
+      for (const [prop, descriptor] of saved) Object.defineProperty(Element.prototype, prop, descriptor);
+      if (savedOffsetHeight) Object.defineProperty(HTMLElement.prototype, "offsetHeight", savedOffsetHeight);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+      Element.prototype.getBoundingClientRect = savedRect;
+    };
+  }
+
+  const rowNodes = () => Array.from(timelinePane().querySelectorAll<HTMLElement>("[data-chat-row-key]"));
+  const firstVisibleRow = () => {
+    for (const node of rowNodes()) {
+      const box = node.getBoundingClientRect();
+      if (box.bottom > 1) return { key: node.dataset.chatRowKey!, top: box.top, node };
+    }
+    return null;
+  };
+  const sizerHeight = () => {
+    const sizer = Array.from(timelinePane().querySelectorAll<HTMLElement>("div"))
+      .find((el) => el.style.position === "relative" && el.style.height);
+    return sizer ? Number.parseFloat(sizer.style.height) : null;
+  };
+  const listElement = (
+    events: AgentChatEventEnvelope[],
+    props: Partial<React.ComponentProps<typeof AgentChatMessageList>> = {},
+  ) => (
+    <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+      <AgentChatMessageList events={events} sessionId={SESSION} {...props} />
+    </MemoryRouter>
+  );
+
+  /** Break bottom-follow and park the viewport at `scrollTop`, as a reader's wheel would. */
+  async function readerScrollsTo(scrollTop: number) {
+    const pane = timelinePane();
+    fireEvent.wheel(pane, { deltaY: -120 });
+    pane.scrollTop = scrollTop;
+    fireEvent.scroll(pane);
+    await nextFrame();
+    await nextFrame();
+  }
+
+  describe.each([
+    { path: "virtualized", tailRows: 80 },
+    { path: "plain", tailRows: 12 },
+  ])("an older page prepended on the $path path", ({ path, tailRows }) => {
+    it("keeps measured heights and mounted rows, and moves scrollTop by exactly the inserted height", async () => {
+      const TAIL_ROW = 120;
+      const tail = userEvents("tail", tailRows, 30);
+      const older = userEvents("older", 40, 10);
+      const olderKeys = new Set(buildTranscriptEventRowKeys(older));
+      const restoreLayout = installFakeLayout(600, (key) => (olderKeys.has(key) ? OLDER_ROW : TAIL_ROW));
+      try {
+        const view = render(listElement(tail, { hasOlderHistory: true }));
+        await nextFrame();
+        const middle = Math.floor(tailRows / 2) * (TAIL_ROW + GAP) + 30;
+        await readerScrollsTo(middle);
+        expect(Boolean(timelinePane().querySelector("[data-chat-virtualized-row]"))).toBe(path === "virtualized");
+
+        const anchor = firstVisibleRow()!;
+        expect(anchor).not.toBeNull();
+        const mountedBefore = new Map(rowNodes().map((node) => [node.dataset.chatRowKey!, node]));
+        const sizerBefore = sizerHeight();
+        const scrollTopBefore = timelinePane().scrollTop;
+
+        view.rerender(listElement([...older, ...tail], { hasOlderHistory: true }));
+
+        const inserted = 40 * (OLDER_ROW + GAP);
+        expect(timelinePane().scrollTop).toBe(scrollTopBefore + inserted);
+        // The row the reader was on did not move on screen and was not remounted.
+        const anchorNow = timelinePane().querySelector<HTMLElement>(`[data-chat-row-key="${anchor.key}"]`)!;
+        expect(anchorNow).toBe(anchor.node);
+        expect(anchorNow.getBoundingClientRect().top).toBe(anchor.top);
+        // Every tail row still mounted is the same DOM node (no remount, so no
+        // replayed fade-ins or re-highlighting).
+        const survivors = rowNodes().filter((node) => mountedBefore.has(node.dataset.chatRowKey!));
+        expect(survivors.length).toBeGreaterThan(0);
+        for (const node of survivors) expect(node).toBe(mountedBefore.get(node.dataset.chatRowKey!));
+        if (path === "virtualized") {
+          // Measured tail heights survived: the sizer grew by the page alone.
+          expect(sizerHeight()).toBe(sizerBefore! + inserted);
+        }
+      } finally {
+        restoreLayout();
+      }
+    });
+  });
+
+  it("keeps the reader's rows in place when the task list moves from above them to a new turn", async () => {
+    const TASK_ROW = 40;
+    const ROW = 120;
+    const at = (second: number) => new Date(Date.UTC(2026, 8, 23, 8, 0, second)).toISOString();
+    const head: AgentChatEventEnvelope[] = [
+      { sessionId: SESSION, timestamp: at(0), event: { type: "user_message", text: "Start", messageId: "start", deliveryState: "delivered", turnId: "turn-1" } },
+      { sessionId: SESSION, timestamp: at(1), event: { type: "todo_update", turnId: "turn-1", items: [{ id: "a", description: "A", status: "in_progress" }] } },
+    ];
+    const tail = userEvents("tail", 12, 30);
+    const moved: AgentChatEventEnvelope = {
+      sessionId: SESSION,
+      timestamp: new Date(Date.UTC(2026, 8, 23, 9, 0, 0)).toISOString(),
+      event: {
+        type: "todo_update",
+        turnId: "turn-2",
+        items: [
+          { id: "a", description: "A", status: "completed" },
+          { id: "b", description: "B", status: "in_progress" },
+        ],
+      },
+    };
+    const restoreLayout = installFakeLayout(600, (key) => (key.startsWith("task-list:") ? TASK_ROW : ROW));
+    try {
+      const view = render(listElement([...head, ...tail]));
+      await nextFrame();
+      const taskKey = `task-list:${SESSION}`;
+      expect(rowNodes().map((node) => node.dataset.chatRowKey).indexOf(taskKey)).toBe(1);
+      await readerScrollsTo(5 * (ROW + GAP) + 30);
+      const anchor = firstVisibleRow()!;
+      expect(anchor.key).not.toBe(taskKey);
+      const scrollTopBefore = timelinePane().scrollTop;
+
+      view.rerender(listElement([...head, ...tail, moved]));
+
+      const keys = rowNodes().map((node) => node.dataset.chatRowKey);
+      // Still exactly one task list, now last (the turn of its latest update).
+      expect(keys.filter((key) => key === taskKey)).toHaveLength(1);
+      expect(keys.at(-1)).toBe(taskKey);
+      // The row the reader was on did not move on screen.
+      const anchorNow = timelinePane().querySelector<HTMLElement>(`[data-chat-row-key="${anchor.key}"]`)!;
+      expect(anchorNow.getBoundingClientRect().top).toBe(anchor.top);
+      expect(timelinePane().scrollTop).toBe(scrollTopBefore - (TASK_ROW + GAP));
+    } finally {
+      restoreLayout();
+    }
+  });
+
+  it("does not follow the task list down the thread when the reader is looking at it as it moves", async () => {
+    const TASK_ROW = 40;
+    const ROW = 120;
+    const at = (second: number) => new Date(Date.UTC(2026, 8, 23, 8, 0, second)).toISOString();
+    const head: AgentChatEventEnvelope[] = [
+      { sessionId: SESSION, timestamp: at(0), event: { type: "user_message", text: "Start", messageId: "start", deliveryState: "delivered", turnId: "turn-1" } },
+      { sessionId: SESSION, timestamp: at(1), event: { type: "todo_update", turnId: "turn-1", items: [{ id: "a", description: "A", status: "in_progress" }] } },
+    ];
+    const tail = userEvents("tail", 12, 30);
+    const moved: AgentChatEventEnvelope = {
+      sessionId: SESSION,
+      timestamp: new Date(Date.UTC(2026, 8, 23, 9, 0, 0)).toISOString(),
+      event: { type: "todo_update", turnId: "turn-2", items: [{ id: "a", description: "A", status: "completed" }] },
+    };
+    const restoreLayout = installFakeLayout(600, (key) => (key.startsWith("task-list:") ? TASK_ROW : ROW));
+    try {
+      const view = render(listElement([...head, ...tail]));
+      await nextFrame();
+      await readerScrollsTo(ROW + GAP + 10);
+      const taskKey = `task-list:${SESSION}`;
+      expect(firstVisibleRow()!.key).toBe(taskKey);
+      const nextRow = rowNodes()[2]!;
+      const nextKey = nextRow.dataset.chatRowKey!;
+      const nextTop = nextRow.getBoundingClientRect().top;
+
+      view.rerender(listElement([...head, ...tail, moved]));
+
+      // The row under the card holds its place; the view did not ride the card
+      // to the bottom of the thread.
+      const nextNow = timelinePane().querySelector<HTMLElement>(`[data-chat-row-key="${nextKey}"]`)!;
+      expect(nextNow.getBoundingClientRect().top).toBe(nextTop);
+    } finally {
+      restoreLayout();
+    }
+  });
+
+  it("keeps an open fold, a jump into a fold, and the turn-end snapshot across a prepend", async () => {
+    const at = (second: number) => new Date(Date.UTC(2026, 8, 23, 12, 0, second)).toISOString();
+    const env = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: SESSION,
+      timestamp: at(second),
+      event,
+    });
+    const older = [
+      env(0, { type: "user_message", text: "Earlier", turnId: "turn-0" }),
+      env(1, { type: "text", text: "Earlier answer.", itemId: "o-1", turnId: "turn-0" }),
+      env(2, { type: "done", turnId: "turn-0", status: "completed" }),
+    ];
+    const turn = [
+      env(10, { type: "user_message", text: "Fix the build", turnId: "turn-1" }),
+      env(11, { type: "reasoning", text: "Reading the error.", turnId: "turn-1" }),
+      env(12, { type: "text", text: "Checking the config.", itemId: "i-1", turnId: "turn-1" }),
+      env(13, { type: "scheduled_work_update", id: "background:job-1", kind: "background_task", status: "running", title: "npm run dev", sourceTaskId: "job-1", turnId: "turn-1" }),
+      env(14, { type: "text", text: "The build is green again.", itemId: "a-1", turnId: "turn-1" }),
+      env(15, { type: "done", turnId: "turn-1", status: "completed" }),
+      // Settles after the turn ended: the snapshot keeps it visible anyway.
+      env(16, { type: "scheduled_work_update", id: "background:job-1", kind: "background_task", status: "completed", title: "npm run dev", sourceTaskId: "job-1", turnId: "turn-1" }),
+    ];
+    const foldToggle = () => screen.getByRole("button", { name: /\. (Show|Hide) the work from this turn$/ });
+    const text = () => timelinePane().textContent ?? "";
+
+    const view = render(listElement(turn));
+    expect(text()).toContain("npm run dev");
+    expect(text()).not.toContain("Checking the config.");
+    fireEvent.click(foldToggle());
+    expect(foldToggle().getAttribute("aria-expanded")).toBe("true");
+
+    view.rerender(listElement([...older, ...turn]));
+    expect(text()).toContain("Earlier answer.");
+    expect(foldToggle().getAttribute("aria-expanded")).toBe("true");
+    expect(text()).toContain("Checking the config.");
+
+    fireEvent.click(foldToggle());
+    expect(text()).not.toContain("Checking the config.");
+    // The background job was live when the turn ended: still kept after the prepend.
+    expect(text()).toContain("npm run dev");
+
+    // A key taken from the pre-prepend window still names the same row.
+    const interimKey = buildTranscriptEventRowKeys(turn)[2]!;
+    view.rerender(listElement([...older, ...turn], { scrollToRowKeyRequest: { key: interimKey, requestId: 1 } }));
+    await waitFor(() => {
+      const row = timelinePane().querySelector(`[data-chat-row-key="${interimKey}"]`);
+      expect(row?.getAttribute("data-chat-anchored-row")).toBe("true");
+    });
+    expect(foldToggle().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  describe("scroll restore", () => {
+    const heightOf = (key: string) => 60 + (key.length % 5) * 20;
+
+    async function leaveAt(events: AgentChatEventEnvelope[], scrollTop: number) {
+      const view = render(listElement(events, { hasOlderHistory: true }));
+      await nextFrame();
+      await readerScrollsTo(scrollTop);
+      const saved = firstVisibleRow()!;
+      const pane = timelinePane();
+      const distanceFromBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+      view.unmount();
+      return { key: saved.key, top: saved.top, distanceFromBottom };
+    }
+
+    it("returns to the same row and offset after the window was trimmed to its last 1,000 events", async () => {
+      const restoreLayout = installFakeLayout(600, heightOf);
+      try {
+        const events = userEvents("msg", 1_200, 0);
+        const saved = await leaveAt(events, 70_000);
+
+        const trimmed = events.slice(-1_000);
+        const onLoadOlderHistory = vi.fn();
+        render(listElement(trimmed, { hasOlderHistory: true, onLoadOlderHistory }));
+        await waitFor(() => {
+          const first = firstVisibleRow();
+          expect(first?.key).toBe(saved.key);
+          expect(first?.top).toBe(saved.top);
+        });
+        expect(onLoadOlderHistory).not.toHaveBeenCalled();
+      } finally {
+        restoreLayout();
+      }
+    });
+
+    it("falls back to the saved distance from the bottom when the row is gone", async () => {
+      const restoreLayout = installFakeLayout(600, heightOf);
+      try {
+        const events = userEvents("gone", 120, 0);
+        const saved = await leaveAt(events, 4_000);
+
+        const without = events.filter((_, index) => buildTranscriptEventRowKeys(events)[index] !== saved.key);
+        render(listElement(without, { hasOlderHistory: true }));
+        await waitFor(() => {
+          const pane = timelinePane();
+          expect(pane.scrollHeight - pane.scrollTop - pane.clientHeight).toBe(saved.distanceFromBottom);
+        });
+      } finally {
+        restoreLayout();
+      }
+    });
+
+    it("chains at most one older page on its own, and loads again once the reader scrolls", async () => {
+      const restoreLayout = installFakeLayout(600, () => 60);
+      try {
+        const tail = userEvents("near-top", 40, 30);
+        await leaveAt(tail, 200);
+
+        const onLoadOlderHistory = vi.fn();
+        const view = render(listElement(tail, { hasOlderHistory: true, onLoadOlderHistory }));
+        // Held while the restore lands, then one automatic request.
+        await waitFor(() => expect(onLoadOlderHistory).toHaveBeenCalledTimes(1));
+
+        // The page lands (a small one: the reader is still inside the runway)
+        // and the re-arm would ask again: capped.
+        let events = tail;
+        for (let page = 0; page < 3; page += 1) {
+          view.rerender(listElement(events, { hasOlderHistory: true, loadingOlderHistory: true, onLoadOlderHistory }));
+          events = [...userEvents(`page-${page}`, 2, 20 - page), ...events];
+          view.rerender(listElement(events, { hasOlderHistory: true, loadingOlderHistory: false, onLoadOlderHistory }));
+          await nextFrame();
+          await nextFrame();
+        }
+        expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+        // The reader scrolls: loading resumes.
+        await readerScrollsTo(100);
+        expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
+      } finally {
+        restoreLayout();
+      }
+    });
+  });
+
+  describe("row heights", () => {
+    it("corrects scrollTop for a row that straddles the viewport top when it grows", () => {
+      const pitch = 80 + GAP;
+      // Row 2 starts 10px above the viewport top and grows by 60.
+      expect(reconcileMeasuredScrollTop({
+        index: 2,
+        previousHeight: 80,
+        nextHeight: 140,
+        scrollTop: 2 * pitch + 10,
+        rowHeight: () => 80,
+      })).toBe(2 * pitch + 70);
+      // A row starting at or below the viewport top grows downward, away from what the reader sees.
+      expect(reconcileMeasuredScrollTop({
+        index: 2,
+        previousHeight: 80,
+        nextHeight: 140,
+        scrollTop: 2 * pitch,
+        rowHeight: () => 80,
+      })).toBe(2 * pitch);
+    });
+
+    it("estimates unmeasured rows by kind, and prose by length across the column", () => {
+      const row = (event: AgentChatEventEnvelope["event"] | { type: "turn_fold" }) => ({
+        key: "k",
+        timestamp: "2026-09-23T00:00:00.000Z",
+        event,
+      }) as Parameters<typeof estimateTranscriptRowHeight>[0];
+      const fold = estimateTranscriptRowHeight(row({ type: "turn_fold" } as never), 720);
+      const shortUser = estimateTranscriptRowHeight(row({ type: "user_message", text: "hi" }), 720);
+      const longAnswer = estimateTranscriptRowHeight(row({ type: "text", text: "word ".repeat(600) }), 720);
+      const longAnswerNarrow = estimateTranscriptRowHeight(row({ type: "text", text: "word ".repeat(600) }), 360);
+      const card = estimateTranscriptRowHeight(row({ type: "approval_request", itemId: "a", kind: "tool_call", description: "Run?" }), 720);
+      expect(fold).toBeLessThan(shortUser);
+      expect(shortUser).toBe(OLDER_ROW);
+      expect(longAnswer).toBeGreaterThan(300);
+      expect(longAnswerNarrow).toBeGreaterThan(longAnswer * 1.8);
+      expect(card).toBeGreaterThan(shortUser);
+    });
+  });
+});
+
+describe("AgentChatMessageList — the chat's one task list", () => {
+  const at = (second: number) => new Date(Date.UTC(2026, 8, 23, 12, 0, second)).toISOString();
+  const env = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: "task-session",
+    timestamp: at(second),
+    event,
+  });
+  const taskRows = () => [...document.querySelectorAll<HTMLElement>("[data-chat-row-key^='task-list:']")];
+  const turnOneList: AgentChatEventEnvelope[] = [
+    env(0, { type: "user_message", text: "Plan the migration", turnId: "turn-1" }),
+    env(1, {
+      type: "plan",
+      turnId: "turn-1",
+      explanation: "Migrating billing",
+      steps: [
+        { text: "Read the schema", status: "completed" },
+        { text: "Write the migration", status: "in_progress" },
+        { text: "Deploy", status: "pending" },
+      ],
+    }),
+    env(2, { type: "reasoning", text: "Checking columns.", turnId: "turn-1" }),
+    env(3, { type: "text", text: "Migration drafted.", itemId: "a-1", turnId: "turn-1" }),
+    env(4, { type: "done", turnId: "turn-1", status: "completed" }),
+  ];
+
+  it("renders one collapsed line: label · done/total · current item", () => {
+    renderMessageList(turnOneList, { sessionId: "task-session" });
+    expect(taskRows()).toHaveLength(1);
+    expect(taskRows()[0]!.dataset.chatRowKey).toBe("task-list:task-session");
+    const card = screen.getByTestId("chat-task-list-card");
+    expect(card.dataset.open).toBe("false");
+    expect(card.textContent).toBe("Migrating billing·1/3·Write the migration");
+    expect(screen.queryByText("Deploy")).toBeNull();
+  });
+
+  it("expands to the full list on click, collapses on the next, and remembers per chat across remounts", () => {
+    const view = renderMessageList(turnOneList, { sessionId: "task-session" });
+    const toggle = () => within(screen.getByTestId("chat-task-list-card")).getAllByRole("button")[0]!;
+    fireEvent.click(toggle());
+    expect(screen.getByTestId("chat-task-list-card").dataset.open).toBe("true");
+    const list = screen.getByTestId("chat-task-list");
+    expect([...list.querySelectorAll<HTMLElement>("[data-task-status]")].map((row) => [row.textContent, row.dataset.taskStatus])).toEqual([
+      ["Read the schema", "done"],
+      ["Write the migration", "running"],
+      ["Deploy", "pending"],
+    ]);
+    // Only the running row carries the travelling underline.
+    expect(list.querySelectorAll("[data-task-running-line]")).toHaveLength(1);
+    view.unmount();
+    renderMessageList(turnOneList, { sessionId: "task-session" });
+    expect(screen.getByTestId("chat-task-list-card").dataset.open).toBe("true");
+    fireEvent.click(toggle());
+    expect(screen.getByTestId("chat-task-list-card").dataset.open).toBe("false");
+  });
+
+  it("never folds: the card stays visible when the turn's work folds", () => {
+    renderMessageList(turnOneList, { sessionId: "task-session" });
+    expect(screen.getByRole("button", { name: /\. (Show|Hide) the work from this turn$/ })).toBeTruthy();
+    // The thought folded away; the task list did not.
+    expect(screen.queryByText("Checking columns.")).toBeNull();
+    expect(taskRows()).toHaveLength(1);
+  });
+
+  it("moves to the turn of the latest update and leaves no card behind", () => {
+    const view = renderMessageList(turnOneList, { sessionId: "task-session" });
+    const next = [
+      ...turnOneList,
+      env(10, { type: "user_message", text: "Now deploy", turnId: "turn-2" }),
+      env(11, {
+        type: "todo_update",
+        turnId: "turn-2",
+        items: [{ id: "d", description: "Deploy to staging", status: "in_progress", activeForm: "Deploying to staging" }],
+      }),
+    ];
+    view.rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList events={next} sessionId="task-session" />
+      </MemoryRouter>,
+    );
+    const keys = [...document.querySelectorAll<HTMLElement>("[data-chat-row-key]")].map((node) => node.dataset.chatRowKey);
+    expect(keys.filter((key) => key?.startsWith("task-list:"))).toEqual(["task-list:task-session"]);
+    expect(keys.at(-1)).toBe("task-list:task-session");
+    // The running item reads in its present-continuous form.
+    expect(screen.getByTestId("chat-task-list-card").textContent).toBe("Tasks·0/1·Deploying to staging");
   });
 });

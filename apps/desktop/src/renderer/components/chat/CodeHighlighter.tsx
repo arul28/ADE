@@ -67,8 +67,17 @@ function getHighlighter(): Promise<ShikiHighlighter> {
 
 /* ── Highlight function ── */
 
+function highlightCacheKey(code: string, language: string): string {
+  return `${language}::${code}`;
+}
+
+/** Cached highlight for this exact block, if one was produced before; synchronous. */
+function readCachedHighlight(code: string, language: string): string | undefined {
+  return highlightCache.get(highlightCacheKey(code, language));
+}
+
 async function highlightCode(code: string, language: string): Promise<string> {
-  const cacheKey = `${language}::${code}`;
+  const cacheKey = highlightCacheKey(code, language);
   const cached = highlightCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
@@ -202,9 +211,42 @@ class CodeErrorBoundary extends React.Component<
 
 /* ── Inner highlighted code (async state) ── */
 
+/*
+ * The plain fallback and shiki's output lay out identically: both are a <pre>
+ * with the same font, size, line height, and wrapping around a <code>. Shiki
+ * emits `<pre class="shiki"><code>…</code></pre>`; a bare <pre> would not wrap
+ * (and takes the UA monospace size for its line boxes), so swapping the plain
+ * block for the highlighted one used to change the block's height after the
+ * row had been measured — the transcript moved under the reader. Same box,
+ * only the colours change.
+ */
+const CODE_PRE_CLASS = "m-0 whitespace-pre-wrap break-words bg-transparent p-0 font-mono text-[11px] leading-[1.6]";
+const HIGHLIGHTED_PRE_CLASS = [
+  "shiki-highlighted",
+  "[&_pre]:!m-0 [&_pre]:!p-0 [&_pre]:!bg-transparent [&_pre]:whitespace-pre-wrap [&_pre]:break-words",
+  "[&_pre]:font-mono [&_pre]:text-[11px] [&_pre]:leading-[1.6]",
+  "[&_code]:!bg-transparent [&_code]:!p-0 [&_code]:font-mono [&_code]:text-[11px] [&_code]:leading-[1.6]",
+  "[&_.shiki]:!bg-transparent",
+].join(" ");
+
 function HighlightedCodeInner({ code, language }: { code: string; language: string }) {
-  const [html, setHtml] = useState<string | null>(null);
+  // A cache hit renders highlighted on the first frame: a remounted row (a
+  // virtualized row scrolling back in, a reopened chat) must not flash plain
+  // code and then re-highlight at a different height.
+  const [state, setState] = useState<{ code: string; language: string; html: string | null }>(() => ({
+    code,
+    language,
+    html: readCachedHighlight(code, language) ?? null,
+  }));
   const mountedRef = useRef(true);
+  // New code (a streaming block growing): take the cached answer synchronously
+  // when there is one, else show the new text plain until it highlights. Both
+  // render the same box, so the swap never changes the row's height.
+  let current = state;
+  if (state.code !== code || state.language !== language) {
+    current = { code, language, html: readCachedHighlight(code, language) ?? null };
+    setState(current);
+  }
 
   useEffect(() => {
     mountedRef.current = true;
@@ -212,31 +254,27 @@ function HighlightedCodeInner({ code, language }: { code: string; language: stri
   }, []);
 
   useEffect(() => {
+    if (readCachedHighlight(code, language) !== undefined) return;
     let cancelled = false;
-    setHtml(null);
-
-    highlightCode(code, language).then((result) => {
-      if (!cancelled && mountedRef.current) {
-        setHtml(result);
-      }
+    void highlightCode(code, language).then((result) => {
+      if (cancelled || !mountedRef.current) return;
+      setState((previous) => (
+        previous.code === code && previous.language === language
+          ? { code, language, html: result || null }
+          : previous
+      ));
     });
-
     return () => { cancelled = true; };
   }, [code, language]);
 
-  if (!html) {
-    // Loading / no highlight available — show plain code
-    return (
-      <code className="font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]">
-        {code}
-      </code>
-    );
+  if (!current.html) {
+    return <PlainCodeFallback code={code} />;
   }
 
   return (
     <div
-      className="shiki-highlighted [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0 [&_code]:!bg-transparent [&_code]:!p-0 [&_code]:font-mono [&_code]:text-[11px] [&_code]:leading-[1.6] [&_.shiki]:!bg-transparent"
-      dangerouslySetInnerHTML={{ __html: html }}
+      className={HIGHLIGHTED_PRE_CLASS}
+      dangerouslySetInnerHTML={{ __html: current.html }}
     />
   );
 }
@@ -245,9 +283,11 @@ function HighlightedCodeInner({ code, language }: { code: string; language: stri
 
 function PlainCodeFallback({ code }: { code: string }) {
   return (
-    <code className="font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]">
-      {code}
-    </code>
+    <pre className={CODE_PRE_CLASS}>
+      <code className="font-mono text-[11px] leading-[1.6] text-[var(--chat-code-fg)]">
+        {code}
+      </code>
+    </pre>
   );
 }
 

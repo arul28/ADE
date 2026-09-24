@@ -37,59 +37,33 @@ describe("piUiRequestToPendingInput", () => {
     ]);
   });
 
-  it("builds a freeform card when the prompt has no options", () => {
-    const request = piUiRequestToPendingInput("req-2", freeform, null);
-    expect(request.kind).toBe("question");
-    expect(request.allowsFreeform).toBe(true);
-    expect(request.questions[0]!.options).toBeUndefined();
-  });
-
-  it("carries an editor's starting text onto the card", () => {
-    // A Pi extension's `editor` prefill is the document being edited, so the
-    // card has to surface it rather than dropping it.
-    const request = piUiRequestToPendingInput("req-5", { ...freeform, defaultValue: "existing draft" }, null);
-    expect(request.questions[0]!.defaultAssumption).toBe("existing draft");
-  });
-
-  it("marks a secret prompt so the answer is not echoed", () => {
-    const request = piUiRequestToPendingInput("req-3", { ...freeform, kind: "secret" }, null);
-    expect(request.questions[0]!.isSecret).toBe(true);
-  });
-
-  it("renders an approval as an approval card", () => {
+  it("builds freeform, editor, secret, and approval cards", () => {
+    const text = piUiRequestToPendingInput("req-2", freeform, null);
+    expect(text).toMatchObject({ kind: "question", allowsFreeform: true });
+    expect(text.questions[0]!.options).toBeUndefined();
+    // A Pi extension's `editor` prefill is the document being edited.
+    expect(piUiRequestToPendingInput("req-5", { ...freeform, defaultValue: "existing draft" }, null).questions[0]!.defaultAssumption)
+      .toBe("existing draft");
+    expect(piUiRequestToPendingInput("req-3", { ...freeform, kind: "secret" }, null).questions[0]!.isSecret).toBe(true);
     expect(piUiRequestToPendingInput("req-4", approval, null).kind).toBe("approval");
   });
 });
 
 describe("piUiResponseFromAnswer", () => {
-  it("returns the chosen option value", () => {
-    expect(piUiResponseFromAnswer(question, { decision: "accept", answers: { [PI_UI_ANSWER_ID]: "1" } }))
-      .toEqual({ ok: true, value: "1" });
-  });
-
-  it("unwraps a multi-select answer and falls back to free text", () => {
-    expect(piUiResponseFromAnswer(question, { decision: "accept", answers: { [PI_UI_ANSWER_ID]: ["0"] } }))
-      .toEqual({ ok: true, value: "0" });
-    expect(piUiResponseFromAnswer(freeform, { decision: "accept", responseText: "because it is simple" }))
-      .toEqual({ ok: true, value: "because it is simple" });
-  });
-
-  it("reports a dismissed or declined card as unanswered", () => {
-    expect(piUiResponseFromAnswer(question, { decision: "cancel" })).toEqual({ ok: false });
-    expect(piUiResponseFromAnswer(question, { decision: "decline" })).toEqual({ ok: false });
-  });
-
-  it("keeps an approval an allow even when the surface attaches a comment", () => {
-    expect(piUiResponseFromAnswer(approval, { decision: "accept", responseText: "looks fine" }))
-      .toEqual({ ok: true, value: PI_APPROVAL_ALLOW });
-  });
-
-  it("maps an approval decision onto the value the gate reads", () => {
-    expect(piUiResponseFromAnswer(approval, { decision: "accept" })).toEqual({ ok: true, value: PI_APPROVAL_ALLOW });
-    expect(piUiResponseFromAnswer(approval, { decision: "accept_for_session" }))
-      .toEqual({ ok: true, value: PI_APPROVAL_ALLOW_SESSION });
+  it.each([
+    ["the chosen option", question, { decision: "accept", answers: { [PI_UI_ANSWER_ID]: "1" } }, { ok: true, value: "1" }],
+    ["an unwrapped multi-select", question, { decision: "accept", answers: { [PI_UI_ANSWER_ID]: ["0"] } }, { ok: true, value: "0" }],
+    ["free text", freeform, { decision: "accept", responseText: "because it is simple" }, { ok: true, value: "because it is simple" }],
+    ["a dismissed card", question, { decision: "cancel" }, { ok: false }],
+    ["a declined card", question, { decision: "decline" }, { ok: false }],
+    // An approval stays an allow even when the surface attaches a comment.
+    ["an approval with a comment", approval, { decision: "accept", responseText: "looks fine" }, { ok: true, value: PI_APPROVAL_ALLOW }],
+    ["an approval", approval, { decision: "accept" }, { ok: true, value: PI_APPROVAL_ALLOW }],
+    ["a session approval", approval, { decision: "accept_for_session" }, { ok: true, value: PI_APPROVAL_ALLOW_SESSION }],
     // An approval with no decision at all is a denial, never a silent allow.
-    expect(piUiResponseFromAnswer(approval, {})).toEqual({ ok: false });
+    ["an approval without a decision", approval, {}, { ok: false }],
+  ] as const)("maps %s", (_name, payload, answer, expected) => {
+    expect(piUiResponseFromAnswer(payload, answer as Parameters<typeof piUiResponseFromAnswer>[1])).toEqual(expected);
   });
 });
 
@@ -294,40 +268,20 @@ describe("mapPiSdkEventToChatEvents", () => {
       type: "compaction_end",
       result: { tokensBefore: 1_000, estimatedTokensAfter: 400 },
     }, "turn-1", "compact-1", state);
-    mapPiSdkEventToChatEvents({ type: "compaction_start" }, "turn-2", "compact-2", state);
-    const second = mapPiSdkEventToChatEvents({
-      type: "compaction_end",
-      result: { tokensBefore: 2_000, estimatedTokensAfter: 500 },
-    }, "turn-2", "compact-2", state);
-
     expect(first[0]).toMatchObject({ type: "context_compact", state: "completed", preTokens: 1_000, postTokens: 400 });
-    expect(second[0]).toMatchObject({
-      type: "context_compact",
-      state: "completed",
-      preTokens: 2_000,
-      postTokens: 500,
-    });
-    expect(second[0]).not.toHaveProperty("sessionCompactionCount");
+    expect(first[0]).not.toHaveProperty("sessionCompactionCount");
   });
 });
 
 describe("piExtensionLoadNotice", () => {
-  it("names the extensions that loaded", () => {
-    const [notice] = piExtensionLoadNotice([{ id: "/x/git-info/index.ts", name: "git-info" }], null);
-    expect(notice).toMatchObject({ type: "system_notice", noticeKind: "info" });
-    expect((notice as { message: string }).message).toContain("git-info");
-  });
-
-  it("says which tools this Pi build cannot gate", () => {
-    const [notice] = piExtensionLoadNotice(undefined, null, ["bash", "write"]);
-    expect(notice).toMatchObject({ noticeKind: "warning" });
-    expect((notice as { message: string }).message).toContain("bash, write");
-  });
-
-  it("reports a load failure separately from a clean empty list", () => {
+  it("names loaded extensions, ungated tools, and a load failure, and stays quiet on a clean empty list", () => {
+    expect(piExtensionLoadNotice([{ id: "/x/git-info/index.ts", name: "git-info" }], null)[0])
+      .toMatchObject({ type: "system_notice", noticeKind: "info", message: expect.stringContaining("git-info") });
+    expect(piExtensionLoadNotice(undefined, null, ["bash", "write"])[0])
+      .toMatchObject({ noticeKind: "warning", message: expect.stringContaining("bash, write") });
     expect(piExtensionLoadNotice([], null)).toEqual([]);
-    const events = piExtensionLoadNotice([], "bad.ts: boom");
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ noticeKind: "warning" });
+    const failed = piExtensionLoadNotice([], "bad.ts: boom");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ noticeKind: "warning" });
   });
 });

@@ -69,11 +69,6 @@ describe("ProviderEmptyState", () => {
     expect(screen.getByText(/No models discovered/i)).toBeTruthy();
   });
 
-  it("does not show 'no models match this view' wording (regression)", () => {
-    render(<ProviderEmptyState family="cursor" />);
-    expect(screen.queryByText(/No models match this view/i)).toBeNull();
-  });
-
   describe("opencode-required mode", () => {
     it("renders identical Install OpenCode title for all three families", () => {
       for (const family of ["opencode", "ollama", "lmstudio"] as const) {

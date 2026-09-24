@@ -31,7 +31,7 @@ describe("codexPlanLimitNoticeState", () => {
 
   // The bug: the armed flag was only ever set. A chat open across a five-hour
   // rollover warned for the first window and never again.
-  it("regression: re-arms when the window rolls over, so the next window warns too", () => {
+  it("re-arms when the window rolls over, so the next window warns too", () => {
     const rolledOver = at(3, true);
     expect(rolledOver).toEqual({ emit: false, emitted: false });
     expect(at(CODEX_PLAN_LIMIT_NOTICE_PERCENT, rolledOver.emitted)).toEqual({

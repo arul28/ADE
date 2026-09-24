@@ -59,3 +59,13 @@ defect, even when it passes.
     tests here are service-level tests of races and seams (process-kill guards,
     multi-brain claims, token refresh order). An end-to-end run cannot reach
     them reliably.
+11. **No test-only production seam.** Do not add an export, flag, wrapper, or
+    hook that no production caller needs. Test through the real boundary, or
+    do not add the test.
+12. **One contract, one owner.** A second test of the same contract needs a
+    failure the owner cannot reach, such as a transport or lifecycle break.
+    Otherwise extend the owner.
+
+`/quality` records a coverage gap. It does not add the test. `/test` adds one
+only when it can name the behavior, the failure that turns the test red, and
+why no existing test already catches that.

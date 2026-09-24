@@ -158,7 +158,7 @@ describe("evaluatePermissionPolicy precedence", () => {
 
 describe("evaluatePermissionPolicy names host tools, never infers risk", () => {
   // The five rows of issue 1208 part C, shared with the end-to-end assertions
-  // in `agentChatService.test.ts` so both layers see the same cases.
+  // in `agentChatServiceHostPolicy.test.ts` so both layers see the same cases.
   for (const toolName of HOST_TOOL_APPROVAL_NAMES) {
     it(`${toolName} is allowed by an mcp:srv:* rule`, () => {
       const policy: AgentChatPermissionPolicy = { fallback: "ask", allowedTools: ["mcp:srv:*"] };

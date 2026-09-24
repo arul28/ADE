@@ -158,7 +158,7 @@ describe("runDelegatedCli", () => {
     await expect(pending).resolves.toEqual({ code: 0, signal: null });
   });
 
-  it("regression: starts an ADE .cmd shim's runtime and entry directly, so %VAR% in argv stays literal", async () => {
+  it("starts an ADE .cmd shim's runtime and entry directly, so %VAR% in argv stays literal", async () => {
     const shimPath = "C:\\Users\\a\\AppData\\Local\\Temp\\ade-cli-shims\\x\\ade.cmd";
     const execPath = "C:\\Program Files\\ADE Alpha\\ADE Alpha.exe";
     const entryPath = "C:\\Program Files\\ADE Alpha\\resources\\ade-cli\\cli.cjs";

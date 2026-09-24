@@ -10,6 +10,7 @@ import {
   isTimelineUserMessageRow,
   minimapHasPersistentGutter,
   minimapRailInert,
+  placeMinimapEntriesOnVisibleRows,
   resolveMinimapHitStripWidth,
   resolveMinimapIndexFromPointer,
   resolveMinimapPreviewTranslateY,
@@ -423,5 +424,36 @@ describe("chatUserMinimap.logic", () => {
     const entries = collectUserMessageMinimapSourceEntries(rows, { includeCodexExtras: true });
     expect(entries).toHaveLength(1);
     expect(entries[0]?.kind).toBe("user");
+  });
+});
+
+describe("placeMinimapEntriesOnVisibleRows", () => {
+  // Unfolded: u1, q (queued steer), h, a, u2. A closed fold replaced q and h.
+  const unfolded: ChatTranscriptGroupedEnvelope[] = [
+    userRow("first", "u1"),
+    userRow("still there?", "q", true),
+    textRow("interim", "h"),
+    textRow("answer", "a"),
+    userRow("second", "u2"),
+  ];
+  const entries = collectUserMessageMinimapSourceEntries(unfolded, { includeCodexExtras: true });
+
+  it("keeps every item and places one hidden in a closed fold on the fold row", () => {
+    const visible = new Map([["u1", 0], ["turn-fold:t1", 1], ["a", 2], ["u2", 3]]);
+    const placed = placeMinimapEntriesOnVisibleRows(entries, visible, new Map([["q", "turn-fold:t1"], ["h", "turn-fold:t1"]]));
+    expect(placed.map((entry) => [entry.rowKey, entry.rowIndex, entry.foldId ?? null])).toEqual([
+      ["u1", 0, null],
+      ["q", 1, "turn-fold:t1"],
+      ["u2", 3, null],
+    ]);
+    // Reply previews come from the unfolded rows, so folding never loses one.
+    expect(placed[0]!.assistantPreview).toBe("answer");
+  });
+
+  it("uses the row's own index once the fold is open, reusing unchanged entries", () => {
+    const visible = new Map([["u1", 0], ["turn-fold:t1", 1], ["q", 2], ["h", 3], ["a", 4], ["u2", 5]]);
+    const placed = placeMinimapEntriesOnVisibleRows(entries, visible, new Map([["q", "turn-fold:t1"]]));
+    expect(placed.map((entry) => [entry.rowIndex, entry.foldId ?? null])).toEqual([[0, null], [2, null], [5, null]]);
+    expect(placed[0]).toBe(entries[0]);
   });
 });

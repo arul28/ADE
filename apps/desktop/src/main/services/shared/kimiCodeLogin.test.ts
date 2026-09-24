@@ -59,7 +59,7 @@ describe("resolveKimiCodeLogin", () => {
 
   // The bug: ADE read only `credentials/kimi-code.json`, so a `--region global`
   // login, which Kimi keeps in its own scoped file, was never found.
-  it("regression: finds a --region global login through config.toml", () => {
+  it("finds a --region global login through config.toml", () => {
     const home = kimiHome({
       "config.toml": globalLoginConfig(),
       "credentials/kimi-code-env-0e4f99c69cc27850.json": TOKEN,

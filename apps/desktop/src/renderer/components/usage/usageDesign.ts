@@ -180,8 +180,37 @@ export const USAGE_CHART_OTHER_LABEL = "Other";
 export const USAGE_CHART_OTHER_COLOR = "var(--color-muted-fg)";
 
 /**
- * Thresholds shared by the pace bars and the header chip, so "nearly dry" means
- * the same thing in the top bar as it does on the page.
+ * Quota headroom bands, by percent LEFT. One rule for every quota meter — the
+ * header rings and the popover/settings window bars — regardless of provider:
+ * at or above `ok` is green, at or above `warn` is yellow, below is red.
+ */
+export const USAGE_HEADROOM_THRESHOLDS = {
+  ok: 50,
+  warn: 25,
+} as const;
+
+export type UsageHeadroomTone = "ok" | "warn" | "critical";
+
+export function usageHeadroomTone(percentLeft: number): UsageHeadroomTone {
+  if (percentLeft >= USAGE_HEADROOM_THRESHOLDS.ok) return "ok";
+  if (percentLeft >= USAGE_HEADROOM_THRESHOLDS.warn) return "warn";
+  return "critical";
+}
+
+/** The app theme's own status tokens (light and dark both declare them). */
+export const USAGE_HEADROOM_COLOR: Record<UsageHeadroomTone, string> = {
+  ok: "var(--color-success)",
+  warn: "var(--color-warning)",
+  critical: "var(--color-error)",
+};
+
+export function usageHeadroomColor(percentLeft: number): string {
+  return USAGE_HEADROOM_COLOR[usageHeadroomTone(percentLeft)];
+}
+
+/**
+ * Thresholds for spend meters (extra usage), by percent SPENT. Quota windows
+ * use `usageHeadroomColor` instead.
  */
 export const USAGE_PRESSURE = {
   warn: 70,

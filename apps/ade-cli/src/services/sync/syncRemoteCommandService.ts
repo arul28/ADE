@@ -282,6 +282,7 @@ import type { createCursorCloudFleetService } from "../../../../desktop/src/main
 import type { createDevinCloudFleetService } from "../../../../desktop/src/main/services/chat/devinCloudFleetService";
 import type { DevinCloudMode } from "../../../../desktop/src/shared/types/config";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
+import { getSourceFaviconService } from "../../../../desktop/src/main/services/chat/sourceFaviconService";
 import {
   createPromptStash,
   deletePromptStash,
@@ -4548,6 +4549,16 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ...(cols != null ? { cols } : {}),
       ...(rows != null ? { rows } : {}),
     });
+    if (result.resumed) {
+      try {
+        args.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        args.logger.warn("sync_remote.cli_resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     return {
       sessionId: result.sessionId,
       ptyId: result.ptyId,
@@ -4586,6 +4597,16 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ...(parsed.codexSandbox != null ? { codexSandbox: parsed.codexSandbox } : {}),
       ...(parsed.codexConfigSource != null ? { codexConfigSource: parsed.codexConfigSource } : {}),
     });
+    if (result.resumed) {
+      try {
+        args.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        args.logger.warn("sync_remote.cli_resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     return result satisfies SyncSendToSessionResult;
   });
   register("work.stopRuntime", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -4615,6 +4636,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       linearIssueTracker,
     });
   });
+  // Sources favicons (hosted web, iOS). Machine-level: no project needed, so a
+  // personal chat's Sources list gets icons too. The resolver only ever talks
+  // to public HTTPS hosts; see chat/sourceFaviconService.ts.
+  register("chat.resolveSourceFavicons", { viewerAllowed: true }, async (payload) =>
+    getSourceFaviconService().resolve(payload), "runtime");
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),
@@ -6876,12 +6902,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
     getDescriptors(): SyncRemoteCommandDescriptor[] {
       return [...registry.values()].map((entry) => entry.descriptor);
-    },
-
-    getAbortObservingActions(): SyncRemoteCommandAction[] {
-      return [...registry.values()]
-        .filter((entry) => entry.observesAbort)
-        .map((entry) => entry.descriptor.action as SyncRemoteCommandAction);
     },
 
     getPolicy(action: string): SyncRemoteCommandPolicy | null {

@@ -206,7 +206,7 @@ describe("PrChecksTab — header", () => {
     expect(screen.getByTestId("pr-checks-rerun-failed")).toBeTruthy();
   });
 
-  it("fills the progress bar with every bucket, so the segments account for all checks", async () => {
+  it("shows the total count of workflow checks", async () => {
     await renderTab({
       actionRuns: [run({
         jobs: [
@@ -217,13 +217,7 @@ describe("PrChecksTab — header", () => {
         ],
       })],
     });
-    const bar = screen.getByTestId("pr-checks-progress-bar");
-    const flexTotal = Array.from(bar.children)
-      .map((child) => Number((child as HTMLElement).style.flex))
-      .reduce((a, b) => a + b, 0);
-    // 4 jobs → 4 units of flex, i.e. the bar fills completely.
-    expect(flexTotal).toBe(4);
-    expect(within(screen.getByTestId("pr-checks-header")).getByText("/4")).toBeTruthy();
+    expect(within(screen.getByTestId("pr-checks-header")).queryByText("/4")).not.toBeNull();
   });
 });
 

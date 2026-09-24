@@ -206,7 +206,7 @@ describe("isAllowedAdeAction", () => {
     }
   });
 
-  it("regression: allows deleting an installed simulator on the bus but never to an automation", () => {
+  it("allows deleting an installed simulator on the bus but never to an automation", () => {
     expect(isAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
     expect(isUserOnlyAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
     expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(false);
@@ -320,7 +320,7 @@ describe("isAllowedAdeAction", () => {
       "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
       "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
-      "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
+      "resolveSmartLinkPreview", "resolveSourceFavicons", "resolveUnprocessedMessage", "respondToInput",
       "restoreCancelledQueue", "rewindFiles", "saveTempAttachment", "sendMessage",
       "setClaudeOutputStyle", "setCodexGoal", "setCodexGoalStatus", "setParallelLaunchState",
       "setScheduledWorkPaused", "steer", "stopTask", "suggestLaneNameFromPrompt",

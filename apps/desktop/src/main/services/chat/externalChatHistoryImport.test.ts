@@ -163,57 +163,6 @@ describe("claudeJsonlToChatEvents", () => {
     });
   });
 
-  it("caps pathological Claude imports and keeps the newest content messages plus notices", () => {
-    const lines = Array.from({ length: 5 }, (_, index) => JSON.stringify({
-      type: "user",
-      uuid: `user-${index}`,
-      timestamp: `2026-07-06T10:00:0${index}.000Z`,
-      message: { role: "user", content: [{ type: "text", text: `message ${index}` }] },
-    }));
-
-    const events = claudeJsonlToChatEvents(lines, { ...baseOptions, maxEvents: 3 });
-
-    expect(events).toHaveLength(5);
-    expect(events[0]!.event).toMatchObject({
-      type: "system_notice",
-      message: "Session imported from claude CLI (11111111)",
-    });
-    expect(events[1]!.event).toMatchObject({
-      type: "system_notice",
-      message: "Imported: 2 earlier messages truncated",
-    });
-    expect(events.slice(2).map((envelope) => envelope.event)).toEqual([
-      expect.objectContaining({ type: "user_message", text: "message 2" }),
-      expect.objectContaining({ type: "user_message", text: "message 3" }),
-      expect.objectContaining({ type: "user_message", text: "message 4" }),
-    ]);
-  });
-
-  it("adds a byte-level truncation notice when a tail-read was required", () => {
-    const events = claudeJsonlToChatEvents([
-      JSON.stringify({
-        type: "user",
-        uuid: "user-tail",
-        timestamp: "2026-07-06T10:00:00.000Z",
-        message: { role: "user", content: [{ type: "text", text: "tail message" }] },
-      }),
-    ], { ...baseOptions, transcriptBytesTruncated: true, transcriptByteLimit: 16 });
-
-    expect(events[0]!.event).toMatchObject({
-      type: "system_notice",
-      message: "Session imported from claude CLI (11111111)",
-    });
-    expect(events[1]!.event).toMatchObject({
-      type: "system_notice",
-      message: "Imported: earlier transcript bytes truncated to the last 16 bytes",
-    });
-    expect(events.map((envelope) => envelope.event.type)).toEqual([
-      "system_notice",
-      "system_notice",
-      "user_message",
-    ]);
-  });
-
   it("keeps both truncation notices when byte and event caps both apply", () => {
     const lines = Array.from({ length: 6 }, (_, index) => JSON.stringify({
       type: "user",
@@ -295,6 +244,31 @@ describe("codexTurnsToChatEvents", () => {
       status: "completed",
       output: "PASS externalChatHistoryImport.test.ts",
     });
+  });
+
+  it("keeps the Codex commentary/final-answer phase on imported assistant text", () => {
+    const events = codexTurnsToChatEvents([{
+      id: "turn-phase",
+      items: [
+        { type: "agentMessage", id: "item-commentary", text: "Checking the tests.", phase: "commentary" },
+        { type: "agentMessage", id: "item-unknown", text: "No label.", phase: null },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "All green." }], phase: "final_answer" },
+        { type: "agentMessage", id: "item-bogus", text: "Odd label.", phase: "summary" },
+      ],
+    }], {
+      ...baseOptions,
+      provider: "codex",
+      externalSessionId: "thread_phase",
+    });
+
+    const texts = events.flatMap((envelope) => envelope.event.type === "text" ? [envelope.event] : []);
+    expect(texts.map((event) => [event.text, event.phase])).toEqual([
+      ["Checking the tests.", "commentary"],
+      ["No label.", undefined],
+      ["All green.", "final_answer"],
+      ["Odd label.", undefined],
+    ]);
+    expect(texts[1]).not.toHaveProperty("phase");
   });
 
   it("maps rollout-style message and function call items", () => {

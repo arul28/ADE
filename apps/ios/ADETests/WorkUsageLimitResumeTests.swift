@@ -769,7 +769,9 @@ final class WorkUsageLimitResumeTests: XCTestCase {
           itemId: "command-1",
           parentItemId: nil,
           turnId: "turn-limit",
-          status: .completed
+          status: .completed,
+          sources: nil,
+          sourceRefsOmittedForMobile: nil
         )
       ),
       doneEnvelope(

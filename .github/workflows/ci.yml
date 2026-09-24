@@ -696,17 +696,19 @@ jobs:
   # this workflow it exits
   # success immediately, so non-iOS PRs pay only runner spin-up. Pushes to main
   # and workflow_dispatch always execute the full build + test.
-  test-ios:
-    runs-on: macos-26
-    timeout-minutes: 45
+  # The path gate runs on Ubuntu: a gated skip on the macOS job still waited
+  # minutes for a macOS runner just to exit, and it held one of the few
+  # concurrent macOS slots the other jobs need.
+  ios-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
           # Depth 2 keeps the PR merge commit's parents available, so the
           # gating step below can diff the merge against its base parent.
           fetch-depth: 2
-          # xcodebuild executes PR-controlled build phases; it never needs
-          # authenticated git, so don't leave the token in .git/config.
           persist-credentials: false
 
       - name: Decide whether iOS is affected
@@ -733,8 +735,27 @@ jobs:
             echo "No apps/ios or shared-fixture changes in this PR; skipping the iOS build."
           fi
 
+
+  test-ios:
+    needs: ios-gate
+    # Skipped iOS work still reports success here (ci-pass treats "skipped" as
+    # failure), but on a cheap Ubuntu runner instead of a macOS one.
+    runs-on: ${{ needs.ios-gate.outputs.run == 'true' && 'macos-26' || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    steps:
+      - name: No iOS changes
+        if: needs.ios-gate.outputs.run != 'true'
+        run: echo "No apps/ios or shared-fixture changes in this PR; skipping the iOS build."
+
+      - uses: actions/checkout@v4
+        if: needs.ios-gate.outputs.run == 'true'
+        with:
+          # xcodebuild executes PR-controlled build phases; it never needs
+          # authenticated git, so don't leave the token in .git/config.
+          persist-credentials: false
+
       - name: Select Xcode 26
-        if: steps.gate.outputs.run == 'true'
+        if: needs.ios-gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
@@ -744,22 +765,40 @@ jobs:
           xcodebuild -version
 
       - name: Cache Swift packages
-        if: steps.gate.outputs.run == 'true'
+        if: needs.ios-gate.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: ~/spm-packages
           key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-v1-
 
+      # The simulator cold boot took 4-8 minutes when it started after the
+      # build; booting it now overlaps the build.
+      - name: Pick and boot the simulator
+        if: needs.ios-gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          dest_id=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable and (.name | startswith("iPhone")))][0].udid')
+          if [[ -z "$dest_id" || "$dest_id" == "null" ]]; then
+            echo "::error::No available iPhone simulator on this runner image"
+            xcrun simctl list devices
+            exit 1
+          fi
+          echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$dest_id" || true
+
+      # A concrete simulator destination builds only the arch the tests run on;
+      # 'generic/platform=iOS Simulator' also compiled x86_64.
       - name: Build for testing
-        if: steps.gate.outputs.run == 'true'
+        if: needs.ios-gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           cd apps/ios
           xcodebuild \
             -project ADE.xcodeproj \
             -scheme ADE \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
             -derivedDataPath "$RUNNER_TEMP/ios-dd" \
             -clonedSourcePackagesDirPath ~/spm-packages \
             -skipMacroValidation \
@@ -768,21 +807,15 @@ jobs:
             build-for-testing
 
       - name: Run ADETests
-        if: steps.gate.outputs.run == 'true'
+        if: needs.ios-gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           cd apps/ios
-          dest_id=$(xcrun simctl list devices available --json \
-            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable and (.name | startswith("iPhone")))][0].udid')
-          if [[ -z "$dest_id" || "$dest_id" == "null" ]]; then
-            echo "::error::No available iPhone simulator on this runner image"
-            xcrun simctl list devices
-            exit 1
-          fi
+          xcrun simctl bootstatus "$IOS_SIM_ID" -b
           xcodebuild \
             -project ADE.xcodeproj \
             -scheme ADE \
-            -destination "platform=iOS Simulator,id=$dest_id" \
+            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
             -derivedDataPath "$RUNNER_TEMP/ios-dd" \
             -clonedSourcePackagesDirPath ~/spm-packages \
             -skipMacroValidation \
@@ -792,7 +825,7 @@ jobs:
             test-without-building
 
       - name: Upload test results on failure
-        if: failure() && steps.gate.outputs.run == 'true'
+        if: failure() && needs.ios-gate.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ios-test-results

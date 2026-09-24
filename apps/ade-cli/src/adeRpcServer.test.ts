@@ -2616,7 +2616,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2669,9 +2669,13 @@ describe("adeRpcServer", () => {
   it("omits activity guidance when the runtime cannot accept activity reports", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionActivityReportingEnabled = false;
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "chat-agent",
+      laneId: "lane-1",
+    });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "agent", chatSessionId: "chat-agent", callerId: "agent-1" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2769,7 +2773,7 @@ describe("adeRpcServer", () => {
 
     try {
       const response = await withEnv({ ADE_HOME: adeHome }, async () => {
-        await initialize(handler, { role: "agent" });
+        await initialize(handler, { role: "cto" });
         return await callTool(handler, "start_cli_session", {
           laneId: "lane-1",
           provider: "codex",
@@ -2806,7 +2810,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "droid",
@@ -2849,9 +2853,11 @@ describe("adeRpcServer", () => {
       orchestrationParentSessionId: "parent-session-1",
       spawnKind: "peer",
     });
+    const notifyParentOfCliChildSpawn = vi.fn(() => true);
+    (fixture.runtime.agentChatService as any).notifyParentOfCliChildSpawn = notifyParentOfCliChildSpawn;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2860,6 +2866,10 @@ describe("adeRpcServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
+    // The parent gets the same spawn chip + card a chat child gets, keyed on
+    // the terminal session the PTY create just returned.
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(1);
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledWith("session-1");
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
     expect(createCall).toEqual(expect.objectContaining({
       resumeMetadata: expect.objectContaining({
@@ -2881,10 +2891,171 @@ describe("adeRpcServer", () => {
     }));
   });
 
+  it("lets an agent start a CLI child only as itself in an authorized lane", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
+      return null;
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "chat-agent", callerId: "agent-1" });
+
+    const allowed = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "chat-agent",
+      spawnKind: "subagent",
+    });
+    expect(allowed.isError).toBeUndefined();
+
+    const foreignParent = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "other-chat",
+    });
+    expect(foreignParent.isError).toBe(true);
+    expect(JSON.stringify(foreignParent.error ?? foreignParent)).toMatch(/PTY access is limited/i);
+
+    const foreignLane = await callTool(handler, "start_cli_session", {
+      laneId: "lane-2",
+      provider: "codex",
+      orchestrationParentSessionId: "chat-agent",
+    });
+    expect(foreignLane.isError).toBe(true);
+  });
+
+  it("reopens the parent card only when a CLI send actually resumes the child", async () => {
+    const fixture = createRuntime();
+    const notifyParentOfCliChildSpawn = vi.fn(() => true);
+    (fixture.runtime.agentChatService as any).notifyParentOfCliChildSpawn = notifyParentOfCliChildSpawn;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    fixture.runtime.ptyService.sendToSession.mockResolvedValueOnce({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      pid: 123,
+      session: null,
+      resumed: false,
+      reusedExistingRuntime: true,
+    });
+    await callTool(handler, "send_to_session", { sessionId: "session-1", text: "still running" });
+    expect(notifyParentOfCliChildSpawn).not.toHaveBeenCalled();
+
+    fixture.runtime.ptyService.sendToSession.mockResolvedValueOnce({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      pid: 123,
+      session: null,
+      resumed: true,
+      reusedExistingRuntime: false,
+    });
+    await callTool(handler, "send_to_session", { sessionId: "session-1", text: "continue" });
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(1);
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledWith("session-1", { resumed: true });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "pty.sendToSession",
+      params: { args: { sessionId: "session-1", text: "again" } },
+    });
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(1);
+
+    fixture.runtime.ptyService.sendToSession.mockResolvedValueOnce({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      pid: 124,
+      session: null,
+      resumed: true,
+      reusedExistingRuntime: false,
+    });
+    await handler({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "pty.sendToSession",
+      params: { args: { sessionId: "session-1", text: "reopen" } },
+    });
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(2);
+    expect(notifyParentOfCliChildSpawn).toHaveBeenLastCalledWith("session-1", { resumed: true });
+  });
+
+  it("lane-filters CLI children for an agent and denies a transcript from another lane", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
+      if (sessionId === "cli-foreign") {
+        return { id: sessionId, laneId: "lane-2", toolType: "codex" };
+      }
+      if (sessionId === "cli-own") {
+        return { id: sessionId, laneId: "lane-1", toolType: "codex" };
+      }
+      return null;
+    });
+    const listCliChildSessions = vi.fn((args: { laneId?: string } = {}) => [
+      { sessionId: "cli-own", laneId: "lane-1" },
+      { sessionId: "cli-foreign", laneId: "lane-2" },
+    ].filter((row) => !args.laneId || row.laneId === args.laneId));
+    (fixture.runtime.agentChatService as any).listCliChildSessions = listCliChildSessions;
+    const getChatTranscript = vi.fn(async () => ({ sessionId: "cli-own", entries: [], truncated: false, totalEntries: 0 }));
+    (fixture.runtime.agentChatService as any).getChatTranscript = getChatTranscript;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "chat-agent", callerId: "agent-1" });
+
+    const listed = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listCliChildSessions",
+      args: {},
+    });
+    expect(listed.isError).toBeUndefined();
+    expect(listCliChildSessions).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-1" }));
+    expect(listed.result).toEqual([{ sessionId: "cli-own", laneId: "lane-1" }]);
+
+    const deniedList = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listCliChildSessions",
+      args: { laneId: "lane-2" },
+    });
+    expect(deniedList.isError).toBe(true);
+
+    const deniedRead = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "readTranscript",
+      args: { sessionId: "cli-foreign" },
+    });
+    expect(deniedRead.isError).toBe(true);
+    expect(getChatTranscript).not.toHaveBeenCalled();
+
+    const allowedRead = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "readTranscript",
+      args: { sessionId: "cli-own" },
+    });
+    expect(allowedRead.isError).toBeUndefined();
+    expect(getChatTranscript).toHaveBeenCalled();
+  });
+
+  it("does not notify any parent for an unparented CLI session", async () => {
+    const fixture = createRuntime();
+    const notifyParentOfCliChildSpawn = vi.fn(() => false);
+    (fixture.runtime.agentChatService as any).notifyParentOfCliChildSpawn = notifyParentOfCliChildSpawn;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "cto" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledTimes(1);
+    expect(notifyParentOfCliChildSpawn).not.toHaveBeenCalled();
+  });
+
   it("requires subagent or peer for every parented agent CLI session", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
 
     const missingType = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
@@ -2922,7 +3093,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2953,7 +3124,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ SHELL: "/bin/zsh" }, async () => {
-      await initialize(handler, { role: "agent" });
+      await initialize(handler, { role: "cto" });
       return await callTool(handler, "start_cli_session", {
         laneId: "lane-1",
         provider: "shell",
@@ -2988,7 +3159,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "agent" });
+      await initialize(handler, { role: "cto" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
@@ -3023,7 +3194,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -3063,7 +3234,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -3092,7 +3263,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -3124,7 +3295,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "cursor",
@@ -3151,7 +3322,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -3171,7 +3342,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "send_to_session", {
       sessionId: "session-existing",
       text: "continue here",
@@ -3192,7 +3363,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "list_ade_actions", { domain: "pty" });
 
     expect(response?.isError).toBeUndefined();
@@ -3204,7 +3375,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -3222,7 +3393,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -5697,7 +5868,7 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledWith({ udid: "SIM-1" });
   });
 
-  it("regression: refuses user-only verbs to a CLI process with no chat, and never lists them to it", async () => {
+  it("refuses user-only verbs to a CLI process with no chat, and never lists them to it", async () => {
     const fixture = createRuntime();
     const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
     const deviceDelete = vi.fn(async () => ({ ok: true }));
@@ -5734,7 +5905,7 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
   });
 
-  it("regression: user-only verbs go to the desktop's own client names and to no other caller", async () => {
+  it("user-only verbs go to the desktop's own client names and to no other caller", async () => {
     const fixture = createRuntime();
     const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
     fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
@@ -7763,7 +7934,7 @@ describe("adeRpcServer", () => {
       expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
     });
 
-    it("regression: never owns proof by a synthetic <client>:<pid> caller id", () => {
+    it("never owns proof by a synthetic <client>:<pid> caller id", () => {
       // The shape of a real incident. An agent whose shell carried no chat
       // session filed two screenshots; the only owner written was
       // `chat_session: ade-cli:56056`, so no lane resolved and no drawer could

@@ -118,9 +118,6 @@ function asRequest(
  * canonical names; drift in WHICH band a phase belongs to still fails here.
  */
 describe("Activity pane state-group conformance", () => {
-  it("has cases to check", () => {
-    expect(stateGroupCases.cases.length).toBeGreaterThan(0);
-  });
 
   for (const testCase of stateGroupCases.cases) {
     it(`files "${testCase.name}" with the canonical ${testCase.expected} band`, () => {

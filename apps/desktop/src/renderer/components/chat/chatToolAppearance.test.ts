@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Globe } from "@phosphor-icons/react";
 import { getToolMeta } from "./chatToolAppearance";
 
 describe("getToolMeta", () => {
@@ -146,5 +147,17 @@ describe("getToolMeta", () => {
 
     const broadcastMeta = getToolMeta("broadcast");
     expect(broadcastMeta.label).toBe("Broadcast");
+  });
+});
+
+describe("web tool aliases", () => {
+  it("gives every provider spelling of web search/fetch the globe icon instead of the warning glyph", () => {
+    for (const name of ["WebSearch", "webSearch", "websearch", "web_search"]) {
+      expect(getToolMeta(name)).toMatchObject({ label: "Search", icon: Globe, category: "web" });
+    }
+    for (const name of ["WebFetch", "webFetch", "webfetch", "web_fetch", "FetchUrl"]) {
+      expect(getToolMeta(name)).toMatchObject({ label: "Fetch", icon: Globe, category: "web" });
+    }
+    expect(getToolMeta("webSearch").getTarget?.({ searchTerm: "cursor sdk" })).toBe("cursor sdk");
   });
 });

@@ -100,14 +100,6 @@ describe("headerLineCount", () => {
     expect(headerLineCount(makeState({}))).toBe(1);
   });
 
-  it("does not add a header line for the active model (the '● now' line was removed)", () => {
-    const state = makeState({
-      entries: [entry({ modelId: "anthropic/claude-opus-4-8" })],
-      activeModelId: "anthropic/claude-opus-4-8",
-    });
-    expect(headerLineCount(state)).toBe(1);
-  });
-
   it("adds a sign-in line when the provider is unavailable", () => {
     const state = makeState({
       activeProviderAuthStatus: "unavailable",

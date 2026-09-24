@@ -1081,6 +1081,7 @@ export function aggregateChatBlocks(args: {
       workItemStartedAt.clear();
       segmentWorkItemStartedAt.clear();
       passthrough(id, "user-bubble");
+      passthrough(`${id}:delivery`, "notice");
       toolActivitySegmentStart = blocks.length;
       segmentHasCheckpoint = false;
       turnStartedAt.set(turnKey, safeMs(envelope.timestamp));

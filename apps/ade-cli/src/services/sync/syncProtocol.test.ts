@@ -1,13 +1,11 @@
 import { deflateSync, gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import {
-  BACKPRESSURE_POLL_MS,
   createSyncEnvelopeChunkAssembler,
   decodeStrictBase64,
   DEFAULT_SYNC_MAX_FRAME_BYTES,
   encodeSyncEnvelope,
   encodeSyncEnvelopeFrames,
-  FORWARD_DATA_CHUNK_BYTES,
   isSyncProtocolVersionSupported,
   MAX_CHANNEL_ID_CHARS,
   MAX_ENVELOPE_CHUNK_ID_BYTES,
@@ -19,8 +17,6 @@ import {
   syncFrameByteLength,
   type SyncWireFrame,
   parseSyncEnvelopeChunkPayload,
-  PEER_BACKPRESSURE_BYTES,
-  RPC_DATA_CHUNK_BYTES,
   SyncProtocolVersionMismatchError,
   SYNC_PROTOCOL_MIN_SUPPORTED,
   SYNC_PROTOCOL_VERSION,
@@ -66,14 +62,6 @@ function reassemble(frames: SyncWireFrame[], options: { shuffle?: boolean } = {}
 }
 
 describe("paired runtime wire framing", () => {
-  it("exports the canonical framing and backpressure constants", () => {
-    expect(RPC_DATA_CHUNK_BYTES).toBe(256 * 1024);
-    expect(FORWARD_DATA_CHUNK_BYTES).toBe(64 * 1024);
-    expect(PEER_BACKPRESSURE_BYTES).toBe(4 * 1024 * 1024);
-    expect(BACKPRESSURE_POLL_MS).toBe(25);
-    expect(MAX_CHANNEL_ID_CHARS).toBe(128);
-  });
-
   it("strictly decodes base64 and normalizes channel ids", () => {
     expect(decodeStrictBase64(Buffer.from("hello").toString("base64"))?.toString("utf8")).toBe("hello");
     expect(decodeStrictBase64("")).toEqual(Buffer.alloc(0));

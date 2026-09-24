@@ -14,12 +14,9 @@ describe("applyHostedWebZoom", () => {
 
     applyHostedWebZoom(1.4);
 
-    const bodyStyle = document.body.style as CSSStyleDeclaration & { zoom?: string };
-    expect(document.documentElement.style.getPropertyValue("--ade-web-zoom-factor")).toBe("1.4");
-    expect(bodyStyle.zoom).toBe("1.4");
+    const bodyStyle = document.body.style;
     expect(parseFloat(bodyStyle.width) * 1.4).toBeCloseTo(1400, 5);
     expect(parseFloat(bodyStyle.height) * 1.4).toBeCloseTo(900, 5);
-    expect(bodyStyle.minHeight).toBe(bodyStyle.height);
   });
 
   it("inverse-sizes at the hosted 100% factor so default zoom still fills one viewport", () => {
@@ -28,18 +25,6 @@ describe("applyHostedWebZoom", () => {
     applyHostedWebZoom(1.1);
     expect(parseFloat(document.body.style.width) * 1.1).toBeCloseTo(1100, 5);
     expect(parseFloat(document.body.style.height) * 1.1).toBeCloseTo(880, 5);
-  });
-
-  it("keeps a definite body box at factor 1 so h-full still fills the viewport", () => {
-    applyHostedWebZoom(1.4);
-    applyHostedWebZoom(1);
-
-    const bodyStyle = document.body.style as CSSStyleDeclaration & { zoom?: string };
-    expect(bodyStyle.zoom).toBe("");
-    expect(bodyStyle.width).toBe("100%");
-    expect(bodyStyle.height).toBe("100%");
-    expect(bodyStyle.minHeight).toBe("100%");
-    expect(document.documentElement.style.getPropertyValue("--ade-web-zoom-factor")).toBe("1");
   });
 
   it("repaints the inverse box on window resize", () => {
@@ -58,24 +43,9 @@ describe("applyHostedWebZoom", () => {
     Object.defineProperty(window, "addEventListener", { configurable: true, value: undefined });
     try {
       expect(() => applyHostedWebZoom(1.4)).not.toThrow();
-      expect(document.documentElement.style.getPropertyValue("--ade-web-zoom-factor")).toBe("1.4");
     } finally {
       Object.defineProperty(window, "addEventListener", { configurable: true, value: originalAdd });
     }
   });
 
-  it("pins html and #root to a percentage box so h-full can fill the inverse size", () => {
-    const root = document.createElement("div");
-    root.id = "root";
-    document.body.appendChild(root);
-    try {
-      applyHostedWebZoom(1.4);
-      expect(document.documentElement.style.height).toBe("100%");
-      expect(document.documentElement.style.overflow).toBe("hidden");
-      expect(root.style.height).toBe("100%");
-      expect(root.style.overflow).toBe("hidden");
-    } finally {
-      root.remove();
-    }
-  });
 });

@@ -9,22 +9,13 @@ describe("frontmatterFlag", () => {
   // are booleans. `user-invocable: no` stayed the STRING "no" — truthy — so a
   // skill written the YAML 1.1 way every other harness accepts stayed invocable
   // and was advertised to the model.
-  it("reads every conventional false spelling as false", () => {
-    for (const value of [false, 0, "false", "False", "FALSE", "no", "No", "off", "OFF", "0", " no "]) {
-      expect(frontmatterFlag(value)).toBe(false);
-    }
-  });
-
-  it("reads every conventional true spelling as true", () => {
-    for (const value of [true, 1, "true", "True", "yes", "YES", "on", "1", " yes "]) {
-      expect(frontmatterFlag(value)).toBe(true);
-    }
-  });
-
-  it("leaves anything unrecognized undefined so the caller picks its own default", () => {
-    for (const value of [undefined, null, "", "maybe", "2", 2, -1, {}, []]) {
-      expect(frontmatterFlag(value)).toBeUndefined();
-    }
+  // Anything unrecognized stays undefined so the caller picks its own default.
+  it.each([
+    [false, [false, 0, "false", "False", "FALSE", "no", "No", "off", "OFF", "0", " no "]],
+    [true, [true, 1, "true", "True", "yes", "YES", "on", "1", " yes "]],
+    [undefined, [undefined, null, "", "maybe", "2", 2, -1, {}, []]],
+  ])("reads every conventional %s spelling", (expected, values: unknown[]) => {
+    for (const value of values) expect(frontmatterFlag(value)).toBe(expected);
   });
 });
 
@@ -49,37 +40,20 @@ describe("discoverSkillCommands boolean frontmatter", () => {
     fs.rmSync(skillsDir, { recursive: true, force: true });
   });
 
-  it("hides a skill for every YAML 1.1 false spelling of user-invocable", () => {
-    for (const [label, value] of [["no", "no"], ["off", "off"], ["zero", "0"], ["plain", "false"], ["quoted", "\"no\""]]) {
-      writeSkill(`hidden-${label}`, [`user-invocable: ${value}`]);
-    }
+  it("hides a skill whose user-invocable reads false, including the YAML 1.1 spelling", () => {
+    writeSkill("hidden-no", ["user-invocable: no"]);
+    writeSkill("hidden-quoted", ["user-invocable: \"no\""]);
     writeSkill("shown", ["user-invocable: yes"]);
 
-    const names = discoverSkillCommands(skillsDir).map((entry) => entry.name);
-
-    expect(names).toEqual(["/shown"]);
+    expect(discoverSkillCommands(skillsDir).map((entry) => entry.name)).toEqual(["/shown"]);
   });
 
-  it("keeps a skill listed but model-hidden for every true spelling of disable-model-invocation", () => {
-    for (const [label, value] of [["yes", "yes"], ["on", "on"], ["one", "1"], ["plain", "true"]]) {
-      writeSkill(`tool-only-${label}`, [`disable-model-invocation: ${value}`]);
-    }
+  it("keeps a skill listed but model-hidden only when disable-model-invocation reads true", () => {
+    writeSkill("tool-only", ["disable-model-invocation: yes"]);
+    writeSkill("open", ["disable-model-invocation: no"]);
 
-    const commands = discoverSkillCommands(skillsDir);
-
-    expect(commands).toHaveLength(4);
-    expect(commands.every((entry) => entry.modelInvocable === false)).toBe(true);
-  });
-
-  it("leaves a skill model-invocable when disable-model-invocation reads false", () => {
-    for (const [label, value] of [["no", "no"], ["off", "off"], ["zero", "0"], ["plain", "false"]]) {
-      writeSkill(`open-${label}`, [`disable-model-invocation: ${value}`]);
-    }
-
-    const commands = discoverSkillCommands(skillsDir);
-
-    expect(commands).toHaveLength(4);
-    expect(commands.every((entry) => entry.modelInvocable === true)).toBe(true);
+    expect(discoverSkillCommands(skillsDir).map((entry) => [entry.name, entry.modelInvocable]))
+      .toEqual([["/open", true], ["/tool-only", false]]);
   });
 
   it("still lists a hidden skill when the caller opts out of the flag", () => {

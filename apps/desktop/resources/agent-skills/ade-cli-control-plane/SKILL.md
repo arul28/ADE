@@ -123,9 +123,15 @@ child receives `ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance while
 that parent is reachable.
 
 Tracked provider CLI sessions also require `subagent` or `peer` when parented
-and receive the same lineage environment. Their process boundary is still
-checked with `ade chat wait`; use `--mode chat` when you need automatic
-turn-completion wakeups and summaries.
+and receive the same lineage environment. The parent thread shows a CLI child
+as a subagent card, but the card closes (and a `subagent` wakes the parent with
+the CLI's last message) only when the CLI process exits. An interactive CLI
+that finishes its task and stays open reports nothing until it is closed.
+Poll CLI children with `ade chat status <id>` (running / blocked / idle), find
+them with `ade chat list`, and read their last message plus terminal tail with
+`ade chat read <id>` (`ade terminal read <id>` for the full output). **Default
+to `--mode chat` for a subagent that must report back**: a chat child reports
+after every turn it finishes.
 
 When the new work must carry the current lane's unmerged commits, follow the
 child-lane rule in the `ade-lanes-git` skill and use

@@ -65,14 +65,14 @@ describe("providerPointersFromChatRecord", () => {
   // its own, OpenCode's persisted `"unified"` provider keyed as `unified:<id>`
   // there and `opencode:<id>` here, so live OpenCode chats never matched their
   // external session and kept showing up as importable.
-  it("regression: normalizes a unified provider to opencode", () => {
+  it("normalizes a unified provider to opencode", () => {
     expect(providerPointersFromChatRecord({
       provider: "unified",
       providerSessionId: "oc-1",
     })).toEqual([{ provider: "opencode", externalId: "oc-1" }]);
   });
 
-  it("regression: drops pointers whose provider is not a known one", () => {
+  it("normalizes unknown chat providers and drops unknown imported providers", () => {
     expect(providerPointersFromChatRecord({
       provider: "totally-unknown",
       providerSessionId: "x-1",

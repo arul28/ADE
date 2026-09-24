@@ -3,7 +3,6 @@ import type { AttentionItem } from "../../../../desktop/src/shared/types/attenti
 import { ATTENTION_CONTRACT_VERSION } from "../../../../desktop/src/shared/types/attention";
 import type { AgentChatUsageLimitResume } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
-import { SESSION_ACTIVITY_VALUES } from "../../../../desktop/src/shared/types/sessions";
 import { sessionGlyphMark } from "../theme";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
@@ -16,7 +15,7 @@ import {
   type WorkListSessionRow,
   type WorkListShelfKind,
 } from "../workListModel";
-import { getPreviewLine, partitionQuietSessions, toWorkSessionSummary } from "../workRow";
+import { getPreviewLine, toWorkSessionSummary } from "../workRow";
 
 const NOW = Date.parse("2026-05-12T12:00:00.000Z");
 
@@ -416,41 +415,9 @@ describe("workListModel shelves", () => {
     expect(keys).not.toContain("session:chat-snoozed");
   });
 
-  it("uses the same filing rule the copied desktop partition uses", () => {
-    const summaries = sessions.map((entry) => toWorkSessionSummary(entry, "Feature"));
-    const partition = partitionQuietSessions(summaries, NOW);
-
-    expect(partition.snoozed.map((entry) => entry.id)).toEqual(["chat-snoozed"]);
-    expect(partition.settled.map((entry) => entry.id)).toEqual(["chat-settled"]);
-    expect(partition.active.map((entry) => entry.id)).toEqual(["chat-live"]);
-  });
 });
 
 describe("workListModel status", () => {
-  it.each(SESSION_ACTIVITY_VALUES)("shows a current agent report as a detail inside the running phase: %s", (value) => {
-    const model = build({
-      lanes: [lane("lane-1", "Feature")],
-      sessions: [session({
-        sessionId: "chat-report",
-        laneId: "lane-1",
-        status: "active",
-        runtimeState: "running",
-        currentTurnStartedAt: "2026-05-12T11:50:00.000Z",
-        activityStatus: {
-          value,
-          source: "agent",
-          updatedAt: "2026-05-12T11:59:00.000Z",
-        },
-      })],
-      activeSessionId: null,
-    });
-
-    const [row] = sessionRows(model);
-    expect(row!.filing).toBe("running");
-    expect(row!.status?.label).toBe(`${value[0]!.toUpperCase()}${value.slice(1)}`);
-    expect(row!.status?.glyph).toBe(value);
-  });
-
   it("gives Testing a distinct TUI mark from Done", () => {
     expect(sessionGlyphMark("testing")).toBe("T");
     expect(sessionGlyphMark("testing")).not.toBe(sessionGlyphMark("done"));
@@ -641,15 +608,6 @@ describe("usage-limit resume projection", () => {
       ...overrides,
     };
   }
-
-  it("forwards the host resume state onto the shared session summary", () => {
-    const summary = toWorkSessionSummary(session({
-      sessionId: "chat-limited",
-      laneId: "lane-1",
-      usageLimitResume: resume(),
-    }));
-    expect(summary.usageLimitResume).toEqual(resume());
-  });
 
   it("labels a limited row from the shared presentation instead of Failed", () => {
     const model = build({

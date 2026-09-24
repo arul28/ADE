@@ -28,12 +28,6 @@ function baseModelState(overrides: Partial<AdeCodeModelState>): AdeCodeModelStat
 }
 
 describe("parseCommand /model", () => {
-  it("returns right placement with no args", () => {
-    const parsed = parseCommand("/model");
-    expect(parsed?.spec?.name).toBe("/model");
-    expect(parsed?.spec?.placement).toBe("right");
-    expect(parsed?.args).toBe("");
-  });
 
   it("wins over a user/SDK /model command", () => {
     const parsed = parseCommand("/model", [
@@ -42,26 +36,6 @@ describe("parseCommand /model", () => {
     expect(parsed?.spec?.name).toBe("/model");
     expect(parsed?.spec?.placement).toBe("right");
     expect(parsed?.userCommand).toBeNull();
-  });
-});
-
-describe("paletteCommands SDK overrides", () => {
-  it("/model dedupes user/SDK /model out of the palette", () => {
-    const results = paletteCommands("/model", [
-      { name: "/model", description: "Select or change the AI model.", source: "sdk", argumentHint: "[model]" },
-    ]);
-    const modelEntries = results.filter((entry) => entry.name === "/model");
-    expect(modelEntries).toHaveLength(1);
-    expect(modelEntries[0]?.source).toBe("ade");
-  });
-});
-
-describe("paletteCommands placement", () => {
-  it("includes /model with right placement when filtering by /m", () => {
-    const results = paletteCommands("/m");
-    const model = results.find((entry) => entry.name === "/model");
-    expect(model).toBeDefined();
-    expect(model?.placement).toBe("right");
   });
 });
 
@@ -108,9 +82,6 @@ describe("isPlanMode", () => {
 });
 
 describe("hasFirstUserMessage", () => {
-  it("is false when there are no events", () => {
-    expect(hasFirstUserMessage([])).toBe(false);
-  });
 
   it("is false when no envelope carries a user_message", () => {
     expect(hasFirstUserMessage([

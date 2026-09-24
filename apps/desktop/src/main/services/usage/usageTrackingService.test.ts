@@ -1168,7 +1168,7 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("venice/claude-sonnet-4-5-20250929").input).toBe(3.75 / 1_000_000);
   });
 
-  it("prices a model the vendor no longer lists from a reseller row that names the vendor", () => {
+  it("uses reseller pricing when the vendor catalog omits a model", () => {
     // Anthropic's own models.dev entry dropped Opus 4; nano-gpt still lists
     // `anthropic/claude-opus-4`, with no cache-write rate.
     const price = resolveTokenPrice("claude-opus-4");
@@ -3617,24 +3617,23 @@ describe("createUsageTrackingService", () => {
       dependencies: createFastDependencies(),
     });
 
-    // Should not throw
-    const snapshot = await service.poll();
-    expect(snapshot).toBeDefined();
+    await expect(service.poll()).resolves.toMatchObject({ errors: [] });
+    expect(onUpdate).toHaveBeenCalled();
+    // The failed listener does not wedge later polls.
+    await expect(service.poll({ reason: "user" })).resolves.toMatchObject({ errors: [] });
 
     service.dispose();
   });
 
-  it("prevents concurrent polls", async () => {
+  it("shares one in-flight poll between concurrent automatic polls", async () => {
     const logger = createLogger();
-    const service = createUsageTrackingService({
-      logger,
-      dependencies: createFastDependencies(),
-    });
+    const dependencies = createFastDependencies();
+    const service = createUsageTrackingService({ logger, dependencies });
 
-    // Fire two polls concurrently
     const [s1, s2] = await Promise.all([service.poll(), service.poll()]);
-    expect(s1).toBeDefined();
-    expect(s2).toBeDefined();
+    expect(s2).toBe(s1);
+    expect(dependencies.pollClaudeUsage).toHaveBeenCalledTimes(1);
+    expect(dependencies.pollCodexUsage).toHaveBeenCalledTimes(1);
 
     service.dispose();
   });

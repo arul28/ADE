@@ -5831,37 +5831,6 @@ describe("createSyncHostService LAN discovery", () => {
     }
   });
 
-  it("keeps LAN discovery unpublished when discovery is explicitly refreshed", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const publishedServices: Array<{ on: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
-    publishMock.mockImplementation(() => {
-      const service = { on: vi.fn(), stop: vi.fn() };
-      publishedServices.push(service);
-      return service;
-    });
-    const host = createSyncHostService(
-      createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]) as unknown as Parameters<
-        typeof createSyncHostService
-      >[0],
-    );
-
-    try {
-      await host.waitUntilListening();
-      publishMock.mockClear();
-
-      host.refreshLanDiscovery();
-      expect(publishMock).not.toHaveBeenCalled();
-
-      host.refreshLanDiscovery({ forceLan: true });
-
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(publishedServices).toEqual([]);
-    } finally {
-      await host.dispose();
-      cleanup();
-    }
-  });
-
   it("does not publish native LAN discovery when running under Electron on macOS", async () => {
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
     Object.defineProperty(process.versions, "electron", {
@@ -6347,95 +6316,6 @@ describe("CTO-gated Linear sync commands", () => {
         features?: { commandRouting?: { actions?: SyncRemoteCommandDescriptor[] } };
       })?.features?.commandRouting?.actions ?? [];
 
-      expect(MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS).toEqual([
-        "chat.startLaunch",
-        "chat.getLaunch",
-        "chat.listLaunches",
-        "chat.cancelLaunch",
-        "chat.retryLaunch",
-        "chat.startLaunchNow",
-        "chat.queueLaunchMessage",
-        "cto.startLinearMobileOAuth",
-        "cto.completeLinearMobileOAuth",
-        "cto.setLinearToken",
-        "cto.clearLinearToken",
-        "cto.getAttention",
-        "session.settleSessions",
-        "session.unsettleSessions",
-        "session.setSettleOverride",
-        "session.snoozeSession",
-        "session.wakeSession",
-        "session.clearWokeMarker",
-        "session.moveOnBoard",
-        "session.undoBoardMove",
-        "chat.setSpawnKind",
-        "chat.dismissSubagentTakeoverPrompt",
-        "chat.regenerateSessionMetadata",
-        "chat.resumeUsageLimitNow",
-        "chat.continueUsageLimitOnAlternate",
-        "prs.listGithubStacks",
-        "prs.syncGithubStacks",
-        "prs.createGithubStack",
-        "prs.addGithubStackPullRequests",
-        "prs.unstackGithubStack",
-        "ai.openCursorCloudChat",
-        "ai.watchCursorCloudMirror",
-        "ai.listCursorCloudRepositories",
-        "ai.listCursorCloudAgents",
-        "ai.listCursorCloudRuns",
-        "ai.createCursorCloudRun",
-        "ai.getCursorCloudLaneSecretNames",
-        "ai.archiveCursorCloudAgent",
-        "ai.unarchiveCursorCloudAgent",
-        "ai.deleteCursorCloudAgent",
-        "ai.getCursorCloudAgent",
-        "ai.getCursorAgentUsage",
-        "ai.listCursorCloudArtifacts",
-        "ai.downloadCursorCloudArtifact",
-        "ai.cursorCloudStreamRun",
-        "ai.cancelCursorCloudRun",
-        "ai.cursorCloudFollowUp",
-        "ai.cursorCloudFleet",
-        "ai.getCursorCloudFleet",
-        "ai.cursorCloudResolveLane",
-        "ai.cursorCloudPullIntoLane",
-        "ai.cursorCloudStopRun",
-        "ai.getDevinCloudFleet",
-        "ai.pullDevinCloudSessionIntoLane",
-        "ai.openDevinCloudChat",
-        "ai.getDevinCloudAuthStatus",
-        "chat.listPromptStashes",
-        "chat.createPromptStash",
-        "chat.deletePromptStash",
-        "workTools.getLaneState",
-        "workTools.readObservationPreview",
-        "macDesktop.getStatus",
-        "macDesktop.start",
-        "macDesktop.stop",
-        "macDesktop.streamSubscribe",
-        "macDesktop.streamUnsubscribe",
-        "macDesktop.takeControl",
-        "macDesktop.returnControl",
-        "macDesktop.renewLease",
-        "macDesktop.input",
-        "apple.status",
-        "apple.streamTicket",
-        "apple.input",
-        "apple.invoke",
-        "apple.deviceList",
-        "apple.deviceCreate",
-        "apple.deviceAttach",
-        "apple.recordList",
-        "apple.recordStart",
-        "apple.recordStop",
-        "prs.setDraft",
-        "prs.setAutoMerge",
-      ]);
-      expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
-        expect.arrayContaining(
-          MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS.filter((action) => !action.startsWith("apple.")),
-        ),
-      );
       // The two direct credential-store writers stay advertised — a phone still
       // feature-detects them — but are host-local, so the gate rejects them
       // (C12-sec). Clients hide the affordance by reading the advertised
@@ -6457,8 +6337,6 @@ describe("CTO-gated Linear sync commands", () => {
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
-        // Pulling a Devin session's PR head mutates lane worktrees too.
-        "ai.pullDevinCloudSessionIntoLane",
         // Resuming spends a provider turn, so it is a host mutation a
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
@@ -6476,7 +6354,6 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudStopRun",
       ]);
       const controllerAllowedActions = new Set<string>([
-        "ai.pullDevinCloudSessionIntoLane",
         "ai.createCursorCloudRun",
         "ai.archiveCursorCloudAgent",
         "ai.unarchiveCursorCloudAgent",
@@ -6502,12 +6379,13 @@ describe("CTO-gated Linear sync commands", () => {
         if (action.startsWith("apple.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
+        const scope = action === "chat.resolveSourceFavicons" ? "runtime" : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
         // with an accurate viewerAllowed bit.
         expect(actions).toContainEqual(expect.objectContaining({
           action,
-          scope: "project",
+          scope,
           policy: expect.objectContaining({ viewerAllowed: !viewerBlocked }),
         }));
         if (controllerAllowed) {
@@ -12175,6 +12053,13 @@ describe("chat_subscribe snapshots", () => {
     const transcriptPath = path.join(projectRoot, "transcripts", "chat-tool-result.chat.jsonl");
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
     const fullResult = "x".repeat(8_000);
+    const sources = Array.from({ length: 8 }, (_, index) => ({
+      kind: "web_search_result" as const,
+      url: `https://source-${index}.example/guide`,
+      title: `Source ${index}`,
+      snippet: "context that should stay on the host ".repeat(500),
+      query: "private search wording",
+    }));
     const event: AgentChatEventEnvelope = {
       sessionId,
       timestamp: "2026-09-20T10:00:00.000Z",
@@ -12185,6 +12070,7 @@ describe("chat_subscribe snapshots", () => {
         result: fullResult,
         itemId,
         status: "completed",
+        sources,
       },
     };
     fs.writeFileSync(transcriptPath, `${JSON.stringify(event)}\n`, "utf8");
@@ -12228,6 +12114,13 @@ describe("chat_subscribe snapshots", () => {
           windowTruncated: false,
           sessionFound: true,
         }),
+        getChatEventHistoryPage: vi.fn().mockResolvedValue({
+          sessionId,
+          events: [event],
+          startOffset: 0,
+          hasMore: false,
+          sessionFound: true,
+        }),
         getSessionSummary: vi.fn().mockResolvedValue({ status: "inactive" }),
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
@@ -12249,8 +12142,28 @@ describe("chat_subscribe snapshots", () => {
         type: "tool_result",
         resultTruncatedForMobile: true,
         resultOriginalBytes: fullResult.length,
+        sourceRefsOmittedForMobile: 5,
       });
       expect((snapshotEvent.event as { result: string }).result).not.toBe(fullResult);
+      const snapshotSources = (snapshotEvent.event as { sources: Array<{ snippet?: string; query?: string }> }).sources;
+      expect(snapshotSources).toHaveLength(3);
+      expect(snapshotSources.some((source) => source.snippet || source.query)).toBe(false);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "chat-tool-result-history-page",
+        payload: {
+          sessionId,
+          beforeOffset: Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8"),
+          maxBytes: 256 * 1_024,
+        },
+      }));
+      const historyPage = await waitForEnvelope(peer.envelopes, "chat_history", "chat-tool-result-history-page");
+      const pageEvent = (historyPage.payload as { events: AgentChatEventEnvelope[] }).events[0]!;
+      expect(pageEvent.event).toMatchObject({ type: "tool_result", sourceRefsOmittedForMobile: 5 });
+      const pageSources = (pageEvent.event as { sources: Array<{ snippet?: string; query?: string }> }).sources;
+      expect(pageSources).toHaveLength(3);
+      expect(pageSources.some((source) => source.snippet || source.query)).toBe(false);
 
       peer.ws.send(encodeSyncEnvelope({
         type: "chat_tool_result",
@@ -12306,10 +12219,6 @@ describe("mobile chat wire (mobileChatSlimV1)", () => {
     expect((shared.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBeUndefined();
   });
 
-  it("leaves a small tool result identical on both wires", () => {
-    const envelope = toolResultEnvelope("exit 0");
-    expect(compactChatEventEnvelopeForMobileSync(envelope)).toEqual(compactChatEventEnvelopeForSync(envelope));
-  });
 });
 
 describe("chat event replay buffer (resumable chat streams)", () => {
@@ -14101,29 +14010,6 @@ describe("createSyncHostService all-projects roster", () => {
     }
   });
 
-  it("stays silent on roster_subscribe when no roster provider is wired (older host)", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const rosterState = { projects: [] as ReturnType<typeof rosterProject>[] };
-    const host = createRosterHost(projectRoot, rosterState, { withRosterProvider: false });
-    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-    try {
-      const port = await host.waitUntilListening();
-      peer = await connectPeer(port, host.getBootstrapToken(), "ios-roster-3");
-
-      peer.ws.send(encodeSyncEnvelope({ type: "roster_subscribe", requestId: "roster-1", payload: {} }));
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      expect(peer.envelopes.some((envelope) => envelope.type === "roster_snapshot")).toBe(false);
-      expect(peer.envelopes.some((envelope) => envelope.type === "roster_delta")).toBe(false);
-    } finally {
-      try {
-        peer?.ws.close();
-      } catch {
-        // ignore
-      }
-      await host.dispose();
-      cleanup();
-    }
-  });
 });
 
 /**

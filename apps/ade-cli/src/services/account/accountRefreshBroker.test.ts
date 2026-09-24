@@ -134,21 +134,6 @@ describe("createCliRefreshBroker", () => {
   });
 });
 
-describe("cli refresh broker installation sites", () => {
-  it("is not installed by the plans that host the brain", async () => {
-    const source = await import("node:fs/promises").then((fs) =>
-      fs.readFile(new URL("../../cli.ts", import.meta.url), "utf8"),
-    );
-    const install = source.indexOf("installMachineBrainRefreshBroker");
-    expect(install).toBeGreaterThan(-1);
-    const guard = source.slice(Math.max(0, install - 1200), install);
-    expect(guard).toContain('plan.kind !== "serve"');
-    expect(guard).toContain('plan.kind !== "runtime"');
-    expect(guard).toContain('plan.kind !== "brain"');
-    expect(guard).toContain("!parsed.options.headless");
-  });
-});
-
 describe("account refresh broker policy", () => {
   it("unwraps and trims a token without forwarding refresh options", async () => {
     const requestToken = vi.fn(async () => ({

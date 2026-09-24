@@ -124,6 +124,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   mosaicScopeKey,
   sceneScopeKey,
   sceneLive,
+  tone,
 }: {
   markdown: string;
   /**
@@ -156,7 +157,16 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    * scrollback never re-executes generated code.
    */
   sceneLive?: boolean;
+  /**
+   * `thought`: reasoning text (Thought rows, the live thinking block). Smaller
+   * and muted, and a thematic break draws as a paragraph gap rather than a
+   * rule: reasoning fragments are joined with `---`
+   * (`mergeReasoningTextFragments`), and a full-width rule between each one
+   * read as a divider instead of one continuous thought.
+   */
+  tone?: "thought";
 }) {
+  const thought = tone === "thought";
   // This component knows both halves of "still arriving", so it answers the
   // question once instead of handing the frame two flags to combine. Fence
   // state is read over the WHOLE body — settled prose plus the growing tail —
@@ -173,6 +183,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   }, [onOpenWorkspacePath]);
 
   const components: MarkdownComponents = useMemo(() => ({
+    ...(thought
+      ? { hr: () => <div aria-hidden data-thought-fragment-gap="" className="h-[0.6lh]" /> }
+      : {}),
     h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
     h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
     h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
@@ -296,12 +309,15 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming]);
+  }), [mosaic, mosaicScopeKey, sceneScopeKey, neu, openWorkspacePath, sceneLive, sceneStreaming, thought]);
 
   return (
     <div
       className={cn(
-        "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
+        "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words",
+        thought
+          ? "ade-thought-text text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.65]"
+          : "text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
         neu
           ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
           : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",

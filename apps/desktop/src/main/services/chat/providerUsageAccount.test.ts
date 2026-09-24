@@ -32,43 +32,50 @@ function instance(overrides: Partial<ProviderInstance> = {}): ProviderInstance {
 }
 
 describe("Claude usage account kind", () => {
-  it("reads an API key from the init apiKeySource", () => {
-    for (const apiKeySource of ["ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key"]) {
-      expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource, instanceSignedIn: true }).kind).toBe("api_key");
-    }
-  });
-
-  it("reads a claude.ai login from apiKeySource none on the first-party route", () => {
-    expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource: "none", modelProvider: "firstParty" }).kind)
-      .toBe("subscription");
-  });
-
-  it("does not claim a plan for a cloud route, a keyed preset, or a redirected endpoint", () => {
-    expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource: "none", modelProvider: "bedrock" }).kind).toBe("unknown");
-    expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource: "none", keyedPreset: true }).kind).toBe("unknown");
-    expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource: "none", redirectedEndpoint: true }).kind).toBe("unknown");
-  });
-
-  it("falls back to the signed-in instance only before init reports a source", () => {
-    expect(claudeUsageAccountKind({ ...claudeBase, instanceSignedIn: true }).kind).toBe("subscription");
-    expect(claudeUsageAccountKind(claudeBase).kind).toBe("unknown");
-    expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource: "oauth", instanceSignedIn: true }).kind).toBe("unknown");
+  // A plan turn is never marked; any other turn names the first route that took
+  // it off the plan, in precedence order cloud > preset > endpoint.
+  it.each([
+    ["an API key source", { apiKeySource: "ANTHROPIC_API_KEY", instanceSignedIn: true }, "api_key", null],
+    ["an API key helper", { apiKeySource: "apiKeyHelper", instanceSignedIn: true }, "api_key", null],
+    ["a /login managed key", { apiKeySource: "/login managed key", instanceSignedIn: true }, "api_key", null],
+    ["a keyed preset on an API key", { apiKeySource: "ANTHROPIC_API_KEY", keyedPreset: true }, "api_key", "preset"],
+    ["a claude.ai login on the first-party route", { apiKeySource: "none", modelProvider: "firstParty" }, "subscription", null],
+    ["a Bedrock route", { apiKeySource: "none", modelProvider: "bedrock" }, "unknown", "cloud"],
+    ["a keyed preset", { apiKeySource: "none", keyedPreset: true }, "unknown", "preset"],
+    ["a redirected endpoint", { apiKeySource: "none", redirectedEndpoint: true }, "unknown", "endpoint"],
+    ["a Vertex route under a preset and an endpoint", {
+      apiKeySource: "none",
+      modelProvider: "vertex",
+      keyedPreset: true,
+      redirectedEndpoint: true,
+    }, "unknown", "cloud"],
+    ["a signed-in instance before init reports", { instanceSignedIn: true }, "subscription", null],
+    ["nothing reported", {}, "unknown", null],
+    ["a first-party route with no source", { modelProvider: "firstParty" }, "unknown", null],
+    ["an unrecognised source", { apiKeySource: "oauth", instanceSignedIn: true }, "unknown", null],
+  ] as const)("reads %s", (_label, overrides, kind, routedAway) => {
+    expect(claudeUsageAccountKind({ ...claudeBase, ...overrides })).toEqual({ kind, routedAway });
   });
 });
 
 describe("Codex usage account kind", () => {
-  it("follows the account/updated auth mode", () => {
-    expect(codexUsageAccountKind({ authMode: "apikey", keyedPreset: false, instanceSignedIn: true }).kind).toBe("api_key");
-    expect(codexUsageAccountKind({ authMode: "chatgpt", keyedPreset: false, instanceSignedIn: false }).kind).toBe("subscription");
-    expect(codexUsageAccountKind({ authMode: "chatgptAuthTokens", keyedPreset: false, instanceSignedIn: false }).kind).toBe("subscription");
-    expect(codexUsageAccountKind({ authMode: "amazonBedrock", keyedPreset: false, instanceSignedIn: true }).kind).toBe("unknown");
-  });
-
-  it("marks a Bedrock auth mode as a cloud route, not the plan", () => {
-    for (const authMode of ["amazonBedrock", "bedrockApiKey", "bedrockAccessKeys"]) {
-      expect(codexUsageAccountKind({ authMode, keyedPreset: false, instanceSignedIn: true }))
-        .toEqual({ kind: "unknown", routedAway: "cloud" });
-    }
+  it.each([
+    [{ authMode: "apikey", instanceSignedIn: true }, "api_key", null],
+    [{ authMode: "apikey", keyedPreset: true }, "api_key", "preset"],
+    [{ authMode: "chatgpt" }, "subscription", null],
+    // A ChatGPT login pays even under a keyed preset: never marked.
+    [{ authMode: "chatgpt", keyedPreset: true, instanceSignedIn: true }, "subscription", null],
+    [{ authMode: "chatgptAuthTokens" }, "subscription", null],
+    [{ authMode: "amazonBedrock", instanceSignedIn: true }, "unknown", "cloud"],
+    [{ authMode: "bedrockApiKey", instanceSignedIn: true }, "unknown", "cloud"],
+    [{ authMode: "bedrockAccessKeys", instanceSignedIn: true }, "unknown", "cloud"],
+    // No auth mode arrived: fall back to the instance login.
+    [{ authMode: null, instanceSignedIn: true }, "subscription", null],
+    [{ authMode: null, keyedPreset: true, instanceSignedIn: true }, "unknown", "preset"],
+    [{ authMode: null }, "unknown", null],
+  ] as const)("reads %o", (overrides, kind, routedAway) => {
+    expect(codexUsageAccountKind({ keyedPreset: false, instanceSignedIn: false, ...overrides }))
+      .toEqual({ kind, routedAway });
   });
 
   it("reads the auth mode and plan from account/read", () => {
@@ -84,12 +91,6 @@ describe("Codex usage account kind", () => {
     expect(codexAuthModeFromAccountRead({ account: null, requiresOpenaiAuth: true })).toBeNull();
     expect(codexAuthModeFromAccountRead({})).toBeNull();
     expect(codexAuthModeFromAccountRead({ account: { type: "somethingNew" } })).toBeNull();
-  });
-
-  it("falls back to the instance login when no auth mode arrived", () => {
-    expect(codexUsageAccountKind({ authMode: null, keyedPreset: false, instanceSignedIn: true }).kind).toBe("subscription");
-    expect(codexUsageAccountKind({ authMode: null, keyedPreset: true, instanceSignedIn: true }).kind).toBe("unknown");
-    expect(codexUsageAccountKind({ authMode: null, keyedPreset: false, instanceSignedIn: false }).kind).toBe("unknown");
   });
 });
 
@@ -184,30 +185,6 @@ describe("turn usage account resolvers", () => {
     expect(bedrock).not.toHaveProperty("upstream");
     // A plan turn on the first-party route is never marked.
     expect(accounts.claude({}, { apiKeySource: "none", modelProvider: "firstParty" })).not.toHaveProperty("routedAway");
-  });
-
-  it("marks only a turn the plan did not pay for", () => {
-    // A ChatGPT login pays even under a keyed preset: never marked.
-    expect(codexUsageAccountKind({ authMode: "chatgpt", keyedPreset: true, instanceSignedIn: true }))
-      .toEqual({ kind: "subscription", routedAway: null });
-    // The cloud route wins over a preset and an endpoint.
-    expect(claudeUsageAccountKind({
-      ...claudeBase,
-      apiKeySource: "none",
-      modelProvider: "vertex",
-      keyedPreset: true,
-      redirectedEndpoint: true,
-    })).toEqual({ kind: "unknown", routedAway: "cloud" });
-    expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource: "ANTHROPIC_API_KEY", keyedPreset: true }))
-      .toEqual({ kind: "api_key", routedAway: "preset" });
-    expect(codexUsageAccountKind({ authMode: "apikey", keyedPreset: true, instanceSignedIn: false }))
-      .toEqual({ kind: "api_key", routedAway: "preset" });
-    expect(claudeUsageAccountKind({ ...claudeBase, redirectedEndpoint: true }))
-      .toEqual({ kind: "unknown", routedAway: "endpoint" });
-    expect(claudeUsageAccountKind({ ...claudeBase, modelProvider: "firstParty" }))
-      .toEqual({ kind: "unknown", routedAway: null });
-    expect(claudeUsageAccountKind({ ...claudeBase, apiKeySource: "none", modelProvider: "firstParty" }))
-      .toEqual({ kind: "subscription", routedAway: null });
   });
 
   it("names the Codex account from the reported auth mode", () => {

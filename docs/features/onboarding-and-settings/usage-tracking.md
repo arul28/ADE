@@ -456,15 +456,20 @@ that is signed in on this machine. Claude and Codex stay on their existing
 connection signal. Cursor, Copilot, Grok, OpenCode, and Kimi join in that order as
 soon as a local credential exists, and a provider with no credential is absent
 — it is not an error row and it does not take a mark. Each top-bar mark is the
-provider logo inside a thin ring of that provider's colour, drawn tight
-around the mark. The pale arc is usage: it starts at 12 o'clock and grows
-clockwise. What is left stays the saturated brand colour. The pale tint is
-opaque and much lighter than the brand. The ring is the week when the
+provider logo inside a thin ring, drawn tight around the mark. The pale arc
+is usage: it starts at 12 o'clock and grows clockwise. What is left is drawn
+in a headroom colour that is the same for every provider: green from 50% left,
+yellow from 25% to under 50%, red under 25% (`USAGE_HEADROOM_THRESHOLDS` and
+`usageHeadroomColor` in `usageDesign.ts`, on the theme's `--color-success`,
+`--color-warning`, `--color-error`). The pale tint is opaque and much lighter
+than the headroom colour. The ring is the week when the
 provider reports one, otherwise the month. The control's accessible name still says `wk`
 or `mo`, the percent left, and a five-hour window when that provider reports
 one. The popover rows keep their text meters. iOS and the TUI have no top-bar
-ring; they keep the text meters. Bars use the provider colour from
-`providerColors.ts` (Cursor slate, Copilot green, Grok gray, OpenCode purple).
+ring; they keep the text meters. Quota window bars in the popover use the
+same headroom colours; charts and the extra-usage spend bar keep the provider
+colour from `providerColors.ts` (Cursor slate, Copilot green, Grok gray,
+OpenCode purple).
 
 The poller checks for a credential before any network call. The five extra
 providers run in the same parallel batch as Claude and Codex, each HTTP call
@@ -792,8 +797,8 @@ for each provider, mainly Claude and Codex. The wire contract is in
   itself is `UsageAccountRow.tsx`, rendered by `UsageLimitsBand` in the header
   popup. It replaced a per-window card stack that cost roughly 360px per
   provider and hid the email; the popover ran about 720px tall for two
-  providers. Bars are drawn in the PROVIDER's brand colour from
-  `providerColors.ts`, with `usagePressureColor` still overriding at 70/90 —
+  providers. Bars are coloured by headroom (`usageHeadroomColor`: green from
+  50% left, yellow from 25%, red below), the same rule as the top-bar rings —
   accounts get no colour of their own, because hashing an account id into a
   palette drew a Claude window in Gemini's blue. On iOS the same rows are the
   Limits tab of the Work usage module (`WorkUsageLimitsModule.swift`, split out

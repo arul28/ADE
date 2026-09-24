@@ -16,7 +16,9 @@
  * session and feed every update for that session through it in arrival order.
  */
 
-import type { AgentChatEvent, AgentChatPlanStep } from "../../../../shared/types";
+import type { AgentChatEvent, AgentChatPlanStep, ChatSourceRef } from "../../../../shared/types";
+import { boundChatSourceRefs } from "../../../../shared/chatSources";
+import { acpResourceLinkSourceRef, acpToolSourceRefs } from "../chatSourceAdapters";
 import {
   assertNever,
   type AcpSlashCommand,
@@ -63,6 +65,11 @@ type TrackedToolCall = {
   lastOutput: string;
   /** Paths already announced for an edit tool, to keep row ids stable. */
   diffIndexByPath: Map<string, number>;
+  /** Latest `rawInput` / `locations`, read when the row closes to find web sources. */
+  rawInput?: unknown;
+  locations?: unknown;
+  /** `resource_link` blocks the tool returned, as sources. */
+  resourceLinks?: ChatSourceRef[];
 };
 
 export type AcpTranslatorCallbacks = {
@@ -113,8 +120,15 @@ function textOfContentBlock(block: AcpContentBlock): string {
       return "";
     case "audio":
       return "";
-    case "resource_link":
-      return "";
+    case "resource_link": {
+      // A link, not text: render it as one, instead of dropping it. The source
+      // itself is reported separately (see `resourceLinkSources`).
+      const label = block.title?.trim() || block.name.trim() || block.uri;
+      const uri = block.uri.replace(/[<>\r\n]/g, (character) =>
+        `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+      );
+      return `[${label.replace(/[[\]]/g, "")}](<${uri}>)`;
+    }
     case "resource":
       return typeof block.resource.text === "string" ? block.resource.text : "";
     default:
@@ -232,6 +246,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
   let syntheticMessageCounter = 0;
   let activeTextMessageId: string | null = null;
   let activeThoughtMessageId: string | null = null;
+  const textByMessageId = new Map<string, string>();
   let lastSlashSignature: string | null = null;
 
   const withTurn = <T extends object>(event: T): T & { turnId?: string } =>
@@ -262,7 +277,17 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
     for (const item of content) {
       if (item.type === "content") {
         const text = textOfContentBlock(item.content);
-        if (text.length) tracked.lastOutput = text;
+        const link = acpResourceLinkSourceRef(item.content);
+        if (text.length && !link) {
+          tracked.lastOutput = tracked.lastOutput
+            ? `${tracked.lastOutput}\n${text}`
+            : text;
+        }
+        if (link) {
+          // Returned by a tool, not cited by the answer.
+          const { cited: _cited, ...ref } = link;
+          (tracked.resourceLinks ??= []).push(ref);
+        }
         continue;
       }
       if (item.type === "terminal") {
@@ -356,16 +381,29 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
       case "file_change":
         // Every file row already carries its own status from the diff pass.
         return [];
-      case "tool":
+      case "tool": {
+        const sources = tracked.status === "completed"
+          ? boundChatSourceRefs([
+            ...acpToolSourceRefs({
+              kind: tracked.kind,
+              rawInput: tracked.rawInput,
+              rawOutput,
+              locations: tracked.locations,
+            }),
+            ...(tracked.resourceLinks ?? []),
+          ])
+          : [];
         return [
           withTurn({
             type: "tool_result" as const,
             tool: tracked.toolName,
             result: rawOutput ?? tracked.lastOutput,
+            ...(sources.length ? { sources } : {}),
             itemId: toolCallId,
             status: toolStatusToAde(tracked.status),
           }),
         ];
+      }
       default:
         return assertNever(tracked.rowKind, "acp tool row kind");
     }
@@ -379,10 +417,18 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         return [];
 
       case "agent_message_chunk": {
-        const text = textOfContentBlock(update.content);
-        if (!text.length) return [];
         const messageId = messageIdFor("text", update.messageId);
-        return [withTurn({ type: "text" as const, text, messageId, itemId: messageId })];
+        let text = textOfContentBlock(update.content);
+        if (!text.length) return [];
+        if (acpResourceLinkSourceRef(update.content)) {
+          const previousText = textByMessageId.get(messageId) ?? "";
+          if (previousText && !/\s$/u.test(previousText)) text = `\n${text}`;
+        }
+        textByMessageId.set(messageId, `${textByMessageId.get(messageId) ?? ""}${text}`);
+        const events: AgentChatEvent[] = [withTurn({ type: "text" as const, text, messageId, itemId: messageId })];
+        const link = acpResourceLinkSourceRef(update.content);
+        if (link) events.push(withTurn({ type: "sources" as const, sources: [link], itemId: messageId }));
+        return events;
       }
 
       case "agent_thought_chunk": {
@@ -404,6 +450,8 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
           cwd: "",
           lastOutput: "",
           diffIndexByPath: new Map(),
+          rawInput: update.rawInput,
+          locations: update.locations,
         };
         toolCalls.set(update.toolCallId, tracked);
         const events = openRow(tracked, update.toolCallId, update.rawInput);
@@ -430,6 +478,8 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
             cwd: "",
             lastOutput: "",
             diffIndexByPath: new Map(),
+            rawInput: update.rawInput ?? undefined,
+            locations: update.locations ?? undefined,
           };
           toolCalls.set(update.toolCallId, adopted);
           const adoptedEvents = openRow(adopted, update.toolCallId, update.rawInput);
@@ -444,6 +494,8 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
 
         if (update.title?.length) tracked.title = update.title;
         if (update.name?.length) tracked.toolName = update.name;
+        if (update.rawInput != null) tracked.rawInput = update.rawInput;
+        if (update.locations != null) tracked.locations = update.locations;
         const previousStatus = tracked.status;
         if (update.status) tracked.status = update.status;
 
@@ -462,6 +514,9 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         const steps: AgentChatPlanStep[] = update.entries.map((entry) => ({
           text: entry.content,
           status: planStatusToAde(entry.status),
+          ...(entry.priority === "high" || entry.priority === "medium" || entry.priority === "low"
+            ? { priority: entry.priority }
+            : {}),
         }));
         return [withTurn({ type: "plan" as const, steps })];
       }
@@ -540,11 +595,13 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
       turnId = nextTurnId;
       activeTextMessageId = null;
       activeThoughtMessageId = null;
+      textByMessageId.clear();
     },
     endTurn: () => {
       turnId = null;
       activeTextMessageId = null;
       activeThoughtMessageId = null;
+      textByMessageId.clear();
     },
     translate,
     rowKindFor: (toolCallId: string) => toolCalls.get(toolCallId)?.rowKind ?? null,
@@ -552,6 +609,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
       toolCalls.clear();
       activeTextMessageId = null;
       activeThoughtMessageId = null;
+      textByMessageId.clear();
     },
   };
 }

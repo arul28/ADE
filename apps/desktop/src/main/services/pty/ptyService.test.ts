@@ -8014,6 +8014,15 @@ describe("ptyService", () => {
       );
     });
 
+    it("treats Windows STATUS_CONTROL_C_EXIT as a disposed session", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+      mockPty._emitter.emit("exit", { exitCode: -1073741510 });
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId, exitCode: -1073741510, status: "disposed" }),
+      );
+    });
+
     it("marks session as completed when exit code is null", async () => {
       const { service, mockPty, sessionService } = createHarness();
       const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });

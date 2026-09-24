@@ -46,19 +46,17 @@ describe("ContextUsageDial", () => {
     expect(getByLabelText("Context usage unavailable")).toBeTruthy();
   });
 
-  it("uses the sky color below 70%", () => {
-    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.5 })} />);
-    expect(container.querySelector('circle[stroke="#38bdf8"]')).toBeTruthy();
-  });
-
-  it("uses the rose color when nearing the limit", () => {
-    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.95 })} />);
-    expect(container.querySelector('circle[stroke="#fb7185"]')).toBeTruthy();
-  });
-
-  it("uses amber when the displayed percentage rounds up to 80", () => {
-    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.795 })} />);
-    expect(container.querySelector('circle[stroke="#fbbf24"]')).toBeTruthy();
+  // Three bands: normal, nearing compaction (from the DISPLAYED 80%), and nearing the limit.
+  it("changes its ring colour at the displayed 80% and at 90%", () => {
+    const strokeAt = (ratio: number) => {
+      const { container, unmount } = render(<ContextUsageDial usage={vm({ ratio })} />);
+      const stroke = container.querySelector("circle[stroke-dasharray]")?.getAttribute("stroke");
+      unmount();
+      return stroke;
+    };
+    const [normal, rounded, warning, danger] = [0.5, 0.795, 0.85, 0.95].map(strokeAt);
+    expect(new Set([normal, warning, danger]).size).toBe(3);
+    expect(rounded).toBe(warning);
   });
 
   it("falls back to a tokens-only readout when the window is unknown", () => {

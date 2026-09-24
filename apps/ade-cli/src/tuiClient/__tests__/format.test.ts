@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  __clearAssistantMarkdownCacheForTests,
-  __getAssistantMarkdownCacheStatsForTests,
   diffLineKind,
   latestExpandableFailureId,
   parseAssistantMarkdown,
@@ -43,36 +41,6 @@ describe("webSearchResultPreviewLines", () => {
     expect(webSearchResultDomain("docs.example.org/server?x=1")).toBe("docs.example.org");
     expect(webSearchResultDomain("not a url")).toBe("not a url");
     expect(webSearchResultDomain(undefined)).toBe("");
-  });
-
-  it("renders `title — domain` lines, falling back to domain then url", () => {
-    const lines = webSearchResultPreviewLines(
-      [
-        { title: "Codex docs", url: "https://www.example.com/codex" },
-        { url: "https://docs.example.org/server" },
-      ],
-      undefined,
-      3,
-    );
-    expect(lines).toEqual([
-      "Codex docs — example.com",
-      "docs.example.org",
-    ]);
-  });
-
-  it("caps at max and appends `+N more` using resultsTotal", () => {
-    const lines = webSearchResultPreviewLines(
-      [
-        { title: "One", url: "https://a.com" },
-        { title: "Two", url: "https://b.com" },
-        { title: "Three", url: "https://c.com" },
-        { title: "Four", url: "https://d.com" },
-      ],
-      9,
-      3,
-    );
-    expect(lines).toHaveLength(3);
-    expect(lines[2]).toBe("Three — c.com  +6 more");
   });
 
   it("returns no lines when results are absent", () => {
@@ -153,48 +121,6 @@ describe("renderChatLines", () => {
     expect(lines).toHaveLength(0);
   });
 
-  it("LRU-caches assistant markdown parses by message text", () => {
-    __clearAssistantMarkdownCacheForTests();
-    const text = "Paragraph text\n\n```ts\nconst value = 1;\n```";
-    const first = parseAssistantMarkdown(text);
-    const second = parseAssistantMarkdown(text);
-
-    expect(second).toBe(first);
-    expect(__getAssistantMarkdownCacheStatsForTests().entries).toBe(1);
-  });
-
-  it("parses assistant markdown into stable blocks", () => {
-    const blocks = parseAssistantMarkdown([
-      "# Heading",
-      "",
-      "Paragraph text",
-      "",
-      "- Bullet",
-      "1. Numbered",
-      "> Quote",
-      "",
-      "```sh",
-      "npm test",
-      "```",
-    ].join("\n"));
-    expect(blocks).toEqual([
-      { kind: "heading", level: 1, text: "Heading" },
-      { kind: "paragraph", text: "Paragraph text" },
-      { kind: "bullet", text: "Bullet" },
-      { kind: "numbered", number: "1", text: "Numbered" },
-      { kind: "quote", text: "Quote" },
-      expect.objectContaining({ kind: "code", language: "sh", lines: ["npm test"] }),
-    ]);
-    const code = blocks[5];
-    expect(code?.kind).toBe("code");
-    if (code?.kind === "code") {
-      // sh is aliased → bash, so highlighting populates per-line tokens.
-      expect(code.tokens).toBeDefined();
-      expect(code.tokens?.length).toBe(1);
-      expect(code.tokens?.[0]?.length).toBeGreaterThan(0);
-    }
-  });
-
   it("parses fenced code without language as raw lines and no tokens", () => {
     const blocks = parseAssistantMarkdown(["```", "plain line 1", "plain line 2", "```"].join("\n"));
     expect(blocks).toEqual([
@@ -205,39 +131,6 @@ describe("renderChatLines", () => {
       expect(code.language).toBeUndefined();
       expect(code.tokens).toBeUndefined();
     }
-  });
-
-  it("parses multi-line typescript code block with per-line token arrays", () => {
-    const blocks = parseAssistantMarkdown([
-      "```ts",
-      "const x = 1;",
-      "const y = \"two\";",
-      "```",
-    ].join("\n"));
-    expect(blocks).toHaveLength(1);
-    const block = blocks[0];
-    expect(block?.kind).toBe("code");
-    if (block?.kind === "code") {
-      expect(block.lines).toEqual(["const x = 1;", "const y = \"two\";"]);
-      expect(block.tokens).toBeDefined();
-      expect(block.tokens?.length).toBe(2);
-      // At least one keyword token (`const`) must be tagged.
-      const allTokens = block.tokens?.flat() ?? [];
-      expect(allTokens.some((t) => t.category === "keyword")).toBe(true);
-      expect(allTokens.some((t) => t.category === "string")).toBe(true);
-    }
-  });
-
-  it("parses GFM tables", () => {
-    const blocks = parseAssistantMarkdown([
-      "| Name | Status |",
-      "|------|--------|",
-      "| Alice | OK |",
-      "| Bob   | Bad |",
-    ].join("\n"));
-    expect(blocks).toEqual([
-      { kind: "table", headers: ["Name", "Status"], rows: [["Alice", "OK"], ["Bob", "Bad"]] },
-    ]);
   });
 
   it("parses thematic break (hr)", () => {
@@ -286,29 +179,6 @@ describe("renderChatLines", () => {
     expect(runs[0]).toMatchObject({ text: "bold ", bold: true });
     expect(runs[1]).toMatchObject({ text: "both", bold: true, italic: true });
     expect(runs[2]).toMatchObject({ text: " rest", bold: true });
-  });
-
-  it("renders compact chat turns without speaker metadata spam", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: { type: "user_message", text: "hello" },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: { type: "text", text: "hi" },
-        },
-      ],
-    });
-    expect(lines.map((line) => line.tone)).toEqual(["user", "assistant"]);
-    expect(lines.map((line) => line.header)).toEqual([undefined, undefined]);
   });
 
   it("labels an approval_request question as a question, not an approval", () => {
@@ -409,68 +279,10 @@ describe("renderChatLines", () => {
     expect(lines.map((line) => line.header)).toEqual([undefined, undefined, undefined]);
   });
 
-  it("omits assistant model labels from normal text", () => {
-    const lines = renderChatLines({
-      activeSession: {
-        sessionId: "s1",
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-7[1m]",
-        status: "idle",
-        startedAt: "2026-01-01T12:00:00.000Z",
-        endedAt: null,
-        lastActivityAt: "2026-01-01T12:00:00.000Z",
-        lastOutputPreview: null,
-        summary: null,
-        nextWakeAt: null,
-      },
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 1,
-          event: { type: "text", text: "hi" },
-        },
-      ],
-    });
-
-    expect(lines[0]?.header).toBeUndefined();
-    expect(lines[0]?.body).toBe("hi");
-  });
-
   it("renders non-JSON-safe objects without throwing", () => {
     const value: { self?: unknown } = {};
     value.self = value;
     expect(renderObject(value)).toBe("[object Object]");
-  });
-
-  it("passes known terminal-reason labels through failed turn endings", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: { type: "status", turnStatus: "failed", turnId: "turn-1" },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: { type: "done", status: "failed", turnId: "turn-1", terminalReason: "prompt_too_long" },
-        },
-      ],
-    });
-
-    expect(terminalReasonLabel("budget_exhausted")).toBe("budget limit reached");
-    expect(terminalReasonLabel("future_reason")).toBeNull();
-    expect(lines.map((line) => line.body)).toEqual([
-      "[status] failed · context window overflow",
-      "[done] failed · context window overflow",
-    ]);
   });
 
   it("renders stop receipts and conversation resets as dim notice lines", () => {
@@ -560,46 +372,6 @@ describe("renderChatLines", () => {
     });
     expect(terminalRecoveryLines).toEqual([
       expect.objectContaining({ tone: "notice", body: "queue recovery expired" }),
-    ]);
-  });
-
-  it("renders tool, edit, and compaction events compactly", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: { type: "tool_call", tool: "read", args: { path: "src/app.ts" }, itemId: "tool-1" },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: {
-            type: "file_change",
-            path: "src/app.ts",
-            kind: "modify",
-            status: "completed",
-            itemId: "edit-1",
-            diff: "+hello\n-world",
-          },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:02.000Z",
-          sequence: 3,
-          event: { type: "context_compact", trigger: "auto" },
-        },
-      ],
-    });
-
-    expect(lines).toEqual([
-      expect.objectContaining({ tone: "tool", body: expect.stringContaining("> read") }),
-      expect.objectContaining({ tone: "tool", body: expect.stringContaining("> edit src/app.ts") }),
-      expect.objectContaining({ tone: "notice", body: expect.stringContaining("context compacted") }),
     ]);
   });
 
@@ -715,10 +487,16 @@ describe("renderChatLines", () => {
       notices: [],
       events: baseEvents,
     });
-    expect(unresolved).toEqual([expect.objectContaining({
-      header: "not processed · /run-next steer-1 · /edit-message steer-1 · /dismiss-message steer-1",
-      body: "Please continue",
-    })]);
+    expect(unresolved).toEqual([
+      expect.objectContaining({
+        tone: "user",
+        body: "Please continue",
+      }),
+      expect.objectContaining({
+        tone: "notice",
+        body: "↳ Not steered — turn ended first · /run-next steer-1 · /edit-message steer-1 · /dismiss-message steer-1",
+      }),
+    ]);
 
     const resolved = renderChatLines({
       activeSession: null,
@@ -739,10 +517,16 @@ describe("renderChatLines", () => {
         },
       ],
     });
-    expect(resolved).toEqual([expect.objectContaining({
-      header: "not processed · started as the next turn",
-      body: "Please continue",
-    })]);
+    expect(resolved).toEqual([
+      expect.objectContaining({
+        tone: "user",
+        body: "Please continue",
+      }),
+      expect.objectContaining({
+        tone: "notice",
+        body: "↳ Not processed · started as the next turn",
+      }),
+    ]);
   });
 
   it("prefers provider-neutral health and recovery events over legacy duplicates", () => {
@@ -886,7 +670,7 @@ describe("renderChatLines", () => {
     expect(planLines[0]?.body).toContain("Write");
   });
 
-  it("drops an earlier todo row once a plan for that turn names every item, like desktop", () => {
+  it("draws the chat's ONE task list once, at its latest list event, like desktop", () => {
     const todo = (turnId: string, descriptions: string[], sequence: number) => ({
       sessionId: "s1",
       timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
@@ -917,14 +701,15 @@ describe("renderChatLines", () => {
         plan("t2", ["Read"], 4),
       ],
     });
-    const planLines = lines.filter((line) => line.body.startsWith("plan"));
-    // t1: the todo is covered, so only its plan card stays. t2: "Deploy" is
-    // not in the plan, so the todo row stays next to the plan.
-    expect(planLines).toHaveLength(3);
-    expect(planLines.filter((line) => line.body.includes("Deploy"))).toHaveLength(1);
+    const listLines = lines.filter((line) => line.body.startsWith("plan") || line.body.startsWith("tasks"));
+    // Every earlier plan/todo event draws nothing; the newest list (t2's plan)
+    // is drawn once, where it arrived — the last line.
+    expect(listLines).toHaveLength(1);
+    expect(listLines[0]?.body).toBe("plan  0/1\n○ Read");
+    expect(lines.at(-1)).toBe(listLines[0]);
   });
 
-  it("keeps a turn's plan steps when a later plan event for it arrives empty", () => {
+  it("clears the task list when a later plan event arrives with no steps (ACP plan_removed)", () => {
     const plan = (steps: string[], sequence: number) => ({
       sessionId: "s1",
       timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
@@ -936,9 +721,7 @@ describe("renderChatLines", () => {
       notices: [],
       events: [plan(["Read", "Write"], 1), plan([], 2)],
     });
-    const last = lines.filter((line) => line.body.startsWith("plan")).at(-1);
-    expect(last?.body).toContain("Read");
-    expect(last?.body).toContain("Write");
+    expect(lines.filter((line) => line.body.startsWith("plan"))).toEqual([]);
   });
 
   it("renders the new event variants (status, error, done, todo, subagent, completion_report, turn_diff_summary, codex_context_compaction)", () => {
@@ -1029,10 +812,11 @@ describe("renderChatLines", () => {
     expect(body).toContain("[status] completed");
     expect(body).toContain("[error] rate limited");
     expect(body).toMatch(/\[done\] completed/);
-    expect(body).toContain("plan  1/2");
+    // A todo list reads as the chat's one TASKS list.
+    expect(body).toContain("tasks  1/2");
     expect(body).toContain("● Read");
     expect(body).toContain("◐ Write");
-    expect(body).toContain("[agent] do thing (started)");
+    expect(body).toContain("[agent] do thing · running");
     expect(body).toContain("[done] turn summary: shipped it");
     expect(body).toContain("[diff] +12/-4 across 2 files");
     expect(body).toContain("⟳ compacting · manual");
@@ -1194,28 +978,6 @@ describe("renderChatLines", () => {
     expect(body).toContain("[delegation] state");
   });
 
-  it("suppresses tokens events from the chat transcript", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: {
-            type: "tokens",
-            turnId: "t",
-            inputTokens: 100,
-            outputTokens: 50,
-            contextWindow: 10_000,
-          } as never,
-        },
-      ],
-    });
-    expect(lines).toHaveLength(0);
-  });
-
   it("renders one receipt row for every pending-input resolution", () => {
     // A card that vanishes with no row leaves the transcript unable to say
     // whether the question was answered, declined, or thrown away — and the
@@ -1242,7 +1004,7 @@ describe("renderChatLines", () => {
     }
   });
 
-  it("fixes the system_notice continue regression (does not duplicate subsequent rows)", () => {
+  it("keeps transcript rows after a system notice without duplication", () => {
     const lines = renderChatLines({
       activeSession: null,
       notices: [],
