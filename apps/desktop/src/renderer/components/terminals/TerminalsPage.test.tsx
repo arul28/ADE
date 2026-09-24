@@ -2680,17 +2680,17 @@ describe("TerminalsPage chat session activation", () => {
 
     await waitFor(() => expect(getStreamStatus).toHaveBeenCalledWith(
       { laneId: "lane-studio" },
-      studioBinding,
+      STUDIO_BINDING,
     ));
     // The capability probe behind the tool's availability asked the same
     // machine — a remote Studio does not hide Mac Desktop, and a local tab
     // does not answer for it.
-    expect(getStatus).toHaveBeenCalledWith({}, studioBinding);
+    expect(getStatus).toHaveBeenCalledWith({}, STUDIO_BINDING);
     expect(getStatus).toHaveBeenCalledWith(
       { laneId: "lane-studio", chatSessionId: "chat-studio" },
-      studioBinding,
+      STUDIO_BINDING,
     );
-    expect(onEvent).toHaveBeenCalledWith(expect.any(Function), studioBinding);
+    expect(onEvent).toHaveBeenCalledWith(expect.any(Function), STUDIO_BINDING);
   });
 
 });
