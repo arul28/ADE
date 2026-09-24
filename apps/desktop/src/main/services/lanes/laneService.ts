@@ -5124,7 +5124,7 @@ export function createLaneService({
         folder: args.folder,
         branchName: args.branchName,
         linearIssue: args.linearIssue ?? null,
-      });
+      }, runtimeOptions);
     },
 
     async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {
