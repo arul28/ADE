@@ -600,6 +600,53 @@ final class WorkToolsContractTests: XCTestCase {
       "The macOS desktop is off.")
   }
 
+  func testMacDesktopErrorCodesBecomePlainPhoneText() {
+    XCTAssertEqual(
+      macDesktopVisibleMessage("MAC_DESKTOP_NO_WINDOW: The lane has no windows."),
+      "No windows are open on this desktop yet.")
+    XCTAssertEqual(
+      macDesktopVisibleMessage("lane_stopping: Lane lane-1 is stopping."),
+      "This lane is stopping. Try again when it is ready.")
+    // A newer code stays useful without leaking its machine-readable prefix.
+    XCTAssertEqual(
+      macDesktopVisibleMessage("MAC_DESKTOP_DRIVER_UNAVAILABLE: The helper is not running."),
+      "The helper is not running.")
+    XCTAssertEqual(
+      macDesktopVisibleMessage("MAC_DESKTOP_NO_WINDOW"),
+      "No windows are open on this desktop yet.")
+    let separatelyCoded = NSError(
+      domain: "ADE",
+      code: 17,
+      userInfo: [NSLocalizedDescriptionKey: "Lane is stopping.", "ADEErrorCode": "lane_stopping"])
+    XCTAssertEqual(
+      macDesktopVisibleMessage(for: separatelyCoded),
+      "This lane is stopping. Try again when it is ready.")
+    XCTAssertEqual(
+      macDesktopOffCardMessage(
+        starting: false,
+        error: "MAC_DESKTOP_NO_WINDOW: no window",
+        canStart: true),
+      "No windows are open on this desktop yet.")
+    XCTAssertEqual(
+      macDesktopViewerOverlay(
+        phase: .failed("lane_stopping: lane is stopping"),
+        hasFrame: false,
+        hostError: nil)?.message,
+      "This lane is stopping. Try again when it is ready.")
+    XCTAssertEqual(
+      macDesktopViewerOverlay(
+        phase: .ended(reason: "error", message: "MAC_DESKTOP_NO_WINDOW: no window"),
+        hasFrame: false,
+        hostError: nil)?.message,
+      "No windows are open on this desktop yet.")
+    XCTAssertEqual(
+      macDesktopViewerOverlay(
+        phase: .ended(reason: "error", message: nil),
+        hasFrame: false,
+        hostError: "MAC_DESKTOP_NO_WINDOW: no window")?.message,
+      "No windows are open on this desktop yet.")
+  }
+
   // MARK: - Viewer zoom
 
   private static let zoomFrame = CGSize(width: 400, height: 250)
@@ -732,6 +779,9 @@ final class WorkToolsContractTests: XCTestCase {
       XCTAssertEqual(service.hostCompatibilityMissingActions, ["mobileCompatibility"])
       XCTAssertFalse(service.supportsWorkToolsState)
       XCTAssertFalse(service.supportsWorkToolsObservationPreview)
+      XCTAssertFalse(service.supportsMacDesktopStream)
+      XCTAssertFalse(service.supportsMacDesktopControl)
+      XCTAssertFalse(service.supportsMacDesktopStart)
     }
   }
 
@@ -877,7 +927,9 @@ final class WorkToolsContractTests: XCTestCase {
           "id": "obs-1",
           "capturedAt": "2026-09-16T10:01:00.000Z",
           "caption": "click · Sign in",
-          "screenshotPath": "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png"
+          "screenshotPath": "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png",
+          "truncatedReason": "stalled",
+          "stalledApps": ["Safari"]
         },
         "hostIsLocal": true,
         "recording": { "running": true, "startedAt": "2026-09-16T10:00:30.000Z" }
@@ -906,6 +958,8 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(
       macDesktop.lastObservation?.screenshotPath,
       "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png")
+    XCTAssertEqual(macDesktop.lastObservation?.truncatedReason, "stalled")
+    XCTAssertEqual(macDesktop.lastObservation?.stalledApps, ["Safari"])
     XCTAssertEqual(macDesktopLeaseLine(macDesktop.lease), "Agent driving · Fix the header")
     XCTAssertEqual(workToolsDisplayName("mac-desktop"), "macOS")
   }

@@ -410,11 +410,60 @@ private struct MacDesktopViewerStatusOverlay: View {
 
 // MARK: - Pure helpers
 
+/// Turns host errors into phone copy. Mac Desktop driver errors cross the
+/// runtime boundary as `CODE: message`, while sync commands can also carry the
+/// code separately in `ADEErrorCode`. Strip either form before displaying it.
+func macDesktopVisibleMessage(_ rawMessage: String?, code explicitCode: String? = nil) -> String? {
+  guard let message = rawMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty else {
+    return nil
+  }
+
+  let prefixedError: (code: String, message: String)? = {
+    guard let colon = message.firstIndex(of: ":") else { return nil }
+    let candidate = String(message[..<colon])
+    guard
+      !candidate.isEmpty,
+      candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }),
+      candidate.contains("_") || candidate == candidate.uppercased()
+    else { return nil }
+    let detail = String(message[message.index(after: colon)...])
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return (candidate, detail)
+  }()
+  let standaloneCode = message.contains("_")
+    && message.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" })
+    ? message
+    : nil
+  let code = explicitCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let resolvedCode = (code?.isEmpty == false ? code : nil) ?? prefixedError?.code ?? standaloneCode
+
+  switch resolvedCode?.lowercased() {
+  case "mac_desktop_no_window":
+    return "No windows are open on this desktop yet."
+  case "lane_stopping":
+    return "This lane is stopping. Try again when it is ready."
+  default:
+    if let prefixedError {
+      return prefixedError.message.isEmpty ? "The Mac Desktop request failed. Try again." : prefixedError.message
+    }
+    if standaloneCode != nil { return "The Mac Desktop request failed. Try again." }
+    return message
+  }
+}
+
+func macDesktopVisibleMessage(for error: Error) -> String {
+  let nsError = error as NSError
+  return macDesktopVisibleMessage(
+    nsError.localizedDescription,
+    code: nsError.userInfo["ADEErrorCode"] as? String
+  ) ?? "The macOS desktop could not complete the request. Try again."
+}
+
 /// The Off card's one line: the start in flight, why the last one failed, or
 /// that the display is off.
 func macDesktopOffCardMessage(starting: Bool, error: String?, canStart: Bool) -> String {
   if starting { return "Starting the macOS desktop…" }
-  if let error = error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+  if let error = macDesktopVisibleMessage(error) {
     return error
   }
   return canStart
@@ -436,7 +485,7 @@ func macDesktopViewerOverlay(
   hasFrame: Bool,
   hostError: String?
 ) -> MacDesktopViewerOverlay? {
-  let hostMessage = hostError.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+  let hostMessage = macDesktopVisibleMessage(hostError)
   switch phase {
   case .live:
     return nil
@@ -454,10 +503,13 @@ func macDesktopViewerOverlay(
     return MacDesktopViewerOverlay(message: "Starting the picture…", busy: true, offersReconnect: false)
   case .ended(let reason, let message):
     let fallback = reason == "display_destroyed" ? "This lane's desktop closed." : "The stream stopped."
-    let text = hostMessage ?? message.flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+    let text = hostMessage ?? macDesktopVisibleMessage(message) ?? fallback
     return MacDesktopViewerOverlay(message: text, busy: false, offersReconnect: true)
   case .failed(let message):
-    return MacDesktopViewerOverlay(message: message, busy: false, offersReconnect: true)
+    return MacDesktopViewerOverlay(
+      message: macDesktopVisibleMessage(message) ?? "The desktop stream stopped.",
+      busy: false,
+      offersReconnect: true)
   }
 }
 

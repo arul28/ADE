@@ -357,7 +357,7 @@ final class MacDesktopLiveSession: ObservableObject {
     if (nsError.userInfo["ADEErrorCode"] as? String) == "unsupported_action" {
       return "Live video isn't available from this machine."
     }
-    return nsError.localizedDescription
+    return macDesktopVisibleMessage(for: error)
   }
 }
 

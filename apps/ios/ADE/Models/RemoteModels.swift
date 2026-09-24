@@ -6763,6 +6763,10 @@ struct WorkToolsMacDesktopRecording: Codable, Equatable {
 struct WorkToolsMacDesktopObservation: Codable, Equatable {
   var screenshotPath: String
   var caption: String?
+  /// Optional on newer hosts; the phone can still show the frame when the
+  /// accessibility walk reports that it stopped early.
+  var truncatedReason: String?
+  var stalledApps: [String]?
 }
 
 /// A window the driver could not park, so it stayed on the human's own screen.
@@ -6810,6 +6814,22 @@ struct MacDesktopStatus: Codable, Equatable {
   var windows: [WorkToolsMacDesktopWindow]?
   var lease: WorkToolsMacDesktopLease?
   var stream: WorkToolsMacDesktopStream?
+}
+
+/// An app the lane opened that remained open when the display stopped.
+struct MacDesktopAppLeftOpen: Codable, Equatable {
+  var pid: Int
+  var appName: String
+  var message: String
+}
+
+/// The phone does not currently expose Stop, but this mirrors the sync reply
+/// so older hosts (which omit the new app lists) and newer hosts both decode.
+struct MacDesktopStopResult: Codable, Equatable {
+  var stopped: Bool
+  var releasedWindows: Int
+  var quitApps: [String]?
+  var appsLeftOpen: [MacDesktopAppLeftOpen]?
 }
 
 /// `macDesktop.streamSubscribe` reply: the picture's shape, then records flow.

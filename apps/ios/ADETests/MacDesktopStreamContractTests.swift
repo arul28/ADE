@@ -143,6 +143,22 @@ final class MacDesktopStreamContractTests: XCTestCase {
     XCTAssertEqual(macDesktopLeaseLine(status.lease), "Agent driving · Fix the header")
   }
 
+  func testStopResultDecodesOlderAndNewerHostShapes() throws {
+    let older = try JSONDecoder().decode(
+      MacDesktopStopResult.self,
+      from: Data(#"{"stopped":true,"releasedWindows":2}"#.utf8))
+    XCTAssertTrue(older.stopped)
+    XCTAssertEqual(older.releasedWindows, 2)
+    XCTAssertNil(older.quitApps)
+    XCTAssertNil(older.appsLeftOpen)
+
+    let newerData = Data(#"{"stopped":true,"releasedWindows":2,"quitApps":["Safari"],"appsLeftOpen":[{"pid":42,"appName":"TextEdit","message":"TextEdit moved to your screen."}]}"#.utf8)
+    let newer = try JSONDecoder().decode(MacDesktopStopResult.self, from: newerData)
+    XCTAssertEqual(newer.quitApps, ["Safari"])
+    XCTAssertEqual(newer.appsLeftOpen?.first?.pid, 42)
+    XCTAssertEqual(newer.appsLeftOpen?.first?.appName, "TextEdit")
+  }
+
   // MARK: - Annex-B → AVCC
 
   func testAnnexBConversionSplitsBothStartCodeLengthsAndLengthPrefixesEachNAL() {
@@ -394,6 +410,12 @@ final class MacDesktopStreamContractTests: XCTestCase {
       do {
         try await service.macDesktopInput(laneId: "lane-1", call: ["kind": "click"])
         XCTFail("An unadvertised click must not be attempted.")
+      } catch {
+        XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
+      }
+      do {
+        try await service.macDesktopStart(laneId: "lane-1")
+        XCTFail("An unadvertised start must not be attempted.")
       } catch {
         XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
       }

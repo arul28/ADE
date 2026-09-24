@@ -294,10 +294,10 @@ struct MacDesktopCard: View {
     }
   }
 
-  /// The host's own last capture error, verbatim, as on the Apple card.
+  /// The host's own last capture error, with any machine code stripped.
   @ViewBuilder
   private func macDesktopErrorLine(_ message: String?) -> some View {
-    if let message, !message.isEmpty {
+    if let message = macDesktopVisibleMessage(message) {
       HStack(alignment: .firstTextBaseline, spacing: 6) {
         Image(systemName: "exclamationmark.triangle")
           .font(.caption2)
