@@ -18,7 +18,9 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   const current = queue[0] ?? null;
 
   useEffect(() => {
-    const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
+    const subscribe = window.ade?.lanes?.onDeleteEvent;
+    if (!subscribe) return;
+    const unsubscribe = subscribe((event) => {
       const progress = event.progress;
       const leftover = progress.leftoverWorktree;
       const finished = progress.overallStatus === "completed" || progress.overallStatus === "completed_with_warnings";

@@ -4115,6 +4115,10 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     unarchiveLaneWithRuntimeSetup(args, payload));
   register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
     deleteLaneWithRuntimeCleanup(args, payload));
+  register("lanes.deleteLeftoverWorktree", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.deleteLeftoverWorktree(
+      requireString(payload.laneId, "lanes.deleteLeftoverWorktree requires laneId."),
+    ));
   register("lanes.getStackChain", { viewerAllowed: true }, async (payload) =>
     args.laneService.getStackChain(requireString(payload.laneId, "lanes.getStackChain requires laneId.")));
   register("lanes.getChildren", { viewerAllowed: true }, async (payload) =>
