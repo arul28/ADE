@@ -92,6 +92,7 @@ import type {
   ApplyLaneTemplateArgs,
   ArchiveAndReclaimLaneArgs,
   DeleteLaneArgs,
+  DeleteLaneResult,
   FileChangeEvent,
   LaneEnvInitProgress,
   LaneListSnapshot,
@@ -1801,11 +1802,20 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         notifyLaneArchived(lane);
       }
     },
-    delete: async (args?: DeleteLaneArgs): Promise<void> => {
+    delete: async (args?: DeleteLaneArgs): Promise<DeleteLaneResult> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const teardownEnv = await buildLaneEnvTeardown(runtime, laneId, { includeArchived: true });
-      await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
+      const result = await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
       releaseLaneRuntimeResources(runtime, laneId);
+      return result;
+    },
+    getLeftoverWorktree: async (args?: { laneId?: string }) => {
+      const laneId = requireNonEmptyString(args?.laneId, "laneId");
+      return runtime.laneService.getLeftoverWorktree(laneId);
+    },
+    deleteLeftoverWorktree: async (args?: { laneId?: string }) => {
+      const laneId = requireNonEmptyString(args?.laneId, "laneId");
+      return runtime.laneService.deleteLeftoverWorktree(laneId);
     },
     archiveAndReclaim: async (args?: ArchiveAndReclaimLaneArgs) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");

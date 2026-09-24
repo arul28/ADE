@@ -39,7 +39,9 @@ import type {
   CreateLaneArgs,
   CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
+  DeleteLaneResult,
   LaneDeleteEvent,
+  LaneDeleteLeftoverWorktree,
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
@@ -1318,6 +1320,7 @@ function cloneLaneDeleteProgress(progress: LaneDeleteProgress): LaneDeleteProgre
   return {
     ...progress,
     steps: progress.steps.map((step) => ({ ...step })),
+    leftoverWorktree: progress.leftoverWorktree ? { ...progress.leftoverWorktree } : progress.leftoverWorktree,
   };
 }
 
@@ -3822,6 +3825,83 @@ export function createLaneService({
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
+  /**
+   * External folders left behind after a successful lane delete, keyed by the
+   * removed lane id. `dev` and `ino` are the directory itself at delete time,
+   * so a later Delete folder cannot remove a different directory that reused
+   * the path. The file keeps the record across a runtime restart.
+   */
+  type StoredLeftoverWorktree = LaneDeleteLeftoverWorktree & {
+    dev: number | null;
+    ino: number | null;
+    /** Basename of the token file written into the leftover directory. */
+    tokenName: string | null;
+    token: string | null;
+  };
+  const leftoverWorktreeByLaneId = new Map<string, StoredLeftoverWorktree>();
+  const leftoverWorktreeFile = path.join(projectRoot, ".ade", "leftover-worktrees.json");
+  const persistLeftoverWorktrees = () => {
+    const payload: Record<string, StoredLeftoverWorktree> = {};
+    for (const [laneId, leftover] of leftoverWorktreeByLaneId) payload[laneId] = leftover;
+    fs.mkdirSync(path.dirname(leftoverWorktreeFile), { recursive: true });
+    const temporary = `${leftoverWorktreeFile}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(payload));
+    fs.renameSync(temporary, leftoverWorktreeFile);
+  };
+  const loadLeftoverWorktrees = () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(leftoverWorktreeFile, "utf8"));
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    for (const [laneId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const row = value as Partial<StoredLeftoverWorktree>;
+      if (typeof row.path !== "string" || typeof row.laneName !== "string") continue;
+      leftoverWorktreeByLaneId.set(laneId, {
+        path: row.path,
+        canDelete: row.canDelete === true,
+        laneName: row.laneName,
+        dev: typeof row.dev === "number" ? row.dev : null,
+        ino: typeof row.ino === "number" ? row.ino : null,
+        tokenName: typeof row.tokenName === "string" ? row.tokenName : null,
+        token: typeof row.token === "string" ? row.token : null,
+      });
+    }
+  };
+  loadLeftoverWorktrees();
+  const rememberLeftoverWorktree = async (laneId: string, leftover: LaneDeleteLeftoverWorktree) => {
+    let stored: StoredLeftoverWorktree = {
+      ...leftover,
+      dev: null,
+      ino: null,
+      tokenName: null,
+      token: null,
+    };
+    if (leftover.canDelete) {
+      try {
+        const stat = await fs.promises.lstat(leftover.path);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+          stored = { ...stored, canDelete: false };
+        } else {
+          // Linux can recycle an inode as soon as the directory is removed, so
+          // the inode alone cannot tell a replacement from the original folder.
+          // A token file written here is absent from a directory that reused the path.
+          const tokenName = `.ade-leftover-${randomUUID()}`;
+          const token = randomUUID();
+          await fs.promises.writeFile(path.join(leftover.path, tokenName), token, { flag: "wx" });
+          stored = { ...leftover, dev: stat.dev, ino: stat.ino, tokenName, token };
+        }
+      } catch {
+        stored = { ...stored, canDelete: false };
+      }
+    }
+    leftoverWorktreeByLaneId.set(laneId, stored);
+    persistLeftoverWorktrees();
+    return stored;
+  };
   const laneReclaimInFlight = new Set<string>();
   const laneStorageWorktreeLocks = createLaneWorktreeLockService({ db, logger });
   let gitWorktreeMutationQueue: Promise<void> = Promise.resolve();
@@ -7410,7 +7490,7 @@ export function createLaneService({
     async delete(
       args: DeleteLaneArgs,
       runtimeOpts?: { teardownEnv?: () => Promise<void> }
-    ): Promise<void> {
+    ): Promise<DeleteLaneResult> {
       const {
         laneId,
         deleteBranch = true,
@@ -7665,13 +7745,35 @@ export function createLaneService({
                 throw new Error("ADE will not remove a lane folder through a symbolic link.");
               }
             } else {
-              if (await isSymbolicLinkPath(targetPath)) {
-                throw new Error("ADE will not remove a lane folder through a symbolic link.");
-              }
-              // Outside `.ade/worktrees` ADE never falls back to deleting files,
-              // so a directory that git does not recognise is left untouched.
-              if (fs.existsSync(targetPath) && !(await isExpectedGitWorktreeRoot(targetPath))) {
-                throw new Error(STALE_WORKTREE_ROOT_MESSAGE);
+              const symlink = await isSymbolicLinkPath(targetPath);
+              const directoryExists = fs.existsSync(targetPath);
+              const recognizedRoot = directoryExists && !symlink && await isExpectedGitWorktreeRoot(targetPath);
+              // A folder ADE did not create is removed only by `git worktree remove`
+              // while Git still claims it. Once Git has forgotten it, the lane row
+              // can go and the directory stays until the user deletes it.
+              if (symlink || (directoryExists && !recognizedRoot)) {
+                const worktrees = await listGitWorktrees();
+                const canonicalTarget = canonicalPath(targetPath);
+                const stillRegistered = worktrees.some((worktree) =>
+                  !worktree.isBare && (
+                    worktree.path === targetPath || canonicalPath(worktree.path) === canonicalTarget
+                  )
+                );
+                if (!stillRegistered) {
+                  progress.leftoverWorktree = {
+                    path: targetPath,
+                    canDelete: !symlink,
+                    laneName: row.name,
+                  };
+                  return {
+                    detail: symlink
+                      ? `left symlink on disk: ${targetPath}`
+                      : `left on disk: ${targetPath}`,
+                  };
+                }
+                if (symlink) {
+                  throw new Error("ADE will not remove a lane folder through a symbolic link.");
+                }
               }
             }
             return runGitWorktreeMutation(async () => {
@@ -7737,11 +7839,14 @@ export function createLaneService({
                   return { detail: row.worktree_path };
                 }
                 if (!managedWorktreePath) {
-                  // Git unregistered it but left files behind. They are the
-                  // user's, outside ADE's storage — say so instead of deleting.
-                  const message = `git removed the worktree but files remain at ${row.worktree_path}`;
-                  recordNonFatalFailure("git_worktree_remove", message);
-                  return { detail: `${row.worktree_path}; warning: ${message}` };
+                  // Git unregistered the checkout and left the directory. The
+                  // lane row can go; the dialog asks before anything is removed.
+                  progress.leftoverWorktree = {
+                    path: normAbs(row.worktree_path),
+                    canDelete: true,
+                    laneName: row.name,
+                  };
+                  return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
                 }
                 return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
               }
@@ -7865,6 +7970,15 @@ export function createLaneService({
         });
 
         invalidateLanePathCaches();
+        const leftover = progress.leftoverWorktree ?? null;
+        if (leftover) {
+          const stored = await rememberLeftoverWorktree(laneId, leftover);
+          progress.leftoverWorktree = {
+            path: stored.path,
+            canDelete: stored.canDelete,
+            laneName: stored.laneName,
+          };
+        }
         finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
         broadcastLifecycleEvent({
           type: "lane-deleted",
@@ -7889,7 +8003,9 @@ export function createLaneService({
             durationMs: totalMs
           });
         }
+        return { leftoverWorktree: progress.leftoverWorktree ?? null };
       } catch (error) {
+        progress.leftoverWorktree = null;
         finalize("failed");
         finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
         throw error;
@@ -7955,6 +8071,75 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       return row.worktree_path;
+    },
+
+    getLeftoverWorktree(laneId: string): LaneDeleteLeftoverWorktree | null {
+      const leftover = leftoverWorktreeByLaneId.get(laneId);
+      if (!leftover) return null;
+      return { path: leftover.path, canDelete: leftover.canDelete, laneName: leftover.laneName };
+    },
+
+    /**
+     * Removes the external directory a finished delete left on disk.
+     * Refuses the project root, a symlink, and a path Git has registered again.
+     */
+    async deleteLeftoverWorktree(laneId: string): Promise<{ removed: boolean }> {
+      const leftover = leftoverWorktreeByLaneId.get(laneId);
+      if (!leftover) throw new Error("That folder is no longer waiting to be deleted.");
+      if (!leftover.canDelete) {
+        throw new Error("ADE will not remove a lane folder through a symbolic link.");
+      }
+      const targetPath = normAbs(leftover.path);
+      if (protectedRootPaths.has(targetPath) || protectedRootPaths.has(canonicalPath(targetPath))) {
+        throw new Error("ADE will not remove the project's own folder.");
+      }
+      if (await isSymbolicLinkPath(targetPath)) {
+        throw new Error("ADE will not remove a lane folder through a symbolic link.");
+      }
+      if (await isExpectedGitWorktreeRoot(targetPath)) {
+        throw new Error("That folder is a Git worktree again. Remove it from the lane that owns it.");
+      }
+      const worktrees = await listGitWorktrees();
+      const canonicalTarget = canonicalPath(targetPath);
+      const stillRegistered = worktrees.some((worktree) =>
+        !worktree.isBare && (
+          worktree.path === targetPath || canonicalPath(worktree.path) === canonicalTarget
+        )
+      );
+      if (stillRegistered) {
+        throw new Error("Git still has this folder registered as a worktree.");
+      }
+      if (!fs.existsSync(targetPath)) {
+        leftoverWorktreeByLaneId.delete(laneId);
+        persistLeftoverWorktrees();
+        return { removed: false };
+      }
+      if (leftover.dev !== null && leftover.ino !== null) {
+        const stat = await fs.promises.lstat(targetPath);
+        if (stat.dev !== leftover.dev || stat.ino !== leftover.ino || !stat.isDirectory()) {
+          throw new Error("That folder was replaced after the lane was deleted.");
+        }
+      }
+      if (leftover.tokenName && leftover.token) {
+        const tokenPath = path.join(targetPath, leftover.tokenName);
+        let contents = "";
+        try {
+          const tokenStat = await fs.promises.lstat(tokenPath);
+          if (tokenStat.isSymbolicLink() || !tokenStat.isFile()) {
+            throw new Error("token is not a file");
+          }
+          contents = await fs.promises.readFile(tokenPath, "utf8");
+        } catch {
+          throw new Error("That folder was replaced after the lane was deleted.");
+        }
+        if (contents !== leftover.token) {
+          throw new Error("That folder was replaced after the lane was deleted.");
+        }
+      }
+      await fs.promises.rm(targetPath, { recursive: true, force: false });
+      leftoverWorktreeByLaneId.delete(laneId);
+      persistLeftoverWorktrees();
+      return { removed: true };
     },
 
     /**

@@ -527,6 +527,7 @@ import type {
   LaneGitHubIssue,
   LaneLinearIssue,
   LaneListSnapshot,
+  LaneDeleteLeftoverWorktree,
   LaneSummary,
   ListOperationsArgs,
   ListOverlapsArgs,
@@ -7088,6 +7089,71 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.autoRebaseService) return;
     await ctx.autoRebaseService.dismissStatus({ laneId: arg.laneId });
+  });
+
+  const readLaneWorktreePath = async (
+    event: { sender: Electron.WebContents },
+    laneId: string,
+  ): Promise<string | null> => {
+    const ctx = getCtx();
+    if (ctx.laneService) return ctx.laneService.getLaneWorktreePath(laneId);
+    const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callActionForRoot(rootPath, {
+        domain: "lane",
+        action: "list",
+        args: { includeArchived: true, includeStatus: false },
+      }),
+    );
+    const lanes = Array.isArray(response?.result) ? (response.result as LaneSummary[]) : [];
+    return lanes.find((lane) => lane.id === laneId)?.worktreePath ?? null;
+  };
+
+  const readLeftoverWorktree = async (
+    event: { sender: Electron.WebContents },
+    laneId: string,
+  ): Promise<LaneDeleteLeftoverWorktree | null> => {
+    const fromRuntime = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callActionForRoot(rootPath, {
+        domain: "lane",
+        action: "getLeftoverWorktree",
+        args: { laneId },
+      }),
+    );
+    const runtimeLeftover = fromRuntime?.result;
+    if (runtimeLeftover && typeof runtimeLeftover === "object" && typeof (runtimeLeftover as LaneDeleteLeftoverWorktree).path === "string") {
+      return runtimeLeftover as LaneDeleteLeftoverWorktree;
+    }
+    return getCtx().laneService?.getLeftoverWorktree(laneId) ?? null;
+  };
+
+  ipcMain.handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
+    const worktreePath = await readLaneWorktreePath(event, arg.laneId);
+    if (!worktreePath) throw new Error("Lane worktree path is not available.");
+    if (!fs.existsSync(worktreePath)) throw new Error("Lane worktree is missing.");
+    shell.showItemInFolder(worktreePath);
+  });
+
+  ipcMain.handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string }): Promise<void> => {
+    const leftover = await readLeftoverWorktree(event, arg.laneId);
+    if (!leftover?.path) throw new Error("That folder is no longer available to reveal.");
+    if (!fs.existsSync(leftover.path)) throw new Error("That folder is no longer on disk.");
+    shell.showItemInFolder(leftover.path);
+  });
+
+  ipcMain.handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string }): Promise<{ removed: boolean }> => {
+    const fromRuntime = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callActionForRoot(rootPath, {
+        domain: "lane",
+        action: "deleteLeftoverWorktree",
+        args: { laneId: arg.laneId },
+      }),
+    );
+    if (fromRuntime?.result && typeof fromRuntime.result === "object") {
+      return fromRuntime.result as { removed: boolean };
+    }
+    const service = getCtx().laneService;
+    if (!service) throw new Error("That folder is no longer waiting to be deleted.");
+    return service.deleteLeftoverWorktree(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {

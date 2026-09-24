@@ -20,6 +20,7 @@ import {
 } from "./InboundDeeplinkModal";
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
+import { LeftoverWorktreeDialogHost } from "../lanes/LeftoverWorktreeDialogHost";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
@@ -1405,6 +1406,7 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          <LeftoverWorktreeDialogHost />
         </div>
       </Router>
     </LaunchGate>
