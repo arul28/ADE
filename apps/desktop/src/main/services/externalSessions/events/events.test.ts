@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { dedentUserText } from "./common";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope, ExternalSessionProvider } from "../../../../shared/types";
@@ -8,6 +11,11 @@ import type { ExternalSessionDiscoveryRecord } from "../discoveryUtils";
 import { decodeEventsCursor, loadExternalSessionEvents } from "./index";
 import { openCodeExportToEvents } from "./opencode";
 import { readJsonlWindow } from "./paging";
+
+// Loaded at run time: Vite cannot resolve a static `node:sqlite` import.
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: new (path: string) => DatabaseSyncType;
+};
 
 const tempDirs: string[] = [];
 
@@ -304,6 +312,19 @@ describe("loadExternalSessionEvents — other providers", () => {
     expect(toolResult(page.events, "fc-1")).toBe("a.ts");
   });
 
+  it("converts only Qwen user rows that discovery counts as prompts", async () => {
+    const rows = [
+      { uuid: "q0", type: "user", provenance: "injected", message: { parts: [{ text: "Injected context" }] } },
+      { uuid: "q1", type: "user", message: { parts: [{ text: "Typed without provenance" }] } },
+      { uuid: "q2", type: "user", provenance: "real_user", message: { parts: [{ text: "Typed explicitly" }] } },
+    ];
+    const page = await load("qwen", tempFile("qwen.jsonl", rows));
+    expect(shape(page.events)).toEqual([
+      "user_message:Typed without provenance",
+      "user_message:Typed explicitly",
+    ]);
+  });
+
   it("reads Grok chat history and skips injected user context", async () => {
     const rows = [
       { type: "system", content: "You are Grok" },
@@ -335,6 +356,7 @@ describe("loadExternalSessionEvents — other providers", () => {
     const rows = [
       { type: "session.start", id: "e0", timestamp: "2026-03-11T02:43:00.000Z", data: {} },
       { type: "user.message", id: "e1", timestamp: "2026-03-11T02:43:16.901Z", data: { content: "Unify the model picker", transformedContent: "<current_datetime/>Unify" } },
+      { type: "user.message", id: "e1a", timestamp: "2026-03-11T02:43:17.000Z", data: { source: "autopilot", content: "Continue working on the task." } },
       { type: "assistant.message", id: "e2", timestamp: "2026-03-11T02:43:27.930Z", data: { messageId: "m1", content: "Reading.", reasoningText: "Plan", toolRequests: [{ toolCallId: "call_1", name: "view", arguments: { path: "a.ts" } }] } },
       { type: "tool.execution_start", id: "e3", timestamp: "2026-03-11T02:43:27.931Z", data: { toolCallId: "call_1", toolName: "view", arguments: { path: "a.ts" } } },
       { type: "tool.execution_start", id: "e4", timestamp: "2026-03-11T02:43:28.000Z", data: { toolCallId: "call_sub", toolName: "grep", arguments: {}, parentToolCallId: "call_task" } },
@@ -376,6 +398,41 @@ describe("loadExternalSessionEvents — other providers", () => {
       "tool_result:completed#tc-1",
     ]);
     expect(toolArgs(page.events, "tc-1")).toEqual({ path: "main.ts" });
+  });
+
+  it("converts persisted Kimi messages, filters origins, and drops duplicate turn begins", async () => {
+    const rows = [
+      { type: "turn_begin", time: 1_757_000_000, userInput: "Add a README" },
+      { type: "context.append_message", time: 1_757_000_001, message: { role: "user", content: [{ type: "text", text: "Add a README" }], origin: { kind: "user" } } },
+      {
+        type: "context.append_message",
+        time: 1_757_000_002,
+        message: {
+          role: "assistant",
+          content: [{ type: "think", think: "Inspect the project." }, { type: "text", text: "Reading the files." }],
+          tool_calls: [{ id: "call-1", function: { name: "ReadFile", arguments: "{\"path\":\"README.md\"}" } }],
+        },
+      },
+      { type: "context.append_message", time: 1_757_000_003, message: { role: "tool", name: "ReadFile", tool_call_id: "call-1", content: [{ type: "text", text: "README contents" }] } },
+      { type: "context.append_message", time: 1_757_000_004, message: { role: "assistant", content: [{ type: "text", text: "README added." }] } },
+      { type: "context.append_message", time: 1_757_000_005, message: { role: "user", content: [{ type: "text", text: "cron tick" }], origin: { kind: "cron_job" } } },
+    ];
+    const page = await load("kimi", tempFile("wire.jsonl", rows));
+    expect(shape(page.events)).toEqual([
+      "user_message:Add a README",
+      "reasoning:Inspect the project.",
+      "text:Reading the files.",
+      "tool_call:ReadFile#call-1",
+      "tool_result:completed#call-1",
+      "text:README added.",
+    ]);
+    expect(page.events[0]!.timestamp).toBe(new Date(1_757_000_001 * 1000).toISOString());
+    expect(toolArgs(page.events, "call-1")).toEqual({ path: "README.md" });
+
+    const fallback = await load("kimi", tempFile("turn.jsonl", [
+      { type: "turn_begin", time: 1_757_000_000, userInput: "A turn without append_message" },
+    ]));
+    expect(shape(fallback.events)).toEqual(["user_message:A turn without append_message"]);
   });
 
   it("maps an OpenCode export's text, reasoning and tool parts", () => {
@@ -420,6 +477,157 @@ describe("loadExternalSessionEvents — other providers", () => {
       "notice:Session imported from qwen CLI (sess-1)",
       "user_message:only sample",
     ]);
+  });
+});
+
+describe("loadExternalSessionEvents — Cursor store.db", () => {
+  /** A 32-byte blob reference in protobuf field `field` (wire type 2). */
+  function blobRef(field: number, id: string): Buffer {
+    return Buffer.concat([Buffer.from([(field << 3) | 2, 32]), Buffer.from(id, "hex")]);
+  }
+
+  /**
+   * A store laid out as Cursor writes it: content-addressed blobs inserted
+   * newest first (row order is not conversation order), a protobuf root that
+   * lists the messages, and `meta['0']` as hex JSON naming the root.
+   */
+  function writeCursorStore(
+    messages: unknown[],
+    summary?: { replaced: unknown[]; summaryMessage: unknown },
+  ): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-events-"));
+    tempDirs.push(dir);
+    const storePath = path.join(dir, "store.db");
+    const db = new DatabaseSync(storePath);
+    db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
+    const insert = db.prepare("INSERT OR IGNORE INTO blobs (id, data) VALUES (?, ?)");
+    const put = (data: Buffer): string => {
+      const id = createHash("sha256").update(data).digest("hex");
+      insert.run(id, data);
+      return id;
+    };
+    const messageIds = [...messages].reverse().map((message) => put(Buffer.from(JSON.stringify(message)))).reverse();
+    const rootParts = messageIds.map((id) => blobRef(1, id));
+    if (summary) {
+      const replacedIds = summary.replaced.map((message) => put(Buffer.from(JSON.stringify(message))));
+      const summaryMessageId = put(Buffer.from(JSON.stringify(summary.summaryMessage)));
+      const summaryBlob = put(Buffer.concat([
+        ...replacedIds.map((id) => blobRef(1, id)),
+        Buffer.from([0x12, 5]), Buffer.from("notes"),
+        blobRef(4, summaryMessageId),
+      ]));
+      // The summary message follows the root's context messages.
+      rootParts.splice(1, 0, blobRef(1, summaryMessageId));
+      rootParts.push(blobRef(13, summaryBlob));
+    }
+    rootParts.push(Buffer.from([0x50, 0x01]));
+    const rootId = put(Buffer.concat(rootParts));
+    const meta = { agentId: "sess-1", latestRootBlobId: rootId, name: "New Agent", createdAt: 1 };
+    db.prepare("INSERT INTO meta (key, value) VALUES ('0', ?)").run(Buffer.from(JSON.stringify(meta)).toString("hex"));
+    db.close();
+    return storePath;
+  }
+
+  const conversation = [
+    { role: "system", content: "You are an AI coding assistant." },
+    { role: "user", content: "<user_info>\nOS Version: darwin\n</user_info>\n\n<git_status>\nGit repo: /Users/dev/project\n</git_status>" },
+    { role: "user", content: [{ type: "text", text: "<system_reminder>\nAsk mode is active.\n</system_reminder>" }, { type: "text", text: "<user_query>\nWhy does the build fail?\n</user_query>" }] },
+    {
+      role: "assistant",
+      id: "1",
+      content: [
+        { type: "redacted-reasoning", data: "opaque" },
+        { type: "reasoning", text: "Check the log." },
+        { type: "text", text: "Reading the log." },
+        { type: "tool-call", toolCallId: "call_A\nfc_1", toolName: "Shell", args: { command: "npm run build" } },
+      ],
+    },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "call_A\nfc_1", toolName: "Shell", result: "Exit code: 1" }] },
+    { role: "assistant", id: "2", content: [{ type: "text", text: "A type error." }] },
+    { role: "user", content: [{ type: "text", text: "<user_query>\ncontinue\n</user_query>" }] },
+    { role: "assistant", id: "3", content: [{ type: "text", text: "Fixed." }] },
+    // Byte-identical to the earlier one: the same blob, listed twice.
+    { role: "user", content: [{ type: "text", text: "<user_query>\ncontinue\n</user_query>" }] },
+  ];
+
+  const expected = [
+    "user_message:Why does the build fail?",
+    "reasoning:Check the log.",
+    "text:Reading the log.",
+    "tool_call:Shell#call_A|fc_1",
+    "tool_result:completed#call_A|fc_1",
+    "text:A type error.",
+    "user_message:continue",
+    "text:Fixed.",
+    "user_message:continue",
+  ];
+
+  it("previews a store-only chat in conversation order", async () => {
+    // 2026-09-24: 11 of 27 Cursor rows had only store.db and previewed empty.
+    const page = await load("cursor", writeCursorStore(conversation));
+    expect(shape(page.events)).toEqual(expected);
+    expect(toolArgs(page.events, "call_A|fc_1")).toEqual({ command: "npm run build" });
+    expect(toolResult(page.events, "call_A|fc_1")).toBe("Exit code: 1");
+    expect(page).toMatchObject({ hasOlder: false, olderCursor: null, truncated: false });
+  });
+
+  it("gives the replay copy the whole conversation", async () => {
+    const page = await load("cursor", writeCursorStore(conversation), { purpose: "import" });
+    const content = page.events.filter(({ event }) => event.type !== "system_notice");
+    expect(shape(content)).toEqual(expected);
+    expect(page.events.every(({ sessionId }) => sessionId === "external-preview:cursor:sess-1")).toBe(true);
+  });
+
+  it("pages back through the store to the first message", async () => {
+    const storePath = writeCursorStore(conversation);
+    const pages: string[][] = [];
+    let before: string | null = null;
+    for (let i = 0; i < 10; i += 1) {
+      const page = await load("cursor", storePath, { maxEvents: 2, before });
+      pages.unshift(shape(page.events));
+      expect(page.events.length).toBeLessThanOrEqual(2);
+      if (!page.hasOlder) break;
+      before = page.olderCursor;
+    }
+    expect(pages.flat()).toEqual(expected);
+  });
+
+  it("restores the turns a summarization replaced", async () => {
+    const storePath = writeCursorStore(
+      [
+        { role: "system", content: "You are an AI coding assistant." },
+        { role: "user", content: [{ type: "text", text: "<user_query>\nnow ship it\n</user_query>" }] },
+        { role: "assistant", content: [{ type: "text", text: "Shipped." }] },
+      ],
+      {
+        replaced: [
+          { role: "user", content: [{ type: "text", text: "<user_query>\nfix the banner\n</user_query>" }] },
+          { role: "assistant", content: [{ type: "text", text: "Fixed the banner." }] },
+        ],
+        summaryMessage: { role: "user", content: "Your conversation was summarized due to context constraints." },
+      },
+    );
+    const page = await load("cursor", storePath);
+    expect(shape(page.events)).toEqual([
+      "user_message:fix the banner",
+      "text:Fixed the banner.",
+      "context_compact",
+      "user_message:now ship it",
+      "text:Shipped.",
+    ]);
+  });
+
+  it("falls back to sampled text when the store has no readable conversation", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-events-"));
+    tempDirs.push(dir);
+    const storePath = path.join(dir, "store.db");
+    const db = new DatabaseSync(storePath);
+    db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
+    db.close();
+    const page = await load("cursor", storePath, {
+      record: { messages: [{ role: "user", text: "hi", at: 1 }] },
+    });
+    expect(shape(page.events)).toEqual(["user_message:hi"]);
   });
 });
 

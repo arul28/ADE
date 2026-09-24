@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowClockwise, DownloadSimple, FolderSimple, Warning } from "@phosphor-icons/react";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import {
+  importProviderLabel,
   planImport,
   type ImportPlan,
   type ImportPlanAction,
@@ -11,10 +12,8 @@ import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSes
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import type { LaneComboboxLane } from "../LaneCombobox";
 import {
-  ALL_IMPORT_PROVIDERS,
   getExternalSessionsApi,
   normalizeListResult,
-  providerDisplayName,
   type ExternalSessionImportResult,
   type ExternalSessionProvider,
   type ExternalSessionSource,
@@ -127,10 +126,11 @@ export function ImportSessionBrowser({
   const [targetChoice, setTargetChoice] = useState<{ key: string; laneId: string } | null>(null);
   const [surfacePrefs, setSurfacePrefs] = useState<Partial<Record<ExternalSessionProvider, ImportSurface>>>({});
   const [modelChoice, setModelChoice] = useState<{ key: string; model: string } | null>(null);
-  const [confirmToken, setConfirmToken] = useState<string | null>(null);
-  // A chat copy asks for its model first: the first "Copy" click arms it and
-  // shows the picker, the next click (or Enter) makes the copy.
-  const [copyArmedToken, setCopyArmedToken] = useState<string | null>(null);
+  // One action at a time waits on a second press, keyed to the row, surface and
+  // lane it was armed for. `confirm`: continuing a live session. `copy`: a chat
+  // copy asks for its model first, so the first "Copy" click shows the picker
+  // and the next click (or Enter) makes the copy.
+  const [armed, setArmed] = useState<{ token: string; kind: "confirm" | "copy" } | null>(null);
   // Enter never imports the row the dialog picked on its own: the user must
   // have chosen a row (click, arrow keys) or typed a search first.
   const [selectionTouched, setSelectionTouched] = useState(false);
@@ -187,7 +187,8 @@ export function ImportSessionBrowser({
     setSelectedKey(null);
     setTargetChoice(null);
     setModelChoice(null);
-    setConfirmToken(null);
+    setArmed(null);
+    setSelectionTouched(false);
     setImportError(null);
   }, []);
 
@@ -230,7 +231,7 @@ export function ImportSessionBrowser({
       return;
     }
     const seq = ++requestSeq.current;
-    const providers = ALL_IMPORT_PROVIDERS;
+    const providers = [...EXTERNAL_SESSION_PROVIDERS];
     setLoadError(null);
     setFailedProviders([]);
     setPendingProviders(providers);
@@ -417,10 +418,11 @@ export function ImportSessionBrowser({
     ? (modelChoice?.key === activeKey ? modelChoice.model : defaultForkModel(active))
     : null;
   const importedRef = active?.alreadyImported ? readImportedSessionRef(active) : null;
-  const needsLiveConfirm = Boolean(active?.possiblyActive && plan?.primary?.mode === "resume");
-  const currentConfirmToken = active && plan ? `${activeKey}|${plan.surface}|${plan.targetLaneId}` : null;
-  const confirming = needsLiveConfirm && confirmToken != null && confirmToken === currentConfirmToken;
-  const copyArmed = copyArmedToken != null && copyArmedToken === currentConfirmToken;
+  const needsLiveConfirm = plan?.primary?.confirmBeforeRun === true;
+  const currentArmToken = active && plan ? `${activeKey}|${plan.surface}|${plan.targetLaneId}` : null;
+  const armedHere = armed != null && armed.token === currentArmToken ? armed.kind : null;
+  const confirming = needsLiveConfirm && armedHere === "confirm";
+  const copyArmed = armedHere === "copy";
 
   useEffect(() => () => {
     if (confirmTimer.current) clearTimeout(confirmTimer.current);
@@ -464,7 +466,7 @@ export function ImportSessionBrowser({
         laneId: laneForImport,
         target: action.target,
         mode: action.mode,
-        ...(action.needsModel && action.target === "chat" && model ? { model } : {}),
+        ...(action.needsModel && model ? { model } : {}),
       };
       const result = runtimePin ? await api.import(request, runtimePin) : await api.import(request);
       onImported(summary, result, selectedSource ?? undefined);
@@ -479,22 +481,24 @@ export function ImportSessionBrowser({
 
   const handleRun = useCallback((action: ImportPlanAction) => {
     if (!active || !plan || importing || !plan.targetLaneId) return;
-    const isSecondaryChatCopy = action === plan.secondary && action.needsModel && action.target === "chat";
-    if (isSecondaryChatCopy && !copyArmed) {
-      setCopyArmedToken(currentConfirmToken);
+    const token = currentArmToken;
+    if (action === plan.secondary && action.needsModel && !copyArmed) {
+      if (token) setArmed({ token, kind: "copy" });
       return;
     }
-    setCopyArmedToken(null);
-    const isLiveContinue = action.mode === "resume" && active.possiblyActive;
-    if (isLiveContinue && !confirming) {
-      setConfirmToken(currentConfirmToken);
+    if (action.confirmBeforeRun && !confirming) {
+      if (token) setArmed({ token, kind: "confirm" });
       if (confirmTimer.current) clearTimeout(confirmTimer.current);
-      confirmTimer.current = setTimeout(() => setConfirmToken(null), LIVE_CONFIRM_MS);
+      // Only the live-continue confirm times out; an armed copy waits for the user.
+      confirmTimer.current = setTimeout(
+        () => setArmed((prev) => prev?.kind === "confirm" ? null : prev),
+        LIVE_CONFIRM_MS,
+      );
       return;
     }
-    setConfirmToken(null);
+    setArmed(null);
     void runImport(active, action, plan.targetLaneId);
-  }, [active, confirming, copyArmed, currentConfirmToken, importing, plan, runImport]);
+  }, [active, confirming, copyArmed, currentArmToken, importing, plan, runImport]);
 
   const handleOpenExisting = useCallback((ref: ImportedSessionRef) => {
     onOpenExisting?.(ref, selectedSource ?? undefined);
@@ -546,7 +550,7 @@ export function ImportSessionBrowser({
 
   // ── Render ──────────────────────────────────────────────────────────────
   const failedNotice = failedProviders.length
-    ? `${failedProviders.map(providerDisplayName).join(", ")} couldn't be scanned.`
+    ? `${failedProviders.map(importProviderLabel).join(", ")} couldn't be scanned.`
     : null;
   const laneFilterName = laneFilter === OTHER_FOLDERS_ID
     ? "other folders"
@@ -630,7 +634,7 @@ export function ImportSessionBrowser({
           <CenterState
             icon={<DownloadSimple size={18} />}
             title="No sessions found"
-            detail={`Checked ${ALL_IMPORT_PROVIDERS.map(providerDisplayName).join(", ")} on ${machineName}.`}
+            detail={`Checked ${EXTERNAL_SESSION_PROVIDERS.map(importProviderLabel).join(", ")} on ${machineName}.`}
           />
         ) : (
           <div className="flex min-h-0 flex-1">
@@ -667,7 +671,7 @@ export function ImportSessionBrowser({
                     disabled={Boolean(importing)}
                     confirming={confirming}
                     copyArmed={copyArmed}
-                    onCancelCopy={() => setCopyArmedToken(null)}
+                    onCancelCopy={() => setArmed((prev) => prev?.kind === "copy" ? null : prev)}
                     noteTone={needsLiveConfirm ? "warning" : "muted"}
                     error={importError?.key === activeKey ? importError.message : null}
                     onRun={handleRun}

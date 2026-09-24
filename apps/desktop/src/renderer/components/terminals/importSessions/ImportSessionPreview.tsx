@@ -10,13 +10,9 @@ import { ToolLogo } from "../ToolLogos";
 import { PROVIDER_TOOL_TYPE, type ExternalSessionSummary } from "./contract";
 import { modelDisplayName, type SessionPlace } from "./importBrowserModel";
 import { LiveBadge, MetaSeparator, PlaceLabel } from "./ImportSessionParts";
-import {
-  formatPromptCount,
-  formatSessionSize,
-  formatUpdatedAt,
-  sessionHeading,
-} from "./sessionPresentation";
+import { formatPromptCount, formatUpdatedAt, sessionHeading } from "./sessionPresentation";
 import { useExternalSessionDetail } from "./useExternalSessionDetail";
+import { formatExternalSessionSize } from "../../../../shared/externalSessionAffordances";
 import { withImportedTurnBoundaries } from "../../../../shared/importedTurnBoundaries";
 
 function CopyIdButton({ id }: { id: string }) {
@@ -90,7 +86,7 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
     formatUpdatedAt(summary.updatedAt) ? { key: "time", node: <span>{formatUpdatedAt(summary.updatedAt)}</span> } : null,
     formatPromptCount(summary.messageCount) ? { key: "prompts", node: <span>{formatPromptCount(summary.messageCount)}</span> } : null,
     model ? { key: "model", node: <span className="max-w-[160px] truncate">{model}</span> } : null,
-    formatSessionSize(summary.sizeBytes) ? { key: "size", node: <span>{formatSessionSize(summary.sizeBytes)}</span> } : null,
+    formatExternalSessionSize(summary.sizeBytes) ? { key: "size", node: <span>{formatExternalSessionSize(summary.sizeBytes)}</span> } : null,
   ];
   const meta = metaEntries.filter((entry): entry is { key: string; node: ReactNode } => entry != null);
 

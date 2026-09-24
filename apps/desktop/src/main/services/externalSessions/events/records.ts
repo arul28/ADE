@@ -9,7 +9,24 @@ import { discoverKimiSessions } from "../discoverKimi";
 import { discoverOpenCodeSessions } from "../discoverOpenCode";
 import { discoverPiSessions } from "../discoverPi";
 import { discoverQwenSessions } from "../discoverQwen";
-import type { ExternalSessionDiscoveryRecord } from "../discoveryUtils";
+import type { ExternalSessionDiscoveryArgs, ExternalSessionDiscoveryRecord } from "../discoveryUtils";
+
+/** The one provider-to-discoverer table; listing, import, and detail lookup all use it. */
+export const EXTERNAL_SESSION_DISCOVERERS: Record<
+  ExternalSessionProvider,
+  (args: ExternalSessionDiscoveryArgs) => Promise<ExternalSessionDiscoveryRecord[]>
+> = {
+  claude: discoverClaudeSessions,
+  codex: discoverCodexSessions,
+  cursor: discoverCursorSessions,
+  droid: discoverDroidSessions,
+  opencode: discoverOpenCodeSessions,
+  pi: discoverPiSessions,
+  qwen: discoverQwenSessions,
+  kimi: discoverKimiSessions,
+  grok: discoverGrokSessions,
+  copilot: discoverCopilotSessions,
+};
 
 /** Exact-id lookup of one session's discovery record, or null when it is gone. */
 export async function discoverExternalSessionRecord(
@@ -17,36 +34,11 @@ export async function discoverExternalSessionRecord(
   sessionId: string,
   options: { homeDir?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<ExternalSessionDiscoveryRecord | null> {
-  const args = {
+  const [record] = await EXTERNAL_SESSION_DISCOVERERS[provider]({
     sessionId,
     limit: 1,
     ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     ...(options.env ? { env: options.env } : {}),
-  };
-  switch (provider) {
-    case "claude":
-      return (await discoverClaudeSessions(args))[0] ?? null;
-    case "codex":
-      return (await discoverCodexSessions(args))[0] ?? null;
-    case "cursor":
-      return (await discoverCursorSessions(args))[0] ?? null;
-    case "droid":
-      return (await discoverDroidSessions(args))[0] ?? null;
-    case "opencode":
-      return (await discoverOpenCodeSessions(args))[0] ?? null;
-    case "pi":
-      return (await discoverPiSessions(args))[0] ?? null;
-    case "qwen":
-      return (await discoverQwenSessions(args))[0] ?? null;
-    case "kimi":
-      return (await discoverKimiSessions(args))[0] ?? null;
-    case "grok":
-      return (await discoverGrokSessions(args))[0] ?? null;
-    case "copilot":
-      return (await discoverCopilotSessions(args))[0] ?? null;
-    default: {
-      const _never: never = provider;
-      return _never;
-    }
-  }
+  });
+  return record ?? null;
 }

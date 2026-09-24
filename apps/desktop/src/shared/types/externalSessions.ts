@@ -69,6 +69,86 @@ export interface ExternalSessionCapabilities {
   importToChat: boolean;
 }
 
+/**
+ * What each provider supports, before per-session adjustments. The host narrows
+ * these per session (missing folder, installed droid `--fork`); the browser
+ * mock shows them as-is.
+ */
+export const EXTERNAL_SESSION_PROVIDER_CAPABILITIES: Record<ExternalSessionProvider, ExternalSessionCapabilities> = {
+  claude: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: true,
+    importToChat: true,
+  },
+  codex: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: true,
+    fork: true,
+    forkIntoDifferentCwd: true,
+    importToChat: true,
+  },
+  cursor: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: false,
+    forkIntoDifferentCwd: false,
+    importToChat: false,
+  },
+  droid: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: true,
+    importToChat: true,
+  },
+  opencode: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: false,
+    importToChat: true,
+  },
+  pi: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: false,
+    importToChat: true,
+  },
+  // ACP providers: sessions are scoped to the folder they ran in, so a CLI
+  // continue or copy stays there. Qwen and Grok copy with `--fork-session`.
+  qwen: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: false,
+    importToChat: false,
+  },
+  kimi: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: false,
+    forkIntoDifferentCwd: false,
+    importToChat: false,
+  },
+  grok: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: false,
+    importToChat: false,
+  },
+  copilot: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: false,
+    forkIntoDifferentCwd: false,
+    importToChat: true,
+  },
+};
+
 /** One human/assistant turn sampled from a provider transcript for preview purposes. */
 export interface ExternalSessionMessage {
   role: "user" | "assistant";

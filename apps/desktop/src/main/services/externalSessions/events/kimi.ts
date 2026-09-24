@@ -1,17 +1,11 @@
 import { EnvelopeSink, isRecord, maybeParseJson, str, textOf, toIso, type JsonRecord, type JsonlConverter } from "./common";
+import { isKimiUserOrigin } from "../discoverKimi";
 
 /**
- * Kimi Code wire log
- * (`~/.kimi-code/sessions/wd_<slug>_<hash>/<id>/agents/main/wire.jsonl`).
- *
- * UNVERIFIED: no Kimi session exists on the machine this was written on. The
- * reader follows the Kimi CLI wire protocol — rows `{ timestamp, message:
- * { type, payload } }` with `TurnBegin { user_input }`, streamed `ContentPart`
- * (`text` / `think`), `ToolCall { id, function: { name, arguments } }`,
- * `ToolCallPart { arguments_part }` and `ToolResult { tool_call_id,
- * return_value }` — and also accepts OpenAI-style `{ role, content,
- * tool_calls, tool_call_id }` rows. Anything else is ignored, and an empty
- * result falls back to the sampled messages.
+ * Kimi Code wire log (`~/.kimi-code/sessions/.../agents/main/wire.jsonl`, or
+ * legacy `context.jsonl`). It accepts persisted `context.append_message` and
+ * `turn_begin` rows, the streamed `{ message: { type, payload } }` protocol,
+ * and OpenAI-style role messages. An empty result falls back to sampled text.
  */
 export const kimiRecordsToEvents: JsonlConverter = (records, ctx) => {
   const sink = new EnvelopeSink(ctx.options);
@@ -21,6 +15,12 @@ export const kimiRecordsToEvents: JsonlConverter = (records, ctx) => {
   let bufferKey = "";
   let bufferTimestamp = "";
   let lastCall: { id: string; name: string; args: string; timestamp: string } | null = null;
+  const hasAppendUser = records.some((record) => (
+    isRecord(record)
+      && record.type === "context.append_message"
+      && isRecord(record.message)
+      && str(record.message.role) === "user"
+  ));
 
   const flushText = () => {
     if (thinkBuffer) sink.reasoning(thinkBuffer, bufferTimestamp, `${bufferKey}:think`);
@@ -37,7 +37,26 @@ export const kimiRecordsToEvents: JsonlConverter = (records, ctx) => {
   records.forEach((record, index) => {
     if (!isRecord(record)) return;
     const key = `kimi:${ctx.lineKeys[index] ?? index}`;
-    const timestamp = toIso(record.timestamp, ctx.fallbackMs(index));
+    const timestamp = toIso(record.timestamp ?? record.time ?? record.created_at, ctx.fallbackMs(index));
+    const appendedMessage = record.type === "context.append_message" && isRecord(record.message)
+      ? record.message
+      : null;
+
+    if (appendedMessage) {
+      flushCall();
+      flushText();
+      openAiRow(sink, appendedMessage, key, timestamp, toolNames, true);
+      return;
+    }
+    if (record.type === "turn_begin") {
+      flushCall();
+      flushText();
+      if (!hasAppendUser && typeof record.userInput === "string") {
+        sink.user(record.userInput, timestamp, key);
+      }
+      return;
+    }
+
     const message = isRecord(record.message) && str(record.message.type) ? record.message : null;
 
     if (!message) {
@@ -66,7 +85,7 @@ export const kimiRecordsToEvents: JsonlConverter = (records, ctx) => {
     flushText();
     if (type === "TurnBegin") {
       const input = payload.user_input;
-      sink.user(typeof input === "string" ? input : textOf(input), timestamp, key);
+      if (!hasAppendUser) sink.user(typeof input === "string" ? input : textOf(input), timestamp, key);
     } else if (type === "ToolCall") {
       const fn = isRecord(payload.function) ? payload.function : payload;
       const id = str(payload.id) ?? `${key}:tool`;
@@ -92,12 +111,31 @@ function openAiRow(
   key: string,
   timestamp: string,
   toolNames: Map<string, string>,
+  filterUserOrigin = false,
 ): void {
   const role = str(record.role);
   if (role === "user") {
-    sink.user(textOf(record.content), timestamp, key);
+    if (!filterUserOrigin || isKimiUserOrigin(record)) sink.user(textOf(record.content), timestamp, key);
   } else if (role === "assistant") {
-    sink.text(textOf(record.content), timestamp, `${key}:text`);
+    const content = Array.isArray(record.content) ? record.content : [record.content];
+    const text: string[] = [];
+    const reasoning: string[] = [];
+    content.forEach((part) => {
+      if (isRecord(part)) {
+        const type = str(part.type);
+        if (type === "think" || type === "thinking" || type === "reasoning" || part.thought === true) {
+          const value = str(part.think) ?? str(part.thinking) ?? textOf(part);
+          if (value) reasoning.push(value);
+          return;
+        }
+      }
+      const value = textOf(part);
+      if (value) text.push(value);
+    });
+    const explicitReasoning = textOf(record.reasoning) || textOf(record.reasoningText);
+    if (explicitReasoning) reasoning.unshift(explicitReasoning);
+    sink.reasoning(reasoning.join("\n"), timestamp, `${key}:reasoning`);
+    sink.text(text.join("\n"), timestamp, `${key}:text`);
     const calls = Array.isArray(record.tool_calls) ? record.tool_calls : [];
     calls.forEach((call, callIndex) => {
       if (!isRecord(call)) return;
@@ -108,7 +146,10 @@ function openAiRow(
       sink.toolCall(name, maybeParseJson(fn.arguments), timestamp, id);
     });
   } else if (role === "tool") {
-    const id = str(record.tool_call_id) ?? `${key}:result`;
-    sink.toolResult(toolNames.get(id) ?? "tool", textOf(record.content), timestamp, id, false);
+    const id = str(record.tool_call_id) ?? str(record.toolCallId) ?? `${key}:result`;
+    const name = toolNames.get(id) ?? str(record.name) ?? "tool";
+    const failed = record.is_error === true || record.isError === true || record.error != null;
+    const result = failed && record.error != null ? record.error : record.content ?? record.output ?? "";
+    sink.toolResult(name, textOf(result) || result, timestamp, id, failed);
   }
 }

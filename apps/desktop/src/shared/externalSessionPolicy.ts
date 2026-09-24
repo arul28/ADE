@@ -119,6 +119,11 @@ export type ImportPlanAction = {
   label: string;
   /** A chat copy lets the user pick the model. */
   needsModel: boolean;
+  /**
+   * Continuing a session that may still be open elsewhere asks for a second
+   * press before it runs; two writers on one provider session corrupt it.
+   */
+  confirmBeforeRun: boolean;
 };
 
 export type ImportPlan = {
@@ -166,7 +171,7 @@ export function importProviderLabel(provider: ExternalSessionProvider): string {
 export function planImport(
   summary: Pick<
     ExternalSessionSummary,
-    "provider" | "capabilities" | "home" | "possiblyActive"
+    "provider" | "capabilities" | "home" | "possiblyActive" | "cwdMatchesRequestedLane"
   >,
   options: PlanImportOptions,
 ): ImportPlan {
@@ -209,12 +214,14 @@ export function planImport(
     mode: "resume",
     label: "Continue",
     needsModel: false,
+    confirmBeforeRun: summary.possiblyActive === true,
   };
   const copyAction = (label: string): ImportPlanAction => ({
     target: surface,
     mode: "fork",
     label,
     needsModel: surface === "chat",
+    confirmBeforeRun: false,
   });
 
   let primary: ImportPlanAction | null = null;
@@ -236,7 +243,9 @@ export function planImport(
     && surface === "cli"
     && pair.resume !== "any"
     && homeId == null
-    && home != null
+    // An older host sends no `home`; its folder check is the only signal
+    // that the session runs somewhere other than the chosen lane.
+    && (home != null || summary.cwdMatchesRequestedLane === false)
   ) {
     note = "Runs in its original folder.";
   }

@@ -1,13 +1,17 @@
 import Foundation
 import SwiftUI
 
-private let workImportSessionProviders = [
-  "all", "claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot",
-]
-
+private let workImportAllProvidersFilter = "all"
 /// Lane filter values that are not lane ids.
 private let workImportAllLanesFilter = "__all_lanes__"
-private let workImportOtherFoldersFilter = "__other_folders__"
+/// Rows per provider scan. The sync host caps a list at 100; ten providers at
+/// full size would be a heavy payload for a phone.
+private let workImportBrowseLimitPerProvider = 50
+/// How long "Continue anyway" stays armed after the first tap (desktop: 4 s).
+private let workImportLiveConfirmNanos: UInt64 = 4_000_000_000
+/// Every provider failing at once is a host that is still starting; wait and
+/// scan once more before showing the error (desktop: 2.5 s).
+private let workImportScanRetryNanos: UInt64 = 2_500_000_000
 
 struct WorkImportSessionScreen: View {
   @EnvironmentObject var syncService: SyncService
@@ -18,18 +22,25 @@ struct WorkImportSessionScreen: View {
   let onChatImported: @MainActor (AgentChatSessionSummary) async -> Void
 
   @State private var sessions: [ExternalSessionSummary] = []
-  @State private var providerFilter = "all"
+  @State private var providerFilter = workImportAllProvidersFilter
   @State private var scope = "project"
-  /// Nil until the first load decides between the origin lane and "All lanes".
-  @State private var laneFilter: String?
-  @State private var loading = false
-  @State private var hasLoaded = false
-  @State private var errorMessage: String?
+  /// Nil until the user picks: the filter then follows the origin lane while
+  /// it has (or may still get) sessions, else "All lanes".
+  @State private var laneFilterChoice: String?
+  /// Providers whose scan has not answered yet.
+  @State private var pendingProviders: Set<String> = []
+  @State private var scanDone = false
+  @State private var loadError: String?
+  @State private var failedProviders: [String] = []
+  @State private var loadSeq = 0
+  @State private var importError: String?
   @State private var importingSessionId: String?
   @State private var selectedSession: ExternalSessionSummary?
   /// Where the import goes. Defaults to the session's home lane when it opens.
   @State private var targetLaneId: String
-  @State private var surface: String?
+  /// Mode picked on this screen, per provider. Falls back to the stored
+  /// preference, then to the plan's first surface.
+  @State private var surfaceChoices: [String: String] = [:]
   /// Action key waiting on a second tap (continuing a session that may be live).
   @State private var confirmingKey: String?
 
@@ -46,10 +57,14 @@ struct WorkImportSessionScreen: View {
     _targetLaneId = State(initialValue: lane.id)
   }
 
-  /// The list no longer depends on the target lane: every row carries its own
-  /// home lane, and the lane filter works on the loaded rows.
-  private var queryKey: String {
-    "\(providerFilter)|\(scope)"
+  // MARK: - Derived list state
+
+  private var scanProviders: [String] {
+    workImportScanProviders(hostKnowsAcpProviders: syncService.supportsExternalSessionDetail)
+  }
+
+  private var loading: Bool {
+    !pendingProviders.isEmpty || (!scanDone && loadError == nil)
   }
 
   private var liveLaneIds: Set<String> {
@@ -60,75 +75,172 @@ struct WorkImportSessionScreen: View {
     lanes.first(where: { $0.id == laneId })?.name
   }
 
-  private var sortedSessions: [ExternalSessionSummary] {
-    sessions.sorted { left, right in
-      (left.updatedAt ?? left.createdAt ?? 0) > (right.updatedAt ?? right.createdAt ?? 0)
-    }
+  private func bucket(_ session: ExternalSessionSummary) -> String {
+    session.importLaneBucket(liveLaneIds: liveLaneIds, originLaneId: lane.id)
   }
 
-  private var laneCounts: [String: Int] {
+  private var scanLaneKeys: Set<String> {
+    Set(sessions.map(bucket))
+  }
+
+  /// The origin lane while the scan can still find its sessions, else All lanes.
+  private var laneFilter: String {
+    if let laneFilterChoice { return laneFilterChoice }
+    return scanLaneKeys.contains(lane.id) || loading ? lane.id : workImportAllLanesFilter
+  }
+
+  /// A provider filter with no sessions left falls back to All.
+  private var effectiveProviderFilter: String {
+    guard providerFilter != workImportAllProvidersFilter else { return providerFilter }
+    return sessions.contains(where: { workExternalSessionProviderKey($0.provider) == providerFilter })
+      ? providerFilter
+      : workImportAllProvidersFilter
+  }
+
+  private func matchesLane(_ session: ExternalSessionSummary) -> Bool {
+    laneFilter == workImportAllLanesFilter || bucket(session) == laneFilter
+  }
+
+  private func matchesProvider(_ session: ExternalSessionSummary) -> Bool {
+    let filter = effectiveProviderFilter
+    return filter == workImportAllProvidersFilter || workExternalSessionProviderKey(session.provider) == filter
+  }
+
+  private var inLane: [ExternalSessionSummary] {
+    sessions.filter(matchesLane)
+  }
+
+  private var inProvider: [ExternalSessionSummary] {
+    sessions.filter(matchesProvider)
+  }
+
+  /// Chips count the sessions under the current lane filter.
+  private var providerCounts: [String: Int] {
     var counts: [String: Int] = [:]
-    for session in sessions {
-      counts[session.importLaneBucket(liveLaneIds: liveLaneIds, originLaneId: lane.id), default: 0] += 1
+    for session in inLane {
+      counts[workExternalSessionProviderKey(session.provider), default: 0] += 1
     }
     return counts
   }
 
+  /// Lane rows count the sessions under the current provider filter.
+  private var laneCounts: [String: Int] {
+    var counts: [String: Int] = [:]
+    for session in inProvider {
+      counts[bucket(session), default: 0] += 1
+    }
+    return counts
+  }
+
+  /// Only providers with a session under the lane filter get a chip; the
+  /// chosen one keeps its chip so the filter can be cleared.
+  private var providerChips: [WorkImportProviderCount] {
+    let counts = providerCounts
+    let filter = effectiveProviderFilter
+    return scanProviders
+      .filter { (counts[$0] ?? 0) > 0 || $0 == filter }
+      .map { WorkImportProviderCount(provider: $0, count: counts[$0] ?? 0) }
+  }
+
   private var visibleSessions: [ExternalSessionSummary] {
-    let filter = laneFilter ?? workImportAllLanesFilter
-    guard filter != workImportAllLanesFilter else { return sortedSessions }
-    return sortedSessions.filter {
-      $0.importLaneBucket(liveLaneIds: liveLaneIds, originLaneId: lane.id) == filter
+    inLane.filter(matchesProvider).sorted { left, right in
+      (left.updatedAt ?? left.createdAt ?? 0) > (right.updatedAt ?? right.createdAt ?? 0)
     }
   }
 
+  private var visibleGroups: [WorkImportSessionGroup] {
+    var groups: [WorkImportSessionGroup] = []
+    for session in visibleSessions {
+      let label = workImportDateGroup(session.updatedAt ?? session.createdAt)
+      if groups.last?.label == label {
+        groups[groups.count - 1].rows.append(session)
+      } else {
+        groups.append(WorkImportSessionGroup(label: label, rows: [session]))
+      }
+    }
+    return groups
+  }
+
+  /// Rows hide their lane label when the filter already names that one lane.
+  private var rowsShowLane: Bool {
+    laneFilter == workImportAllLanesFilter || laneFilter == workImportOtherFoldersFilter
+  }
+
+  private var laneFilterName: String {
+    switch laneFilter {
+    case workImportOtherFoldersFilter: return "other folders"
+    case workImportAllLanesFilter: return "any lane"
+    default: return laneName(laneFilter) ?? "this lane"
+    }
+  }
+
+  private var failedNotice: String? {
+    guard !failedProviders.isEmpty else { return nil }
+    let names = scanProviders
+      .filter { failedProviders.contains($0) }
+      .map(workExternalSessionProviderName)
+      .joined(separator: ", ")
+    return "\(names) couldn't be scanned."
+  }
+
+  // MARK: - Body
+
   var body: some View {
-    VStack(spacing: 0) {
-      Group {
-        if selectedSession == nil {
-          controls
-        } else {
-          detailControls
-        }
+    Group {
+      if let selectedSession {
+        detail(selectedSession)
+      } else {
+        browser
       }
-      .padding(.horizontal, 16)
-      .padding(.top, 12)
-      .padding(.bottom, 8)
-
-      if let errorMessage {
-        Text(errorMessage)
-          .font(.caption)
-          .foregroundStyle(ADEColor.danger)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 16)
-          .padding(.bottom, 8)
-      }
-
-      content
     }
     .adeScreenBackground()
     .adeNavigationGlass()
-    .navigationTitle("Import session")
+    .navigationTitle(selectedSession == nil ? "Import session" : "Session")
     .navigationBarTitleDisplayMode(.inline)
+    // The detail is a step inside this screen, so the system back button
+    // (which would leave the whole screen) gives way to "Sessions".
+    .navigationBarBackButtonHidden(selectedSession != nil)
+    .toolbar {
+      if selectedSession != nil {
+        ToolbarItem(placement: .topBarLeading) {
+          Button {
+            closeDetail()
+          } label: {
+            Label("Sessions", systemImage: "chevron.left")
+              .labelStyle(.titleAndIcon)
+          }
+          .disabled(importingSessionId != nil)
+          .accessibilityLabel("Back to sessions")
+        }
+      }
+    }
     .toolbar(.hidden, for: .tabBar)
     .adeRootTabBarHidden()
-    .task(id: queryKey) {
-      await loadSessions()
+    .task(id: scope) {
+      await loadSessions(resetting: true)
     }
   }
 
-  @ViewBuilder
-  private var detailControls: some View {
-    Button {
-      selectedSession = nil
-      confirmingKey = nil
-    } label: {
-      Label("All sessions", systemImage: "chevron.left")
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.accent)
+  // MARK: - Browser
+
+  private var browser: some View {
+    VStack(spacing: 0) {
+      controls
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+
+      if let failedNotice, !sessions.isEmpty {
+        Label(failedNotice, systemImage: "exclamationmark.triangle")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 16)
+          .padding(.bottom, 6)
+      }
+
+      browserContent
     }
-    .buttonStyle(.plain)
-    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   @ViewBuilder
@@ -136,11 +248,18 @@ struct WorkImportSessionScreen: View {
     VStack(alignment: .leading, spacing: 12) {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
-          ForEach(workImportSessionProviders, id: \.self) { provider in
+          WorkImportProviderChip(
+            provider: workImportAllProvidersFilter,
+            count: inLane.count,
+            selected: effectiveProviderFilter == workImportAllProvidersFilter,
+            action: { providerFilter = workImportAllProvidersFilter }
+          )
+          ForEach(providerChips) { chip in
             WorkImportProviderChip(
-              provider: provider,
-              selected: providerFilter == provider,
-              action: { providerFilter = provider }
+              provider: chip.provider,
+              count: chip.count,
+              selected: effectiveProviderFilter == chip.provider,
+              action: { providerFilter = chip.provider }
             )
           }
         }
@@ -150,96 +269,103 @@ struct WorkImportSessionScreen: View {
       HStack(spacing: 10) {
         WorkImportLaneFilterMenu(
           lanes: lanes,
+          scanKeys: scanLaneKeys,
           counts: laneCounts,
-          totalCount: sessions.count,
+          totalCount: inProvider.count,
           selection: Binding(
-            get: { laneFilter ?? workImportAllLanesFilter },
-            set: { laneFilter = $0 }
+            get: { laneFilter },
+            set: { laneFilterChoice = $0 }
           )
         )
         Spacer(minLength: 0)
+        if loading && !sessions.isEmpty {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityLabel("Scanning sessions")
+        }
       }
 
-      Picker("Scope", selection: $scope) {
-        Text("This project only").tag("project")
+      Picker("Where to look", selection: $scope) {
+        Text("This project").tag("project")
         Text("All folders").tag("all")
       }
       .pickerStyle(.segmented)
+      .accessibilityLabel("Where to look")
     }
   }
 
   @ViewBuilder
-  private var content: some View {
-    if let selectedSession {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 12) {
-          WorkImportSessionRow(
-            session: selectedSession,
-            lanes: lanes,
-            importing: importingSessionId == selectedSession.importIdentity
-          )
-          WorkImportActionBar(
-            session: selectedSession,
-            plan: plan(for: selectedSession),
-            lanes: lanes,
-            targetLaneId: Binding(
-              get: { targetLaneId },
-              set: { newValue in
-                targetLaneId = newValue
-                confirmingKey = nil
-              }
-            ),
-            surface: Binding(
-              get: { plan(for: selectedSession).surface ?? "chat" },
-              set: { newValue in
-                surface = newValue
-                confirmingKey = nil
-              }
-            ),
-            confirmingKey: confirmingKey,
-            importDisabled: importingSessionId != nil || loading,
-            onRun: { action in
-              run(action, for: selectedSession)
-            },
-            onOpenExisting: { ref in
-              Task { await openExisting(selectedSession, ref: ref) }
-            }
-          )
-        }
-        .padding(16)
-      }
-      .refreshable { await loadSessions() }
-    } else if loading && !hasLoaded {
-      Spacer()
-      ProgressView()
-        .controlSize(.regular)
-      Spacer()
-    } else if visibleSessions.isEmpty {
-      Spacer()
-      VStack(spacing: 8) {
-        Image(systemName: "tray")
-          .font(.title3)
-          .foregroundStyle(ADEColor.textMuted)
-        Text(sessions.isEmpty ? "No sessions found" : "No sessions in this lane")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("Pull to refresh")
+  private var browserContent: some View {
+    if let loadError, sessions.isEmpty, !loading {
+      WorkImportCenterState(
+        systemImage: "exclamationmark.triangle",
+        tint: ADEColor.warning,
+        title: "Sessions couldn't be loaded",
+        detail: loadError,
+        actionTitle: "Try again",
+        action: { Task { await loadSessions() } }
+      )
+    } else if visibleSessions.isEmpty && loading {
+      VStack(spacing: 10) {
+        Spacer()
+        ProgressView()
+          .controlSize(.regular)
+        Text("Scanning sessions…")
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
+        Spacer()
       }
-      Spacer()
+      .frame(maxWidth: .infinity)
+    } else if sessions.isEmpty {
+      WorkImportCenterState(
+        systemImage: "tray",
+        tint: ADEColor.textMuted,
+        title: "No sessions found",
+        detail: "Checked \(scanProviders.map(workExternalSessionProviderName).joined(separator: ", ")) \(scope == "project" ? "in this project" : "in every folder").",
+        actionTitle: "Scan again",
+        action: { Task { await loadSessions() } }
+      )
+    } else if visibleSessions.isEmpty {
+      if laneFilter != workImportAllLanesFilter {
+        WorkImportCenterState(
+          systemImage: "tray",
+          tint: ADEColor.textMuted,
+          title: "No sessions in \(laneFilterName)",
+          detail: nil,
+          actionTitle: "Show all lanes",
+          action: { laneFilterChoice = workImportAllLanesFilter }
+        )
+      } else {
+        WorkImportCenterState(
+          systemImage: "tray",
+          tint: ADEColor.textMuted,
+          title: "No matching sessions",
+          detail: nil,
+          actionTitle: "Show all providers",
+          action: { providerFilter = workImportAllProvidersFilter }
+        )
+      }
     } else {
       List {
-        ForEach(visibleSessions, id: \.importIdentity) { session in
-          Button {
-            open(session)
-          } label: {
-            WorkImportSessionSummaryRow(session: session, lanes: lanes)
+        ForEach(visibleGroups) { group in
+          Text(group.label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .accessibilityAddTraits(.isHeader)
+            .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 0, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+          ForEach(group.rows, id: \.importIdentity) { session in
+            Button {
+              open(session)
+            } label: {
+              WorkImportSessionSummaryRow(session: session, lanes: lanes, showsLane: rowsShowLane)
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
           }
-          .buttonStyle(.plain)
-          .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-          .listRowSeparator(.hidden)
-          .listRowBackground(Color.clear)
         }
       }
       .listStyle(.plain)
@@ -250,78 +376,190 @@ struct WorkImportSessionScreen: View {
     }
   }
 
-  /// Opens a row: the target starts on its home lane, the mode on the first
-  /// surface the provider offers.
+  // MARK: - Detail
+
+  private func detail(_ session: ExternalSessionSummary) -> some View {
+    let plan = plan(for: session)
+    return ScrollView {
+      WorkImportSessionRow(session: session, lanes: lanes)
+        .padding(16)
+    }
+    .refreshable { await loadSessions() }
+    // Pinned like the desktop action bar: the one action is always on screen,
+    // however long the preview is.
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      WorkImportActionBar(
+        session: session,
+        plan: plan,
+        lanes: lanes,
+        targetLaneId: Binding(
+          get: { targetLaneId },
+          set: { newValue in
+            targetLaneId = newValue
+            confirmingKey = nil
+          }
+        ),
+        surface: Binding(
+          get: { plan.surface ?? "chat" },
+          set: { newValue in
+            let provider = workExternalSessionProviderKey(session.provider)
+            surfaceChoices[provider] = newValue
+            workSetImportSurfacePreference(provider, surface: newValue)
+            confirmingKey = nil
+          }
+        ),
+        confirmingKey: confirmingKey,
+        importing: importingSessionId == session.importIdentity,
+        importDisabled: importingSessionId != nil,
+        error: importError,
+        onRun: { action in
+          run(action, for: session)
+        },
+        onOpenExisting: { ref in
+          Task { await openExisting(session, ref: ref) }
+        }
+      )
+      .padding(.horizontal, 12)
+      .padding(.top, 8)
+      .padding(.bottom, 8)
+    }
+  }
+
+  private func closeDetail() {
+    selectedSession = nil
+    confirmingKey = nil
+    importError = nil
+  }
+
+  /// Opens a row: the target starts on its home lane, the mode on the last
+  /// one used for this provider (else the first the plan offers).
   private func open(_ session: ExternalSessionSummary) {
     targetLaneId = session.defaultImportTargetLaneId(liveLaneIds: liveLaneIds) ?? lane.id
-    surface = nil
     confirmingKey = nil
+    importError = nil
     selectedSession = session
   }
 
+  private func requestedSurface(for session: ExternalSessionSummary) -> String? {
+    let provider = workExternalSessionProviderKey(session.provider)
+    return surfaceChoices[provider] ?? workImportSurfacePreference(provider)
+  }
+
   private func plan(for session: ExternalSessionSummary) -> WorkImportPlan {
-    workPlanImport(session, surface: surface, targetLaneId: targetLaneId, laneName: laneName)
+    workPlanImport(
+      session,
+      surface: requestedSurface(for: session),
+      targetLaneId: targetLaneId,
+      laneName: laneName
+    )
   }
 
   private func run(_ action: WorkImportPlanAction, for session: ExternalSessionSummary) {
+    guard importingSessionId == nil else { return }
     let plan = plan(for: session)
-    let key = "\(session.importIdentity):\(action.target):\(action.mode):\(plan.targetLaneId ?? "")"
+    let laneId = plan.targetLaneId ?? targetLaneId
+    // Same guard, same words as the host: never send an import it would refuse.
+    if let reason = workImportRejectionReason(session, target: action.target, mode: action.mode, laneId: laneId) {
+      ADEHaptics.error()
+      importError = reason
+      return
+    }
+    let key = workImportConfirmKey(session: session, action: action, laneId: plan.targetLaneId)
     // Continuing a session that may be open elsewhere takes a second tap.
-    if action.mode == "resume", session.possiblyActive, confirmingKey != key {
+    if action.confirmBeforeRun, confirmingKey != key {
       confirmingKey = key
       ADEHaptics.warning()
+      Task { @MainActor in
+        try? await Task.sleep(nanoseconds: workImportLiveConfirmNanos)
+        if confirmingKey == key { confirmingKey = nil }
+      }
       return
     }
     confirmingKey = nil
-    let laneId = plan.targetLaneId ?? targetLaneId
     Task { await importSession(session, action: action, laneId: laneId) }
   }
 
-  private func loadSessions() async {
-    let requestedQueryKey = queryKey
-    let requestedProviderFilter = providerFilter
+  // MARK: - Loading
+
+  /// Scans every provider in parallel, like the desktop dialog, so the chips
+  /// can show counts. A refresh swaps each provider's rows in place, so the
+  /// list never blanks; a scope change starts from an empty list.
+  @MainActor
+  private func loadSessions(resetting: Bool = false, attempt: Int = 0) async {
+    loadSeq += 1
+    let seq = loadSeq
     let requestedScope = scope
-    loading = true
-    defer {
-      if requestedQueryKey == queryKey {
-        loading = false
+    let originLaneId = lane.id
+    if resetting {
+      sessions = []
+      scanDone = false
+    }
+    let providers = scanProviders
+    loadError = nil
+    failedProviders = []
+    pendingProviders = Set(providers)
+    var failures = 0
+    var lastError: String?
+
+    await withTaskGroup(of: (String, [ExternalSessionSummary]?, Error?).self) { group in
+      for provider in providers {
+        group.addTask {
+          do {
+            let rows = try await syncService.listExternalSessions(
+              providers: [provider],
+              laneId: originLaneId,
+              scope: requestedScope,
+              limit: workImportBrowseLimitPerProvider
+            )
+            return (provider, rows, nil)
+          } catch {
+            return (provider, nil, error)
+          }
+        }
+      }
+      for await (provider, rows, error) in group {
+        guard seq == loadSeq else { continue }
+        pendingProviders.remove(provider)
+        if let rows {
+          let kept = rows.filter(workImportHasPrompts)
+          sessions = sessions.filter { workExternalSessionProviderKey($0.provider) != provider } + kept
+        } else if let error, !(error is CancellationError) {
+          // An older host that does not know this provider refuses it by
+          // name; that is "not supported here", not a failed scan.
+          if error.localizedDescription.contains("requires a valid provider") { continue }
+          failures += 1
+          lastError = error.localizedDescription
+          failedProviders.append(provider)
+        }
       }
     }
-    errorMessage = nil
-    do {
-      let providers = requestedProviderFilter == "all" ? nil : [requestedProviderFilter]
-      let loadedSessions = try await syncService.listExternalSessions(
-        providers: providers,
-        laneId: lane.id,
-        scope: requestedScope,
-        limit: 100
-      )
-      guard requestedQueryKey == queryKey else { return }
-      sessions = loadedSessions
-      if laneFilter == nil {
-        // Open on the lane the screen came from when it has sessions.
-        let origin = lane.id
-        laneFilter = loadedSessions.contains(where: {
-          $0.importLaneBucket(liveLaneIds: liveLaneIds, originLaneId: origin) == origin
-        }) ? origin : workImportAllLanesFilter
-      }
-      if let current = selectedSession {
-        selectedSession = sessions.first(where: { $0.importIdentity == current.importIdentity })
-      }
-      hasLoaded = true
-    } catch is CancellationError {
-    } catch {
-      guard requestedQueryKey == queryKey else { return }
-      errorMessage = error.localizedDescription
-      hasLoaded = true
+
+    guard seq == loadSeq, !Task.isCancelled else { return }
+    if failures == providers.count && attempt == 0 {
+      try? await Task.sleep(nanoseconds: workImportScanRetryNanos)
+      guard seq == loadSeq, !Task.isCancelled else { return }
+      await loadSessions(attempt: 1)
+      return
+    }
+    scanDone = true
+    if failures == providers.count {
+      loadError = lastError ?? "The machine didn't answer. Check that it has this project open, then try again."
+    }
+    // Keep an open detail on the fresh copy of its row.
+    if let current = selectedSession,
+       let fresh = sessions.first(where: { $0.importIdentity == current.importIdentity }) {
+      selectedSession = fresh
     }
   }
 
+  // MARK: - Import
+
   @MainActor
   private func importSession(_ session: ExternalSessionSummary, action: WorkImportPlanAction, laneId: String) async {
-    guard importingSessionId == nil, !loading else { return }
+    guard importingSessionId == nil else { return }
     importingSessionId = session.importIdentity
-    errorMessage = nil
+    importError = nil
+    defer { importingSessionId = nil }
     do {
       let result = try await syncService.importExternalSession(
         provider: session.provider,
@@ -359,16 +597,18 @@ struct WorkImportSessionScreen: View {
       }
     } catch {
       ADEHaptics.error()
-      errorMessage = error.localizedDescription
+      importError = error.localizedDescription
+      // The host may have imported before failing; refresh so the row shows
+      // "In ADE" instead of inviting a duplicate.
+      Task { await loadSessions() }
     }
-    importingSessionId = nil
   }
 
   @MainActor
   private func openExisting(_ session: ExternalSessionSummary, ref: ExternalSessionImportedRef) async {
-    guard importingSessionId == nil, !loading else { return }
+    guard importingSessionId == nil else { return }
     importingSessionId = session.importIdentity
-    errorMessage = nil
+    importError = nil
     await openExistingSession(session, ref: ref)
     importingSessionId = nil
   }
@@ -380,13 +620,13 @@ struct WorkImportSessionScreen: View {
   ) async {
     guard let kind = workNormalizedImportedSessionKind(ref.kind) else {
       ADEHaptics.error()
-      errorMessage = "The imported session reference is not supported."
+      importError = "The imported session reference is not supported."
       return
     }
     let sessionId = ref.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !sessionId.isEmpty else {
       ADEHaptics.error()
-      errorMessage = "The imported session reference is missing a session ID."
+      importError = "The imported session reference is missing a session ID."
       return
     }
 
@@ -398,14 +638,14 @@ struct WorkImportSessionScreen: View {
         await onChatImported(summary)
       } catch {
         ADEHaptics.error()
-        errorMessage = "The imported ADE chat is not available yet. \(error.localizedDescription)"
+        importError = "The imported ADE chat is not available yet. \(error.localizedDescription)"
       }
     } else {
       if let terminal = await syncService.ensureSessionRowHydrated(sessionId: sessionId) {
         await onCliImported(terminal)
       } else {
         ADEHaptics.error()
-        errorMessage = "The imported CLI session is not available yet. Refresh and try again."
+        importError = "The imported CLI session is not available yet. Refresh and try again."
       }
     }
   }
@@ -445,16 +685,74 @@ struct WorkImportSessionScreen: View {
   }
 }
 
+private struct WorkImportProviderCount: Identifiable {
+  let provider: String
+  let count: Int
+  var id: String { provider }
+}
+
+/// A day of sessions in the list ("Today", "Yesterday", …).
+private struct WorkImportSessionGroup: Identifiable {
+  let label: String
+  var rows: [ExternalSessionSummary]
+  var id: String { label }
+}
+
+/// A centered empty/error state with one way forward, never a dead end.
+private struct WorkImportCenterState: View {
+  let systemImage: String
+  let tint: Color
+  let title: String
+  let detail: String?
+  let actionTitle: String?
+  let action: (() -> Void)?
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 8) {
+        Image(systemName: systemImage)
+          .font(.title3)
+          .foregroundStyle(tint)
+          .accessibilityHidden(true)
+        Text(title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .multilineTextAlignment(.center)
+        if let detail {
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if let actionTitle, let action {
+          Button(actionTitle, action: action)
+            .font(.subheadline.weight(.semibold))
+            .buttonStyle(.bordered)
+            .tint(ADEColor.accent)
+            .padding(.top, 4)
+        }
+      }
+      .frame(maxWidth: .infinity)
+      .padding(.horizontal, 32)
+      .padding(.vertical, 48)
+    }
+  }
+}
+
 /// Lane filter for the session list: All lanes, each lane with sessions (with
 /// its count), and Other folders for sessions no live lane owns.
 private struct WorkImportLaneFilterMenu: View {
   let lanes: [LaneSummary]
+  /// Buckets that hold any session, whatever the provider filter.
+  let scanKeys: Set<String>
+  /// Per-bucket counts under the provider filter.
   let counts: [String: Int]
   let totalCount: Int
   @Binding var selection: String
 
   private var lanesWithSessions: [LaneSummary] {
-    lanes.filter { (counts[$0.id] ?? 0) > 0 || $0.id == selection }
+    lanes.filter { scanKeys.contains($0.id) || $0.id == selection }
   }
 
   private var selectedLane: LaneSummary? {
@@ -474,7 +772,7 @@ private struct WorkImportLaneFilterMenu: View {
         ForEach(lanesWithSessions) { lane in
           Text("\(lane.name) · \(counts[lane.id] ?? 0)").tag(lane.id)
         }
-        if (counts[workImportOtherFoldersFilter] ?? 0) > 0 || selection == workImportOtherFoldersFilter {
+        if scanKeys.contains(workImportOtherFoldersFilter) || selection == workImportOtherFoldersFilter {
           Text("Other folders · \(counts[workImportOtherFoldersFilter] ?? 0)").tag(workImportOtherFoldersFilter)
         }
       }
@@ -488,7 +786,7 @@ private struct WorkImportLaneFilterMenu: View {
           )
         } else {
           Image(systemName: selection == workImportOtherFoldersFilter ? "folder" : "square.stack.3d.up")
-            .font(.system(size: 11, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.textMuted)
         }
         Text(title)
@@ -496,7 +794,7 @@ private struct WorkImportLaneFilterMenu: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         Image(systemName: "chevron.up.chevron.down")
-          .font(.system(size: 9, weight: .bold))
+          .font(.caption2.weight(.bold))
           .foregroundStyle(ADEColor.textMuted.opacity(0.7))
       }
       .padding(.horizontal, 12)
@@ -509,188 +807,27 @@ private struct WorkImportLaneFilterMenu: View {
   }
 }
 
-/// The action bar: mode switch, lane control, note, and one main button with
-/// an optional Copy — all from `workPlanImport`.
-private struct WorkImportActionBar: View {
-  let session: ExternalSessionSummary
-  let plan: WorkImportPlan
-  let lanes: [LaneSummary]
-  @Binding var targetLaneId: String
-  @Binding var surface: String
-  let confirmingKey: String?
-  let importDisabled: Bool
-  let onRun: (WorkImportPlanAction) -> Void
-  let onOpenExisting: (ExternalSessionImportedRef) -> Void
-
-  private var importedRef: ExternalSessionImportedRef? {
-    workImportedSessionRef(for: session)
-  }
-
-  /// An imported row opens its ADE session instead of continuing it again;
-  /// only the copy stays on offer.
-  private var actions: (primary: WorkImportPlanAction?, secondary: WorkImportPlanAction?) {
-    guard importedRef != nil else { return (plan.primary, plan.secondary) }
-    let copies = [plan.primary, plan.secondary].compactMap { $0 }.filter { $0.mode == "fork" }
-    return (copies.first, nil)
-  }
-
-  private var note: String? {
-    guard let primary = actions.primary else { return nil }
-    if primary == plan.primary { return plan.note }
-    return nil
-  }
-
-  private func confirmKey(_ action: WorkImportPlanAction) -> String {
-    "\(session.importIdentity):\(action.target):\(action.mode):\(plan.targetLaneId ?? "")"
-  }
-
-  private var lockedLane: LaneSummary? {
-    guard let laneId = plan.targetLaneId else { return nil }
-    return lanes.first(where: { $0.id == laneId })
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      if let importedRef {
-        Button {
-          onOpenExisting(importedRef)
-        } label: {
-          Label("Open in ADE", systemImage: "arrow.right.circle.fill")
-            .font(.subheadline.weight(.semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(ADEColor.accent)
-        .disabled(importDisabled)
-      }
-
-      if plan.surfaces.count > 1 {
-        Picker("Mode", selection: $surface) {
-          ForEach(plan.surfaces, id: \.self) { value in
-            Text(workImportSurfaceLabel(value)).tag(value)
-          }
-        }
-        .pickerStyle(.segmented)
-        .accessibilityLabel("Import as")
-      } else if let only = plan.surface {
-        Text(workImportSurfaceLabel(only))
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-
-      if plan.surface != nil {
-        HStack(alignment: .center, spacing: 8) {
-          Text("in")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-          if plan.laneLocked {
-            lockedChip
-          } else {
-            WorkLanePickerDropdown(
-              lanes: lanes,
-              selectedLaneId: $targetLaneId,
-              showsAutoCreateOption: false
-            )
-          }
-          Spacer(minLength: 0)
-        }
-        if plan.laneLocked, let lockReason = plan.lockReason {
-          Text(lockReason)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
-
-      if let primary = actions.primary, confirmingKey == confirmKey(primary) {
-        Label("It may be open elsewhere. Tap again to continue anyway.", systemImage: "exclamationmark.triangle.fill")
-          .font(.caption)
-          .foregroundStyle(ADEColor.warning)
-      } else if let note {
-        Text(note)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-
-      if actions.primary != nil || actions.secondary != nil {
-        HStack(spacing: 10) {
-          Spacer(minLength: 0)
-          if let secondary = actions.secondary {
-            Button(secondary.label) {
-              onRun(secondary)
-            }
-            .font(.subheadline.weight(.semibold))
-            .buttonStyle(.bordered)
-            .tint(ADEColor.textPrimary)
-            .disabled(importDisabled)
-          }
-          if let primary = actions.primary {
-            let confirming = confirmingKey == confirmKey(primary)
-            Button {
-              onRun(primary)
-            } label: {
-              Text(confirming ? "Continue anyway" : primary.label)
-                .font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 6)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(confirming ? ADEColor.warning : ADEColor.accent)
-            .disabled(importDisabled)
-          }
-        }
-      } else if importedRef == nil {
-        Text("This session can't be imported from here.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-    }
-    .padding(16)
-    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.6)
-    }
-  }
-
-  private var lockedChip: some View {
-    let name = lockedLane?.name ?? session.home?.laneName ?? "its lane"
-    let color = LaneColorPalette.displayColor(
-      forHex: lockedLane?.color ?? session.home?.color,
-      fallback: ADEColor.textSecondary
-    )
-    return HStack(spacing: 6) {
-      Image(systemName: "lock.fill")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      WorkLaneLogoMark(color: color, laneIcon: lockedLane?.icon, size: 12)
-      Text(name)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .background(Color.white.opacity(0.04), in: Capsule(style: .continuous))
-    .overlay(Capsule(style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 0.6))
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Lane \(name), locked")
-    .accessibilityHint(plan.lockReason ?? "")
-  }
-}
-
 private struct WorkImportProviderChip: View {
   let provider: String
+  let count: Int
   let selected: Bool
   let action: () -> Void
+
+  private var name: String {
+    provider == workImportAllProvidersFilter ? "All" : providerDisplayName(provider)
+  }
 
   var body: some View {
     Button(action: action) {
       HStack(spacing: 6) {
-        if provider != "all" {
+        if provider != workImportAllProvidersFilter {
           providerLogo
         }
-        Text(provider == "all" ? "All" : providerDisplayName(provider))
+        Text(name)
           .font(.caption.weight(.semibold))
+        Text("\(count)")
+          .font(.caption2.weight(.semibold).monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
       }
       .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
       .padding(.horizontal, 10)
@@ -702,6 +839,7 @@ private struct WorkImportProviderChip: View {
       }
     }
     .buttonStyle(.plain)
+    .accessibilityLabel("\(name), \(count) \(count == 1 ? "session" : "sessions")")
     .accessibilityAddTraits(selected ? .isSelected : [])
   }
 
@@ -714,789 +852,6 @@ private struct WorkImportProviderChip: View {
       size: 18
     )
   }
-}
-
-private struct WorkImportSessionSummaryRow: View {
-  let session: ExternalSessionSummary
-  let lanes: [LaneSummary]
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 12) {
-      WorkProviderBareLogo(
-        provider: session.provider,
-        fallbackSymbol: providerIcon(session.provider),
-        tint: ADEColor.providerChatAccent(for: session.provider),
-        size: 20
-      )
-      .padding(.top, 2)
-
-      VStack(alignment: .leading, spacing: 5) {
-        Text(session.rowHeading)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-
-        HStack(spacing: 5) {
-          WorkImportLaneLabel(session: session, lanes: lanes)
-          if !session.relativeUpdatedAt.isEmpty {
-            Text("· \(session.relativeUpdatedAt)")
-          }
-          if let count = session.messageCount {
-            Text("· \(count) \(count == 1 ? "prompt" : "prompts")")
-          }
-          if let size = session.sizeDisplay {
-            Text("· \(size)")
-          }
-        }
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
-
-        if let started = session.startedAnchorSnippet,
-           let latest = session.latestAnchorMessage {
-          WorkImportSessionAnchorBlock(started: started, latest: latest.text)
-        } else if let started = session.startedAnchorSnippet {
-          WorkImportSessionAnchorBlock(started: started, latest: nil)
-        } else if let latest = session.latestAnchorMessage {
-          WorkImportSessionAnchorBlock(started: nil, latest: latest.text)
-        } else if !session.hasConversationAnchorData,
-                  let preview = session.previewSnippet,
-                  !session.previewDuplicatesHeading {
-          Text(preview)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
-        }
-      }
-
-      Spacer(minLength: 4)
-      Image(systemName: "chevron.right")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .padding(.top, 4)
-    }
-    .padding(14)
-    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.6)
-    }
-  }
-}
-
-private struct WorkImportSessionAnchorBlock: View {
-  let started: String?
-  let latest: String?
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 3) {
-      if let started {
-        anchor(label: "started", text: started, lineLimit: 1)
-      }
-      if let latest {
-        anchor(label: "latest", text: latest, lineLimit: 2)
-      }
-    }
-    .padding(.leading, 9)
-    .overlay(alignment: .leading) {
-      Rectangle()
-        .fill(ADEColor.glassBorder)
-        .frame(width: 1)
-    }
-    .padding(.top, 2)
-  }
-
-  private func anchor(label: String, text: String, lineLimit: Int) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
-      Text(label)
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(text)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(lineLimit)
-    }
-  }
-}
-
-private struct WorkImportSessionRow: View {
-  let session: ExternalSessionSummary
-  let lanes: [LaneSummary]
-  let importing: Bool
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 10) {
-        VStack(alignment: .leading, spacing: 7) {
-          Text(session.rowHeading)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
-          statusBadges
-          metaLine
-        }
-
-        Spacer(minLength: 0)
-
-        if importing {
-          ProgressView()
-            .controlSize(.small)
-            .padding(.top, 2)
-        }
-      }
-
-      WorkImportSessionPreview(session: session)
-    }
-    .padding(16)
-    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.6)
-    }
-    .contentShape(Rectangle())
-  }
-
-  @ViewBuilder
-  private var metaLine: some View {
-    HStack(spacing: 5) {
-      WorkProviderBareLogo(
-        provider: session.provider,
-        fallbackSymbol: providerIcon(session.provider),
-        tint: ADEColor.providerChatAccent(for: session.provider),
-        size: 16
-      )
-
-      Text(providerDisplayName(session.provider))
-
-      Text("·")
-        .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-      WorkImportLaneLabel(session: session, lanes: lanes)
-
-      if !session.relativeUpdatedAt.isEmpty {
-        Text("·")
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-        Text(session.relativeUpdatedAt)
-      }
-
-      if let messageCount = session.messageCount {
-        Text("·")
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-        Text("\(messageCount) \(messageCount == 1 ? "prompt" : "prompts")")
-      }
-
-      if let size = session.sizeDisplay {
-        Text("·")
-          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-        Text(size)
-      }
-    }
-    .font(.caption)
-    .foregroundStyle(ADEColor.textSecondary)
-    .lineLimit(1)
-  }
-
-  @ViewBuilder
-  private var statusBadges: some View {
-    if session.alreadyImported || session.possiblyActive {
-      HStack(spacing: 6) {
-        if session.alreadyImported {
-          WorkImportBadge(text: "Imported", tint: ADEColor.success)
-        }
-        if session.possiblyActive {
-          WorkImportBadge(text: "May be open elsewhere", tint: ADEColor.warning)
-        }
-      }
-    }
-  }
-}
-
-/// The session's conversation, disclosed under the detail header.
-///
-/// On a host with `work.getExternalSessionDetail` it is the conversation as
-/// ADE chat events, rendered by the same builders and row views as a Work chat
-/// (messages, tool calls, commands, file changes, reasoning), in a bounded
-/// scroller that opens at the newest message with "Load earlier" at the top.
-/// On an older host, while the first page loads, or when the call fails, it is
-/// the list's sampled messages, as before.
-private struct WorkImportSessionPreview: View {
-  @EnvironmentObject var syncService: SyncService
-
-  let session: ExternalSessionSummary
-
-  @State private var expanded = true
-  @State private var events: [AgentChatEventEnvelope] = []
-  @State private var entries: [WorkTimelineEntry] = []
-  /// The host's text tail, for a host that answered without events.
-  @State private var hostMessages: [ExternalSessionMessage] = []
-  @State private var hasOlder = false
-  @State private var olderCursor: String?
-  @State private var loading = false
-  @State private var loadingOlder = false
-  @State private var olderError: String?
-  @State private var expandedCardIds: Set<String> = []
-
-  private static let bottomAnchorId = "work-import-preview-bottom"
-  private static let transcriptHeight: CGFloat = 380
-
-  private var fallbackMessages: [ExternalSessionMessage] {
-    let host = hostMessages.compactMap { message -> ExternalSessionMessage? in
-      let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.isEmpty else { return nil }
-      return ExternalSessionMessage(role: message.role, text: text, at: message.at)
-    }
-    return host.isEmpty ? session.conversationMessages : host
-  }
-
-  private var disclosureTitle: String {
-    if !entries.isEmpty { return "Conversation" }
-    let count = fallbackMessages.count
-    guard count > 0 else { return "Preview" }
-    return "Last \(count) \(count == 1 ? "message" : "messages")"
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Button {
-        withAnimation(.easeInOut(duration: 0.18)) {
-          expanded.toggle()
-        }
-      } label: {
-        HStack(spacing: 4) {
-          Image(systemName: "chevron.right")
-            .font(.system(size: 10, weight: .bold))
-            .rotationEffect(.degrees(expanded ? 90 : 0))
-          Text(disclosureTitle)
-            .font(.caption.weight(.semibold))
-          if loading {
-            ProgressView()
-              .controlSize(.mini)
-              .padding(.leading, 2)
-          }
-        }
-        .foregroundStyle(ADEColor.textMuted)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-
-      if expanded {
-        if !entries.isEmpty {
-          transcriptPreview
-        } else {
-          WorkImportSampledMessagesPreview(session: session, messages: fallbackMessages)
-        }
-      }
-    }
-    .task(id: session.importIdentity) {
-      await loadNewest()
-    }
-  }
-
-  private var transcriptPreview: some View {
-    ScrollViewReader { proxy in
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 10) {
-          if hasOlder {
-            loadEarlierControl(proxy: proxy)
-          }
-          ForEach(entries) { entry in
-            entryView(entry)
-              .id(entry.id)
-          }
-          Color.clear
-            .frame(height: 1)
-            .id(Self.bottomAnchorId)
-        }
-        .padding(10)
-      }
-      .defaultScrollAnchor(.bottom, for: .initialOffset)
-      .id(session.importIdentity)
-      .frame(height: Self.transcriptHeight)
-      .background(ADEColor.textPrimary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.glassBorder.opacity(0.55), lineWidth: 0.6)
-      }
-      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .environment(\.workChatProvider, session.provider)
-      .onAppear {
-        proxy.scrollTo(Self.bottomAnchorId, anchor: .bottom)
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func loadEarlierControl(proxy: ScrollViewProxy) -> some View {
-    VStack(spacing: 4) {
-      Button {
-        let anchorId = entries.first?.id
-        Task {
-          await loadOlder()
-          // Keep the row the reader was looking at in place instead of jumping
-          // to the top of the page that just arrived.
-          if let anchorId, entries.contains(where: { $0.id == anchorId }) {
-            proxy.scrollTo(anchorId, anchor: .top)
-          }
-        }
-      } label: {
-        HStack(spacing: 6) {
-          if loadingOlder {
-            ProgressView()
-              .controlSize(.mini)
-          }
-          Text(loadingOlder ? "Loading earlier…" : "Load earlier")
-            .font(.caption.weight(.semibold))
-        }
-        .foregroundStyle(ADEColor.accent)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(ADEColor.accent.opacity(0.1), in: Capsule())
-      }
-      .buttonStyle(.plain)
-      .disabled(loadingOlder)
-
-      if let olderError {
-        Text(olderError)
-          .font(.caption2)
-          .foregroundStyle(ADEColor.danger)
-      }
-    }
-    .frame(maxWidth: .infinity)
-    .padding(.bottom, 4)
-  }
-
-  @ViewBuilder
-  private func entryView(_ entry: WorkTimelineEntry) -> some View {
-    switch entry.payload {
-    case .message(let message):
-      WorkChatMessageBubble(
-        message: message,
-        maxUserBubbleWidth: 260,
-        onOpenFullOutput: {}
-      )
-      .equatable()
-    case .toolCard(let card):
-      WorkToolCardView(
-        toolCard: card,
-        isExpanded: expandedCardIds.contains(card.id),
-        onToggle: { toggleCard(card.id) },
-        onOpenFile: { _ in },
-        onOpenPr: { _ in }
-      )
-      .equatable()
-    case .commandCard(let card):
-      WorkCommandCardView(
-        card: card,
-        isExpanded: expandedCardIds.contains(card.id),
-        onToggle: { toggleCard(card.id) }
-      )
-      .equatable()
-    case .fileChangeCard(let card):
-      WorkFileChangeCardView(
-        card: card,
-        isExpanded: expandedCardIds.contains(card.id),
-        onToggle: { toggleCard(card.id) }
-      )
-      .equatable()
-    case .toolGroup(let group):
-      WorkToolCallsPanelView(
-        group: group,
-        isExpanded: expandedCardIds.contains(group.id),
-        onToggle: { toggleCard(group.id) },
-        expandedMemberIds: expandedCardIds,
-        onToggleMember: { memberId in toggleCard(memberId) }
-      )
-    case .changedFiles(let group):
-      WorkChangedFilesPanelView(
-        group: group,
-        isExpanded: expandedCardIds.contains(group.id),
-        onToggle: { toggleCard(group.id) },
-        expandedFileIds: expandedCardIds,
-        onToggleFile: { fileId in toggleCard(fileId) },
-        onUndo: nil
-      )
-    case .subagent(let row):
-      WorkSubagentTimelineRowView(row: row)
-    case .eventCard(let card):
-      if card.kind == "reasoning" {
-        WorkReasoningCard(
-          card: card,
-          isLive: false,
-          isExpanded: expandedCardIds.contains(card.id),
-          onToggle: { toggleCard(card.id) }
-        )
-      } else if card.kind == "plan" {
-        WorkProposedPlanCard(
-          card: card,
-          isExpanded: expandedCardIds.contains(card.id),
-          onToggle: { toggleCard(card.id) }
-        )
-      } else {
-        EmptyView()
-      }
-    default:
-      // Live-session rows (pending inputs, turn footers, usage, artifacts,
-      // ADE cards) have nothing to say about a session that is not running.
-      EmptyView()
-    }
-  }
-
-  private func toggleCard(_ id: String) {
-    if expandedCardIds.contains(id) {
-      expandedCardIds.remove(id)
-    } else {
-      expandedCardIds.insert(id)
-    }
-  }
-
-  /// The newest page. The detail view is reused across sessions, so every
-  /// load starts from a clean slate.
-  private func loadNewest() async {
-    events = []
-    entries = []
-    hostMessages = []
-    hasOlder = false
-    olderCursor = nil
-    olderError = nil
-    loadingOlder = false
-    expandedCardIds = []
-    guard syncService.supportsExternalSessionDetail else { return }
-    loading = true
-    defer { loading = false }
-    do {
-      let detail = try await syncService.getExternalSessionDetail(
-        provider: session.provider,
-        sessionId: session.id
-      )
-      guard !Task.isCancelled else { return }
-      events = detail.events
-      hostMessages = detail.messages
-      olderCursor = detail.olderCursor
-      hasOlder = detail.hasOlder && detail.olderCursor != nil
-      rebuildEntries()
-    } catch {
-      // The sampled messages stay on screen: a failed detail call costs the
-      // full conversation, never the preview.
-    }
-  }
-
-  private func loadOlder() async {
-    guard let cursor = olderCursor, !loadingOlder else { return }
-    loadingOlder = true
-    olderError = nil
-    defer { loadingOlder = false }
-    do {
-      let detail = try await syncService.getExternalSessionDetail(
-        provider: session.provider,
-        sessionId: session.id,
-        before: cursor
-      )
-      guard !Task.isCancelled else { return }
-      let known = Set(events.map(\.id))
-      events = detail.events.filter { !known.contains($0.id) } + events
-      olderCursor = detail.olderCursor
-      hasOlder = detail.hasOlder && detail.olderCursor != nil
-      rebuildEntries()
-    } catch {
-      olderError = "Couldn't load earlier messages."
-    }
-  }
-
-  /// Same pipeline as a Work chat transcript: envelopes to `WorkChatEnvelope`,
-  /// then the timeline snapshot (tool-call folding included), then the
-  /// mobile presentation filter.
-  private func rebuildEntries() {
-    let transcript = makeWorkChatTranscript(from: events)
-    let snapshot = buildWorkChatTimelineSnapshot(
-      transcript: transcript,
-      fallbackEntries: [],
-      artifacts: [],
-      localEchoMessages: []
-    )
-    entries = workPresentedTimelineEntries(snapshot.timeline, provider: session.provider)
-  }
-}
-
-/// The list's sampled messages: the whole preview on an older host, and the
-/// fallback while (or if) the full conversation cannot be loaded.
-private struct WorkImportSampledMessagesPreview: View {
-  let session: ExternalSessionSummary
-  let messages: [ExternalSessionMessage]
-
-  var body: some View {
-    if !messages.isEmpty {
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 0) {
-          ForEach(Array(messages.enumerated()), id: \.offset) { index, message in
-            WorkImportConversationMessageRow(message: message)
-            if index < messages.count - 1 {
-              Divider()
-                .overlay(ADEColor.glassBorder.opacity(0.45))
-            }
-          }
-        }
-      }
-      .frame(
-        height: min(
-          260,
-          max(92, CGFloat(messages.count) * 72)
-        )
-      )
-      .background(ADEColor.textPrimary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.glassBorder.opacity(0.55), lineWidth: 0.6)
-      }
-    } else if let preview = session.previewSnippet,
-              !session.previewDuplicatesHeading {
-      Text(preview)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ADEColor.textPrimary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(ADEColor.glassBorder.opacity(0.55), lineWidth: 0.6)
-        }
-    } else {
-      Text("No conversational preview was recoverable for this session.")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-  }
-}
-
-private struct WorkImportConversationMessageRow: View {
-  let message: ExternalSessionMessage
-
-  private var isUser: Bool {
-    message.role == "user"
-  }
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Text(isUser ? "YOU" : "ADE")
-        .font(.system(size: 9, weight: .bold))
-        .foregroundStyle(isUser ? ADEColor.purpleAccent : ADEColor.success)
-        .frame(width: 30, alignment: .leading)
-        .padding(.top, 2)
-
-      Text(message.text)
-        .font(.caption)
-        .foregroundStyle(isUser ? ADEColor.textPrimary : ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .background(isUser ? ADEColor.purpleAccent.opacity(0.025) : Color.clear)
-  }
-}
-
-private struct WorkImportBadge: View {
-  let text: String
-  let tint: Color
-
-  var body: some View {
-    Text(text)
-      .font(.caption2.weight(.semibold))
-      .foregroundStyle(tint)
-      .padding(.horizontal, 7)
-      .padding(.vertical, 3)
-      .background(tint.opacity(0.12), in: Capsule())
-  }
-}
-
-/// Lane dot + name for a row. Never a worktree folder: a removed lane says so,
-/// and a folder outside every lane shows its last path segment.
-private struct WorkImportLaneLabel: View {
-  let session: ExternalSessionSummary
-  let lanes: [LaneSummary]
-
-  private var liveLane: LaneSummary? {
-    guard session.home?.kind == "lane", let laneId = session.home?.laneId else { return nil }
-    return lanes.first(where: { $0.id == laneId })
-  }
-
-  var body: some View {
-    HStack(spacing: 4) {
-      if session.home?.kind == "lane" {
-        Circle()
-          .fill(LaneColorPalette.displayColor(
-            forHex: liveLane?.color ?? session.home?.color,
-            fallback: ADEColor.textSecondary
-          ))
-          .frame(width: 6, height: 6)
-      } else if session.home != nil {
-        Image(systemName: "folder")
-          .font(.system(size: 9, weight: .semibold))
-      }
-      Text(liveLane?.name ?? session.laneDisplayName)
-        .lineLimit(1)
-        .truncationMode(.middle)
-    }
-  }
-}
-
-extension ExternalSessionSummary {
-  var importIdentity: String {
-    "\(provider):\(id)"
-  }
-
-  /// The row's lane label: the home lane's name, "Removed lane", or the last
-  /// folder of a path outside every lane. Older hosts send no `home`.
-  var laneDisplayName: String {
-    switch home?.kind {
-    case "lane":
-      let name = home?.laneName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      return name.isEmpty ? "Lane" : name
-    case "removed-lane":
-      return "Removed lane"
-    case "outside":
-      return cwdLastPathSegment ?? "Other folder"
-    default:
-      return cwdLastPathSegment ?? cwdDisplayName
-    }
-  }
-
-  /// Which lane-filter bucket the row belongs to: a live lane id, or "Other
-  /// folders". Rows from hosts without `home` fall back to the folder match.
-  func importLaneBucket(liveLaneIds: Set<String>, originLaneId: String) -> String {
-    if let home {
-      if home.kind == "lane", let laneId = home.laneId, liveLaneIds.contains(laneId) {
-        return laneId
-      }
-      return workImportOtherFoldersFilter
-    }
-    return cwdMatchesRequestedLane == true ? originLaneId : workImportOtherFoldersFilter
-  }
-
-  /// The home lane when it is a live lane on this device, else nil.
-  func defaultImportTargetLaneId(liveLaneIds: Set<String>) -> String? {
-    guard home?.kind == "lane", let laneId = home?.laneId, liveLaneIds.contains(laneId) else { return nil }
-    return laneId
-  }
-
-  var sizeDisplay: String? {
-    guard let sizeBytes, sizeBytes.isFinite, sizeBytes >= 0, sizeBytes < 9e18 else { return nil }
-    return ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
-  }
-
-  var rowHeading: String {
-    if let realTitle { return realTitle }
-    if let openingPromptHeading { return openingPromptHeading }
-    let whereText = cwdLastPathSegment ?? cwdDisplayName
-    guard !relativeUpdatedAt.isEmpty else { return whereText }
-    return "\(whereText) · \(relativeUpdatedAt)"
-  }
-
-  var hasRealTitle: Bool {
-    realTitle != nil
-  }
-
-  var realTitle: String? {
-    let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmedTitle.isEmpty ? nil : trimmedTitle
-  }
-
-  /// The opening ask, used as a heading when the provider persisted no title.
-  var openingPromptHeading: String? {
-    workImportHeadingText(previewSnippet)
-  }
-
-  var startedAnchorSnippet: String? {
-    guard let openingPromptHeading,
-          workImportHeadingText(openingPromptHeading) != workImportHeadingText(rowHeading) else {
-      return nil
-    }
-    return openingPromptHeading
-  }
-
-  var latestAnchorMessage: ExternalSessionMessage? {
-    guard let latest = conversationMessages.last else { return nil }
-    // Normalize both sides before comparing, and check the started anchor too:
-    // a titled single-message thread clears the heading check yet still repeats
-    // the opening prompt, which reads as a rendering bug.
-    let normalizedLatest = workImportHeadingText(latest.text)
-    guard normalizedLatest != workImportHeadingText(rowHeading) else { return nil }
-    if let started = startedAnchorSnippet, normalizedLatest == workImportHeadingText(started) {
-      return nil
-    }
-    return latest
-  }
-
-  var hasConversationAnchorData: Bool {
-    openingPromptHeading != nil || !conversationMessages.isEmpty
-  }
-
-  var conversationMessages: [ExternalSessionMessage] {
-    (messages ?? []).compactMap { message in
-      let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !text.isEmpty else { return nil }
-      return ExternalSessionMessage(role: message.role, text: text, at: message.at)
-    }
-  }
-
-  var previewSnippet: String? {
-    let trimmedPreview = preview?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmedPreview.isEmpty ? nil : trimmedPreview
-  }
-
-  var previewDuplicatesHeading: Bool {
-    guard let previewSnippet else { return false }
-    return workImportHeadingText(previewSnippet) == workImportHeadingText(rowHeading)
-  }
-
-  var trimmedCwd: String? {
-    let trimmed = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? nil : trimmed
-  }
-
-  var cwdLastPathSegment: String? {
-    guard let trimmedCwd else { return nil }
-    let last = (trimmedCwd as NSString).lastPathComponent
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    return last.isEmpty || last == "/" ? nil : last
-  }
-
-  var cwdDisplayName: String {
-    guard let cwd = trimmedCwd else { return "its original folder" }
-    let home = NSHomeDirectory()
-    var display = cwd
-    if cwd == home { display = "~" }
-    if cwd.hasPrefix(home + "/") {
-      display = "~" + cwd.dropFirst(home.count)
-    }
-    let segments = display.split(separator: "/").map(String.init)
-    guard segments.count > 3 else { return display }
-    return "…/" + segments.suffix(3).joined(separator: "/")
-  }
-
-  var relativeUpdatedAt: String {
-    guard let timestamp = updatedAt ?? createdAt, timestamp > 0 else { return "" }
-    let seconds = timestamp > 10_000_000_000 ? timestamp / 1000 : timestamp
-    return WorkImportSessionFormatters.relative.localizedString(for: Date(timeIntervalSince1970: seconds), relativeTo: Date())
-  }
-}
-
-private func workImportHeadingText(_ value: String?) -> String? {
-  let collapsed = value?
-    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  guard !collapsed.isEmpty else { return nil }
-  guard collapsed.count > 72 else { return collapsed }
-  return String(collapsed.prefix(71)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
-}
-
-private enum WorkImportSessionFormatters {
-  static let relative: RelativeDateTimeFormatter = {
-    let formatter = RelativeDateTimeFormatter()
-    formatter.unitsStyle = .short
-    return formatter
-  }()
 }
 
 private func providerDisplayName(_ provider: String) -> String {

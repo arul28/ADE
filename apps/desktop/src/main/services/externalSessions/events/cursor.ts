@@ -1,4 +1,8 @@
-import { EnvelopeSink, isRecord, str, textOf, type JsonlConverter } from "./common";
+import type { AgentChatEventEnvelope } from "../../../../shared/types";
+import type { ExternalChatHistoryImportOptions } from "../../chat/externalChatHistoryImport";
+import { CURSOR_STORE_MAX_MESSAGE_BYTES, openCursorStoreConversation } from "../discoverCursor";
+import { EnvelopeSink, isRecord, str, textOf, type JsonRecord, type JsonlConverter } from "./common";
+import { cutPage, type EventsCursor, type PageCut } from "./paging";
 
 /**
  * Cursor agent transcripts
@@ -7,7 +11,7 @@ import { EnvelopeSink, isRecord, str, textOf, type JsonlConverter } from "./comm
  * tool ids and no tool results — Cursor keeps outputs only in `store.db`. A
  * tool call is closed with an empty completed result so a finished transcript
  * does not render as still running. A session known only through `store.db`
- * has no converter and falls back to the sampled messages (text only).
+ * is read by `loadCursorStorePage` below.
  */
 export const cursorRecordsToEvents: JsonlConverter = (records, ctx) => {
   const sink = new EnvelopeSink(ctx.options);
@@ -42,3 +46,117 @@ export const cursorRecordsToEvents: JsonlConverter = (records, ctx) => {
   });
   return sink.out;
 };
+
+/**
+ * One `store.db` message (AI SDK JSON) as events. User text, assistant text,
+ * readable reasoning, tool calls and tool results convert; system prompts,
+ * redacted reasoning and images carry nothing to show.
+ */
+function cursorStoreMessageToEvents(message: JsonRecord, sink: EnvelopeSink, key: string, timestamp: string): void {
+  const role = str(message.role);
+  const parts = Array.isArray(message.content) ? message.content : [message.content];
+  if (role === "user") {
+    const text = parts
+      .filter((part) => typeof part === "string" || (isRecord(part) && str(part.type) === "text"))
+      .map(textOf)
+      .join("\n");
+    // Cursor sends its environment block (`<user_info>` then `<git_status>`)
+    // as its own user message, as `readCursorStorePrompts` also skips.
+    if (/^<user_info>/u.test(text.trim())) return;
+    sink.user(text, timestamp, key);
+    return;
+  }
+  // Cursor joins the two halves of an OpenAI call id with a newline.
+  const toolId = (value: unknown, fallback: string): string => str(value)?.replace(/\s*\n\s*/gu, "|") ?? fallback;
+  parts.forEach((part, index) => {
+    const partKey = `${key}:${index}`;
+    if (typeof part === "string") {
+      if (role === "assistant") sink.text(part, timestamp, `${partKey}:text`);
+      return;
+    }
+    if (!isRecord(part)) return;
+    const type = str(part.type);
+    if (role === "assistant" && type === "text") {
+      sink.text(str(part.text) ?? "", timestamp, `${partKey}:text`);
+    } else if (role === "assistant" && type === "reasoning") {
+      sink.reasoning(str(part.text) ?? "", timestamp, `${partKey}:reasoning`);
+    } else if (role === "assistant" && type === "tool-call") {
+      sink.toolCall(str(part.toolName) ?? "tool", part.args ?? {}, timestamp, toolId(part.toolCallId, `${partKey}:tool`));
+    } else if (role === "tool" && type === "tool-result") {
+      sink.toolResult(
+        str(part.toolName) ?? "tool",
+        part.result ?? "",
+        timestamp,
+        toolId(part.toolCallId, `${partKey}:tool`),
+        part.isError === true,
+      );
+    }
+  });
+}
+
+/**
+ * A page of a Cursor chat that exists only as `store.db`. The cursor's `end`
+ * is a message index (the store's message list only grows at its end), and a
+ * page reads back from it one message at a time until it holds `maxEvents`
+ * events or `maxBytes` of message blobs, so a large store is never loaded
+ * whole. The same `end` always yields the same window, which `index` cuts.
+ */
+export function loadCursorStorePage(args: {
+  storePath: string;
+  options: ExternalChatHistoryImportOptions;
+  cursor: EventsCursor | null;
+  maxEvents: number;
+  maxBytes: number;
+  fallbackBaseMs: number;
+}): (PageCut & { bytesTruncated: boolean }) | null {
+  const conversation = openCursorStoreConversation(args.storePath, null);
+  if (!conversation) return null;
+  try {
+    const { messageIds, summaryIndex, summaryId } = conversation;
+    const end = Math.min(messageIds.length, args.cursor?.end ?? messageIds.length);
+    const chunks: AgentChatEventEnvelope[][] = [];
+    let start = end;
+    let count = 0;
+    let bytes = 0;
+    let bytesTruncated = false;
+    while (start > 0 && count < args.maxEvents) {
+      const index = start - 1;
+      const id = messageIds[index]!;
+      const size = conversation.messageSize(id) ?? 0;
+      if (bytes + size > args.maxBytes && start < end) {
+        bytesTruncated = true;
+        break;
+      }
+      start = index;
+      // One oversized blob (a huge tool output) is left out, not the page.
+      if (size > CURSOR_STORE_MAX_MESSAGE_BYTES) continue;
+      bytes += size;
+      const sink = new EnvelopeSink(args.options);
+      const timestamp = new Date(args.fallbackBaseMs + index).toISOString();
+      if (index === summaryIndex) {
+        sink.push({
+          type: "context_compact",
+          trigger: "auto",
+          provider: "cursor",
+          ...(summaryId ? { compactionId: summaryId } : {}),
+          state: "completed",
+        }, timestamp, `cursor-store:${index}:compact`);
+      }
+      const message = conversation.readMessage(id);
+      if (message) cursorStoreMessageToEvents(message, sink, `cursor-store:${index}`, timestamp);
+      chunks.push(sink.out);
+      count += sink.out.length;
+    }
+    const events = chunks.reverse().flat();
+    const cut = cutPage(events, {
+      maxEvents: args.maxEvents,
+      index: args.cursor?.index ?? null,
+      windowStart: start,
+      windowEnd: end,
+      windowBytes: null,
+    });
+    return { ...cut, bytesTruncated };
+  } finally {
+    conversation.close();
+  }
+}

@@ -54,4 +54,22 @@ describe("runOpenCodeToFile", () => {
       executable: big, argv: [], env: process.env, timeoutMs: 10_000, maxBytes: 1024,
     })).resolves.toMatchObject({ ok: false, reason: "too_large" });
   });
+  it.skipIf(process.platform === "win32")("writes the export to an owner-only file", async () => {
+    const cli = fakeCli(`process.stdout.write(String(require("node:fs").fstatSync(1).mode & 0o777));\n`);
+    const result = await runOpenCodeToFile({
+      executable: cli, argv: [], env: process.env, timeoutMs: 10_000, maxBytes: 1024,
+    });
+    expect(result).toEqual({ ok: true, stdout: String(0o600) });
+  });
+
+  it("reports a timeout after the CLI is stopped and leaves no output file", async () => {
+    const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("ade-opencode-") && name.endsWith(".out"));
+    const slow = fakeCli(`setTimeout(() => {}, 60_000);\n`);
+    const result = await runOpenCodeToFile({
+      executable: slow, argv: [], env: process.env, timeoutMs: 300, maxBytes: 1024,
+    });
+    expect(result).toMatchObject({ ok: false, reason: "timeout" });
+    const after = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("ade-opencode-") && name.endsWith(".out"));
+    expect(after.filter((name) => !before.includes(name))).toEqual([]);
+  });
 });

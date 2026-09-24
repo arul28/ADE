@@ -2,7 +2,6 @@
 // MUST stay the first import: it wraps process.emitWarning before anything can
 // pull in `node:sqlite`, whose experimental-feature warning would otherwise
 // print on every single `ade` invocation. See ./lib/nodeWarnings.
-import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
 import "./lib/nodeWarnings";
 // Second on purpose: hands this run to $ADE_CLI_PATH when a shell rc put an
 // older `ade` first on PATH, before the rest of the bundle loads.
@@ -70,6 +69,7 @@ import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
+import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,

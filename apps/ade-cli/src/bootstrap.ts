@@ -47,7 +47,7 @@ import type { SearchService } from "../../desktop/src/main/services/search/searc
 import {
   createExternalSessionsService,
 } from "../../desktop/src/main/services/externalSessions/externalSessionsService";
-import { providerPointersFromChatRecord } from "../../desktop/src/main/services/externalSessions/liveChatProviderRefs";
+import { chatImportedRefsProvider } from "../../desktop/src/main/services/externalSessions/liveChatProviderRefs";
 import { createSupervisedPtyLoader } from "../../desktop/src/main/services/pty/supervisedPtyHost";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -2545,25 +2545,6 @@ export async function createAdeRuntime(args: {
         }
       },
     ));
-    const agentChatImportedRefsSource = agentChatService;
-    const chatImportedRefsProvider = agentChatImportedRefsSource
-      ? async () => {
-        const sessions = await agentChatImportedRefsSource.listSessions(undefined, {
-          includeIdentity: true,
-          includeAutomation: true,
-          includeArchived: false,
-        });
-        // Same extractor as the desktop host and the on-disk scan: every
-        // provider pointer a live chat holds, not only `importedFrom`, so a
-        // session ADE itself runs never lists as importable on either host.
-        return sessions.flatMap((session) =>
-          providerPointersFromChatRecord(session).map((pointer) => ({
-            provider: pointer.provider,
-            externalId: pointer.externalId,
-            chatSessionId: session.sessionId,
-          })));
-      }
-      : undefined;
     externalSessionsService = createExternalSessionsService({
       projectRoot,
       laneService,
@@ -2571,7 +2552,7 @@ export async function createAdeRuntime(args: {
       ptyService,
       logger,
       chatImporter: agentChatService,
-      ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
+      ...(agentChatService ? { chatImportedRefsProvider: chatImportedRefsProvider(agentChatService) } : {}),
       chatSessionsDir: paths.chatSessionsDir,
     });
 

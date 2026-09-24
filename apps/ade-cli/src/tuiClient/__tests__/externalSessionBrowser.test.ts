@@ -11,12 +11,12 @@ import {
   externalSessionLaneLabel,
   externalSessionProviderLabel,
   externalSessionRowTitle,
-  formatExternalSessionSize,
   isImportEntry,
   nextExternalSessionProviderFilter,
   nextExternalSessionTargetLane,
   normalizeExternalSessionListResult,
   visibleExternalSessions,
+  withReloadedExternalSessions,
   type ExternalSessionImportEntry,
 } from "../externalSessionBrowser";
 import type { RightPaneContent } from "../types";
@@ -155,6 +155,43 @@ describe("externalSessionBrowser helpers", () => {
     });
   });
 
+  it("drops the row's lane and action picks when a reload puts another session at that index", () => {
+    const older = session({ id: "older", title: "Older", updatedAt: 10, home: APPLE });
+    const content: Extract<RightPaneContent, { kind: "external-session-browser" }> = {
+      kind: "external-session-browser",
+      laneId: "apple",
+      laneLabel: "Apple Sim Preview",
+      providerFilter: "all",
+      query: "",
+      sessions: [older],
+      loading: false,
+      selectedIndex: 0,
+      actionIndex: 2,
+      targetLaneId: "other",
+      targetLaneLabel: "Other lane",
+      confirmKey: "claude:older:cli:resume",
+    };
+
+    // Same row still at the index: the picks stay.
+    expect(withReloadedExternalSessions(content, [{ ...older, messageCount: 5 }])).toMatchObject({
+      selectedIndex: 0,
+      actionIndex: 2,
+      targetLaneId: "other",
+      confirmKey: "claude:older:cli:resume",
+    });
+
+    // A newer session now sorts first: Enter must not import it into the lane
+    // picked for the old row.
+    const newer = session({ id: "newer", title: "Newer", updatedAt: 50, home: APPLE });
+    expect(withReloadedExternalSessions(content, [older, newer])).toMatchObject({
+      selectedIndex: 0,
+      actionIndex: 0,
+      targetLaneId: null,
+      targetLaneLabel: null,
+      confirmKey: null,
+    });
+  });
+
   it("lists one entry per plan action and defaults the target to the home lane", () => {
     const row = session({ home: APPLE });
     const actions = externalSessionBrowserActions(row, { fallbackLaneId: "other" });
@@ -225,8 +262,11 @@ describe("externalSessionBrowser helpers", () => {
     const live = session({ home: APPLE, possiblyActive: true });
     const entries = externalSessionBrowserActions(live, { fallbackLaneId: "apple" }).filter(isImportEntry);
     const byKey = Object.fromEntries(entries.map((entry) => [entry.key, entry])) as Record<string, ExternalSessionImportEntry>;
-    expect(byKey["cli:resume"]).toMatchObject({ needsConfirm: true, note: "Open elsewhere — close it there first." });
-    expect(byKey["cli:fork"]).toMatchObject({ needsConfirm: false, note: null });
+    expect(byKey["cli:resume"]).toMatchObject({
+      action: { confirmBeforeRun: true },
+      note: "Open elsewhere — close it there first.",
+    });
+    expect(byKey["cli:fork"]).toMatchObject({ action: { confirmBeforeRun: false }, note: null });
   });
 
   it("makes Open existing the default and keeps only copies for imported sessions", () => {
@@ -271,14 +311,6 @@ describe("externalSessionBrowser helpers", () => {
   it("finds rows by lane name", () => {
     const rows = [session({ id: "a", title: "One", home: APPLE }), session({ id: "b", title: "Two" })];
     expect(visibleExternalSessions(rows, "all", "apple sim").map((row) => row.id)).toEqual(["a"]);
-  });
-
-  it("formats session sizes and skips missing ones", () => {
-    expect(formatExternalSessionSize(null)).toBeNull();
-    expect(formatExternalSessionSize(undefined)).toBeNull();
-    expect(formatExternalSessionSize(512)).toBe("512 B");
-    expect(formatExternalSessionSize(1536)).toBe("1.5 KB");
-    expect(formatExternalSessionSize(42 * 1024 * 1024)).toBe("42 MB");
   });
 
   it("cycles through every provider, including the ACP ones", () => {

@@ -19,17 +19,6 @@ import {
 } from "./attachmentUploadService";
 import { resetSharedProviderInstanceStoresForTests } from "../providerInstances/providerInstanceStore";
 
-const externalSessionDetailMocks = vi.hoisted(() => ({
-  loadExternalSessionDetail: vi.fn(),
-}));
-
-// The detail loader reads provider stores under the real home directory, so
-// `work.getExternalSessionDetail` tests stand in for it.
-vi.mock("../../../../desktop/src/main/services/externalSessions/externalSessionDetail", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  loadExternalSessionDetail: externalSessionDetailMocks.loadExternalSessionDetail,
-}));
-
 function makePayload(
   action: string,
   args: Record<string, unknown> = {},
@@ -1805,7 +1794,7 @@ describe("createSyncRemoteCommandService", () => {
     expect(list).not.toHaveBeenCalled();
   });
 
-  it("routes work.getExternalSessionDetail to the detail loader with a mobile page size", async () => {
+  it("routes work.getExternalSessionDetail through the external session service with a mobile page size", async () => {
     const detail = {
       provider: "claude",
       id: "session-1",
@@ -1833,9 +1822,9 @@ describe("createSyncRemoteCommandService", () => {
       hasOlder: true,
       olderCursor: "cursor-older",
     };
-    externalSessionDetailMocks.loadExternalSessionDetail.mockResolvedValueOnce(detail);
+    const getDetail = vi.fn().mockResolvedValue(detail);
     const { service } = createService({
-      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn() },
+      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn(), getDetail },
     });
 
     expect(service.getDescriptor("work.getExternalSessionDetail")).toEqual({
@@ -1850,7 +1839,7 @@ describe("createSyncRemoteCommandService", () => {
       before: " cursor-newer ",
     })) as typeof detail;
 
-    expect(externalSessionDetailMocks.loadExternalSessionDetail).toHaveBeenCalledWith(
+    expect(getDetail).toHaveBeenCalledWith(
       { provider: "claude", sessionId: "session-1", before: "cursor-newer" },
       { maxEvents: 120 },
     );
@@ -1885,25 +1874,25 @@ describe("createSyncRemoteCommandService", () => {
       hasOlder: false,
       olderCursor: null,
     };
-    externalSessionDetailMocks.loadExternalSessionDetail.mockResolvedValueOnce(detail);
+    const getDetail = vi.fn().mockResolvedValue(detail);
     const { service } = createService({
-      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn() },
+      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn(), getDetail },
     });
 
     await expect(service.execute(makePayload("work.getExternalSessionDetail", {
       provider: "codex",
       sessionId: "thread-1",
     }))).resolves.toEqual(detail);
-    expect(externalSessionDetailMocks.loadExternalSessionDetail).toHaveBeenLastCalledWith(
+    expect(getDetail).toHaveBeenLastCalledWith(
       { provider: "codex", sessionId: "thread-1" },
       { maxEvents: 120 },
     );
   });
 
   it("rejects invalid work.getExternalSessionDetail payloads and runtimes without external sessions", async () => {
-    externalSessionDetailMocks.loadExternalSessionDetail.mockClear();
+    const getDetail = vi.fn();
     const { service } = createService({
-      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn() },
+      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn(), getDetail },
     });
 
     await expect(service.execute(makePayload("work.getExternalSessionDetail", {
@@ -1925,7 +1914,7 @@ describe("createSyncRemoteCommandService", () => {
       provider: "claude",
       sessionId: "session-1",
     }))).rejects.toThrow("External sessions service not available.");
-    expect(externalSessionDetailMocks.loadExternalSessionDetail).not.toHaveBeenCalled();
+    expect(getDetail).not.toHaveBeenCalled();
   });
 
   it("routes work.importExternalSession to the external session service", async () => {

@@ -383,10 +383,12 @@ const EXTERNAL_SESSION_NOISE_TAGS = [
   "command-args",
   "ide_opened_file",
   "ide_selection",
-  // Cursor: slash-command bodies, attached-image notes, and the environment block.
+  // Cursor: slash-command bodies, attached-image notes, the environment block,
+  // and the mode reminder ("Ask mode is active…") sent beside a query.
   "cursor_commands",
   "image_files",
   "user_info",
+  "system_reminder",
 ] as const;
 
 function stripKnownNoiseTags(raw: string): string {

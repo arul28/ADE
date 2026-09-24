@@ -397,6 +397,7 @@ import {
 } from "./state";
 import {
   clampExternalSessionBrowserContent,
+  EXTERNAL_SESSION_ROW_RESET,
   externalSessionActionKey,
   externalSessionBrowserActions,
   externalSessionBrowserTargetOptions,
@@ -407,6 +408,7 @@ import {
   normalizeExternalSessionListResult,
   resolveExternalSessionTargetLane,
   visibleExternalSessions,
+  withReloadedExternalSessions,
   type ExternalSessionImportEntry,
 } from "./externalSessionBrowser";
 import { SpinTickProvider } from "./spinTick";
@@ -9931,14 +9933,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (externalSessionListGenerationRef.current !== generation) return;
       setRightPane((prev) => {
         if (prev.kind !== "external-session-browser" || prev.laneId !== laneId) return prev;
-        return clampExternalSessionBrowserContent({
+        return withReloadedExternalSessions({
           ...prev,
-          sessions,
           loading: false,
           error: null,
           importError: null,
           loadedAt: Date.now(),
-        });
+        }, sessions);
       });
     } catch (err) {
       if (externalSessionListGenerationRef.current !== generation) return;
@@ -15915,7 +15916,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ? Math.min(Math.max(0, browser.actionIndex), actions.length - 1)
         : 0;
       // A new row starts on its own home lane, with nothing waiting on confirm.
-      const rowReset = { actionIndex: 0, targetLaneId: null, targetLaneLabel: null, confirmKey: null } as const;
+      const rowReset = EXTERNAL_SESSION_ROW_RESET;
 
       if (key.escape) {
         setRightPane({ kind: "empty" });
@@ -15973,7 +15974,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         const confirmKey = externalSessionActionKey(selectedSession, action);
-        if (action.needsConfirm && browser.confirmKey !== confirmKey) {
+        if (action.action.confirmBeforeRun && browser.confirmKey !== confirmKey) {
           setRightPane((prev) => prev.kind === "external-session-browser"
             ? { ...prev, confirmKey, importError: null }
             : prev);

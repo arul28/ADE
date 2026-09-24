@@ -79,6 +79,17 @@ describe("Kimi session capture", () => {
       .toEqual(["session_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]);
   });
 
+  it("ignores a workspaces.json id that would leave the sessions folder", () => {
+    fs.mkdirSync(kimiHome, { recursive: true });
+    const escaping = "wd_x/../../../outside";
+    fs.writeFileSync(path.join(kimiHome, "workspaces.json"), JSON.stringify({
+      version: 1,
+      workspaces: { [escaping]: { root: cwd, name: "escape" } },
+    }));
+    writeSession(escaping, "session_ffffffff-ffff-4fff-8fff-ffffffffffff", { workDir: cwd, createdAt: Date.now() });
+    expect(listKimiSessionCandidates({ kimiHome, cwd })).toEqual([]);
+  });
+
   it("selects the session born in the launch window, preferring a recorded cwd", () => {
     const startedAtMs = Date.parse("2026-09-23T12:00:00.000Z");
     const bucket = kimiWorkDirKey(cwd);

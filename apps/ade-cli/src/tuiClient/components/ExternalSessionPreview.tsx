@@ -6,8 +6,8 @@ import {
   externalSessionLaneLabel,
   externalSessionProviderLabel,
   externalSessionRowTitle,
-  formatExternalSessionSize,
 } from "../externalSessionBrowser";
+import { formatExternalSessionSize } from "../../../../desktop/src/shared/externalSessionAffordances";
 import type { ExternalSessionSummary } from "../../../../desktop/src/shared/types/externalSessions";
 
 /**

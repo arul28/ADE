@@ -1,7 +1,6 @@
 import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
-  ExternalSessionCapabilities,
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionHome,
@@ -11,6 +10,7 @@ import type {
   ExternalSessionProvider,
   ExternalSessionSummary,
 } from "../shared/types";
+import { EXTERNAL_SESSION_PROVIDER_CAPABILITIES } from "../shared/types/externalSessions";
 
 /**
  * Import-session data for the Vite-only preview: one or more sessions per
@@ -23,27 +23,6 @@ type MockLane = { id: string; name: string; branchRef?: string | null; color?: s
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
-
-const CLI_ONLY_HOME: ExternalSessionCapabilities = {
-  resumeInPlace: true,
-  resumeInDifferentCwd: false,
-  fork: false,
-  forkIntoDifferentCwd: false,
-  importToChat: false,
-};
-
-const CAPABILITIES: Record<ExternalSessionProvider, ExternalSessionCapabilities> = {
-  claude: { resumeInPlace: true, resumeInDifferentCwd: false, fork: true, forkIntoDifferentCwd: true, importToChat: true },
-  codex: { resumeInPlace: true, resumeInDifferentCwd: true, fork: true, forkIntoDifferentCwd: true, importToChat: true },
-  cursor: CLI_ONLY_HOME,
-  droid: { resumeInPlace: true, resumeInDifferentCwd: false, fork: true, forkIntoDifferentCwd: true, importToChat: false },
-  opencode: { ...CLI_ONLY_HOME, fork: true },
-  pi: { ...CLI_ONLY_HOME, fork: true },
-  qwen: { ...CLI_ONLY_HOME, fork: true },
-  kimi: CLI_ONLY_HOME,
-  grok: { ...CLI_ONLY_HOME, fork: true },
-  copilot: CLI_ONLY_HOME,
-};
 
 type Seed = {
   provider: ExternalSessionProvider;
@@ -135,7 +114,7 @@ function summaries(lanes: MockLane[], now: number): ExternalSessionSummary[] {
       possiblyActive: Boolean(seed.live),
       importedBefore: seed.provider === "codex" ? true : undefined,
       cwdMatchesRequestedLane: null,
-      capabilities: CAPABILITIES[seed.provider],
+      capabilities: EXTERNAL_SESSION_PROVIDER_CAPABILITIES[seed.provider],
       home,
       sizeBytes: seed.sizeBytes,
     } satisfies ExternalSessionSummary;

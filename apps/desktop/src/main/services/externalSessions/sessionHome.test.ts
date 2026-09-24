@@ -46,6 +46,11 @@ describe("createSessionHomeResolver", () => {
     expect(resolve(path.join(root, ".ade/worktrees/gone-1234"))).toMatchObject({ kind: "removed-lane", laneId: null });
   });
 
+  it.skipIf(process.platform === "linux")("treats a differently cased worktrees folder as a removed lane on case-insensitive systems", () => {
+    const resolve = createSessionHomeResolver([lane("primary", "main", root, "primary")]);
+    expect(resolve(path.join(root, ".ADE/WORKTREES/deleted-9999"))).toMatchObject({ kind: "removed-lane", laneId: null });
+  });
+
   it("marks folders outside every lane", () => {
     const resolve = createSessionHomeResolver([lane("primary", "main", root, "primary")]);
     expect(resolve(os.tmpdir())).toMatchObject({ kind: "outside", laneId: null });

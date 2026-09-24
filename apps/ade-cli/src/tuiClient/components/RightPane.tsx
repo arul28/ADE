@@ -22,12 +22,12 @@ import {
   externalSessionProviderLabel,
   externalSessionRowTitle,
   externalSessionTargetLaneName,
-  formatExternalSessionSize,
   isImportEntry,
   visibleExternalSessions,
 } from "../externalSessionBrowser";
 import { formatRelativePastTime } from "../relativeTime";
 import { usageLimitResumePill } from "../../../../desktop/src/shared/usageLimitResumePresentation";
+import { formatExternalSessionSize } from "../../../../desktop/src/shared/externalSessionAffordances";
 import {
   isEarlierBackgroundItem,
   isEarlierScheduleItem,

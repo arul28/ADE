@@ -5926,6 +5926,9 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var alreadyImported: Bool
   var importedSessionRef: ExternalSessionImportedRef?
   var possiblyActive: Bool
+  /// ADE imported this session before and that ADE row is gone. A hint shown
+  /// as "Copied before"; the row stays importable.
+  var importedBefore: Bool
   var cwdMatchesRequestedLane: Bool?
   var capabilities: ExternalSessionCapabilities
   /// The lane this session belongs to. Older hosts do not send it.
@@ -5946,6 +5949,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     case alreadyImported
     case importedSessionRef
     case possiblyActive
+    case importedBefore
     case cwdMatchesRequestedLane
     case capabilities
     case home
@@ -5965,6 +5969,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     alreadyImported: Bool = false,
     importedSessionRef: ExternalSessionImportedRef? = nil,
     possiblyActive: Bool = false,
+    importedBefore: Bool = false,
     cwdMatchesRequestedLane: Bool? = nil,
     capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities(),
     home: ExternalSessionHome? = nil,
@@ -5982,6 +5987,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     self.alreadyImported = alreadyImported
     self.importedSessionRef = importedSessionRef
     self.possiblyActive = possiblyActive
+    self.importedBefore = importedBefore
     self.cwdMatchesRequestedLane = cwdMatchesRequestedLane
     self.capabilities = capabilities
     self.home = home
@@ -6019,6 +6025,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     // field, never the row.
     home = try? container.decodeIfPresent(ExternalSessionHome.self, forKey: .home)
     sizeBytes = try? container.decodeIfPresent(Double.self, forKey: .sizeBytes)
+    importedBefore = (try? container.decodeIfPresent(Bool.self, forKey: .importedBefore)) ?? false
   }
 }
 
@@ -6113,6 +6120,11 @@ struct ExternalSessionDetail: Decodable, Equatable {
   }
 }
 
+/// The host's answer to `work.importExternalSession`. By the time it arrives
+/// the import already happened on the host, so only `kind` and the ids are
+/// required: an embedded `session`/`chatSummary` this build cannot decode is
+/// dropped (the screen re-fetches the chat summary) instead of failing the
+/// whole result and inviting a duplicate import.
 struct ExternalSessionImportResult: Codable, Equatable {
   var kind: String
   var sessionId: String?
@@ -6121,6 +6133,45 @@ struct ExternalSessionImportResult: Codable, Equatable {
   var chatSessionId: String?
   var session: TerminalSessionSummary?
   var chatSummary: AgentChatSessionSummary?
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case sessionId
+    case ptyId
+    case laneId
+    case chatSessionId
+    case session
+    case chatSummary
+  }
+
+  init(
+    kind: String,
+    sessionId: String? = nil,
+    ptyId: String? = nil,
+    laneId: String? = nil,
+    chatSessionId: String? = nil,
+    session: TerminalSessionSummary? = nil,
+    chatSummary: AgentChatSessionSummary? = nil
+  ) {
+    self.kind = kind
+    self.sessionId = sessionId
+    self.ptyId = ptyId
+    self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.session = session
+    self.chatSummary = chatSummary
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    kind = try container.decode(String.self, forKey: .kind)
+    sessionId = try? container.decodeIfPresent(String.self, forKey: .sessionId)
+    ptyId = try? container.decodeIfPresent(String.self, forKey: .ptyId)
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    chatSessionId = try? container.decodeIfPresent(String.self, forKey: .chatSessionId)
+    session = try? container.decodeIfPresent(TerminalSessionSummary.self, forKey: .session)
+    chatSummary = try? container.decodeIfPresent(AgentChatSessionSummary.self, forKey: .chatSummary)
+  }
 }
 
 struct SyncScalarBytes: Codable, Equatable {

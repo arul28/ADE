@@ -833,7 +833,6 @@ import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import {
-  loadExternalSessionDetail,
   normalizeExternalSessionDetailArgs,
   startExternalSessionDetailWatch,
   stopExternalSessionDetailWatch,
@@ -6291,7 +6290,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.externalSessionsGetDetail, async (_event, arg: unknown): Promise<ExternalSessionDetail> => {
-    return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(arg));
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["externalSessionsService"]);
+    return ctx.externalSessionsService.getDetail(normalizeExternalSessionDetailArgs(arg));
   });
 
   const detailWatchCleanupSenders = new Set<number>();

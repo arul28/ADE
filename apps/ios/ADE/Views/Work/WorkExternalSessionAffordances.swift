@@ -35,13 +35,17 @@ let workImportSurfaces = ["chat", "cli"]
 
 /// The provider table. Host capabilities can only narrow it
 /// (see `workEffectiveImportRules`).
+///
+/// Chat continue for Droid, OpenCode, Pi and Copilot seeds the provider's own
+/// session pointer. Cursor, Qwen, Kimi and Grok stay `none` until a live run
+/// proves their CLI session can be loaded by ADE's chat runtime.
 let workProviderImportRules: [String: WorkProviderImportRules] = [
   "claude": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
   "codex": WorkProviderImportRules(chatContinue: .any, chatCopy: .any, cliContinue: .any, cliCopy: .any),
   "cursor": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
-  "droid": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .any),
-  "opencode": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
-  "pi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+  "droid": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
+  "opencode": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+  "pi": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
   "qwen": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
   "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
   "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
@@ -115,8 +119,12 @@ struct WorkImportPlanAction: Equatable {
   /// Wire value for the import `mode`: "resume" or "fork".
   var mode: String
   var label: String
-  /// A chat copy lets the user pick the model.
+  /// A chat copy takes a model. Desktop shows a picker; the phone sends no
+  /// model and the host picks the session's family, else the provider default.
   var needsModel: Bool
+  /// Continuing a session that may still be open elsewhere asks for a second
+  /// tap before it runs; two writers on one provider session corrupt it.
+  var confirmBeforeRun: Bool = false
 }
 
 struct WorkImportPlan: Equatable {
@@ -186,13 +194,19 @@ func workPlanImport(
   let awayFromHome = homeId != nil && targetLaneId != homeId
 
   func copyAction(_ label: String) -> WorkImportPlanAction {
-    WorkImportPlanAction(target: surface, mode: "fork", label: label, needsModel: surface == "chat")
+    WorkImportPlanAction(target: surface, mode: "fork", label: label, needsModel: surface == "chat", confirmBeforeRun: false)
   }
 
   var primary: WorkImportPlanAction?
   var secondary: WorkImportPlanAction?
   if canContinue {
-    primary = WorkImportPlanAction(target: surface, mode: "resume", label: "Continue", needsModel: false)
+    primary = WorkImportPlanAction(
+      target: surface,
+      mode: "resume",
+      label: "Continue",
+      needsModel: false,
+      confirmBeforeRun: session.possiblyActive
+    )
     if canCopy { secondary = copyAction("Copy") }
   } else if canCopy {
     primary = copyAction(surface == "chat" ? "Open as ADE chat" : awayFromHome ? "Copy here" : "Copy")
@@ -207,7 +221,8 @@ func workPlanImport(
             surface == "cli",
             pair.resume != .any,
             homeId == nil,
-            home != nil {
+            // An older host sends no `home`; its folder check is the only signal.
+            home != nil || session.cwdMatchesRequestedLane == false {
     note = "Runs in its original folder."
   }
 
@@ -221,6 +236,92 @@ func workPlanImport(
     secondary: secondary,
     note: note
   )
+}
+
+/// Host-side guard, mirrored so the phone refuses the same imports with the
+/// same words before a round trip. Mirrors `importRejectionReason`.
+func workImportRejectionReason(
+  _ session: ExternalSessionSummary,
+  target: String,
+  mode: String,
+  laneId: String
+) -> String? {
+  let rules = workEffectiveImportRules(session)
+  let pair = workRulesForSurface(rules, target)
+  let rule = mode == "resume" ? pair.resume : pair.fork
+  let label = workExternalSessionProviderName(session.provider)
+  if rule == .none {
+    let what: String
+    if target == "chat" {
+      what = mode == "resume" ? "continued as an ADE chat" : "opened as an ADE chat"
+    } else {
+      what = mode == "resume" ? "continued in a terminal" : "copied in a terminal"
+    }
+    return "This \(label) session can't be \(what)."
+  }
+  if !workLaneRuleAllows(rule, home: session.home, targetLaneId: laneId) {
+    if let homeName = session.home?.laneName, !homeName.isEmpty {
+      return "This \(label) session can only do that in \(homeName)."
+    }
+    return "This \(label) session can't do that in this lane."
+  }
+  return nil
+}
+
+/// Sessions with no prompts have nothing to continue or replay; the list hides
+/// them, like the desktop dialog. An unknown count stays visible.
+func workImportHasPrompts(_ session: ExternalSessionSummary) -> Bool {
+  guard let count = session.messageCount else { return true }
+  return count > 0
+}
+
+/// Date section for the import list: "Today", "Yesterday", a weekday within
+/// the last week, else a short date. Mirrors `sessionDateGroup`. Accepts
+/// seconds or milliseconds.
+func workImportDateGroup(_ timestamp: Double?, now: Date = Date(), calendar: Calendar = .current) -> String {
+  guard let timestamp, timestamp.isFinite, timestamp > 0 else { return "Older" }
+  let seconds = timestamp > 10_000_000_000 ? timestamp / 1000 : timestamp
+  let date = Date(timeIntervalSince1970: seconds)
+  let today = calendar.startOfDay(for: now)
+  let day = calendar.startOfDay(for: date)
+  if day == today { return "Today" }
+  if let yesterday = calendar.date(byAdding: .day, value: -1, to: today), day == yesterday {
+    return "Yesterday"
+  }
+  if now.timeIntervalSince(date) < 7 * 24 * 60 * 60 {
+    return date.formatted(.dateTime.weekday(.wide))
+  }
+  return date.formatted(.dateTime.month(.abbreviated).day().year())
+}
+
+/// The last import mode picked for a provider, shared by every import screen.
+/// Same idea as the desktop's `ade.importSession.surface.<provider>`.
+func workImportSurfacePreference(_ provider: String, defaults: UserDefaults = .standard) -> String? {
+  let value = defaults.string(forKey: "ade.importSession.surface.\(workExternalSessionProviderKey(provider))")
+  return value.flatMap { workImportSurfaces.contains($0) ? $0 : nil }
+}
+
+func workSetImportSurfacePreference(_ provider: String, surface: String, defaults: UserDefaults = .standard) {
+  guard workImportSurfaces.contains(surface) else { return }
+  defaults.set(surface, forKey: "ade.importSession.surface.\(workExternalSessionProviderKey(provider))")
+}
+
+/// Every provider the importer scans, in display order. Mirrors
+/// `EXTERNAL_SESSION_PROVIDERS`.
+let workImportSessionProviders = [
+  "claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot",
+]
+
+/// The ACP providers a host learned together with `work.getExternalSessionDetail`.
+let workImportAcpProviders: Set<String> = ["qwen", "kimi", "grok", "copilot"]
+
+/// Providers worth asking this host about. An older host (no
+/// `work.getExternalSessionDetail`) refuses the ACP providers by name, so the
+/// phone does not ask it about them at all.
+func workImportScanProviders(hostKnowsAcpProviders: Bool) -> [String] {
+  hostKnowsAcpProviders
+    ? workImportSessionProviders
+    : workImportSessionProviders.filter { !workImportAcpProviders.contains($0) }
 }
 
 /// Label for a surface in the mode switch.

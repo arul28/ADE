@@ -55,10 +55,7 @@ import type {
   AttentionPresence,
 } from "../../../shared/types/attention";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
-import {
-  loadExternalSessionDetail,
-  normalizeExternalSessionDetailArgs,
-} from "../externalSessions/externalSessionDetail";
+import { normalizeExternalSessionDetailArgs } from "../externalSessions/externalSessionDetail";
 import type {
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
@@ -3260,7 +3257,7 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
       );
     },
     getDetail(args: unknown) {
-      return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(args ?? {}));
+      return externalSessionsService.getDetail(normalizeExternalSessionDetailArgs(args ?? {}));
     },
     // `watchDetail`/`unwatchDetail` are deliberately absent: the watch pushes
     // updates on a per-sender Electron IPC channel this action domain cannot

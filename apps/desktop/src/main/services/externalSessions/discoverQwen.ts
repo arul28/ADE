@@ -72,7 +72,7 @@ function qwenPartsText(message: Record<string, unknown> | null): string | null {
 }
 
 /** A user record the person typed, as opposed to one Qwen injected. */
-function isQwenPromptRecord(record: Record<string, unknown>): boolean {
+export function isQwenPromptRecord(record: Record<string, unknown>): boolean {
   if (record.type !== "user") return false;
   const provenance = asString(record.provenance);
   return provenance == null || provenance === "real_user";

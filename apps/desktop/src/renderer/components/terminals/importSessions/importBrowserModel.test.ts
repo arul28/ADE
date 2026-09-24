@@ -8,7 +8,7 @@ import {
   sessionPlace,
   spliceNewestPage,
 } from "./importBrowserModel";
-import { formatSessionSize } from "./sessionPresentation";
+import { formatExternalSessionSize } from "../../../../shared/externalSessionAffordances";
 
 function summary(overrides: Partial<ExternalSessionSummary> = {}): ExternalSessionSummary {
   return {
@@ -77,9 +77,13 @@ describe("importBrowserModel", () => {
     expect(spliceNewestPage(current, [env("t9", "z")])).toBeNull();
   });
 
-  it("formats sizes compactly", () => {
-    expect(formatSessionSize(40 * 1024 * 1024)).toBe("40 MB");
-    expect(formatSessionSize(2.44 * 1024 * 1024)).toBe("2.4 MB");
-    expect(formatSessionSize(null)).toBe("");
+  it("formats sizes compactly and hides unknown or zero sizes", () => {
+    expect(formatExternalSessionSize(40 * 1024 * 1024)).toBe("40 MB");
+    expect(formatExternalSessionSize(2.44 * 1024 * 1024)).toBe("2.4 MB");
+    expect(formatExternalSessionSize(1536)).toBe("1.5 KB");
+    expect(formatExternalSessionSize(512)).toBe("512 B");
+    expect(formatExternalSessionSize(0)).toBe("");
+    expect(formatExternalSessionSize(null)).toBe("");
+    expect(formatExternalSessionSize(undefined)).toBe("");
   });
 });

@@ -110,7 +110,7 @@ function copilotEventText(record: Record<string, unknown>): string | null {
  * A prompt the person typed. Autopilot writes its own "keep going" turns as
  * `user.message` with `source: "autopilot"`; those are not prompts.
  */
-function isCopilotPrompt(record: Record<string, unknown>): boolean {
+export function isCopilotPrompt(record: Record<string, unknown>): boolean {
   if (record.type !== "user.message") return false;
   const source = asString(asRecord(record.data)?.source);
   return source == null || source === "user";

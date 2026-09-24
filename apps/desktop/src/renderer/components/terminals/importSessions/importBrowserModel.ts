@@ -52,14 +52,12 @@ export function replaceProviderRows(
 }
 
 export function readImportedSessionRef(summary: ExternalSessionSummary): ImportedSessionRef | null {
-  const raw = (summary as { importedSessionRef?: unknown }).importedSessionRef;
-  if (!raw || typeof raw !== "object") return null;
-  const kind = (raw as { kind?: unknown }).kind;
-  const sessionId = (raw as { sessionId?: unknown }).sessionId;
-  if ((kind !== "chat" && kind !== "cli") || typeof sessionId !== "string" || !sessionId) {
+  const ref = summary.importedSessionRef;
+  // Typed, but it came over the wire from a host that may be older or newer.
+  if (!ref || (ref.kind !== "chat" && ref.kind !== "cli") || typeof ref.sessionId !== "string" || !ref.sessionId) {
     return null;
   }
-  return { kind, sessionId };
+  return { kind: ref.kind, sessionId: ref.sessionId };
 }
 
 /**
@@ -240,8 +238,10 @@ export function eventsFromMessages(
 }
 
 function envelopeIdentity(envelope: AgentChatEventEnvelope): string {
-  const event = envelope.event as { type: string; itemId?: string; messageId?: string };
-  return `${envelope.timestamp}|${event.type}|${event.itemId ?? event.messageId ?? ""}`;
+  const event = envelope.event;
+  const itemId = "itemId" in event && typeof event.itemId === "string" ? event.itemId : null;
+  const messageId = "messageId" in event && typeof event.messageId === "string" ? event.messageId : null;
+  return `${envelope.timestamp}|${event.type}|${itemId ?? messageId ?? ""}`;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { providerDisplayName } from "./contract";
+import { importProviderLabel } from "../../../../shared/externalSessionPolicy";
 import { relativeTimeCompact, relativeWhen } from "../../../lib/format";
 import type { ExternalSessionMessage, ExternalSessionSummary } from "./contract";
 
@@ -17,20 +17,6 @@ export function formatUpdatedAtCompact(ms: number | null | undefined): string {
 export function formatPromptCount(count: number | null | undefined): string {
   if (count == null || !Number.isFinite(count)) return "";
   return `${count.toLocaleString()} prompt${count === 1 ? "" : "s"}`;
-}
-
-/** Whole units above 10 ("40 MB"), one decimal below ("2.4 MB"). */
-export function formatSessionSize(bytes: number | null | undefined): string {
-  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return "";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const text = unit === 0 || value >= 10 ? String(Math.round(value)) : value.toFixed(1);
-  return `${text} ${units[unit]}`;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -79,7 +65,7 @@ export function sessionHeading(summary: ExternalSessionSummary): string {
   const firstUser = summary.messages?.find((message) => message.role === "user")?.text;
   const sampled = asHeadingText(firstUser ?? null);
   if (sampled) return sampled;
-  return `Untitled ${providerDisplayName(summary.provider)} chat`;
+  return `Untitled ${importProviderLabel(summary.provider)} chat`;
 }
 
 /**

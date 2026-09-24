@@ -5,9 +5,9 @@ import { SmartTooltip } from "../../ui/SmartTooltip";
 import { DraftMachinePicker } from "../../chat/DraftMachinePicker";
 import { ToolLogo } from "../ToolLogos";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
+import { importProviderLabel } from "../../../../shared/externalSessionPolicy";
 import {
   PROVIDER_TOOL_TYPE,
-  providerDisplayName,
   type ExternalSessionProvider,
   type ExternalSessionSource,
 } from "./contract";
@@ -155,7 +155,7 @@ export function ImportTopBar({
           <Chip
             key={chip.provider}
             provider={chip.provider}
-            label={providerDisplayName(chip.provider)}
+            label={importProviderLabel(chip.provider)}
             count={chip.count}
             selected={providerFilter === chip.provider}
             onClick={() => onProviderFilterChange(chip.provider)}

@@ -1,6 +1,6 @@
 /**
- * Path display for external-session rows. The import actions themselves live
- * in `externalSessionPolicy.ts`.
+ * Display helpers for external-session rows, shared by the desktop dialog and
+ * the TUI. The import actions themselves live in `externalSessionPolicy.ts`.
  */
 
 /**
@@ -67,4 +67,22 @@ export function shortenExternalSessionCwd(
   const segments = displayPath.split(/[\\/]/).filter(Boolean);
   if (segments.length <= maxSegments) return displayPath;
   return `…${separator}${segments.slice(-maxSegments).join(separator)}`;
+}
+
+/**
+ * Transcript size for a row: whole units above 10 ("40 MB"), one decimal below
+ * ("2.4 MB"). Empty when the host sent no size or a zero one — a 0 B session
+ * says nothing worth a slot in the row.
+ */
+export function formatExternalSessionSize(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const text = unit === 0 || value >= 10 ? String(Math.round(value)) : value.toFixed(1);
+  return `${text} ${units[unit]}`;
 }

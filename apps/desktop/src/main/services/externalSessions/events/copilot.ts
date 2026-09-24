@@ -1,4 +1,5 @@
 import { EnvelopeSink, isRecord, str, textOf, toIso, type JsonlConverter } from "./common";
+import { isCopilotPrompt } from "../discoverCopilot";
 
 /**
  * GitHub Copilot CLI events (`~/.copilot/session-state/<id>/events.jsonl`).
@@ -20,6 +21,7 @@ export const copilotRecordsToEvents: JsonlConverter = (records, ctx) => {
     const timestamp = toIso(record.timestamp, ctx.fallbackMs(index));
     switch (str(record.type)) {
       case "user.message":
+        if (!isCopilotPrompt(record)) return;
         sink.user(textOf(data.content), timestamp, rowId);
         return;
       case "assistant.message": {

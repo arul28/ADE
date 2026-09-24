@@ -2161,6 +2161,8 @@ function isWindowsAbsoluteKimiPath(value: string): boolean {
  * Checked against the real `~/.kimi-code/workspaces.json` entry
  * `wd_admin_2151c536b962` for `/Users/admin`.
  */
+const KIMI_BUCKET_ID_RE = /^wd_[a-z0-9._-]*_[0-9a-f]{12}$/;
+
 export function kimiWorkDirKey(workDir: string): string {
   const normalized = isWindowsAbsoluteKimiPath(workDir)
     ? path.win32.resolve(workDir).replaceAll("\\", "/")
@@ -2223,7 +2225,9 @@ export function listKimiSessionCandidates(args: { kimiHome: string; cwd: string 
     };
     for (const [id, workspace] of Object.entries(parsed.workspaces ?? {})) {
       const root = typeof workspace?.root === "string" ? workspace.root : "";
-      if (id.startsWith("wd_") && root && spellings.some((spelling) => pathsEqual(root, spelling))) bucketIds.add(id);
+      // The id becomes a folder name: only Kimi's own `wd_<slug>_<hash>` shape,
+      // so a hand-edited entry cannot point the scan outside `sessions/`.
+      if (KIMI_BUCKET_ID_RE.test(id) && root && spellings.some((spelling) => pathsEqual(root, spelling))) bucketIds.add(id);
     }
   } catch {
     // No or unreadable workspaces.json: the computed bucket still applies.

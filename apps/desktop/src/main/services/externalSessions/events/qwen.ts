@@ -1,4 +1,5 @@
 import { EnvelopeSink, isRecord, str, toIso, type JsonRecord, type JsonlConverter } from "./common";
+import { isQwenPromptRecord } from "../discoverQwen";
 
 /**
  * Qwen Code chat JSONL (`~/.qwen/projects/<slug>/chats/<id>.jsonl`), a Gemini
@@ -19,6 +20,7 @@ export const qwenRecordsToEvents: JsonlConverter = (records, ctx) => {
     if (!isRecord(record)) return;
     const type = str(record.type);
     if (type !== "user" && type !== "assistant" && type !== "tool_result") return;
+    if (type === "user" && !isQwenPromptRecord(record)) return;
     const message = isRecord(record.message) ? record.message : null;
     const parts = Array.isArray(message?.parts) ? message.parts : [];
     const rowId = str(record.uuid) ?? `qwen:${ctx.lineKeys[index] ?? index}`;

@@ -98,7 +98,7 @@ function recordTime(record: Record<string, unknown>): number | string | null {
 }
 
 /** User turns Kimi counts as typed by the person (mirrors `isUserVisibleTurnRecord`). */
-function isKimiUserOrigin(message: Record<string, unknown>): boolean {
+export function isKimiUserOrigin(message: Record<string, unknown>): boolean {
   const origin = asRecord(message.origin);
   const kind = asString(origin?.kind);
   if (kind == null || kind === "user") return true;

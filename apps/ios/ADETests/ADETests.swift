@@ -403,9 +403,30 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(plan.note, "Runs in its original folder.")
   }
 
+  func testImportPlanNotesOriginalFolderForOlderHostWithoutHome() {
+    var away = importSession("pi")
+    away.home = nil
+    away.cwdMatchesRequestedLane = false
+    XCTAssertEqual(workPlanImport(away, surface: "cli", targetLaneId: "main").note, "Runs in its original folder.")
+    var here = away
+    here.cwdMatchesRequestedLane = true
+    XCTAssertNil(workPlanImport(here, surface: "cli", targetLaneId: "main").note)
+  }
+
   func testImportPlanWarnsBeforeContinuingLiveSession() {
     let plan = workPlanImport(importSession("claude", possiblyActive: true), surface: "cli", targetLaneId: "apple")
     XCTAssertEqual(plan.note, "Open elsewhere — close it there first.")
+  }
+
+  func testImportPlanAsksForConfirmationOnlyBeforeContinuingLiveSession() {
+    let live = workPlanImport(importSession("claude", possiblyActive: true), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(live.primary?.mode, "resume")
+    XCTAssertEqual(live.primary?.confirmBeforeRun, true)
+    // A copy leaves the original untouched, so it never needs the second tap.
+    XCTAssertEqual(live.secondary?.mode, "fork")
+    XCTAssertEqual(live.secondary?.confirmBeforeRun, false)
+    let idle = workPlanImport(importSession("claude"), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(idle.primary?.confirmBeforeRun, false)
   }
 
   func testImportPlanFallsBackToFirstSurfaceWithActions() {
@@ -446,6 +467,141 @@ final class ADETests: XCTestCase {
       ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
     )
     XCTAssertEqual(Set(workProviderImportRules.keys).count, 10)
+  }
+
+  /// Hardcoded copy of `PROVIDER_IMPORT_RULES` in
+  /// apps/desktop/src/shared/externalSessionPolicy.ts. Change both together.
+  func testImportProviderTableMatchesDesktopPolicy() {
+    let expected: [String: WorkProviderImportRules] = [
+      "claude": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
+      "codex": WorkProviderImportRules(chatContinue: .any, chatCopy: .any, cliContinue: .any, cliCopy: .any),
+      "cursor": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+      "droid": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
+      "opencode": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "pi": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "qwen": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+      "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "copilot": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+    ]
+    XCTAssertEqual(Set(workProviderImportRules.keys), Set(expected.keys))
+    for (provider, rules) in expected {
+      XCTAssertEqual(workProviderImportRules[provider], rules, provider)
+    }
+    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot"])
+  }
+
+  func testImportPlanContinuesNativeChatProvidersAtLaneRootOnly() {
+    for provider in ["copilot", "droid", "opencode", "pi"] {
+      let atRoot = workPlanImport(importSession(provider), surface: "chat", targetLaneId: "apple")
+      XCTAssertEqual(atRoot.primary, WorkImportPlanAction(target: "chat", mode: "resume", label: "Continue", needsModel: false), provider)
+      XCTAssertEqual(atRoot.secondary?.label, "Copy", provider)
+
+      var subfolder = importAppleHome
+      subfolder.atLaneRoot = false
+      let inSubfolder = workPlanImport(importSession(provider, home: subfolder), surface: "chat", targetLaneId: "apple")
+      XCTAssertEqual(inSubfolder.primary?.label, "Open as ADE chat", provider)
+
+      let elsewhere = workPlanImport(importSession(provider), surface: "chat", targetLaneId: "other")
+      XCTAssertEqual(elsewhere.primary?.mode, "fork", provider)
+      XCTAssertEqual(elsewhere.note, "Original stays in Apple Sim Preview.", provider)
+    }
+    var noChat = importFullCapabilities
+    noChat.importToChat = false
+    let narrowed = workPlanImport(importSession("copilot", capabilities: noChat), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(narrowed.primary?.label, "Open as ADE chat")
+  }
+
+  func testImportRejectionReasonMatchesDesktop() {
+    let cursor = importSession("cursor", capabilities: ExternalSessionCapabilities(resumeInPlace: true))
+    XCTAssertEqual(
+      workImportRejectionReason(cursor, target: "cli", mode: "resume", laneId: "other"),
+      "This Cursor session can only do that in Apple Sim Preview."
+    )
+    XCTAssertEqual(
+      workImportRejectionReason(cursor, target: "cli", mode: "fork", laneId: "apple"),
+      "This Cursor session can't be copied in a terminal."
+    )
+    XCTAssertNil(workImportRejectionReason(cursor, target: "cli", mode: "resume", laneId: "apple"))
+    XCTAssertEqual(
+      workImportRejectionReason(cursor, target: "chat", mode: "resume", laneId: "apple"),
+      "This Cursor session can't be continued as an ADE chat."
+    )
+    let unnamedHome = ExternalSessionHome(kind: "lane", laneId: "apple", laneName: nil, atLaneRoot: true)
+    XCTAssertEqual(
+      workImportRejectionReason(importSession("claude", home: unnamedHome), target: "chat", mode: "resume", laneId: "other"),
+      "This Claude session can't do that in this lane."
+    )
+    XCTAssertNil(workImportRejectionReason(importSession("copilot"), target: "chat", mode: "resume", laneId: "apple"))
+  }
+
+  func testImportScanProvidersSkipAcpProvidersOnOlderHost() {
+    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 10)
+    XCTAssertEqual(
+      workImportScanProviders(hostKnowsAcpProviders: false),
+      ["claude", "codex", "cursor", "droid", "opencode", "pi"]
+    )
+  }
+
+  func testImportListHidesSessionsWithNoPrompts() {
+    XCTAssertTrue(workImportHasPrompts(ExternalSessionSummary(provider: "claude", id: "a", messageCount: nil)))
+    XCTAssertTrue(workImportHasPrompts(ExternalSessionSummary(provider: "claude", id: "b", messageCount: 3)))
+    XCTAssertFalse(workImportHasPrompts(ExternalSessionSummary(provider: "claude", id: "c", messageCount: 0)))
+  }
+
+  func testImportDateGroupLabelsTodayYesterdayAndOlder() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let now = Date(timeIntervalSince1970: 1_790_000_000) // mid-day UTC
+    XCTAssertEqual(workImportDateGroup(now.timeIntervalSince1970 * 1000 - 60_000, now: now, calendar: calendar), "Today")
+    XCTAssertEqual(workImportDateGroup(now.timeIntervalSince1970 - 86_400, now: now, calendar: calendar), "Yesterday")
+    XCTAssertEqual(workImportDateGroup(nil, now: now, calendar: calendar), "Older")
+    XCTAssertNotEqual(workImportDateGroup(now.timeIntervalSince1970 - 40 * 86_400, now: now, calendar: calendar), "Older")
+  }
+
+  func testExternalSessionRowNamesWindowsFolderAndUntitledChat() {
+    let windows = ExternalSessionSummary(
+      provider: "codex",
+      id: "win",
+      cwd: #"C:\Users\arul\Projects\ade-app\"#,
+      home: ExternalSessionHome(kind: "outside")
+    )
+    XCTAssertEqual(windows.cwdLastPathSegment, "ade-app")
+    XCTAssertEqual(windows.laneDisplayName, "ade-app")
+    XCTAssertEqual(windows.rowHeading, "Untitled Codex chat")
+
+    let sampled = ExternalSessionSummary(
+      provider: "claude",
+      id: "sampled",
+      messages: [
+        ExternalSessionMessage(role: "assistant", text: "Hi"),
+        ExternalSessionMessage(role: "user", text: "  Fix   the import\nscreen "),
+      ]
+    )
+    XCTAssertEqual(sampled.rowHeading, "Fix the import screen")
+  }
+
+  func testExternalSessionImportedBeforeAndImportResultDecodeLeniently() throws {
+    let summary = try JSONDecoder().decode(
+      ExternalSessionSummary.self,
+      from: Data(#"{"provider":"claude","id":"x","importedBefore":true}"#.utf8)
+    )
+    XCTAssertTrue(summary.importedBefore)
+    let malformed = try JSONDecoder().decode(
+      ExternalSessionSummary.self,
+      from: Data(#"{"provider":"claude","id":"y","importedBefore":"yes"}"#.utf8)
+    )
+    XCTAssertFalse(malformed.importedBefore)
+
+    // The import already happened on the host; a chat summary this build
+    // cannot read must not turn it into an error.
+    let result = try JSONDecoder().decode(
+      ExternalSessionImportResult.self,
+      from: Data(#"{"kind":"chat","chatSessionId":"chat-1","laneId":"apple","chatSummary":{"sessionId":42}}"#.utf8)
+    )
+    XCTAssertEqual(result.kind, "chat")
+    XCTAssertEqual(result.chatSessionId, "chat-1")
+    XCTAssertNil(result.chatSummary)
   }
 
   func testSyncPreprocessRejectsCompressedPayloadAboveLimit() throws {

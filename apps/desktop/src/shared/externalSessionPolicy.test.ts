@@ -35,6 +35,7 @@ function session(
     home: ExternalSessionHome | null;
     possiblyActive: boolean;
     messageCount: number | null;
+    cwdMatchesRequestedLane: boolean | null;
   }> = {},
 ) {
   return {
@@ -43,6 +44,7 @@ function session(
     home: overrides.home === undefined ? APPLE : overrides.home,
     possiblyActive: overrides.possiblyActive ?? false,
     messageCount: overrides.messageCount === undefined ? 12 : overrides.messageCount,
+    cwdMatchesRequestedLane: overrides.cwdMatchesRequestedLane ?? null,
   };
 }
 
@@ -107,9 +109,26 @@ describe("planImport", () => {
     expect(plan.note).toBe("Runs in its original folder.");
   });
 
+  it("tells an older host's CLI continue from another folder that it runs in its original folder", () => {
+    const away = planImport(session("pi", { home: null, cwdMatchesRequestedLane: false }), { surface: "cli", targetLaneId: "main" });
+    expect(away.primary).toMatchObject({ mode: "resume" });
+    expect(away.note).toBe("Runs in its original folder.");
+    const here = planImport(session("pi", { home: null, cwdMatchesRequestedLane: true }), { surface: "cli", targetLaneId: "main" });
+    expect(here.note).toBeNull();
+  });
+
   it("warns before continuing a live session", () => {
     const plan = planImport(session("claude", { possiblyActive: true }), { surface: "cli", targetLaneId: "apple" });
     expect(plan.note).toBe("Open elsewhere — close it there first.");
+  });
+
+  it("asks for confirmation only before continuing a live session", () => {
+    const live = planImport(session("claude", { possiblyActive: true }), { surface: "chat", targetLaneId: "apple" });
+    expect(live.primary).toMatchObject({ mode: "resume", confirmBeforeRun: true });
+    // A copy leaves the original untouched, so it never needs the second press.
+    expect(live.secondary).toMatchObject({ mode: "fork", confirmBeforeRun: false });
+    const idle = planImport(session("claude"), { surface: "chat", targetLaneId: "apple" });
+    expect(idle.primary).toMatchObject({ mode: "resume", confirmBeforeRun: false });
   });
 
   it("falls back to the first surface that has actions", () => {

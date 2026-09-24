@@ -15,7 +15,7 @@ import { claudeRecordsToEvents } from "./claude";
 import { codexRecordsToEvents } from "./codex";
 import { EnvelopeSink, type JsonlConverter } from "./common";
 import { copilotRecordsToEvents } from "./copilot";
-import { cursorRecordsToEvents } from "./cursor";
+import { cursorRecordsToEvents, loadCursorStorePage } from "./cursor";
 import { grokRecordsToEvents } from "./grok";
 import { kimiRecordsToEvents } from "./kimi";
 import { openCodeExportToEvents, runOpenCodeExport } from "./opencode";
@@ -74,38 +74,6 @@ export const EXTERNAL_SESSION_PREVIEW_MAX_WINDOW_BYTES = 16 * 1024 * 1024;
 /** Consecutive empty windows skipped before a page gives up. */
 const MAX_EMPTY_WINDOWS = 4;
 
-function envelope(
-  chatSessionId: string,
-  event: AgentChatEvent,
-  atMs: number | null,
-  index: number,
-): AgentChatEventEnvelope {
-  return {
-    sessionId: chatSessionId,
-    timestamp: new Date((atMs ?? 0) + index).toISOString(),
-    event,
-  };
-}
-
-/**
- * Fallback converter: the discovery record's sampled user/assistant text.
- * Provider converters replace this with full events (tool calls included).
- */
-export function eventsFromSampledMessages(
-  args: Pick<LoadExternalSessionEventsArgs, "record" | "chatSessionId">,
-): ExternalSessionEventsPage {
-  const messages = args.record?.messages ?? [];
-  const events = messages.map((message, index) => envelope(
-    args.chatSessionId,
-    message.role === "user"
-      ? { type: "user_message", text: message.text }
-      : { type: "text", text: message.text },
-    message.at,
-    index,
-  ));
-  return { events, hasOlder: false, olderCursor: null, truncated: false };
-}
-
 const JSONL_CONVERTERS: Partial<Record<ExternalSessionProvider, JsonlConverter>> = {
   claude: claudeRecordsToEvents,
   droid: claudeRecordsToEvents,
@@ -146,9 +114,16 @@ function jsonlSourceFor(provider: ExternalSessionProvider, record: ExternalSessi
     case "kimi":
       return sourcePath.toLowerCase().endsWith(".jsonl") ? sourcePath : inSessionFolder("agents", "main", "wire.jsonl");
     default:
-      // Cursor sessions known only through `store.db` have no JSONL.
+      // Cursor sessions known only through `store.db` have no JSONL; see
+      // `cursorStoreSourceFor`.
       return sourcePath.toLowerCase().endsWith(".jsonl") ? sourcePath : null;
   }
+}
+
+/** A Cursor chat known only through its `store.db` (no agent transcript). */
+function cursorStoreSourceFor(record: ExternalSessionDiscoveryRecord | null): string | null {
+  const sourcePath = record?.sourcePath?.trim();
+  return sourcePath && path.basename(sourcePath) === "store.db" ? sourcePath : null;
 }
 
 type RawPage = {
@@ -279,6 +254,7 @@ export async function loadExternalSessionEvents(
   const fallbackBaseMs = record?.createdAt ?? record?.updatedAt ?? importedAt;
   const byteLimit = isImport ? MAX_IMPORT_TRANSCRIPT_BYTES : EXTERNAL_SESSION_PREVIEW_MAX_WINDOW_BYTES;
 
+  const cursorStorePath = args.provider === "cursor" ? cursorStoreSourceFor(record) : null;
   let raw: RawPage | null = null;
   try {
     if (args.provider === "opencode") {
@@ -291,6 +267,15 @@ export async function loadExternalSessionEvents(
         fallbackBaseMs,
         ...(args.homeDir ? { homeDir: args.homeDir } : {}),
         ...(args.env ? { env: args.env } : {}),
+      });
+    } else if (cursorStorePath) {
+      raw = loadCursorStorePage({
+        storePath: cursorStorePath,
+        options,
+        cursor,
+        maxEvents,
+        maxBytes: byteLimit,
+        fallbackBaseMs,
       });
     } else {
       const convert = JSONL_CONVERTERS[args.provider];

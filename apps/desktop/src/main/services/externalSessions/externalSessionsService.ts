@@ -10,6 +10,8 @@ import {
 import type {
   AgentChatImportExternalSessionResult,
   ExternalSessionCapabilities,
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionListArgs,
@@ -23,19 +25,15 @@ import type {
 } from "../../../shared/types";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { liveClaudeSessionIds } from "./claudeLiveSessions";
-import { claudeConfigDir, discoverClaudeSessions } from "./discoverClaude";
-import { discoverCodexSessions } from "./discoverCodex";
-import { discoverCursorSessions } from "./discoverCursor";
-import { discoverDroidSessions } from "./discoverDroid";
-import { discoverOpenCodeSessions } from "./discoverOpenCode";
-import { discoverPiSessions } from "./discoverPi";
-import { discoverQwenSessions } from "./discoverQwen";
-import { discoverKimiSessions } from "./discoverKimi";
-import { discoverGrokSessions } from "./discoverGrok";
-import { discoverCopilotSessions } from "./discoverCopilot";
+import { claudeConfigDir } from "./discoverClaude";
+import { EXTERNAL_SESSION_DISCOVERERS } from "./events/records";
+import { loadExternalSessionDetail } from "./externalSessionDetail";
 import { createSessionHomeResolver, type SessionHomeLane, type SessionHomeResolver } from "./sessionHome";
 import { importRejectionReason } from "../../../shared/externalSessionPolicy";
-import { EXTERNAL_SESSION_PROVIDERS } from "../../../shared/types/externalSessions";
+import {
+  EXTERNAL_SESSION_PROVIDER_CAPABILITIES,
+  EXTERNAL_SESSION_PROVIDERS,
+} from "../../../shared/types/externalSessions";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
 import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
@@ -154,81 +152,6 @@ const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
 const PROJECT_SCOPE_DISCOVERY_LIMIT = 200;
 /** Originals re-listed per call after their ADE copy absorbed them (see `list`). */
 const MAX_RESCUED_COPY_ORIGINALS = 25;
-
-const PROVIDER_CAPABILITIES: Record<ExternalSessionProvider, ExternalSessionCapabilities> = {
-  claude: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: true,
-    importToChat: true,
-  },
-  codex: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: true,
-    fork: true,
-    forkIntoDifferentCwd: true,
-    importToChat: true,
-  },
-  cursor: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: false,
-    forkIntoDifferentCwd: false,
-    importToChat: false,
-  },
-  droid: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: true,
-    importToChat: true,
-  },
-  opencode: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: false,
-    importToChat: true,
-  },
-  pi: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: false,
-    importToChat: true,
-  },
-  // ACP providers: sessions are scoped to the folder they ran in, so a CLI
-  // continue or copy stays there. Qwen and Grok copy with `--fork-session`.
-  qwen: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: false,
-    importToChat: false,
-  },
-  kimi: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: false,
-    forkIntoDifferentCwd: false,
-    importToChat: false,
-  },
-  grok: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: false,
-    importToChat: false,
-  },
-  copilot: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: false,
-    forkIntoDifferentCwd: false,
-    importToChat: true,
-  },
-};
 
 type ImportedSessionRef = NonNullable<ExternalSessionSummary["importedSessionRef"]>;
 
@@ -658,10 +581,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     cwdExistenceCache?: Map<string, boolean>,
   ): ExternalSessionCapabilities => {
     const base = provider !== "droid"
-      ? PROVIDER_CAPABILITIES[provider]
+      ? EXTERNAL_SESSION_PROVIDER_CAPABILITIES[provider]
       : (() => {
           const fork = droidForkAvailable();
-          return { ...PROVIDER_CAPABILITIES.droid, fork, forkIntoDifferentCwd: fork };
+          return { ...EXTERNAL_SESSION_PROVIDER_CAPABILITIES.droid, fork, forkIntoDifferentCwd: fork };
         })();
     if (session === undefined || provider === "codex") return base;
     const cwd = session?.cwd?.trim() ?? "";
@@ -691,18 +614,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     };
   };
 
-  const discoverByProvider: Record<ExternalSessionProvider, (discoveryArgs: ExternalSessionDiscoveryArgs) => Promise<ExternalSessionDiscoveryRecord[]>> = {
-    claude: discoverClaudeSessions,
-    codex: discoverCodexSessions,
-    cursor: discoverCursorSessions,
-    droid: discoverDroidSessions,
-    opencode: discoverOpenCodeSessions,
-    pi: discoverPiSessions,
-    qwen: discoverQwenSessions,
-    kimi: discoverKimiSessions,
-    grok: discoverGrokSessions,
-    copilot: discoverCopilotSessions,
-  };
+  const discoverByProvider = EXTERNAL_SESSION_DISCOVERERS;
 
   // Lanes change rarely compared with how often the importer lists, but a
   // stale lane name is worse than a slow list: re-read on every call.
@@ -1322,10 +1234,17 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     };
   };
 
+  /** Reads the provider's own store; `maxEvents` shrinks the page (the phone asks for fewer). */
+  const getDetail = (
+    detailArgs: ExternalSessionDetailArgs,
+    options: { maxEvents?: number } = {},
+  ): Promise<ExternalSessionDetail> => loadExternalSessionDetail(detailArgs, options);
+
   return {
     list,
     importExternalSession,
     import: importExternalSession,
+    getDetail,
   };
 }
 

@@ -1,4 +1,3 @@
-import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
 import path from "node:path";
@@ -11,6 +10,7 @@ import {
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
 } from "../../../../desktop/src/shared/types/chat";
+import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { runWithAbortSignal } from "./abortSignal";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
@@ -174,6 +174,8 @@ import type {
   StartIntegrationResolutionArgs,
   SubmitPrReviewArgs,
   UnstackGitHubPrStackArgs,
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionListArgs,
@@ -342,13 +344,13 @@ import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
 import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/terminalSessionSignals";
 import type { SyncPinStore } from "./syncPinStore";
-import { loadExternalSessionDetail } from "../../../../desktop/src/main/services/externalSessions/externalSessionDetail";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
   importExternalSession(args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult>;
+  getDetail(args: ExternalSessionDetailArgs, options?: { maxEvents?: number }): Promise<ExternalSessionDetail>;
 };
 
 const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>(EXTERNAL_SESSION_PROVIDER_LIST);
@@ -4479,10 +4481,9 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("work.getExternalSessionDetail", { viewerAllowed: true }, async (payload) => {
     const parsed = parseGetExternalSessionDetailArgs(payload);
-    // Same availability gate as list/import: a runtime without the external
-    // sessions service does not offer session browsing at all.
-    resolveExternalSessionsService(args);
-    const detail = await loadExternalSessionDetail(parsed, { maxEvents: SYNC_EXTERNAL_SESSION_DETAIL_MAX_EVENTS });
+    const detail = await resolveExternalSessionsService(args).getDetail(parsed, {
+      maxEvents: SYNC_EXTERNAL_SESSION_DETAIL_MAX_EVENTS,
+    });
     return compactExternalSessionDetailForMobile(detail) satisfies SyncGetExternalSessionDetailResult;
   });
   register("work.importExternalSession", { viewerAllowed: true, queueable: true }, async (payload) => {

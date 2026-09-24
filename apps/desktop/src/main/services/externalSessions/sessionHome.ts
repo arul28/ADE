@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { ExternalSessionHome, LaneSummary } from "../../../shared/types";
 import { pathContains, realishPath } from "./discoveryUtils";
-import { pathsEqual } from "../shared/pathCompare";
+import { pathComparisonKey, pathsEqual } from "../shared/pathCompare";
 
 export type SessionHomeLane = Pick<LaneSummary, "id" | "name" | "branchRef" | "color" | "laneType" | "worktreePath">;
 
@@ -13,7 +13,10 @@ const WORKTREES_SEGMENTS = [".ade", "worktrees"];
 
 function startsWithWorktreesSegment(relative: string): boolean {
   const segments = relative.split(/[\\/]+/u).filter(Boolean);
-  return WORKTREES_SEGMENTS.every((segment, index) => segments[index] === segment);
+  // Same case rule as the containment check that let this path in: on macOS
+  // and Windows `.ADE/WORKTREES` is the same folder as `.ade/worktrees`.
+  return WORKTREES_SEGMENTS.every((segment, index) =>
+    segments[index] != null && pathComparisonKey(segments[index]) === pathComparisonKey(segment));
 }
 
 /**

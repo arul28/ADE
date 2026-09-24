@@ -4139,10 +4139,12 @@ describe("createAgentChatService", () => {
           laneId: "lane-1",
           cwd: tmpRoot,
           fork: false,
+          sourceModel: piDescriptor.id,
+          sourceReasoningEffort: "high",
         });
 
         const persisted = readPersistedChatState(result.chatSessionId);
-        expect(result.chatSummary).toMatchObject({ provider: "pi", modelId: piDescriptor.id });
+        expect(result.chatSummary).toMatchObject({ provider: "pi", modelId: piDescriptor.id, reasoningEffort: "high" });
         expect(persisted.piSessionId).toBe("pi-external-1");
         expect(persisted.importedFrom).toMatchObject({ provider: "pi", mode: "continue" });
       });

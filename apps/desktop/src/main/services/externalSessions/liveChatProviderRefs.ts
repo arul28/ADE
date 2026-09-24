@@ -54,6 +54,41 @@ export function providerPointersFromChatRecord(raw: unknown): ProviderPointer[] 
   return pointersFromRecord(raw);
 }
 
+/** The slice of the chat service the live-chat pointer scan needs. */
+export type LiveChatSessionLister = {
+  listSessions(
+    laneId: undefined,
+    options: { includeIdentity: boolean; includeAutomation: boolean; includeArchived: boolean },
+  ): Promise<ReadonlyArray<{ sessionId: string }>>;
+};
+
+/**
+ * Every provider pointer a live chat holds, not only `importedFrom`, so a
+ * session ADE itself runs never lists as importable. Both hosts (desktop main
+ * and the headless brain) wire this in, and it goes through the same extractor
+ * as the on-disk scan so both sides key a chat the same way: rolling a second
+ * one is how `unified` (OpenCode's persisted provider value) ended up keyed as
+ * `unified:<id>` on one path and `opencode:<id>` on the other, leaving live
+ * OpenCode chats visible in the import list.
+ */
+export function chatImportedRefsProvider(
+  chatService: LiveChatSessionLister,
+): () => Promise<ImportedChatSessionRef[]> {
+  return async () => {
+    const sessions = await chatService.listSessions(undefined, {
+      includeIdentity: true,
+      includeAutomation: true,
+      includeArchived: false,
+    });
+    return sessions.flatMap((session) =>
+      providerPointersFromChatRecord(session).map((pointer) => ({
+        provider: pointer.provider,
+        externalId: pointer.externalId,
+        chatSessionId: session.sessionId,
+      })));
+  };
+}
+
 function pointersFromRecord(raw: unknown): ProviderPointer[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const record = raw as Record<string, unknown>;

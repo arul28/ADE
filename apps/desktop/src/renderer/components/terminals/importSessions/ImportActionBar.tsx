@@ -170,8 +170,7 @@ export function ImportActionBar({
   // The model only matters to a copy, so the picker shows when the copy is
   // the main action, or once the user has asked for the secondary copy.
   const showModel = Boolean(
-    (primary?.needsModel && primary.target === "chat")
-      || (copyArmed && secondary?.needsModel && secondary.target === "chat"),
+    primary?.needsModel || (copyArmed && secondary?.needsModel),
   );
 
   return (

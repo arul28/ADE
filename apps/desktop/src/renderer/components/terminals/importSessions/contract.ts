@@ -7,7 +7,6 @@
  * reader, display helpers).
  */
 import type { OpenProjectBinding, TerminalToolType } from "../../../../shared/types";
-import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import type { LaneComboboxLane } from "../LaneCombobox";
 import type {
   ExternalSessionDetail,
@@ -15,10 +14,6 @@ import type {
   ExternalSessionDetailUpdatedEvent,
   ExternalSessionDetailWatchArgs,
 } from "../../../../shared/types/externalSessionDetail";
-import {
-  EXTERNAL_SESSION_PROVIDER_LABELS,
-  EXTERNAL_SESSION_PROVIDERS,
-} from "../../../../shared/types/externalSessions";
 import type {
   ExternalSessionProvider,
   ExternalSessionImportArgs,
@@ -44,9 +39,6 @@ export type {
   ExternalSessionDetailUpdatedEvent,
   ExternalSessionDetailWatchArgs,
 } from "../../../../shared/types/externalSessionDetail";
-
-/** Every provider we scan when no specific filter is applied. */
-export const ALL_IMPORT_PROVIDERS: ExternalSessionProvider[] = [...EXTERNAL_SESSION_PROVIDERS];
 
 /**
  * Provenance marker stamped by the backend onto imported terminal/chat
@@ -121,10 +113,6 @@ export function readImportedFrom(session: unknown): ImportedFrom | null {
   };
 }
 
-export function providerDisplayName(provider: ExternalSessionProvider): string {
-  return EXTERNAL_SESSION_PROVIDER_LABELS[provider] ?? provider;
-}
-
 /** Maps an external provider to the terminal toolType used for its CLI runtime. */
 export const PROVIDER_TOOL_TYPE: Record<ExternalSessionProvider, TerminalToolType> = {
   claude: "claude",
@@ -137,17 +125,4 @@ export const PROVIDER_TOOL_TYPE: Record<ExternalSessionProvider, TerminalToolTyp
   kimi: "kimi",
   grok: "grok",
   copilot: "copilot",
-};
-
-export const PROVIDER_FAMILY: Record<ExternalSessionProvider, ProviderFamily> = {
-  claude: "anthropic",
-  codex: "openai",
-  cursor: "cursor",
-  droid: "factory",
-  opencode: "opencode",
-  pi: "pi",
-  qwen: "qwen",
-  kimi: "moonshot",
-  grok: "xai",
-  copilot: "github-copilot",
 };

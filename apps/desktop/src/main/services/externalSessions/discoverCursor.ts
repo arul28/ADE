@@ -210,6 +210,161 @@ export function readCursorStorePrompts(
   }
 }
 
+/**
+ * Top-level fields of a protobuf message: field number and raw bytes
+ * (length-delimited) or number (varint). Null when the bytes are not one.
+ */
+function protobufFields(bytes: Uint8Array): Array<[number, Uint8Array | number]> | null {
+  const fields: Array<[number, Uint8Array | number]> = [];
+  let offset = 0;
+  const varint = (): number | null => {
+    let value = 0;
+    let scale = 1;
+    for (let i = 0; i < 10 && offset < bytes.length; i += 1) {
+      const byte = bytes[offset++]!;
+      value += (byte & 0x7f) * scale;
+      if (!(byte & 0x80)) return value;
+      scale *= 128;
+    }
+    return null;
+  };
+  while (offset < bytes.length) {
+    const tag = varint();
+    if (tag === null) return null;
+    const field = Math.floor(tag / 8);
+    switch (tag % 8) {
+      case 0: {
+        const value = varint();
+        if (value === null) return null;
+        fields.push([field, value]);
+        break;
+      }
+      case 1:
+        offset += 8;
+        break;
+      case 2: {
+        const length = varint();
+        if (length === null || offset + length > bytes.length) return null;
+        fields.push([field, bytes.subarray(offset, offset + length)]);
+        offset += length;
+        break;
+      }
+      case 5:
+        offset += 4;
+        break;
+      default:
+        return null;
+    }
+  }
+  return offset === bytes.length ? fields : null;
+}
+
+/** Repeated 32-byte blob references (content hashes) under `field`, in order. */
+function protobufBlobRefs(fields: Array<[number, Uint8Array | number]>, field: number): string[] {
+  const refs: string[] = [];
+  for (const [number, value] of fields) {
+    if (number === field && value instanceof Uint8Array && value.length === 32) {
+      refs.push(Buffer.from(value).toString("hex"));
+    }
+  }
+  return refs;
+}
+
+/** Bytes of the largest message blob the conversation reader will decode. */
+export const CURSOR_STORE_MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The conversation inside a Cursor `store.db`, verified on 2026-09-24 against
+ * 42 stores. `blobs` is content-addressed (`id` = sha256 of `data`), so row
+ * order is not conversation order. `meta['0']` (hex JSON) names
+ * `latestRootBlobId`; that root is a protobuf whose repeated field 1 lists the
+ * message blob ids oldest first. Each message blob is AI SDK JSON
+ * `{ role, content }`. After a summarization the root starts over from the
+ * summary, and its field 13 names a summary blob whose field 1 lists the
+ * messages it replaced and field 4 the summary message the root carries.
+ */
+export type CursorStoreConversation = {
+  /** Message blob ids, oldest first (ids repeat when a message does). */
+  messageIds: string[];
+  /** Index in `messageIds` where the latest summarization's messages end. */
+  summaryIndex: number | null;
+  /** Summary blob id of that summarization. */
+  summaryId: string | null;
+  /** Byte length of one message blob, or null when it is missing. */
+  messageSize: (id: string) => number | null;
+  /** One message as `{ role, content }`, or null when it is not readable JSON. */
+  readMessage: (id: string) => Record<string, unknown> | null;
+  close: () => void;
+};
+
+export function openCursorStoreConversation(
+  storePath: string,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): CursorStoreConversation | null {
+  const db = openExternalSessionDb(storePath, logger);
+  if (!db) return null;
+  try {
+    const metaRow = db.prepare("SELECT value FROM meta WHERE key = '0'").get() as { value?: unknown } | undefined;
+    const encoded = typeof metaRow?.value === "string" ? metaRow.value.trim() : "";
+    const json = /^[0-9a-f]+$/iu.test(encoded) && encoded.length % 2 === 0
+      ? Buffer.from(encoded, "hex").toString("utf8")
+      : encoded;
+    const rootId = asString(asRecord(safeParseJson(json))?.latestRootBlobId);
+    if (!rootId) {
+      closeExternalSessionDb(db);
+      return null;
+    }
+    const selectData = db.prepare("SELECT data FROM blobs WHERE id = ?");
+    const selectSize = db.prepare("SELECT length(data) AS size FROM blobs WHERE id = ?");
+    const readProtobuf = (id: string) => {
+      const row = selectData.get(id) as { data?: unknown } | undefined;
+      return row?.data instanceof Uint8Array ? protobufFields(row.data) : null;
+    };
+    const root = readProtobuf(rootId);
+    const rootIds = root ? protobufBlobRefs(root, 1) : [];
+    if (!root || rootIds.length === 0) {
+      closeExternalSessionDb(db);
+      return null;
+    }
+    let messageIds = rootIds;
+    let summaryIndex: number | null = null;
+    let summaryId: string | null = null;
+    // A summarized chat's root holds only what followed the summary; the
+    // summary blob keeps the turns it replaced.
+    const summaryRef = protobufBlobRefs(root, 13)[0] ?? null;
+    const summary = summaryRef ? readProtobuf(summaryRef) : null;
+    if (summary) {
+      const replaced = protobufBlobRefs(summary, 1);
+      const summaryMessage = protobufBlobRefs(summary, 4)[0] ?? null;
+      const resumeAt = summaryMessage ? rootIds.indexOf(summaryMessage) : -1;
+      if (replaced.length > 0 && resumeAt >= 0) {
+        messageIds = [...replaced, ...rootIds.slice(resumeAt + 1)];
+        summaryIndex = replaced.length;
+        summaryId = summaryRef;
+      }
+    }
+    return {
+      messageIds,
+      summaryIndex,
+      summaryId,
+      messageSize: (id) => {
+        const row = selectSize.get(id) as { size?: unknown } | undefined;
+        return typeof row?.size === "number" ? row.size : null;
+      },
+      readMessage: (id) => {
+        const row = selectData.get(id) as { data?: unknown } | undefined;
+        const text = blobText(row?.data);
+        if (!text || !text.trimStart().startsWith("{")) return null;
+        return asRecord(safeParseJson(text));
+      },
+      close: () => closeExternalSessionDb(db),
+    };
+  } catch {
+    closeExternalSessionDb(db);
+    return null;
+  }
+}
+
 type CursorArtifact = {
   filePath: string;
   mtimeMs: number;

@@ -30,7 +30,6 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { createMockExternalSessionsApi } from "./browserMockExternalSessions";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
@@ -95,6 +94,7 @@ import {
   INERT_KEEP_AWAKE_SNAPSHOT,
   type KeepAwakeSnapshot,
 } from "../shared/types/keepAwake";
+import { createMockExternalSessionsApi } from "./browserMockExternalSessions";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";

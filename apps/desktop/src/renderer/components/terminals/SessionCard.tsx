@@ -62,7 +62,8 @@ import {
 import { ToolLogo } from "./ToolLogos";
 import { cursorCloudAgentWebUrl } from "../../lib/cursorCloudUtils";
 import { openExternalUrl } from "../../lib/openExternal";
-import { readImportedFrom, providerDisplayName } from "./importSessions/contract";
+import { readImportedFrom } from "./importSessions/contract";
+import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
@@ -1091,7 +1092,7 @@ export const SessionCard = React.memo(function SessionCard({
     hoverRows.push({
       id: "imported-from",
       icon: <DownloadSimple size={13} className="text-muted-fg/60" />,
-      value: `Imported from ${providerDisplayName(importedFrom.provider)}`,
+      value: `Imported from ${importProviderLabel(importedFrom.provider)}`,
     });
   }
   if (gridBadge) {

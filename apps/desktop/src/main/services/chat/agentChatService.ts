@@ -41946,6 +41946,7 @@ export function createAgentChatService(args: {
         model: descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id,
         modelId: descriptor.id,
         ...(provider === "pi" ? { piSessionId: externalSessionId } : {}),
+        ...(importedReasoningEffort(args, descriptor) ? { reasoningEffort: importedReasoningEffort(args, descriptor) } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
       createdSessionId = created.id;
