@@ -28,8 +28,6 @@ import { liveClaudeSessionIds } from "./claudeLiveSessions";
 import { claudeConfigDir } from "./discoverClaude";
 import { EXTERNAL_SESSION_DISCOVERERS } from "./discoverers";
 import { validateExternalSessionId } from "./sessionIds";
-
-export { validateExternalSessionId };
 import { loadExternalSessionDetail } from "./externalSessionDetail";
 import { createSessionHomeResolver, type SessionHomeLane, type SessionHomeResolver } from "./sessionHome";
 import { importRejectionReason } from "../../../shared/externalSessionPolicy";

@@ -270,6 +270,7 @@ describe("externalSessionDetail", () => {
       watchId: "w1",
       provider: "claude",
       sessionId: "44444444-4444-4444-8444-444444444444",
+      loadDetail: (detailArgs) => loadExternalSessionDetail(detailArgs),
       onUpdate: () => undefined,
     });
     expect(first.watchable).toBe(true);
@@ -350,6 +351,7 @@ describe("externalSessionDetail", () => {
         watchId: "race",
         provider: "claude",
         sessionId: "66666666-6666-4666-8666-666666666666",
+        loadDetail: (detailArgs) => loadExternalSessionDetail(detailArgs),
         onUpdate: () => undefined,
       });
       const first = start();

@@ -91,7 +91,7 @@ const JSONL_CONVERTERS: Partial<Record<ExternalSessionProvider, JsonlConverter>>
  * session folder or a sibling file for the ACP stores, so those resolve the
  * conversation file inside the session folder.
  */
-function jsonlSourceFor(provider: ExternalSessionProvider, record: ExternalSessionDiscoveryRecord | null): string | null {
+export function jsonlSourceFor(provider: ExternalSessionProvider, record: ExternalSessionDiscoveryRecord | null): string | null {
   const sourcePath = record?.sourcePath?.trim();
   if (!sourcePath) return null;
   const inSessionFolder = (...segments: string[]): string | null => {
@@ -121,7 +121,7 @@ function jsonlSourceFor(provider: ExternalSessionProvider, record: ExternalSessi
 }
 
 /** A Cursor chat known only through its `store.db` (no agent transcript). */
-export function cursorStoreSourceFor(record: ExternalSessionDiscoveryRecord | null): string | null {
+function cursorStoreSourceFor(record: ExternalSessionDiscoveryRecord | null): string | null {
   const sourcePath = record?.sourcePath?.trim();
   return sourcePath && path.basename(sourcePath) === "store.db" ? sourcePath : null;
 }

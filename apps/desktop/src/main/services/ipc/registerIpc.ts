@@ -6302,6 +6302,9 @@ export function registerIpc({
     const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
     if (!watchId) throw new Error("external session detail watchId must be a string.");
     const args = normalizeExternalSessionDetailArgs(arg);
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["externalSessionsService"]);
+    const externalSessionsService = ctx.externalSessionsService;
     const sender = event.sender;
     const senderId = sender.id;
     if (!detailWatchCleanupSenders.has(senderId)) {
@@ -6311,13 +6314,12 @@ export function registerIpc({
         stopExternalSessionDetailWatchesForSender(senderId);
       });
     }
-    const externalSessionsService = getCtx().externalSessionsService;
     return startExternalSessionDetailWatch({
       senderId,
       watchId,
       provider: args.provider,
       sessionId: args.sessionId,
-      ...(externalSessionsService ? { loadDetail: (detailArgs) => externalSessionsService.getDetail(detailArgs) } : {}),
+      loadDetail: (detailArgs) => externalSessionsService.getDetail(detailArgs),
       onUpdate: (detail) => {
         if (sender.isDestroyed()) return;
         const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };

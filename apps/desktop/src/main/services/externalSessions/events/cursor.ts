@@ -125,41 +125,38 @@ export function loadCursorStorePage(args: {
       const index = start - 1;
       const id = messageIds[index]!;
       const size = conversation.messageSize(id) ?? 0;
+      const oversized = size > CURSOR_STORE_MAX_MESSAGE_BYTES;
       // One oversized blob (a huge tool output) is left out, not the page, and
       // so never spends the page's byte budget.
-      if (size > CURSOR_STORE_MAX_MESSAGE_BYTES) {
-        start = index;
+      if (!oversized && bytes + size > args.maxBytes && bytes > 0) {
+        bytesTruncated = true;
+        break;
+      }
+      start = index;
+      const sink = new EnvelopeSink(args.options);
+      const timestamp = new Date(args.fallbackBaseMs + index).toISOString();
+      if (oversized) {
         // Say where it was: a silent gap reads as a complete conversation.
-        const sink = new EnvelopeSink(args.options);
         sink.push({
           type: "system_notice",
           noticeKind: "info",
           severity: "info",
           message: `One message (${Math.round(size / (1024 * 1024))} MB) was left out of this Cursor chat.`,
-        }, new Date(args.fallbackBaseMs + index).toISOString(), `cursor-store:${index}:omitted`);
-        chunks.push(sink.out);
-        count += sink.out.length;
-        continue;
+        }, timestamp, `cursor-store:${index}:omitted`);
+      } else {
+        bytes += size;
+        if (index === summaryIndex) {
+          sink.push({
+            type: "context_compact",
+            trigger: "auto",
+            provider: "cursor",
+            ...(summaryId ? { compactionId: summaryId } : {}),
+            state: "completed",
+          }, timestamp, `cursor-store:${index}:compact`);
+        }
+        const message = conversation.readMessage(id);
+        if (message) cursorStoreMessageToEvents(message, sink, `cursor-store:${index}`, timestamp);
       }
-      if (bytes + size > args.maxBytes && bytes > 0) {
-        bytesTruncated = true;
-        break;
-      }
-      start = index;
-      bytes += size;
-      const sink = new EnvelopeSink(args.options);
-      const timestamp = new Date(args.fallbackBaseMs + index).toISOString();
-      if (index === summaryIndex) {
-        sink.push({
-          type: "context_compact",
-          trigger: "auto",
-          provider: "cursor",
-          ...(summaryId ? { compactionId: summaryId } : {}),
-          state: "completed",
-        }, timestamp, `cursor-store:${index}:compact`);
-      }
-      const message = conversation.readMessage(id);
-      if (message) cursorStoreMessageToEvents(message, sink, `cursor-store:${index}`, timestamp);
       chunks.push(sink.out);
       count += sink.out.length;
     }

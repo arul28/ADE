@@ -5,7 +5,8 @@ import type {
   ExternalSessionDetailArgs,
   ExternalSessionDetailMessage,
 } from "../../../shared/types/externalSessionDetail";
-import { cursorStoreSourceFor, discoverExternalSessionRecord, loadExternalSessionEvents } from "./events";
+import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import { discoverExternalSessionRecord, jsonlSourceFor, loadExternalSessionEvents } from "./events";
 import {
   asRecord,
   asString,
@@ -80,6 +81,18 @@ function generousMessageFromRecord(record: unknown): ExternalSessionDetailMessag
     ? longer
     : clipExternalSessionText(sampled.text, DETAIL_MESSAGE_MAX_CHARS) ?? sampled.text;
   return { role: sampled.role, text, at: sampled.at };
+}
+
+function messagesFromEvents(events: readonly AgentChatEventEnvelope[]): ExternalSessionDetailMessage[] {
+  const messages: ExternalSessionDetailMessage[] = [];
+  for (const { event, timestamp } of events) {
+    if (event.type !== "user_message" && event.type !== "text") continue;
+    const text = event.text.trim();
+    if (!text) continue;
+    const at = Date.parse(timestamp);
+    messages.push({ role: event.type === "user_message" ? "user" : "assistant", text, at: Number.isFinite(at) ? at : null });
+  }
+  return messages.slice(-DETAIL_MAX_MESSAGES);
 }
 
 function messagesFromRecords(
@@ -172,13 +185,10 @@ export async function loadExternalSessionDetail(
   const record = await discoverExternalSessionRecord(args.provider, args.sessionId, home);
   if (!record) return emptyDetail(args);
   const sourcePath = record.sourcePath?.trim() || null;
-  // A store-only Cursor chat's source is SQLite, not JSONL: its text tail is
-  // the discovery record's sampled messages.
-  const jsonlPath = sourcePath && !(args.provider === "cursor" && cursorStoreSourceFor(record)) ? sourcePath : null;
+  // The same conversation file the converters read: a session folder or a
+  // Cursor `store.db` is not JSONL.
+  const jsonlPath = jsonlSourceFor(args.provider, record);
   const suffix = jsonlPath ? readJsonlRecordsFromSuffix(jsonlPath, DETAIL_TAIL_BYTES) : [];
-  const messages = suffix.length
-    ? messagesFromRecords(args.provider, suffix)
-    : (record.messages ?? []);
   const page = await loadExternalSessionEvents({
     provider: args.provider,
     sessionId: args.sessionId,
@@ -189,6 +199,13 @@ export async function loadExternalSessionDetail(
     ...(options.maxEvents != null ? { maxEvents: options.maxEvents } : {}),
     ...home,
   }).catch(() => null);
+  // `messages` is the text tail older iOS and TUI clients read. Without a
+  // JSONL tail (a store-only Cursor chat) it comes from the preview events.
+  const messages = suffix.length
+    ? messagesFromRecords(args.provider, suffix)
+    : record.messages?.length
+      ? record.messages
+      : messagesFromEvents(page?.events ?? []);
   return {
     provider: record.provider,
     id: record.id,
@@ -246,13 +263,13 @@ export async function startExternalSessionDetailWatch(args: {
    * Loads the detail, first and on every change; the external sessions
    * service's `getDetail`, so the watch reads the same home as a plain get.
    */
-  loadDetail?: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
+  loadDetail: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
 }): Promise<ExternalSessionDetail> {
   stopExternalSessionDetailWatch(args.senderId, args.watchId);
   const key = watchKey(args.senderId, args.watchId);
   const generation = nextWatchGeneration++;
   watchGenerations.set(key, generation);
-  const loadDetail = args.loadDetail ?? ((detailArgs) => loadExternalSessionDetail(detailArgs));
+  const { loadDetail } = args;
   const detail = await loadDetail({
     provider: args.provider,
     sessionId: args.sessionId,
