@@ -44879,8 +44879,7 @@ export function createAgentChatService(args: {
     row: SteerUserRowFields,
     turnId: string | undefined,
   ): void => {
-    const acceptedTurnId = managed.acceptedSteerRows?.get(row.steerId)?.turnId;
-    managed.acceptedSteerRows?.delete(row.steerId);
+    const acceptedTurnId = takeAcceptedSteerRow(managed, row.steerId)?.turnId;
     if (managed.deleted) return;
     emitSteerUserRow(managed, row, "failed", turnId ?? acceptedTurnId);
     persistChatState(managed);

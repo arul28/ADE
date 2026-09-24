@@ -146,6 +146,16 @@ export const messageClearsAttentionMarkers = (
 };
 
 /**
+ * The child turn a `spawn_completion_delivery_failed` notice was written for,
+ * trimmed; `undefined` for any other event or a notice without one.
+ */
+export const spawnDeliveryFailedChildTurnId = (event: AgentChatEvent): string | undefined => {
+  if (event.type !== "system_notice" || event.status !== "spawn_completion_delivery_failed") return undefined;
+  const detail = typeof event.detail === "object" ? event.detail : undefined;
+  return detail?.spawnCompletionDeliveryFailure?.childTurnId?.trim() || undefined;
+};
+
+/**
  * The child turn a spawn-ended report is filed under when the end event
  * carried no turn id (a delete, or a done event that lost its id), or `null`
  * when there is nothing left to report.
@@ -169,16 +179,6 @@ export const messageClearsAttentionMarkers = (
  *   `fallbackId` cannot double-report, and the parent still hears once that a
  *   child it is waiting on was stopped before its first turn.
  */
-/**
- * The child turn a `spawn_completion_delivery_failed` notice was written for,
- * trimmed; `undefined` for any other event or a notice without one.
- */
-export const spawnDeliveryFailedChildTurnId = (event: AgentChatEvent): string | undefined => {
-  if (event.type !== "system_notice" || event.status !== "spawn_completion_delivery_failed") return undefined;
-  const detail = typeof event.detail === "object" ? event.detail : undefined;
-  return detail?.spawnCompletionDeliveryFailure?.childTurnId?.trim() || undefined;
-};
-
 export const resolveSpawnEndedTurnId = (args: {
   history: readonly AgentChatEventEnvelope[];
   childMidTurn: boolean;
