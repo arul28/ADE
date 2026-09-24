@@ -885,8 +885,10 @@ tool's own runtime pin: the built-in browser closes every tab it has open
 `ignoreOwnership`), and mac-desktop the `mac_desktop.stop` action for the
 lane. A failure is logged and never blocks the tab from leaving the strip.
 Closing the **pane** (the ✕ at the row's end) is not a stop: every tool keeps
-running and the corner card can preview it (subject to the per-chat
-“Show preview when minimized” toggle).
+running. The corner card can preview the browser and App Control (subject to
+the per-chat “Show preview when minimized” toggle). The Mac Desktop comes back
+in its own floating player, and stays hidden while the pane is already showing
+it.
 
 ### Which tools are open is per lane
 
@@ -1229,11 +1231,9 @@ dismissal undone by the event it caused would never stick.
   before it has painted and outranks every non-floated activity, because the
   “Show preview when minimized” toggle is an explicit ask and a blank card
   with the tool's name is better feedback than a lit control that does
-  nothing. `browser`,
-  `app-control`, `ios`, and `mac-desktop` are previewable
-  (`WORK_LIVE_SCREEN_TOOLS` in `state/workLiveCardState.ts`, which the
-  store also imports so the list cannot fork); Git and Files have nothing
-  to look at.
+  nothing.   The corner card's candidates are `browser` and `app-control`. The Apple
+  device and the Mac Desktop float in their own players (see below). Git and
+  Files have nothing to look at.
 - **It belongs to the chat you are reading.** The card is passed the selected
   chat session id and shows only sessions that chat owns: a browser tab's
   `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.
@@ -1242,24 +1242,12 @@ dismissal undone by the event it caused would never stick.
   shown it: the card records `workLiveCardSeenByTool` (tool → session key) in
   the chat's companion state while the pane is open on that tool, and an
   unowned session is shown only where that marker matches. That is what keeps
-  a hand-opened browser tab from following you into every chat. mac-desktop is
-  the exception — it is per lane, so it shows only to a chat that is a current
-  viewer of the lane's stream or holds its input lease (the stream status
-  carries the redacted-safe `viewerChatSessionIds`). When a floated tool's
+  a hand-opened browser tab from following you into every chat. When a floated tool's
   session ends (tab closed, app exited, simulator shut down) the float is
   dropped with it, so closing the tool never leaves a blank named frame.
-- **It is a viewer, not a copy.** The pane and the card share one decoder per
-  lane through `macDesktopLiveViewLease.ts`, a renderer-side refcount that
-  starts the stream with the first holder and stops it with the last. The pane
-  (and full screen) outranks the card, so while the pane is open the card keeps
-  the stream alive without decoding; when the pane switches tools the card is
-  promoted and decodes into an off-screen canvas, so frames keep landing in
-  `macDesktopFrameStore` and the chat stays a viewer. Hiding the pane is
-  therefore not an unsubscribe, and one lane never has two decoders.
 - **The ✕ and the toggle mean off until turned back on.** × records the
-  session it was showing — browser active tab id, App Control session id,
-  simulator session id, and for mac-desktop the display's own identity
-  (`display:<displayId>:<createdAt>`) — per chat, in
+  session it was showing — browser active tab id or App Control session id —
+  per chat, in
   `chatCompanionUiState.ts`; the record is dropped when the chat is deleted.
   The read is `isWorkLivePreviewEnabled`, which is **presence-based**: any
   marker means this tool's preview is off for this chat, and a new session
@@ -1287,6 +1275,35 @@ dismissal undone by the event it caused would never stick.
   preview subscriber is *parked* past the union of every display's bounds
   instead of being detached — see [Chat › the corner card and parked
   preview views](../chat/README.md#the-corner-card-and-parked-preview-views).
+
+### The shared floating player
+
+The floating Apple device and the floating Mac Desktop share one shell,
+`components/shared/FloatingPlayer.tsx`. The shell owns the box over the chat
+column: drag, resize from any edge, an 8 px status dot at rest, and a hover
+bar that takes the dot's place (Open in pane, picture in picture, Close).
+The picture inside is each tool's own. While picture in picture is up, the
+box stays composited at an opacity no eye can see and takes no pointer input,
+because a canvas the compositor treats as hidden can hand PiP a black surface.
+
+`MacDesktopMiniPlayer.tsx` is the Mac Desktop's player. `WorkLiveCornerCard`
+mounts it beside the corner card, because that is the Work page's host over
+the chat column. `macDesktopFloatState` shows it for the chat in front when
+that chat may see the lane's desktop (a stream viewer, the lease holder, or a
+grant from its agent), the preview is not dismissed, and there is a picture,
+the Off state, an explicit float, or a decoder the player already holds. It
+is not visible while the tools pane is showing Mac Desktop. Closing it records
+the display's identity (`display:<displayId>:<createdAt>`) per chat, so a
+destroyed-and-recreated display can show again. Place and width are one
+window-level choice (`ade.macDesktop.floatingPlayer.v1`), clamped into the
+column on every pass.
+
+The pane and the player share one decoder per lane through
+`macDesktopLiveViewLease.ts`. The first holder starts the stream, the last
+release stops it, and the pane outranks the player. While the pane is open the
+player keeps the stream up without decoding; when the pane switches tools the
+player is promoted. Hiding the pane is not an unsubscribe, and one lane never
+has two decoders.
 
 ### Tooltips and menus in the pane
 

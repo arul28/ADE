@@ -51,8 +51,12 @@ silently approve a per-app elicitation.
 
 **Transport:** ADE's own native helper, `ade-desktop-driver`, spoken to as NDJSON
 over stdin/stdout by `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts`.
-No external CLI, no code-signature negotiation with another vendor — the binary
-is built and bundled by ADE (`apps/desktop/scripts/build-mac-desktop-driver.mjs`).
+Ops use the grouped wire names only (`display.create`, `stream.start`, `ping`).
+The helper's stderr is copied into the brain logger as `mac_desktop.driver_stderr`
+(`~/.ade/runtime/brain.jsonl` when the service runs in the brain). The process
+itself is owned by `macDesktopDriverLifecycle.ts`. No external CLI, no
+code-signature negotiation with another vendor — the binary is built and bundled
+by ADE (`apps/desktop/scripts/build-mac-desktop-driver.mjs`).
 
 **Platform:** macOS runtime hosts only. Elsewhere the service reports
 `supported: false` and every method rejects with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.

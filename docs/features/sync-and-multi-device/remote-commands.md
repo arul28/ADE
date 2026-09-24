@@ -699,8 +699,9 @@ existing still-image fallback. Web takeover is advertised separately with
   status read.
 - `start` `{ laneId, laneName? }` / `stop` `{ laneId }` — controller-only
   (`viewerAllowed: false`, `controllerAllowed: true`): creating or destroying a
-  display is a host mutation, so a read-only viewer device never gets it; the
-  hosted web client (a paired browser controller) does, and the phone does not.
+  display is a host mutation, so a read-only viewer device never gets it. A
+  paired phone and the hosted web client both may `start`. The phone calls it
+  only from the Off card; it never calls `stop`. The web client may stop.
   `start` is idempotent and platform-gated: a non-Mac runtime answers
   `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 - `streamSubscribe` `{ laneId, subscriptionId, viewerLabel? }` → `{ ok, width,
@@ -717,7 +718,9 @@ existing still-image fallback. Web takeover is advertised separately with
   browser controller drives. The payload's `controllerId` is a per-tab TOKEN,
   not a lease identity — the brain derives the holder id as
   `web:<socket connection id>:<token>`, so a client can only return or renew
-  the lease its own socket took. The phone never calls it (view-only).
+  the lease its own socket took. A paired phone calls the same four commands
+  (`takeControl`, `returnControl`, `renewLease`, `input`) when the host
+  advertises `macDesktopControl`.
 - `returnControl` `{ laneId, controllerId }` and `renewLease` `{ laneId,
   controllerId }` → `MacDesktopLeaseState | null`, with the same derivation.
   A second connection's derivation cannot match the first's holder id, so
