@@ -9,8 +9,8 @@ import type {
   ChatLaunchIdArgs,
   ChatLaunchLaneConfig,
   ChatLaunchQueueMessageArgs,
-  LaneLinearIssue,
 } from "../../../shared/types";
+import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { isRecord } from "../shared/utils";
 
 /**
@@ -179,15 +179,19 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
   if (!isRecord(value)) return undefined;
   const mode = value.mode === "child" ? "child" : value.mode === "import" ? "import" : value.mode === "root" ? "root" : null;
   if (!mode) return undefined;
-  const linearIssue = isRecord(value.linearIssue) && asTrimmedString(value.linearIssue.id)
-    ? value.linearIssue as unknown as LaneLinearIssue
-    : null;
+  const parentLaneId = asTrimmedString(value.parentLaneId);
+  const branchRef = asTrimmedString(value.branchRef);
+  const templateId = asTrimmedString(value.templateId);
+  const color = asTrimmedString(value.color);
+  // The canonical strict parser, so a malformed issue degrades to null instead
+  // of reaching the lane service and throwing on a missing field.
+  const linearIssue = parseLaneLinearIssueValue(value.linearIssue);
   return {
     mode,
-    ...(asTrimmedString(value.parentLaneId) ? { parentLaneId: asTrimmedString(value.parentLaneId)! } : {}),
-    ...(asTrimmedString(value.branchRef) ? { branchRef: asTrimmedString(value.branchRef)! } : {}),
-    ...(asTrimmedString(value.templateId) ? { templateId: asTrimmedString(value.templateId)! } : {}),
-    ...(asTrimmedString(value.color) ? { color: asTrimmedString(value.color)! } : {}),
+    ...(parentLaneId ? { parentLaneId } : {}),
+    ...(branchRef ? { branchRef } : {}),
+    ...(templateId ? { templateId } : {}),
+    ...(color ? { color } : {}),
     ...(linearIssue ? { linearIssue } : {}),
   };
 }

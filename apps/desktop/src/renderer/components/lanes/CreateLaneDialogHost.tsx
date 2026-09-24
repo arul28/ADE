@@ -16,11 +16,13 @@ import {
   canCreateLaneOnMachine,
   deriveLaneMachineOptions,
   THIS_MACHINE_ID,
+  type LaneMachineOption,
   type LaneMachineProjectRef,
 } from "./laneMachines";
 import type { LaneBranchOption } from "./laneUtils";
 import type {
   BranchPullRequest,
+  ChatLaunchLaneConfig,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
   LaneLinearIssue,
@@ -40,24 +42,16 @@ type CreateSetupPhase =
 export type CreateLaneBehavior = "stay-open-setup" | "close-on-create" | "configure-for-chat";
 
 /**
- * The lane recipe a "configure-for-chat" dialog hands back. Nothing is created
- * here: the composer holds this and the new-lane launch applies it when the
- * chat is sent, so the lane only exists once the user actually starts work.
+ * The lane recipe a "configure-for-chat" dialog hands back. It is the launch's
+ * own `ChatLaunchLaneConfig` plus the two fields that travel separately on a
+ * launch (name and base), so a new recipe field cannot be forgotten on one side.
+ * Nothing is created here: the composer holds this and the new-lane launch
+ * applies it when the chat is sent.
  */
-export type NewLaneDraftConfig = {
-  mode: "root" | "child" | "import";
+export type NewLaneDraftConfig = ChatLaunchLaneConfig & {
   name: string;
   /** root/child base override ("" for none). */
   baseBranch: string;
-  /** child: the parent lane. */
-  parentLaneId: string;
-  /** import: the existing branch ref. */
-  branchRef: string;
-  /** Lane template applied when the lane is eventually created. */
-  templateId: string | null;
-  /** Accent color applied once the lane exists. */
-  color: string | null;
-  linearIssue: LaneLinearIssue | null;
 };
 
 export type CreateLanePrefill = {
@@ -752,32 +746,35 @@ export function CreateLaneDialogHost({
     }
   }, [selectedTemplateId, resetCreateDialogState, onOpenChange]);
 
+  /**
+   * The two form errors the submit button cannot express (everything else is in
+   * `isSubmitDisabled`): a template that has since been deleted, and a Linear
+   * issue attached to an import. Shared by the real create and configure-for-chat
+   * so the two cannot diverge again.
+   */
+  const validateLaneFormExtras = useCallback((): string | null => {
+    if (createSelectedLinearIssue && createMode === "existing") {
+      return "Detach the Linear issue before importing an existing branch.";
+    }
+    if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
+      return "The selected lane template no longer exists. Refresh templates or choose a different option.";
+    }
+    return null;
+  }, [createMode, createSelectedLinearIssue, selectedTemplateId, templates]);
+
   const handleCreateSubmit = useCallback(async () => {
-    // Configure-for-chat: validate exactly like a create, then hand the recipe
-    // back instead of creating. The composer owns the deferred creation.
+    // Configure-for-chat: validate like a create, then hand the recipe back
+    // instead of creating. The composer owns the deferred creation.
     if (behavior === "configure-for-chat") {
-      const name = createLaneName.trim();
-      if (!name) return;
-      if (createMode === "child" && !createParentLaneId) return;
-      if (createMode === "primary") {
-        const validBaseBranch = listNewLaneBaseOptions(createBranches, createBaseSource)
-          .some((option) => option.ref === createBaseBranch);
-        if (createBranchesLoading || !validBaseBranch) {
-          setCreateError(createBranchesLoading
-            ? "Still loading base branches. Try again in a moment."
-            : "Choose a valid base branch for the selected source.");
-          return;
-        }
-      }
-      if (createMode === "existing" && !createImportBranch) return;
-      if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
-        setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
+      const error = validateLaneFormExtras();
+      if (error) {
+        setCreateError(error);
         return;
       }
       setCreateError(null);
       onConfigured?.({
         mode: createMode === "child" ? "child" : createMode === "existing" ? "import" : "root",
-        name,
+        name: createLaneName.trim(),
         baseBranch: createMode === "child"
           ? createChildBaseBranch.trim()
           : createMode === "primary" ? createBaseBranch : "",
@@ -813,12 +810,9 @@ export function CreateLaneDialogHost({
       }
     }
     if (createMode === "existing" && !createImportBranch) return;
-    if (createSelectedLinearIssue && createMode === "existing") {
-      setCreateError("Detach the Linear issue before importing an existing branch.");
-      return;
-    }
-    if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
-      setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
+    const extrasError = validateLaneFormExtras();
+    if (extrasError) {
+      setCreateError(extrasError);
       return;
     }
 
@@ -928,10 +922,10 @@ export function CreateLaneDialogHost({
     onOpenChange,
     runSetupForCreatedLane,
     selectedTemplateId,
-    templates,
     createSelectedColor,
     createSelectedLinearIssue,
     activeProjectRoot,
+    validateLaneFormExtras,
   ]);
 
   const handleDialogOpenChange = useCallback((next: boolean) => {
@@ -945,9 +939,30 @@ export function CreateLaneDialogHost({
     ? "This branch is currently checked out and has uncommitted changes. The new lane will only include committed changes - uncommitted work will not carry over."
     : null;
 
-  // Configuring a draft creates nothing: the composer's machine picker owns the
-  // machine, and the CTA says so plainly instead of promising a create.
+  // Configuring a draft creates nothing and owns no machine; the two behaviors
+  // differ in one bundle of props, kept here instead of nine ternaries inline.
   const configureForChat = behavior === "configure-for-chat";
+  const behaviorChrome = configureForChat
+    ? {
+        envInitProgress: null,
+        laneCreated: false,
+        setupStatus: null,
+        setupSteps: [] as CreateLaneSetupStep[],
+        submitLabelOverride: "Use this setup",
+        machines: [] as LaneMachineOption[],
+        onSelectMachine: undefined,
+        onConnectMachine: undefined,
+      }
+    : {
+        envInitProgress: createEnvInitProgress,
+        laneCreated,
+        setupStatus: createSetupStatus,
+        setupSteps: createSetupSteps,
+        submitLabelOverride: null,
+        machines,
+        onSelectMachine: handleSelectMachine,
+        onConnectMachine: handleConnectMachine,
+      };
 
   return (
     <CreateLaneDialog
@@ -973,11 +988,7 @@ export function CreateLaneDialogHost({
       onSubmit={handleCreateSubmit}
       busy={createBusy}
       error={createError}
-      envInitProgress={configureForChat ? null : createEnvInitProgress}
-      laneCreated={configureForChat ? false : laneCreated}
-      setupStatus={configureForChat ? null : createSetupStatus}
-      setupSteps={configureForChat ? [] : createSetupSteps}
-      submitLabelOverride={configureForChat ? "Use this setup" : null}
+      {...behaviorChrome}
       templates={templates}
       selectedTemplateId={selectedTemplateId}
       setSelectedTemplateId={setSelectedTemplateId}
@@ -992,10 +1003,7 @@ export function CreateLaneDialogHost({
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       importBranchWarning={importBranchWarning}
-      machines={configureForChat ? [] : machines}
       selectedMachineId={selectedMachineId}
-      onSelectMachine={configureForChat ? undefined : handleSelectMachine}
-      onConnectMachine={configureForChat ? undefined : handleConnectMachine}
     />
   );
 }

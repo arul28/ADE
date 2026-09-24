@@ -61,7 +61,7 @@ import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachi
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
 import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
-import { mergeChatLaunchRows, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
+import { mergeChatLaunchRows, selectKnownLaunchSessionIds, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
 import { subscribeChatLaunchClosed } from "../chat/launch/chatLaunchDraftRestore";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
@@ -591,25 +591,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
   );
   /**
-   * Session ids owned by a live launch on this project — listed or not.
-   *
-   * A launch's synthetic roster row delists the moment its agent starts
-   * (`shouldListChatLaunchRow`), but the host's own row for that chat only lands
-   * on the next roster read. In that gap the open tab's id was not "valid", so
-   * the prune below dropped it and moved the active chat to an unrelated one —
-   * the random jump users saw right after auto-create-lane setup finished.
-   * Keeping these ids valid holds the tab until the host row takes over.
+   * Session ids owned by a live launch on this project — listed or not (see
+   * `selectKnownLaunchSessionIds`). The prune below keeps these valid so the
+   * hand-off from a launch's synthetic row to the host's own row never drops the
+   * open tab and moves the active chat (the random jump after auto-create setup).
    */
-  const knownLaunchSessionIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const source of chatLaunchRowSources) {
-      if (source.bindingKey !== activeChatLaunchBindingKey && !crossMachineBindingKeys.has(source.bindingKey)) continue;
-      const { snapshot } = source;
-      if (snapshot.kind !== "chat" || snapshot.phase === "cancelled") continue;
-      ids.add(snapshot.sessionId ?? snapshot.launchId);
-    }
-    return ids;
-  }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
+  const knownLaunchSessionIds = useMemo(
+    () => selectKnownLaunchSessionIds(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
+    [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
+  );
   const sessions = useMemo(() => {
     if (pendingChatLaunches.length === 0) return hostSessions;
     // A launch row yields to the real row wherever it appears — this roster or

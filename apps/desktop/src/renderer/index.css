@@ -1453,7 +1453,7 @@ body.ade-project-sidebar-resizing {
 
 .ade-lane-popover-create:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent, #a566ff) 45%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 .ade-lane-popover-search:focus,

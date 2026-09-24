@@ -53,6 +53,7 @@ import {
   type IosElementContextItem,
   type IosSimulatorDrawerMode,
   type LaneLinearIssue,
+  type LaneSummary,
   type AiSettingsStatus,
   type CursorCloudOpenChatResult,
   type OpenProjectBinding,
@@ -304,6 +305,7 @@ import {
   type RoutedDraftLane,
 } from "./useDraftMachineRouting";
 import { DraftMachinePicker, type DraftMachineOption } from "./DraftMachinePicker";
+import { useNewLaneDraftConfig } from "./useNewLaneDraftConfig";
 import { CursorCloudAdvancedMenu } from "./CursorCloudAdvancedMenu";
 import { useCursorCloudDraftState } from "./useCursorCloudDraftState";
 import {
@@ -917,19 +919,14 @@ function createDeterministicAutoLaneName(prompt: string, options: { genericSuffi
 }
 
 /**
- * Translate a composer "configure for chat" recipe into the launch's lane
- * recipe. A root recipe needs nothing beyond the launch's own `laneName` /
- * `baseBranch` args, so only child/import/template/color add fields.
+ * The launch recipe carried by a composer "configure for chat" draft. The lane
+ * name and base travel as the launch's own `laneName`/`baseBranch`, so strip
+ * them and pass the rest of the (shared) recipe through unchanged — a new recipe
+ * field cannot be dropped here.
  */
 function chatLaunchLaneConfigFromDraft(config: NewLaneDraftConfig): ChatLaunchLaneConfig {
-  return {
-    mode: config.mode,
-    ...(config.mode === "child" && config.parentLaneId.trim() ? { parentLaneId: config.parentLaneId.trim() } : {}),
-    ...(config.mode === "import" && config.branchRef.trim() ? { branchRef: config.branchRef.trim() } : {}),
-    ...(config.templateId ? { templateId: config.templateId } : {}),
-    ...(config.color ? { color: config.color } : {}),
-    ...(config.linearIssue ? { linearIssue: config.linearIssue } : {}),
-  };
+  const { name: _name, baseBranch: _baseBranch, ...recipe } = config;
+  return recipe;
 }
 
 function createTemporaryAutoLaneBranch(): string {
@@ -3742,13 +3739,6 @@ export function AgentChatPane({
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [draftLaunchTargetId, setDraftLaunchTargetId] = useState<string | null>(null);
-  /**
-   * The lane recipe configured from the composer's "+" — held, never created,
-   * until the chat is sent. When set it rides the auto-create target but swaps
-   * the lane name/base/template/child for the user's choices.
-   */
-  const [draftNewLaneConfig, setDraftNewLaneConfig] = useState<NewLaneDraftConfig | null>(null);
-  const [newLaneDialogOpen, setNewLaneDialogOpen] = useState(false);
   const isWorkCliLaunchDraft =
     !lockSessionId
     && !initialSessionId
@@ -3961,6 +3951,25 @@ export function AgentChatPane({
   const [preferencesReady, setPreferencesReady] = useState(() => hasWarmChatModelCatalog(projectRoot));
   const preferencesProjectRootRef = useRef<string | null | undefined>(projectRoot);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The lane recipe configured from the composer's "+" — held, never created,
+   * until the chat is sent. Rides the auto-create target but swaps the lane
+   * name/base/template/child for the user's choices.
+   */
+  const {
+    config: draftNewLaneConfig,
+    configRef: draftNewLaneConfigRef,
+    pendingRendererRef,
+    dialogOpen: newLaneDialogOpen,
+    setDialogOpen: setNewLaneDialogOpen,
+    openConfigure: handleConfigureNewLane,
+    applyConfigured: handleNewLaneConfigured,
+    clearConfig: clearNewLaneConfig,
+  } = useNewLaneDraftConfig({
+    setError,
+    setDraftLaunchTargetId,
+    autoCreateOptionId: AUTO_CREATE_LANE_OPTION.id,
+  });
   // What a completed replay fork actually did, as opposed to the pre-fork hint
   // that only predicts it: the fork is supposed to replay verbatim, so dropped
   // turns have to be reported, not merely foreshadowed.
@@ -9442,7 +9451,7 @@ export function AgentChatPane({
       setBuiltInBrowserContextItems(saved.builtInBrowserContextItems);
       setDraftLaunchTargetId(saved.draftLaunchTargetId);
       // The recipe is not persisted; a restored draft starts as plain auto-create.
-      setDraftNewLaneConfig(null);
+      clearNewLaneConfig();
       if (!selectedSessionId && saved.modelId) {
         draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
         draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:composer-draft`;
@@ -9471,10 +9480,11 @@ export function AgentChatPane({
     setAppControlContextItems([]);
     setBuiltInBrowserContextItems([]);
     setDraftLaunchTargetId(null);
-    setDraftNewLaneConfig(null);
+    clearNewLaneConfig();
     setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
   }, [
     applyLaunchConfigToComposer,
+    clearNewLaneConfig,
     companionStateKey,
     composerDraftStorageKeyValue,
     composerDraftStorageKeyValues,
@@ -10299,44 +10309,68 @@ export function AgentChatPane({
         const loadingMessage = draftLaneCatalogLoadingMessageRef.current;
         throw new Error(loadingMessage ?? "Auto-create requires a primary lane.");
       }
+      const configured = draftNewLaneConfigRef.current ?? pendingRendererRef.current;
+      pendingRendererRef.current = null;
       const namingSeed = buildDraftLaunchNamingSeed(snapshot);
-      const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, pin, force: true }).catch(() => null);
       const namingModelId = snapshot.modelId;
       onAutoCreateNameModelResolved?.(namingModelId);
       const genericSuffix = autoLaneGenericSuffix();
-      // Instant: name the lane deterministically now. If AI titles are enabled,
-      // the real name is generated in the background after creation and applied
-      // via lanes.rename — naming never blocks lane creation (no 10s race).
-      const laneName = createDeterministicAutoLaneName(namingSeed, { genericSuffix });
+      // The configured name wins; otherwise name the lane deterministically now.
+      // If AI titles are enabled, the real name is generated in the background
+      // after creation and applied via lanes.rename — never on the critical path.
+      const configuredName = configured?.name.trim() ?? "";
+      const laneName = configuredName || createDeterministicAutoLaneName(namingSeed, { genericSuffix });
       onAutoCreateNameResolved?.();
       assertActive?.();
-      const baseSource = effectiveNewLaneBaseSource(projectConfigSnapshot);
-      const branches = await fetchNewLaneBaseBranches({
-        source: baseSource,
-        fetchRemoteBranches: () => pin
-          ? window.ade.git.fetch({ laneId: primaryLane.id }, pin)
-          : window.ade.git.fetch({ laneId: primaryLane.id }),
-        listBranches: () => pin
-          ? window.ade.git.listBranches({ laneId: primaryLane.id }, pin)
-          : window.ade.git.listBranches({ laneId: primaryLane.id }),
-      });
-      const primaryBaseRef = primaryLane.baseRef
-        ?? (branchNameFromRef(primaryLane.branchRef) || "main");
-      const selectedBaseBranch = selectDefaultNewLaneBaseRef({
-        branches,
-        source: baseSource,
-        primaryBaseRef,
-      });
-      const baseBranch = selectedBaseBranch;
-      assertActive?.();
-      const createArgs = {
-        name: laneName,
-        branchName: createTemporaryAutoLaneBranch(),
-        ...(baseBranch ? { baseBranch } : {}),
-      };
-      const createdLane = pin
-        ? await window.ade.lanes.create(createArgs, pin)
-        : await window.ade.lanes.create(createArgs);
+      let createdLane: LaneSummary;
+      if (configured?.mode === "import") {
+        const branchRef = configured.branchRef?.trim() ?? "";
+        if (!branchRef) throw new Error("Choose a branch to import.");
+        createdLane = await window.ade.lanes.importBranch({ branchRef, name: laneName });
+      } else if (configured?.mode === "child") {
+        const parentLaneId = configured.parentLaneId?.trim() ?? "";
+        if (!parentLaneId) throw new Error("Choose a parent lane for the child lane.");
+        const childBaseRef = configured.baseBranch.trim();
+        const childArgs = {
+          parentLaneId,
+          name: laneName,
+          ...(childBaseRef ? { baseBranchRef: childBaseRef } : {}),
+        };
+        createdLane = pin
+          ? await window.ade.lanes.createChild(childArgs, pin)
+          : await window.ade.lanes.createChild(childArgs);
+      } else {
+        let baseBranch = configured?.baseBranch.trim() ?? "";
+        if (!baseBranch) {
+          const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, pin, force: true }).catch(() => null);
+          const baseSource = effectiveNewLaneBaseSource(projectConfigSnapshot);
+          const branches = await fetchNewLaneBaseBranches({
+            source: baseSource,
+            fetchRemoteBranches: () => pin
+              ? window.ade.git.fetch({ laneId: primaryLane.id }, pin)
+              : window.ade.git.fetch({ laneId: primaryLane.id }),
+            listBranches: () => pin
+              ? window.ade.git.listBranches({ laneId: primaryLane.id }, pin)
+              : window.ade.git.listBranches({ laneId: primaryLane.id }),
+          });
+          const primaryBaseRef = primaryLane.baseRef
+            ?? (branchNameFromRef(primaryLane.branchRef) || "main");
+          baseBranch = selectDefaultNewLaneBaseRef({
+            branches,
+            source: baseSource,
+            primaryBaseRef,
+          }) ?? "";
+        }
+        assertActive?.();
+        const createArgs = {
+          name: laneName,
+          branchName: createTemporaryAutoLaneBranch(),
+          ...(baseBranch ? { baseBranch } : {}),
+        };
+        createdLane = pin
+          ? await window.ade.lanes.create(createArgs, pin)
+          : await window.ade.lanes.create(createArgs);
+      }
       // lanes.create is not cancellable, so if the launch timed out while it
       // was in flight, the outer wait has already rejected with targetLane ===
       // null and will not roll this lane back. Clean it up here, pinned to the
@@ -10352,17 +10386,30 @@ export function AgentChatPane({
         }
         throw abortError;
       }
-      startBackgroundLaneNaming({
-        laneId: createdLane.id,
-        prompt: namingSeed,
-        modelId: namingModelId,
-        chatModelId: snapshot.modelId,
-        provider: sessionProvider,
-        fallbackName: laneName,
-        temporaryBranch: createdLane.branchRef,
-        attachments: snapshot.attachments,
-        pin,
-      });
+      if (configured?.color) {
+        await window.ade.lanes
+          .updateAppearance({ laneId: createdLane.id, color: configured.color }, pin)
+          .catch(() => undefined);
+      }
+      if (configured?.templateId) {
+        await window.ade.lanes
+          .applyTemplate({ laneId: createdLane.id, templateId: configured.templateId })
+          .catch(() => undefined);
+      }
+      // A user-named lane keeps its name; only prompt-derived lanes get AI-named.
+      if (!configuredName) {
+        startBackgroundLaneNaming({
+          laneId: createdLane.id,
+          prompt: namingSeed,
+          modelId: namingModelId,
+          chatModelId: snapshot.modelId,
+          provider: sessionProvider,
+          fallbackName: laneName,
+          temporaryBranch: createdLane.branchRef,
+          attachments: snapshot.attachments,
+          pin,
+        });
+      }
       if (canRefreshPinnedProject(pin)) {
         await refreshLanesStore().catch((refreshError: unknown) => {
           console.warn("draft launch lane refresh failed", refreshError);
@@ -10414,11 +10461,14 @@ export function AgentChatPane({
     canRefreshPinnedProject,
     availableLanes,
     draftLaunchTargetIsAutoCreate,
+    draftNewLaneConfigRef,
     laneDisplayLabel,
     laneId,
     lanes,
+    pendingRendererRef,
     projectRoot,
     refreshLanesStore,
+    sessionProvider,
     startBackgroundLaneNaming,
   ]);
 
@@ -10664,7 +10714,11 @@ export function AgentChatPane({
     // the first frame. Only `fetch` depends on project config; an unread
     // config assumes the default (fetch from the remote).
     const knownConfig = peekProjectConfigCached({ projectRoot, pin: launchBinding });
-    const includeFetch = !baseBranch && !configuredLane && effectiveNewLaneBaseSource(knownConfig) !== "local";
+    // Only child/import skip the fetch; a configured root still branches from a
+    // remote base when the project is configured that way.
+    const includeFetch = !baseBranch
+      && !(configuredLane && configuredLane.mode !== "root")
+      && effectiveNewLaneBaseSource(knownConfig) !== "local";
     registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
     insertOptimisticChatLaunch(
       launchBinding,
@@ -10672,7 +10726,7 @@ export function AgentChatPane({
     );
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
-    setDraftNewLaneConfig(null);
+    clearNewLaneConfig();
     const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
     if (opensNow) {
       stashComposerDockOrigin(launchId, findDraftComposerHandoffElement(shellRef.current), {
@@ -10684,20 +10738,26 @@ export function AgentChatPane({
       openLaunchedDraftSession({ laneId: newLaneId, laneName, sessionId: launchId, draftKind: "chat" });
     }
     // A runtime that predates brain-owned launches rejects the action; that one
-    // launch then drops its card/row and runs the renderer-owned chain.
-    void startChatLaunch(launchId, { onUnsupported });
+    // launch then drops its card/row and runs the renderer-owned chain, which
+    // consumes this recipe so it still builds the lane the user configured.
+    pendingRendererRef.current = configuredLane;
+    void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
+      if (outcome !== "unsupported") pendingRendererRef.current = null;
+    });
     return true;
   }, [
     buildChatCreateArgs,
     buildDraftCliLaunchParams,
     canRefreshPinnedProject,
     clearDraftLaunchComposer,
+    clearNewLaneConfig,
     clearPromptSuggestionForSession,
     constrainedModelSelectionError,
     initialNativeControls,
     lastLaunchConfigStorageKey,
     onLaunchCliSession,
     openLaunchedDraftSession,
+    pendingRendererRef,
     projectRoot,
     selectedSessionId,
   ]);
@@ -12973,23 +13033,13 @@ export function AgentChatPane({
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
 
-  /** The composer's "+": configure a lane now, create it when the chat is sent. */
-  const handleConfigureNewLane = useCallback(() => {
-    setNewLaneDialogOpen(true);
-  }, []);
-  const handleNewLaneConfigured = useCallback((config: NewLaneDraftConfig) => {
-    setError(null);
-    setDraftNewLaneConfig(config);
-    // Ride the auto-create target: the lane is not created until send.
-    setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION.id);
-  }, [setError]);
   const handleShelfLaneChange = useCallback((nextLaneId: string) => {
     // Picking "Auto-create lane" keeps a configured recipe (it is the same
     // pending-lane target); picking any real lane drops it — the user chose a
     // concrete destination instead.
-    if (!isAutoCreateLaneOptionId(nextLaneId)) setDraftNewLaneConfig(null);
+    if (!isAutoCreateLaneOptionId(nextLaneId)) clearNewLaneConfig();
     handleDraftLaneSelectionChange(nextLaneId);
-  }, [handleDraftLaneSelectionChange]);
+  }, [clearNewLaneConfig, handleDraftLaneSelectionChange]);
   const canUseThisComputerForDraft = laneMachineOptions.some(
     (option) => option.id === THIS_MACHINE_ID,
   );

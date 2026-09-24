@@ -59,6 +59,8 @@ type LaneServiceLike = {
       branchName?: string;
       /** child-mode launches branch from an existing lane instead of the base. */
       parentLaneId?: string;
+      /** child-mode base override: checkout here instead of the parent's HEAD. */
+      startPoint?: string;
       /** Bound to the new lane the same way a manual create binds it. */
       linearIssue?: LaneLinearIssue | null;
     },
@@ -162,6 +164,11 @@ function autoLaneGenericSuffix(date: Date): string {
 }
 
 const temporaryAutoLaneBranch = (): string => `ade/${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+
+/** A child or imported lane is not cut from a remote base, so no fetch stage runs. */
+function laneConfigSkipsFetch(config: ChatLaunchLaneConfig | null | undefined): boolean {
+  return config?.mode === "child" || config?.mode === "import";
+}
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());
 
@@ -464,6 +471,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
           branchName: temporaryAutoLaneBranch(),
           ...(baseRef ? { baseBranch: baseRef } : {}),
           ...(config?.mode === "child" && config.parentLaneId ? { parentLaneId: config.parentLaneId } : {}),
+          // A child's base override has to travel as the start point: `create`
+          // only honors `baseBranch` when the parent is the primary lane.
+          ...(config?.mode === "child" && baseRef ? { startPoint: baseRef } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
         },
         {
@@ -748,13 +758,12 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       || deriveDeterministicLaneNameFromPrompt(prompt, { genericSuffix: autoLaneGenericSuffix(now()) });
     const baseBranch = args.baseBranch?.trim() || null;
     const laneConfig = args.laneConfig ?? null;
-    // A child/import lane is not cut from a remote base, so there is no fetch.
     const environment = deps.planEnvironment(laneConfig?.templateId ?? null);
     const snapshot = createChatLaunchSnapshot({
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
       laneName,
-      includeFetch: !baseBranch && !laneConfig && !deps.usesLocalLaneBase(),
+      includeFetch: !baseBranch && !laneConfigSkipsFetch(laneConfig) && !deps.usesLocalLaneBase(),
       includeEnvironment: environment.hasEnvironment,
       templateName: environment.templateName,
       nowIso: nowIso(),
@@ -802,12 +811,16 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     // A lane whose create inserted its row but never returned (restart
     // mid-checkout) is this launch's too, even though laneCreated is false.
     if (record.snapshot.laneCreated || findInterruptedLane(record)) {
+      // An import lane adopted a pre-existing branch the user already had.
+      // Deleting the lane row is this launch's to do; deleting that branch
+      // (local or remote) is not — the manual delete defaults to keeping it.
+      const importedBranch = record.laneConfig?.mode === "import";
       try {
         await deps.laneService.delete({
           laneId: record.snapshot.laneId,
           force: true,
-          deleteBranch: true,
-          deleteRemoteBranch: true,
+          deleteBranch: !importedBranch,
+          deleteRemoteBranch: !importedBranch,
           requireRemoteBranchDelete: false,
         });
         record.snapshot.laneCreated = false;
