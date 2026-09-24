@@ -94,6 +94,21 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    */
   const startingStreams = new Map<string, Promise<LaneTransport>>();
 
+  /**
+   * Waits out any start in flight — one lane's, or every lane's — so a release
+   * sees the owner that start is about to add. A release that ran first found
+   * no owner, and the start then re-added the viewer that had already left:
+   * a running stream with a ghost owner nobody would ever release. A failed
+   * start added nobody, so its rejection is not the release's to report.
+   */
+  const settleStarts = async (laneId?: string): Promise<void> => {
+    const pending = laneId === undefined
+      ? [...startingStreams.values()]
+      : [startingStreams.get(laneId)].filter((start): start is Promise<LaneTransport> => start !== undefined);
+    if (pending.length === 0) return;
+    await Promise.all(pending.map((start) => start.catch(() => undefined)));
+  };
+
   /** True when this chat was not a viewer of the lane yet. */
   const addStreamOwner = (laneId: string, chatSessionId: string | null | undefined): boolean => {
     const owner = chatSessionId?.trim() || null;
@@ -279,6 +294,13 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       pending = opening;
     }
     const transport = await pending;
+    if (streamServer.getTransport(laneId)?.token !== transport.token) {
+      // The run this call waited on ended before it resumed — a release that
+      // settled first, a lane teardown. Its token is dead, and recording this
+      // owner against a stopped run is the ghost owner `settleStarts` exists
+      // to prevent, so the ask starts over against whatever is running now.
+      return await startStreamFor(args, owner);
+    }
     const added = addOwner(laneId, owner);
     deps.touchDisplay(laneId);
     // The only call that hands out the token.
@@ -322,6 +344,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     laneId: string,
     chatSessionId: string | null | undefined,
   ): Promise<MacDesktopStreamStatus> {
+    await settleStarts(laneId);
     const owners = streamOwners.get(laneId);
     const dropped = owners?.delete(chatSessionId?.trim() || null) ?? false;
     if (owners && owners.size === 0) streamOwners.delete(laneId);
@@ -400,6 +423,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
      * viewer's picture alive.
      */
     async stopOwnedBy(chatSessionId: string): Promise<void> {
+      await settleStarts();
       for (const [laneId, owners] of [...streamOwners]) {
         if (!owners.delete(chatSessionId)) continue;
         if (hasStreamOwners(laneId)) continue;
@@ -415,6 +439,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
      * the picture away from a chat that is still watching.
      */
     async releaseStreamSubscription(subscriptionId: string): Promise<void> {
+      await settleStarts();
       for (const [laneId, subscriptions] of [...streamSubscriptions]) {
         if (!subscriptions.delete(subscriptionId)) continue;
         if (hasStreamOwners(laneId)) continue;

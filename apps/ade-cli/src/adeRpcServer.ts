@@ -3222,9 +3222,10 @@ const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(["getStatus", "listWindows
  * policy surface (a runtime whose service omits a method rejects the call on
  * its own), so deriving from it can only ever over-cover.
  *
- * CTO-only actions (`startStream`, `takeControl`, ...) are excluded because the
- * role gate already refuses them for an agent-shaped caller; a lane check on
- * top would answer with the wrong error.
+ * CTO-only actions (`startStream`, `takeControl`, ...) are excluded because
+ * `scopeMacDesktopAdeActionArgs` refuses them outright for an agent-shaped
+ * caller, whatever its role; a lane check on top would answer with the wrong
+ * error.
  */
 export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
   (ADE_ACTION_ALLOWLIST.mac_desktop ?? []).filter(
@@ -3293,6 +3294,18 @@ export function scopeMacDesktopAdeActionArgs(
   macDesktopArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   if (isUserClient) return macDesktopArgs;
+  // The role gate alone is not enough: a chat identity is clamped to `agent`,
+  // but a run/step/attempt identity keeps a `cto` role, and it is still an
+  // agent — the viewing actions are a person's. `startStream` hands back the
+  // unredacted loopback token, and with it the agent could post real input
+  // under the human's takeover controller id it read off `getStatus`. Refused
+  // by caller shape, not role.
+  if (isCtoOnlyAdeAction("mac_desktop", action)) {
+    scopeAccessDenied(
+      "mac_desktop viewing and permission actions belong to user clients",
+      `run_ade_action:mac_desktop.${action}`,
+    );
+  }
   const {
     chatSessionId: _callerSupplied,
     controllerId: _callerController,
@@ -3357,23 +3370,38 @@ const APPLE_AGENT_DRIVING_ACTIONS = new Set([
 ]);
 
 /**
+ * `mac_desktop` actions an agent can call that do NOT drive the lane's display:
+ * the reads, stopping or releasing what it holds, observing and waiting, and
+ * asking for the input lease (the real input that follows it is what counts).
+ * The one hand-written half of the derivation below.
+ */
+const MAC_DESKTOP_NON_DRIVING_ACTIONS = new Set<string>([
+  ...MAC_DESKTOP_READ_ONLY_ACTIONS,
+  "stop",
+  "releaseWindow",
+  "observe",
+  "wait",
+  "screenshot",
+  "stopRecording",
+  "requestInputLease",
+]);
+
+/**
  * `mac_desktop` actions that mean an agent is driving the lane's display, so
  * the desktop may float the Mac Desktop card over that agent's chat (see
- * `work_tools.noteAgentMacDesktopActivity`). Reads, `stop` and window releases
- * are not driving.
+ * `work_tools.noteAgentMacDesktopActivity`).
+ *
+ * Derived the same way as `MAC_DESKTOP_LANE_BOUND_ACTIONS`: every allowlisted
+ * action that is neither listed as non-driving nor CTO-only (which an agent
+ * cannot reach). A new acting action added to the allowlist floats the card
+ * without anyone remembering to copy its name here. `present` moves windows,
+ * so it counts.
  */
-const MAC_DESKTOP_AGENT_DRIVING_ACTIONS = new Set([
-  "start",
-  "open",
-  "claimWindow",
-  "click",
-  "type",
-  "press",
-  "scroll",
-  "drag",
-  "move",
-  "startRecording",
-]);
+export const MAC_DESKTOP_AGENT_DRIVING_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.mac_desktop ?? []).filter(
+    (action) => !MAC_DESKTOP_NON_DRIVING_ACTIONS.has(action) && !isCtoOnlyAdeAction("mac_desktop", action),
+  ),
+);
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
 const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode", "pi"]);

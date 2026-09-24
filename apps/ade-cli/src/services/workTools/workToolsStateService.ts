@@ -515,8 +515,15 @@ function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
       return event.laneId;
     case "time-lapse":
       return event.timeLapse.laneId;
-    default:
+    case "permission-changed":
+    case "driver-health":
       return null;
+    default: {
+      // A new event type is a compile error here until someone decides whether
+      // it names a lane or fans out to every lane.
+      const unhandled: never = event;
+      return unhandled;
+    }
   }
 }
 
@@ -705,8 +712,22 @@ export function createWorkToolsStateService(
     let status: MacDesktopStatus;
     try {
       if (!last) {
-        // Nothing to answer with yet, so the first read waits for the host.
-        status = await read;
+        // Nothing to answer with yet, but the first read gets the same deadline
+        // as every later one: a helper that is starting up must not hold the
+        // whole lane state past the phone's own timeout. Unknown is answered
+        // as absent, and the late answer tells the clients to read again.
+        const result = await settleWithin(read, WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+        if (!result.settled) {
+          args.logger?.debug("work_tools.mac_desktop_first_status_slow", {
+            laneId,
+            deadlineMs: WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS,
+          });
+          void read.then(() => {
+            if (!disposed && (macDesktopDisplayEpochByLane.get(laneId) ?? 0) === epoch) emitStateChanged(laneId);
+          }, () => undefined);
+          return null;
+        }
+        status = result.value;
       } else {
         const result = await settleWithin(read, WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
         if (result.settled) {

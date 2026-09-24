@@ -959,19 +959,33 @@ describe("workToolsStateService", () => {
       service.dispose();
     });
 
-    it("waits for the host on the first read, when there is nothing to answer with", async () => {
+    it("gives the first read the same deadline, answers unknown, and asks clients to read again", async () => {
+      // The first read had no deadline: a helper still starting up held the
+      // whole lane state past the phone's own timeout, which drops every chip.
       vi.useFakeTimers();
-      const mac = slowMacService({ fastReads: 0, slowMs: 3_000, status: () => macStatus() });
-      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
-      let answered = false;
-      const first = service.getLaneState({ laneId: "lane-1" }).then((state) => {
-        answered = true;
-        return state;
+      const onStateChanged = vi.fn();
+      const mac = slowMacService({ fastReads: 0, slowMs: 9_000, status: () => macStatus() });
+      const service = createWorkToolsStateService({
+        projectRoot,
+        onStateChanged,
+        debounceMs: 10,
+        macDesktopService: mac.reader,
+      });
+      let answered: Awaited<ReturnType<typeof service.getLaneState>> | null = null;
+      void service.getLaneState({ laneId: "lane-1" }).then((state) => {
+        answered = state;
       });
       await vi.advanceTimersByTimeAsync(WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
-      expect(answered).toBe(false);
-      await vi.advanceTimersByTimeAsync(3_000);
-      expect((await first).macDesktop?.display?.laneId).toBe("lane-1");
+      expect(answered).not.toBeNull();
+      expect(answered!.macDesktop).toBeNull();
+      expect(onStateChanged).not.toHaveBeenCalled();
+
+      // The late answer becomes the last status and tells clients to re-read.
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(onStateChanged).toHaveBeenCalled();
+      const next = service.getLaneState({ laneId: "lane-1" });
+      await vi.advanceTimersByTimeAsync(WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+      expect((await next).macDesktop?.display?.laneId).toBe("lane-1");
       service.dispose();
     });
 

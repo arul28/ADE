@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
+  MAC_DESKTOP_AGENT_DRIVING_ACTIONS,
   MAC_DESKTOP_LANE_BOUND_ACTIONS,
   resolveComputerUseOwners,
 } from "./adeRpcServer";
@@ -5956,6 +5957,48 @@ describe("adeRpcServer", () => {
     }));
   });
 
+  it("refuses CTO-only mac_desktop actions to an agent-shaped CTO caller, not to user clients", async () => {
+    // A chat identity is clamped to `agent`, but a run/step identity keeps the
+    // CTO role it asked for, and the role gate alone let it through:
+    // `startStream` returns the unredacted loopback token, and with it the
+    // agent could post real input under the human's takeover id read off
+    // `getStatus`.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const startStream = vi.fn(async () => ({ token: "secret" }));
+    const requestPermission = vi.fn(async () => ({ ok: true }));
+    const takeControl = vi.fn(async () => ({ ok: true }));
+    const getStatus = vi.fn(async () => ({ supported: true }));
+    fixture.runtime.macDesktopService = { getStatus, startStream, requestPermission, takeControl } as any;
+
+    const cto = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(cto, { callerId: "step-1", role: "cto", runId: "run-1", stepId: "step-1" });
+    for (const action of ["startStream", "requestPermission", "takeControl"]) {
+      const refused = await callTool(cto, "run_ade_action", {
+        domain: "mac_desktop",
+        action,
+        args: { laneId: "lane-a" },
+      });
+      expect(refused?.isError).toBe(true);
+    }
+    expect(startStream).not.toHaveBeenCalled();
+    expect(requestPermission).not.toHaveBeenCalled();
+    expect(takeControl).not.toHaveBeenCalled();
+
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "startStream",
+      args: { laneId: "lane-b" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(startStream).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b" }));
+  });
+
   it("strips a caller-supplied controllerId and holderId from mac_desktop calls", async () => {
     // `getStatus().lease.holderId` prints the human's takeover controller id to
     // any caller that can read the lane. The service prefers `controllerId` over
@@ -7771,5 +7814,25 @@ describe("MAC_DESKTOP_LANE_BOUND_ACTIONS", () => {
     // Everything absent from that list is either a read that answers without a
     // lane (`getStatus`, `listWindows`, `getStreamStatus`) or one of the
     // CTO-only viewing actions gated by role — the pin above is what says so.
+  });
+});
+
+describe("MAC_DESKTOP_AGENT_DRIVING_ACTIONS", () => {
+  it("covers every acting mac_desktop action, derived from the allowlist", () => {
+    // Derived like the lane-bound set: a new acting action lands here on its
+    // own, and this pin is where a reviewer decides it drives the display.
+    expect([...MAC_DESKTOP_AGENT_DRIVING_ACTIONS].sort()).toEqual([
+      "claimWindow",
+      "click",
+      "drag",
+      "move",
+      "open",
+      "present",
+      "press",
+      "scroll",
+      "start",
+      "startRecording",
+      "type",
+    ]);
   });
 });

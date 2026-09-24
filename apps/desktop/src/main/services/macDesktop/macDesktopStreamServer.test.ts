@@ -355,4 +355,37 @@ describe("macDesktopStreamServer", () => {
     expect(after.status).toBe(403);
     await after.arrayBuffer();
   });
+
+  it("binds one server when two lanes start at the same time", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const info = vi.fn();
+    const server = createMacDesktopStreamServer({ logger: { ...logger, info } });
+    cleanups.push(() => server.dispose());
+    const [first, second] = await Promise.all([
+      server.start({ laneId: "lane-1", sourcePort: upstream.port }),
+      server.start({ laneId: "lane-2", sourcePort: upstream.port }),
+    ]);
+    expect(info.mock.calls.filter(([event]) => event === "mac_desktop.stream_server_listening")).toHaveLength(1);
+    expect(first.port).toBe(second.port);
+    expect(server.port()).toBe(first.port);
+  });
+
+  it("ends a run no reader ever connected to after the zero-client grace", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const onZeroClients = vi.fn();
+    const server = createMacDesktopStreamServer({ logger, onZeroClients });
+    cleanups.push(() => server.dispose());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+      vi.advanceTimersByTime(2_999);
+      expect(onZeroClients).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onZeroClients).toHaveBeenCalledWith("lane-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

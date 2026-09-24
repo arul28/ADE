@@ -142,8 +142,9 @@ function scheduleViewerStop(
  * Asks the host for the lane's stream on behalf of a decoder owner.
  *
  * `fresh` is a Reconnect: the host restarts a run that has sent nothing for a
- * while instead of handing it back. It joins an ask already in flight, which
- * is a new run anyway.
+ * while instead of handing it back. It only joins another Reconnect in
+ * flight: an ordinary ask in flight may be the host handing back the very
+ * stale run the Reconnect is meant to replace.
  */
 export function startMacDesktopLiveStream(args: {
   laneId: string;
@@ -151,7 +152,7 @@ export function startMacDesktopLiveStream(args: {
   runtimePin: OpenProjectBinding | null;
   fresh?: boolean;
 }): Promise<MacDesktopStreamStatus> {
-  const key = `${args.laneId}\u0000${normalizeChat(args.chatSessionId) ?? ""}`;
+  const key = `${args.laneId}\u0000${normalizeChat(args.chatSessionId) ?? ""}\u0000${args.fresh ? "fresh" : ""}`;
   const pending = pendingStarts.get(key);
   if (pending) return pending;
   const started = window.ade.macDesktop.startStream(

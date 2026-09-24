@@ -207,6 +207,8 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
   let server: Server | null = null;
   let port = 0;
   let disposed = false;
+  /** The bind in flight, so two first starts share one server. */
+  let binding: Promise<number> | null = null;
 
   const applyRate = (lane: LaneStream, fps: number): void => {
     void Promise.resolve(deps.setRate?.({ laneId: lane.laneId, fps })).catch((error) => {
@@ -413,15 +415,33 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
     response.on("close", () => dropClient(lane, client, "client-closed"));
   };
 
-  const ensureServer = async (): Promise<number> => {
-    if (server && port) return port;
-    const bound = await bindLoopbackServer(handleRequest, {
+  /**
+   * Binds the loopback server once. Memoized on the bind itself, not its
+   * result: two lanes starting together both used to see no server, both
+   * bind, and the first one's server leaked with its lane's URL pointing at a
+   * port the second bind had just overwritten. A bind that lands after
+   * `dispose` closes what it bound.
+   */
+  const ensureServer = (): Promise<number> => {
+    if (server && port) return Promise.resolve(port);
+    if (binding) return binding;
+    const attempt = bindLoopbackServer(handleRequest, {
       bindErrorMessage: "The Mac Desktop video server could not bind a loopback port.",
+    }).then((bound) => {
+      if (disposed) {
+        bound.server.close();
+        throw new Error("The Mac Desktop video server has been disposed.");
+      }
+      server = bound.server;
+      port = bound.port;
+      deps.logger.info("mac_desktop.stream_server_listening", { port });
+      return port;
+    }).finally(() => {
+      // A failed bind may be retried by the next start.
+      if (binding === attempt) binding = null;
     });
-    server = bound.server;
-    port = bound.port;
-    deps.logger.info("mac_desktop.stream_server_listening", { port });
-    return port;
+    binding = attempt;
+    return attempt;
   };
 
   const transportFor = (lane: LaneStream): MacDesktopStreamTransportWithSecret => ({
@@ -481,6 +501,7 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
     async start(args: MacDesktopStreamStartArgs): Promise<MacDesktopStreamTransportWithSecret> {
       if (disposed) throw new Error("The Mac Desktop video server has been disposed.");
       await ensureServer();
+      if (disposed) throw new Error("The Mac Desktop video server has been disposed.");
       const existing = lanes.get(args.laneId);
       if (existing) return transportFor(existing);
       const lane: LaneStream = {
@@ -505,6 +526,11 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
       };
       lanes.set(args.laneId, lane);
       scheduleIdleDrop(lane);
+      // A run nobody ever reads from must still end. The grace used to arm
+      // only when a reader dropped, so a viewer that left before its reader
+      // connected left the encoder running for good. The first reader cancels
+      // this, and the timer re-checks for readers before it fires.
+      scheduleZeroClientStop(lane);
       return transportFor(lane);
     },
 

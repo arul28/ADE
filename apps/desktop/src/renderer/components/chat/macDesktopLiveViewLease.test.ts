@@ -11,6 +11,7 @@ import {
   acquireMacDesktopLiveViewLease,
   macDesktopLiveViewLeaseState,
   resetMacDesktopLiveViewLeasesForTests,
+  startMacDesktopLiveStream,
 } from "./macDesktopLiveViewLease";
 
 const stopStream = vi.fn(async () => ({
@@ -234,5 +235,34 @@ describe("macDesktopLiveViewLease", () => {
     pane.release();
     passGrace();
     expect(stopStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not answer a Reconnect with an ordinary start already in flight", async () => {
+    // An ordinary ask in flight may be the host handing back the very stale
+    // run the Reconnect exists to replace.
+    const resolvers: Array<() => void> = [];
+    const startStream = vi.fn((_args: { fresh?: boolean }) => new Promise((resolve) => {
+      resolvers.push(() => resolve({ laneId: "lane-1" }));
+    }));
+    (window as unknown as { ade: unknown }).ade = { macDesktop: { stopStream, startStream } };
+
+    const ordinary = startMacDesktopLiveStream({ laneId: "lane-1", chatSessionId: "chat-1", runtimePin: null });
+    const reconnect = startMacDesktopLiveStream({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      runtimePin: null,
+      fresh: true,
+    });
+    const secondReconnect = startMacDesktopLiveStream({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      runtimePin: null,
+      fresh: true,
+    });
+    expect(startStream).toHaveBeenCalledTimes(2);
+    expect(startStream.mock.calls[1]?.[0]).toMatchObject({ fresh: true });
+    expect(secondReconnect).toBe(reconnect);
+    for (const resolve of resolvers) resolve();
+    await Promise.all([ordinary, reconnect]);
   });
 });
