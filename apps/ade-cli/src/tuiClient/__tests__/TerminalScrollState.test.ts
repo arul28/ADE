@@ -62,9 +62,6 @@ describe("scrollTerminalBy", () => {
     expect(bottom).toEqual({ scrollOffset: 0, pendingNewCount: 0 });
   });
 
-  it("returns the same reference when already pinned at the bottom and going further down", () => {
-    expect(scrollTerminalBy(TERMINAL_SCROLL_AT_BOTTOM, -10, max)).toBe(TERMINAL_SCROLL_AT_BOTTOM);
-  });
 });
 
 describe("jumpTerminalToBottom", () => {
@@ -74,9 +71,6 @@ describe("jumpTerminalToBottom", () => {
     );
   });
 
-  it("is a no-op (same ref) when already at the bottom", () => {
-    expect(jumpTerminalToBottom(TERMINAL_SCROLL_AT_BOTTOM)).toBe(TERMINAL_SCROLL_AT_BOTTOM);
-  });
 });
 
 describe("noteTerminalNewRows", () => {

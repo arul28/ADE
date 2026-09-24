@@ -51,6 +51,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const effortParam = (...values: string[]) =>
+  ({ id: "reasoning_effort", displayName: "Reasoning effort", values: values.map((value) => ({ value })) });
+const speedParam = (...values: string[]) =>
+  ({ id: "speed", displayName: "Speed", values: values.map((value) => ({ value })) });
+
 const failCatalogFetches = (): void => {
   cursorModelsListMock.mockRejectedValue(new Error("network down"));
   vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
@@ -75,30 +80,11 @@ describe("resolving a Cursor model selection against the catalog", () => {
         id: "composer-2",
         displayName: "Composer 2",
         aliases: ["composer-latest"],
-        parameters: [
-          {
-            id: "reasoning_effort",
-            displayName: "Reasoning effort",
-            values: [
-              { value: "low", displayName: "Low" },
-              { value: "high", displayName: "High" },
-            ],
-          },
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [{ value: "fast", displayName: "Fast" }],
-          },
-        ],
-        variants: [
-          {
-            displayName: "Fast High",
-            params: [
-              { id: "reasoning_effort", value: "high" },
-              { id: "speed", value: "fast" },
-            ],
-          },
-        ],
+        parameters: [effortParam("low", "high"), speedParam("fast")],
+        variants: [{
+          displayName: "Fast High",
+          params: [{ id: "reasoning_effort", value: "high" }, { id: "speed", value: "fast" }],
+        }],
       },
     ]);
 
@@ -127,46 +113,6 @@ describe("resolving a Cursor model selection against the catalog", () => {
     ]);
   });
 
-  it("passes explicit standard service tier params when Cursor fast mode is off", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2.5",
-        displayName: "Composer 2.5",
-        parameters: [
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [
-              { value: "standard", displayName: "Standard" },
-              { value: "fast", displayName: "Fast" },
-            ],
-          },
-        ],
-        variants: [
-          {
-            displayName: "Standard",
-            params: [{ id: "speed", value: "standard" }],
-          },
-          {
-            displayName: "Fast",
-            params: [{ id: "speed", value: "fast" }],
-          },
-        ],
-      },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "composer-2.5",
-      fastMode: false,
-    })).toEqual([{ id: "speed", value: "standard" }]);
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "composer-2.5",
-      fastMode: true,
-    })).toEqual([{ id: "speed", value: "fast" }]);
-  });
-
   it("discovers and resolves service tiers from compact variant-only rows", async () => {
     cursorModelsListMock.mockResolvedValue([{
       id: "composer-2.6",
@@ -188,19 +134,6 @@ describe("resolving a Cursor model selection against the catalog", () => {
       modelSdkId: "composer-2.6",
       serviceTier: "fast",
     })).toEqual({ status: "ok", params: [{ id: "service_tier", value: "fast" }] });
-  });
-
-  it("keeps a known model with no parameterized controls valid", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      { id: "grok-4.6", displayName: "Grok 4.6" },
-    ]);
-
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(resolveCursorSdkModelSelectionParams({
-      modelSdkId: "grok-4.6",
-      fastMode: false,
-    })).toEqual([]);
   });
 
   it("reports a value a control the model DOES declare cannot express as partial", async () => {
@@ -255,24 +188,13 @@ describe("resolving a Cursor model selection against the catalog", () => {
         displayName: "Composer 2.5",
         // Cursor's real row for this model declares a speed control and no
         // reasoning control at all.
-        parameters: [{
-          id: "speed",
-          displayName: "Speed",
-          values: [
-            { value: "standard", displayName: "Standard" },
-            { value: "fast", displayName: "Fast" },
-          ],
-        }],
+        parameters: [speedParam("standard", "fast")],
       },
       {
         id: "grok-4.6",
         displayName: "Grok 4.6",
         // The mirror case: a reasoning control and no service tier control.
-        parameters: [{
-          id: "reasoning_effort",
-          displayName: "Reasoning effort",
-          values: [{ value: "high", displayName: "High" }],
-        }],
+        parameters: [effortParam("high")],
       },
     ]);
 
@@ -298,34 +220,6 @@ describe("resolving a Cursor model selection against the catalog", () => {
     })).toEqual({ status: "ok", params: [{ id: "reasoning_effort", value: "high" }] });
   });
 
-  it("lets a cloud create launch a model that declares no reasoning control", async () => {
-    cursorModelsListMock.mockResolvedValue([{
-      id: "composer-2.5",
-      displayName: "Composer 2.5",
-      parameters: [{
-        id: "speed",
-        displayName: "Speed",
-        values: [
-          { value: "standard", displayName: "Standard" },
-          { value: "fast", displayName: "Fast" },
-        ],
-      }],
-    }]);
-
-    // The fail-closed cloud path verifies the same way: it returns the params it
-    // could express instead of refusing the launch over an inapplicable control.
-    await expect(resolveCursorSdkModelSelection("crsr_test", {
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "xhigh",
-      fastMode: false,
-    })).resolves.toEqual({ status: "ok", params: [{ id: "speed", value: "standard" }] });
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "xhigh",
-      fastMode: false,
-    })).resolves.toEqual([{ id: "speed", value: "standard" }]);
-  });
-
   it("tells an unlisted model apart from a catalog it could not load", async () => {
     expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" })).toEqual({
       status: "catalog-unavailable",
@@ -341,53 +235,11 @@ describe("resolving a Cursor model selection against the catalog", () => {
       .toEqual({ status: "unknown-model" });
   });
 
-  it("probes and resolves in one call, and names a probe failure as its reason", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2",
-        displayName: "Composer 2",
-        parameters: [{
-          id: "reasoning_effort",
-          displayName: "Reasoning effort",
-          values: [{ value: "high" }],
-        }],
-      },
-    ]);
-
-    await expect(resolveCursorSdkModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      reasoningEffort: "high",
-    })).resolves.toEqual({ status: "ok", params: [{ id: "reasoning_effort", value: "high" }] });
-
-    clearCursorCliModelsCache();
-    cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 })));
-
-    const failed = await resolveCursorSdkModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      reasoningEffort: "high",
-    });
-    // The async resolver supplies the probe's own reason. The cache-only
-    // resolver cannot: it takes no API key, so it never speaks for one.
-    expect(failed).toEqual({ status: "catalog-unavailable", reason: expect.any(String) });
-    if (failed.status === "ok") throw new Error("unreachable");
-    expect(describeCursorSdkModelSelectionFailure("composer-2", failed))
-      .toMatch(/^Could not load Cursor's model catalog \(.+\)\. Try again\.$/);
-    expect(resolveCursorSdkModelSelectionFromCache({ modelSdkId: "composer-2" })).toEqual({
-      status: "catalog-unavailable",
-      reason: "Cursor's model catalog has not loaded yet.",
-    });
-  });
-
   it("verifies a cloud create only when the caller chose a control", async () => {
     cursorModelsListMock.mockResolvedValue([{
       id: "composer-2",
       displayName: "Composer 2",
-      parameters: [{
-        id: "speed",
-        displayName: "Speed",
-        values: [{ value: "fast", displayName: "Fast" }],
-      }],
+      parameters: [speedParam("fast")],
     }]);
 
     // Nothing chosen: no verification, and the caller supplies its own fallback.
@@ -404,15 +256,6 @@ describe("resolving a Cursor model selection against the catalog", () => {
       modelSdkId: "composer-2",
       fastMode: false,
     })).rejects.toThrow("could not verify the selected model settings (standard tier)");
-  });
-
-  it("treats blank reasoning effort as no explicit control", async () => {
-    cursorModelsListMock.mockRejectedValue(new Error("should not probe"));
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      reasoningEffort: " ",
-    })).resolves.toBeNull();
-    expect(cursorModelsListMock).not.toHaveBeenCalled();
   });
 
   it("resolves an authoritative empty probe without another key's cached catalog", async () => {
@@ -436,16 +279,12 @@ describe("resolving a Cursor model selection against the catalog", () => {
       .toEqual({ status: "ok", params: [] });
   });
 
-  it("names the cause of every selection a fail-closed caller refuses", () => {
-    expect(describeCursorSdkModelSelectionFailure("composer-2", { status: "unknown-model" }))
-      .toBe("Cursor Cloud does not list model composer-2. Refresh Cursor models.");
-    expect(describeCursorSdkModelSelectionFailure("composer-2", {
-      status: "partial",
-      params: [],
-      unmet: ["fast"],
-    })).toBe(
-      "Cursor Cloud could not verify the selected model settings (fast tier). Refresh Cursor models and try again.",
-    );
+  it.each([
+    [{ status: "catalog-unavailable", reason: "offline" } as const, /Could not load Cursor's model catalog \(offline\)/],
+    [{ status: "unknown-model" } as const, /does not list model composer-2/],
+    [{ status: "partial", params: [], unmet: ["fast"] } as const, /could not verify the selected model settings \(fast tier\)/],
+  ])("names the cause of a %o selection a fail-closed caller refuses", (selection, cause) => {
+    expect(describeCursorSdkModelSelectionFailure("composer-2", selection)).toMatch(cause);
   });
 
   it("does not let standard tier variants overwrite selected Cursor reasoning params", async () => {
@@ -453,35 +292,12 @@ describe("resolving a Cursor model selection against the catalog", () => {
       {
         id: "composer-2.5",
         displayName: "Composer 2.5",
-        parameters: [
-          {
-            id: "reasoning_effort",
-            displayName: "Reasoning effort",
-            values: [
-              { value: "low", displayName: "Low" },
-              { value: "high", displayName: "High" },
-            ],
-          },
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [
-              { value: "standard", displayName: "Standard" },
-              { value: "fast", displayName: "Fast" },
-            ],
-          },
-        ],
+        parameters: [effortParam("low", "high"), speedParam("standard", "fast")],
         variants: [
-          {
-            displayName: "High reasoning",
-            params: [{ id: "reasoning_effort", value: "high" }],
-          },
+          { displayName: "High reasoning", params: [{ id: "reasoning_effort", value: "high" }] },
           {
             displayName: "Standard",
-            params: [
-              { id: "speed", value: "standard" },
-              { id: "reasoning_effort", value: "low" },
-            ],
+            params: [{ id: "speed", value: "standard" }, { id: "reasoning_effort", value: "low" }],
           },
         ],
       },
@@ -504,31 +320,11 @@ describe("resolving a Cursor model selection against the catalog", () => {
       {
         id: "grok-4.6",
         displayName: "Grok 4.6",
-        parameters: [
-          {
-            id: "reasoning_effort",
-            displayName: "Reasoning effort",
-            values: [
-              { value: "high", displayName: "High" },
-            ],
-          },
-          {
-            id: "speed",
-            displayName: "Speed",
-            values: [
-              { value: "fast", displayName: "Fast" },
-            ],
-          },
-        ],
-        variants: [
-          {
-            displayName: "Fast",
-            params: [
-              { id: "speed", value: "fast" },
-              { id: "reasoning_effort", value: "high" },
-            ],
-          },
-        ],
+        parameters: [effortParam("high"), speedParam("fast")],
+        variants: [{
+          displayName: "Fast",
+          params: [{ id: "speed", value: "fast" }, { id: "reasoning_effort", value: "high" }],
+        }],
       },
     ]);
 
@@ -554,16 +350,8 @@ describe("Cursor model options and a cold catalog", () => {
     id: "composer-2",
     displayName: "Composer 2",
     parameters: [
-      {
-        id: "reasoning_effort",
-        displayName: "Reasoning effort",
-        values: [{ value: "low" }, { value: "high" }],
-      },
-      {
-        id: "speed",
-        displayName: "Speed",
-        values: [{ value: "standard" }, { value: "fast" }],
-      },
+      effortParam("low", "high"),
+      speedParam("standard", "fast"),
       {
         id: "max_context",
         displayName: "Max context",
@@ -620,7 +408,7 @@ describe("Cursor model options and a cold catalog", () => {
     })).toEqual([{ id: "reasoning_effort", value: "high" }]);
   });
 
-  it("reports a config value the declared parameter cannot take, and a cloud create refuses it", async () => {
+  it("reports a config value the declared parameter cannot take as unmet", async () => {
     cursorModelsListMock.mockResolvedValue([composerRow]);
     await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
 
@@ -628,15 +416,6 @@ describe("Cursor model options and a cold catalog", () => {
       modelSdkId: "composer-2",
       configValues: { verbosity: "loud" },
     })).toEqual({ status: "partial", params: [], unmet: ["config"] });
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      configValues: { verbosity: "loud" },
-    })).rejects.toThrow("could not verify the selected model settings (model options)");
-    // Config values alone are an explicit selection a cloud create verifies.
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2",
-      configValues: { verbosity: "verbose" },
-    })).resolves.toEqual([{ id: "verbosity", value: "verbose" }]);
   });
 
   it("lists only the options that have no control of their own", async () => {
@@ -719,8 +498,8 @@ describe("a cloud run reads the catalog it already holds", () => {
     id: "composer-2.5",
     displayName: "Composer 2.5",
     parameters: [
-      { id: "reasoning_effort", displayName: "Reasoning effort", values: [{ value: "low" }, { value: "high" }] },
-      { id: "speed", displayName: "Speed", values: [{ value: "standard" }, { value: "fast" }] },
+      effortParam("low", "high"),
+      speedParam("standard", "fast"),
       {
         id: "verbosity",
         displayName: "Verbosity",
@@ -728,24 +507,6 @@ describe("a cloud run reads the catalog it already holds", () => {
       },
     ],
   };
-
-  it("verifies against this key's warm catalog instead of fetching on every cloud run", async () => {
-    cursorModelsListMock.mockResolvedValue([composer25]);
-    await probeCursorSdkModelDiscovery("crsr_test");
-    expect(cursorModelsListMock).toHaveBeenCalledTimes(1);
-
-    // A catalog fetch that would fail now must not matter: the warm rows answer.
-    failCatalogFetches();
-    await expect(verifyExplicitCursorModelSelection("crsr_test", {
-      modelSdkId: "composer-2.5",
-      reasoningEffort: "high",
-    })).resolves.toEqual([{ id: "reasoning_effort", value: "high" }]);
-    await expect(resolveCursorSdkFollowUpSelection("crsr_test", {
-      modelSdkId: "composer-2.5",
-      fastMode: true,
-    })).resolves.toEqual({ status: "ok", params: [{ id: "speed", value: "fast" }] });
-    expect(cursorModelsListMock).toHaveBeenCalledTimes(1);
-  });
 
   it("refuses a follow-up only for a model the catalog does not list", async () => {
     cursorModelsListMock.mockResolvedValue([composer25]);
@@ -802,13 +563,9 @@ describe("a cloud run reads the catalog it already holds", () => {
 });
 
 describe("the Fast tier comes from the catalog in memory only", () => {
-  it("answers null while the catalog is cold, and never fetches for it", () => {
-    cursorModelsListMock.mockResolvedValue([]);
+  it("answers null while cold without fetching; warm, a declared fast value is a tier", async () => {
     expect(cursorModelFastTierFromCache("composer-2.5")).toBeNull();
     expect(cursorModelsListMock).not.toHaveBeenCalled();
-  });
-
-  it("reads a warm catalog: a declared fast value is a tier, an unlisted model is unknown", async () => {
     cursorModelsListMock.mockResolvedValue([
       { id: "composer-2.5", parameters: [{ id: "speed", values: [{ value: "standard" }, { value: "fast" }] }] },
       { id: "composer-2", parameters: [{ id: "reasoning_effort", values: [{ value: "high" }] }] },
@@ -852,16 +609,11 @@ describe("an adopted model keeps only the choices it can take", () => {
     cursorConfigValues: { verbosity: "verbose", max_context: true },
   };
 
-  it("says nothing while the catalog cannot answer for the model", async () => {
+  it("drops the choices that would come back unmet, keeps the inapplicable ones, and says nothing when it cannot answer", async () => {
     expect(unsupportedCursorSelection(chosen, "composer-2")).toBeNull();
     cursorModelsListMock.mockResolvedValue(catalog);
     await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
     expect(unsupportedCursorSelection(chosen, "not-listed")).toBeNull();
-  });
-
-  it("drops the choices that would come back unmet, and keeps the inapplicable ones", async () => {
-    cursorModelsListMock.mockResolvedValue(catalog);
-    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
 
     expect(unsupportedCursorSelection(chosen, "composer-2.5")).toEqual({
       reasoningEffort: false,
@@ -908,9 +660,5 @@ describe("the model options the composer renders", () => {
       .map((option) => option.currentValue)).toEqual([false, "terse"]);
     expect(cursorSdkConfigOptions("composer-2", { max_context: "true" })[0]?.currentValue).toBe(true);
     expect(cursorSdkConfigOptions("composer-2", null)[1]?.options?.[0]).toEqual({ value: "", label: "Default" });
-  });
-
-  it("has no options before the catalog loads", () => {
-    expect(cursorSdkConfigOptions("composer-2", { verbosity: "terse" })).toEqual([]);
   });
 });

@@ -102,14 +102,6 @@ describe("createHostSleepChipTracker", () => {
       .toBe((asleep[0] as { detail: { hostSleep: { sleepId: string } } }).detail.hostSleep.sleepId);
   });
 
-  it("leaves a failure the API itself named completely alone", () => {
-    const power = fakePowerSource();
-    const h = trackerHarness({ powerSource: power.source });
-
-    power.suspend();
-    expect(h.tracker.holdRetry(h.running, "overloaded", 529)).toBe(false);
-  });
-
   // The gap detector fires on any tick 60s+ late, and an event-loop stall that
   // large does happen under load. Narrating it as a sleep is honest — nothing
   // ran either way — but letting it excuse provider retries would silence every

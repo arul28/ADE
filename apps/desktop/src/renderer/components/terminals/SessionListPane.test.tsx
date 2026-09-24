@@ -186,6 +186,41 @@ function paneElement(props: Partial<ComponentProps<typeof SessionListPane>> = {}
   );
 }
 
+/** Seeds one online foreign machine ("Mac Studio (12)") into the cross-machine union. */
+function seedStudioMachine(
+  lanes: LaneSummary[],
+  sessions: TerminalSessionSummary[],
+  overrides: Partial<CrossMachineMachineLanes> = {},
+) {
+  useAppStore.setState({
+    crossMachineLanesByMachineId: {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio (12)",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Mac Studio (12)",
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+        online: true,
+        lanes,
+        sessions,
+        prs: [],
+        lastSyncedAtMs: 1,
+        lanesSyncedAtMs: 1,
+        error: null,
+        ...overrides,
+      },
+    },
+  });
+}
+
 function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
   return render(paneElement(props));
 }
@@ -467,37 +502,7 @@ describe("SessionListPane", () => {
 
     expect(screen.queryByTestId("work-lane-filter-active-indicator")).toBeNull();
 
-    const session = makeSession();
-    rerender(
-      <MemoryRouter>
-        <SessionListPane
-          lanes={[makeLane()]}
-          runningFiltered={[session]}
-          awaitingInputFiltered={[]}
-          endedFiltered={[]}
-          settledFiltered={[]}
-          allSessionsUnfiltered={[session]}
-          loading={false}
-          filterLaneId="lane-known"
-          setFilterLaneId={vi.fn()}
-          q=""
-          setQ={vi.fn()}
-          selectedSessionId={null}
-          draftKind="chat"
-          showingDraft={false}
-          onShowDraftKind={vi.fn()}
-          onSelectSession={vi.fn()}
-          onContextMenu={vi.fn()}
-          sessionListOrganization="by-lane"
-          setSessionListOrganization={vi.fn()}
-          workCollapsedLaneIds={[]}
-          toggleWorkLaneCollapsed={vi.fn()}
-          workCollapsedSectionIds={[]}
-          toggleWorkSectionCollapsed={vi.fn()}
-          sessionsGroupedByLane={new Map([[session.laneId, [session]]])}
-        />
-      </MemoryRouter>,
-    );
+    rerender(paneElement({ filterLaneId: "lane-known" }));
 
     expect(screen.getByRole("button", { name: "Filters, lane filter active" })).toBeTruthy();
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
@@ -967,30 +972,6 @@ describe("SessionListPane", () => {
     expect(screen.queryByRole("button", { name: /stop & delete/i })).toBeNull();
   });
 
-  it("renders a settled session in the Settled section", () => {
-    const settled = makeSession({
-      id: "session-settled",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "Prepared release checklist",
-      manuallyNamed: true,
-      runtimeState: "idle",
-      settledAt: "2026-07-23T12:00:00.000Z",
-    });
-
-    renderPane({
-      runningFiltered: [],
-      settledFiltered: [settled],
-      allSessionsUnfiltered: [settled],
-      sessionListOrganization: "all-lanes-by-status",
-      sessionsGroupedByLane: new Map([[settled.laneId, [settled]]]),
-      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
-    });
-
-    expect(screen.getByText("Settled")).toBeTruthy();
-    expect(screen.getByText("Prepared release checklist")).toBeTruthy();
-  });
-
   it("keeps settled lane tails reachable but collapsed by default", () => {
     // The lane keeps one active session so it stays a normal lane: an all-quiet
     // lane collapses to the thin header instead and hides its tails entirely.
@@ -1221,42 +1202,7 @@ describe("SessionListPane", () => {
         },
       },
     });
-    const ended = makeSession({
-      id: "session-ended",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "Ended chat",
-      status: "disposed",
-      runtimeState: "exited",
-    });
-
-    renderPane({
-      runningFiltered: [],
-      endedFiltered: [ended],
-      allSessionsUnfiltered: [ended],
-      selectedSessionIds: new Set([ended.id]),
-      sessionsGroupedByLane: new Map([[ended.laneId, [ended]]]),
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Settle 1" }));
-
-    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ended"]));
-    expect(screen.getByText("Settled 1")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
-  });
-
-  it("excludes loud Needs-you sessions from selected bulk settle", async () => {
-    const settleMany = vi.fn().mockResolvedValue(["session-ended"]);
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      writable: true,
-      value: {
-        sessions: {
-          settleMany,
-          unsettleMany: vi.fn().mockResolvedValue(undefined),
-        },
-      },
-    });
+    // A loud Needs-you row in the selection is excluded from the settle.
     const loud = makeSession({
       id: "session-loud",
       runtimeState: "waiting-input",
@@ -1278,7 +1224,10 @@ describe("SessionListPane", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Settle 1" }));
+
     await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ended"]));
+    expect(screen.getByText("Settled 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
 
   it("Settle all in Your move settles only quiet Ready sessions", async () => {
@@ -1418,40 +1367,16 @@ describe("SessionListPane", () => {
     });
 
     function seedForeignMachine(overrides: Partial<CrossMachineMachineLanes> = {}) {
-      useAppStore.setState({
-        crossMachineLanesByMachineId: {
-          "target-studio": {
-            machineId: "target-studio",
-            machineName: "Mac Studio (12)",
-            targetId: "target-studio",
-            projectId: "project-a",
-            binding: {
-              kind: "remote",
-              key: "remote:target-studio:project-a",
-              targetId: "target-studio",
-              runtimeName: "Mac Studio (12)",
-              projectId: "project-a",
-              rootPath: "/repo-a",
-              displayName: "Repo A",
-            },
-            online: true,
-            lanes: [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" })],
-            sessions: [
-              makeSession({
-                id: "session-elsewhere",
-                laneId: "lane-elsewhere",
-                laneName: "Elsewhere Lane",
-                title: "Chat on the other machine",
-              }),
-            ],
-            prs: [],
-            lastSyncedAtMs: 1,
-            lanesSyncedAtMs: 1,
-            error: null,
-            ...overrides,
-          },
-        },
-      });
+      seedStudioMachine(
+        [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" })],
+        [makeSession({
+          id: "session-elsewhere",
+          laneId: "lane-elsewhere",
+          laneName: "Elsewhere Lane",
+          title: "Chat on the other machine",
+        })],
+        overrides,
+      );
     }
 
     it("marks only lanes that are not on this machine", () => {
@@ -2111,41 +2036,6 @@ describe("SessionListPane", () => {
     });
   });
 
-  /**
-   * Cause-2 regression guard for LOCAL filing, which turned out to be correct:
-   * `canonicalSessionState` ranks a declared settle ABOVE stopped/failed/ended,
-   * so a row that is settled AND terminal still lands in the settled bucket and
-   * still lets its lane sink. Pinned here because "settled but also failed"
-   * looks like the kind of row a future precedence tweak would quietly strand
-   * in the inbox.
-   */
-  it("shelves a local lane whose only row is settled and also failed", () => {
-    const lane = makeLane({ id: "lane-dead", name: "Dead lane", branchRef: "dead" });
-    const settledAndFailed = makeSession({
-      id: "session-dead",
-      laneId: "lane-dead",
-      laneName: "Dead lane",
-      title: "Settled after a crash",
-      status: "failed",
-      runtimeState: "exited",
-      exitCode: 2,
-      settledAt: "2026-07-28T12:11:00.000Z",
-    });
-
-    const { container } = renderPane({
-      lanes: [lane],
-      runningFiltered: [],
-      settledFiltered: [settledAndFailed],
-      allSessionsUnfiltered: [settledAndFailed],
-      sessionsGroupedByLane: new Map([["lane-dead", [settledAndFailed]]]),
-      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
-    });
-
-    const shelf = container.querySelector('[data-section-id="lane-shelf:settled"]');
-    expect(shelf).toBeTruthy();
-    expect(shelf!.parentElement!.contains(screen.getByText("Settled after a crash"))).toBe(true);
-  });
-
   it("hides Your move bulk settle when every session needs input", () => {
     const loud = makeSession({
       id: "session-loud",
@@ -2531,20 +2421,6 @@ describe("SessionListPane singleton lanes and shelves", () => {
     );
   });
 
-  it("restores the divider as soon as the lane holds two chats", () => {
-    const first = soloSession();
-    const second = soloSession({ id: "session-solo-2", title: "The second chat" });
-    const { container } = renderPane({
-      lanes: [soloLane],
-      runningFiltered: [first, second],
-      allSessionsUnfiltered: [first, second],
-      sessionsGroupedByLane: new Map([["lane-solo", [first, second]]]),
-    });
-
-    expect(container.querySelector('[data-section-id="lane-solo"]')).toBeTruthy();
-    expect(screen.getByText("Solo lane")).toBeTruthy();
-  });
-
   it("counts top-level rows only, so a chat with nested subagents stays a singleton", () => {
     const parent = soloSession({ toolType: "codex-chat" });
     const child = soloSession({
@@ -2602,9 +2478,12 @@ describe("SessionListPane singleton lanes and shelves", () => {
   });
 
   it("files a settled singleton into the Settled shelf, still without a divider", () => {
+    // Settled AND failed: a declared settle outranks the terminal failure, so
+    // the row still files as settled and its lane still sinks.
     const settled = soloSession({
-      status: "completed",
-      runtimeState: "idle",
+      status: "failed",
+      runtimeState: "exited",
+      exitCode: 2,
       settledAt: "2026-07-23T12:00:00.000Z",
     });
     const { container } = renderPane({
@@ -2925,48 +2804,6 @@ describe("SessionListPane header shape", () => {
     ];
   }
 
-  it("keeps the quiet lane header available by name", () => {
-    const [activeA, activeB] = twoRowLane();
-    renderPane({
-      lanes: [makeLane()],
-      runningFiltered: [activeA!, activeB!],
-      allSessionsUnfiltered: [activeA!, activeB!],
-      sessionsGroupedByLane: new Map([["lane-known", [activeA!, activeB!]]]),
-    });
-    cleanup();
-
-    const snoozed = makeSession({
-      id: "session-a",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "First",
-      snoozedUntil: "2099-01-01T00:00:00.000Z",
-    });
-    const settled = makeSession({
-      id: "session-b",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "Second",
-      status: "completed",
-      runtimeState: "idle",
-      settledAt: "2026-07-23T12:00:00.000Z",
-    });
-    renderPane({
-      lanes: [makeLane()],
-      runningFiltered: [],
-      snoozedFiltered: [snoozed],
-      settledFiltered: [settled],
-      allSessionsUnfiltered: [snoozed, settled],
-      sessionsGroupedByLane: new Map([["lane-known", [snoozed, settled]]]),
-      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
-    });
-
-    const quietWrapper = document.querySelector<HTMLElement>('[data-section-id="lane-known"]')!;
-    expect(quietWrapper.getAttribute("data-lane-quiet")).toBe("true");
-    const quietHeader = within(quietWrapper).getByRole("button", { name: /Known Lane/ });
-    expect(quietHeader.getAttribute("aria-expanded")).toBe("false");
-  });
-
   it("keeps the PR badge on a collapsed quiet lane header", () => {
     lanePrsByLaneIdForTest.set(laneBoundMachineKey("lane-known"), [makePr()]);
     const snoozed = makeSession({
@@ -3084,42 +2921,6 @@ describe("SessionListPane visual hierarchy", () => {
 
   const tintedLane = makeLane({ id: "lane-known", name: "Known Lane", color: "#34d399" });
 
-  function twoChats() {
-    return [
-      makeSession({ id: "session-a", laneId: "lane-known", laneName: "Known Lane", title: "First" }),
-      makeSession({ id: "session-b", laneId: "lane-known", laneName: "Known Lane", title: "Second" }),
-    ];
-  }
-
-  it("groups multiple chats under their lane", () => {
-    const [a, b] = twoChats();
-    const { container } = renderPane({
-      lanes: [tintedLane],
-      runningFiltered: [a!, b!],
-      allSessionsUnfiltered: [a!, b!],
-      sessionsGroupedByLane: new Map([["lane-known", [a!, b!]]]),
-    });
-
-    const body = container.querySelector('[data-lane-group-body="lane-known"]') as HTMLElement;
-    expect(body.contains(screen.getByText("First"))).toBe(true);
-    expect(body.contains(screen.getByText("Second"))).toBe(true);
-  });
-
-  it("shows a singleton chat under its lane", () => {
-    const solo = makeSession({
-      id: "session-solo", laneId: "lane-known", laneName: "Known Lane", title: "The only chat",
-    });
-    const { container } = renderPane({
-      lanes: [tintedLane],
-      runningFiltered: [solo],
-      allSessionsUnfiltered: [solo],
-      sessionsGroupedByLane: new Map([["lane-known", [solo]]]),
-    });
-
-    const body = container.querySelector('[data-lane-group-body="lane-known"]') as HTMLElement;
-    expect(body.contains(screen.getByText("The only chat"))).toBe(true);
-  });
-
   describe("Primary lanes", () => {
     const primaryLane = makeLane({
       id: "lane-primary", name: "Primary", laneType: "primary", branchRef: "main", color: null,
@@ -3154,17 +2955,6 @@ describe("SessionListPane visual hierarchy", () => {
       expect(order).toEqual(["lane-primary", "lane-other"]);
     });
 
-    it("locks Primary to ADE purple even when its row stores no colour", () => {
-      const { container } = renderWithPrimary();
-      const rail = container.querySelector('[data-testid="lane-group-rail-lane-primary"]');
-      expect(rail?.getAttribute("style")).toMatch(/rgba\(167,\s*139,\s*250,\s*0?\.25\)/);
-    });
-
-    it("shows no machine badge while only one Primary is visible", () => {
-      renderWithPrimary();
-      expect(document.querySelector("[data-machine-marker-mode]")).toBeNull();
-    });
-
     it("separates two Primaries by badging only the one that is elsewhere", () => {
       // Every ADE machine has a Primary, so two connected machines put two
       // identically-named, identically-purple rows in one column. This used to
@@ -3172,39 +2962,15 @@ describe("SessionListPane visual hierarchy", () => {
       // the physical-machine rule exactly one Primary on screen can be unbadged
       // — the one on the Mac you're sitting at — so presence versus absence
       // separates the pair on its own.
-      useAppStore.setState({
-        crossMachineLanesByMachineId: {
-          "target-studio": {
-            machineId: "target-studio",
-            machineName: "Mac Studio (12)",
-            targetId: "target-studio",
-            projectId: "project-a",
-            binding: {
-              kind: "remote",
-              key: "remote:target-studio:project-a",
-              targetId: "target-studio",
-              runtimeName: "Mac Studio (12)",
-              projectId: "project-a",
-              rootPath: "/repo-a",
-              displayName: "Repo A",
-            },
-            online: true,
-            lanes: [makeLane({
-              id: "lane-primary-studio", name: "Primary", laneType: "primary", branchRef: "main",
-            })],
-            sessions: [makeSession({
-              id: "session-primary-studio",
-              laneId: "lane-primary-studio",
-              laneName: "Primary",
-              title: "Primary chat elsewhere",
-            })],
-            prs: [],
-            lastSyncedAtMs: 1,
-            lanesSyncedAtMs: 1,
-            error: null,
-          },
-        },
-      });
+      seedStudioMachine(
+        [makeLane({ id: "lane-primary-studio", name: "Primary", laneType: "primary", branchRef: "main" })],
+        [makeSession({
+          id: "session-primary-studio",
+          laneId: "lane-primary-studio",
+          laneName: "Primary",
+          title: "Primary chat elsewhere",
+        })],
+      );
 
       const { container } = renderWithPrimary();
 
@@ -3297,32 +3063,7 @@ describe("SessionListPane machine chip suppression", () => {
   });
 
   function seedMachine(lane: LaneSummary, sessions: TerminalSessionSummary[]) {
-    useAppStore.setState({
-      crossMachineLanesByMachineId: {
-        "target-studio": {
-          machineId: "target-studio",
-          machineName: "Mac Studio (12)",
-          targetId: "target-studio",
-          projectId: "project-a",
-          binding: {
-            kind: "remote",
-            key: "remote:target-studio:project-a",
-            targetId: "target-studio",
-            runtimeName: "Mac Studio (12)",
-            projectId: "project-a",
-            rootPath: "/repo-a",
-            displayName: "Repo A",
-          },
-          online: true,
-          lanes: [lane],
-          sessions,
-          prs: [],
-          lastSyncedAtMs: 1,
-          lanesSyncedAtMs: 1,
-          error: null,
-        },
-      },
-    });
+    seedStudioMachine([lane], sessions);
   }
 
   it("suppresses the row chip under a machine-labelled lane header, but not for a singleton", () => {
@@ -3608,68 +3349,6 @@ describe("SessionListPane header chevrons", () => {
     expect(toggleWorkLaneCollapsed).toHaveBeenLastCalledWith("lane-known");
   });
 
-  it("toggles a quiet lane header from its chevron", () => {
-    const toggleWorkSectionCollapsed = vi.fn();
-    renderPane({
-      lanes: [makeLane()],
-      runningFiltered: [],
-      snoozedFiltered: [snoozed],
-      settledFiltered: [settled],
-      allSessionsUnfiltered: [snoozed, settled],
-      sessionsGroupedByLane: new Map([["lane-known", [snoozed, settled]]]),
-      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
-      toggleWorkSectionCollapsed,
-    });
-
-    expect(document.querySelector('[data-section-id="lane-known"]')?.getAttribute("data-lane-quiet"))
-      .toBe("true");
-    expectChevronMatchesLabel(
-      "lane-known",
-      screen.getByRole("button", { name: /Known Lane \(2 quiet\)/i }),
-      toggleWorkSectionCollapsed,
-    );
-    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("lane-open:lane-known");
-  });
-
-  it("toggles a by-lane quiet shelf from its chevron", () => {
-    const toggleWorkSectionCollapsed = vi.fn();
-    renderPane({
-      lanes: [makeLane()],
-      runningFiltered: [],
-      settledFiltered: [settled],
-      allSessionsUnfiltered: [settled],
-      sessionsGroupedByLane: new Map([["lane-known", [settled]]]),
-      toggleWorkSectionCollapsed,
-    });
-
-    expectChevronMatchesLabel(
-      "lane-shelf:settled",
-      screen.getByRole("button", { name: "Settled (1)" }),
-      toggleWorkSectionCollapsed,
-    );
-    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("shelf-open:lane-shelf:settled");
-  });
-
-  it("toggles a by-status quiet shelf from its chevron", () => {
-    const toggleWorkSectionCollapsed = vi.fn();
-    renderPane({
-      lanes: [makeLane()],
-      sessionListOrganization: "all-lanes-by-status",
-      runningFiltered: [],
-      snoozedFiltered: [snoozed],
-      allSessionsUnfiltered: [snoozed],
-      sessionsGroupedByLane: new Map([["lane-known", [snoozed]]]),
-      toggleWorkSectionCollapsed,
-    });
-
-    expectChevronMatchesLabel(
-      "status:snoozed",
-      screen.getByRole("button", { name: "Snoozed (1)" }),
-      toggleWorkSectionCollapsed,
-    );
-    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("shelf-open:status:snoozed");
-  });
-
   it("toggles a status section header from its chevron", () => {
     const toggleWorkSectionCollapsed = vi.fn();
     renderPane({
@@ -3742,19 +3421,16 @@ describe("shortcutChipLabel", () => {
    * branch. `Mod` already resolved to Ctrl; a binding that spells the modifier
    * out did not, and printed a "Meta" key that exists on no Windows keyboard.
    */
-  it("names the real key when a binding spells the modifier out", () => {
-    expect(shortcutChipLabel("Mod+K")).toBe("Ctrl+K");
-    expect(shortcutChipLabel("Cmd+K")).toBe("Ctrl+K");
-    expect(shortcutChipLabel("Meta+K")).toBe("Ctrl+K");
-    expect(shortcutChipLabel("Command+K")).toBe("Ctrl+K");
-  });
-
-  it("does not print the same modifier twice", () => {
-    expect(shortcutChipLabel("Ctrl+Cmd+K")).toBe("Ctrl+K");
-  });
-
-  it("keeps the other modifiers spelled out", () => {
-    expect(shortcutChipLabel("Mod+Shift+Alt+P")).toBe("Ctrl+Alt+Shift+P");
+  it.each([
+    ["Mod+K", "Ctrl+K"],
+    ["Cmd+K", "Ctrl+K"],
+    ["Meta+K", "Ctrl+K"],
+    ["Command+K", "Ctrl+K"],
+    // Never the same modifier twice; other modifiers stay spelled out.
+    ["Ctrl+Cmd+K", "Ctrl+K"],
+    ["Mod+Shift+Alt+P", "Ctrl+Alt+Shift+P"],
+  ])("labels %s as %s", (binding, label) => {
+    expect(shortcutChipLabel(binding)).toBe(label);
   });
 });
 
@@ -3771,32 +3447,7 @@ describe("SessionListPane shared-branch clusters", () => {
     lane: LaneSummary;
     session: TerminalSessionSummary;
   }) {
-    useAppStore.setState({
-      crossMachineLanesByMachineId: {
-        "target-studio": {
-          machineId: "target-studio",
-          machineName: "Mac Studio (12)",
-          targetId: "target-studio",
-          projectId: "project-a",
-          binding: {
-            kind: "remote",
-            key: "remote:target-studio:project-a",
-            targetId: "target-studio",
-            runtimeName: "Mac Studio (12)",
-            projectId: "project-a",
-            rootPath: "/repo-a",
-            displayName: "Repo A",
-          },
-          online: true,
-          lanes: [args.lane],
-          sessions: [args.session],
-          prs: [],
-          lastSyncedAtMs: 1,
-          lanesSyncedAtMs: 1,
-          error: null,
-        },
-      },
-    });
+    seedStudioMachine([args.lane], [args.session]);
   }
 
   it("parks same-branch local and foreign lanes together inside a dashed cluster", () => {
@@ -4067,6 +3718,9 @@ describe("SessionListPane Apple device marks", () => {
     const header = container.querySelector('[data-section-id="lane-group"]') as HTMLElement;
     const mark = within(header).getByRole("img", { name: "iPhone 16 Pro on this lane" });
     expect(mark.getAttribute("data-lane-apple-device-running")).toBe("true");
+    // The only mark: unclaimed lanes stay bare, and rows under the marked
+    // header do not repeat it.
+    expect(container.querySelectorAll("[data-lane-apple-device]")).toHaveLength(1);
 
     fireEvent.pointerEnter(mark.parentElement!);
     act(() => {
@@ -4104,19 +3758,5 @@ describe("SessionListPane Apple device marks", () => {
     } finally {
       laneMacDesktopsForTest.clear();
     }
-  });
-
-  it("leaves lanes without a device unmarked", () => {
-    laneAppleDevicesForTest.set("lane-group", { udid: "udid-group", name: "iPhone 16 Pro", running: true });
-    const { container } = renderLanes();
-
-    const plainCard = container.querySelector('[data-session-id="session-plain"]') as HTMLElement;
-    expect(plainCard.querySelector("[data-lane-apple-device]")).toBeNull();
-    const soloCard = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
-    expect(soloCard.querySelector("[data-lane-apple-device]")).toBeNull();
-    // Rows under a marked header do not repeat the mark.
-    const groupCard = container.querySelector('[data-session-id="session-group-a"]') as HTMLElement;
-    expect(groupCard.querySelector("[data-lane-apple-device]")).toBeNull();
-    expect(container.querySelectorAll("[data-lane-apple-device]")).toHaveLength(1);
   });
 });

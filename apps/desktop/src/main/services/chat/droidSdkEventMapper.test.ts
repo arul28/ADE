@@ -13,47 +13,47 @@ function map(message: unknown) {
   });
 }
 
-describe("mapDroidSdkMessageToChatEvents — AGI mission workers", () => {
-  it("maps mission_worker_started to a subagent_started event keyed by worker session id", () => {
-    const events = map({ type: "mission_worker_started", workerSessionId: "worker-abc123def" });
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      type: "subagent_started",
-      taskId: "worker-abc123def",
-      parentToolUseId: null,
-      turnId: "turn-1",
-    });
-    // Description is derived from the worker id so concurrent workers stay distinct.
-    expect((events[0] as { description: string }).description).toContain("Worker");
-  });
+function statefulMap(turnId = "turn-1") {
+  const state = createDroidSdkEventMapperState();
+  return {
+    state,
+    map: (message: unknown) => mapDroidSdkMessageToChatEvents(message, { turnId, cwd: "/work", state }),
+  };
+}
 
-  it("includes a worker model when the payload reports one", () => {
-    const events = map({
-      type: "mission_worker_started",
-      workerSessionId: "worker-model-1",
-      model: "gpt-5.4",
-    });
-    expect(events[0]).toMatchObject({
-      type: "subagent_started",
-      taskId: "worker-model-1",
-      model: "gpt-5.4",
-    });
+describe("mapDroidSdkMessageToChatEvents — AGI missions", () => {
+  it.each([
+    ["a started worker as a subagent keyed by worker session id",
+      { type: "mission_worker_started", workerSessionId: "worker-abc123def" },
+      { type: "subagent_started", taskId: "worker-abc123def", parentToolUseId: null, turnId: "turn-1" }],
+    ["a started worker's reported model",
+      { type: "mission_worker_started", workerSessionId: "worker-model-1", model: "gpt-5.4" },
+      { type: "subagent_started", taskId: "worker-model-1", model: "gpt-5.4" }],
+    ["a clean worker exit to a completed result",
+      { type: "mission_worker_completed", workerSessionId: "worker-1", exitCode: 0 },
+      { type: "subagent_result", taskId: "worker-1", status: "completed" }],
+    ["a non-zero worker exit to a failed result",
+      { type: "mission_worker_completed", workerSessionId: "worker-2", exitCode: 1 },
+      { type: "subagent_result", taskId: "worker-2", status: "failed" }],
+    ["mission_state_changed to a mission_state event",
+      { type: "mission_state_changed", state: "running" },
+      { type: "mission_state", state: "running", turnId: "turn-1" }],
+  ])("maps %s", (_label, message, expected) => {
+    const events = map(message);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject(expected);
   });
 
   it("omits model when the worker payload does not report one", () => {
-    const events = map({ type: "mission_worker_started", workerSessionId: "worker-abc123def" });
-    expect(events[0]).not.toHaveProperty("model");
+    expect(map({ type: "mission_worker_started", workerSessionId: "worker-abc123def" })[0]).not.toHaveProperty("model");
   });
 
-  it("maps a clean mission_worker_completed to a completed subagent_result with the exit code", () => {
-    const events = map({ type: "mission_worker_completed", workerSessionId: "worker-1", exitCode: 0 });
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      type: "subagent_result",
-      taskId: "worker-1",
-      status: "completed",
-    });
-    expect((events[0] as { summary: string }).summary).toContain("0");
+  it.each([
+    ["heartbeat", { type: "mission_heartbeat", timestamp: "2026-06-05T00:00:00Z" }],
+    ["worker start without a session id", { type: "mission_worker_started" }],
+    ["state change without a state", { type: "mission_state_changed" }],
+  ])("ignores a %s", (_label, message) => {
+    expect(map(message)).toEqual([]);
   });
 
   it("carries derived token usage from the worker settings payload", () => {
@@ -80,24 +80,6 @@ describe("mapDroidSdkMessageToChatEvents — AGI mission workers", () => {
         usageConfidence: "derived",
       },
     });
-  });
-
-  it("maps a non-zero exit code to a failed subagent_result", () => {
-    const events = map({ type: "mission_worker_completed", workerSessionId: "worker-2", exitCode: 1 });
-    expect(events[0]).toMatchObject({ type: "subagent_result", taskId: "worker-2", status: "failed" });
-  });
-
-  it("ignores heartbeat and malformed worker events", () => {
-    expect(map({ type: "mission_heartbeat", timestamp: "2026-06-05T00:00:00Z" })).toEqual([]);
-    expect(map({ type: "mission_worker_started" })).toEqual([]); // missing workerSessionId
-  });
-});
-
-describe("mapDroidSdkMessageToChatEvents — AGI mission control", () => {
-  it("maps mission_state_changed to a mission_state event", () => {
-    expect(map({ type: "mission_state_changed", state: "running" })).toEqual([
-      { type: "mission_state", state: "running", turnId: "turn-1" },
-    ]);
   });
 
   it("maps mission_features_changed to a feature checklist, keeping worker assignment", () => {
@@ -132,10 +114,6 @@ describe("mapDroidSdkMessageToChatEvents — AGI mission control", () => {
     expect(ev.entries[0]).toMatchObject({ type: "worker_started", workerSessionId: "w-1", featureId: "f1" });
     expect(ev.entries[1]).toMatchObject({ type: "worker_completed", text: "done" });
   });
-
-  it("returns mission_state with no rows when state is missing", () => {
-    expect(map({ type: "mission_state_changed" })).toEqual([]);
-  });
 });
 
 describe("mapDroidSdkMessageToChatEvents — structured assistant content", () => {
@@ -143,12 +121,7 @@ describe("mapDroidSdkMessageToChatEvents — structured assistant content", () =
     // The CLI streams `assistant_text_delta` and then the complete `assistant`
     // message for the same block; the completed message must not duplicate the
     // streamed text (a real 0.9.x regression when block ids are used as keys).
-    const state = createDroidSdkEventMapperState();
-    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
-      turnId: "turn-1",
-      cwd: "/work",
-      state,
-    });
+    const { map: mapWithState } = statefulMap();
 
     expect(mapWithState({
       type: "assistant_text_delta",
@@ -210,32 +183,6 @@ describe("mapDroidSdkMessageToChatEvents — structured assistant content", () =
     ]);
   });
 
-  it("keeps large inline images intact for the desktop live preview", () => {
-    const imageData = "A".repeat(80 * 1024);
-
-    const events = map({
-      type: "assistant",
-      message: {
-        id: "message-large-image",
-        role: "assistant",
-        content: [{
-          type: "image",
-          id: "image-large",
-          source: { type: "base64", mediaType: "image/png", data: imageData },
-        }],
-      },
-    });
-
-    expect(events).toEqual([{
-      type: "codex_image_generation",
-      itemId: "image-large",
-      turnId: "turn-1",
-      prompt: "Droid image output",
-      result: `data:image/png;base64,${imageData}`,
-      status: "completed",
-    }]);
-  });
-
   it("does not infer MCP identity from generic Droid tool names", () => {
     expect(map({
       type: "tool_call",
@@ -269,12 +216,7 @@ describe("mapDroidSdkMessageToChatEvents — structured assistant content", () =
 
 describe("mapDroidSdkMessageToChatEvents — Droid telemetry", () => {
   it("maps thinking tokens to reasoning tokens and keeps the latest cumulative update", () => {
-    const state = createDroidSdkEventMapperState();
-    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
-      turnId: "turn-1",
-      cwd: "/work",
-      state,
-    });
+    const { state, map: mapWithState } = statefulMap();
 
     expect(mapWithState({
       type: "token_usage_update",
@@ -346,12 +288,7 @@ describe("mapDroidSdkMessageToChatEvents — Droid telemetry", () => {
   });
 
   it("recognizes Droid's compaction enum and keeps the tagged start sample as the pre-size", () => {
-    const state = createDroidSdkEventMapperState();
-    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
-      turnId: "turn-1",
-      cwd: "/work",
-      state,
-    });
+    const { map: mapWithState } = statefulMap();
     const stats = (used: number, updatedAt: string) => ({
       used,
       remaining: 2_000 - used,
@@ -385,12 +322,7 @@ describe("mapDroidSdkMessageToChatEvents — Droid telemetry", () => {
   });
 
   it("drops a compaction start sample that lands after the compaction closed", () => {
-    const state = createDroidSdkEventMapperState();
-    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
-      turnId: "turn-1",
-      cwd: "/work",
-      state,
-    });
+    const { state, map: mapWithState } = statefulMap();
     mapWithState({ type: "working_state_changed", state: "compacting_conversation" });
     mapWithState({ type: "working_state_changed", state: "streaming_assistant_message" });
     expect(mapWithState({
@@ -402,12 +334,7 @@ describe("mapDroidSdkMessageToChatEvents — Droid telemetry", () => {
   });
 
   it("keeps a trailing sample on the turn that took it, even after the next turn started", () => {
-    const state = createDroidSdkEventMapperState();
-    const mapTurnTwo = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
-      turnId: "turn-2",
-      cwd: "/work",
-      state,
-    });
+    const { state, map: mapTurnTwo } = statefulMap("turn-2");
     const stats = { used: 900, remaining: 1_100, limit: 2_000, accuracy: "exact", updatedAt: "2026-09-23T12:00:00.000Z" };
     expect(mapTurnTwo({ type: "context_stats", contextStats: stats, turnId: "turn-1" })).toEqual([
       expect.objectContaining({ type: "context_usage", turnId: "turn-1" }),
@@ -426,32 +353,13 @@ describe("mapDroidSdkMessageToChatEvents — Droid telemetry", () => {
   });
 
   it("closes a compaction on any non-compacting state, once", () => {
-    const state = createDroidSdkEventMapperState();
-    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
-      turnId: "turn-1",
-      cwd: "/work",
-      state,
-    });
+    const { map: mapWithState } = statefulMap();
     mapWithState({ type: "working_state_changed", state: "compacting_conversation" });
     const closed = mapWithState({ type: "working_state_changed", state: "streaming_assistant_message" });
     expect(closed.filter((event) => event.type === "context_compact")).toEqual([
       expect.objectContaining({ state: "completed" }),
     ]);
     expect(mapWithState({ type: "working_state_changed", state: "idle" })).toEqual([]);
-  });
-
-  it("does not put context occupancy on done", () => {
-    const state = createDroidSdkEventMapperState();
-    mapDroidSdkMessageToChatEvents({
-      type: "context_stats",
-      contextStats: { used: 900, remaining: 1_100, limit: 2_000, accuracy: "exact", updatedAt: "2026-09-23T12:00:00.000Z" },
-    }, { turnId: "turn-1", cwd: "/work", state });
-    const done = mapDroidSdkRunResultToDoneEvent({ success: true, tokenUsage: { inputTokens: 5 } }, {
-      turnId: "turn-1",
-      model: "claude-sonnet-5",
-      state,
-    });
-    expect(done.usage).toEqual({ inputTokens: 5 });
   });
 
   it("reports a served model only when the provider changed it beyond custom prefix normalization", () => {

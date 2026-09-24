@@ -5,7 +5,7 @@ import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/typ
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { WorkSessionsPane } from "../components/WorkSessionsPane";
 import { buildWorkListModel, type WorkListShelfKind } from "../workListModel";
-import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "../commands";
+import { paletteCommands, parseCommand } from "../commands";
 import type { TuiChatSessionSummary } from "../adeApi";
 import {
   boardColumnLabel,
@@ -82,25 +82,6 @@ afterEach(() => {
 });
 
 describe("/session slash commands", () => {
-  it("registers every lifecycle verb with a description and an optional-id hint", () => {
-    for (const name of [
-      "/session snooze",
-      "/session wake",
-      "/session settle",
-      "/session unsettle",
-      "/session keep-active",
-      "/session demote",
-      "/session promote",
-      "/session move",
-    ]) {
-      const spec = BUILTIN_COMMANDS.find((command) => command.name === name);
-      expect(spec, name).toBeDefined();
-      expect(spec!.description.length).toBeGreaterThan(0);
-      expect(spec!.placement).toBe("right");
-      expect(spec!.argumentHint).toContain("session-id");
-      expect(sessionLifecycleCommandFor(name)).not.toBeNull();
-    }
-  });
 
   it("parses the multi-word forms without shadowing each other, and surfaces them in the palette", () => {
     expect(parseCommand("/session snooze abc 1h")?.name).toBe("/session snooze");

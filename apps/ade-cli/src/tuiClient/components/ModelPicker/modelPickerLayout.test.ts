@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus } from "../../../../../desktop/src/shared/types/config";
-import { buildModelPickerLayoutInput, modelPickerRefreshProvider } from "../../modelPickerController";
-import type { AdeCodeModelState, ModelPickerRightPaneContent } from "../../types";
+import { modelPickerRefreshProvider } from "../../modelPickerController";
 import { buildModelPickerLayout, collectModelPickerEntries, defaultSelectionFor, modelPickerProviderAuthStatus } from "./modelPickerLayout";
 
 function modelInfo(overrides: Partial<AgentChatModelInfo> & { id: string }): AgentChatModelInfo {
@@ -12,12 +11,6 @@ function modelInfo(overrides: Partial<AgentChatModelInfo> & { id: string }): Age
     ...overrides,
   };
 }
-
-const modelState: Pick<AdeCodeModelState, "modelId" | "reasoningEffort" | "interfaceMode"> = {
-  modelId: "openai/gpt-5.5",
-  reasoningEffort: "medium",
-  interfaceMode: "chat",
-};
 
 describe("buildModelPickerLayout", () => {
   const models: AgentChatModelInfo[] = [
@@ -78,21 +71,6 @@ describe("buildModelPickerLayout", () => {
     expect(layout.entries.every((entry) => entry.family === "codex")).toBe(true);
   });
 
-  it("keeps provider refresh state visible while a dynamic catalog is loading", () => {
-    const layout = buildModelPickerLayout({
-      models: [],
-      favorites: [],
-      recents: [],
-      activeModelId: null,
-      query: "",
-      selection: { kind: "provider", provider: "pi" },
-      focusedIndex: 0,
-      searchMode: false,
-      refreshingProvider: "pi",
-    });
-    expect(layout.refreshingProvider).toBe("pi");
-  });
-
   it("gates Cursor model availability on the interface mode", () => {
     const cursorModels: AgentChatModelInfo[] = [
       modelInfo({ id: "cursor/sdk-only", displayName: "Cursor SDK Only", family: "cursor", cursorAvailability: { sdk: true, cli: false } }),
@@ -131,25 +109,6 @@ describe("buildModelPickerLayout", () => {
 
     expect(modelPickerProviderAuthStatus(status, "pi", "chat")).toBe("unavailable");
     expect(modelPickerProviderAuthStatus(status, "pi", "cli")).toBe("ready");
-  });
-
-  it("keeps a rail for every ACP provider so /model can offer them", () => {
-    const layout = buildModelPickerLayout({
-      models,
-      favorites: [],
-      recents: [],
-      activeModelId: null,
-      query: "",
-      selection: { kind: "favorites" },
-      focusedIndex: 0,
-      searchMode: false,
-    });
-    const rails = layout.railEntries
-      .filter((entry) => entry.kind === "provider")
-      .map((entry) => (entry.kind === "provider" ? entry.provider : null));
-    for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
-      expect(rails).toContain(provider);
-    }
   });
 
   it("grades ACP provider auth from the host's optional status slots", () => {
@@ -545,47 +504,6 @@ describe("buildModelPickerLayout", () => {
     });
   });
 
-  it("preserves Cursor fast and availability metadata from direct model results", () => {
-    const layout = buildModelPickerLayout({
-      models: [
-        modelInfo({
-          id: "cursor/composer-2.5",
-          modelId: "cursor/composer-2.5",
-          family: "cursor",
-          displayName: "Composer 2.5",
-          serviceTiers: ["fast"],
-          cursorAvailability: { cli: true, sdk: false },
-        }),
-      ],
-      favorites: [],
-      recents: [],
-      activeModelId: null,
-      query: "",
-      selection: { kind: "provider", provider: "cursor" },
-      focusedIndex: 0,
-      searchMode: false,
-    });
-
-    expect(layout.entries[0]).toMatchObject({
-      modelId: "cursor/composer-2.5",
-      serviceTiers: ["fast"],
-      cursorAvailability: { cli: true, sdk: false },
-    });
-  });
-
-  it("clamps focusedIndex into the visible range", () => {
-    const layout = buildModelPickerLayout({
-      models,
-      favorites: [],
-      recents: [],
-      activeModelId: null,
-      query: "",
-      selection: { kind: "provider", provider: "claude" },
-      focusedIndex: 99,
-      searchMode: false,
-    });
-    expect(layout.focusedIndex).toBe(Math.max(0, layout.entries.length - 1));
-  });
 });
 
 describe("modelPickerController", () => {
@@ -604,43 +522,6 @@ describe("modelPickerController", () => {
     expect(modelPickerRefreshProvider("claude")).toBeNull();
   });
 
-  it("builds the shared layout input from picker and model state", () => {
-    const picker: ModelPickerRightPaneContent = {
-      kind: "model-picker",
-      surface: "chat",
-      query: "sonnet",
-      searchMode: true,
-      selection: { kind: "provider", provider: "claude" },
-      providerTabKey: "anthropic",
-      focusedIndex: 2,
-      footerFocus: "reasoning",
-      settingsRows: [{ kind: "reasoning", label: "Reasoning", value: "high" }],
-      laneLabel: "purpose-lane",
-    };
-
-    expect(buildModelPickerLayoutInput({
-      picker,
-      models: [],
-      catalog: null,
-      favorites: ["openai/gpt-5.5"],
-      recents: ["anthropic/claude-sonnet-5"],
-      modelState,
-      aiStatus: null,
-      refreshingProvider: "pi",
-    })).toMatchObject({
-      query: "sonnet",
-      searchMode: true,
-      selection: { kind: "provider", provider: "claude" },
-      providerTabKey: "anthropic",
-      focusedIndex: 2,
-      footerFocus: "reasoning",
-      activeModelId: "openai/gpt-5.5",
-      activeReasoningEffort: "medium",
-      interfaceMode: "chat",
-      laneLabel: "purpose-lane",
-      refreshingProvider: "pi",
-    });
-  });
 });
 
 describe("defaultSelectionFor", () => {

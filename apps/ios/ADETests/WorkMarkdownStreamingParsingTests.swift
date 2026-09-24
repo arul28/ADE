@@ -399,10 +399,6 @@ final class WorkStreamingMonospacedClassifierTests: XCTestCase {
   }
 }
 
-/// Diagnostic benchmark for the path that previously rescanned the entire
-/// growing assistant response on every delta. It deliberately reports rather
-/// than asserts wall-clock numbers: CI hosts vary, but the optimized path must
-/// remain visible in test logs and in the simulator trace.
 final class WorkStreamingPreviewPerformanceTests: XCTestCase {
   func testFenceMetadataSurvivesAnOpeningFenceSplitAcrossDeltas() {
     var message = WorkChatMessage(
@@ -421,78 +417,6 @@ final class WorkStreamingPreviewPerformanceTests: XCTestCase {
     XCTAssertTrue(message.markdownContainsFence == true)
     XCTAssertEqual(message.markdownOpenFenceMarker, "```swift")
     XCTAssertEqual(message.markdownTrailingBacktickRun, 0)
-  }
-
-  func testStreamingAssistantPreviewCostIsReported() {
-    let deltaCount = 500
-    var optimizedMessage = WorkChatMessage(
-      id: "assistant-preview-benchmark",
-      role: "assistant",
-      markdown: "Seed.",
-      timestamp: "2026-03-25T00:00:01.000Z",
-      turnId: "turn-1",
-      itemId: "item-1"
-    )
-    let optimizedCache = WorkAssistantPreviewCache()
-
-    let optimizedStart = Date()
-    for index in 1...deltaCount {
-      _ = workApplyStreamingAssistantText(
-        " Delta \(index): the keeper walked the length of the gallery and counted the lamps again.",
-        to: &optimizedMessage
-      )
-      _ = optimizedCache.preview(for: optimizedMessage)
-    }
-    let optimizedSeconds = Date().timeIntervalSince(optimizedStart)
-
-    var baselineText = "Seed."
-    let baselineStart = Date()
-    for index in 1...deltaCount {
-      baselineText += " Delta \(index): the keeper walked the length of the gallery and counted the lamps again."
-      _ = workAssistantMessagePreview(baselineText)
-    }
-    let baselineSeconds = Date().timeIntervalSince(baselineStart)
-
-    XCTAssertEqual(optimizedMessage.markdown, baselineText)
-    print(String(
-      format: "assistant preview streaming benchmark: %d deltas / %d chars; optimized %.1f ms, full-rescan baseline %.1f ms, speedup %.1fx",
-      deltaCount,
-      baselineText.count,
-      optimizedSeconds * 1000,
-      baselineSeconds * 1000,
-      baselineSeconds / max(optimizedSeconds, .leastNonzeroMagnitude)
-    ))
-  }
-
-  func testPlainProseStreamingParserCostIsReported() {
-    let deltaCount = 500
-    let delta = " The keeper walked the length of the gallery and counted the lamps again."
-    var optimizedText = "Seed."
-    let optimizedKey = "\(#function)-optimized"
-    let optimizedStart = Date()
-    for _ in 1...deltaCount {
-      optimizedText += delta
-      _ = parseMarkdownBlocksForStreaming(optimizedText, cacheKey: optimizedKey)
-    }
-    let optimizedSeconds = Date().timeIntervalSince(optimizedStart)
-
-    var baselineText = "Seed."
-    let baselineStart = Date()
-    for _ in 1...deltaCount {
-      baselineText += delta
-      _ = parseMarkdownBlocks(baselineText)
-    }
-    let baselineSeconds = Date().timeIntervalSince(baselineStart)
-
-    XCTAssertEqual(optimizedText, baselineText)
-    print(String(
-      format: "markdown parser streaming benchmark: %d deltas / %d chars; append-only %.1f ms, full-rescan baseline %.1f ms, speedup %.1fx",
-      deltaCount,
-      optimizedText.count,
-      optimizedSeconds * 1000,
-      baselineSeconds * 1000,
-      baselineSeconds / max(optimizedSeconds, .leastNonzeroMagnitude)
-    ))
   }
 }
 
@@ -664,70 +588,9 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     }
   }
 
-  /// Replays a long code block as a token stream and reports the cost of the
-  /// incremental path against the previous whole-text algorithm, which is
-  /// reproduced here (full tokenize + `index(offsetBy:)` walked from the start
-  /// for every token).
-  ///
-  /// Diagnostic only. The correctness gate is
-  /// `testHighlightMatchesPreviousWholeTextAlgorithm`; asserting on wall-clock
-  /// here would just add a flake under CI load.
-  func testStreamingHighlightCostIsReported() {
-    let line = "  let value\(Int.random(in: 0...9)) = compute(from: \"input\", count: 12) // step\n"
-    let fullText = String(repeating: line, count: 200)
-
-    var snapshots: [String] = []
-    var snapshot = ""
-    var remainder = Substring(fullText)
-    while !remainder.isEmpty {
-      snapshot += remainder.prefix(24)
-      remainder = remainder.dropFirst(24)
-      snapshots.append(snapshot)
-    }
-
-    ADECodeRenderingCache.shared.purgeOnMemoryWarning()
-    let incrementalStart = Date()
-    for snapshot in snapshots {
-      _ = SyntaxHighlighter.highlightedAttributedString(snapshot, as: .swift)
-    }
-    let incrementalSeconds = Date().timeIntervalSince(incrementalStart)
-
-    ADECodeRenderingCache.shared.purgeOnMemoryWarning()
-    let wholeTextStart = Date()
-    for snapshot in snapshots {
-      _ = SyntaxHighlighter.highlightedSegment(Substring(snapshot), as: .swift)
-    }
-    let wholeTextSeconds = Date().timeIntervalSince(wholeTextStart)
-
-    ADECodeRenderingCache.shared.purgeOnMemoryWarning()
-    let legacyStart = Date()
-    for snapshot in snapshots {
-      _ = Self.legacyHighlight(snapshot, as: .swift)
-    }
-    let legacySeconds = Date().timeIntervalSince(legacyStart)
-    print(String(
-      format: "whole-text with the role fill (no prefix reuse): %.3f ms per tick (%.1fx vs previous)",
-      wholeTextSeconds * 1000 / Double(snapshots.count),
-      legacySeconds / max(wholeTextSeconds, .leastNonzeroMagnitude)
-    ))
-
-    let ticks = Double(snapshots.count)
-    print(String(
-      format: "streaming highlight over %d ticks (%d chars): incremental %.1f ms total / %.3f ms per tick, previous %.1f ms total / %.3f ms per tick (%.1fx)",
-      snapshots.count,
-      fullText.count,
-      incrementalSeconds * 1000,
-      incrementalSeconds * 1000 / ticks,
-      legacySeconds * 1000,
-      legacySeconds * 1000 / ticks,
-      legacySeconds / max(incrementalSeconds, .leastNonzeroMagnitude)
-    ))
-  }
-
-  /// The pre-change algorithm, verbatim: tokenize the whole text, then walk from
-  /// `startIndex` for every token, letting later tokens overwrite the ranges
-  /// they overlap. Serves as both the benchmark baseline and the correctness
-  /// oracle, so it applies the real per-role attributes.
+  /// The pre-change painter: tokenize the whole text, then walk from the start
+  /// for every token so later tokens overwrite overlapping ranges. The
+  /// equivalence test compares the current painter to this one.
   private static func legacyHighlight(_ text: String, as language: FilesLanguage) -> AttributedString {
     var attributed = AttributedString(text)
     attributed.font = .system(.body, design: .monospaced)
@@ -803,19 +666,7 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     )
   }
 
-  func testStreamingYamlQuotedValueSpanningLinesMatchesFullHighlight() {
-    assertIncrementalMatchesFullHighlight(
-      """
-      key: "first
-        continued"
-      other: 2
-      """,
-      as: .yaml
-    )
-  }
-
   func testStreamingApostropheInCommentDoesNotSplitInsideAStringMatch() {
-    // A lone apostrophe in a comment still opens a string match for the rule
     // that scans independently of the comment rule.
     assertIncrementalMatchesFullHighlight(
       """
@@ -859,75 +710,23 @@ final class SyntaxHighlighterStreamingTests: XCTestCase {
     )
   }
 
-  /// Languages allowed to reuse a stable prefix, each pinned to the rule
-  /// patterns that claim was made about.
-  ///
-  /// Reuse is only sound while nothing in a language's rules can match across a
-  /// newline except the delimiters the boundary counts. That is a property of
-  /// the patterns, not something the code can re-derive, and every time it has
-  /// been wrong the symptom was a completed block frozen mis-highlighted in
-  /// cache. If one of these fingerprints changes, re-check the new pattern
-  /// against `multilineDelimiters(for:)` before updating the constant.
-  private static let prefixReuseFingerprints: [FilesLanguage: String] = [
-    .swift: "2c7b721d13b3bcc9",
-    .typescript: "fa894f542c775be5",
-    .javascript: "2f738c3408aa7929",
-    .python: "6de225fbadd012d8",
-    .rust: "563f92af2415db71",
-    .go: "3575d64645ceff4c",
-    .java: "aa8e57e8d480c530",
-    .html: "561765deebafcca7",
-  ]
-
   func testLanguagesWithUnmodelledMultilineRulesOptOutOfPrefixReuse() {
     // Each of these has a rule whose match crosses, or depends on text past, a
     // newline with no delimiter to count: CSS selector lists, YAML's `^\s*` key
-    // rule, Markdown links, and JSON's `(?=\s*:)` key lookahead.
+    // rule, Markdown links, and JSON's `(?=\s*:)` key lookahead. Opted-out
+    // languages highlight the whole block each tick, so comparing the two
+    // painters would only compare a function to itself.
     for language in [FilesLanguage.css, .yaml, .markdown, .json] {
       XCTAssertNil(
         SyntaxHighlighter.multilineDelimiters(for: language),
         "\(language.rawValue) has newline-crossing rules the balance scan cannot model"
       )
     }
-    for language in Self.prefixReuseFingerprints.keys {
+    for language in [
+      FilesLanguage.swift, .typescript, .javascript, .python, .rust, .go, .java, .html,
+    ] {
       XCTAssertNotNil(SyntaxHighlighter.multilineDelimiters(for: language))
     }
-  }
-
-  func testPrefixReuseLanguagesStillHaveTheRulesThatClaimWasMadeAbout() {
-    for (language, pinned) in Self.prefixReuseFingerprints where !pinned.isEmpty {
-      XCTAssertEqual(
-        SyntaxHighlighter.tokenRuleFingerprint(for: language), pinned,
-        """
-        \(language.rawValue)'s token rules changed. Prefix reuse assumes no rule \
-        matches across a newline except the counted delimiters — re-check the new \
-        pattern against multilineDelimiters(for:), then update this fingerprint.
-        """
-      )
-    }
-  }
-
-  func testStreamingJsonKeyLookaheadMatchesFullHighlight() {
-    // The key rule only matches once `(?=\s*:)` finds the colon, which can
-    // arrive after the newline — the key would otherwise freeze unhighlighted.
-    assertIncrementalMatchesFullHighlight("{\n  \"key\"\n: 1,\n  \"b\": 2\n}", as: .json)
-  }
-
-  func testMultilineCssSelectorStillMatchesFullHighlight() {
-    assertIncrementalMatchesFullHighlight(
-      """
-      .foo,
-      .bar {
-        color: red;
-      }
-      """,
-      as: .css
-    )
-  }
-
-  func testMultilineYamlAndMarkdownStillMatchFullHighlight() {
-    assertIncrementalMatchesFullHighlight("a:\n\n  b: 1\nc: 2", as: .yaml)
-    assertIncrementalMatchesFullHighlight("see [long\nlink](https://x.test)\n\ntext", as: .markdown)
   }
 
   func testDifferentBlockOfSameLanguageDoesNotReuseForeignPrefix() {

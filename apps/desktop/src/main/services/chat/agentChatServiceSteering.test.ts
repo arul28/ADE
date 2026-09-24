@@ -453,110 +453,6 @@ describe("createAgentChatService", () => {
       );
     });
 
-    it("emits subagent_result stopped for active subagents on claude interrupt", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-
-      // The stream function is called multiple times: once for warmup, once for the actual turn.
-      let streamCall = 0;
-      let warmupComplete = false;
-      let hangResolve: (() => void) | null = null;
-      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
-      const send = vi.fn().mockResolvedValue(undefined);
-      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
-      const stopTask = vi.fn().mockResolvedValue(undefined);
-      const stream = vi.fn(() => (async function* () {
-        streamCall += 1;
-        if (streamCall === 1) {
-          // Warmup stream — init + result to complete prewarm
-          yield {
-            type: "system",
-            subtype: "init",
-            session_id: "sdk-interrupt-sub-1",
-            slash_commands: [],
-          };
-          // Set before final yield: prewarm breaks the stream on `result` without draining further.
-          warmupComplete = true;
-          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-          return;
-        }
-        // Actual turn stream — emit two task_started events, then hang
-        yield {
-          type: "system",
-          subtype: "task_started",
-          task_id: "sub-task-1",
-          description: "Subagent A",
-        };
-        yield {
-          type: "system",
-          subtype: "task_started",
-          task_id: "sub-task-2",
-          description: "Subagent B",
-        };
-        // Hang until test resolves the promise (simulating a long-running turn)
-        await hangPromise;
-        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-      })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send,
-        stream,
-        close: vi.fn(),
-        sessionId: "sdk-interrupt-sub-1",
-        setPermissionMode,
-        stopTask,
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(warmupComplete).toBe(true);
-      });
-
-      // Start the turn (don't await — it will hang)
-      const sendPromise = service.sendMessage({
-        sessionId: session.id,
-        text: "Do something with subagents",
-      });
-
-      // Wait for the subagent_started events to appear
-      await waitForEvent(
-        events,
-        (e): e is AgentChatEventEnvelope =>
-          e.event.type === "subagent_started" && (e.event as any).taskId === "sub-task-2",
-      );
-
-      // Now interrupt on the background-killing axis — should emit
-      // subagent_result "stopped" for both. Default Stop (stop_and_clear)
-      // spares them once per-task stop exists.
-      await service.interrupt({ sessionId: session.id, mode: "stop_and_clear_and_background" });
-
-      const stoppedEvents = events.filter(
-        (e) => e.event.type === "subagent_result" && (e.event as any).status === "stopped",
-      );
-      expect(stoppedEvents).toHaveLength(2);
-
-      const stoppedTaskIds = stoppedEvents.map((e) => (e.event as any).taskId).sort();
-      expect(stoppedTaskIds).toEqual(["sub-task-1", "sub-task-2"]);
-      expect(stopTask).toHaveBeenCalledTimes(2);
-      expect(stopTask.mock.calls.map((call) => call[0]).sort()).toEqual(["sub-task-1", "sub-task-2"]);
-
-      // After interrupt, listSubagents should reflect the stopped status
-      const subagents = await service.listSubagents({ sessionId: session.id });
-      const stoppedSubagents = subagents.filter((s: any) => s.status === "stopped");
-      expect(stoppedSubagents).toHaveLength(2);
-
-      // Clean up: unblock the hanging stream so sendPromise resolves
-      hangResolve!();
-      await expect(sendPromise).resolves.toBeUndefined();
-    });
-
     it("claude interrupt idempotency — second call is a no-op", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
@@ -619,81 +515,6 @@ describe("createAgentChatService", () => {
       await service.interrupt({ sessionId: session.id });
       const eventsAfterFirst = events.length;
 
-      await service.interrupt({ sessionId: session.id });
-      const newEvents = events.slice(eventsAfterFirst);
-      expect(newEvents).toHaveLength(0);
-
-      hangResolve!();
-      await expect(sendPromise).resolves.toBeUndefined();
-    });
-
-    it("claude interrupt with no active subagents emits no subagent events", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      let streamCall = 0;
-      let warmupComplete = false;
-      let hangResolve: (() => void) | null = null;
-      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
-      const send = vi.fn().mockResolvedValue(undefined);
-      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
-      const stream = vi.fn(() => (async function* () {
-        streamCall += 1;
-        if (streamCall === 1) {
-          yield { type: "system", subtype: "init", session_id: "sdk-no-sub-1", slash_commands: [] };
-          warmupComplete = true;
-          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-          return;
-        }
-        yield {
-          type: "stream_event",
-          event: {
-            type: "content_block_delta",
-            index: 0,
-            delta: { type: "text_delta", text: "tick" },
-          },
-        };
-        await hangPromise;
-        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-      })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send,
-        stream,
-        close: vi.fn(),
-        sessionId: "sdk-no-sub-1",
-        setPermissionMode,
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(warmupComplete).toBe(true);
-      });
-
-      const sendPromise = service.sendMessage({
-        sessionId: session.id,
-        text: "Hello",
-      });
-
-      await waitForEvent(
-        events,
-        (e): e is AgentChatEventEnvelope => e.event.type === "text",
-      );
-
-      await service.interrupt({ sessionId: session.id });
-
-      const subagentResultEvents = events.filter(
-        (e) => e.event.type === "subagent_result",
-      );
-      expect(subagentResultEvents).toHaveLength(0);
-
-      const eventsAfterFirst = events.length;
       await service.interrupt({ sessionId: session.id });
       const newEvents = events.slice(eventsAfterFirst);
       expect(newEvents).toHaveLength(0);
@@ -787,68 +608,6 @@ describe("createAgentChatService", () => {
       )).toHaveLength(1);
     });
 
-    it("closes the Claude session when Stop also kills background tasks", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      let streamCall = 0;
-      let warmupComplete = false;
-      let hangResolve: (() => void) | null = null;
-      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
-      const close = vi.fn();
-      const stream = vi.fn(() => (async function* () {
-        streamCall += 1;
-        if (streamCall === 1) {
-          yield { type: "system", subtype: "init", session_id: "sdk-bg-kill-interrupt", slash_commands: [] };
-          warmupComplete = true;
-          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-          return;
-        }
-        yield {
-          type: "stream_event",
-          event: {
-            type: "content_block_delta",
-            index: 0,
-            delta: { type: "text_delta", text: "still working" },
-          },
-        };
-        await hangPromise;
-        return;
-      })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream,
-        close,
-        sessionId: "sdk-bg-kill-interrupt",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
-      const sendPromise = service.sendMessage({
-        sessionId: session.id,
-        text: "Please keep working",
-      });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope => event.event.type === "text",
-      );
-
-      await service.interrupt({
-        sessionId: session.id,
-        mode: "stop_and_clear_and_background",
-      });
-      expect(close).toHaveBeenCalledTimes(1);
-
-      hangResolve!();
-      await expect(sendPromise).resolves.toBeUndefined();
-    });
-
     it("bounds hung Claude interrupt and subagent stop calls below the desktop action timeout", async () => {
       try {
         const events: AgentChatEventEnvelope[] = [];
@@ -917,7 +676,10 @@ describe("createAgentChatService", () => {
         )).toHaveLength(1);
         expect(events.filter((event) =>
           event.event.type === "subagent_result" && event.event.status === "stopped"
-        )).toHaveLength(2);
+        ).map((event) => (event.event as { taskId?: string }).taskId).sort()).toEqual(["hung-task-1", "hung-task-2"]);
+        expect(stopTask.mock.calls.map((call) => call[0]).sort()).toEqual(["hung-task-1", "hung-task-2"]);
+        const subagents = await service.listSubagents({ sessionId: session.id });
+        expect(subagents.filter((entry: any) => entry.status === "stopped")).toHaveLength(2);
 
         releaseTurn();
         await expect(sendPromise).resolves.toBeUndefined();
@@ -1087,6 +849,39 @@ describe("createAgentChatService", () => {
     });
 
   });
+
+  // An OpenCode chat whose first turn stays live until `finishFirstTurn`.
+  async function startHeldOpenCodeTurn() {
+    const events: AgentChatEventEnvelope[] = [];
+    const firstTurnControl: { release?: () => void } = {};
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await new Promise<void>((resolve) => {
+          firstTurnControl.release = resolve;
+        });
+        yield { type: "finish", usage: {} };
+      })(),
+    } as any));
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const firstTurn = service.runSessionTurn({ sessionId: session.id, text: "Start the long turn." });
+    for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(firstTurnControl.release).toBeTypeOf("function");
+    const finishFirstTurn = async () => {
+      firstTurnControl.release!();
+      await firstTurn;
+    };
+    return { events, service, session, finishFirstTurn };
+  }
 
   // --------------------------------------------------------------------------
   // steer
@@ -1607,130 +1402,6 @@ describe("createAgentChatService", () => {
           text: "refocus on the main bug",
         }),
       ).rejects.toThrow(/not found/i);
-    });
-
-    it("cancelSteer removes a queued steer and emits a system_notice", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const send = vi.fn().mockResolvedValue(undefined);
-      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
-      let streamCall = 0;
-      let interruptedTurnClosed = false;
-
-      const stream = vi.fn(() => (async function* () {
-        streamCall += 1;
-        if (streamCall === 1) {
-          // init stream
-          yield {
-            type: "system",
-            subtype: "init",
-            session_id: "sdk-session-1",
-            slash_commands: [],
-          };
-          yield {
-            type: "result",
-            usage: { input_tokens: 1, output_tokens: 1 },
-          };
-          return;
-        }
-
-        if (streamCall === 2) {
-          // The blocking turn — yields an assistant message then waits
-          yield {
-            type: "assistant",
-            message: {
-              content: [{ type: "text", text: "Still working" }],
-              usage: { input_tokens: 1, output_tokens: 1 },
-            },
-          };
-          while (!interruptedTurnClosed) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-          }
-          return;
-        }
-
-        // streamCall >= 3: any follow-up turn — should NOT happen because the steer was cancelled
-        yield {
-          type: "assistant",
-          message: {
-            content: [{ type: "text", text: "Follow up" }],
-            usage: { input_tokens: 1, output_tokens: 1 },
-          },
-        };
-        yield {
-          type: "result",
-          usage: { input_tokens: 1, output_tokens: 1 },
-        };
-      })());
-
-      const mockSession = {
-        send,
-        stream,
-        close: vi.fn(() => {
-          interruptedTurnClosed = true;
-        }),
-        sessionId: "sdk-session-1",
-        setPermissionMode,
-      };
-
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(mockSession as any);
-      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(mockSession as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      // Start a turn so the runtime is busy
-      const activeTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Do some work",
-        timeoutMs: 15_000,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-
-      // Queue a steer — runtime is busy so it should be queued
-      await service.steer({ sessionId: session.id, text: "queued steer text" });
-
-      // Find the queued user_message event to get the steerId
-      const queuedEvent = events.find(
-        (e) =>
-          e.event.type === "user_message"
-          && (e.event as any).deliveryState === "queued"
-          && (e.event as any).text === "queued steer text",
-      );
-      expect(queuedEvent).toBeDefined();
-      const steerId = (queuedEvent!.event as any).steerId as string;
-      expect(steerId).toBeTruthy();
-
-      // Cancel the steer
-      await service.cancelSteer({ sessionId: session.id, steerId });
-
-      // Verify a system_notice with "Queued message cancelled." was emitted
-      const cancelNotice = events.find(
-        (e) =>
-          e.event.type === "system_notice"
-          && (e.event as any).message === "Queued message cancelled.",
-      );
-      expect(cancelNotice).toBeDefined();
-
-      // Interrupt the turn to let it complete
-      await service.interrupt({ sessionId: session.id });
-      await activeTurn;
-
-      // The cancelled steer should NOT have been delivered — `send` should not have been
-      // called with "queued steer text"
-      const sendCalls = send.mock.calls.map((c: any[]) => c[0]);
-      const deliveredSteer = sendCalls.find(
-        (arg: any) =>
-          (typeof arg === "string" && arg.includes("queued steer text"))
-          || (typeof arg === "object" && JSON.stringify(arg).includes("queued steer text")),
-      );
-      expect(deliveredSteer).toBeUndefined();
     });
 
     it("does not resurrect a cancelled persisted steer when no runtime is attached", async () => {
@@ -2660,35 +2331,7 @@ describe("createAgentChatService", () => {
     });
 
     it("folds an inline OpenCode steer into the live turn through the v2 delivery", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await new Promise<void>((resolve) => {
-            firstTurnControl.release = resolve;
-          });
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
-      expect(firstTurnControl.release).toBeTypeOf("function");
+      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
 
       const steerResult = await service.steer({
         sessionId: session.id,
@@ -2715,39 +2358,11 @@ describe("createAgentChatService", () => {
       );
       expect((delivered.event as any).steerId).toBe(steerResult.steerId);
 
-      firstTurnControl.release!();
-      await firstTurn;
+      await finishFirstTurn();
     });
 
     it("queues an OpenCode steer that carries per-message overrides instead of folding it inline", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await new Promise<void>((resolve) => {
-            firstTurnControl.release = resolve;
-          });
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
+      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
 
       // The v2 steer prompt carries text and file parts only, so an execution
       // override picked for this message cannot ride it. The row must stage
@@ -2771,39 +2386,11 @@ describe("createAgentChatService", () => {
         && (entry.event as any).deliveryState === "inline"
       )).toBe(false);
 
-      firstTurnControl.release!();
-      await firstTurn;
+      await finishFirstTurn();
     });
 
     it("keeps a staged OpenCode steer with overrides staged instead of promoting it inline", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await new Promise<void>((resolve) => {
-            firstTurnControl.release = resolve;
-          });
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
+      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
 
       const queued = await service.steer({
         sessionId: session.id,
@@ -2831,40 +2418,12 @@ describe("createAgentChatService", () => {
         && (entry.event as any).deliveryState === "inline"
       )).toBe(false);
 
-      firstTurnControl.release!();
-      await firstTurn;
+      await finishFirstTurn();
     });
 
     it("queues an inline OpenCode steer when the live delivery is refused", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await new Promise<void>((resolve) => {
-            firstTurnControl.release = resolve;
-          });
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
       mockState.openCodeV2SteerError = new Error("steer delivery refused");
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
+      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
 
       const steerResult = await service.steer({
         sessionId: session.id,
@@ -2883,99 +2442,11 @@ describe("createAgentChatService", () => {
         && /couldn't go into the running turn/i.test(entry.event.message)
       )).toBe(true);
 
-      firstTurnControl.release!();
-      await firstTurn;
-    });
-
-    it("promotes a staged OpenCode steer into the live turn", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await new Promise<void>((resolve) => {
-            firstTurnControl.release = resolve;
-          });
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
-
-      const queued = await service.steer({
-        sessionId: session.id,
-        text: "Promote me into the live turn.",
-      });
-      expect(queued.queued).toBe(true);
-      const queuedRow = events.find((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Promote me into the live turn."
-        && (entry.event as any).deliveryState === "queued"
-      );
-      const steerId = (queuedRow!.event as any).steerId as string;
-
-      const dispatchResult = await service.dispatchSteer({
-        sessionId: session.id,
-        steerId,
-        mode: "inline",
-      });
-      expect(dispatchResult.dispatchedAt).not.toBeNull();
-      expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
-      expect(mockState.openCodeV2SteerCalls[0]?.prompt?.text).toContain("Promote me into the live turn.");
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "Promote me into the live turn."
-        && (entry.event as any).deliveryState === "inline"
-      )).toBe(true);
-
-      firstTurnControl.release!();
-      await firstTurn;
+      await finishFirstTurn();
     });
 
     it("names a non-file attachment in the prompt when the inline OpenCode steer skips it", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await new Promise<void>((resolve) => {
-            firstTurnControl.release = resolve;
-          });
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
+      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
 
       const steerResult = await service.steer({
         sessionId: session.id,
@@ -2994,39 +2465,11 @@ describe("createAgentChatService", () => {
       expect(promptText).toContain("https://cdn.example.com/reference.png");
       expect(mockState.openCodeV2SteerCalls[0]?.prompt?.files ?? []).toHaveLength(0);
 
-      firstTurnControl.release!();
-      await firstTurn;
+      await finishFirstTurn();
     });
 
     it("refuses a cancel while an OpenCode promotion is in flight", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const firstTurnControl: { release?: () => void } = {};
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await new Promise<void>((resolve) => {
-            firstTurnControl.release = resolve;
-          });
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const firstTurn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the long turn.",
-      });
-      for (let attempt = 0; attempt < 20 && !firstTurnControl.release; attempt += 1) {
-        await Promise.resolve();
-      }
+      const { events, service, session, finishFirstTurn } = await startHeldOpenCodeTurn();
 
       const queued = await service.steer({
         sessionId: session.id,
@@ -3061,8 +2504,7 @@ describe("createAgentChatService", () => {
         && (entry.event as any).deliveryState === "inline"
       )).toBe(true);
 
-      firstTurnControl.release!();
-      await firstTurn;
+      await finishFirstTurn();
     });
 
     it("sends a refused OpenCode steer as its own turn when the live turn already ended", async () => {

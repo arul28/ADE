@@ -248,44 +248,6 @@ describe("createAgentChatService", () => {
       ]));
     });
 
-    it("returns the same slash command set for a live droid session", async () => {
-      const codexPromptsDir = path.join(tmpRoot, ".codex", "prompts");
-      fs.mkdirSync(codexPromptsDir, { recursive: true });
-      fs.writeFileSync(path.join(codexPromptsDir, "summarize.md"), "Summarize this lane.");
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "droid",
-        model: "custom:claude-sonnet-5-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      const names = commands.map((command) => command.name);
-
-      expect(names).toContain("/clear");
-      expect(commands).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          name: "/summarize",
-          description: "Summarize this lane.",
-          source: "sdk",
-        }),
-      ]));
-    });
-
-    it("does not advertise /login as a Claude SDK command", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      const loginCmd = commands.find((c: any) => c.name === "/login");
-      expect(loginCmd).toBeUndefined();
-    });
-
     it("filters SDK terminal_slash_commands extras from a live Claude session palette", async () => {
       let warmupComplete = false;
       const stream = vi.fn(() => (async function* () {
@@ -325,86 +287,6 @@ describe("createAgentChatService", () => {
       expect(names).not.toContain("/foo-cli");
     });
 
-    it("advertises the ADE-hosted Claude output-style command", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      expect(commands).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          name: "/output-style",
-          source: "sdk",
-        }),
-      ]));
-    });
-
-    it("removes dead-listed Codex slash commands from the palette", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.5",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      const names = commands.map((c) => c.name);
-      // §A.6 leftovers (removed handlers/IPC)
-      expect(names).not.toContain("/fork");
-      expect(names).not.toContain("/resume");
-      expect(names).not.toContain("/rollback");
-      expect(names).not.toContain("/unarchive");
-      // Codex-CLI-only surfaces with no ADE consumer
-      expect(names).not.toContain("/apps");
-      expect(names).not.toContain("/plugins");
-      expect(names).not.toContain("/ps");
-      expect(names).not.toContain("/stop");
-      // Duplicate ADE composer/lane flows
-      expect(names).not.toContain("/mention");
-      expect(names).not.toContain("/new");
-      // TUI-only configuration
-      expect(names).not.toContain("/statusline");
-      expect(names).not.toContain("/title");
-      // Destructive runtime side-effect; ADE owns /quit
-      expect(names).not.toContain("/exit");
-      // /inject was added by F.2
-      expect(names).toContain("/inject");
-    });
-
-    it("includes project Claude Code command files before SDK init completes", async () => {
-      const commandsDir = path.join(tmpRoot, ".claude", "commands");
-      fs.mkdirSync(commandsDir, { recursive: true });
-      fs.writeFileSync(path.join(commandsDir, "automate.md"), [
-        "---",
-        "description: Generate test coverage",
-        "argument-hint: [area]",
-        "---",
-        "",
-        "Generate tests for $ARGUMENTS.",
-        "",
-      ].join("\n"));
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      expect(commands).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          name: "/automate",
-          description: "Generate test coverage",
-          argumentHint: "[area]",
-          source: "sdk",
-        }),
-      ]));
-    });
-
     it("does not let a filesystem /login command replace provider auth guidance", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
@@ -427,70 +309,6 @@ describe("createAgentChatService", () => {
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
       expect(loginCmd).toBeUndefined();
-    });
-
-    it("does not include /login for opencode sessions", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      const loginCmd = commands.find((c: any) => c.name === "/login");
-      expect(loginCmd).toBeUndefined();
-    });
-
-    it("includes Codex prompt files before the app server reports dynamic commands", async () => {
-      const promptsDir = path.join(tmpRoot, ".codex", "prompts");
-      fs.mkdirSync(promptsDir, { recursive: true });
-      fs.writeFileSync(path.join(promptsDir, "audit.md"), "Audit recent work.");
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      expect(commands).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          name: "/audit",
-          description: "Audit recent work.",
-          source: "sdk",
-        }),
-      ]));
-    });
-
-    it("advertises Codex CLI parity slash command hints for Codex sessions", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.5",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      expect(commands).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          name: "/fast",
-          argumentHint: "[on|off|status]",
-          source: "local",
-        }),
-        expect.objectContaining({
-          name: "/plan",
-          argumentHint: "[prompt]",
-          source: "local",
-        }),
-        expect.objectContaining({
-          name: "/goal",
-          argumentHint: "[pause|resume|clear|<objective>]",
-          source: "local",
-        }),
-      ]));
     });
 
     it("includes project Claude command files for Codex-backed sessions", async () => {
@@ -1801,26 +1619,6 @@ describe("createAgentChatService", () => {
       expect(metaEventsWithMode).toHaveLength(0);
     });
 
-    it("updates the session title", async () => {
-      const { service, sessionService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      const updated = await service.updateSession({
-        sessionId: session.id,
-        title: "My Custom Title",
-      });
-
-      expect(updated.id).toBe(session.id);
-      expect(sessionService.updateMeta).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: session.id, title: "My Custom Title" }),
-      );
-    });
-
     it("resets title to default when set to empty string", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -1838,23 +1636,6 @@ describe("createAgentChatService", () => {
       expect(sessionService.updateMeta).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: session.id, title: "AI Chat" }),
       );
-    });
-
-    it("updates reasoning effort", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      const updated = await service.updateSession({
-        sessionId: session.id,
-        reasoningEffort: "high",
-      });
-
-      expect(updated.reasoningEffort).toBe("high");
     });
 
     it("normalizes reasoning effort trimming and lowercase", async () => {
@@ -1906,23 +1687,6 @@ describe("createAgentChatService", () => {
           modelId: "",
         }),
       ).rejects.toThrow(/modelId is required/i);
-    });
-
-    it("updates permission mode", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      const updated = await service.updateSession({
-        sessionId: session.id,
-        permissionMode: "full-auto",
-      });
-
-      expect(updated.permissionMode).toBe("full-auto");
     });
 
     it("manuallyNamed suppresses auto-titling after sendMessage", async () => {

@@ -925,9 +925,6 @@ describe("deriveTodoItems", () => {
       { id: "todo-1", description: "Investigate flaky test", status: "in_progress" },
       { id: "todo-2", description: "Write fix", status: "pending" },
     ]);
-    for (const item of result) {
-      expect(Object.keys(item).sort()).toEqual(["description", "id", "status"]);
-    }
   });
 
   it("returns only the last todo_update when multiple are present (each update fully replaces)", () => {

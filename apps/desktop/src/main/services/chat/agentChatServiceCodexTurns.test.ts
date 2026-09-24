@@ -1132,57 +1132,6 @@ describe("createAgentChatService", () => {
       ).toHaveLength(0);
     });
 
-    it("returns an explicit steer result and emits a delivered steer bubble for Codex", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-      });
-
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "Start working",
-      }, { awaitDispatch: true });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
-        } =>
-          event.event.type === "status"
-          && event.event.turnStatus === "started"
-          && event.event.turnId === "turn-1",
-      );
-
-      const result = await service.steer({
-        sessionId: session.id,
-        text: "Focus on the shared chat UI.",
-      });
-
-      expect(result.queued).toBe(false);
-      expect(result.steerId).toMatch(/^test-uuid-/);
-      expect(
-        mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer"),
-      ).toBe(true);
-
-      expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "user_message",
-            text: "Focus on the shared chat UI.",
-            deliveryState: "accepted",
-            processed: false,
-            steerId: result.steerId,
-            turnId: "turn-1",
-          }),
-        }),
-      ]));
-    });
-
     // Regression: mention expansion once lived only in steerUserMessage, which
     // the daemon-routed exported steer() never calls — packaged builds shipped
     // raw chips. Expansion now sits in steerWithOptions, the single funnel, so

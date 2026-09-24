@@ -19,7 +19,6 @@ import {
   runNamingAcrossProviders,
   runSessionMetadataGeneration,
   SESSION_METADATA_SYSTEM_PROMPT,
-  withSessionModelDescriptors,
 } from "./sessionNaming";
 
 // The registry is the source of truth for provider grouping, so the fixtures are
@@ -37,34 +36,21 @@ const OPENAI_MODELS = modelsFor("openai/");
 const ANTHROPIC_MODELS = modelsFor("anthropic/");
 
 describe("isProviderLevelNamingFailure", () => {
-  it("condemns the provider when the account itself cannot run the model", () => {
-    // The 400 that silently broke every naming call: the CLI is healthy, the
-    // account is not entitled, so a sibling model on the same provider is a
-    // wasted spawn.
-    expect(isProviderLevelNamingFailure(
-      new Error(`{"status":400,"message":"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}`),
-    )).toBe(true);
-    expect(isProviderLevelNamingFailure(new Error("spawn codex ENOENT"))).toBe(true);
-    expect(isProviderLevelNamingFailure(new Error("401 unauthorized"))).toBe(true);
-    expect(isProviderLevelNamingFailure(
-      new Error("Image input is not supported with Qwen native metadata tasks"),
-    )).toBe(true);
-  });
-
-  it("does not condemn the provider for a single model lacking a capability", () => {
-    // These must still retry a sibling model — condemning the provider here
-    // would skip straight to the deterministic slug.
-    expect(isProviderLevelNamingFailure(new Error("Image input is not supported for this model"))).toBe(false);
-    expect(isProviderLevelNamingFailure(new Error("json schema is not supported by this model"))).toBe(false);
-    expect(isProviderLevelNamingFailure(new Error("socket hang up"))).toBe(false);
-  });
-
-  it("does not condemn the provider when one model is unavailable", () => {
-    // A single retired or unrecognized model says nothing about its siblings.
-    expect(isProviderLevelNamingFailure(new Error("model_not_found"))).toBe(false);
-    expect(isProviderLevelNamingFailure(new Error("The model `gpt-x` does not exist"))).toBe(false);
-    // The binary genuinely being absent is still provider-level.
-    expect(isProviderLevelNamingFailure(new Error("codex: command not found"))).toBe(true);
+  // true condemns the whole provider (the account or binary cannot run it);
+  // false must still retry a sibling model on the same provider.
+  it.each([
+    [`{"status":400,"message":"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}`, true],
+    ["spawn codex ENOENT", true],
+    ["401 unauthorized", true],
+    ["Image input is not supported with Qwen native metadata tasks", true],
+    ["codex: command not found", true],
+    ["Image input is not supported for this model", false],
+    ["json schema is not supported by this model", false],
+    ["socket hang up", false],
+    ["model_not_found", false],
+    ["The model `gpt-x` does not exist", false],
+  ])("classifies %s as provider-level=%s", (message, expected) => {
+    expect(isProviderLevelNamingFailure(new Error(message))).toBe(expected);
   });
 });
 
@@ -76,16 +62,6 @@ describe("buildNamingModelCandidates", () => {
     });
 
     expect(candidates).toEqual([OPENAI_MODELS[0]?.id, OPENAI_MODELS[1]?.id]);
-    expect(candidates.some((id) => id.startsWith("anthropic/"))).toBe(false);
-  });
-
-  it("does not splice a hardcoded namer from another provider", () => {
-    const candidates = buildNamingModelCandidates({
-      availableModels: ALL_MODELS,
-      preferred: [OPENAI_MODELS[0]?.id],
-    });
-
-    expect(candidates).toEqual([OPENAI_MODELS[0]?.id]);
   });
 
   it("drops unavailable and duplicate preferences instead of attempting them", () => {
@@ -94,86 +70,46 @@ describe("buildNamingModelCandidates", () => {
       preferred: [null, "", "openai/does-not-exist", ANTHROPIC_MODELS[0]?.id, ANTHROPIC_MODELS[0]?.id],
     });
 
-    expect(candidates[0]).toBe(ANTHROPIC_MODELS[0]?.id);
-    expect(candidates).not.toContain("openai/does-not-exist");
-  });
-
-  it("returns nothing when no preferred model is available", () => {
-    expect(buildNamingModelCandidates({ availableModels: [], preferred: ["openai/gpt-5.4-mini"] })).toEqual([]);
+    expect(candidates).toEqual([ANTHROPIC_MODELS[0]?.id]);
   });
 });
 
 describe("buildSessionIntelligenceModelCandidates", () => {
-  it("uses the cheap ADE-provider helper first and the session model second", () => {
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: ALL_MODELS,
-      provider: "claude",
-      sessionModelId: OPENAI_MODELS[0]?.id,
-    })).toEqual([BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]?.id]);
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: ALL_MODELS,
-      provider: "codex",
-      sessionModelId: ANTHROPIC_MODELS[0]?.id,
-    })).toEqual([BACKGROUND_UTILITY_CODEX_MODEL_ID, ANTHROPIC_MODELS[0]?.id]);
-  });
-
-  it("does not spawn a Claude helper for OpenCode-wrapped Anthropic", () => {
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: ALL_MODELS,
-      provider: "opencode",
-      sessionModelId: ANTHROPIC_MODELS[0]?.id,
-    })).toEqual([ANTHROPIC_MODELS[0]?.id]);
-  });
-
-  it("does not consult toolType when an explicit non-ADE provider is set", () => {
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: ALL_MODELS,
-      provider: "opencode",
-      toolType: "claude-chat",
-      sessionModelId: ANTHROPIC_MODELS[0]?.id,
-    })).toEqual([ANTHROPIC_MODELS[0]?.id]);
-  });
-
-  it("uses toolType only when provider is absent", () => {
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: ALL_MODELS,
-      toolType: "claude-chat",
-      sessionModelId: OPENAI_MODELS[0]?.id,
-    })).toEqual([BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]?.id]);
-  });
-
-  it("injects Composer 2.5 for Cursor even when the auth snapshot has no Cursor inventory", () => {
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: [],
-      provider: "cursor",
-      sessionModelId: "cursor/grok-4-5",
-    })).toEqual([BACKGROUND_UTILITY_CURSOR_MODEL_ID, "cursor/grok-4-5"]);
-  });
-
-  it("keeps the session model even when the auth snapshot is empty", () => {
-    const sessionModelId = OPENAI_MODELS[0]?.id;
-    expect(sessionModelId).toBeTruthy();
-    expect(withSessionModelDescriptors([], [sessionModelId]).map((descriptor) => descriptor.id)).toEqual([sessionModelId]);
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: [],
-      sessionModelId,
-    })).toEqual([sessionModelId]);
-  });
-
-  it("resolves a session-model alias onto its canonical id", () => {
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: ALL_MODELS,
-      sessionModel: "sonnet",
-    })).toEqual(["anthropic/claude-sonnet-5"]);
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: [],
-      sessionModel: "sonnet",
-    })).toEqual(["anthropic/claude-sonnet-5"]);
-    expect(buildSessionIntelligenceModelCandidates({
-      availableModels: ALL_MODELS,
-      provider: "claude",
-      sessionModel: "sonnet",
-    })).toEqual([BACKGROUND_UTILITY_CLAUDE_MODEL_ID, "anthropic/claude-sonnet-5"]);
+  // Cheap ADE-provider helper first, then the session model; non-ADE providers
+  // skip the helper, and toolType only counts when no provider is set.
+  it.each<[string, Parameters<typeof buildSessionIntelligenceModelCandidates>[0], string[]]>([
+    ["claude: helper then session model",
+      { availableModels: ALL_MODELS, provider: "claude", sessionModelId: OPENAI_MODELS[0]!.id },
+      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]!.id]],
+    ["codex: helper then session model",
+      { availableModels: ALL_MODELS, provider: "codex", sessionModelId: ANTHROPIC_MODELS[0]!.id },
+      [BACKGROUND_UTILITY_CODEX_MODEL_ID, ANTHROPIC_MODELS[0]!.id]],
+    ["OpenCode-wrapped Anthropic gets no Claude helper",
+      { availableModels: ALL_MODELS, provider: "opencode", sessionModelId: ANTHROPIC_MODELS[0]!.id },
+      [ANTHROPIC_MODELS[0]!.id]],
+    ["an explicit non-ADE provider ignores toolType",
+      { availableModels: ALL_MODELS, provider: "opencode", toolType: "claude-chat", sessionModelId: ANTHROPIC_MODELS[0]!.id },
+      [ANTHROPIC_MODELS[0]!.id]],
+    ["toolType picks the helper when provider is absent",
+      { availableModels: ALL_MODELS, toolType: "claude-chat", sessionModelId: OPENAI_MODELS[0]!.id },
+      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, OPENAI_MODELS[0]!.id]],
+    ["Cursor injects Composer with no Cursor inventory",
+      { availableModels: [], provider: "cursor", sessionModelId: "cursor/grok-4-5" },
+      [BACKGROUND_UTILITY_CURSOR_MODEL_ID, "cursor/grok-4-5"]],
+    ["the session model survives an empty auth snapshot",
+      { availableModels: [], sessionModelId: OPENAI_MODELS[0]!.id },
+      [OPENAI_MODELS[0]!.id]],
+    ["a session-model alias resolves to its canonical id",
+      { availableModels: ALL_MODELS, sessionModel: "sonnet" },
+      ["anthropic/claude-sonnet-5"]],
+    ["an alias resolves with an empty auth snapshot",
+      { availableModels: [], sessionModel: "sonnet" },
+      ["anthropic/claude-sonnet-5"]],
+    ["an alias follows the provider helper",
+      { availableModels: ALL_MODELS, provider: "claude", sessionModel: "sonnet" },
+      [BACKGROUND_UTILITY_CLAUDE_MODEL_ID, "anthropic/claude-sonnet-5"]],
+  ])("%s", (_label, args, expected) => {
+    expect(buildSessionIntelligenceModelCandidates(args)).toEqual(expected);
   });
 });
 

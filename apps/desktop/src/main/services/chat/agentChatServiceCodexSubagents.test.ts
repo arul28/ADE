@@ -1901,47 +1901,6 @@ describe("createAgentChatService", () => {
       ).toBe("running");
     });
 
-    it("reports a Codex model reroute as a notice and as the turn's served model", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
-      await service.sendMessage({ sessionId: session.id, text: "Do the risky thing." }, { awaitDispatch: true });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
-      );
-      mockState.emitCodexPayload({
-        jsonrpc: "2.0",
-        method: "model/rerouted",
-        params: { threadId: "thread-1", turnId: "turn-1", fromModel: "gpt-5.4", toModel: "gpt-5.4-safe", reason: "highRiskCyberActivity" },
-      });
-      const notice = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }>;
-        } => event.event.type === "system_notice" && event.event.message.includes("rerouted"),
-      );
-      expect(notice.event.message).toBe("Codex rerouted this turn from gpt-5.4 to gpt-5.4-safe.");
-      expect(notice.event.turnId).toBe("turn-1");
-
-      mockState.emitCodexPayload({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
-      });
-      const done = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
-        } => event.event.type === "done" && event.event.turnId === "turn-1",
-      );
-      expect(done.event.servedModel).toBe("gpt-5.4-safe");
-      expect(done.event.account).toMatchObject({ provider: "codex" });
-    });
-
     it("gives the usage ledger a Codex turn's thread-total delta, context, served model, and account", async () => {
       // `codex app-server` 0.153 answers `account/read` like this for an API key;
       // it sends no `account/updated` at startup, so the read is the only report.
@@ -2001,6 +1960,10 @@ describe("createAgentChatService", () => {
         servedModel: "gpt-5.4-safe",
         account: { provider: "codex", kind: "api_key" },
       });
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.turnId === "turn-1"
+        && event.event.message.includes("gpt-5.4-safe"))).toBe(true);
 
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({

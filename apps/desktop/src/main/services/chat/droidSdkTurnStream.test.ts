@@ -58,23 +58,7 @@ describe("consumeDroidSdkTurnStream", () => {
     ]);
   });
 
-  it("closes a compaction the stream never closed, without waiting on the read", async () => {
-    const posted: unknown[] = [];
-    const reader = pendingReader();
-    const outcome = await consumeDroidSdkTurnStream({
-      stream: streamOf([
-        { type: "working_state_changed", state: "compacting_conversation" },
-        { type: "result", success: true },
-      ]),
-      postSdkEvent: (event) => posted.push(event),
-      readContextStats: reader.read,
-      readWorkerTokenUsage: async () => null,
-    });
-    expect(outcome.resultSuccess).toBe(true);
-    expect(posted.at(-1)).toEqual({ type: "working_state_changed", state: "idle" });
-  });
-
-  it("stamps every context sample with the send's turn id", async () => {
+  it("closes a compaction the stream never closed and stamps every context sample with the send's turn id", async () => {
     const posted: unknown[] = [];
     const outcome = await consumeDroidSdkTurnStream({
       stream: streamOf([
@@ -86,6 +70,9 @@ describe("consumeDroidSdkTurnStream", () => {
       readWorkerTokenUsage: async () => null,
       turnId: "turn-7",
     });
+    expect(outcome.resultSuccess).toBe(true);
+    expect(posted.filter((event) => (event as { type?: string }).type === "working_state_changed").at(-1))
+      .toEqual({ type: "working_state_changed", state: "idle" });
     await outcome.contextSamples;
     expect(posted.filter((event) => (event as { type?: string }).type === "context_stats")).toEqual([
       { type: "context_stats", contextStats: stats(500), phase: "compaction_start", turnId: "turn-7" },

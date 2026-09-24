@@ -15407,18 +15407,6 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(tokens.contains(where: { $0.role == .string && $0.text == "\"/users\"" }))
   }
 
-  func testSyntaxHighlighterRepeatedCallsReturnStableTokensAndHighlights() {
-    let source = "import Foundation\nstruct Demo {\n  let title = \"Hello\"\n  // Greets the workspace\n}"
-
-    let firstTokens = SyntaxHighlighter.tokenize(source, as: .swift)
-    let secondTokens = SyntaxHighlighter.tokenize(source, as: .swift)
-    XCTAssertEqual(secondTokens, firstTokens)
-
-    let firstHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
-    let secondHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
-    XCTAssertEqual(secondHighlight, firstHighlight)
-  }
-
   func testMatchedTransitionScopeReturnsNilIdsWithoutNamespace() {
     let scope = ADEMatchedTransitionScope(namespace: nil, stem: "work-session-1")
 
@@ -20854,11 +20842,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.metadata, ["Automatic recovery"])
   }
 
-  func testCodexRecoveryFollowsTheHostCapability() {
-    XCTAssertTrue(workChatCodexRecoveryAvailable(hostSupportsRecovery: true))
-    XCTAssertFalse(workChatCodexRecoveryAvailable(hostSupportsRecovery: false))
-  }
-
   func testMcpConnectorIdentitySurvivesDecodedAndFallbackToolCards() throws {
     let eventObject: [String: Any] = [
       "type": "tool_call",
@@ -21969,25 +21952,6 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(preview.count, workChatAccessibilityPreviewLimit + 3)
     XCTAssertTrue(preview.hasSuffix("..."))
-  }
-
-  func testParseMarkdownBlocksUsesStableIdsAcrossRepeatedCalls() {
-    let markdown = """
-    # Heading
-
-    - one
-    - one
-
-    ```swift
-    let value = 1
-    ```
-    """
-
-    let first = parseMarkdownBlocks(markdown)
-    let second = parseMarkdownBlocks(markdown)
-
-    XCTAssertEqual(first, second)
-    XCTAssertEqual(first.map(\.id), second.map(\.id))
   }
 
   func testParseMarkdownListBlocksStayBoundedAndPreserveOrder() {

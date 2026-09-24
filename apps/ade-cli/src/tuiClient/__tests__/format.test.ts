@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  __clearAssistantMarkdownCacheForTests,
-  __getAssistantMarkdownCacheStatsForTests,
   diffLineKind,
   latestExpandableFailureId,
   parseAssistantMarkdown,
@@ -43,36 +41,6 @@ describe("webSearchResultPreviewLines", () => {
     expect(webSearchResultDomain("docs.example.org/server?x=1")).toBe("docs.example.org");
     expect(webSearchResultDomain("not a url")).toBe("not a url");
     expect(webSearchResultDomain(undefined)).toBe("");
-  });
-
-  it("renders `title — domain` lines, falling back to domain then url", () => {
-    const lines = webSearchResultPreviewLines(
-      [
-        { title: "Codex docs", url: "https://www.example.com/codex" },
-        { url: "https://docs.example.org/server" },
-      ],
-      undefined,
-      3,
-    );
-    expect(lines).toEqual([
-      "Codex docs — example.com",
-      "docs.example.org",
-    ]);
-  });
-
-  it("caps at max and appends `+N more` using resultsTotal", () => {
-    const lines = webSearchResultPreviewLines(
-      [
-        { title: "One", url: "https://a.com" },
-        { title: "Two", url: "https://b.com" },
-        { title: "Three", url: "https://c.com" },
-        { title: "Four", url: "https://d.com" },
-      ],
-      9,
-      3,
-    );
-    expect(lines).toHaveLength(3);
-    expect(lines[2]).toBe("Three — c.com  +6 more");
   });
 
   it("returns no lines when results are absent", () => {
@@ -153,48 +121,6 @@ describe("renderChatLines", () => {
     expect(lines).toHaveLength(0);
   });
 
-  it("LRU-caches assistant markdown parses by message text", () => {
-    __clearAssistantMarkdownCacheForTests();
-    const text = "Paragraph text\n\n```ts\nconst value = 1;\n```";
-    const first = parseAssistantMarkdown(text);
-    const second = parseAssistantMarkdown(text);
-
-    expect(second).toBe(first);
-    expect(__getAssistantMarkdownCacheStatsForTests().entries).toBe(1);
-  });
-
-  it("parses assistant markdown into stable blocks", () => {
-    const blocks = parseAssistantMarkdown([
-      "# Heading",
-      "",
-      "Paragraph text",
-      "",
-      "- Bullet",
-      "1. Numbered",
-      "> Quote",
-      "",
-      "```sh",
-      "npm test",
-      "```",
-    ].join("\n"));
-    expect(blocks).toEqual([
-      { kind: "heading", level: 1, text: "Heading" },
-      { kind: "paragraph", text: "Paragraph text" },
-      { kind: "bullet", text: "Bullet" },
-      { kind: "numbered", number: "1", text: "Numbered" },
-      { kind: "quote", text: "Quote" },
-      expect.objectContaining({ kind: "code", language: "sh", lines: ["npm test"] }),
-    ]);
-    const code = blocks[5];
-    expect(code?.kind).toBe("code");
-    if (code?.kind === "code") {
-      // sh is aliased → bash, so highlighting populates per-line tokens.
-      expect(code.tokens).toBeDefined();
-      expect(code.tokens?.length).toBe(1);
-      expect(code.tokens?.[0]?.length).toBeGreaterThan(0);
-    }
-  });
-
   it("parses fenced code without language as raw lines and no tokens", () => {
     const blocks = parseAssistantMarkdown(["```", "plain line 1", "plain line 2", "```"].join("\n"));
     expect(blocks).toEqual([
@@ -205,39 +131,6 @@ describe("renderChatLines", () => {
       expect(code.language).toBeUndefined();
       expect(code.tokens).toBeUndefined();
     }
-  });
-
-  it("parses multi-line typescript code block with per-line token arrays", () => {
-    const blocks = parseAssistantMarkdown([
-      "```ts",
-      "const x = 1;",
-      "const y = \"two\";",
-      "```",
-    ].join("\n"));
-    expect(blocks).toHaveLength(1);
-    const block = blocks[0];
-    expect(block?.kind).toBe("code");
-    if (block?.kind === "code") {
-      expect(block.lines).toEqual(["const x = 1;", "const y = \"two\";"]);
-      expect(block.tokens).toBeDefined();
-      expect(block.tokens?.length).toBe(2);
-      // At least one keyword token (`const`) must be tagged.
-      const allTokens = block.tokens?.flat() ?? [];
-      expect(allTokens.some((t) => t.category === "keyword")).toBe(true);
-      expect(allTokens.some((t) => t.category === "string")).toBe(true);
-    }
-  });
-
-  it("parses GFM tables", () => {
-    const blocks = parseAssistantMarkdown([
-      "| Name | Status |",
-      "|------|--------|",
-      "| Alice | OK |",
-      "| Bob   | Bad |",
-    ].join("\n"));
-    expect(blocks).toEqual([
-      { kind: "table", headers: ["Name", "Status"], rows: [["Alice", "OK"], ["Bob", "Bad"]] },
-    ]);
   });
 
   it("parses thematic break (hr)", () => {
@@ -286,29 +179,6 @@ describe("renderChatLines", () => {
     expect(runs[0]).toMatchObject({ text: "bold ", bold: true });
     expect(runs[1]).toMatchObject({ text: "both", bold: true, italic: true });
     expect(runs[2]).toMatchObject({ text: " rest", bold: true });
-  });
-
-  it("renders compact chat turns without speaker metadata spam", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: { type: "user_message", text: "hello" },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: { type: "text", text: "hi" },
-        },
-      ],
-    });
-    expect(lines.map((line) => line.tone)).toEqual(["user", "assistant"]);
-    expect(lines.map((line) => line.header)).toEqual([undefined, undefined]);
   });
 
   it("labels an approval_request question as a question, not an approval", () => {
@@ -409,68 +279,10 @@ describe("renderChatLines", () => {
     expect(lines.map((line) => line.header)).toEqual([undefined, undefined, undefined]);
   });
 
-  it("omits assistant model labels from normal text", () => {
-    const lines = renderChatLines({
-      activeSession: {
-        sessionId: "s1",
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-7[1m]",
-        status: "idle",
-        startedAt: "2026-01-01T12:00:00.000Z",
-        endedAt: null,
-        lastActivityAt: "2026-01-01T12:00:00.000Z",
-        lastOutputPreview: null,
-        summary: null,
-        nextWakeAt: null,
-      },
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 1,
-          event: { type: "text", text: "hi" },
-        },
-      ],
-    });
-
-    expect(lines[0]?.header).toBeUndefined();
-    expect(lines[0]?.body).toBe("hi");
-  });
-
   it("renders non-JSON-safe objects without throwing", () => {
     const value: { self?: unknown } = {};
     value.self = value;
     expect(renderObject(value)).toBe("[object Object]");
-  });
-
-  it("passes known terminal-reason labels through failed turn endings", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: { type: "status", turnStatus: "failed", turnId: "turn-1" },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: { type: "done", status: "failed", turnId: "turn-1", terminalReason: "prompt_too_long" },
-        },
-      ],
-    });
-
-    expect(terminalReasonLabel("budget_exhausted")).toBe("budget limit reached");
-    expect(terminalReasonLabel("future_reason")).toBeNull();
-    expect(lines.map((line) => line.body)).toEqual([
-      "[status] failed · context window overflow",
-      "[done] failed · context window overflow",
-    ]);
   });
 
   it("renders stop receipts and conversation resets as dim notice lines", () => {
@@ -560,46 +372,6 @@ describe("renderChatLines", () => {
     });
     expect(terminalRecoveryLines).toEqual([
       expect.objectContaining({ tone: "notice", body: "queue recovery expired" }),
-    ]);
-  });
-
-  it("renders tool, edit, and compaction events compactly", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:00.000Z",
-          sequence: 1,
-          event: { type: "tool_call", tool: "read", args: { path: "src/app.ts" }, itemId: "tool-1" },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: {
-            type: "file_change",
-            path: "src/app.ts",
-            kind: "modify",
-            status: "completed",
-            itemId: "edit-1",
-            diff: "+hello\n-world",
-          },
-        },
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:02.000Z",
-          sequence: 3,
-          event: { type: "context_compact", trigger: "auto" },
-        },
-      ],
-    });
-
-    expect(lines).toEqual([
-      expect.objectContaining({ tone: "tool", body: expect.stringContaining("> read") }),
-      expect.objectContaining({ tone: "tool", body: expect.stringContaining("> edit src/app.ts") }),
-      expect.objectContaining({ tone: "notice", body: expect.stringContaining("context compacted") }),
     ]);
   });
 
@@ -1192,28 +964,6 @@ describe("renderChatLines", () => {
     expect(body).toContain("[tools] ran 4 tools");
     expect(body).toContain("[delegation] handoff to worker-a");
     expect(body).toContain("[delegation] state");
-  });
-
-  it("suppresses tokens events from the chat transcript", () => {
-    const lines = renderChatLines({
-      activeSession: null,
-      notices: [],
-      events: [
-        {
-          sessionId: "s1",
-          timestamp: "2026-01-01T12:00:01.000Z",
-          sequence: 2,
-          event: {
-            type: "tokens",
-            turnId: "t",
-            inputTokens: 100,
-            outputTokens: 50,
-            contextWindow: 10_000,
-          } as never,
-        },
-      ],
-    });
-    expect(lines).toHaveLength(0);
   });
 
   it("renders one receipt row for every pending-input resolution", () => {

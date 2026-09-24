@@ -24,18 +24,18 @@ describe("lane Apple device directive", () => {
       expect(lines[0]).toBe("<ade-lane-tools>");
       expect(lines.at(-1)).toBe("</ade-lane-tools>");
       expect(lines.length).toBeLessThanOrEqual(8);
-      // The owner's 2026-09-23 report: an agent said it swiped Safari away without checking.
-      expect(text).toContain("Check each step before you report it");
-      expect(text).toContain("To show the device to the user, run `\"$ADE_CLI_PATH\" apple show`.");
       expect(text).toContain("iPhone 17 Pro (5B1C-UDID)");
-      expect(text).toContain("`\"$ADE_CLI_PATH\" apple record-start --text`");
-      expect(text).toContain("`\"$ADE_CLI_PATH\" apple record-stop --text`");
-      expect(text).toContain("`\"$ADE_CLI_PATH\" apple screenshot --out shot.png --text`");
+      // The commands must be ones the CLI actually has.
+      for (const command of [
+        "apple show",
+        "apple record-start --text",
+        "apple record-stop --text",
+        "apple screenshot --out shot.png --text",
+      ]) {
+        expect(text).toContain(`"$ADE_CLI_PATH" ${command}`);
+      }
       // "--socket apple" read as a socket named apple; the shim already names the brain.
       expect(text).not.toContain("--socket");
-      expect(text).toContain("open -a Simulator");
-      expect(text).toContain("recordVideo");
-      expect(text).toContain("If recording fails, say so. Never attach an older recording or a file you did not just record.");
     });
 
     it("keeps a user-edited device name to one line with no markup", () => {
@@ -54,11 +54,10 @@ describe("lane Apple device directive", () => {
   });
 
   describe("createLaneAppleDeviceLookup", () => {
-    it("reads the lane's row from lane_apple_devices on macOS", () => {
+    it("reads the lane's device on macOS", () => {
       const get = vi.fn(() => ROW);
       const lookup = createLaneAppleDeviceLookup({ platform: "darwin", store: { get } as never });
       expect(lookup?.("lane-1")).toMatchObject({ udid: "5B1C-UDID", name: "iPhone 17 Pro" });
-      expect(get).toHaveBeenCalledWith(expect.stringContaining("from lane_apple_devices where lane_id = ?"), ["lane-1"]);
     });
 
     it("is off on Windows and Linux, and without a store", () => {

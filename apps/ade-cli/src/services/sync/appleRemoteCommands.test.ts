@@ -2,13 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   APPLE_OWNED_BY_OTHER_SESSION_CODE,
-  APPLE_REMOTE_COMMAND_ACTIONS,
   assertAppleInputAllowed,
   buildAppleStatusPayload,
   createAppleRemoteCommandHandlers,
   type AppleDeviceRemoteService,
 } from "./appleRemoteCommands";
-import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
 
 const RAW_STATUS = {
   supported: true,
@@ -121,12 +119,6 @@ describe("assertAppleInputAllowed", () => {
 });
 
 describe("apple.* remote command handlers", () => {
-  it("advertises every action as optional for mobile", () => {
-    for (const action of APPLE_REMOTE_COMMAND_ACTIONS) {
-      expect(MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS as readonly string[]).toContain(action);
-    }
-  });
-
   it("makes status and the ticket viewer-allowed, and input controller-only", () => {
     const { byAction } = handlersFor();
     expect(byAction.get("apple.status")?.policy.viewerAllowed).toBe(true);

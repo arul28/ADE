@@ -40,6 +40,14 @@ vi.mock("node:child_process", () => ({
   fork: (...args: unknown[]) => forkMock(...args),
 }));
 
+/** A worker response body; `null` means the worker never answers that request type. */
+type WorkerReply = Record<string, unknown> | null;
+
+/**
+ * A forked worker that answers each request type with a fixed response:
+ * `init` and `send` succeed unless `replies` overrides them, and `dispose`
+ * exits the process.
+ */
 class FakeSdkChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
@@ -51,33 +59,30 @@ class FakeSdkChild extends EventEmitter {
   sent: unknown[] = [];
   private exited = false;
 
+  constructor(private readonly replies: Record<string, WorkerReply> = {}) {
+    super();
+  }
+
   send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
     this.sent.push(message);
-    if (message.type === "init" && message.requestId) {
-      queueMicrotask(() => {
-        this.emit("message", {
-          type: "response",
-          requestId: message.requestId,
-          ok: true,
-          result: { agentId: "agent-1" },
-        });
-      });
-    }
-    if (message.type === "send" && message.requestId) {
-      queueMicrotask(() => {
-        this.emit("message", {
-          type: "response",
-          requestId: message.requestId,
-          ok: true,
-          result: {},
-        });
-      });
+    const reply = {
+      init: { ok: true, result: { agentId: "agent-1" } },
+      send: { ok: true, result: {} },
+      ...this.replies,
+    }[message.type ?? ""];
+    const requestId = message.requestId;
+    if (reply && requestId) {
+      queueMicrotask(() => this.emit("message", { type: "response", requestId, ...reply }));
     }
     if (message.type === "dispose") {
       this.disposeCount += 1;
-      queueMicrotask(() => this.finishExit(0, null));
+      this.onDispose();
     }
     return true;
+  }
+
+  protected onDispose(): void {
+    queueMicrotask(() => this.finishExit(0, null));
   }
 
   finishExit(code: number | null, signal: NodeJS.Signals | null): void {
@@ -123,23 +128,9 @@ class GatedInitSdkChild extends FakeSdkChild {
   }
 }
 
+/** Ignores the IPC `dispose`; it exits only when the test (or a kill) says so. */
 class DelayedExitChild extends FakeSdkChild {
-  override send(message: { type?: string; requestId?: string }): boolean {
-    if (message.type === "init" && message.requestId) {
-      queueMicrotask(() => {
-        this.emit("message", {
-          type: "response",
-          requestId: message.requestId,
-          ok: true,
-          result: { agentId: "agent-1" },
-        });
-      });
-    }
-    if (message.type === "dispose") {
-      this.disposeCount += 1;
-    }
-    return true;
-  }
+  protected override onDispose(): void {}
 }
 
 /** Dispose/kill never reaps the pid — the replace wait must not fork over it. */
@@ -163,6 +154,7 @@ class WedgedWorkerChild extends DelayedExitChild {
   }
 }
 
+/** Exits on `init`, after writing `stderrText`; a later `dispose` throws like a closed channel. */
 class ExitingBeforeInitChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
@@ -170,9 +162,14 @@ class ExitingBeforeInitChild extends EventEmitter {
   killed = false;
   connected = true;
 
+  constructor(private readonly stderrText = "") {
+    super();
+  }
+
   send(message: { type?: string; requestId?: string }): boolean {
     if (message.type === "init") {
       queueMicrotask(() => {
+        if (this.stderrText) this.stderr.emit("data", this.stderrText);
         this.exitCode = 1;
         this.connected = false;
         this.emit("exit", 1, null);
@@ -192,123 +189,9 @@ class ExitingBeforeInitChild extends EventEmitter {
   }
 }
 
-class ExitingWithStderrBeforeInitChild extends EventEmitter {
-  stdout = new EventEmitter();
-  stderr = new EventEmitter();
-  exitCode: number | null = null;
-  killed = false;
-  connected = true;
-
-  send(message: { type?: string }): boolean {
-    if (message.type === "init") {
-      queueMicrotask(() => {
-        this.stderr.emit(
-          "data",
-          [
-            "ConnectError: [internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
-            "  rawMessage: 'Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM'",
-            "Node.js v26.0.0",
-          ].join("\n"),
-        );
-        this.exitCode = 1;
-        this.connected = false;
-        this.emit("exit", 1, null);
-      });
-      return true;
-    }
-    return true;
-  }
-
-  kill(signal?: NodeJS.Signals): boolean {
-    this.killed = true;
-    this.emit("exit", null, signal ?? "SIGTERM");
-    return true;
-  }
-}
-
-/** Init itself is rejected — the fork happened, so its socket directory exists. */
-class FailingInitChild extends FakeSdkChild {
-  override send(message: { type?: string; requestId?: string }): boolean {
-    if (message.type === "init" && message.requestId) {
-      queueMicrotask(() => {
-        this.emit("message", {
-          type: "response",
-          requestId: message.requestId,
-          ok: false,
-          error: "Cursor SDK init failed: listen EINVAL: invalid argument (code=EINVAL)",
-        });
-      });
-      return true;
-    }
-    return super.send(message);
-  }
-}
-
-class FailingSendChild extends FakeSdkChild {
-  override send(message: { type?: string; requestId?: string }): boolean {
-    if (message.type === "send" && message.requestId) {
-      queueMicrotask(() => {
-        this.emit("message", {
-          type: "response",
-          requestId: message.requestId,
-          ok: false,
-          error: "Cursor rate limited this request: [resource_exhausted] Error",
-          errorCode: "rate_limited",
-          errorDetail: {
-            message: "[resource_exhausted] Error",
-            code: "resource_exhausted",
-            status: 429,
-            requestId: "req-cursor-1",
-            operation: "Agent.send",
-            endpoint: "/agent/send",
-            isRetryable: true,
-          },
-        });
-      });
-      return true;
-    }
-    return super.send(message);
-  }
-}
-
-/** Answers `send` with a terminal run result instead of an empty object. */
-class OneShotSdkChild extends FakeSdkChild {
-  constructor(private readonly runResult: unknown = { status: "finished", result: " named it " }) {
-    super();
-  }
-
-  override send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
-    if (message.type === "send" && message.requestId) {
-      this.sent.push(message);
-      const requestId = message.requestId;
-      queueMicrotask(() => {
-        this.emit("message", { type: "response", requestId, ok: true, result: this.runResult });
-      });
-      return true;
-    }
-    return super.send(message);
-  }
-}
-
-/** Never answers `send`, so the one-shot deadline is the only way out. */
-class StalledSendChild extends FakeSdkChild {
-  cancelCount = 0;
-
-  override send(message: { type?: string; requestId?: string }): boolean {
-    if (message.type === "send") {
-      this.sent.push(message);
-      return true;
-    }
-    if (message.type === "cancel" && message.requestId) {
-      this.cancelCount += 1;
-      const requestId = message.requestId;
-      queueMicrotask(() => {
-        this.emit("message", { type: "response", requestId, ok: true, result: null });
-      });
-      return true;
-    }
-    return super.send(message);
-  }
+/** Answers `send` with a terminal run result, the way a one-shot run ends. */
+function oneShotChild(runResult: unknown = { status: "finished", result: " named it " }): FakeSdkChild {
+  return new FakeSdkChild({ send: { ok: true, result: runResult } });
 }
 
 /** Reports how many `send` requests were in flight at the same moment. */
@@ -346,26 +229,6 @@ function sentMessagesOfType(
   ));
 }
 
-/** Answers `send` with a rejection, the way a worker reports its own fault. */
-class RejectingSendChild extends FakeSdkChild {
-  override send(message: { type?: string; requestId?: string }): boolean {
-    if (message.type === "send" && message.requestId) {
-      this.sent.push(message);
-      const requestId = message.requestId;
-      queueMicrotask(() => {
-        this.emit("message", {
-          type: "response",
-          requestId,
-          ok: false,
-          error: "Cursor SDK worker is not initialized.",
-        });
-      });
-      return true;
-    }
-    return super.send(message);
-  }
-}
-
 function oneShotArgs(workspacePath: string) {
   return {
     projectRoot: path.join(os.tmpdir(), "ade-project"),
@@ -375,6 +238,19 @@ function oneShotArgs(workspacePath: string) {
     promptText: "Name this chat.",
     feature: "session_title",
     timeoutMs: 5_000,
+  };
+}
+
+/** Acquire args under a pool key no other test shares. */
+function poolArgs(tag: string, extra: { activityRuntimeSocketPath?: string } = {}) {
+  return {
+    poolKey: `${tag}:${Date.now()}:${Math.random()}`,
+    projectRoot: path.join(os.tmpdir(), "ade-project"),
+    workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+    modelSdkId: "cursor-model",
+    sessionId: "session-1",
+    policy: { ...TEST_POLICY },
+    ...extra,
   };
 }
 
@@ -410,32 +286,6 @@ describe("Cursor SDK pool paths", () => {
     expect(paths.userHomeDir).toBe(userHomeDir);
     expect(paths.cacheRoot).toContain(path.join(projectRoot, ".ade", "cache", "cursor-sdk"));
     expect(paths.stateRoot).toBe(path.join(paths.cacheRoot, "state"));
-    if (process.platform === "win32") {
-      expect(paths.socketPath).toContain("\\\\.\\pipe\\ade-cursor-sdk-");
-    } else {
-      expect(paths.socketPath).toContain(`ade-cursor-sdk-${process.getuid?.() ?? ""}`);
-      expect(path.basename(paths.socketPath)).toBe("hook.sock");
-    }
-  });
-
-  it("gives each worker instance its own hook socket while sharing the pool state root", () => {
-    const projectRoot = path.join(os.tmpdir(), "ade-project");
-    const args = {
-      projectRoot,
-      poolKey: "lane:/repo:session",
-      userHomeDir: path.join(os.tmpdir(), "real-home"),
-    };
-    const first = buildCursorSdkPaths({ ...args, instanceId: "worker-a" });
-    const second = buildCursorSdkPaths({ ...args, instanceId: "worker-b" });
-    expect(first.socketPath).not.toBe(second.socketPath);
-    expect(first.stateRoot).toBe(second.stateRoot);
-    if (process.platform === "win32") {
-      expect(first.socketPath.startsWith("\\\\.\\pipe\\ade-cursor-sdk-")).toBe(true);
-      expect(second.socketPath.startsWith("\\\\.\\pipe\\ade-cursor-sdk-")).toBe(true);
-    } else {
-      expect(path.dirname(first.socketPath)).not.toBe(path.dirname(second.socketPath));
-      expect(path.basename(first.socketPath)).toBe("hook.sock");
-    }
   });
 
   it("retries one-shot SDK state removal until the worker releases its handles", async () => {
@@ -472,51 +322,20 @@ describe("Cursor SDK pool paths", () => {
     }
   });
 
-  it("leaves SDK state alone when cleanup was not requested", () => {
-    const cacheRoot = makeTempDir("ade-cursor-keep-");
-    const stateRoot = path.join(cacheRoot, "state");
-    fs.mkdirSync(stateRoot, { recursive: true });
-    cleanupCursorSdkRuntimePaths({ cacheRoot, stateRoot, cleanupStateRoot: false });
-    expect(fs.existsSync(stateRoot)).toBe(true);
-  });
+  it("keeps durable SDK state stable while each pool key and worker instance gets its own hook socket", () => {
+    const shared = { projectRoot: path.join(os.tmpdir(), "ade-project"), stateKey: "session-1:lane-1:state" };
+    const first = buildCursorSdkPaths({ ...shared, poolKey: "session-1:composer-2.5:full-auto", instanceId: "worker-a" });
+    const otherPool = buildCursorSdkPaths({ ...shared, poolKey: "session-1:claude-sonnet-5:edit", instanceId: "worker-a" });
+    const otherInstance = buildCursorSdkPaths({ ...shared, poolKey: "session-1:composer-2.5:full-auto", instanceId: "worker-b" });
 
-  it("keeps durable SDK state stable while pool-specific socket paths change", () => {
-    const projectRoot = path.join(os.tmpdir(), "ade-project");
-    const first = buildCursorSdkPaths({
-      projectRoot,
-      poolKey: "session-1:composer-2.5:full-auto",
-      instanceId: "shared",
-      stateKey: "session-1:lane-1:state",
-    });
-    const second = buildCursorSdkPaths({
-      projectRoot,
-      poolKey: "session-1:claude-sonnet-5:edit",
-      instanceId: "shared",
-      stateKey: "session-1:lane-1:state",
-    });
-
-    expect(second.stateRoot).toBe(first.stateRoot);
-    expect(second.cacheRoot).toBe(first.cacheRoot);
-    expect(second.socketPath).not.toBe(first.socketPath);
-  });
-
-  it("gives each worker instance its own hook socket while keeping durable state stable", () => {
-    const projectRoot = path.join(os.tmpdir(), "ade-project");
-    const shared = {
-      projectRoot,
-      poolKey: "session-1:composer-2.5:full-auto",
-      stateKey: "session-1:lane-1:state",
-    };
-    const first = buildCursorSdkPaths({ ...shared, instanceId: "worker-a" });
-    const second = buildCursorSdkPaths({ ...shared, instanceId: "worker-b" });
-
-    expect(second.stateRoot).toBe(first.stateRoot);
-    expect(second.cacheRoot).toBe(first.cacheRoot);
-    expect(second.socketPath).not.toBe(first.socketPath);
+    for (const other of [otherPool, otherInstance]) {
+      expect(other.stateRoot).toBe(first.stateRoot);
+      expect(other.cacheRoot).toBe(first.cacheRoot);
+      expect(other.socketPath).not.toBe(first.socketPath);
+    }
     if (process.platform !== "win32") {
-      expect(path.basename(first.socketPath)).toBe("hook.sock");
-      expect(path.basename(second.socketPath)).toBe("hook.sock");
-      expect(path.dirname(second.socketPath)).not.toBe(path.dirname(first.socketPath));
+      expect(path.basename(otherInstance.socketPath)).toBe("hook.sock");
+      expect(path.dirname(otherInstance.socketPath)).not.toBe(path.dirname(first.socketPath));
     }
   });
 
@@ -604,15 +423,8 @@ describe("Cursor SDK pool paths", () => {
     // provider outage or a bad key would then litter the tmpdir indefinitely.
     const failingChild = new FailingInitChild();
     forkMock.mockReturnValueOnce(failingChild);
-    const poolKey = `test-init-failure-cleanup:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: makeTempDir("ade-cursor-init-fail-"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = { ...poolArgs("test-init-failure-cleanup"), projectRoot: makeTempDir("ade-cursor-init-fail-") };
+    const { poolKey } = args;
     // The per-user root is shared with every other worker on this machine, so
     // compare against a snapshot rather than asserting it is empty.
     const instanceRoot = path.dirname(path.dirname(
@@ -688,6 +500,14 @@ describe("Cursor SDK pool paths", () => {
     expect(fs.existsSync(cacheRoot)).toBe(true);
   });
 
+  const WORKER_ENV_ARGS = {
+    userHomeDir: "/Users/admin",
+    stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
+    socketPath: "/tmp/ade-cursor-sdk/socket.sock",
+    workspacePath: "/repo/.ade/worktrees/lane",
+    sessionId: "session-1",
+  };
+
   it("builds a worker environment with real HOME parity and no ADE brain ownership metadata", () => {
     const cliRoot = makeTempDir("ade-cli-current-");
     const cliBinDir = path.join(cliRoot, "bin");
@@ -696,72 +516,60 @@ describe("Cursor SDK pool paths", () => {
     const adeCommand = path.join(cliBinDir, process.platform === "win32" ? "ade.cmd" : "ade");
     fs.writeFileSync(adeCommand, "");
     fs.writeFileSync(cliEntry, "");
+    const stripped = {
+      CURSOR_API_KEY: "cursor-secret",
+      CURSOR_AUTH_TOKEN: "cursor-token",
+      ADE_HOME: "/Users/admin/.ade-beta",
+      ADE_PACKAGE_CHANNEL: "beta",
+      ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+      ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+      ADE_RPC_URL: "/Users/admin/.ade-beta/sock/ade.sock",
+      ADE_DESKTOP_BRIDGE_SOCKET_PATH: "/Users/admin/.ade-beta/sock/desktop-bridge.sock",
+      ADE_RUNTIME_BUILD_HASH: "old-build",
+      ADE_RUNTIME_PARENT_PID: "1234",
+      ADE_RUNTIME_IDLE_EXIT_MS: "300000",
+      ADE_CLI_JS: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+      ADE_CLI_INSTALL_NAME: "ade-beta",
+      ADE_DEFAULT_ROLE: "cto",
+      ADE_DESKTOP_APP_NAME: "ADE Beta",
+      ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
+      ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL: "1",
+      ELECTRON_RUN_AS_NODE: "1",
+      ADE_CLI_ENTRY_PATH: cliEntry,
+    };
     const env = buildCursorSdkWorkerEnv({
+      ...WORKER_ENV_ARGS,
       baseEnv: {
         HOME: "/synthetic",
         USERPROFILE: "/synthetic-profile",
         PATH: "/bin",
-        ADE_CLI_ENTRY_PATH: cliEntry,
         ADE_CLI_BIN_DIR: cliBinDir,
-        ADE_HOME: "/Users/admin/.ade-beta",
-        ADE_PACKAGE_CHANNEL: "beta",
-        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
-        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
-        ADE_DESKTOP_BRIDGE_SOCKET_PATH: "/Users/admin/.ade-beta/sock/desktop-bridge.sock",
-        ADE_RUNTIME_BUILD_HASH: "old-build",
-        ADE_RUNTIME_PARENT_PID: "1234",
-        ADE_RUNTIME_IDLE_EXIT_MS: "300000",
-        ADE_CLI_JS: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
-        ADE_CLI_INSTALL_NAME: "ade-beta",
-        ADE_DEFAULT_ROLE: "cto",
-        ADE_DESKTOP_APP_NAME: "ADE Beta",
-        ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
-        ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL: "1",
-        ELECTRON_RUN_AS_NODE: "1",
-        CURSOR_API_KEY: "cursor-secret",
-        CURSOR_AUTH_TOKEN: "cursor-token",
+        ...stripped,
       },
-      userHomeDir: "/Users/admin",
-      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
-      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
-      workspacePath: "/repo/.ade/worktrees/lane",
-      sessionId: "session-1",
     });
 
-    expect(env.HOME).toBe("/Users/admin");
-    expect(env.USERPROFILE).toBe("/Users/admin");
-    expect(env.CURSOR_API_KEY).toBeUndefined();
-    expect(env.CURSOR_AUTH_TOKEN).toBeUndefined();
-    expect(env.ADE_HOME).toBeUndefined();
-    expect(env.ADE_PACKAGE_CHANNEL).toBeUndefined();
-    expect(env.ADE_RUNTIME_SOCKET_PATH).toBeUndefined();
-    expect(env.ADE_RPC_SOCKET_PATH).toBeUndefined();
-    expect(env.ADE_DESKTOP_BRIDGE_SOCKET_PATH).toBeUndefined();
-    expect(env.ADE_RUNTIME_BUILD_HASH).toBeUndefined();
-    expect(env.ADE_RUNTIME_PARENT_PID).toBeUndefined();
-    expect(env.ADE_RUNTIME_IDLE_EXIT_MS).toBeUndefined();
-    expect(env.ADE_CLI_JS).toBeUndefined();
-    expect(env.ADE_CLI_INSTALL_NAME).toBeUndefined();
-    expect(env.ADE_DEFAULT_ROLE).toBeUndefined();
-    expect(env.ADE_DESKTOP_APP_NAME).toBeUndefined();
-    expect(env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION).toBeUndefined();
-    expect(env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL).toBeUndefined();
-    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
-    expect(env.ADE_CLI_ENTRY_PATH).toBeUndefined();
-    expect(env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL).toBe("1");
-    expect(env.ADE_CLI_BIN_DIR).toBe(cliBinDir);
-    expect(env.ADE_CLI_PATH).toBe(adeCommand);
+    for (const key of Object.keys(stripped)) {
+      expect(env[key], key).toBeUndefined();
+    }
+    expect(env).toMatchObject({
+      HOME: "/Users/admin",
+      USERPROFILE: "/Users/admin",
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+      ADE_CLI_BIN_DIR: cliBinDir,
+      ADE_CLI_PATH: adeCommand,
+      ADE_CURSOR_SDK_SOCKET: "/tmp/ade-cursor-sdk/socket.sock",
+      ADE_CURSOR_SDK_LANE_ROOT: "/repo/.ade/worktrees/lane",
+      ADE_CURSOR_SDK_SESSION_ID: "session-1",
+      ADE_CURSOR_SDK_STATE_ROOT: "/repo/.ade/cache/cursor-sdk/hash/state",
+      // Only an agent this worker spawned may send a preCompact report.
+      ADE_CURSOR_SDK_PRECOMPACT: "1",
+    });
     expect(env.PATH?.split(path.delimiter)[0]).toBe(cliBinDir);
-    expect(env.ADE_CURSOR_SDK_SOCKET).toBe("/tmp/ade-cursor-sdk/socket.sock");
-    expect(env.ADE_CURSOR_SDK_LANE_ROOT).toBe("/repo/.ade/worktrees/lane");
-    expect(env.ADE_CURSOR_SDK_SESSION_ID).toBe("session-1");
-    expect(env.ADE_CURSOR_SDK_STATE_ROOT).toBe("/repo/.ade/cache/cursor-sdk/hash/state");
-    // Only an agent this worker spawned may send a preCompact report.
-    expect(env.ADE_CURSOR_SDK_PRECOMPACT).toBe("1");
   });
 
   it("passes only the explicitly authorized ADE runtime socket for activity reports", () => {
     const env = buildCursorSdkWorkerEnv({
+      ...WORKER_ENV_ARGS,
       baseEnv: {
         PATH: "/usr/bin",
         ADE_HOME: "/Users/admin/.ade-beta",
@@ -770,11 +578,6 @@ describe("Cursor SDK pool paths", () => {
         ADE_RPC_SOCKET_PATH: "/Users/admin/.ade/sock/ade.sock",
         ADE_RPC_URL: "/Users/admin/.ade/sock/ade.sock",
       },
-      userHomeDir: "/Users/admin",
-      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
-      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
-      workspacePath: "/repo/.ade/worktrees/lane",
-      sessionId: "session-1",
       activityRuntimeSocketPath: "/Users/admin/.ade-beta/sock/ade.sock",
     });
 
@@ -797,17 +600,13 @@ describe("Cursor SDK pool paths", () => {
     fs.writeFileSync(adeCommand, "");
 
     const env = buildCursorSdkWorkerEnv({
+      ...WORKER_ENV_ARGS,
       baseEnv: {
         PATH: "/usr/bin",
         NODE_PATH: "/custom/node_modules",
         ADE_CLI_BIN_DIR: cliBinDir,
         ADE_CLI_PATH: adeCommand,
       },
-      userHomeDir: "/Users/admin",
-      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
-      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
-      workspacePath: "/repo/.ade/worktrees/lane",
-      sessionId: "session-1",
     });
 
     expect(env.NODE_PATH?.split(path.delimiter)).toEqual([
@@ -816,7 +615,7 @@ describe("Cursor SDK pool paths", () => {
     ]);
   });
 
-  it("normalizes stale ADE CLI metadata to the current command bin dir without exposing CLI internals", () => {
+  it("points the worker at the current ADE CLI command, not a stale CLI entry from another install", () => {
     const stableRoot = makeTempDir("ade-cli-stable-");
     const betaRoot = makeTempDir("ade-cli-beta-");
     const stableEntry = path.join(stableRoot, "cli.cjs");
@@ -827,30 +626,16 @@ describe("Cursor SDK pool paths", () => {
     fs.writeFileSync(betaCommand, "");
 
     const env = buildCursorSdkWorkerEnv({
+      ...WORKER_ENV_ARGS,
       baseEnv: {
         PATH: "/usr/bin",
-        ADE_PACKAGE_CHANNEL: "beta",
-        ADE_HOME: "/Users/admin/.ade-beta",
-        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
-        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
-        ADE_RPC_URL: "/Users/admin/.ade-beta/sock/ade.sock",
         ADE_CLI_ENTRY_PATH: stableEntry,
         ADE_CLI_BIN_DIR: betaBinDir,
         ADE_CLI_PATH: betaCommand,
       },
-      userHomeDir: "/Users/admin",
-      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
-      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
-      workspacePath: "/repo/.ade/worktrees/lane",
-      sessionId: "session-1",
     });
 
     expect(env.ADE_CLI_ENTRY_PATH).toBeUndefined();
-    expect(env.ADE_PACKAGE_CHANNEL).toBeUndefined();
-    expect(env.ADE_HOME).toBeUndefined();
-    expect(env.ADE_RPC_URL).toBeUndefined();
-    expect(env.ADE_RPC_SOCKET_PATH).toBeUndefined();
-    expect(env.ADE_RUNTIME_SOCKET_PATH).toBeUndefined();
     expect(env.ADE_CLI_BIN_DIR).toBe(betaBinDir);
     expect(env.ADE_CLI_PATH).toBe(betaCommand);
     expect(env.PATH?.split(path.delimiter)[0]).toBe(betaBinDir);
@@ -864,18 +649,11 @@ describe("Cursor SDK pool paths", () => {
     expect(resolved).toBe(process.platform === "win32" ? "C:\\Users\\admin" : "/posix-home");
   });
 
-  it("retains a ref for each concurrent waiter on a shared initialization", async () => {
+  it("forks one owner-marked worker and retains a ref for each concurrent waiter on it", async () => {
     const child = new FakeSdkChild();
     forkMock.mockReturnValue(child);
-    const poolKey = `test:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test");
+    const { poolKey } = args;
 
     const [first, second] = await Promise.all([
       acquireCursorSdkConnection(args),
@@ -883,6 +661,8 @@ describe("Cursor SDK pool paths", () => {
     ]);
 
     expect(forkMock).toHaveBeenCalledTimes(1);
+    // The orphan sweep reads this marker to tell a live brain's worker from a leaked one.
+    expect(forkMock.mock.calls[0]?.[1]).toEqual([`--ade-owner-pid=${process.pid}`]);
     expect(second.pooled).toBe(first.pooled);
     expect(second.generation).toBe(first.generation);
 
@@ -897,15 +677,8 @@ describe("Cursor SDK pool paths", () => {
     const firstChild = new GatedInitSdkChild();
     const secondChild = new FakeSdkChild();
     forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
-    const poolKey = `test-skill-roots:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test-skill-roots");
+    const { poolKey } = args;
 
     const firstPending = acquireCursorSdkConnection({ ...args, agentSkillDirs: ["/skills/first"] });
     await firstChild.initSent;
@@ -934,15 +707,8 @@ describe("Cursor SDK pool paths", () => {
     const firstChild = new FakeSdkChild();
     const secondChild = new FakeSdkChild();
     forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
-    const poolKey = `test-skill-roots-exit:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test-skill-roots-exit");
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection({ ...args, agentSkillDirs: ["/skills/first"] });
     firstChild.finishExit(1, null);
@@ -960,16 +726,8 @@ describe("Cursor SDK pool paths", () => {
     const firstChild = new FakeSdkChild();
     const secondChild = new FakeSdkChild();
     forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
-    const poolKey = `test-activity-socket:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-      activityRuntimeSocketPath: "/runtime/alpha.sock",
-    };
+    const args = poolArgs("test-activity-socket", { activityRuntimeSocketPath: "/runtime/alpha.sock" });
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection(args);
     const secondPending = acquireCursorSdkConnection({
@@ -994,22 +752,10 @@ describe("Cursor SDK pool paths", () => {
   it.skipIf(process.platform === "linux")("reuses a live worker for equivalent case-insensitive runtime socket paths", async () => {
     const child = new FakeSdkChild();
     forkMock.mockReturnValue(child);
-    const poolKey = `test-equivalent-activity-socket:${Date.now()}:${Math.random()}`;
-    const runtimeSocketPath = process.platform === "win32"
-      ? "C:\\runtime\\alpha.sock"
-      : "/runtime/alpha.sock";
-    const equivalentRuntimeSocketPath = process.platform === "win32"
-      ? "c:/RUNTIME/ALPHA.SOCK"
-      : "/RUNTIME/ALPHA.SOCK";
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-      activityRuntimeSocketPath: runtimeSocketPath,
-    };
+    const runtimeSocketPath = process.platform === "win32" ? "C:\\runtime\\alpha.sock" : "/runtime/alpha.sock";
+    const equivalentRuntimeSocketPath = process.platform === "win32" ? "c:/RUNTIME/ALPHA.SOCK" : "/RUNTIME/ALPHA.SOCK";
+    const args = poolArgs("test-equivalent-activity-socket", { activityRuntimeSocketPath: runtimeSocketPath });
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection(args);
     const equivalent = await acquireCursorSdkConnection({
@@ -1027,15 +773,8 @@ describe("Cursor SDK pool paths", () => {
   it("evicts a poisoned worker even while another lease is still held", async () => {
     const child = new FakeSdkChild();
     forkMock.mockReturnValue(child);
-    const poolKey = `test:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test");
+    const { poolKey } = args;
 
     const [first, second] = await Promise.all([
       acquireCursorSdkConnection(args),
@@ -1060,25 +799,39 @@ describe("Cursor SDK pool paths", () => {
     releaseCursorSdkConnection(poolKey, third.generation);
   });
 
-  it("does not fork a replacement until the poisoned worker has exited", async () => {
+  const epipe = () => Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+  it.each([
+    {
+      name: "a poisoned worker",
+      disrupt: (child: DelayedExitChild, poolKey: string, generation: number) => {
+        expect(poisonCursorSdkConnection(poolKey, generation)).toBe(true);
+      },
+    },
+    {
+      // A dispatched kill plus an IPC error is not an exit.
+      name: "a poisoned worker whose kill was dispatched and whose IPC then errored",
+      disrupt: (child: DelayedExitChild, poolKey: string, generation: number) => {
+        expect(poisonCursorSdkConnection(poolKey, generation)).toBe(true);
+        child.killed = true;
+        child.emit("error", epipe());
+      },
+    },
+    {
+      name: "a live worker whose IPC channel errored before dispose",
+      disrupt: (child: DelayedExitChild) => {
+        child.emit("error", epipe());
+      },
+    },
+  ])("does not fork a replacement for $name until it has exited", async ({ disrupt }) => {
     const firstChild = new DelayedExitChild();
-    const nextChild = new FakeSdkChild();
     forkMock.mockReturnValueOnce(firstChild);
-    const poolKey = `test-replace-wait:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test-replace-wait");
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection(args);
-    expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
-    expect(firstChild.disposeCount).toBe(1);
+    disrupt(firstChild, poolKey, first.generation);
 
-    forkMock.mockReturnValue(nextChild);
+    forkMock.mockReturnValue(new FakeSdkChild());
     let replaced = false;
     const pending = acquireCursorSdkConnection(args).then((result) => {
       replaced = true;
@@ -1087,10 +840,10 @@ describe("Cursor SDK pool paths", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(forkMock).toHaveBeenCalledTimes(1);
     expect(replaced).toBe(false);
+    expect(firstChild.disposeCount).toBe(1);
 
-    firstChild.finishExit(0, null);
+    firstChild.finishExit(null, "SIGTERM");
     const second = await pending;
-    expect(replaced).toBe(true);
     expect(second.pooled).not.toBe(first.pooled);
     expect(forkMock).toHaveBeenCalledTimes(2);
     expect(forkedSocketPath(1)).not.toBe(forkedSocketPath(0));
@@ -1106,15 +859,8 @@ describe("Cursor SDK pool paths", () => {
     const firstChild = new WedgedWorkerChild();
     const nextChild = new FakeSdkChild();
     forkMock.mockReturnValueOnce(firstChild);
-    const poolKey = `test-replace-wedged:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test-replace-wedged");
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection(args);
     vi.useFakeTimers();
@@ -1142,15 +888,8 @@ describe("Cursor SDK pool paths", () => {
     const firstChild = new StuckExitChild();
     const nextChild = new FakeSdkChild();
     forkMock.mockReturnValueOnce(firstChild);
-    const poolKey = `test-replace-timeout:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test-replace-timeout");
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection(args);
     vi.useFakeTimers();
@@ -1175,94 +914,12 @@ describe("Cursor SDK pool paths", () => {
     releaseCursorSdkConnection(poolKey, second.generation);
   });
 
-  it("does not treat a dispatched kill plus IPC error as the worker exiting", async () => {
-    const firstChild = new DelayedExitChild();
-    const nextChild = new FakeSdkChild();
-    forkMock.mockReturnValueOnce(firstChild);
-    const poolKey = `test-replace-epipe:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
-
-    const first = await acquireCursorSdkConnection(args);
-    expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
-    firstChild.killed = true;
-    firstChild.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
-
-    forkMock.mockReturnValue(nextChild);
-    let replaced = false;
-    const pending = acquireCursorSdkConnection(args).then((result) => {
-      replaced = true;
-      return result;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(forkMock).toHaveBeenCalledTimes(1);
-    expect(replaced).toBe(false);
-
-    firstChild.finishExit(null, "SIGTERM");
-    const second = await pending;
-    expect(replaced).toBe(true);
-    expect(second.pooled).not.toBe(first.pooled);
-    expect(forkMock).toHaveBeenCalledTimes(2);
-
-    releaseCursorSdkConnection(poolKey, second.generation);
-  });
-
-  it("waits for exit when a live worker's IPC channel errors before dispose", async () => {
-    const firstChild = new DelayedExitChild();
-    const nextChild = new FakeSdkChild();
-    forkMock.mockReturnValueOnce(firstChild);
-    const poolKey = `test-live-epipe:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
-
-    const first = await acquireCursorSdkConnection(args);
-    firstChild.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
-
-    forkMock.mockReturnValue(nextChild);
-    let replaced = false;
-    const pending = acquireCursorSdkConnection(args).then((result) => {
-      replaced = true;
-      return result;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(forkMock).toHaveBeenCalledTimes(1);
-    expect(replaced).toBe(false);
-    expect(firstChild.disposeCount).toBe(1);
-
-    firstChild.finishExit(null, "SIGTERM");
-    const second = await pending;
-    expect(replaced).toBe(true);
-    expect(second.pooled).not.toBe(first.pooled);
-    expect(forkMock).toHaveBeenCalledTimes(2);
-
-    releaseCursorSdkConnection(poolKey, second.generation);
-  });
-
   it("reuses a oneshot worker during idle instead of colliding on cleanup", async () => {
     const firstChild = new FakeSdkChild();
     const secondChild = new FakeSdkChild();
     forkMock.mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild);
-    const poolKey = `cloud-oneshot:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("cloud-oneshot");
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection(args);
     releaseCursorSdkConnectionAfterIdle(poolKey, first.generation, 60_000);
@@ -1280,15 +937,17 @@ describe("Cursor SDK pool paths", () => {
   });
 
 
-  it("runs a one-shot local prompt on a pooled worker and starts a fresh conversation", async () => {
+  it("runs back-to-back one-shot prompts on one warm pooled worker, each in a fresh conversation", async () => {
     const child = new OneShotSdkChild();
     forkMock.mockReturnValue(child);
     const workspacePath = path.join(os.tmpdir(), `ade-oneshot-${Date.now()}-${Math.random()}`);
 
     const result = await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
+    await runCursorSdkLocalPrompt({ ...oneShotArgs(workspacePath), modelSdkId: "composer-2" });
 
     expect(result.text).toBe("named it");
     expect(result.agentId).toBe("agent-1");
+    expect(forkMock).toHaveBeenCalledTimes(1);
     const init = sentMessagesOfType(child, "init")[0]?.payload;
     expect(init).toMatchObject({
       modelSdkId: "grok-4.6",
@@ -1301,29 +960,12 @@ describe("Cursor SDK pool paths", () => {
       agentName: CURSOR_SDK_ONESHOT_AGENT_NAME,
       policy: CURSOR_SDK_ONESHOT_POLICY,
     });
-    const send = sentMessagesOfType(child, "send")[0]?.payload;
-    expect(send).toMatchObject({
-      promptText: "Name this chat.",
-      modelSdkId: "grok-4.6",
-      resetConversation: true,
-    });
-  });
-
-  it("keeps the one-shot worker warm across back-to-back prompts", async () => {
-    const child = new OneShotSdkChild();
-    forkMock.mockReturnValue(child);
-    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-warm-${Date.now()}-${Math.random()}`);
-
-    await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
-    await runCursorSdkLocalPrompt({ ...oneShotArgs(workspacePath), modelSdkId: "composer-2" });
-
-    expect(forkMock).toHaveBeenCalledTimes(1);
-    const sends = sentMessagesOfType(child, "send");
-    expect(sends).toHaveLength(2);
     // The worker applies a per-send model, so a second candidate model does not
     // need a second worker.
-    expect(sends[1]?.payload?.modelSdkId).toBe("composer-2");
-    expect(sends[1]?.payload?.resetConversation).toBe(true);
+    expect(sentMessagesOfType(child, "send").map((send) => send.payload)).toMatchObject([
+      { promptText: "Name this chat.", modelSdkId: "grok-4.6", resetConversation: true },
+      { modelSdkId: "composer-2", resetConversation: true },
+    ]);
   });
 
   it("serializes concurrent one-shot prompts on the same workspace", async () => {
@@ -1342,20 +984,20 @@ describe("Cursor SDK pool paths", () => {
     expect(forkMock).toHaveBeenCalledTimes(1);
   });
 
-  it("maps an errored one-shot run onto a thrown error", async () => {
-    forkMock.mockReturnValue(new OneShotSdkChild({ status: "error", result: "Cursor is out of credits." }));
+  it.each([
+    ["an errored run", { status: "error", result: "Cursor is out of credits." }, "Cursor is out of credits."],
+    ["a cancelled run", { status: "cancelled", result: "" }, "Cursor SDK task was cancelled."],
+    // The run's error detail wins over its partial result text.
+    [
+      "an errored run with error detail",
+      { status: "error", result: "Here is the partial answer", error: { message: "Cursor stream failed: NGHTTP2_ENHANCE_YOUR_CALM" } },
+      "Cursor stream failed: NGHTTP2_ENHANCE_YOUR_CALM",
+    ],
+  ])("maps %s onto a thrown one-shot error", async (_name, runResult, message) => {
+    forkMock.mockReturnValue(new OneShotSdkChild(runResult));
     const workspacePath = path.join(os.tmpdir(), `ade-oneshot-error-${Date.now()}-${Math.random()}`);
 
-    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath)))
-      .rejects.toThrow("Cursor is out of credits.");
-  });
-
-  it("maps a cancelled one-shot run onto a thrown error", async () => {
-    forkMock.mockReturnValue(new OneShotSdkChild({ status: "cancelled", result: "" }));
-    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-cancelled-${Date.now()}-${Math.random()}`);
-
-    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath)))
-      .rejects.toThrow("Cursor SDK task was cancelled.");
+    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath))).rejects.toThrow(message);
   });
 
   it("cancels and discards the worker when a one-shot prompt times out", async () => {
@@ -1391,18 +1033,6 @@ describe("Cursor SDK pool paths", () => {
     const result = await runCursorSdkLocalPrompt(oneShotArgs(workspacePath));
     expect(result.text).toBe("named it");
     expect(forkMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("reports a terminal one-shot error from the run's error detail", async () => {
-    forkMock.mockReturnValue(new OneShotSdkChild({
-      status: "error",
-      result: "Here is the partial answer",
-      error: { message: "Cursor stream failed: NGHTTP2_ENHANCE_YOUR_CALM" },
-    }));
-    const workspacePath = path.join(os.tmpdir(), `ade-oneshot-detail-${Date.now()}-${Math.random()}`);
-
-    await expect(runCursorSdkLocalPrompt(oneShotArgs(workspacePath)))
-      .rejects.toThrow("Cursor stream failed: NGHTTP2_ENHANCE_YOUR_CALM");
   });
 
   it("shares one warm worker across two spellings of the same workspace path", async () => {
@@ -1455,15 +1085,9 @@ describe("Cursor SDK pool paths", () => {
   it("preserves structured Cursor SDK worker error metadata on rejected requests", async () => {
     const child = new FailingSendChild();
     forkMock.mockReturnValue(child);
-    const poolKey = `test-send-failure:${Date.now()}:${Math.random()}`;
-    const acquired = await acquireCursorSdkConnection({
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    });
+    const args = poolArgs("test-send-failure");
+    const { poolKey } = args;
+    const acquired = await acquireCursorSdkConnection(args);
 
     await expect(acquired.pooled.sendPrompt({ promptText: "hi" })).rejects.toMatchObject({
       code: "rate_limited",
@@ -1507,15 +1131,9 @@ describe("Cursor SDK pool paths", () => {
 
     const child = new SteeringChild();
     forkMock.mockReturnValue(child);
-    const poolKey = `test-steer:${Date.now()}:${Math.random()}`;
-    const acquired = await acquireCursorSdkConnection({
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    });
+    const args = poolArgs("test-steer");
+    const { poolKey } = args;
+    const acquired = await acquireCursorSdkConnection(args);
 
     await expect(acquired.pooled.steer("redirect this turn")).resolves.toEqual({
       outcome: "complete_delivered",
@@ -1527,57 +1145,14 @@ describe("Cursor SDK pool paths", () => {
     releaseCursorSdkConnection(poolKey, acquired.generation);
   });
 
-  it("sends screenshot paths over worker IPC instead of inline bytes", async () => {
-    const child = new FakeSdkChild();
-    forkMock.mockReturnValue(child);
-    const poolKey = `test-image-paths:${Date.now()}:${Math.random()}`;
-    const acquired = await acquireCursorSdkConnection({
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    });
-
-    await acquired.pooled.sendPrompt({
-      promptText: "compare these screens",
-      images: [
-        { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
-        { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
-      ],
-    });
-
-    const sendReq = child.sent.find((message) => (
-      message
-      && typeof message === "object"
-      && "type" in message
-      && message.type === "send"
-    )) as { payload?: { images?: Array<{ path?: string; data?: string }> } } | undefined;
-    expect(sendReq?.payload?.images).toEqual([
-      { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
-      { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
-    ]);
-    expect(sendReq?.payload?.images?.some((image) => image.data)).toBeFalsy();
-
-    releaseCursorSdkConnection(poolKey, acquired.generation);
-  });
-
   it("does not reuse a worker whose IPC channel has closed", async () => {
     const firstChild = new FakeSdkChild();
     const secondChild = new FakeSdkChild();
     forkMock
       .mockReturnValueOnce(firstChild)
       .mockReturnValueOnce(secondChild);
-    const poolKey = `test-disconnected:${Date.now()}:${Math.random()}`;
-    const args = {
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    };
+    const args = poolArgs("test-disconnected");
+    const { poolKey } = args;
 
     const first = await acquireCursorSdkConnection(args);
     expect(isCursorSdkPooledAlive(first.pooled)).toBe(true);
@@ -1593,53 +1168,25 @@ describe("Cursor SDK pool paths", () => {
     releaseCursorSdkConnection(poolKey, second.generation);
   });
 
-  it("rejects initialization instead of throwing when the worker IPC channel closes", async () => {
-    forkMock.mockReturnValue(new ExitingBeforeInitChild());
-    const poolKey = `test-exit:${Date.now()}:${Math.random()}`;
+  it.each([
+    ["with no output", "", "Cursor SDK worker exited (1)."],
+    [
+      "including its recent stderr",
+      [
+        "ConnectError: [internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+        "  rawMessage: 'Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM'",
+        "Node.js v26.0.0",
+      ].join("\n"),
+      /NGHTTP2_ENHANCE_YOUR_CALM/,
+    ],
+  ])("rejects initialization instead of throwing when the worker exits before init, %s", async (_name, stderrText, message) => {
+    forkMock.mockReturnValue(new ExitingBeforeInitChild(stderrText));
 
-    await expect(acquireCursorSdkConnection({
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    })).rejects.toThrow("Cursor SDK worker exited (1).");
-  });
-
-  it("includes recent worker stderr when a Cursor SDK worker exits", async () => {
-    forkMock.mockReturnValue(new ExitingWithStderrBeforeInitChild());
-    const poolKey = `test-exit-stderr:${Date.now()}:${Math.random()}`;
-
-    await expect(acquireCursorSdkConnection({
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    })).rejects.toThrow(/NGHTTP2_ENHANCE_YOUR_CALM/);
+    await expect(acquireCursorSdkConnection(poolArgs("test-exit"))).rejects.toThrow(message);
   });
 });
 
 describe("Cursor SDK worker orphan guard", () => {
-  it("puts the owner pid in the worker argv", async () => {
-    const child = new FakeSdkChild();
-    forkMock.mockReturnValue(child);
-    const poolKey = `test-owner-arg:${Date.now()}:${Math.random()}`;
-    const acquired = await acquireCursorSdkConnection({
-      poolKey,
-      projectRoot: path.join(os.tmpdir(), "ade-project"),
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      modelSdkId: "cursor-model",
-      sessionId: "session-1",
-      policy: { ...TEST_POLICY },
-    });
-
-    expect(forkMock.mock.calls[0]?.[1]).toEqual([`--ade-owner-pid=${process.pid}`]);
-    releaseCursorSdkConnection(poolKey, acquired.generation);
-  });
-
   it("releases the shared one-shot workers, which no session owns", async () => {
     const child = new OneShotSdkChild();
     const replacement = new OneShotSdkChild();

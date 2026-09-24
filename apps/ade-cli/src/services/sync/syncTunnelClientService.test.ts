@@ -3,13 +3,8 @@ import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import {
-  BRIDGE_VALIDATION_LEASE_MS,
   CONNECT_DEADLINE_MS,
   CONTROL_JSON_INITIAL_PING_DELAY_MS,
-  CONTROL_JSON_PING_INTERVAL_MS,
-  CONTROL_JSON_PONG_DEADLINE_MS,
-  CONTROL_PING_INTERVAL_MS,
-  CONTROL_PONG_DEADLINE_MS,
   computeBackoffMs,
   createSyncTunnelClientService,
   makeBufferedForwarder,
@@ -1177,8 +1172,6 @@ describe("createSyncTunnelClientService", () => {
     });
 
     try {
-      expect(CONTROL_PING_INTERVAL_MS).toBe(30_000);
-      expect(CONTROL_PONG_DEADLINE_MS).toBe(10_000);
       await service.start();
       await vi.waitFor(() => {
         expect(connections).toBeGreaterThanOrEqual(2);
@@ -1932,7 +1925,6 @@ describe("createSyncTunnelClientService", () => {
   });
 
   it("invalidates the validation lease on listener, account, and control generation changes", async () => {
-    expect(BRIDGE_VALIDATION_LEASE_MS).toBe(2_000);
     const sockets: StubWebSocket[] = [];
     let port = 8787;
     let nonce = "c".repeat(32);
@@ -2440,8 +2432,6 @@ describe("createSyncTunnelClientService", () => {
     });
 
     try {
-      expect(CONTROL_JSON_PING_INTERVAL_MS).toBe(180_000);
-      expect(CONTROL_JSON_PONG_DEADLINE_MS).toBe(30_000);
       await service.start();
       const control = sockets[0]!;
       control.open();

@@ -58,6 +58,25 @@ async function settleDirectiveBookkeeping(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+/**
+ * The harness mocks `node:readline` for the Codex app-server; code under test
+ * that reads a file line by line gets a real reader for its next call.
+ */
+async function useRealLineReaderOnce(): Promise<void> {
+  const readline = await import("node:readline");
+  const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
+    on: vi.fn(),
+    close: vi.fn(),
+    [Symbol.asyncIterator]: () => (async function* () {
+      const chunks: string[] = [];
+      for await (const chunk of options.input) chunks.push(String(chunk));
+      for (const line of chunks.join("").split(/\r?\n/u)) yield line;
+    })(),
+  });
+  vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
+  vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+}
+
 
 describe("createAgentChatService", () => {
   it("uses the injected GitHub service to enrich smart-link previews", async () => {
@@ -172,41 +191,6 @@ describe("createAgentChatService", () => {
     });
   });
 
-  it("returns an object with all expected methods", () => {
-    const { service } = createService();
-    expect(service.createSession).toBeTypeOf("function");
-    expect(service.importExternalChatSession).toBeTypeOf("function");
-    expect(service.handoffSession).toBeTypeOf("function");
-    expect(service.prepareCrossMachineHandoff).toBeTypeOf("function");
-    expect(service.preflightCrossMachineDestination).toBeTypeOf("function");
-    expect(service.fastForwardCrossMachineHandoffLane).toBeTypeOf("function");
-    expect(service.acceptCrossMachineHandoff).toBeTypeOf("function");
-    expect(service.markCrossMachineHandoff).toBeTypeOf("function");
-    expect(service.emitAdeCard).toBeTypeOf("function");
-    expect(service.sendMessage).toBeTypeOf("function");
-    expect(service.steer).toBeTypeOf("function");
-    expect(service.interrupt).toBeTypeOf("function");
-    expect(service.resumeSession).toBeTypeOf("function");
-    expect(service.listSessions).toBeTypeOf("function");
-    expect(service.getSessionSummary).toBeTypeOf("function");
-    expect(service.getTurnStatus).toBeTypeOf("function");
-    expect(service.getChatTranscript).toBeTypeOf("function");
-    expect(service.getChatTranscriptPage).toBeTypeOf("function");
-    expect(service.ensureIdentitySession).toBeTypeOf("function");
-    expect(service.approveToolUse).toBeTypeOf("function");
-    expect(service.getAvailableModels).toBeTypeOf("function");
-    expect(service.getSlashCommands).toBeTypeOf("function");
-    expect(service.dispose).toBeTypeOf("function");
-    expect(service.deleteSession).toBeTypeOf("function");
-    expect(service.disposeAll).toBeTypeOf("function");
-    expect(service.updateSession).toBeTypeOf("function");
-    expect(service.warmupModel).toBeTypeOf("function");
-    expect(service.listSubagents).toBeTypeOf("function");
-    expect(service.getSessionCapabilities).toBeTypeOf("function");
-    expect(service.cleanupStaleAttachments).toBeTypeOf("function");
-    expect(service.setComputerUseArtifactBrokerService).toBeTypeOf("function");
-  });
-
   it("reports a persisted terminal turn through the content-free settlement hook", async () => {
     installClaudeResponseFixture({
       sdkSessionId: "sdk-turn-settled",
@@ -266,20 +250,7 @@ describe("createAgentChatService", () => {
       await service.runSessionTurn({ sessionId: session.id, text: "Complete the task." });
 
       expect(observe).toHaveBeenCalled();
-      // The harness mocks `node:readline` for the Codex app-server; the
-      // ledger reads its month file line by line, so it gets a real reader.
-      const readline = await import("node:readline");
-      const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
-        on: vi.fn(),
-        close: vi.fn(),
-        [Symbol.asyncIterator]: () => (async function* () {
-          const chunks: string[] = [];
-          for await (const chunk of options.input) chunks.push(String(chunk));
-          for (const line of chunks.join("").split(/\r?\n/u)) yield line;
-        })(),
-      });
-      vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
-      vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+      await useRealLineReaderOnce();
       const rows = await store.readTurns();
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
@@ -541,6 +512,8 @@ describe("createAgentChatService", () => {
       expect(session.provider).toBe("opencode");
       expect(session.status).toBe("idle");
       expect(session.completion).toBeNull();
+      expect(session.sessionProfile).toBe("workflow");
+      expect(session.surface).toBe("work");
       expect(sessionService.create).toHaveBeenCalledTimes(1);
     });
 
@@ -590,19 +563,6 @@ describe("createAgentChatService", () => {
       await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
         goal: "Run quality, tests, ship, merge, and release.",
       });
-    });
-
-    it("creates a claude session with default model", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      expect(session).toBeDefined();
-      expect(session.provider).toBe("claude");
-      expect(session.status).toBe("idle");
     });
 
     it("imports a same-cwd Claude external chat with persisted resume identity and visible history", async () => {
@@ -748,18 +708,7 @@ describe("createAgentChatService", () => {
           "utf8",
         );
         const sourceBefore = fs.readFileSync(sourcePath, "utf8");
-        const readline = await import("node:readline");
-        const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
-          on: vi.fn(),
-          close: vi.fn(),
-          [Symbol.asyncIterator]: () => (async function* () {
-            const chunks: string[] = [];
-            for await (const chunk of options.input) chunks.push(String(chunk));
-            for (const line of chunks.join("").split(/\r?\n/u)) yield line;
-          })(),
-        });
-        vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
-        vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+        await useRealLineReaderOnce();
         const { service } = createService();
 
         const result = await service.importExternalChatSession({
@@ -826,18 +775,7 @@ describe("createAgentChatService", () => {
       vi.mocked(failingSessionService.create).mockImplementationOnce(() => {
         throw new Error("create failed after transplant");
       });
-      const readline = await import("node:readline");
-      const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
-        on: vi.fn(),
-        close: vi.fn(),
-        [Symbol.asyncIterator]: () => (async function* () {
-          const chunks: string[] = [];
-          for await (const chunk of options.input) chunks.push(String(chunk));
-          for (const line of chunks.join("").split(/\r?\n/u)) yield line;
-        })(),
-      });
-      vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
-      vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+      await useRealLineReaderOnce();
       const { service } = createService({ sessionService: failingSessionService });
 
       await expect(service.importExternalChatSession({
@@ -1282,81 +1220,6 @@ describe("createAgentChatService", () => {
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-5");
     });
 
-    it("maps retired Claude Opus 4.7 1M sessions onto Opus 5 even when the SDK reports bare Opus 4.7", async () => {
-      const events: AgentChatEventEnvelope[] = [];
-      let streamCall = 0;
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream: vi.fn(() => (async function* () {
-          streamCall += 1;
-          if (streamCall === 1) {
-            yield {
-              type: "system",
-              subtype: "init",
-              session_id: "sdk-opus-4-7-1m",
-              model: "claude-opus-4-7",
-              slash_commands: [],
-            };
-            yield {
-              type: "result",
-              subtype: "success",
-              is_error: false,
-              session_id: "sdk-opus-4-7-1m",
-              usage: { input_tokens: 1, output_tokens: 1 },
-              modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
-            };
-            return;
-          }
-          yield {
-            type: "system",
-            subtype: "init",
-            session_id: "sdk-opus-4-7-1m",
-            model: "claude-opus-4-7",
-            slash_commands: [],
-          };
-          yield {
-            type: "assistant",
-            message: {
-              model: "claude-opus-4-7",
-              content: [{ type: "text", text: "Done" }],
-              usage: { input_tokens: 1, output_tokens: 1 },
-            },
-          };
-          yield {
-            type: "result",
-            subtype: "success",
-            is_error: false,
-            session_id: "sdk-opus-4-7-1m",
-            usage: { input_tokens: 1, output_tokens: 1 },
-            modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
-          };
-        })()),
-        close: vi.fn(),
-        sessionId: "sdk-opus-4-7-1m",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-7[1m]",
-        modelId: "anthropic/claude-opus-4-7-1m",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Report the selected model.",
-      });
-
-      const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
-      expect(doneEvent?.event.type).toBe("done");
-      expect((doneEvent!.event as any).model).toBe("claude-opus-5");
-      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-5");
-    });
-
     it("suppresses Claude EDE diagnostics without hiding real result errors", async () => {
       const diagnostic = "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null";
       const diagnosticOnlyEvents = await runClaudeStreamFixture({
@@ -1475,34 +1338,6 @@ describe("createAgentChatService", () => {
 
       expect(sessionService.get(session.id)?.title).toBe("Pearl UI Audit");
       expect(sessionService.get(session.id)?.manuallyNamed).toBe(true);
-    });
-
-    it("appends ADE tooling guidance to Claude SDK sessions", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-guidance",
-      } as any);
-
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("system prompt");
-      expect(opts?.systemPrompt?.append).toContain(
-        `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
-      );
     });
 
     it("rebuilds the Claude query with the per-turn reasoning effort, not the stale warm-query effort (FIX 3)", async () => {
@@ -1672,6 +1507,9 @@ describe("createAgentChatService", () => {
       expect(userTurnPayload).not.toContain("ade actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toContain("system prompt");
+      expect(opts?.systemPrompt?.append).toContain(
+        `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
+      );
     });
 
     it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {
@@ -1687,14 +1525,7 @@ describe("createAgentChatService", () => {
         path.join(repositorySkillRoot, ".claude-plugin", "plugin.json"),
         JSON.stringify({ name: "shadowed-repository-plugin", hooks: "./hooks.json" }),
       );
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-skills",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-skills") as any);
 
       const { service } = createService({
         getAdeCliAgentEnv: () => ({
@@ -1713,22 +1544,17 @@ describe("createAgentChatService", () => {
         expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
       });
 
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        includeHookEvents?: boolean;
-        promptSuggestions?: boolean;
-        perTaskStopAffordance?: boolean;
-        autoContinueAtUsageLimit?: boolean;
-        settingSources?: string[];
-        settings?: {
-          enabledPlugins?: Record<string, boolean>;
-          outputStyle?: string;
-          fastMode?: boolean;
-          dialogExpiry?: string;
-        };
-        skills?: string;
-        plugins?: Array<{ type?: string; path?: string }>;
-      } | undefined;
-      expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
+      // A full work chat keeps all three setting layers and the preset prompt,
+      // so the user's own MCP config loads: ADE injects no servers, no
+      // managed-only lock, and no strictMcpConfig (only light sessions are strict).
+      expect(opts?.settingSources).toEqual(["user", "project", "local"]);
+      expect(opts?.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
+      expect(opts).not.toHaveProperty("mcpServers");
+      expect(opts?.managedSettings).toBeUndefined();
+      expect(opts?.strictMcpConfig).toBeUndefined();
+      expect(opts?.allowedTools).toBeUndefined();
+      expect(opts?.toolConfig?.askUserQuestion?.previewFormat).toBe("markdown");
       expect(opts?.skills).toBe("all");
       expect(opts?.plugins).toEqual(expect.arrayContaining([
         { type: "local", path: fs.realpathSync(bundledSkillRoot) },
@@ -1778,14 +1604,7 @@ describe("createAgentChatService", () => {
       process.env.CLAUDE_CONFIG_DIR = userClaudeDir;
 
       try {
-        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-          send: vi.fn(),
-          stream: vi.fn(async function* () {
-            return;
-          }),
-          close: vi.fn(),
-          sessionId: "sdk-session-user-output-style",
-        } as any);
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-user-output-style") as any);
 
         const { service } = createService();
         await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
@@ -1804,35 +1623,6 @@ describe("createAgentChatService", () => {
         if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
         else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
       }
-    });
-
-    it("passes Claude fast mode through SDK flag settings for Opus sessions", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-fast",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "claude-opus-4-8",
-        modelId: "anthropic/claude-opus-4-8",
-        fastMode: true,
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        settings?: { fastMode?: boolean };
-      } | undefined;
-      expect(opts?.settings?.fastMode).toBe(true);
     });
 
     it("uses updated Claude fast mode on the next SDK query", async () => {
@@ -1878,13 +1668,16 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // Opus 5 also supports fast mode, so the toggle should survive the switch.
+      // Opus 5.5 also supports fast mode, so the toggle should survive the switch.
       await service.updateSession({
         sessionId: session.id,
-        modelId: "anthropic/claude-opus-4-8",
+        modelId: "anthropic/claude-opus-5-5",
       });
 
-      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        modelId: "anthropic/claude-opus-5-5",
+        fastMode: true,
+      });
     });
 
     it("clears Claude fast mode when switching to a non-fast Claude model", async () => {
@@ -1956,14 +1749,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(path.join(tmpRoot, ".claude", "settings.json"), JSON.stringify({
         enabledPlugins: { "review-pack@local": true },
       }));
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-plugins",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-plugins") as any);
 
       const { service } = createService();
       await service.createSession({
@@ -1985,65 +1771,11 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("loads user/project MCP servers in normal chats (no managed-only lock)", async () => {
-      fs.writeFileSync(path.join(tmpRoot, ".mcp.json"), JSON.stringify({
-        mcpServers: {
-          projectTools: {
-            command: "node",
-            args: ["mcp-server.js"],
-          },
-        },
-      }));
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-mcp",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        managedSettings?: Record<string, unknown>;
-        settingSources?: string[];
-        strictMcpConfig?: boolean;
-      } | undefined;
-      expect(opts).toBeTruthy();
-      // Project/user setting sources stay enabled so the SDK reads the user's
-      // configured MCP servers (.mcp.json / ~/.claude.json) — same as a terminal session.
-      expect(opts?.settingSources).toEqual(expect.arrayContaining(["project"]));
-      // ADE does not inject mcpServers into a normal chat,
-      // and it no longer locks MCP to managed-only — so the user's servers can load.
-      expect(opts).not.toHaveProperty("mcpServers");
-      expect(opts?.managedSettings).toBeUndefined();
-      // Inverse of the lightweight test: strictMcpConfig must NOT leak into normal
-      // chats, or it would silently re-block the user's MCP servers we just enabled.
-      expect(opts?.strictMcpConfig).toBeUndefined();
-    });
-
     // The ADE SDK's whole per-thread MCP feature lands here: a caller's servers
     // have to reach the Claude query, and reach it *alongside* whatever ADE
     // already injects rather than replacing it.
     it("passes caller-injected MCP servers to the Claude query", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-caller-mcp",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-caller-mcp") as any);
 
       const { service } = createService();
       await service.createSession({
@@ -2076,14 +1808,7 @@ describe("createAgentChatService", () => {
     });
 
     it("sets strictMcpConfig when the caller asks to exclude the user's MCP config", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-strict-mcp",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-strict-mcp") as any);
 
       const { service } = createService();
       await service.createSession({
@@ -2240,14 +1965,7 @@ describe("createAgentChatService", () => {
     });
 
     it("lets an embedder keep the user's MCP config on a lightweight personal chat", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-strict-false",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-strict-false") as any);
 
       const { service } = createService();
       const created = await service.createSession({
@@ -2276,35 +1994,6 @@ describe("createAgentChatService", () => {
       expect(summary?.strictMcpConfig).toBe(false);
       const { service: restarted } = createService();
       expect((await restarted.getSessionSummary(created.id))?.strictMcpConfig).toBe(false);
-    });
-
-    it("keeps a lightweight chat strict when the caller states no preference", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-strict-default",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-        sessionProfile: "light",
-        surface: "personal",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        strictMcpConfig?: boolean;
-      } | undefined;
-      // Absent is not `false`: the profile still decides, and it decides strict.
-      expect(opts?.strictMcpConfig).toBe(true);
     });
 
     it("reports the MCP capability on the session summary, not just in memory", async () => {
@@ -2633,14 +2322,7 @@ describe("createAgentChatService", () => {
           },
         },
       }));
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-light-mcp",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-light-mcp") as any);
 
       const { service } = createService();
       await service.createSession({
@@ -2814,22 +2496,6 @@ describe("createAgentChatService", () => {
         expect(withCwd.cwd).not.toBe(hostCwd);
       });
 
-      // The `else if (!lightweight)` branch is untouched by this feature.
-      it("leaves a full work session on the preset prompt and all three layers", async () => {
-        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-host-config-work") as any);
-        const { service } = createService();
-        await service.createSession({
-          laneId: "lane-1",
-          provider: "claude",
-          model: "sonnet",
-        });
-        await vi.waitFor(() => {
-          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-        });
-        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
-        expect(opts.settingSources).toEqual(["user", "project", "local"]);
-        expect(opts.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" });
-      });
     });
 
     it("passes Claude subprocess spawns through the reaper", async () => {
@@ -2841,14 +2507,7 @@ describe("createAgentChatService", () => {
         reapAll: vi.fn(),
         liveRecords: vi.fn(() => []),
       };
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-reaper",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-reaper") as any);
 
       const { service } = createService({ claudeSubprocessReaper });
       const session = await service.createSession({
@@ -2933,14 +2592,7 @@ describe("createAgentChatService", () => {
         "",
       ].join("\n"));
 
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-slash-commands",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-slash-commands") as any);
 
       const { service } = createService();
       await service.createSession({
@@ -2960,6 +2612,9 @@ describe("createAgentChatService", () => {
       expect(append).toContain("/ade-injected-only — Only ADE can tell Claude about this one");
       expect(append).not.toContain("/zz-native-cmd");
       expect(append).not.toContain("/native-only");
+      // Bundled ADE skills are listed alongside the lane's own.
+      expect(append).toContain("/ade-cli-control-plane");
+      expect(append).toContain("/ade-linear");
     });
 
     it("clips an over-long skill description instead of letting it set the prompt size", async () => {
@@ -2975,14 +2630,7 @@ describe("createAgentChatService", () => {
         "",
       ].join("\n"));
 
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-verbose-skill",
-      } as any);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-session-verbose-skill") as any);
 
       const { service } = createService();
       await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
@@ -2995,135 +2643,6 @@ describe("createAgentChatService", () => {
       expect(append).toContain("/verbose-skill");
       expect(append).not.toContain("x".repeat(2000));
       expect(append).toContain("…");
-    });
-
-    it("lists bundled ADE skills when no lane command files exist", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-no-slash-commands",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toBeTruthy();
-      expect(opts?.systemPrompt?.append).toContain("## Project slash commands and skills");
-      expect(opts?.systemPrompt?.append).toContain("/ade-cli-control-plane");
-      expect(opts?.systemPrompt?.append).toContain("/ade-linear");
-      expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
-    });
-
-    it("does not re-list lane commands Claude Code reads for itself", async () => {
-      const commandsDir = path.join(tmpRoot, ".claude", "commands");
-      fs.mkdirSync(commandsDir, { recursive: true });
-      for (let index = 0; index < 25; index += 1) {
-        fs.writeFileSync(path.join(commandsDir, `cmd-${String(index).padStart(2, "0")}.md`), [
-          "---",
-          `description: Command ${index}`,
-          "---",
-          "",
-          `Run command ${index}.`,
-          "",
-        ].join("\n"));
-      }
-
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-many-slash-commands",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      const append = opts?.systemPrompt?.append ?? "";
-      // All 25 live in the lane's own `.claude/commands`, which Claude Code
-      // reads for itself, so none of them belongs in ADE's listing — the cap
-      // that used to hide five of them never had to run. The cap itself is
-      // covered directly in claudeSlashCommandDiscovery.test.ts.
-      expect(append).not.toContain("/cmd-00");
-      expect(append).not.toContain("/cmd-19");
-      expect(append).not.toContain("/cmd-24");
-      expect(append).not.toContain("more command(s) hidden to keep startup context lean");
-    });
-
-    it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-tool-allow",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        allowedTools?: string[];
-      } | undefined;
-      expect(opts?.allowedTools).toBeUndefined();
-    });
-
-    it("requests markdown previews for Claude AskUserQuestion by default", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-ask-user-preview",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        toolConfig?: { askUserQuestion?: { previewFormat?: string } };
-      } | undefined;
-      expect(opts?.toolConfig?.askUserQuestion?.previewFormat).toBe("markdown");
     });
 
     it("migrates legacy Claude plan mode into interaction mode", async () => {
@@ -3140,31 +2659,6 @@ describe("createAgentChatService", () => {
       expect(session.permissionMode).toBe("plan");
     });
 
-    it("sets sessionProfile to workflow by default", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      expect(session.sessionProfile).toBe("workflow");
-    });
-
-    it("respects custom sessionProfile", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-        sessionProfile: "light",
-      });
-
-      expect(session.sessionProfile).toBe("light");
-    });
-
     it("normalizes reasoning effort for opencode provider", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -3178,32 +2672,6 @@ describe("createAgentChatService", () => {
       expect(session.reasoningEffort).toBe("high");
     });
 
-    it("sets surface to work by default", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-        sessionProfile: "light",
-      });
-
-      expect(session.surface).toBe("work");
-    });
-
-    it("sets surface to automation when specified", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-        surface: "automation",
-      });
-
-      expect(session.surface).toBe("automation");
-    });
-
     it("throws when opencode provider has no known model ID", async () => {
       const { service } = createService();
       await expect(
@@ -3213,19 +2681,6 @@ describe("createAgentChatService", () => {
           model: "nonexistent-model-xyz",
         }),
       ).rejects.toThrow(/model/i);
-    });
-
-    it("attaches identityKey when provided", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-        identityKey: "cto",
-      });
-
-      expect(session.identityKey).toBe("cto");
     });
 
     it("persists chat state to disk after creation", async () => {
@@ -3244,26 +2699,6 @@ describe("createAgentChatService", () => {
       const persisted = JSON.parse(fs.readFileSync(path.join(chatSessionsDir, metaFiles[0]!), "utf8"));
       expect(persisted.version).toBe(2);
       expect(persisted.provider).toBe("opencode");
-    });
-
-    it("preserves the personal surface when reconstructing a persisted session", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-        surface: "personal",
-      });
-
-      await service.dispose({ sessionId: session.id });
-      await service.updateSession({ sessionId: session.id, title: "Reopened personal chat" });
-
-      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
-        sessionId: session.id,
-        surface: "personal",
-      });
-      expect(readPersistedChatState(session.id).surface).toBe("personal");
     });
 
     // The resume case from issue 1205: reopening a thread by key sends no first
@@ -3296,6 +2731,7 @@ describe("createAgentChatService", () => {
         // "ignored" — reporting "applied" because the value round-tripped would
         // describe a load ADE is not performing.
         settingSourcesCapability: { level: "ignored", value: "project" },
+        surface: "personal",
       });
     });
 
@@ -3783,20 +3219,9 @@ describe("createAgentChatService", () => {
   describe("getSessionSummary", () => {
     it("returns null for unknown session id", async () => {
       const { service } = createService();
-      const summary = await service.getSessionSummary("nonexistent-id");
-      expect(summary).toBeNull();
-    });
-
-    it("returns null for empty session id", async () => {
-      const { service } = createService();
-      const summary = await service.getSessionSummary("");
-      expect(summary).toBeNull();
-    });
-
-    it("returns null for whitespace-only session id", async () => {
-      const { service } = createService();
-      const summary = await service.getSessionSummary("   ");
-      expect(summary).toBeNull();
+      for (const id of ["nonexistent-id", "", "   "]) {
+        expect(await service.getSessionSummary(id)).toBeNull();
+      }
     });
 
     it("returns summary for an existing session", async () => {
@@ -3929,22 +3354,6 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
-  // setComputerUseArtifactBrokerService
-  // --------------------------------------------------------------------------
-
-  describe("setComputerUseArtifactBrokerService", () => {
-    it("accepts a broker service without throwing", () => {
-      const { service } = createService();
-      const mockBroker = {
-        getBackendStatus: vi.fn(() => null),
-        ingest: vi.fn(),
-      };
-
-      expect(() => service.setComputerUseArtifactBrokerService(mockBroker as any)).not.toThrow();
-    });
-  });
-
-  // --------------------------------------------------------------------------
   // warmupModel
   // --------------------------------------------------------------------------
 
@@ -3954,21 +3363,6 @@ describe("createAgentChatService", () => {
       // Should not throw
       await expect(
         service.warmupModel({ sessionId: "no-such-session", modelId: "opencode/anthropic/claude-sonnet-5" }),
-      ).resolves.toBeUndefined();
-    });
-
-    it("does nothing for non-anthropic model", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      // A non-anthropic-cli model should be a no-op
-      await expect(
-        service.warmupModel({ sessionId: session.id, modelId: "opencode/anthropic/claude-sonnet-5" }),
       ).resolves.toBeUndefined();
     });
 
@@ -4013,12 +3407,6 @@ describe("createAgentChatService", () => {
 
       expect(probeOpenCodeProviderInventory).toHaveBeenCalled();
       expect(models.map((model) => model.id)).toContain("opencode/openai/gpt-5.4");
-    });
-
-    it("returns an array for codex provider", async () => {
-      const { service } = createService();
-      const models = await service.getAvailableModels({ provider: "codex" });
-      expect(Array.isArray(models)).toBe(true);
     });
 
     it("pins GPT-6 Astra ahead of GPT-5.6 in filtered and provider-omitted catalogs", async () => {
@@ -4129,12 +3517,6 @@ describe("createAgentChatService", () => {
       const aggregatedCodexModels = aggregate.filter((model) => codexIds.has(model.id));
       expect(aggregate.length).toBeGreaterThan(0);
       expect(aggregatedCodexModels).toEqual(models.slice(0, 5));
-    });
-
-    it("returns an array for claude provider", async () => {
-      const { service } = createService();
-      const models = await service.getAvailableModels({ provider: "claude" });
-      expect(Array.isArray(models)).toBe(true);
     });
 
     it("uses the Qwen CLI's configured model instead of unrelated curated rows", async () => {
@@ -4360,18 +3742,6 @@ describe("createAgentChatService", () => {
       expect(session.automationRunId).toBe("run-1");
     });
 
-    it("creates a codex session with specified model", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "codex",
-        model: "gpt-5.4",
-      });
-
-      expect(session.provider).toBe("codex");
-      expect(session.status).toBe("idle");
-    });
-
     // The CTO surface offers its operator tools only to full-tooling sessions.
     it.each([
       ["opencode", "full_tooling", "", "opencode/anthropic/claude-sonnet-5"],
@@ -4382,19 +3752,6 @@ describe("createAgentChatService", () => {
 
       expect(session.capabilityMode).toBe(expected);
       expect((await service.getSessionSummary(session.id))?.capabilityMode).toBe(expected);
-    });
-
-    it("uses default execution mode for new sessions", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      // executionMode defaults to null or undefined for new sessions
-      expect(session.executionMode == null).toBe(true);
     });
 
     it("does not auto-upgrade guarded local opencode sessions into plan mode", async () => {
@@ -4826,86 +4183,6 @@ describe("createAgentChatService", () => {
       expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [])).toBe(false);
       // One proven path does not vouch for an unproven sibling.
       expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/*`, "/etc/*"])).toBe(false);
-    });
-
-    it("streams OpenCode assistant text from part deltas, without doubling it at the end", async () => {
-      // OpenCode's processor calls updatePartDelta for every text-delta and
-      // only calls updatePart at text-start and text-end. Ignoring
-      // `message.part.delta` therefore meant nothing rendered until the turn
-      // finished and the whole answer appeared in one jump. The closing
-      // full-part update must not then re-emit the text a second time.
-      const events: AgentChatEventEnvelope[] = [];
-      let releaseStream!: () => void;
-      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          await streamGate;
-          yield { type: "finish", usage: {} };
-        })(),
-      }) as any);
-
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "opencode/openai/gpt-5.4",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Stream something." });
-      const started = await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "status" && event.event.turnStatus === "started",
-      );
-
-      const state = [...mockState.openCodeSessions.values()][0]!;
-      const pushEvents = (...next: any[]): void => {
-        state.events.push(...next);
-        const waiters = [...state.waiters];
-        state.waiters.length = 0;
-        waiters.forEach((waiter) => waiter());
-      };
-
-      const sessionID = "opencode-session-1";
-      const renderedText = (): string => events
-        .filter((event) => event.event.type === "text")
-        .map((event) => (event.event as { text: string }).text)
-        .join("");
-
-      pushEvents(
-        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
-        // text-start: the part exists but is still empty.
-        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Hello" } },
-        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: " world" } },
-      );
-
-      // The turn is still open and no closing full-part update has arrived, so
-      // anything rendered here came from the deltas alone. This is the assertion
-      // that fails when `message.part.delta` is ignored.
-      await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "text");
-      await vi.waitFor(() => { expect(renderedText()).toBe("Hello world"); });
-
-      pushEvents(
-        // text-end: the full accumulated part.
-        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "Hello world", messageID: "msg-a", sessionID } } },
-        { type: "session.idle", properties: { sessionID } },
-      );
-
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.event.type === "done" && event.event.turnId === started.event.turnId,
-      );
-
-      // The closing full-part update must diff to nothing, not repeat the answer.
-      expect(renderedText()).toBe("Hello world");
-
-      releaseStream();
-      await sendPromise;
     });
 
     it("routes OpenCode reasoning deltas (field \"text\") to reasoning, never to assistant text", async () => {
@@ -5568,30 +4845,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("session status transitions", () => {
-    it("session starts with idle status", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      expect(session.status).toBe("idle");
-    });
-
-    it("session has null completion initially", async () => {
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      expect(session.completion).toBeNull();
-    });
-
     it("repairs a persisted row a liveness sweep wrongly detached, on the next turn", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({

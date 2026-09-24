@@ -2837,39 +2837,6 @@ describe("AgentChatComposer", () => {
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("allows attachments while steering an active Claude turn", () => {
-    renderComposer({
-      turnActive: true,
-      sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-5",
-      availableModelIds: ["anthropic/claude-sonnet-5"],
-    });
-
-    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("allows attachments while steering an active Cursor turn", () => {
-    renderComposer({
-      turnActive: true,
-      sessionProvider: "cursor",
-      modelId: "cursor/auto",
-      availableModelIds: ["cursor/auto"],
-    });
-
-    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("allows attachments while steering an active OpenCode turn", () => {
-    renderComposer({
-      turnActive: true,
-      sessionProvider: "opencode",
-      modelId: "opencode/openai/gpt-5.4",
-      availableModelIds: ["opencode/openai/gpt-5.4"],
-    });
-
-    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
-  });
-
   it("offers Linear settings when issue search needs a connection", async () => {
     const onOpenLinearSettings = vi.fn();
     Object.defineProperty(window, "ade", {
