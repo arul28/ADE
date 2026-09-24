@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowSquareOut,
@@ -26,6 +25,7 @@ import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { Dialog } from "../ui/dialog";
 import { FleetRow, SectionHeader, isDevinCloudFleetEntryActive } from "./DevinCloudFleetRow";
 
 type FleetFilter = "all" | "active" | "needs_you" | "finished" | "failed";
@@ -441,25 +441,28 @@ export function DevinCloudFleetModal({
     />
   );
 
-  return createPortal(
-    <>
-      <button
-        type="button"
-        aria-label="Close Devin Cloud fleet"
-        className="fixed inset-0 z-[9998] cursor-default bg-black/55 backdrop-blur-md"
-        onClick={onClose}
-        tabIndex={-1}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Devin Cloud fleet"
-        className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(760px,calc(100dvh-28px))] w-[min(880px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
-        style={{
-          borderColor: "rgba(37,99,235,0.32)",
-          boxShadow: "0 24px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(37,99,235,0.14)",
-        }}
-      >
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title="Devin Cloud fleet"
+      hideHeader
+      width={880}
+      height="min(760px, calc(100dvh - 28px))"
+      maxHeight="calc(100dvh - 28px)"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      preventAutoFocus
+      panelStyle={{
+        background: "var(--ade-shell-surface, #121019)",
+        borderRadius: 12,
+        borderColor: "rgba(37,99,235,0.32)",
+        boxShadow: "0 24px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(37,99,235,0.14)",
+      }}
+    >
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3.5 py-2" style={{ background: "rgba(37,99,235,0.055)" }}>
           <div className="flex min-w-0 items-center gap-2.5">
@@ -734,8 +737,6 @@ export function DevinCloudFleetModal({
             </button>
           </div>
         ) : null}
-      </div>
-    </>,
-    document.body,
+    </Dialog>
   );
 }
