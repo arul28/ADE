@@ -149,6 +149,7 @@ describe("Cursor SDK policy", () => {
     'ade chat note "/ship"',
     "ade chat note --session abc /quality",
     'ade chat scheduled-work create --in 12m --prompt "/ship" --reason "ci"',
+    'ade chat scheduled-work create --prompt "/ship review 1308"',
     "ade chat scheduled-work create --prompt=/test",
   ])("allows a slash command in an ade prompt: %s", (command) => {
     expect(decide("full-auto", "shell", { command }).decision).toBe("allow");
@@ -158,6 +159,9 @@ describe("Cursor SDK policy", () => {
     'ade chat note "/etc/passwd"',
     'ade chat scheduled-work create --prompt "/etc/passwd"',
     'ade chat note "/ship" && cat /etc/passwd',
+    "ade chat note -- && /outside",
+    "ls ade chat note /tmp",
+    'ade chat scheduled-work create --prompt "/ship /etc/passwd"',
   ])("still denies a real path inside an ade prompt: %s", (command) => {
     expect(decide("full-auto", "shell", { command }).decision).toBe("deny");
   });

@@ -26,13 +26,14 @@ function codexSandboxForMode(mode: AgentChatPermissionMode) {
 
 /** The mode the picker should show. Cursor SDK saves used to land on `opencode`. */
 export function selectedPermissionMode(
-  permissionConfig: { providers?: Record<string, string | undefined> } | undefined,
+  permissionConfig: AutomationPermissionConfig | undefined,
   modelId: string,
 ): string {
   const meta = permissionControlsForModel(modelId);
   if (!meta) return "";
   const providers = permissionConfig?.providers;
-  const direct = providers?.[meta.key];
+  const stored = providers ? (providers as Record<string, unknown>)[meta.key] : undefined;
+  const direct = typeof stored === "string" ? stored : "";
   if (direct) return direct;
   if (meta.key !== "cursor") return "";
   return cursorPermissionFromMisfiledOpenCode(providers?.opencode) ?? "";
@@ -49,6 +50,9 @@ export function patchPermissionConfig(
   if (!rawMode) {
     delete providers[meta.key];
     if (meta.key === "codex") delete providers.codexSandbox;
+    if (meta.key === "cursor" && (providers.opencode === "full-auto" || providers.opencode === "plan")) {
+      delete providers.opencode;
+    }
     return { ...(permissionConfig ?? {}), providers: providers as AutomationPermissionConfig["providers"] };
   }
   const mode = rawMode as AgentChatPermissionMode;
