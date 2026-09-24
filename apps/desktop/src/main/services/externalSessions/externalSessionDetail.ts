@@ -87,7 +87,7 @@ function messagesFromEvents(events: readonly AgentChatEventEnvelope[]): External
   const messages: ExternalSessionDetailMessage[] = [];
   for (const { event, timestamp } of events) {
     if (event.type !== "user_message" && event.type !== "text") continue;
-    const text = event.text.trim();
+    const text = clipPreservingNewlines(event.text.trim(), DETAIL_MESSAGE_MAX_CHARS);
     if (!text) continue;
     const at = Date.parse(timestamp);
     messages.push({ role: event.type === "user_message" ? "user" : "assistant", text, at: Number.isFinite(at) ? at : null });

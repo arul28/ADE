@@ -1,7 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Loaded at run time: Vite cannot resolve a static `node:sqlite` import.
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: new (path: string) => DatabaseSyncType;
+};
 
 vi.mock("./discoverClaude", () => ({
   discoverClaudeSessions: vi.fn(),
@@ -9,7 +17,8 @@ vi.mock("./discoverClaude", () => ({
 vi.mock("./discoverCodex", () => ({
   discoverCodexSessions: vi.fn(),
 }));
-vi.mock("./discoverCursor", () => ({
+vi.mock("./discoverCursor", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./discoverCursor")>()),
   discoverCursorSessions: vi.fn(),
 }));
 vi.mock("./discoverDroid", () => ({
@@ -204,6 +213,47 @@ describe("externalSessionDetail", () => {
     ]);
     const detail = await loadExternalSessionDetail({ provider: "cursor", sessionId: "cur-1" });
     expect(detail.messages).toEqual([{ role: "user", text: "real prompt", at: null }]);
+  });
+
+  it("fills a store-only Cursor chat's text tail from its conversation, clipped", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ext-detail-cursor-store-"));
+    tempDirs.push(dir);
+    const storePath = path.join(dir, "store.db");
+    const db = new DatabaseSync(storePath);
+    db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
+    const put = (data: Buffer): string => {
+      const id = createHash("sha256").update(data).digest("hex");
+      db.prepare("INSERT OR IGNORE INTO blobs (id, data) VALUES (?, ?)").run(id, data);
+      return id;
+    };
+    const longAnswer = "x".repeat(6000);
+    const ids = [
+      { role: "user", content: [{ type: "text", text: "<user_query>\nwhy?\n</user_query>" }] },
+      { role: "assistant", id: "1", content: [{ type: "text", text: longAnswer }] },
+    ].map((message) => put(Buffer.from(JSON.stringify(message))));
+    const root = put(Buffer.concat([
+      ...ids.map((id) => Buffer.concat([Buffer.from([0x0a, 32]), Buffer.from(id, "hex")])),
+      Buffer.from([0x50, 0x01]),
+    ]));
+    db.prepare("INSERT INTO meta (key, value) VALUES ('0', ?)")
+      .run(Buffer.from(JSON.stringify({ agentId: "cur-2", latestRootBlobId: root })).toString("hex"));
+    db.close();
+    vi.mocked(discoverCursorSessions).mockResolvedValue([{
+      provider: "cursor",
+      id: "cur-2",
+      cwd: "/Users/dev/project",
+      title: null,
+      preview: "why?",
+      createdAt: null,
+      updatedAt: null,
+      messageCount: 1,
+      sourcePath: storePath,
+    }]);
+
+    const detail = await loadExternalSessionDetail({ provider: "cursor", sessionId: "cur-2" });
+    expect(detail.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(detail.messages[0]?.text).toBe("why?");
+    expect(detail.messages[1]?.text.length).toBeLessThan(longAnswer.length);
   });
 
   it("threads the home it is given into discovery", async () => {
