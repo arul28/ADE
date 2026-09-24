@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowClockwise,
   CircleNotch,
@@ -10,7 +9,7 @@ import {
 
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import { cn } from "../ui/cn";
-import { getFocusableElements } from "../ui/dialogFocus";
+import { Dialog } from "../ui/dialog/Dialog";
 import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
 import {
   USAGE_DIVIDER_COLOR_CLASS,
@@ -71,12 +70,6 @@ export type MacDesktopClaimPickerProps = {
    * replaced in place, so nothing ever covers the chat.
    */
   inline?: boolean;
-  /**
-   * Overlay stacking, used only when NOT inline. Full screen sits at 1000; a
-   * picker opened from inside that overlay has to be one step above or it is
-   * behind the picture.
-   */
-  zIndex?: number;
 };
 
 /** Header cell: the muted, normal-weight `micro` step the settings tables use. */
@@ -93,12 +86,10 @@ export function MacDesktopClaimPicker({
   onClaim,
   onClose,
   inline = false,
-  zIndex,
 }: MacDesktopClaimPickerProps) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [claiming, setClaiming] = useState<number | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const rows = useMemo(
@@ -180,7 +171,6 @@ export function MacDesktopClaimPicker({
 
   const dialog = (
     <div
-      ref={dialogRef}
       role="dialog"
       aria-modal={inline ? undefined : true}
       aria-label="Add an app to this desktop"
@@ -196,21 +186,6 @@ export function MacDesktopClaimPicker({
         USAGE_HAIRLINE_CLASS,
         "bg-surface-raised text-fg shadow-float",
       )}
-        onKeyDown={(event) => {
-          if (event.key !== "Tab") return;
-          const nodes = getFocusableElements(event.currentTarget);
-          if (!nodes.length) return;
-          const first = nodes[0]!;
-          const last = nodes[nodes.length - 1]!;
-          const activeElement = document.activeElement as HTMLElement | null;
-          if (event.shiftKey && activeElement === first) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && activeElement === last) {
-            event.preventDefault();
-            first.focus();
-          }
-        }}
       >
         <header className={cn("flex items-start gap-3 border-b px-4 py-3", USAGE_DIVIDER_COLOR_CLASS)}>
           <div className="min-w-0 flex-1">
@@ -376,17 +351,21 @@ export function MacDesktopClaimPicker({
     );
   }
 
-  if (typeof document === "undefined") return dialog;
-  return createPortal(
-    <div
-      className="fixed inset-0 flex items-start justify-center bg-black/55 p-4 pt-[10vh]"
-      style={{ zIndex: zIndex ?? 220 }}
-      role="presentation"
-      data-testid="mac-desktop-claim-picker"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      title="Add an app to this desktop"
+      hideHeader
+      hideClose
+      width={720}
+      maxHeight="min(560px, calc(100vh - 20vh))"
+      bodyPadding={false}
+      scrollBody={false}
+      panelStyle={{ padding: 0, background: "transparent", border: "none", boxShadow: "none" }}
+      testId="mac-desktop-claim-picker"
     >
       {dialog}
-    </div>,
-    document.body,
+    </Dialog>
   );
 }

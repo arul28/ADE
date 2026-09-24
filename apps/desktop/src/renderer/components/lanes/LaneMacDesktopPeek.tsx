@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useMacDesktopFrame } from "../chat/macDesktopFrameStore";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 /**
  * The lane row's hover peek at that lane's macOS screen.
@@ -57,17 +58,18 @@ export function LaneMacDesktopPeek({ laneId }: { laneId: string }) {
       <span ref={anchorRef} aria-hidden className="hidden" />
       {at
         ? createPortal(
-            <div
-              aria-hidden
-              data-testid="lane-mac-desktop-peek"
-              className="pointer-events-none fixed z-[220] -translate-y-1/2 overflow-hidden rounded-[8px] border border-border bg-black/80 shadow-float"
-              style={{ left: at.left, top: at.top, width: 224 }}
-            >
-              <img src={frame.dataUrl} alt="" className="block h-auto w-full" />
-              {frame.caption ? (
-                <p className="truncate px-2 py-1 text-[10px] text-muted-fg">{frame.caption}</p>
-              ) : null}
-            </div>,
+            <ViewportOverlayHost layer="tooltip" testId="lane-mac-desktop-peek">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -translate-y-1/2 overflow-hidden rounded-[8px] border border-border bg-black/80 shadow-float"
+                style={{ left: at.left, top: at.top, width: 224 }}
+              >
+                <img src={frame.dataUrl} alt="" className="block h-auto w-full" />
+                {frame.caption ? (
+                  <p className="truncate px-2 py-1 text-[10px] text-muted-fg">{frame.caption}</p>
+                ) : null}
+              </div>
+            </ViewportOverlayHost>,
             document.body,
           )
         : null}
