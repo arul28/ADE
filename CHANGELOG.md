@@ -12,6 +12,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Opus 5.5 (`claude-opus-5-5`) is the generic Opus model, with medium effort and Fast mode. Opus 5 stays selectable. Opus 4.8 is removed from the picker and its saved ids resolve to Opus 5.
 - Claude Agent SDK 0.3.280.
 
+## [1.2.78] - 2026-09-24
+
+### Mac desktop
+
+- Each lane gets a private macOS screen that agents can drive, record, and attach as proof (#1302).
+
+### Shell
+
+- One project sidebar hosts Work, Lanes, Files, PRs, and Automations. Lanes is a state-grouped list plus the selected lane. Settings gains an Account section (#1304).
+- Banners, toasts, and dialogs share one notice system (#1305).
+
+### Import
+
+- The Import dialog follows the lane the session ran in, previews the transcript, and lists Qwen, Kimi, Grok, and Copilot sessions (#1303).
+
+### Apple devices
+
+- A lane's simulator streams to the desktop pane, paired computers, the iPhone app, and the web client. Agent recordings are ADE's, and copied video cannot be attached as proof (#1299).
+
+### Work
+
+- Session status names what an active agent is doing (#1296).
+- The first message in a new chat animates into the chat pane, and the composer stays until the send finishes (#1301).
+
+### Usage
+
+- Every turn records the requested model, the served model, tokens, cost, and quota, and the model picked in the UI is what each provider runs (#1300).
+
+### SDK
+
+- Session summaries report a live Codex collaboration mode (`default` or `plan`) and whether that mode was cleared. `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.2.3.
+
+### iOS
+
+- The iPhone app can view a lane's Mac screen and its Apple device stream, and session rows show the same activity detail as desktop.
+
 ## [1.2.77] - 2026-09-23
 
 ### Apple devices
@@ -2069,7 +2105,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.74...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.78...HEAD
+[1.2.78]: https://github.com/arul28/ADE/compare/v1.2.77...v1.2.78
 [1.2.77]: https://github.com/arul28/ADE/compare/v1.2.76...v1.2.77
 [1.2.76]: https://github.com/arul28/ADE/compare/v1.2.75...v1.2.76
 [1.2.75]: https://github.com/arul28/ADE/compare/v1.2.74...v1.2.75

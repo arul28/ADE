@@ -90,6 +90,17 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 
 The three capability fields are `null` when the thread requested nothing, **and** when an older runtime reported nothing. `level` is `"applied"` \| `"best-effort"` \| `"ignored"` for the two host-config reports, and `"enforced"` \| `"best-effort"` \| `"unsupported"` for the permission one.
 
+## Session summary
+
+`AgentChatSessionSummary` is the runtime's record of a tracked session. Two fields report the Codex app-server collaboration mode when a live runtime has one:
+
+| Field | |
+|---|---|
+| `codexEffectiveCollaborationMode` | `"default"` \| `"plan"`. Absent when the runtime did not report a mode. |
+| `codexEffectiveCollaborationModeWasCleared` | `true` when a live Codex runtime confirms there is no accepted turn mode. |
+
+`AgentChatCodexCollaborationMode` is that `"default"` \| `"plan"` union.
+
 ## `ProviderStatus` {#providerstatus}
 
 ```ts

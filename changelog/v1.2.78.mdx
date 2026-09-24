@@ -1,0 +1,48 @@
+---
+title: "v1.2.78"
+description: "Release notes for ADE v1.2.78 - September 24, 2026"
+---
+
+A private Mac screen per lane, a project sidebar, one notice system, lane-aware import, live Apple devices across machines, and a usage record for every turn.
+
+---
+
+## Mac desktop
+
+- **Each lane gets a private macOS screen.** Agents drive it, record it, and attach the recording as proof.
+
+## Shell
+
+- **One project sidebar** hosts Work, Lanes, Files, PRs, and Automations at a shared width. CTO and History open over the page you left.
+- **Lanes is a list plus one lane.** Sessions group by state, and the selected lane shows its dashboard and Git pane. Settings gains an Account section.
+- **Notices share one system.** Banners, toasts, and dialogs use the same placement, dismissal, and keyboard behavior.
+
+## Import
+
+- **Import follows the lane the session ran in.** The dialog filters by lane, previews the transcript, and Continue as CLI opens in that lane.
+- Qwen, Kimi, Grok, and Copilot sessions are listed alongside Claude.
+
+## Apple devices
+
+- **A lane's simulator is live on every surface that can see the lane.** Video goes to the desktop pane, a floating player, paired computers, the iPhone app, and the web client.
+- Agent recordings belong to ADE. An old or copied video cannot be attached as proof of this run.
+
+## Work
+
+- **Session status says what the agent is doing**, not only that it is active.
+- **The first message animates into the chat.** The composer stays put until the send finishes.
+
+## Usage
+
+- **Every turn is measured.** ADE records the model you asked for, the model that answered, tokens, cost, and how fast the subscription window is burning.
+- The model and effort you pick in the UI are what the provider runs.
+
+## SDK
+
+- A session summary reports the Codex collaboration mode a live runtime accepted (`default` or `plan`), and whether that mode was cleared.
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.2.3.
+
+## iOS
+
+- The iPhone app can view a lane's Mac screen and its Apple device stream.
+- Session rows show the same activity detail as desktop.
