@@ -929,7 +929,7 @@ private func normalizedWorkEventId(_ value: String?) -> String? {
 
 private func workSubagentParentItemId(_ event: AgentChatEvent) -> String? {
   switch event {
-  case .subagentStarted(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _),
+  case .subagentStarted(_, _, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _),
        .subagentProgress(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _, _),
        .subagentResult(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _, _, _):
     return normalizedWorkEventId(parentToolUseId) ?? normalizedWorkEventId(parentAgentId)

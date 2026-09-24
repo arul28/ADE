@@ -3344,6 +3344,8 @@ extension AgentChatEvent {
     case replacementMessageId
     case messageId
     case itemId
+    case phase
+    case streamingText
     case logicalItemId
     case parentItemId
     case tool
@@ -3513,13 +3515,12 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "text":
-      self = .text(
-        text: try container.decode(String.self, forKey: .text),
-        messageId: try container.decodeIfPresent(String.self, forKey: .messageId),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
-        phase: try container.decodeIfPresent(String.self, forKey: .phase)
-      )
+      let text = try container.decode(String.self, forKey: .text)
+      let messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let itemId = try container.decodeIfPresent(String.self, forKey: .itemId)
+      let phase = try container.decodeIfPresent(String.self, forKey: .phase)
+      self = .text(text: text, messageId: messageId, turnId: turnId, itemId: itemId, phase: phase)
     case "tool_call":
       let rawTool = try container.decode(String.self, forKey: .tool)
       let mcp = try? container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
@@ -3575,13 +3576,12 @@ extension AgentChatEvent {
         status: try container.decode(String.self, forKey: .status)
       )
     case "plan":
-      self = .plan(
-        steps: try container.decode([AgentChatPlanStep].self, forKey: .steps),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        explanation: try container.decodeIfPresent(String.self, forKey: .explanation),
-        state: try container.decodeIfPresent(String.self, forKey: .state),
-        streamingText: try container.decodeIfPresent(String.self, forKey: .streamingText)
-      )
+      let steps = try container.decode([AgentChatPlanStep].self, forKey: .steps)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let explanation = try container.decodeIfPresent(String.self, forKey: .explanation)
+      let state = try container.decodeIfPresent(String.self, forKey: .state)
+      let streamingText = try container.decodeIfPresent(String.self, forKey: .streamingText)
+      self = .plan(steps: steps, turnId: turnId, explanation: explanation, state: state, streamingText: streamingText)
     case "reasoning":
       self = .reasoning(
         text: try container.decode(String.self, forKey: .text),

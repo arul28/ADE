@@ -92,16 +92,23 @@ func workNormalizeSourceUrl(_ rawValue: String?) -> String? {
       return !(decodedKey.lowercased() == "ref"
         && workRegexMatches(workSourceReferralHostValue, workDecodedQueryPart(value)))
     }
-    .sorted { left, right in
-      let left = left.element
-      let right = right.element
-      let leftKey = left.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
-      let rightKey = right.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
-      return leftKey == rightKey ? left.offset < right.offset : leftKey < rightKey
-    }
+    .sorted(by: workSourceQueryPairPrecedes)
     .map(\.element)
   normalized.percentEncodedQuery = queryPairs.isEmpty ? nil : queryPairs.joined(separator: "&")
   return normalized.string
+}
+
+private func workSourceQueryKey(_ pair: String) -> String {
+  pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+}
+
+private func workSourceQueryPairPrecedes(
+  _ left: (offset: Int, element: String),
+  _ right: (offset: Int, element: String)
+) -> Bool {
+  let leftKey = workSourceQueryKey(left.element)
+  let rightKey = workSourceQueryKey(right.element)
+  return leftKey == rightKey ? left.offset < right.offset : leftKey < rightKey
 }
 
 func workChatSourceKey(_ ref: AgentChatSourceRef) -> String? {

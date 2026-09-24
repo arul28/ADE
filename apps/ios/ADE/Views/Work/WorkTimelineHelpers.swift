@@ -4696,7 +4696,7 @@ func workClaudeGoal(
   return current
 }
 
-private func normalizedWorkTurnId(_ turnId: String?) -> String? {
+func normalizedWorkTurnId(_ turnId: String?) -> String? {
   let key = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return key.isEmpty ? nil : key
 }
