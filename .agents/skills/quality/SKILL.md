@@ -1,11 +1,13 @@
 ---
 name: quality
 description: >-
-  Make the code correct, clean, and current. A thermo dual-review: a
+  Make the code correct, clean, and current. Opens the PR first so CI and
+  review bots run during the review, then harvests their results before it
+  finishes. A thermo dual-review: a
   correctness/security track and a maintainability/code-judo track run in
   parallel, then a synthesis step dedupes, severity-ranks (Blocker/High/Medium/
   Low), verifies each finding against the real code, and FIXES EVERY VERIFIED
-  FINDING at any severity — re-reviewing until clean. Windows parity is a
+  FINDING at any severity — re-reviewing only the fix delta, with a cap. Windows parity is a
   default requirement for all new code. Only findings needing a product
   decision, a behavior change this branch was not asked to make, or a
   capability whose Windows parity is not achievable, reach the merge-blocking
@@ -17,8 +19,10 @@ description: >-
 # Quality Skill
 
 The loop's quality gate: find the bugs, clean up the code. Run after the work is
-implemented (`/context → work → /quality`), before `/test`. This skill is
-correctness + maintainability only — docs, CLI, TUI, and mobile **parity** are
+implemented (`/context → work → /quality`), before `/test`. It opens the PR as
+its first step so CI and the review bots run while it reviews, and it acts on
+their results before it finishes. This skill is correctness + maintainability
+only — docs, CLI, TUI, and mobile **parity** are
 owned by `/test`'s parity passes, so it does not touch them.
 
 Print a one-line phase status as you go (no banner). Update it after each phase:
@@ -181,6 +185,25 @@ additional checks apply:
 
 ---
 
+## Step 0: Open the PR early
+
+Before the review starts, follow **Early PR and harvests → Open** in
+`docs/playbooks/ship-lane.md`: checkpoint commit, push, open the PR ready for
+review (not a draft), and write the ship state with `status: "prepping"`. Then
+start Phase 1 immediately — do not wait for CI or the bots.
+
+Skip this step only when the branch is `main`, the tree holds changes that do
+not belong to this lane, or the user asked for no PR. Say which one applied.
+When a PR already exists, push the checkpoint only if HEAD is ahead of the
+remote and the push rule allows it. When a ship state file already exists (a
+re-run on a lane in `prepping` or `running`), keep its status, iteration, and
+handled comment ids; the playbook's Open step 5 says which fields change.
+
+Do not push again while the review runs. Each push restarts Greptile's
+15–25-minute review.
+
+---
+
 ## Phase 1: Thermo Dual-Review → Synthesize + Fix
 
 ### Track A — Correctness & Security (always runs)
@@ -246,9 +269,9 @@ Cite the doc section in the finding.
    applied.
    **Capability-claim check.** Treat prose about permissions, timing, provider
    support, lifecycle, or automatic notifications as a claim to verify, not as
-   evidence. Find the implementation path and its regression test; if the
-   behavior is load-bearing and no test pins it, add a named test or record the
-   exact alternate verification in the review.
+   evidence. Find the implementation path and the test that pins it. If the
+   behavior is load-bearing and no test pins it, list it for `/test` as a
+   coverage gap. `/test` decides whether a test is worth adding.
 5. **Sweep the bug class.** When an accepted finding is a repeated pattern, scan
    the diff scope for sibling instances and fix them together — stop at touched
    surfaces and owner boundaries; no refactor beyond the class.
@@ -262,13 +285,26 @@ Cite the doc section in the finding.
    Fix correctness findings and Track B judo moves alike. If a fix is genuinely
    large (a multi-file extraction, a schema migration), it is still yours to do —
    do it here, in this run, not "as a follow-up".
-7. **Re-review until clean.** If step 6 changed code, re-run **both mandatory
-   tracks, A and B,** on the *new* diff. New accepted findings → verify (4),
-   apply (6), re-check with both tracks again. Stop only when the same pass
-   yields no new accepted findings from either track. A re-review count is never
-   a reason to defer a verified finding or move it to the gate. This catches
+7. **Re-review the fix delta, with a cap.** If step 6 changed code, re-run
+   **both mandatory tracks, A and B,** on the *fix delta* — the changes step 6
+   made, with the full touched files as context. The rest of the branch was
+   already reviewed in this run; do not review it again. New accepted findings
+   → verify (4), apply (6), and re-check the new fix delta. This catches
    fix-induced correctness regressions and maintainability debt before `/test`
    or `/ship`.
+
+   **Cap: one full review, then at most two delta re-reviews.** If the second
+   delta re-review still finds a Blocker, High, or Medium, fix it and run one
+   last delta check. Do not loop further:
+   - Fix a Blocker, High, or Medium from the last check, but leave it out of
+     the reviewed range: set `qualityReviewedSha` (step 10) to the commit
+     before that fix, so the next delta review at push time covers it.
+   - List a Low from the last check under **Leftovers** in the summary. It is
+     not a gate row and does not block `/ship`.
+
+   A long chain of re-reviews usually chases fix-induced regressions, not real
+   progress. The cap never moves a finding to the gate; only step 8's three
+   reasons do that.
 8. **Gate — the narrow exception, not the escape hatch.** Only three kinds of
    accepted finding may go to the gate unfixed:
    - it needs a **product decision you cannot make** (which of two valid
@@ -290,11 +326,28 @@ Cite the doc section in the finding.
    merge until the author resolves it; `/ship` treats a non-empty gate as a stop.
 
    A finding you neither fixed nor gated is a bug in your run.
-9. **Reconcile (optional)** — if a PR exists, *after* the independent audit, read
-   the PR discussion and review-bot comments (`gh pr view --comments`, or the
-   `ade-pr-workflows` skill). ADE's review bots are `@copilot` (first push) and
-   `@codex` (later iterations) — never trust a bot finding as fact; confirm each
-   against real code, then fold in valid ones and attribute them.
+9. **Harvest the PR (mandatory when a PR exists).** *After* the independent
+   review, follow **Early PR and harvests → Harvest** in the ship playbook.
+   Read whatever CI jobs and review bots (Greptile, Codex, CodeRabbit) have
+   finished on the pushed head, and do not wait for the rest. Drop comments
+   this run already fixed. Verify each remaining comment like a Track A/B
+   finding (step 4), then fix it (step 6) and re-review the fix delta (step 7).
+   Rerun each failed CI test file locally. Fix the failures the code causes, and
+   pass the failures the test itself causes to `/test`.
+10. **Commit and apply the push rule.** Commit the reviewed tree
+    (`quality: apply review fixes`) and record its SHA as `qualityReviewedSha`
+    in the ship state — but only when every change in that commit passed a
+    clean review. When step 7's cap left a final fix unreviewed, keep
+    `qualityReviewedSha` at the commit before that fix, so the delta review at
+    push time covers it. Stage only this lane's files; never commit changes that
+    belong to another lane. When Step 0 was skipped and no ship state exists,
+    only commit, print `qualityReviewedSha` in the summary, and do not push —
+    `/ship` Phase 0 reads it from the summary. If every signal on the remote head is terminal, run the
+    playbook's Commit-bound quality revalidation. When `qualityReviewedSha`
+    is HEAD, the delta is empty and this only binds and pushes. When the cap
+    left a fix outside it, review that delta first, like any other push. This starts round 2, which runs while `/test`
+    works. If a bot is still in flight, hold the commit and let `/test` push
+    it.
 
 ---
 
@@ -311,6 +364,15 @@ the two permitted reasons — not findings you chose to defer.
 - Findings: [total] (Blocker [n] / High [n] / Medium [n] / Low [n])
 - Auto-applied: [count] (safe correctness fixes + structural judo moves)
 - Re-review passes: [n]
+- Reviewed head: `qualityReviewedSha` [sha]
+- Leftovers (Low, found by the last capped check): [list | none]
+
+### PR harvest
+- PR: #[n] ([opened by this run | existing | skipped — reason])
+- CI: [n failed → n fixed here, n passed to /test | all green | n jobs still running]
+- Bots: [n comments → n fixed, n already fixed, n rejected with reason | pending: names]
+- Push: [pushed [sha], round 2 running | held — [bot] in flight on [sha]]
+- For /test: [failing test files caused by the test itself, and coverage gaps from step 4 | none]
 
 ### Gate (MERGE-BLOCKING — every row needs an author decision)
 Only three reasons belong here: a product decision you cannot make; a fix that
@@ -330,9 +392,9 @@ skill could mistake for a live gate. A Windows-parity row's "Decision needed"
 cell must state the capability, the OS-level reason, macOS/Linux status, and the
 hide / disable-with-reason / remove options with your recommendation.
 
-Next: /test (itemize every accepted correctness finding and give each a named
-regression test or explicit alternate verification).
+Next: /test (pass it the "For /test" list and the accepted correctness
+findings; it adds a test only where no existing test would catch the bug).
 
-**Before you print this:** every accepted finding is either in "Auto-applied" or
-the Gate section. If one is in neither, go back to step 6 and fix it.
+**Before you print this:** every accepted finding is in "Auto-applied", the
+Gate section, or (Low from the last capped check only) Leftovers. If one is in neither, go back to step 6 and fix it.
 ```
