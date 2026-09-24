@@ -178,9 +178,9 @@ describe("familyToPermissionKey", () => {
     expect(familyToPermissionKey("factory", true)).toBe("droid");
   });
 
-  it("maps CLI-wrapped cursor to 'cursor', falls back to 'opencode' off-CLI", () => {
+  it("maps cursor to 'cursor' for both the CLI and the SDK", () => {
     expect(familyToPermissionKey("cursor", true)).toBe("cursor");
-    expect(familyToPermissionKey("cursor", false)).toBe("opencode");
+    expect(familyToPermissionKey("cursor", false)).toBe("cursor");
   });
 
   it("maps everything else to 'opencode'", () => {

@@ -894,8 +894,11 @@ Branch switching through `switchBranch` keeps `lanes.branch_ref` in sync.
 A raw `git checkout` inside the worktree — run by the user in a terminal or
 by an agent mid-turn — does not. **Branch drift** is that state: the lane
 worktree's live HEAD no longer points at the branch ADE recorded in
-`lanes.branch_ref`. Left undetected, ADE keeps displaying, and PR-matching
-against, a branch the lane no longer tracks.
+`lanes.branch_ref`. The session card and the PR pane match a pull request to the checked-out
+branch (`branchDrift.headBranchRef`) while the lane is drifted, and to
+`branchRef` otherwise. The create form still names `branchRef`, because opening
+a pull request pushes the recorded branch. The lane record stays on `branchRef`
+until drift is resolved.
 
 **Data model** (`apps/desktop/src/shared/types/lanes.ts`):
 

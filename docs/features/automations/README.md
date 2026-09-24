@@ -120,7 +120,7 @@ Current action coverage is intentionally focused — the runtime semantics stay 
 
 Best for lightweight autonomous text-work: reviews, audits, short summaries, status checks.
 
-- Launches through `agentChatService.createSession` with the rule's prompt template and allowed tools.
+- Launches through `agentChatService.createSession` with the rule's prompt template and allowed tools. A Cursor model, including a Cursor SDK model, stores its permission on `permissionConfig.providers.cursor`. Full Auto and Plan that an older builder saved on `providers.opencode` for that model still launch as Cursor full-auto and plan.
 - Records the session as an automation-scoped chat.
 - Appears in Automations > History as a thread.
 - Minimal orchestration overhead — no planner, no run-graph, no worker pool.
