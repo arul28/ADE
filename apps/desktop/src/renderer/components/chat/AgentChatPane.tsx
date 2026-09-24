@@ -14577,6 +14577,7 @@ export function AgentChatPane({
       laneId={laneId}
       sessionId={composerSessionId}
       runtimePin={renderedChatRuntimePin}
+      workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
     />
   ) : null;
   const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (

@@ -50,7 +50,7 @@ describe("ChatMacDesktopTimeLapseCard next to the pane", () => {
   });
 
   function mount() {
-    return render(<ChatMacDesktopTimeLapseCard laneId="lane-1" sessionId="chat-1" runtimePin={null} />);
+    return render(<ChatMacDesktopTimeLapseCard laneId="lane-1" sessionId="chat-1" runtimePin={null} workScopeKey="bound" />);
   }
 
   it("shows the turn's clip while the pane is not showing the lane's desktop", async () => {

@@ -5,13 +5,11 @@ import type { MacDesktopTimeLapse } from "../../../shared/types/macDesktop";
 import { localArtifactMediaUrl } from "../../../shared/artifactStreamUrl";
 import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import {
   isWorkSurfaceElementMounted,
   useWorkSurfaceElementMounted,
   workSurfaceKey,
 } from "../../lib/workToolOnScreen";
-import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
@@ -66,11 +64,18 @@ export function ChatMacDesktopTimeLapseCard({
   laneId,
   sessionId,
   runtimePin,
+  workScopeKey,
   hostIsLocal = true,
 }: {
   laneId: string | null;
   sessionId: string | null;
   runtimePin: OpenProjectBinding | null;
+  /**
+   * The Work pane's scope key for this chat's machine
+   * (`workRuntimeScopeKey(pin, the tab's binding)`). The pane owns the tab's
+   * binding, so it passes the key in.
+   */
+  workScopeKey: string;
   hostIsLocal?: boolean;
 }) {
   const scope = useChatRuntimeScope();
@@ -79,8 +84,7 @@ export function ChatMacDesktopTimeLapseCard({
   const [src, setSrc] = useState<string | null>(null);
   // The same key the Work pane's Mac Desktop registers under: this lane on
   // this chat's machine.
-  const boundBinding = useAppStore((s) => s.projectBinding);
-  const paneKey = laneId ? workSurfaceKey("mac-desktop", workRuntimeScopeKey(runtimePin, boundBinding), laneId) : null;
+  const paneKey = laneId ? workSurfaceKey("mac-desktop", workScopeKey, laneId) : null;
   const paneShowsDesktop = useWorkSurfaceElementMounted(paneKey);
   const paneKeyRef = useRef(paneKey);
   paneKeyRef.current = paneKey;
