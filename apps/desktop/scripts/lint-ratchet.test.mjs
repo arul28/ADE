@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { compareCounts, countRatchetViolations, parseBaseline, serializeBaseline } from "./lint-ratchet.mjs";
+import { pathToFileURL } from "node:url";
+import {
+  compareCounts,
+  countRatchetViolations,
+  isEntryScript,
+  parseBaseline,
+  serializeBaseline,
+} from "./lint-ratchet.mjs";
 
 const root = path.resolve("/repo");
 const file = (rel) => path.join(root, ...rel.split("/"));
@@ -29,6 +38,42 @@ describe("lint ratchet", () => {
       "apps/desktop/src/renderer/b.tsx": { "ade-ui/no-raw-z-index": 2 },
     });
     assert.deepEqual(Object.keys(counts), ["apps/desktop/src/renderer/a.tsx", "apps/desktop/src/renderer/b.tsx"]);
+  });
+
+  it("counts eslint-disabled ade-ui violations, so a disable comment cannot shrink the count", () => {
+    const counts = countRatchetViolations(
+      [
+        {
+          filePath: file("apps/desktop/src/renderer/a.tsx"),
+          messages: [],
+          suppressedMessages: [{ ruleId: "ade-ui/no-raw-z-index" }, { ruleId: "react-hooks/exhaustive-deps" }],
+        },
+      ],
+      root,
+    );
+    assert.deepEqual(counts, { "apps/desktop/src/renderer/a.tsx": { "ade-ui/no-raw-z-index": 1 } });
+  });
+
+  it("recognizes itself as the entry script through a symlinked path", (t) => {
+    const script = fs.realpathSync.native(new URL("./lint-ratchet.mjs", import.meta.url));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ratchet-link-"));
+    const link = path.join(dir, "linked.mjs");
+    try {
+      fs.symlinkSync(script, link);
+    } catch (error) {
+      // Windows without Developer Mode cannot create symlinks.
+      fs.rmSync(dir, { recursive: true, force: true });
+      t.skip(`symlinks unavailable: ${error.code}`);
+      return;
+    }
+    try {
+      const moduleUrl = pathToFileURL(script).href;
+      assert.equal(isEntryScript(link, moduleUrl, "linux"), true);
+      assert.equal(isEntryScript(path.join(dir, "missing.mjs"), moduleUrl, "linux"), false);
+      assert.equal(isEntryScript(undefined, moduleUrl, "linux"), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("serializes stably and round-trips", () => {

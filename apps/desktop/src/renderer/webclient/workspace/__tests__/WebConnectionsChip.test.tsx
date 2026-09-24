@@ -261,6 +261,36 @@ describe("WebConnectionsChip", () => {
     }
   });
 
+  it("stays open while the user works in a confirm raised from its machine menu", async () => {
+    renderChip([
+      machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true }),
+    ]);
+    openPopover();
+    const popover = await screen.findByRole("dialog");
+    // The confirm renders in its own body portal, outside the popover.
+    const confirm = document.createElement("div");
+    confirm.setAttribute("role", "alertdialog");
+    const button = document.createElement("button");
+    confirm.appendChild(button);
+    document.body.appendChild(confirm);
+    try {
+      fireEvent.pointerDown(button);
+      fireEvent.keyDown(button, { key: "Escape" });
+      expect(popover.isConnected).toBe(true);
+
+      // Escape inside the popover itself (also a role="dialog") still closes it.
+      fireEvent.keyDown(popover, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      openPopover();
+      await screen.findByRole("dialog");
+      fireEvent.pointerDown(document.body);
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    } finally {
+      confirm.remove();
+    }
+  });
+
   it("names no machine as the app's own — the list is status, not a switcher", () => {
     renderChip([
       machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true }),

@@ -29,7 +29,6 @@ import {
   type SessionContextMenuState,
 } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type {
   AgentChatSession,
   LaneSummary,
@@ -214,7 +213,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-  const stopAndDeleteConfirm = useConfirmDialog();
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
@@ -692,11 +690,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ) => {
       void (async () => {
         const label = (session.goal ?? session.title).trim() || "this session";
-        const confirmed = await stopAndDeleteConfirm.confirmAsync({
+        const confirmed = await confirmDialog({
           title: "Stop and delete session",
           message: `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
           confirmLabel: "Stop & delete",
-          danger: true,
+          destructive: true,
         });
         if (!confirmed) return;
 
@@ -726,7 +724,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })();
     },
-    [resolveSessionRuntimePin, stopAndDeleteConfirm, work],
+    [resolveSessionRuntimePin, work],
   );
 
   const selectedSessions = useMemo(
@@ -886,11 +884,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const targets = selectedSessions;
       if (!targets.length) return;
       const runningCount = targets.filter(canBulkStopSession).length;
-      const confirmed = await stopAndDeleteConfirm.confirmAsync({
+      const confirmed = await confirmDialog({
         title: "Stop and delete sessions",
         message: `Stop ${runningCount} running runtime${runningCount === 1 ? "" : "s"} and permanently delete ${targets.length} selected session${targets.length === 1 ? "" : "s"}?\n\nThis terminates running CLI and shell processes, then removes every selected session from ADE.`,
         confirmLabel: "Stop & delete",
-        danger: true,
+        destructive: true,
       });
       if (!confirmed) return;
 
@@ -938,7 +936,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
     })();
-  }, [deleteSelectedSession, selectedSessions, stopAndDeleteConfirm, work]);
+  }, [deleteSelectedSession, selectedSessions, work]);
 
   const finalizeCliResumeResult = useCallback(
     async (
@@ -1938,8 +1936,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         closingPtyIds={work.closingPtyIds}
         deletingSessionId={deletingSessionId}
       />
-
-      <ConfirmDialog state={stopAndDeleteConfirm.state} onClose={stopAndDeleteConfirm.close} />
     </div>
   );
 }

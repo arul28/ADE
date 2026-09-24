@@ -430,47 +430,53 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           </SettingsManagerTable>
 
           {credentialStoreUnreadable ? (
-            <div style={{
-              ...infoBoxStyle,
-              borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
-              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-              color: COLORS.textPrimary,
-            }}>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}
-              </div>
-              <div>{GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}</div>
-              <button
-                type="button"
-                style={{ ...linkButtonStyle, marginTop: 10 }}
-                onClick={() => openConnectionsPanel("machines")}
-              >
-                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action}
-              </button>
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-credential-store-unreadable",
+                tone: "warning",
+                title: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title,
+                detail: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail,
+                actions: [
+                  {
+                    label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action,
+                    onClick: () => openConnectionsPanel("machines"),
+                  },
+                ],
+              }}
+            />
           ) : null}
 
           {credentialFallback ? (
-            <div style={{
-              ...infoBoxStyle,
-              borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
-              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-              color: COLORS.textPrimary,
-            }}>
-              <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
-              <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
-              {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-credential-fallback",
+                tone: "warning",
+                title: (
+                  <span style={{ fontWeight: 500 }}>
+                    <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
+                    <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
+                    {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
+                  </span>
+                ),
+              }}
+            />
           ) : null}
 
           {!credentialFallback && backgroundPausedUntil && authFailure?.kind !== "rate_limited" ? (
-            <div style={{
-              ...infoBoxStyle,
-              borderColor: "color-mix(in srgb, var(--color-warning) 30%, transparent)",
-              background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
-            }}>
-              Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-background-paused",
+                tone: "warning",
+                title: (
+                  <span style={{ fontWeight: 500 }}>
+                    Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
+                  </span>
+                ),
+              }}
+            />
           ) : null}
 
           {credentialStates.length > 0 ? (
@@ -513,33 +519,26 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               {credentialPresentation.permissionHeading}
             </div>
             {permissionMode === "auth-failure" ? (
-              <div style={{
-                ...infoBoxStyle,
-                // Neutral during an outage: a warning tint implies the user has
-                // something to fix, and they don't.
-                borderColor: outage
-                  ? COLORS.border
-                  : "color-mix(in srgb, var(--color-warning) 35%, transparent)",
-                background: outage
-                  ? COLORS.recessedBg
-                  : "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-                color: COLORS.textPrimary,
-              }}>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                  {authFailurePresentation?.title}
-                </div>
-                <div>{authFailurePresentation?.settingsDetail}</div>
-                {outage ? (
-                  <button
-                    type="button"
-                    style={outlineButton({ marginTop: 10 })}
-                    onClick={() => openExternal(outage.actionUrl)}
-                  >
-                    <ArrowSquareOut size={13} />
-                    GitHub status
-                  </button>
-                ) : null}
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "github-auth-failure",
+                  // Neutral during an outage: a warning tone implies the user has
+                  // something to fix, and they don't.
+                  tone: outage ? "neutral" : "warning",
+                  title: authFailurePresentation?.title ?? "",
+                  detail: authFailurePresentation?.settingsDetail,
+                  actions: outage
+                    ? [
+                        {
+                          label: "GitHub status",
+                          icon: <ArrowSquareOut size={12} />,
+                          onClick: () => openExternal(outage.actionUrl),
+                        },
+                      ]
+                    : undefined,
+                }}
+              />
             ) : permissionMode === "app" ? (
               <div style={{ display: "grid", gap: 6 }}>
                 <div style={scopeRowStyle(githubStatus?.repoAccessOk === true)}>

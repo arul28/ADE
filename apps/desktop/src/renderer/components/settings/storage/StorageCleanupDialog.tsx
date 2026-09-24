@@ -28,19 +28,11 @@ export type SafeCleanupPlanConfig = {
 
 type Stage = "loading" | "review" | "removing" | "done" | "error";
 
-const FOCUSABLE_SELECTOR = [
-  "button:not([disabled])",
-  "input:not([disabled])",
-  "select:not([disabled])",
-  "textarea:not([disabled])",
-  "a[href]",
-  "[tabindex]:not([tabindex='-1'])",
-].join(",");
-
 /**
  * A storage dialog whose content draws its own header (the reclaim confirm).
- * The shared `Dialog` supplies the scrim, panel, focus trap, Escape and focus
- * return; stacked frames close top-first through Radix's layer stack.
+ * The shared `Dialog` supplies the scrim, panel, focus trap, initial focus,
+ * Escape and focus return; stacked frames close top-first through Radix's
+ * layer stack.
  */
 export function StorageDialogFrame({
   title,
@@ -55,16 +47,6 @@ export function StorageDialogFrame({
   panelStyleOverride?: React.CSSProperties;
   children: React.ReactNode;
 }) {
-  const contentRef = React.useRef<HTMLDivElement>(null);
-  // The frame has always opened on its first control (a frame after the
-  // content's own autoFocus), not on a text field further down.
-  React.useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      contentRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, []);
-
   return (
     <Dialog
       open
@@ -80,9 +62,7 @@ export function StorageDialogFrame({
       bodyStyle={{ display: "flex", flexDirection: "column" }}
       panelStyle={panelStyleOverride}
     >
-      <div ref={contentRef} style={{ display: "contents" }}>
-        {children}
-      </div>
+      {children}
     </Dialog>
   );
 }

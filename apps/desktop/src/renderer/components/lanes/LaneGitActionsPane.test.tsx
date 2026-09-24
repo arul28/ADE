@@ -573,7 +573,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await user.click(await screen.findByRole("button", { name: "SAVE CHANGES" }));
     await user.type(await screen.findByPlaceholderText("Optional note"), "stash untracked audit");
-    await user.click(screen.getByRole("button", { name: "SAVE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Save stash" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashPush).toHaveBeenCalledWith({
@@ -721,7 +721,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
-    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashDrop).toHaveBeenCalledWith({
@@ -832,7 +832,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByText("2 saved");
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
-    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -859,7 +859,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByText("2 saved");
     await user.click(screen.getByRole("button", { name: "CLEAR STASHES" }));
     await user.type(await screen.findByPlaceholderText("Type 2 to confirm"), "2");
-    await user.click(screen.getByRole("button", { name: "DELETE ALL" }));
+    await user.click(screen.getByRole("button", { name: "Delete all" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashClear).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
@@ -882,7 +882,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByText("2 saved");
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
-    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
     await waitFor(() => {
       expect(screen.getByText("ERROR: drop failed")).toBeTruthy();

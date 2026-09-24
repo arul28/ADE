@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { NoticeTone } from "../notice/noticeTones";
-import { Dialog, type DialogLayer } from "./Dialog";
+import { Dialog } from "./Dialog";
 
 /**
  * `confirmDialog` / `promptDialog`: the app's replacement for `window.confirm`
@@ -27,6 +27,11 @@ export type ConfirmDialogOptions = {
   destructive?: boolean;
   /** Show the tone icon tile. Default: shown when `tone` is set or `destructive`. */
   icon?: boolean;
+  /**
+   * Withdraw the question: aborting closes the dialog and resolves `false`.
+   * For confirms that stop applying while open, or whose owner unmounts.
+   */
+  signal?: AbortSignal;
 };
 
 export type PromptDialogOptions = {
@@ -69,12 +74,12 @@ function getSnapshot() {
   return requests;
 }
 
-function settle(id: number, value: boolean | string | null) {
-  const request = requests.find((entry) => entry.id === id);
-  if (!request) return;
+/** Drop a request; false when it was already settled. */
+function remove(id: number): boolean {
+  if (!requests.some((entry) => entry.id === id)) return false;
   requests = requests.filter((entry) => entry.id !== id);
   emit();
-  (request.resolve as (v: typeof value) => void)(value);
+  return true;
 }
 
 function ensureHost() {
@@ -88,7 +93,21 @@ function ensureHost() {
 
 export function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    requests = [...requests, { id: nextId++, kind: "confirm", options, resolve }];
+    const { signal } = options;
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const id = nextId++;
+    const onAbort = () => {
+      if (remove(id)) resolve(false);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const settle = (value: boolean) => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(value);
+    };
+    requests = [...requests, { id, kind: "confirm", options, resolve: settle }];
     ensureHost();
     emit();
   });
@@ -141,16 +160,18 @@ export function DialogHost(): JSX.Element | null {
         request.kind === "confirm" ? (
           <ConfirmDialogView
             key={request.id}
-            open
             options={request.options}
-            onResult={(value) => settle(request.id, value)}
+            onResult={(value) => {
+              if (remove(request.id)) request.resolve(value);
+            }}
           />
         ) : (
           <PromptDialogView
             key={request.id}
-            open
             options={request.options}
-            onResult={(value) => settle(request.id, value)}
+            onResult={(value) => {
+              if (remove(request.id)) request.resolve(value);
+            }}
           />
         ),
       )}
@@ -158,27 +179,22 @@ export function DialogHost(): JSX.Element | null {
   );
 }
 
-/** The confirm dialog itself; also used by `InlineDialogs.ConfirmDialog`. */
-export function ConfirmDialogView({
-  open,
+function ConfirmDialogView({
   options,
   onResult,
-  layer = "nestedDialog",
 }: {
-  open: boolean;
   options: ConfirmDialogOptions;
   onResult: (confirmed: boolean) => void;
-  layer?: DialogLayer;
 }): JSX.Element {
   const tone: NoticeTone = options.tone ?? (options.destructive ? "error" : "accent");
   return (
     <Dialog
-      open={open}
+      open
       onOpenChange={(next) => {
         if (!next) onResult(false);
       }}
       role="alertdialog"
-      layer={layer}
+      layer="nestedDialog"
       size="sm"
       tone={tone}
       icon={(options.icon ?? Boolean(options.tone || options.destructive)) || undefined}
@@ -193,28 +209,17 @@ export function ConfirmDialogView({
   );
 }
 
-/** The prompt dialog itself; also used by `InlineDialogs.PromptDialog`. */
-export function PromptDialogView({
-  open,
+function PromptDialogView({
   options,
   onResult,
-  layer = "nestedDialog",
 }: {
-  open: boolean;
   options: PromptDialogOptions;
   onResult: (value: string | null) => void;
-  layer?: DialogLayer;
 }): JSX.Element {
   const [value, setValue] = useState(options.defaultValue ?? "");
   const [touched, setTouched] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const errorId = useId();
-  useEffect(() => {
-    if (!open) return;
-    setValue(options.defaultValue ?? "");
-    setTouched(false);
-  }, [open, options.defaultValue]);
-
   const error = options.validate ? options.validate(value) ?? null : null;
   const empty = !options.allowEmpty && !value.trim();
   const blocked = empty || Boolean(error);
@@ -228,11 +233,11 @@ export function PromptDialogView({
 
   return (
     <Dialog
-      open={open}
+      open
       onOpenChange={(next) => {
         if (!next) onResult(null);
       }}
-      layer={layer}
+      layer="nestedDialog"
       size="sm"
       tone={tone}
       title={options.title}

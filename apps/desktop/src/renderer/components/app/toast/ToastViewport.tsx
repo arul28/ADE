@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { Z_LAYERS } from "../../ui/zLayers";
-import { ToastStack } from "./ToastStack";
+import { TOAST_MOTION_PROPS, ToastStack } from "./ToastStack";
 import { useCornerObstacle, type CornerObstacleRect } from "./toastViewportInsets";
 
 /** Distance from the content area's bottom and right edges. */
@@ -68,6 +68,7 @@ export function ToastViewport({ slot, slotKey }: { slot?: ReactNode; slotKey?: s
     <div
       ref={ref}
       data-testid="toast-viewport"
+      data-ade-toast-viewport=""
       className="ade-toast-viewport"
       style={{
         position: "absolute",
@@ -85,14 +86,7 @@ export function ToastViewport({ slot, slotKey }: { slot?: ReactNode; slotKey?: s
       <ToastStack />
       <AnimatePresence initial={false}>
         {slot ? (
-          <motion.div
-            key={slotKey ?? "slot"}
-            layout="position"
-            initial={{ opacity: 0, y: 8, scale: 0.985 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, x: 18, transition: { duration: 0.14 } }}
-            transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-          >
+          <motion.div key={slotKey ?? "slot"} {...TOAST_MOTION_PROPS}>
             {slot}
           </motion.div>
         ) : null}

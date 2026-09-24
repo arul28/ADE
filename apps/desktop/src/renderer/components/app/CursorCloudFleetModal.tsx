@@ -26,8 +26,6 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
-import { NoticeCloseButton, NoticeIcon } from "../ui/notice/NoticeParts";
-import { NOTICE_FLOAT_SURFACE, noticeTone } from "../ui/notice/noticeTones";
 import { Banner } from "../ui/notice";
 import { FleetRow, SectionHeader } from "./CursorCloudFleetRow";
 
@@ -712,20 +710,21 @@ export function CursorCloudFleetModal({
           )}
         </div>
 
-        {/* Pulled notice toast */}
+        {/* Pulled notice */}
         {pulledNotice ? (
           <div
-            role="status"
-            className="absolute bottom-12 left-1/2 flex -translate-x-1/2 items-center gap-2 py-1.5 pl-3 pr-1.5 text-[11.5px] text-fg"
-            style={{
-              ...NOTICE_FLOAT_SURFACE,
-              borderRadius: 14,
-              border: `1px solid ${noticeTone("success").edge}`,
-            }}
+            className="absolute bottom-12 left-1/2 -translate-x-1/2"
+            style={{ width: "max-content", maxWidth: "calc(100% - 32px)" }}
           >
-            <NoticeIcon tone="success" size="sm" bare />
-            {pulledNotice}
-            <NoticeCloseButton label="Dismiss" title="Dismiss" onClick={() => setPulledNotice(null)} />
+            <Banner
+              layout="floating"
+              model={{
+                id: "cursor-cloud-pulled",
+                tone: "success",
+                title: pulledNotice,
+                dismiss: { onDismiss: () => setPulledNotice(null), label: "Dismiss", title: "Dismiss" },
+              }}
+            />
           </div>
         ) : null}
     </Dialog>

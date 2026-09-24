@@ -116,7 +116,7 @@ export function AutoUpdateBanner() {
         title: `ADE will update in ${secondsLeft}s`,
         tone: "info",
         durationMs: 0,
-        action: { label: "Cancel", onClick: handleCancelAutoApply },
+        actions: [{ label: "Cancel", onClick: handleCancelAutoApply }],
       });
     };
     renderToast();

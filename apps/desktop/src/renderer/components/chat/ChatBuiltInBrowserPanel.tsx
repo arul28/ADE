@@ -1887,12 +1887,12 @@ export function ChatBuiltInBrowserPanel({
         title: "HAR exported",
         message: `${result.entryCount} ${result.entryCount === 1 ? "request" : "requests"} · ${result.relativePath ?? result.filePath}`,
         tone: "success",
-        action: {
+        actions: [{
           label: "Reveal",
           onClick: () => {
             void window.ade.app.revealPath(result.filePath).catch(() => {});
           },
-        },
+        }],
       });
     });
   }, [runBusy, withBrowserScope]);
@@ -1913,12 +1913,12 @@ export function ChatBuiltInBrowserPanel({
           ? `Added to proof · ${result.relativePath ?? result.path}`
           : (result.relativePath ?? result.path),
         tone: "success",
-        action: {
+        actions: [{
           label: "Reveal",
           onClick: () => {
             void window.ade.app.revealPath(result.path).catch(() => {});
           },
-        },
+        }],
       });
     });
   }, [applyStatus, runBusy, withBrowserScope]);

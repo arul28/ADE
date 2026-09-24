@@ -726,6 +726,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             ...getIntegrationLaneWarningMessages(p),
           ].join("\n\n"),
           confirmLabel: "Delete",
+          cancelLabel: "Keep lane",
           destructive: true,
         })
       : false;

@@ -54,6 +54,11 @@ tester.run("no-adhoc-notice-component", rule("no-adhoc-notice-component"), {
       code: "import { Banner } from '../../ui/notice/Banner';\nexport const X = memo(function OutageNotice() { return null; });",
       filename: FILE,
     },
+    {
+      // Relative import resolved against the file: components/app/x.tsx -> ./toast/toastStore.
+      code: "import { showToast } from './toast/toastStore';\nexport function UndoToast() { return null; }",
+      filename: "/repo/apps/desktop/src/renderer/components/app/UndoToast.tsx",
+    },
     // Not components: lowercase, plural hook names, non-function values.
     "export function useLaneEventToasts() {}",
     "const bannerNotice = () => null;",

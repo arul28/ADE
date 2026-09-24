@@ -7,18 +7,13 @@
  */
 export {
   Dialog,
-  DialogActions,
-  DIALOG_PANEL_SURFACE,
-  DIALOG_SCRIM_STYLE,
   type DialogAction,
   type DialogLayer,
   type DialogProps,
   type DialogSize,
 } from "./Dialog";
 export {
-  ConfirmDialogView,
   DialogHost,
-  PromptDialogView,
   confirmDialog,
   promptDialog,
   type ConfirmDialogOptions,

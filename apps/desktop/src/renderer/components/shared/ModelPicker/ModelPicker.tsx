@@ -13,6 +13,7 @@ import { HarnessLogo } from "../HarnessLogo";
 import type { HarnessPresetLogo } from "../../../../shared/harnessPresets";
 import { cn } from "../../ui/cn";
 import { usePortalContainer } from "../../ui/portalContainer";
+import { Z_LAYERS } from "../../ui/zLayers";
 import { ModelPickerContent, type ModelPickerSelection } from "./ModelPickerContent";
 import type { AuthStatus } from "./ModelPickerRail";
 import {
@@ -485,7 +486,8 @@ export const ModelPicker = memo(function ModelPicker({
             sideOffset={6}
             collisionPadding={8}
             avoidCollisions
-            className="z-[100] outline-none"
+            className="outline-none"
+            style={{ zIndex: Z_LAYERS.popover }}
             onCloseAutoFocus={(event) => {
               event.preventDefault();
             }}

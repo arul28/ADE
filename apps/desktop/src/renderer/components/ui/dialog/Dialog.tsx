@@ -25,7 +25,7 @@ export type DialogLayer = "dialog" | "nestedDialog";
 const SIZE_WIDTH: Record<DialogSize, number> = { sm: 400, md: 520, lg: 720 };
 
 /** The scrim: one tint, one blur, everywhere. */
-export const DIALOG_SCRIM_STYLE: CSSProperties = {
+const DIALOG_SCRIM_STYLE: CSSProperties = {
   position: "fixed",
   inset: 0,
   background: "rgba(6, 5, 10, 0.58)",
@@ -34,7 +34,7 @@ export const DIALOG_SCRIM_STYLE: CSSProperties = {
 };
 
 /** The panel material (the notice card, lifted). */
-export const DIALOG_PANEL_SURFACE: CSSProperties = {
+const DIALOG_PANEL_SURFACE: CSSProperties = {
   background: "color-mix(in srgb, var(--color-card) 98%, transparent)",
   border: "1px solid color-mix(in srgb, var(--color-border) 88%, var(--color-fg) 12%)",
   borderRadius: 14,
@@ -87,6 +87,11 @@ export type DialogProps = {
   dismissible?: boolean;
   /** When false, scrim clicks do nothing but Esc still closes. Default true. */
   closeOnScrimClick?: boolean;
+  /**
+   * Runs before the dialog handles Escape. The dialog stops the key from
+   * propagating past it; `preventDefault()` instead keeps the dialog open and
+   * lets the key through to an inner handler (an open picker inside).
+   */
   onEscapeKeyDown?: (event: KeyboardEvent) => void;
   /** Element to focus on open. Default: the autoFocus action, else the first focusable. */
   initialFocusRef?: RefObject<HTMLElement | null>;
@@ -106,6 +111,16 @@ export type DialogProps = {
   stopClickPropagation?: boolean;
   children?: ReactNode;
 };
+
+/**
+ * App-level surfaces that stack above an open dialog (toasts, the floating
+ * banner). Interacting with them is not an outside click on the dialog.
+ */
+const ABOVE_DIALOG_SURFACES = '[data-ade-toast-viewport],[data-testid="app-banner-floating"]';
+
+function isAboveDialogSurface(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(ABOVE_DIALOG_SURFACES) !== null;
+}
 
 function cssLength(value: number | string | undefined): string | undefined {
   if (value == null) return undefined;
@@ -239,13 +254,20 @@ export function Dialog({
           onCloseAutoFocus={handleCloseAutoFocus}
           onEscapeKeyDown={(event) => {
             onEscapeKeyDown?.(event);
+            // Radix sees Escape in the document's capture phase, before anyone
+            // else. The topmost dialog owns this keypress: stop it before it
+            // reaches a HeaderSheet focus trap under it (React bubbles through
+            // portals) or a page's window keydown listener, which would close
+            // those too. A caller that prevented default is handing the key to
+            // something inside the dialog (an open picker), so let it through.
+            if (!event.defaultPrevented) event.stopPropagation();
             if (!dismissible) event.preventDefault();
           }}
           onPointerDownOutside={(event) => {
-            if (!dismissible || !closeOnScrimClick) event.preventDefault();
+            if (!dismissible || !closeOnScrimClick || isAboveDialogSurface(event.target)) event.preventDefault();
           }}
           onInteractOutside={(event) => {
-            if (!dismissible || !closeOnScrimClick) event.preventDefault();
+            if (!dismissible || !closeOnScrimClick || isAboveDialogSurface(event.target)) event.preventDefault();
           }}
         >
           <PortalContainerContext.Provider value={panelEl}>
@@ -331,6 +353,7 @@ export function Dialog({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "flex-end",
+                  flexWrap: "wrap",
                   gap: 8,
                   padding: "14px 20px 18px",
                   flexShrink: 0,
@@ -355,28 +378,5 @@ export function Dialog({
         </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>
-  );
-}
-
-/** Footer actions laid out the dialog way, for dialogs that build a custom `footer`. */
-export function DialogActions({
-  actions,
-  tone = "neutral",
-}: {
-  actions: DialogAction[];
-  tone?: NoticeTone;
-}): JSX.Element {
-  return (
-    <>
-      {actions.map((action, index) => (
-        <NoticeButton
-          key={`${action.label}-${index}`}
-          action={action}
-          tone={tone}
-          size="md"
-          fallbackVariant={index === 0 ? "solid" : "secondary"}
-        />
-      ))}
-    </>
   );
 }

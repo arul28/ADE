@@ -5,7 +5,7 @@
  * - `showToast` (components/app/toast/toastStore) + `ToastCard`: bottom-right toasts
  * - `noticeTone`: the shared tone palette
  */
-export { Banner, isDurableDismiss, type BannerDismiss, type BannerLayout, type BannerModel } from "./Banner";
+export { Banner, type BannerDismiss, type BannerLayout, type BannerModel } from "./Banner";
 export { AppBannerHost } from "./AppBannerHost";
 export {
   APP_BANNER_PRIORITY,
@@ -22,8 +22,7 @@ export {
   NoticeChip,
   NoticeCloseButton,
   NoticeIcon,
-  defaultNoticeIcon,
   type NoticeAction,
   type NoticeActionVariant,
 } from "./NoticeParts";
-export { NOTICE_TONE_RANK, noticeTone, type NoticeTone, type NoticeToneTokens } from "./noticeTones";
+export { noticeTone, type NoticeTone, type NoticeToneTokens } from "./noticeTones";

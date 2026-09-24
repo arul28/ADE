@@ -2292,6 +2292,7 @@ describe("TerminalsPage chat session activation", () => {
     const runningCli = workMocks.makeTerminalSession("cli-single", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
+    const confirmSpy = vi.mocked(confirmDialog).mockClear().mockResolvedValue(true);
 
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2319,7 +2320,11 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(await screen.findByRole("button", { name: "context stop and delete cli-single" }));
 
     // The styled confirmation dialog must gate the destructive single-session action.
-    fireEvent.click(await screen.findByRole("button", { name: "Stop & delete" }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Stop and delete session",
+      confirmLabel: "Stop & delete",
+      destructive: true,
+    }));
 
     await waitFor(() => {
       // The session-delete service stops the runtime and removes the record in one call;
@@ -2334,6 +2339,7 @@ describe("TerminalsPage chat session activation", () => {
   it("keeps a foreign runtime pin after the context menu closes for confirmation", async () => {
     const runningCli = workMocks.makeTerminalSession("cli-studio", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     const binding: OpenProjectBinding = {
       kind: "remote",
       key: "remote:studio:ade",
@@ -2375,7 +2381,6 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(await screen.findByRole("button", {
       name: "context stop and delete cli-studio",
     }));
-    fireEvent.click(await screen.findByRole("button", { name: "Stop & delete" }));
 
     await waitFor(() => {
       expect(sessionDelete).toHaveBeenCalledWith(
@@ -2488,6 +2493,7 @@ describe("TerminalsPage chat session activation", () => {
   it("does not delete when the stop-and-delete confirmation is dismissed", async () => {
     const runningCli = workMocks.makeTerminalSession("cli-cancel", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const confirmSpy = vi.mocked(confirmDialog).mockClear();
 
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2512,11 +2518,12 @@ describe("TerminalsPage chat session activation", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "context menu cli-cancel" }));
     fireEvent.click(await screen.findByRole("button", { name: "context stop and delete cli-cancel" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Stop & delete" })).toBeNull(),
-    );
+    // Declined (the mock resolves false): nothing is stopped or deleted.
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Stop and delete session" }),
+    ));
+    await Promise.resolve();
     expect(sessionDelete).not.toHaveBeenCalled();
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalled();
   });
@@ -2528,6 +2535,7 @@ describe("TerminalsPage chat session activation", () => {
     });
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const confirmSpy = vi.mocked(confirmDialog).mockClear().mockResolvedValue(true);
 
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2555,7 +2563,10 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.click(await screen.findByRole("button", { name: "bulk stop and delete" }));
 
     // The styled confirmation dialog gates the destructive action.
-    fireEvent.click(await screen.findByRole("button", { name: "Stop & delete" }));
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Stop and delete sessions",
+      confirmLabel: "Stop & delete",
+    })));
 
     await waitFor(() => {
       // The running CLI session is stopped+deleted via the session-delete service,

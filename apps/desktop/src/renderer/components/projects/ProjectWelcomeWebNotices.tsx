@@ -125,21 +125,20 @@ export function WebAddProjectNotice({
   onDismiss: () => void;
 }) {
   return (
-    <div data-ade-web-add-project-notice="true" style={{ display: "contents" }}>
-      <Banner
-        layout="inline"
-        style={{ marginTop: -4, maxWidth: 460, width: "100%" }}
-        model={{
-          id: "web-add-project",
-          tone: "info",
-          title: "Projects are added on the machine that hosts them.",
-          detail: machineName
-            ? `Open ADE on ${machineName} to add, create, or clone one — it shows up here as soon as it does. ADE Web opens the projects that machine already has.`
-            : "Open ADE on the host machine to add, create, or clone one. ADE Web opens the projects that machine already has.",
-          actions: [{ label: "Got it", onClick: onDismiss }],
-        }}
-      />
-    </div>
+    <Banner
+      testId="ade-web-add-project-notice"
+      layout="inline"
+      style={{ marginTop: -4, maxWidth: 460, width: "100%" }}
+      model={{
+        id: "web-add-project",
+        tone: "info",
+        title: "Projects are added on the machine that hosts them.",
+        detail: machineName
+          ? `Open ADE on ${machineName} to add, create, or clone one — it shows up here as soon as it does. ADE Web opens the projects that machine already has.`
+          : "Open ADE on the host machine to add, create, or clone one. ADE Web opens the projects that machine already has.",
+        actions: [{ label: "Got it", onClick: onDismiss }],
+      }}
+    />
   );
 }
 
@@ -158,32 +157,31 @@ export function WebZeroMachines({ notice }: { notice: WebZeroMachinesNotice }) {
   const look = ZERO_MACHINES_LOOK[notice.kind];
   const lines = [notice.detail, notice.reassurance].filter((line): line is string => Boolean(line));
   return (
-    <div data-ade-web-machines-empty={notice.kind} style={{ display: "contents" }}>
-      <Banner
-        layout="inline"
-        style={{ marginTop: -4, maxWidth: 420, width: "100%" }}
-        model={{
-          id: `web-zero-machines-${notice.kind}`,
-          tone: look.tone,
-          icon: look.icon,
-          busy: notice.kind === "loading",
-          title: notice.headline,
-          detail: lines.length > 0
-            ? (
-                <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {lines.map((line) => <span key={line}>{line}</span>)}
-                </span>
-              )
-            : undefined,
-          actions: notice.action
-            ? [{
-                label: notice.action.label,
-                onClick: notice.action.onSelect,
-                busy: notice.action.busy,
-              }]
-            : undefined,
-        }}
-      />
-    </div>
+    <Banner
+      testId="ade-web-machines-empty"
+      layout="inline"
+      style={{ marginTop: -4, maxWidth: 420, width: "100%" }}
+      model={{
+        id: `web-zero-machines-${notice.kind}`,
+        tone: look.tone,
+        icon: look.icon,
+        busy: notice.kind === "loading",
+        title: notice.headline,
+        detail: lines.length > 0
+          ? (
+              <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {lines.map((line) => <span key={line}>{line}</span>)}
+              </span>
+            )
+          : undefined,
+        actions: notice.action
+          ? [{
+              label: notice.action.label,
+              onClick: notice.action.onSelect,
+              busy: notice.action.busy,
+            }]
+          : undefined,
+      }}
+    />
   );
 }

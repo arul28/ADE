@@ -879,20 +879,14 @@ export function CrossMachineHandoffModal({
       bodyPadding={false}
       scrollBody={false}
       bodyStyle={{ display: "flex", flexDirection: "column" }}
-      // The form's colors are written for this dark surface in every theme.
-      panelStyle={{ background: "#11131a", borderColor: "rgba(255,255,255,0.09)" }}
       // Nothing inside takes focus on open; the panel holds it.
       preventAutoFocus
       // A handoff in flight cannot be backed out of.
       dismissible={!sending}
       onEscapeKeyDown={(event) => {
         // An open permission list takes Escape first and closes itself only.
-        if (document.querySelector("[data-permission-mode-picker-dropdown]")) {
-          event.preventDefault();
-          return;
-        }
-        // The key that closed this dialog is not also the chat's Escape.
-        if (!sending) event.stopPropagation();
+        // (Dialog stops the key either way, so it never reaches the chat.)
+        if (document.querySelector("[data-permission-mode-picker-dropdown]")) event.preventDefault();
       }}
       footerStart={
         <div className="min-w-0 text-[10px] text-fg/38">

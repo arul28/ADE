@@ -322,7 +322,7 @@ export function groupHistoryLaneActions(actions: HistoryLaneAction[]): HistoryLa
     .filter((group) => group.actions.length > 0);
 }
 
-type HistoryConfirmOptions = { confirmLabel?: string; destructive?: boolean };
+type HistoryConfirmOptions = { confirmLabel?: string; cancelLabel?: string; destructive?: boolean };
 
 /** Splits "Question? Detail." into a dialog title and body; the words stay the same. */
 function splitQuestion(text: string): { title: string; message?: string } {
@@ -559,7 +559,7 @@ export async function runHistoryLaneAction(args: {
       case "stash": {
         const message = await promptOrCancel("Stash message", "ADE history stash");
         if (!message) return;
-        const includeUntracked = await confirmOrCancel("Include untracked files in the stash?");
+        const includeUntracked = await confirmOrCancel("Include untracked files in the stash?", { cancelLabel: "Tracked only" });
         await window.ade.git.stashPush({ laneId, message, includeUntracked });
         onNotice?.("Saved stash");
         onComplete?.();

@@ -149,7 +149,7 @@ import {
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
-import { ChatLifecycleBanner, shouldRenderChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
@@ -243,7 +243,6 @@ import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
@@ -4423,7 +4422,7 @@ export function AgentChatPane({
   // Resolve this after the machine pin so foreign chats never send a wake or
   // unsettle request to the tab-bound runtime.
   const composerLifecycleSession = useSessionLifecycleSnapshot(composerSessionId);
-  const hasComposerLifecycleBanner = shouldRenderChatLifecycleBanner(composerLifecycleSession);
+  const hasComposerLifecyclePill = shouldRenderChatLifecyclePill(composerLifecycleSession);
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -11329,18 +11328,16 @@ export function AgentChatPane({
       });
   }, [invalidateCurrentChatSessionList, refreshSessions]);
 
-  const archiveConfirm = useConfirmDialog();
-  const memoryResetConfirm = useConfirmDialog();
   const requestArchiveChat = useCallback(
     async (sessionId: string, title: string) => {
-      const ok = await archiveConfirm.confirmAsync({
+      const ok = await confirmDialog({
         title: `Archive "${title}"?`,
         message: "Archived chats are hidden from the active chat tabs.",
         confirmLabel: "ARCHIVE",
       });
       if (ok) handleArchiveChat(sessionId);
     },
-    [archiveConfirm, handleArchiveChat],
+    [handleArchiveChat],
   );
 
   const handleUnarchiveChat = useCallback((sessionId: string) => {
@@ -11877,11 +11874,11 @@ export function AgentChatPane({
       && !contextAttachmentsSnapshot.length
       && !visualContextPrefix.length
     ) {
-      const ok = await memoryResetConfirm.confirmAsync({
+      const ok = await confirmDialog({
         title: "Reset Codex memory?",
         message: "Deletes every memory file under this Codex home, not just this chat.",
         confirmLabel: "Reset memory",
-        danger: true,
+        destructive: true,
       });
       if (!ok) return;
       setBusy(true);
@@ -14060,8 +14057,8 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
-  const lifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
-    <ChatLifecycleBanner sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
+  const lifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
+    <ChatLifecyclePill sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
   // The whole usage-limit surface: one line, above the composer, in the same
   // capped column the prompt box uses so the two share an edge. It is an
@@ -14598,8 +14595,8 @@ export function AgentChatPane({
       onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
     />
   ) : null;
-  const appPanelLifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
-    <ChatLifecycleBanner
+  const appPanelLifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
+    <ChatLifecyclePill
       sessionId={composerSessionId}
       runtimePin={renderedChatRuntimePin}
       className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
@@ -15487,8 +15484,6 @@ export function AgentChatPane({
           }}
         />
       ) : null}
-      <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
-      <ConfirmDialog state={memoryResetConfirm.state} onClose={memoryResetConfirm.close} />
       {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser
           open={importBrowserOpen}

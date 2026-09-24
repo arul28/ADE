@@ -2,8 +2,7 @@
   "version": 1,
   "files": {
     "apps/desktop/src/renderer/components/account/YourMacsCard.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
+      "ade-ui/no-fixed-overlay": 2
     },
     "apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx": {
       "ade-ui/no-fixed-overlay": 1,
@@ -11,10 +10,6 @@
     },
     "apps/desktop/src/renderer/components/app/AppShell.tsx": {
       "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
     },
     "apps/desktop/src/renderer/components/app/AutoUpdateErrorDialog.tsx": {
       "ade-ui/no-fixed-overlay": 2,
@@ -31,21 +26,12 @@
     "apps/desktop/src/renderer/components/app/TabNav.tsx": {
       "ade-ui/no-fixed-overlay": 1
     },
-    "apps/desktop/src/renderer/components/app/TopBar.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
-    "apps/desktop/src/renderer/components/automations/AutomationsWorkspace.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
-    },
     "apps/desktop/src/renderer/components/capture/CaptureFlyIn.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/capture/GlobalCaptureGestureHost.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
+      "ade-ui/no-fixed-overlay": 1
     },
     "apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx": {
       "ade-ui/no-fixed-overlay": 5,
@@ -94,8 +80,7 @@
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/cto/CtoVoiceHud.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
+      "ade-ui/no-fixed-overlay": 2
     },
     "apps/desktop/src/renderer/components/files/v2/ContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
@@ -119,10 +104,6 @@
     "apps/desktop/src/renderer/components/lanes/LaneDialogShell.tsx": {
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2
-    },
-    "apps/desktop/src/renderer/components/lanes/LaneGitActionsPane.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/lanes/LanePrBadgePopover.tsx": {
       "ade-ui/no-raw-z-index": 1
@@ -161,10 +142,6 @@
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2
     },
-    "apps/desktop/src/renderer/components/prs/CreatePrModal.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/prs/shared/PrCommandPalettes.tsx": {
       "ade-ui/no-fixed-overlay": 2
     },
@@ -176,19 +153,10 @@
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2
     },
-    "apps/desktop/src/renderer/components/settings/WebScopeBanner.tsx": {
-      "ade-ui/no-adhoc-notice-component": 1
-    },
     "apps/desktop/src/renderer/components/shared/MentionInput.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/shared/ModelPicker/ModelListRow.tsx": {
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/shared/ModelPicker/ModelPicker.tsx": {
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/shared/ModelPicker/ReasoningEffortPicker.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx": {

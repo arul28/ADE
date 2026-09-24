@@ -4,6 +4,7 @@ import { CaretDown } from "@phosphor-icons/react";
 import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { usePortalContainer } from "../../ui/portalContainer";
+import { Z_LAYERS } from "../../ui/zLayers";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
 import { useReasoningByFamily } from "./useReasoningByFamily";
 
@@ -462,7 +463,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           sideOffset={6}
           collisionPadding={8}
           avoidCollisions
-          className="z-[100] outline-none"
+          className="outline-none"
+          style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
           }}

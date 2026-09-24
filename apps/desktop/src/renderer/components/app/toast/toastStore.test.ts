@@ -55,6 +55,28 @@ describe("toastStore", () => {
     expect(stack[stack.length - 1].title).toBe("t6");
   });
 
+  it("keeps sticky toasts over the cap, dropping the oldest timed toast instead", () => {
+    const progress = showToast({ title: "Sending feedback", durationMs: 0 });
+    const idle = showToast({ title: "3 sessions idle", durationMs: 0 });
+    const lanes = [1, 2, 3, 4, 5].map((n) => showToast({ title: `Lane ${n} created` }));
+    const stack = getToasts().map((t) => t.id);
+    expect(stack).toHaveLength(5);
+    expect(stack).toEqual([progress, idle, lanes[2], lanes[3], lanes[4]]);
+  });
+
+  it("drops the oldest sticky toast only when every toast is sticky", () => {
+    const ids = [1, 2, 3, 4, 5, 6].map((n) => showToast({ title: `s${n}`, durationMs: 0 }));
+    expect(getToasts().map((t) => t.id)).toEqual(ids.slice(1));
+  });
+
+  it("drops the arriving timed toast's older timed peers before any sticky one", () => {
+    const sticky = [1, 2, 3, 4].map((n) => showToast({ title: `s${n}`, durationMs: 0 }));
+    const timedA = showToast({ title: "a" });
+    const timedB = showToast({ title: "b" });
+    expect(getToasts().map((t) => t.id)).toEqual([...sticky, timedB]);
+    expect(getToasts().some((t) => t.id === timedA)).toBe(false);
+  });
+
   it("auto-dismisses after the default duration", () => {
     showToast({ title: "hi" });
     expect(getToasts()).toHaveLength(1);
@@ -252,9 +274,9 @@ describe("useLaneEventToasts", () => {
       tone: "success",
       colorDot: "#ffaa00",
     });
-    expect(toast?.action?.label).toBe("View");
+    expect(toast?.actions?.[0]?.label).toBe("View");
 
-    toast?.action?.onClick();
+    toast?.actions?.[0]?.onClick?.();
     expect(navigate).toHaveBeenCalledWith("/lanes?laneId=lane-1&focus=single");
   });
 
@@ -418,12 +440,12 @@ describe("useAutoDiagnosticsToast", () => {
       title: "A diagnostic report was sent to ADE",
       message: "Reference abcd1234",
     });
-    expect(toast?.action?.label).toBe("View");
-    expect(toast?.secondaryAction?.label).toBe("Turn off");
+    expect(toast?.actions?.[0]?.label).toBe("View");
+    expect(toast?.actions?.[1]?.label).toBe("Turn off");
 
-    toast?.action?.onClick();
+    toast?.actions?.[0]?.onClick?.();
     expect(api.bridge.diagnostics.revealReport).toHaveBeenCalledWith("/reports/x.md");
-    toast?.secondaryAction?.onClick();
+    toast?.actions?.[1]?.onClick?.();
     expect(api.bridge.diagnostics.setSharing).toHaveBeenCalledWith(false);
   });
 
@@ -475,7 +497,7 @@ describe("useAutoDiagnosticsToast", () => {
     api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
     const [toast] = getToasts();
     act(() => {
-      toast?.secondaryAction?.onClick();
+      toast?.actions?.[1]?.onClick?.();
     });
 
     await waitFor(() => {
@@ -509,7 +531,7 @@ describe("useAutoDiagnosticsToast", () => {
     const [toast] = getToasts();
     // Nothing to reveal, so no dead "View" button — but turning it off must
     // always be one click away from the message that says it happened.
-    expect(toast?.action).toBeUndefined();
-    expect(toast?.secondaryAction?.label).toBe("Turn off");
+    expect(toast?.actions?.map((action) => action.label)).toEqual(["Turn off"]);
+    expect(toast?.actions?.[0]?.variant).toBe("secondary");
   });
 });

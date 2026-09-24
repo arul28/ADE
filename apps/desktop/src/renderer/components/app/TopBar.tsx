@@ -81,7 +81,6 @@ import {
   subscribeOpenConnectionsPanel,
   type ConnectionsPanelTab,
 } from "../../lib/connectionsPanel";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
@@ -400,6 +399,10 @@ function ShellConnectionChip({
   );
 }
 
+/** The top bar's small anchored menus (connections/usage, machine switcher). */
+const TOP_BAR_MENU_CLASS =
+  "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45";
+
 function HeaderStatusMenu({
   remoteConnected,
   syncConnected,
@@ -496,10 +499,7 @@ function HeaderStatusMenu({
               ref={menuRef}
               role="menu"
               aria-label="Connections and usage"
-              className={cn(
-                "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-                "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
-              )}
+              className={TOP_BAR_MENU_CLASS}
               style={{ top: menuPos.top, right: menuPos.right }}
             >
               {children(close)}
@@ -570,10 +570,7 @@ function MachineSwitcherMenu({
       ref={menuRef}
       role="menu"
       aria-label={`Machines for ${group.displayName}`}
-      className={cn(
-        "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-        "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
-      )}
+      className={TOP_BAR_MENU_CLASS}
       style={
         {
           left: anchor.left,
@@ -978,11 +975,6 @@ export function TopBar({
   );
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [connectionsTab, setConnectionsTab] = useState<ConnectionsPanelTab>("machines");
-  const {
-    state: remoteDisconnectConfirmState,
-    confirmAsync: confirmRemoteDisconnect,
-    close: closeRemoteDisconnectConfirm,
-  } = useConfirmDialog();
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -1901,13 +1893,13 @@ export function TopBar({
             ? "Removing this machine will delete its saved SSH details."
             : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
 
-      const confirmed = await confirmRemoteDisconnect({
+      const confirmed = await confirmDialog({
         title: action === "remove"
           ? `Remove ${targetName}?`
           : `Disconnect ${targetName}?`,
         message,
         confirmLabel: action === "remove" ? "REMOVE" : "DISCONNECT",
-        danger: true,
+        destructive: true,
       });
       if (!confirmed) return false;
       if (affectedTabs.length === 0) return true;
@@ -1982,7 +1974,7 @@ export function TopBar({
       finishAffectedTabClose();
       return true;
     },
-    [confirmRemoteDisconnect],
+    [],
   );
 
   const handleRemoteTargetDisconnectRequested = useCallback(
@@ -2944,15 +2936,6 @@ export function TopBar({
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
-      {typeof document !== "undefined"
-        ? createPortal(
-            <ConfirmDialog
-              state={remoteDisconnectConfirmState}
-              onClose={closeRemoteDisconnectConfirm}
-            />,
-            document.body,
-          )
-        : null}
       {typeof document !== "undefined" && !webMode && connectionsOpen
         ? createPortal(
             <HeaderSheet

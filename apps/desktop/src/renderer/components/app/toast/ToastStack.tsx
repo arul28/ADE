@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react";
 
-import { ToastCard, type ToastCardAction, type ToastCardModel } from "../../ui/notice/ToastCard";
+import { ToastCard } from "../../ui/notice/ToastCard";
 import {
   dismissToast,
   pauseToast,
@@ -9,6 +9,18 @@ import {
   useToasts,
   type Toast,
 } from "./toastStore";
+
+/**
+ * Enter/exit motion for every card in the bottom-right corner — store toasts
+ * and the viewport's slot — so they all move the same way.
+ */
+export const TOAST_MOTION_PROPS = {
+  layout: "position",
+  initial: { opacity: 0, y: 8, scale: 0.985 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, x: 18, transition: { duration: 0.14 } },
+  transition: { duration: 0.18, ease: [0.2, 0, 0, 1] },
+} as const satisfies HTMLMotionProps<"div">;
 
 /**
  * Renders the shared toast store through the one `ToastCard`. Mounted inside
@@ -21,29 +33,12 @@ export function ToastStack() {
   return (
     <AnimatePresence initial={false}>
       {toasts.map((toast) => (
-        <motion.div
-          key={toast.id}
-          layout="position"
-          initial={{ opacity: 0, y: 8, scale: 0.985 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, x: 18, transition: { duration: 0.14 } }}
-          transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-        >
+        <motion.div key={toast.id} {...TOAST_MOTION_PROPS}>
           <ToastStackCard toast={toast} />
         </motion.div>
       ))}
     </AnimatePresence>
   );
-}
-
-function toCardActions(toast: Toast): ToastCardAction[] | undefined {
-  if (toast.actions) return toast.actions;
-  const list: ToastCardAction[] = [];
-  if (toast.action) list.push({ label: toast.action.label, onClick: toast.action.onClick, variant: "primary" });
-  if (toast.secondaryAction) {
-    list.push({ label: toast.secondaryAction.label, onClick: toast.secondaryAction.onClick, variant: "secondary" });
-  }
-  return list.length > 0 ? list : undefined;
 }
 
 /**
@@ -59,26 +54,9 @@ function ToastStackCard({ toast }: { toast: Toast }) {
     onRendered?.();
   }, [onRendered]);
 
-  const model: ToastCardModel = {
-    tone: toast.tone,
-    title: toast.title,
-    message: toast.message,
-    icon: toast.icon,
-    badge: toast.badge,
-    eyebrow: toast.eyebrow,
-    colorDot: toast.colorDot,
-    chips: toast.chips,
-    content: toast.content,
-    error: toast.error,
-    busy: toast.busy,
-    actions: toCardActions(toast),
-    dismissible: toast.dismissible,
-    closeTitle: toast.closeTitle,
-  };
-
   return (
     <ToastCard
-      model={model}
+      model={toast}
       onMouseEnter={() => pauseToast(toast.id)}
       onMouseLeave={() => resumeToast(toast.id)}
       onClose={() => {

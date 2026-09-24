@@ -15,6 +15,7 @@ import {
 import { COLORS } from "../lanes/laneDesignTokens";
 import { useReportCornerObstacle } from "../app/toast/toastViewportInsets";
 import { NOTICE_FLOAT_SURFACE, noticeTone } from "../ui/notice/noticeTones";
+import { Z_LAYERS } from "../ui/zLayers";
 
 /**
  * The call HUD: a pill that grows a canvas.
@@ -229,7 +230,11 @@ function FailedPill({ onDismiss }: { onDismiss: () => void }) {
   const [settled, setSettled] = useState(0);
   useReportCornerObstacle(hudRef, settled);
   return (
-    <div className="pointer-events-none fixed inset-0 z-[112]" data-testid="cto-voice-hud-layer">
+    <div
+      className="pointer-events-none fixed inset-0"
+      style={{ zIndex: Z_LAYERS.hud }}
+      data-testid="cto-voice-hud-layer"
+    >
       <motion.div
         ref={hudRef}
         initial={reduced ? false : { opacity: 0, y: 14, scale: 0.98 }}
@@ -310,7 +315,8 @@ export function CtoVoiceHud({
   return (
     <div
       ref={constraintsRef}
-      className="pointer-events-none fixed inset-0 z-[112]"
+      className="pointer-events-none fixed inset-0"
+      style={{ zIndex: Z_LAYERS.hud }}
       data-testid="cto-voice-hud-layer"
     >
       <motion.div

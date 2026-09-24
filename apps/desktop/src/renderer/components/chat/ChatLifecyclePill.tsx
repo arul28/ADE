@@ -55,14 +55,14 @@ function snoozeDetail(snoozedUntil: string | null | undefined, nowMs?: number): 
   return `Hidden until ${until}`;
 }
 
-/** Keep the pane's notice-slot decision in lockstep with the banner itself. */
-export function shouldRenderChatLifecycleBanner(session: TerminalSessionSummary | null): boolean {
+/** Keep the pane's notice-slot decision in lockstep with the pill itself. */
+export function shouldRenderChatLifecyclePill(session: TerminalSessionSummary | null): boolean {
   if (!session) return false;
   return isSessionSnoozed(session)
     || sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "settled";
 }
 
-export function ChatLifecycleBanner({
+export function ChatLifecyclePill({
   sessionId,
   className,
   runtimePin = null,
@@ -72,14 +72,14 @@ export function ChatLifecycleBanner({
   runtimePin?: OpenProjectBinding | null;
 }) {
   const session = useSessionLifecycleSnapshot(sessionId);
-  if (!session || !shouldRenderChatLifecycleBanner(session)) return null;
+  if (!session || !shouldRenderChatLifecyclePill(session)) return null;
 
   const snoozed = isSessionSnoozed(session);
 
   // Snooze outranks the phase, matching the overlay precedence in
   // `sessionStatusPresentation`. (That module's `needs_you` carve-out is
   // deliberately not mirrored: a raised hand already owns the composer itself
-  // via the pending-input card, so it cannot be buried by this banner.)
+  // via the pending-input card, so it cannot be buried by this pill.)
   const variant: LifecycleVariant = snoozed ? "snoozed" : "settled";
   const chrome = VARIANT_CHROME[variant];
   const Icon = chrome.icon;

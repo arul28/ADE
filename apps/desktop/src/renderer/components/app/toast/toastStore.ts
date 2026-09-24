@@ -1,6 +1,6 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useSyncExternalStore } from "react";
 import type { NoticeTone } from "../../ui/notice/noticeTones";
-import type { ToastCardAction, ToastChip } from "../../ui/notice/ToastCard";
+import type { ToastCardAction, ToastCardModel, ToastChip } from "../../ui/notice/ToastCard";
 
 /**
  * ADE's one toast store. Every bottom-right notice — lane events, PR
@@ -12,51 +12,24 @@ import type { ToastCardAction, ToastChip } from "../../ui/notice/ToastCard";
 
 export type ToastTone = NoticeTone;
 
-export type ToastAction = {
-  label: string;
-  onClick: () => void;
-};
-
 export type { ToastCardAction, ToastChip };
 
-export type ToastInput = {
+/**
+ * A toast is a `ToastCardModel` plus the store's own bookkeeping, so the stack
+ * hands it to `ToastCard` as-is. `actions` are pill buttons (the first is the
+ * primary); an action dismisses the toast unless it sets `keepOpen`.
+ */
+export type ToastInput = Omit<ToastCardModel, "tone" | "title"> & {
   id?: string;
   title: string;
-  message?: string;
+  /** Defaults to "info". */
   tone?: ToastTone;
-  /** CSS color for the small lane dot rendered before the title. */
-  colorDot?: string;
-  action?: ToastAction;
-  /**
-   * A second, quieter action beside the first. Added for notices that offer
-   * both "look at this" and "stop doing this"; most toasts want neither or one.
-   */
-  secondaryAction?: ToastAction;
-  /**
-   * Full action list (pill buttons). When set it replaces `action` /
-   * `secondaryAction`. Actions dismiss the toast unless `keepOpen`.
-   */
-  actions?: ToastCardAction[];
-  /** Logo or feature glyph for the icon tile; defaults to the tone icon. */
-  icon?: ReactNode;
-  /** Short tone pill above the title ("Checks failing"). */
-  badge?: string;
-  /** Quiet text beside the badge ("#1287"). */
-  eyebrow?: ReactNode;
-  chips?: ToastChip[];
-  /** Live custom body under the message (a per-item progress list). */
-  content?: ReactNode;
-  /** Inline failure line under the body. */
-  error?: string;
-  /** Spinner in the icon tile. */
-  busy?: boolean;
-  /** Default true. `false` hides the close button (the toast closes itself). */
-  dismissible?: boolean;
-  /** Tooltip on the close button ("Dismiss for an hour"). */
-  closeTitle?: string;
   /** Runs when the user closes the toast with × (not on auto-dismiss). */
   onClose?: () => void;
-  /** Auto-dismiss delay; <= 0 or non-finite keeps the toast until dismissed. */
+  /**
+   * Auto-dismiss delay; <= 0 or non-finite keeps the toast until dismissed.
+   * Sticky toasts outlive timed ones when the stack is over its cap.
+   */
   durationMs?: number;
   /**
    * Fires once `ToastStack` has actually committed this toast to the DOM.
@@ -141,6 +114,21 @@ function scheduleTimer(id: string, durationMs: number): void {
   });
 }
 
+function isSticky(toast: Toast): boolean {
+  return !Number.isFinite(toast.durationMs) || toast.durationMs <= 0;
+}
+
+/**
+ * Which toast to drop when the stack is over its cap: the oldest one that would
+ * time out anyway. Sticky toasts (live progress, "N sessions idle", an undo that
+ * waits for an answer) only go when every toast is sticky, so a burst of
+ * "Lane created" events cannot push them off screen.
+ */
+function oldestEvictableIndex(stack: readonly Toast[]): number {
+  const timed = stack.findIndex((t) => !isSticky(t));
+  return timed >= 0 ? timed : 0;
+}
+
 /**
  * Show a toast, or replace an in-place one when `id` matches an existing toast
  * (keeping its stack position). Returns the toast id.
@@ -161,14 +149,11 @@ export function showToast(input: ToastInput): string {
     next[existingIndex] = toast;
     toasts = next;
   } else {
-    let next = [...toasts, toast];
-    if (next.length > MAX_TOASTS) {
-      const dropCount = next.length - MAX_TOASTS;
-      for (const dropped of next.slice(0, dropCount)) {
-        clearTimer(dropped.id);
-        timers.delete(dropped.id);
-      }
-      next = next.slice(dropCount);
+    const next = [...toasts, toast];
+    while (next.length > MAX_TOASTS) {
+      const [dropped] = next.splice(oldestEvictableIndex(next), 1);
+      clearTimer(dropped.id);
+      timers.delete(dropped.id);
     }
     toasts = next;
   }

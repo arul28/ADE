@@ -1,6 +1,6 @@
 /** Small shared pieces every provider tile, detail page, and body draws from. */
 import React from "react";
-import { CheckCircle, Copy, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, Copy } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import { Banner } from "../../ui/notice";
@@ -268,25 +268,5 @@ export function SubsectionTitle({ children }: { children: React.ReactNode }) {
 
 /** The one-line error a failed enumerate renders as. */
 export function ProviderErrorRow({ message }: { message: string }) {
-  return (
-    <div
-      role="alert"
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 6,
-        padding: "6px 8px",
-        fontSize: 11,
-        fontFamily: SANS_FONT,
-        lineHeight: 1.5,
-        color: COLORS.danger,
-        background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-error) 26%, transparent)",
-        overflowWrap: "anywhere",
-      }}
-    >
-      <XCircle size={12} weight="fill" style={{ flexShrink: 0, marginTop: 2 }} />
-      <span>{message}</span>
-    </div>
-  );
+  return <Banner layout="inline" model={{ id: "provider-error", tone: "error", title: message }} />;
 }

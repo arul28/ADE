@@ -177,6 +177,7 @@ export function LaneBranchDriftStrip({
       label: "Switch anyway",
       onClick: () => { void resolve(forceable, true); },
       disabled: busy,
+      busy: pending === forceable,
     });
   }
   actions.push(
@@ -197,19 +198,18 @@ export function LaneBranchDriftStrip({
   );
 
   return (
-    <div data-testid="lane-branch-drift-strip" style={{ display: "contents" }}>
-      <Banner
-        layout="inline"
-        style={{ margin: "6px 8px", flexShrink: 0 }}
-        model={{
-          id: `lane-branch-drift:${laneId}`,
-          tone: "warning",
-          icon: <GitBranch size={13} weight="bold" />,
-          title: error ? error : message,
-          ariaLabel: message,
-          actions,
-        }}
-      />
-    </div>
+    <Banner
+      layout="inline"
+      testId="lane-branch-drift-strip"
+      style={{ margin: "6px 8px", flexShrink: 0 }}
+      model={{
+        id: `lane-branch-drift:${laneId}`,
+        tone: "warning",
+        icon: <GitBranch size={13} weight="bold" />,
+        title: error ? error : message,
+        ariaLabel: message,
+        actions,
+      }}
+    />
   );
 }

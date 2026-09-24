@@ -42,7 +42,7 @@ import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
-import { WebSettingsSection } from "../settings/WebScopeBanner";
+import { WebSettingsSection } from "../settings/WebScopePill";
 import { Banner } from "../ui/notice";
 import {
   SETTINGS_ENTRIES,

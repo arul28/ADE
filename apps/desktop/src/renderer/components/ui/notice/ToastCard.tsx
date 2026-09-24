@@ -187,7 +187,7 @@ export function ToastCard({
             actions={model.actions}
             tone={model.tone}
             size="md"
-            onAfterClick={onAction ? (action) => onAction(action as ToastCardAction) : undefined}
+            onAfterClick={onAction}
             style={{ justifyContent: "flex-end", marginTop: 3 }}
           />
         </div>

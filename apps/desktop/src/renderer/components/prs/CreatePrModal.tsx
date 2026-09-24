@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import * as Dialog from "@radix-ui/react-dialog";
+import * as RadixDialog from "@radix-ui/react-dialog";
 import { GitPullRequest, GitMerge, CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
@@ -21,6 +21,7 @@ import {
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
 import { confirmDialog } from "../ui/dialog/confirm";
+import { Dialog } from "../ui/dialog";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
@@ -1021,35 +1022,40 @@ export function CreatePrModal({
   );
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => { if (!next && busy) return; onOpenChange(next); }}>
-      <Dialog.Portal>
-        <Dialog.Overlay
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 50,
-            background: "rgba(0,0,0,0.55)",
-            backdropFilter: "blur(8px)",
-          }}
-        />
-        <Dialog.Content
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next && busy) return; onOpenChange(next); }}
+      title="Create pull request"
+      description={
+        numericStep === 1 ? "Configure branch and PR type"
+          : numericStep === 2 ? "Enter PR details"
+            : numericStep === 3 ? "Review results"
+              : undefined
+      }
+      hideHeader
+      hideClose
+      width={560}
+      maxHeight="84vh"
+      dismissible={!busy}
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      panelStyle={{
+        // Pinned near the top, not centered: the wizard changes height between
+        // steps, and a centered panel would jump on every step.
+        margin: "8vh auto auto",
+        borderRadius: 0,
+        background: C.bgCard,
+        border: `1px solid ${C.border}`,
+      }}
+    >
+        <div
           data-tour="prs.createModal"
           style={{
-            position: "fixed",
-            left: "50%",
-            top: "8%",
-            zIndex: 50,
-            width: "min(560px, calc(100vw - 24px))",
-            transform: "translateX(-50%)",
-            borderRadius: 0,
-            background: C.bgCard,
-            border: `1px solid ${C.border}`,
-            boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
-            outline: "none",
-            maxHeight: "84vh",
+            flex: "1 1 auto",
+            minHeight: 0,
             display: "flex",
             flexDirection: "column",
-            overflow: "hidden",
           }}
         >
           {/* ── Modal Header ────────────────────────────────────── */}
@@ -1071,7 +1077,7 @@ export function CreatePrModal({
             }}>
               01
             </span>
-            <Dialog.Title style={{
+            <span aria-hidden="true" style={{
               fontFamily: "var(--font-sans)",
               fontSize: 16,
               fontWeight: 700,
@@ -1080,8 +1086,8 @@ export function CreatePrModal({
               flex: 1,
             }}>
               CREATE PULL REQUEST
-            </Dialog.Title>
-            <Dialog.Close asChild>
+            </span>
+            <RadixDialog.Close asChild>
               <button
                 disabled={busy}
                 style={{
@@ -1099,15 +1105,8 @@ export function CreatePrModal({
               >
                 <X size={18} weight="bold" />
               </button>
-            </Dialog.Close>
+            </RadixDialog.Close>
           </div>
-
-          {/* Visually hidden description for accessibility */}
-          <Dialog.Description style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)" }}>
-            {numericStep === 1 && "Configure branch and PR type"}
-            {numericStep === 2 && "Enter PR details"}
-            {numericStep === 3 && "Review results"}
-          </Dialog.Description>
 
           {/* ── Stepper ─────────────────────────────────────────── */}
           <Stepper currentStep={numericStep} />
@@ -2061,7 +2060,7 @@ export function CreatePrModal({
             {/* Left side */}
             <div>
               {numericStep === 1 && (
-                <Dialog.Close asChild>
+                <RadixDialog.Close asChild>
                   <button
                     style={{
                       background: "transparent",
@@ -2079,7 +2078,7 @@ export function CreatePrModal({
                   >
                     CANCEL
                   </button>
-                </Dialog.Close>
+                </RadixDialog.Close>
               )}
               {numericStep === 2 && (
                 <button
@@ -2167,7 +2166,7 @@ export function CreatePrModal({
                 </button>
               )}
               {numericStep === 3 && results && (
-                <Dialog.Close asChild>
+                <RadixDialog.Close asChild>
                   <button
                     onClick={() => onCreated?.(results)}
                     style={{
@@ -2186,12 +2185,11 @@ export function CreatePrModal({
                   >
                     DONE
                   </button>
-                </Dialog.Close>
+                </RadixDialog.Close>
               )}
             </div>
           </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        </div>
+    </Dialog>
   );
 }

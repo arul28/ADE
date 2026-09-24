@@ -2350,7 +2350,6 @@ button, [role="button"] {
   .ade-streaming-shimmer,
   .ade-streaming-shimmer::after,
   .ade-tool-skeleton::after,
-  .ade-update-installed-card,
   .ade-tool-bounce,
   .ade-title-landed,
   .ade-naming-pending,
@@ -4406,19 +4405,6 @@ button, [role="button"] {
 
 .ade-fade-in {
   animation: ade-fade-slide-up 0.3s ease-out both;
-}
-
-/* The card is centered by a flex layer (not fixed + translate), so its entrance
-   must stay translate-free. The [data-radix-dialog-content] prefix raises
-   specificity above the global ade-dialog-in rule (translateX(-50%)), which
-   would otherwise shift a flex-centered card left by half its width. */
-[data-radix-dialog-content].ade-update-installed-card[data-state="open"] {
-  animation: ade-update-installed-card-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-
-@keyframes ade-update-installed-card-in {
-  from { opacity: 0; transform: scale(0.97); }
-  to { opacity: 1; transform: scale(1); }
 }
 
 /*

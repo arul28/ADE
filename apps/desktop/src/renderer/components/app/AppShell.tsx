@@ -8,7 +8,7 @@ import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
-import { selectActiveProjectRoot, useAppStore, workViewStoreForProject } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
 import type {
   AiSettingsStatus,
@@ -17,13 +17,11 @@ import type {
   OpenProjectBinding,
   SyncRoleSnapshot,
   SyncRouteHealth,
-  TerminalSessionSummary,
 } from "../../../shared/types";
 import {
   eventMatchesBinding,
   getEffectiveBinding,
 } from "../../lib/keybindings";
-import { listSessionsCached } from "../../lib/sessionListCache";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
   getAiStatusCached,
@@ -34,11 +32,6 @@ import {
   hasConfiguredAiProvider,
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
-import { getStaleRunningCliSessionAgeHours } from "../../lib/sessions";
-import {
-  isStaleCliNoticeSnoozed,
-  snoozeStaleCliNotice,
-} from "../../lib/staleCliNoticeSnooze";
 import { hasRecentBannerDismissal } from "../../lib/bannerDismiss";
 import {
   getStoredZoomLevel,
@@ -60,7 +53,7 @@ import { FolderSimpleDashed } from "@phosphor-icons/react";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
-import { STALE_CLI_TOAST_ID, buildStaleCliToast } from "./toast/staleCliToast";
+import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
@@ -194,20 +187,6 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
 
 const FEEDBACK_PROGRESS_TOAST_ID = "ade-feedback-report-progress";
 
-type StaleCliNoticeLane = {
-  laneId: string;
-  laneName: string;
-  count: number;
-};
-
-type StaleCliNotice = {
-  count: number;
-  /** Oldest last-activity (or startedAt fallback) among the stale sessions. */
-  oldestActivityAt: string;
-  /** Per-lane breakdown so the notice can show which lanes hold stale sessions. */
-  lanes: StaleCliNoticeLane[];
-};
-
 /**
  * Backstop for the tab-rail ResizeObserver hold. The rail's width transition is
  * 200ms; this only has to outlast it, and exists so a `transitionend` that
@@ -262,19 +241,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false);
   const visitedTabsRef = useRef(new Set<string>());
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
-  const [staleCliNotice, setStaleCliNotice] =
-    useState<StaleCliNotice | null>(null);
-  // Whether a stale-CLI notice is currently displayed. Lets refreshes keep an
-  // already-visible notice updated without re-tripping the once-per-hour snooze,
-  // and prevents the snooze from hiding a notice the user is actively looking at.
-  const staleCliNoticeActiveRef = useRef(false);
   const [aiStatus, setAiStatus] = useState<AiSettingsStatus | null>(null);
   const [aiStatusLoaded, setAiStatusLoaded] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubConnectionGeneration, setGithubConnectionGeneration] = useState(0);
-  // Connection/health banner dismissals now live in a durable localStorage store
-  // (see IntegrationBannerHost / bannerDismiss.ts) so they survive restart, rather
-  // than the session-only Zustand maps this used to read.
+  // Connection/health banner dismissals live in a durable localStorage store
+  // (AppBannerHost records them in bannerDismiss.ts) so they survive restart.
   const currentProjectRoot = useAppStore(selectActiveProjectRoot);
   const isRemoteProject = projectBinding?.kind === "remote";
   const [projectMissing, setProjectMissing] = useState(false);
@@ -305,6 +277,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     screen: productAnalyticsScreen,
   });
   const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
+  useStaleCliToast({
+    projectRoot: project?.rootPath ?? null,
+    activeProjectRoot: currentProjectRoot,
+    showWelcome,
+    isRemoteProject,
+    isWorkAdjacentRoute,
+    lanes,
+    navigate,
+  });
   const isLanesRouteRef = useRef(isLanesRoute);
 
   // Activity is a modal over whatever tab is in front, not a tab of its own, so
@@ -628,114 +609,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setShowWelcome,
   ]);
 
-  useEffect(() => {
-    const projectRoot = project?.rootPath ?? null;
-    const shouldCheckStaleCliNotice =
-      Boolean(projectRoot) &&
-      !showWelcome &&
-      (!isRemoteProject || isWorkAdjacentRoute);
-    if (!shouldCheckStaleCliNotice) {
-      setStaleCliNotice(null);
-      staleCliNoticeActiveRef.current = false;
-      return;
-    }
-
-    if (!projectRoot) return;
-    let cancelled = false;
-    let refreshTimer: number | null = null;
-
-    // Prevent cross-project stale notice carryover while the first refresh is
-    // pending for the new project.
-    setStaleCliNotice(null);
-    staleCliNoticeActiveRef.current = false;
-
-    const sessionActivityMs = (session: TerminalSessionSummary): number => {
-      const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
-      return Number.isFinite(activityMs) ? activityMs : Date.parse(session.startedAt);
-    };
-
-    const refreshStaleCliNotice = async () => {
-      if (document.visibilityState !== "visible") return;
-      try {
-        const sessions = await listSessionsCached({ status: "running", limit: 500 });
-        if (cancelled) return;
-        const nowMs = Date.now();
-        const stale = sessions
-          .filter((session) => {
-            return getStaleRunningCliSessionAgeHours(session, nowMs) != null;
-          })
-          .sort((left, right) => sessionActivityMs(left) - sessionActivityMs(right));
-
-        if (!stale.length) {
-          setStaleCliNotice(null);
-          staleCliNoticeActiveRef.current = false;
-          return;
-        }
-
-        const oldest = stale[0];
-        const oldestActivityAt =
-          oldest?.lastActivityAt ?? oldest?.startedAt ?? new Date(nowMs).toISOString();
-
-        const laneMap = new Map<string, StaleCliNoticeLane>();
-        for (const session of stale) {
-          const existing = laneMap.get(session.laneId);
-          if (existing) existing.count += 1;
-          else
-            laneMap.set(session.laneId, {
-              laneId: session.laneId,
-              laneName: session.laneName || session.laneId,
-              count: 1,
-            });
-        }
-        const lanesBreakdown = [...laneMap.values()].sort((a, b) => b.count - a.count);
-        const notice: StaleCliNotice = { count: stale.length, oldestActivityAt, lanes: lanesBreakdown };
-
-        // Already showing a notice for this project? Keep it fresh without
-        // re-tripping the snooze. Otherwise gate on the per-project hourly
-        // snooze, and arm the snooze the moment we first show it so the
-        // once-per-hour cadence survives restarts / project re-opens.
-        if (staleCliNoticeActiveRef.current) {
-          setStaleCliNotice(notice);
-          return;
-        }
-        if (isStaleCliNoticeSnoozed(projectRoot, nowMs)) {
-          setStaleCliNotice(null);
-          return;
-        }
-        snoozeStaleCliNotice(projectRoot, nowMs);
-        staleCliNoticeActiveRef.current = true;
-        setStaleCliNotice(notice);
-      } catch {
-        // best effort
-      }
-    };
-
-    const scheduleRefresh = (delayMs = 0) => {
-      if (refreshTimer != null) return;
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        void refreshStaleCliNotice();
-      }, delayMs);
-    };
-
-    scheduleRefresh(4_000);
-    const interval = window.setInterval(() => scheduleRefresh(), 10 * 60_000);
-    const onFocus = () => scheduleRefresh();
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") scheduleRefresh();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      cancelled = true;
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [isRemoteProject, isWorkAdjacentRoute, project?.rootPath, showWelcome]);
-
   // Track visited tabs — mark after a short delay so stagger animation can play on first visit
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -1050,14 +923,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return tintMap[primaryTabPath(location.pathname)] ?? "";
   }, [location.pathname]);
 
-  const staleCliNoticeAgeHours = staleCliNotice
-    ? getStaleRunningCliSessionAgeHours({
-        status: "running",
-        startedAt: staleCliNotice.oldestActivityAt,
-        toolType: "shell",
-        lastActivityAt: staleCliNotice.oldestActivityAt,
-      }) ?? 24
-    : 0;
   // The tab rail expands by animating its own width as a flex item, so <main>
   // and every pane inside it really do get narrower frame by frame — content is
   // pushed aside, exactly as on macOS. What we do not want is for
@@ -1081,61 +946,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
   useEffect(() => () => releasePanesOnRailSettle(), [releasePanesOnRailSettle]);
 
-  const dismissStaleCliNotice = useCallback(() => {
-    // Intentionally re-arms (resets) the snooze from the dismiss moment, not
-    // just the first-show moment: "if dismissed, don't show again for an hour"
-    // is measured from the dismissal. The show-time arming in
-    // refreshStaleCliNotice is what keeps the once-per-hour cadence alive
-    // across restarts when the user never dismisses; the two are complementary,
-    // not a bug.
-    if (currentProjectRoot) snoozeStaleCliNotice(currentProjectRoot);
-    staleCliNoticeActiveRef.current = false;
-    setStaleCliNotice(null);
-  }, [currentProjectRoot]);
-
-  const viewStaleCliProcesses = useCallback(() => {
-    if (currentProjectRoot) {
-      // AppShell renders above AppStoreProvider, so this
-      // must go through the store that owns the project —
-      // writing to the root store would leave the mounted
-      // Work surface showing its own older view state.
-      const workStore = workViewStoreForProject(currentProjectRoot);
-      // Reset the lane filter too so stale sessions across
-      // *all* lanes are visible, not just the active one.
-      workStore.getState().setWorkViewState(currentProjectRoot, (current) => ({
-        ...current,
-        laneFilter: "all",
-        sessionListOrganization: "all-lanes-by-status",
-        workCollapsedSectionIds: current.workCollapsedSectionIds
-          .filter((sectionId) => sectionId !== "status:running"),
-      }));
-    }
-    navigate("/work");
-    dismissStaleCliNotice();
-  }, [currentProjectRoot, dismissStaleCliNotice, navigate]);
-
-  // The idle-sessions notice is a store toast with a stable id: a refresh
-  // updates it in place, and clearing the notice (project switch, sessions
-  // gone, welcome screen) takes it down. × snoozes it via `onClose`.
-  useEffect(() => {
-    if (!staleCliNotice) {
-      dismissToast(STALE_CLI_TOAST_ID);
-      return;
-    }
-    showToast(
-      buildStaleCliToast({
-        count: staleCliNotice.count,
-        ageHours: staleCliNoticeAgeHours,
-        lanes: staleCliNotice.lanes.map((noticeLane) => ({
-          ...noticeLane,
-          color: lanes.find((lane) => lane.id === noticeLane.laneId)?.color ?? null,
-        })),
-        onViewProcesses: viewStaleCliProcesses,
-        onDismiss: dismissStaleCliNotice,
-      }),
-    );
-  }, [staleCliNotice, staleCliNoticeAgeHours, lanes, viewStaleCliProcesses, dismissStaleCliNotice]);
-  useEffect(() => () => dismissToast(STALE_CLI_TOAST_ID), []);
   return (
     <div
       className={cn(

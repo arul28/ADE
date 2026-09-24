@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle, Copy, Info, WarningCircle } from "@phosphor-icons/react";
+import { CheckCircle, Copy, Info } from "@phosphor-icons/react";
 import type {
   OpenCodeProviderAuthMethod,
   OpenCodeProviderAuthPrompt,
@@ -11,7 +11,8 @@ import { openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
-import { Dialog, DialogActions, type DialogAction } from "../ui/dialog";
+import { Dialog, type DialogAction } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -344,30 +345,10 @@ export function OAuthConnectModal({
       maxHeight="85vh"
       preventAutoFocus
       bodyStyle={{ display: "flex", flexDirection: "column", gap: 14 }}
-      footer={
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 8 }}>
-          <DialogActions actions={footerActions} tone="accent" />
-        </div>
-      }
+      actions={footerActions}
     >
       {phase === "error" ? (
-        <div
-          role="alert"
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 8,
-            padding: "10px 12px",
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.danger,
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-          }}
-        >
-          <WarningCircle size={15} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
-          <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{errorMessage}</span>
-        </div>
+        <Banner layout="inline" model={{ id: "oauth-connect-error", tone: "error", title: errorMessage ?? "" }} />
       ) : null}
 
       {phase === "form" || phase === "starting" ? (

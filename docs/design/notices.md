@@ -141,15 +141,31 @@ clicks ×. It does not run on auto-dismiss.
 
 Hovering a toast pauses its timer. Pass a stable `id` to replace a toast in
 place instead of stacking a new one, and use `updateToast(id, patch)` for
-progress. At most 5 toasts show at once. When a sixth arrives, the oldest is
-dropped.
+progress. At most 5 toasts show at once. When a sixth arrives, the oldest
+timed toast is dropped. A sticky toast (`durationMs: 0`) is dropped only when
+every toast on screen is sticky.
 
 ## Stacking: `Z_LAYERS`
 
 Pick a named layer and never type a z-index:
 
-`toast` 95 < `sheet` 120 < `floatingBanner` 140 < `dialog` 200 <
-`nestedDialog` 210 < `tooltip` 300.
+| Layer | Value | For |
+|---|---|---|
+| `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
+| `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |
+| `hud` | 130 | The CTO voice-call HUD; above sheets so End call stays clickable |
+| `floatingBanner` | 140 | Floating top-center banners |
+| `dialog` | 200 | `Dialog` panel and scrim |
+| `nestedDialog` | 210 | A confirm or prompt raised from inside another dialog |
+| `toast` | 250 | `ToastViewport`; above dialogs so a toast raised from a dialog is visible |
+| `tooltip` | 300 | Tooltips and hover cards, including ones inside dialogs |
+| `contextMenu` | 9999 | A row context menu and its click-away layer |
+| `capture` | 2147483000 | The global capture gesture notice, above everything |
+
+`toast` sits above `dialog` because `ToastViewport` renders inside `<main>`,
+which creates no stacking context, so its layer competes directly with the
+body-portaled dialogs. Keep it that way: giving `<main>` (or an ancestor) a
+z-index, transform, filter or `isolation` would trap toasts under dialogs again.
 
 The hosts (`ToastViewport`, `HeaderSheet`, `AppBannerHost`, `Dialog`) already
 use these layers. If you need a z-index at all, you are probably building an

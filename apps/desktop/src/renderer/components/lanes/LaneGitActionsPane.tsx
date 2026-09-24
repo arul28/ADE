@@ -17,7 +17,7 @@ import { showToast } from "../app/toast/toastStore";
 import { BranchIcon } from "../ui/vcsIcons";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
-import { confirmDialog } from "../ui/dialog/confirm";
+import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 import {
   WORK_TOOL_CHROME_CHIP,
   WORK_TOOL_CHROME_CHIP_WRAP,
@@ -50,16 +50,6 @@ import type {
   LaneSummary,
   OpenProjectBinding
 } from "../../../shared/types";
-
-type LaneTextPromptState = {
-  title: string;
-  message?: string;
-  placeholder?: string;
-  value: string;
-  confirmLabel: string;
-  validate?: (value: string) => string | null;
-  resolve: (value: string | null) => void;
-};
 
 type NextActionHint = {
   action: GitRecommendedAction | "rebase_push" | "resolve_conflicts";
@@ -830,8 +820,6 @@ export function LaneGitActionsPane({
   const [stashes, setStashes] = useState<GitStashSummary[]>(initialCachedGitState?.stashes ?? []);
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
   const [forcePushSuggested, setForcePushSuggested] = useState(initialCachedGitState?.forcePushSuggested ?? false);
-  const [textPrompt, setTextPrompt] = useState<LaneTextPromptState | null>(null);
-  const [textPromptError, setTextPromptError] = useState<string | null>(null);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -897,45 +885,20 @@ export function LaneGitActionsPane({
       defaultValue?: string;
       confirmLabel?: string;
       validate?: (value: string) => string | null;
-    }): Promise<string | null> => {
-      return new Promise((resolve) => {
-        setTextPromptError(null);
-        setTextPrompt({
-          title: args.title,
-          message: args.message,
-          placeholder: args.placeholder,
-          value: args.defaultValue ?? "",
-          confirmLabel: args.confirmLabel ?? "Confirm",
-          validate: args.validate,
-          resolve
-        });
-      });
-    },
+    }): Promise<string | null> =>
+      promptDialog({
+        title: args.title,
+        message: args.message,
+        placeholder: args.placeholder,
+        defaultValue: args.defaultValue,
+        confirmLabel: args.confirmLabel ?? "Confirm",
+        // Empty is a valid answer (an optional stash note); a caller that needs
+        // text says so in `validate`.
+        allowEmpty: true,
+        validate: (value) => args.validate?.(value.trim()) ?? null,
+      }).then((value) => value?.trim() ?? null),
     []
   );
-
-  const cancelTextPrompt = useCallback(() => {
-    setTextPrompt((prev) => {
-      if (prev) prev.resolve(null);
-      return null;
-    });
-    setTextPromptError(null);
-  }, []);
-
-  const submitTextPrompt = useCallback(() => {
-    setTextPrompt((prev) => {
-      if (!prev) return prev;
-      const value = prev.value.trim();
-      const validationError = prev.validate?.(value) ?? null;
-      if (validationError) {
-        setTextPromptError(validationError);
-        return prev;
-      }
-      setTextPromptError(null);
-      prev.resolve(value);
-      return null;
-    });
-  }, []);
 
   const refreshChanges = async (targetLaneId: string | null = laneId) => {
     if (!targetLaneId) return;
@@ -3448,66 +3411,6 @@ export function LaneGitActionsPane({
         onCancel={cancelPendingPush}
         onConfirm={confirmPendingPush}
       />
-
-      {textPrompt ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(460px, 100%)", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 20 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "1px", textTransform: "uppercase", color: COLORS.textPrimary }}>
-              {textPrompt.title}
-            </div>
-            {textPrompt.message ? (
-              <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                {textPrompt.message}
-              </div>
-            ) : null}
-            <input
-              autoFocus
-              value={textPrompt.value}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setTextPrompt((prev) => (prev ? { ...prev, value: nextValue } : prev));
-                if (textPromptError) setTextPromptError(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelTextPrompt();
-                } else if (event.key === "Enter") {
-                  event.preventDefault();
-                  submitTextPrompt();
-                }
-              }}
-              placeholder={textPrompt.placeholder}
-              style={{
-                marginTop: 12,
-                height: 36,
-                width: "100%",
-                padding: "0 12px",
-                fontSize: 11,
-                fontFamily: MONO_FONT,
-                letterSpacing: "0.5px",
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                color: COLORS.textSecondary,
-                outline: "none",
-              }}
-            />
-            {textPromptError ? (
-              <div style={{ marginTop: 8, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger }}>
-                {textPromptError}
-              </div>
-            ) : null}
-            <div className="flex justify-end gap-2" style={{ marginTop: 16 }}>
-              <button type="button" style={outlineButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={cancelTextPrompt}>
-                CANCEL
-              </button>
-              <button type="button" style={primaryButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={submitTextPrompt}>
-                {textPrompt.confirmLabel.toUpperCase()}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -119,6 +119,8 @@ export type NoticeAction = {
   expanded?: boolean;
   /** Tooltip. */
   title?: string;
+  /** For disclosure actions ("Details"): rendered as `aria-expanded`. */
+  expanded?: boolean;
 };
 
 export type NoticeButtonSize = "sm" | "md";
@@ -210,17 +212,18 @@ export function NoticeButton({
   );
 }
 
-export function NoticeActions({
+export function NoticeActions<A extends NoticeAction>({
   actions,
   tone,
   size = "sm",
   onAfterClick,
   style,
 }: {
-  actions: NoticeAction[] | undefined;
+  actions: A[] | undefined;
   tone: NoticeTone;
   size?: NoticeButtonSize;
-  onAfterClick?: (action: NoticeAction) => void;
+  /** Receives the clicked action with its full type (e.g. a toast's `keepOpen`). */
+  onAfterClick?: (action: A) => void;
   style?: CSSProperties;
 }): JSX.Element | null {
   if (!actions || actions.length === 0) return null;

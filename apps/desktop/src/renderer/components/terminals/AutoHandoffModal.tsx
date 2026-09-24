@@ -18,8 +18,7 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { cn } from "../ui/cn";
-import { Dialog, DialogActions } from "../ui/dialog";
-import { NoticeCloseButton } from "../ui/notice/NoticeParts";
+import { Dialog } from "../ui/dialog";
 import { LaneCombobox, type LaneComboboxLane } from "./LaneCombobox";
 import { automationRulesReadable, listAutomationRules, saveAutoHandoffRules } from "./sessionLifecycleActions";
 
@@ -459,7 +458,9 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
         if (!next) onClose();
       }}
       title="Auto handoff"
-      hideHeader
+      description={session.title}
+      icon={<ArrowsLeftRight size={16} weight="duotone" />}
+      tone="accent"
       width={640}
       maxHeight="min(720px, calc(100vh - 32px))"
       bodyPadding={false}
@@ -469,12 +470,8 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
       onEscapeKeyDown={(event) => {
         // An open lane list takes Escape first and closes itself only.
         // (The Dialog hosts the list inside its panel; see ui/portalContainer.)
-        if (document.querySelector(".ade-lane-popover")) {
-          event.preventDefault();
-          return;
-        }
-        // The key that closed this dialog is not also the chat's Escape.
-        event.stopPropagation();
+        // (Dialog stops the key either way, so it never reaches the chat.)
+        if (document.querySelector(".ade-lane-popover")) event.preventDefault();
       }}
       footerStart={
         <div className="min-w-0 text-[10.5px] text-muted-fg">
@@ -489,33 +486,11 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
           </button>
         </div>
       }
-      footer={
-        <DialogActions
-          tone="accent"
-          actions={[
-            { label: "Cancel", onClick: onClose, variant: "secondary" },
-            { label: saving ? "Saving…" : "Save", onClick: () => { void save(true); }, variant: "solid", disabled: !valid || saving },
-          ]}
-        />
-      }
+      actions={[
+        { label: "Cancel", onClick: onClose, variant: "secondary" },
+        { label: saving ? "Saving…" : "Save", onClick: () => { void save(true); }, variant: "solid", disabled: !valid || saving },
+      ]}
     >
-        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_13%,transparent),transparent_78%)] px-5 py-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent">
-              <ArrowsLeftRight size={18} weight="duotone" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="font-sans text-[14px] font-semibold text-fg/92" aria-hidden="true">
-                Auto handoff
-              </h2>
-              <p className="mt-1 truncate text-[11px] leading-4 text-muted-fg" title={session.title}>
-                {session.title}
-              </p>
-            </div>
-          </div>
-          <NoticeCloseButton onClick={onClose} label="Close auto handoff" title="Close" size={26} />
-        </header>
-
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {/* The sentence. One card, read left to right, not a form grid. */}
           <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)] bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_8%,transparent),color-mix(in_srgb,var(--color-fg)_3%,transparent)_62%)] px-4 py-3.5">

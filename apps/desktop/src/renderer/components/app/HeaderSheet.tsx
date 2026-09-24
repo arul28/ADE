@@ -5,10 +5,6 @@ import { cn } from "../ui/cn";
 import { useDialogFocusTrap } from "../ui/dialogFocus";
 import { Z_LAYERS } from "../ui/zLayers";
 
-// The trap lives in ui/dialogFocus so HeaderSheet and every other non-Radix
-// surface share one; re-exported here for existing imports.
-export { useDialogFocusTrap };
-
 /**
  * The one top-bar dropdown shell (Connections, usage, activity): a click-away
  * layer on `Z_LAYERS.sheet` with a panel pinned under the header's right edge,

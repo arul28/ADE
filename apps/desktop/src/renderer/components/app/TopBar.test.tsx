@@ -1115,16 +1115,21 @@ describe("TopBar", () => {
       switchProjectToPath,
     } as any);
 
+    const confirm = vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+
     renderTopBarWithRouter();
     act(() => openConnectionsPanel("machines"));
     fireEvent.click(
       await screen.findByRole("button", { name: "Disconnect" }),
     );
-    fireEvent.click(await screen.findByRole("button", { name: "DISCONNECT" }));
 
     await waitFor(() => {
       expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
     });
+    expect(confirm).toHaveBeenLastCalledWith(expect.objectContaining({
+      confirmLabel: "DISCONNECT",
+      destructive: true,
+    }));
     expect(disconnect).not.toHaveBeenCalled();
     expect(
       useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key),

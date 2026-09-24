@@ -2,7 +2,7 @@ import React from "react";
 import { GitBranch } from "@phosphor-icons/react";
 import type { RebaseNeed, AutoRebaseLaneStatus } from "../../../shared/types";
 import { findLaneBaseNeed } from "./shared/rebaseNeedUtils";
-import { Banner, noticeTone } from "../ui/notice";
+import { Banner } from "../ui/notice";
 
 type PrRebaseBannerProps = {
   laneId: string;
@@ -96,9 +96,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
           { label: "View rebase details", onClick: () => onTabChange("rebase") },
           { label: "Hide banner", variant: "link", onClick: () => void handleDismiss() },
         ],
-        extra: actionError ? (
-          <span style={{ fontSize: 11.5, lineHeight: 1.45, color: noticeTone("error").text }}>{actionError}</span>
-        ) : undefined,
+        error: actionError ?? undefined,
       }}
     />
   );

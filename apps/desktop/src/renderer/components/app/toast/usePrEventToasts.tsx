@@ -16,13 +16,11 @@ import { useAppStore } from "../../../state/appStore";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../../prs/prsRouteState";
 import { LaneIcon } from "../../ui/vcsIcons";
-import type { NoticeTone } from "../../ui/notice/noticeTones";
 import {
   getPrToastHeadline,
   getPrToastMeta,
   getPrToastSummary,
   getPrToastTone,
-  type PrToastTone,
 } from "../prToastPresentation";
 import { dismissToast, showToast, updateToast, type ToastCardAction, type ToastChip, type ToastInput } from "./toastStore";
 
@@ -33,13 +31,6 @@ type PrAutoLinkedEvent = Extract<PrEventPayload, { type: "pr-auto-linked" }>;
 export const PR_TOAST_DURATION_MS = 18_000;
 
 type LaneRef = Pick<LaneSummary, "id" | "name" | "color">;
-
-const PR_TONE_TO_NOTICE: Record<PrToastTone, NoticeTone> = {
-  danger: "error",
-  warning: "warning",
-  success: "success",
-  info: "info",
-};
 
 function prNotificationIcon(kind: PrNotificationEvent["kind"]) {
   if (kind === "checks_failing") return <XCircle size={15} weight="fill" />;
@@ -121,7 +112,7 @@ export function buildPrNotificationToast(
 
   return {
     id,
-    tone: PR_TONE_TO_NOTICE[getPrToastTone(event.kind, event.checksStatus)],
+    tone: getPrToastTone(event.kind, event.checksStatus),
     icon: prNotificationIcon(event.kind),
     badge: event.title,
     eyebrow: `#${event.prNumber}`,

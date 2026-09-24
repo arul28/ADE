@@ -14,6 +14,7 @@ import type {
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { confirmDialog } from "../ui/dialog/confirm";
+import { Dialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { extractError } from "./shared";
 import { inputCls } from "./designTokens";
@@ -557,35 +558,40 @@ function ManualRunModal({
   onRun: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4">
-      <div className="w-full max-w-md rounded-xl border border-white/[0.08] bg-surface-overlay p-4 shadow-float">
-        <div className="text-sm font-semibold text-fg">Choose a lane for this run</div>
-        <div className="mt-1 text-xs leading-relaxed text-muted-fg/70">{rule.name} requires a lane when triggered.</div>
-        <label className="mt-4 block space-y-1.5">
-          <span className="text-[10px] uppercase tracking-[0.1em] text-muted-fg/60">Lane</span>
-          <select className={inputCls} value={laneId} onChange={(e) => onLaneId(e.target.value)}>
-            {lanes.map((lane) => (
-              <option key={lane.id} value={lane.id}>
-                {lane.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!lanes.length ? (
-          <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-            No active lanes are available. Switch the rule to create a lane per run, or create a lane from the Work tab.
-          </div>
-        ) : null}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button size="sm" variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button size="sm" variant="primary" disabled={!laneId || pending} onClick={onRun}>
-            <Play size={12} weight="fill" />
-            Run
-          </Button>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      title="Choose a lane for this run"
+      description={`${rule.name} requires a lane when triggered.`}
+      width={448}
+      actions={[
+        { label: "Cancel", variant: "secondary", onClick: onCancel },
+        {
+          label: "Run",
+          variant: "solid",
+          icon: <Play size={12} weight="fill" />,
+          disabled: !laneId || pending,
+          onClick: onRun,
+        },
+      ]}
+    >
+      <label className="block space-y-1.5">
+        <span className="text-[10px] uppercase tracking-[0.1em] text-muted-fg/60">Lane</span>
+        <select className={inputCls} value={laneId} onChange={(e) => onLaneId(e.target.value)}>
+          {lanes.map((lane) => (
+            <option key={lane.id} value={lane.id}>
+              {lane.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {!lanes.length ? (
+        <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          No active lanes are available. Switch the rule to create a lane per run, or create a lane from the Work tab.
         </div>
-      </div>
-    </div>
+      ) : null}
+    </Dialog>
   );
 }

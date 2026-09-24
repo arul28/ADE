@@ -508,7 +508,7 @@ Renderer — settings:
   dictation, the CLI installer, auto-updates, storage, session lifecycle, and
   lane templates stay off the web nav: their reads would land, but their writes
   would resolve against a missing descriptor and silently vanish.
-  `sectionWebScope` resolves a section's scope, and `WebScopeBanner.tsx` prints
+  `sectionWebScope` resolves a section's scope, and `WebScopePill.tsx` prints
   it as the section's opening line — so a toggle that will not follow you to
   another browser says so before you flip it. Desktop renders sections exactly
   as before, with no banner.

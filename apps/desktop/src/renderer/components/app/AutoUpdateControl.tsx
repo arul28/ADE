@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
-import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
-import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 import { confirmDialog } from "../ui/dialog/confirm";
+import { Dialog } from "../ui/dialog";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
 const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";
@@ -313,7 +312,7 @@ export function AutoUpdateControl() {
         onRetry={handleRetryUpdate}
       />
 
-      <Dialog.Root
+      <Dialog
         open={releaseNotesOpen}
         onOpenChange={(nextOpen) => {
           if (!nextOpen) {
@@ -322,76 +321,31 @@ export function AutoUpdateControl() {
             setReleaseNotesOpen(true);
           }
         }}
-      >
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-[120] bg-black/55 backdrop-blur-sm" />
-          {/* Full-viewport flex layer centers the card. Positioning the card
-              this way (instead of fixed + translate) keeps it centered even if
-              an ancestor establishes a containing block for fixed descendants.
-              The layer is click-through so a click outside the card lands on the
-              overlay and dismisses via onOpenChange. */}
-          <div className="pointer-events-none fixed inset-0 z-[121] grid place-items-center p-4">
-            <Dialog.Content
-              className={cn(
-                "ade-update-installed-card pointer-events-auto relative w-[min(92vw,420px)]",
-                "overflow-hidden rounded-xl border border-white/[0.12] bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/55 outline-none",
-              )}
-            >
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-300/60 to-transparent" />
-              <div className="p-5 sm:p-6">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-emerald-300/25 bg-emerald-400/10 text-emerald-200 shadow-[0_0_24px_rgba(16,185,129,0.18)]">
-                      <CheckCircle size={20} weight="fill" aria-hidden="true" />
-                    </div>
-                    <Dialog.Title className="min-w-0 truncate text-sm font-semibold text-fg">
-                      {installedVersion ? `Updated to v${installedVersion}` : "ADE updated"}
-                    </Dialog.Title>
-                  </div>
-                  <Dialog.Close asChild>
-                    <button
-                      type="button"
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/[0.06] hover:text-fg"
-                      aria-label="Close update details"
-                    >
-                      <X size={14} weight="bold" />
-                    </button>
-                  </Dialog.Close>
-                </div>
-
-                <Dialog.Description className="sr-only">
-                  ADE finished installing {installedVersion ? `v${installedVersion}` : "the latest update"}.
-                </Dialog.Description>
-
-                <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
-                  {releaseNotesUrl ? (
-                    <Button
-                      type="button"
-                      variant="primary"
-                      className="w-full sm:w-auto"
-                      onClick={() => openInstalledLink(releaseNotesUrl)}
-                    >
-                      <ArrowSquareOut size={12} weight="bold" />
-                      Changelog
-                    </Button>
-                  ) : null}
-                  {githubReleaseUrl ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full sm:w-auto"
-                      onClick={() => openInstalledLink(githubReleaseUrl)}
-                    >
-                      <GithubLogo size={12} weight="bold" />
-                      View on GitHub
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            </Dialog.Content>
-          </div>
-        </Dialog.Portal>
-      </Dialog.Root>
+        title={installedVersion ? `Updated to v${installedVersion}` : "ADE updated"}
+        tone="success"
+        icon={<CheckCircle size={16} weight="fill" />}
+        size="sm"
+        actions={[
+          ...(releaseNotesUrl
+            ? [
+                {
+                  label: "Changelog",
+                  icon: <ArrowSquareOut size={12} weight="bold" />,
+                  onClick: () => openInstalledLink(releaseNotesUrl),
+                },
+              ]
+            : []),
+          ...(githubReleaseUrl
+            ? [
+                {
+                  label: "View on GitHub",
+                  icon: <GithubLogo size={12} weight="bold" />,
+                  onClick: () => openInstalledLink(githubReleaseUrl),
+                },
+              ]
+            : []),
+        ]}
+      />
     </>
   );
 }

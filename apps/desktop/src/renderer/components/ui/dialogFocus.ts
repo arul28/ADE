@@ -1,15 +1,14 @@
-import { useCallback, useEffect, type KeyboardEventHandler, type RefObject } from "react";
+import { useCallback, useEffect, type KeyboardEvent, type RefObject } from "react";
 
 /**
  * The app's one focus trap for surfaces that are not Radix dialogs.
  *
  * Centered modals use `ui/dialog/Dialog`, whose Radix FocusScope is the trap.
- * Everything else that must hold focus — the top-bar sheets (`HeaderSheet`),
- * popover panels, and the few overlays that keep bespoke motion — uses
- * `useDialogFocusTrap` below, or `getFocusableElements` when it needs a
- * window-level handler. One selector and one set of visibility rules, so no two
- * surfaces disagree about whether a `<summary>`, an `[aria-hidden]` subtree or a
- * closed `<details>` is reachable.
+ * The top-bar sheets (`HeaderSheet` and the Activity popover in
+ * `HeaderActivityControl`) use `useDialogFocusTrap` below, built on
+ * `getFocusableElements`: one selector and one set of visibility rules, so no
+ * two surfaces disagree about whether a `<summary>`, an `[aria-hidden]` subtree
+ * or a closed `<details>` is reachable.
  */
 export const DIALOG_FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -42,12 +41,16 @@ export function getFocusableElements(root: HTMLElement): HTMLElement[] {
 /**
  * Focus the panel on open, close on Escape, and keep Tab / Shift+Tab inside
  * the panel. Returns the panel's `onKeyDown` handler.
+ *
+ * Keys whose target is outside the panel are ignored: React bubbles events
+ * from portaled children (a dialog raised from inside the sheet) through the
+ * panel's handler, and those keys belong to that child, not to the sheet.
  */
 export function useDialogFocusTrap(
-  panelRef: RefObject<HTMLDivElement>,
+  panelRef: RefObject<HTMLElement | null>,
   onClose: () => void,
   open: boolean,
-): KeyboardEventHandler<HTMLDivElement> {
+): (event: KeyboardEvent<HTMLElement>) => void {
   useEffect(() => {
     if (!open) return;
     const frame = window.requestAnimationFrame(() => {
@@ -57,7 +60,9 @@ export function useDialogFocusTrap(
   }, [open, panelRef]);
 
   return useCallback(
-    (event) => {
+    (event: KeyboardEvent<HTMLElement>) => {
+      const panel = panelRef.current;
+      if (!panel || !(event.target instanceof Node) || !panel.contains(event.target)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onClose();
@@ -65,8 +70,6 @@ export function useDialogFocusTrap(
       }
       if (event.key !== "Tab") return;
 
-      const panel = panelRef.current;
-      if (!panel) return;
       const focusable = getFocusableElements(panel);
       if (focusable.length === 0) {
         event.preventDefault();

@@ -29,7 +29,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { type ThemeId, useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { Banner, noticeTone } from "../ui/notice";
+import { Banner } from "../ui/notice";
 import { providerColor } from "./providerColors";
 import { ProviderMark, UsageAccountRow } from "./UsageAccountRow";
 import {
@@ -189,20 +189,17 @@ function ProviderStatusNotice({
       ? "Reconnect"
       : "Retry";
 
+  // The provider's sentence is already the first line of this notice;
+  // repeating it here just says it twice.
+  const failureLine = !blocked && phase === "failed"
+    ? (failureDetail && failureDetail !== message
+      ? `Still failing: ${failureDetail}`
+      : "Tried again just now — still failing.")
+    : undefined;
+
   const outcomeLine = blocked ? (
     <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)" }}>
       Retries again in {formatWaitShort(blockedForMs)}.
-    </span>
-  ) : phase === "failed" ? (
-    <span
-      style={{ fontSize: 11.5, lineHeight: 1.45, color: noticeTone("warning").text }}
-      title={failureDetail ?? undefined}
-    >
-      {/* The provider's sentence is already the first line of this
-          notice; repeating it here just truncates it twice. */}
-      {failureDetail && failureDetail !== message
-        ? `Still failing: ${failureDetail}`
-        : "Tried again just now — still failing."}
     </span>
   ) : phase === "succeeded" ? (
     <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)" }}>Refreshed.</span>
@@ -235,6 +232,7 @@ function ProviderStatusNotice({
         ],
         dismiss: { onDismiss, title: "Dismiss until you open usage again", label: "Dismiss this warning" },
         extra: outcomeLine,
+        error: failureLine,
       }}
     />
   );

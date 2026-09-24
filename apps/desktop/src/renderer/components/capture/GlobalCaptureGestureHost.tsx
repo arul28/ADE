@@ -15,8 +15,8 @@ import { supportsCaptureGesturePlatform } from "../../lib/platform";
 import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
 import { encodeUtf8Base64 } from "../../lib/base64";
-import { NoticeIcon } from "../ui/notice/NoticeParts";
-import { NOTICE_FLOAT_SURFACE, noticeTone } from "../ui/notice/noticeTones";
+import { Banner } from "../ui/notice/Banner";
+import { Z_LAYERS } from "../ui/zLayers";
 import {
   describeShot,
   isCallJoinable,
@@ -208,33 +208,32 @@ export function GlobalCaptureGestureHost() {
         />
       ) : null}
       {notice ? (
+        // Bottom center and above everything: the gesture fires over any
+        // surface, including dialogs and context menus.
         <div
-          role="status"
           data-capture-gesture-notice
           style={{
-            ...NOTICE_FLOAT_SURFACE,
             position: "fixed",
+            left: 16,
+            right: 16,
             bottom: 24,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 2147483000,
-            maxWidth: 460,
+            zIndex: Z_LAYERS.capture,
             display: "flex",
-            alignItems: "flex-start",
-            gap: 8,
-            padding: "9px 14px 9px 11px",
-            borderRadius: 14,
-            fontFamily: "var(--font-sans)",
-            fontSize: 12,
-            lineHeight: 1.45,
-            color: "var(--color-fg)",
-            border: `1px solid ${noticeTone("warning").edge}`,
+            justifyContent: "center",
+            // The full-width strip must not swallow clicks; the banner takes its own.
+            pointerEvents: "none",
           }}
         >
-          <span style={{ marginTop: 1 }}>
-            <NoticeIcon tone="warning" size="sm" bare />
-          </span>
-          <span>{notice}</span>
+          <Banner
+            layout="floating"
+            style={{ maxWidth: 560, pointerEvents: "auto" }}
+            model={{
+              id: "capture-gesture-notice",
+              tone: "warning",
+              title: notice,
+              dismiss: { onDismiss: () => setNotice(null) },
+            }}
+          />
         </div>
       ) : null}
     </>

@@ -18,7 +18,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const RATCHET_RULE_PREFIX = "ade-ui/";
 const LINT_PATTERNS = ["src/**/*.{ts,tsx}"];
@@ -36,7 +36,9 @@ export function repoRelative(filePath, root = repoRoot) {
 export function countRatchetViolations(results, root = repoRoot) {
   const counts = {};
   for (const result of results) {
-    for (const message of result.messages) {
+    // Suppressed messages count too: an `eslint-disable` comment must not be a
+    // way to shrink the number the ratchet compares against the baseline.
+    for (const message of [...result.messages, ...(result.suppressedMessages ?? [])]) {
       if (!message.ruleId || !message.ruleId.startsWith(RATCHET_RULE_PREFIX)) continue;
       const file = repoRelative(result.filePath, root);
       counts[file] ??= {};
@@ -179,7 +181,24 @@ async function main() {
   if (errorCount > 0) process.exitCode = 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+/**
+ * True when this file is the script node was asked to run. Compares real paths
+ * (symlinked checkouts resolve differently from `import.meta.url`), and
+ * case-insensitively on Windows where the drive letter's case can differ.
+ */
+export function isEntryScript(argvPath, moduleUrl = import.meta.url, platform = process.platform) {
+  if (!argvPath) return false;
+  let entry;
+  try {
+    entry = fs.realpathSync.native(path.resolve(argvPath));
+  } catch {
+    return false;
+  }
+  const self = fs.realpathSync.native(fileURLToPath(moduleUrl));
+  return platform === "win32" ? entry.toLowerCase() === self.toLowerCase() : entry === self;
+}
+
+if (isEntryScript(process.argv[1])) {
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

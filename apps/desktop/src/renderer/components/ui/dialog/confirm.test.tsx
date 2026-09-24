@@ -53,6 +53,17 @@ describe("confirmDialog", () => {
     await expect(entered).resolves.toBe(true);
   });
 
+  it("withdraws the question when its signal aborts", async () => {
+    render(<DialogHost />);
+    const abort = new AbortController();
+    const { result } = await open(() => confirmDialog({ title: "Cancel this launch?", signal: abort.signal }));
+    expect(screen.getByRole("alertdialog", { name: "Cancel this launch?" })).toBeTruthy();
+    act(() => abort.abort());
+    await expect(result).resolves.toBe(false);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await expect(confirmDialog({ title: "Too late", signal: abort.signal })).resolves.toBe(false);
+  });
+
   it("stacks above an open dialog and returns focus to it", async () => {
     const user = userEvent.setup();
     function Outer() {

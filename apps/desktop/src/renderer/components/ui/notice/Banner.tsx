@@ -52,6 +52,8 @@ export type BannerModel = {
   ariaLabel?: string;
   /** Extra content under the text (chips, a progress line). Keep it small. */
   extra?: ReactNode;
+  /** Inline failure line under the text ("Rebase failed: …"). */
+  error?: string;
 };
 
 export function isDurableDismiss(
@@ -65,6 +67,7 @@ export function Banner({
   layout = "inline",
   onDurableDismiss,
   style,
+  testId,
 }: {
   model: BannerModel;
   layout?: BannerLayout;
@@ -72,13 +75,16 @@ export function Banner({
   onDurableDismiss?: (dismiss: { key: string; fingerprint: string }) => void;
   /** Outer spacing only (margins, width). Never colours or type. */
   style?: CSSProperties;
+  /** `data-testid` on the banner's root. */
+  testId?: string;
 }): JSX.Element {
   const tokens = noticeTone(model.tone);
   const floating = layout === "floating";
   // Docked banners share the inline wrapping row: in a narrow window the
   // actions drop under the text instead of crushing it.
   const inline = layout !== "floating";
-  const compactPill = floating && !model.detail && !model.extra;
+  const compactPill = floating && !model.detail && !model.extra && !model.error;
+  const hasBody = Boolean(model.detail || model.extra || model.error);
   const name = model.ariaLabel ?? (typeof model.title === "string" ? model.title : "notice");
 
   const dismiss = model.dismiss || null;
@@ -92,14 +98,16 @@ export function Banner({
   const surface: CSSProperties = floating
     ? {
         ...NOTICE_FLOAT_SURFACE,
-        borderRadius: compactPill ? 999 : 14,
+        // 18px reads as a full pill at one line (~34px tall) and degrades to a
+        // rounded card when a long prompt wraps, instead of a stretched lozenge.
+        borderRadius: compactPill ? 18 : 14,
         padding: compactPill ? "5px 6px 5px 14px" : "10px 10px 10px 12px",
         border: `1px solid ${tokens.edge}`,
       }
     : {
         ...NOTICE_DOCKED_SURFACE,
         borderRadius: 10,
-        padding: model.detail || model.extra ? "8px 8px 8px 9px" : "6px 8px 6px 9px",
+        padding: hasBody ? "8px 8px 8px 9px" : "6px 8px 6px 9px",
         border: `1px solid ${tokens.edge}`,
       };
 
@@ -113,30 +121,39 @@ export function Banner({
           fontWeight: compactPill ? 500 : 600,
           lineHeight: 1.35,
           color: "var(--color-fg)",
-          overflow: compactPill ? "hidden" : undefined,
-          textOverflow: compactPill ? "ellipsis" : undefined,
-          whiteSpace: compactPill ? "nowrap" : undefined,
+          // Wrap rather than truncate (a clipped error loses its meaning), and
+          // let an unbroken URL, path or token break instead of spilling out.
+          overflowWrap: "anywhere",
         }}
       >
         {model.title}
       </span>
       {model.detail ? (
-        <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)" }}>{model.detail}</span>
+        <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)", overflowWrap: "anywhere" }}>
+          {model.detail}
+        </span>
       ) : null}
       {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
+      {model.error ? (
+        <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.45, color: noticeTone("error").text, overflowWrap: "anywhere" }}>
+          {model.error}
+        </span>
+      ) : null}
     </div>
   );
 
   return (
     <div
       role={model.tone === "error" ? "alert" : "status"}
+      aria-label={model.ariaLabel}
+      data-testid={testId}
       data-notice-tone={model.tone}
       data-banner-id={model.id}
       data-banner-layout={layout}
       className={floating ? "ade-notice-float-enter" : layout === "docked" ? "ade-notice-dock-enter" : undefined}
       style={{
         display: "flex",
-        alignItems: compactPill || !(model.detail || model.extra) ? "center" : "flex-start",
+        alignItems: compactPill || !hasBody ? "center" : "flex-start",
         gap: compactPill ? 9 : 10,
         minWidth: 0,
         fontFamily: "var(--font-sans)",

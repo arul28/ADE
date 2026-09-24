@@ -95,6 +95,7 @@ function InventoryEmpty({ children }: { children: React.ReactNode }) {
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { Dialog } from "../ui/dialog";
+import { Z_LAYERS } from "../ui/zLayers";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -1261,7 +1262,7 @@ export function YourMacsCard() {
             <>
               <div
                 onClick={closeMenu}
-                style={{ position: "fixed", inset: 0, zIndex: 9998 }}
+                style={{ position: "fixed", inset: 0, zIndex: Z_LAYERS.contextMenu }}
               />
               <div
                 ref={menuRef}
@@ -1277,7 +1278,8 @@ export function YourMacsCard() {
                   left: menuPosition?.left ?? menuAnchor.x,
                   top: menuPosition?.top ?? menuAnchor.y,
                   visibility: menuPosition ? "visible" : "hidden",
-                  zIndex: 9999,
+                  // Same layer as the click-away above; later in the DOM, so it paints on top.
+                  zIndex: Z_LAYERS.contextMenu,
                   width: ACCOUNT_MENU_WIDTH,
                   padding: 4,
                   borderRadius: RADII.md,

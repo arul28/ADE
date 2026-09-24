@@ -207,8 +207,17 @@ const noAdhocNoticeComponent = {
   create(context) {
     let usesNoticeSystem = false;
     const candidates = [];
+    const filename = context.filename ?? context.getFilename?.();
     const noteSource = (source) => {
-      if (source && typeof source.value === "string" && NOTICE_IMPORT.test(source.value)) usesNoticeSystem = true;
+      if (!source || typeof source.value !== "string") return;
+      // Resolve relative imports against this file, so `./toast/toastStore`
+      // from components/app counts the same as `../app/toast/toastStore`.
+      const value = source.value;
+      const resolved =
+        value.startsWith(".") && filename && !filename.startsWith("<")
+          ? path.resolve(path.dirname(filename), value).split(path.sep).join("/")
+          : value;
+      if (NOTICE_IMPORT.test(resolved)) usesNoticeSystem = true;
     };
     return {
       ImportDeclaration(node) {

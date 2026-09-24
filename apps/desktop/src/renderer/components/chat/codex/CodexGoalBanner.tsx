@@ -105,13 +105,7 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
       type="text"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={(e) => {
-        // Moving focus to the clear (×) button must not commit the draft first:
-        // clearing throws the goal away, edit and all.
-        const next = e.relatedTarget;
-        if (onClear && next instanceof HTMLElement && next.closest(".ade-notice-close")) return;
-        submitEdit();
-      }}
+      onBlur={submitEdit}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -150,31 +144,40 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
   }
 
   return (
-    <Banner
-      layout="inline"
-      style={{ margin: "6px 8px", flexShrink: 0 }}
-      model={{
-        id: "codex-goal",
-        tone,
-        icon: <CodexLogo size={13} />,
-        ariaLabel: objective,
-        title,
-        actions,
-        dismiss: onClear ? { onDismiss: clearGoal, title: "Clear goal", label: "Clear goal" } : false,
-        extra: (
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] tabular-nums text-muted-fg">
-            <NoticeBadge tone={tone}><span className="capitalize">{statusLabel(status)}</span></NoticeBadge>
-            <span>{formatTokens(tokensUsed)}</span>
-            {elapsed ? (
-              <>
-                <span aria-hidden>·</span>
-                <span>{elapsed}</span>
-              </>
-            ) : null}
-          </div>
-        ),
+    // Pressing the clear (×) while editing must not blur the input first: the
+    // blur would commit the draft, and clearing throws the goal away anyway.
+    <div
+      style={{ display: "contents" }}
+      onMouseDownCapture={(e) => {
+        if (editing && (e.target as HTMLElement).closest(".ade-notice-close")) e.preventDefault();
       }}
-    />
+    >
+      <Banner
+        layout="inline"
+        style={{ margin: "6px 8px", flexShrink: 0 }}
+        model={{
+          id: "codex-goal",
+          tone,
+          icon: <CodexLogo size={13} />,
+          ariaLabel: objective,
+          title,
+          actions,
+          dismiss: onClear ? { onDismiss: clearGoal, title: "Clear goal", label: "Clear goal" } : false,
+          extra: (
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] tabular-nums text-muted-fg">
+              <NoticeBadge tone={tone}><span className="capitalize">{statusLabel(status)}</span></NoticeBadge>
+              <span>{formatTokens(tokensUsed)}</span>
+              {elapsed ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>{elapsed}</span>
+                </>
+              ) : null}
+            </div>
+          ),
+        }}
+      />
+    </div>
   );
 }
 

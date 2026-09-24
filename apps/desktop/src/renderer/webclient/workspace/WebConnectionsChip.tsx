@@ -160,16 +160,24 @@ export function WebConnectionsChip() {
 
   useEffect(() => {
     if (!open) return;
+    // A confirm raised from the machine menu renders in its own body portal:
+    // clicks and keys inside it belong to that dialog, not "outside" the menu.
+    // (The popover is itself a role="dialog"; Escape inside it still closes it.)
+    const inDialog = (target: EventTarget | null) =>
+      target instanceof Element
+      && !popoverRef.current?.contains(target)
+      && target.closest('[role="dialog"],[role="alertdialog"]') !== null;
     const onPointerDown = (event: PointerEvent) => {
       // The popover lives in a body portal, so it is outside rootRef's subtree
       // and needs its own containment check or every click inside it closes it.
       if (rootRef.current?.contains(event.target as Node)) return;
       if (popoverRef.current?.contains(event.target as Node)) return;
+      if (inDialog(event.target)) return;
       setOpen(false);
       setMenuKey(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || inDialog(event.target)) return;
       setOpen(false);
       setMenuKey(null);
     };

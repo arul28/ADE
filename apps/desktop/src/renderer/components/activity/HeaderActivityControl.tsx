@@ -30,7 +30,7 @@ import {
   selectActivityHideDetails,
   useActivityStore,
 } from "../../state/activityStore";
-import { useDialogFocusTrap } from "../app/HeaderSheet";
+import { useDialogFocusTrap } from "../ui/dialogFocus";
 import { cn } from "../ui/cn";
 import { ActivityAllClear } from "./ActivityAllClear";
 import { ActivityCard } from "./ActivityCard";
@@ -237,11 +237,7 @@ export function HeaderActivityControl({
     }).catch(() => undefined);
   }, []);
 
-  const trapKeyDown = useDialogFocusTrap(
-    panelRef as React.RefObject<HTMLDivElement>,
-    close,
-    open,
-  );
+  const trapKeyDown = useDialogFocusTrap(panelRef, close, open);
 
   // An expired item must stop being counted even if nobody opens the popover,
   // so the clock keeps moving while closed — just far more slowly, and never
