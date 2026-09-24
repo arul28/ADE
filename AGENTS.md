@@ -127,6 +127,8 @@ defect, even when it passes.
    validate it by hand, in the running app, or with an agent-driven check
    (App Control, the browser, the iOS simulator, the CLI). New tests come in
    `/test`, after that validation, and they pin the behavior you proved.
+   - When the user asks for tests directly, write them; this rule covers tests
+     that nobody asked for.
    - Run existing tests during the work as often as you want. This rule stops
      writing new tests, not running old ones.
    - When an existing test breaks because you changed behavior on purpose,

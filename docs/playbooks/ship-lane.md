@@ -188,6 +188,7 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
   "prNumber": 1234,
   "iteration": 2,
   "lastPushSha": "abc123...",
+  "lastPushAt": "2026-04-23T15:00:00Z",
   "qualityValidatedSha": "abc123...",
   "qualityValidatedTree": "def456...",
   "qualityValidatedBaseSha": "789abc...",
@@ -209,7 +210,10 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
 `done-max`, and `blocked`. `prepping` means `/quality` opened the early PR and
 `/ship` has not started yet. `qualityReviewedSha` is the last commit a clean
 quality pass covered; every later review looks only at the delta from it.
-`localAhead` is true while reviewed commits are held back by the push rule. `mode` is `merge` for ordinary `/ship` and `stack` only when
+`localAhead` is true while reviewed commits are held back by the push rule.
+`lastPushAt` is the UTC time of the last push; the push rule's 12-minute grace
+window counts from it. Every push in any phase updates both `lastPushSha` and
+`lastPushAt`. `mode` is `merge` for ordinary `/ship` and `stack` only when
 `--stack-ready` was explicitly supplied. A resumed run must reject mode/base
 changes rather than accidentally switching lifecycle semantics.
 
@@ -451,14 +455,15 @@ The timeline for an ordinary lane:
 4. Post the Phase 4 pings only for a >250-file diff.
 5. Write the state file. The checkpoint was not reviewed, so it binds nothing.
    - **No state file yet:** write `status: "prepping"`, `mode`, `baseBranch`,
-     `prNumber`, `lastPushSha`, `iteration: 0`, `localAhead: false`, empty
+     `prNumber`, `lastPushSha`, `lastPushAt`, `iteration: 0`,
+     `localAhead: false`, empty
      `qualityReviewedSha`, and all three binding fields empty. In stack mode
      also write the `stackBinding` identity fields (stack number, size,
      position, expected parent branch) from `gh stack view --json`.
    - **A state file exists** (for example, `/quality` runs again on a lane that
      `/ship` already started): keep its `status`, `iteration`,
-     `addressedCommentIds`, and `harvests`. Update only `lastPushSha` and
-     `localAhead`, and clear the three binding fields when this step pushed.
+     `addressedCommentIds`, and `harvests`. Update only `lastPushSha`,
+     `lastPushAt`, and `localAhead`, and clear the three binding fields when this step pushed.
 
 Do not wait for anything. Start the quality review immediately.
 
@@ -494,13 +499,14 @@ Harvest fixes stay local until every signal on the remote head is terminal.
 A push cancels and restarts an in-flight Greptile review. So, after a harvest:
 
 - **Push** when both of these hold:
-  - at least 12 minutes have passed since `lastPushSha` was pushed (the bot
-    grace window — earlier, a bot that has not started yet looks idle); and
+  - at least 12 minutes have passed since `lastPushAt` (the bot grace window —
+    earlier, a bot that has not started yet looks idle); and
   - every CI job and every bot with start evidence on the remote head is
     terminal.
 
   The push starts the next round, which then runs during the next phase.
-  Update `lastPushSha`, set `localAhead: false`, and add the harvest entry.
+  Update `lastPushSha` and `lastPushAt`, set `localAhead: false`, and add the
+  harvest entry.
 - **Hold** otherwise. Commit locally, set `localAhead: true`, and continue to
   the next phase. The next harvest or `/ship` pushes the held commits together
   with its own fixes, in one push.
