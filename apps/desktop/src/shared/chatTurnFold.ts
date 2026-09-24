@@ -281,6 +281,10 @@ function isTrivialTurnFoldProjection(event: TurnFoldEventProjection): boolean {
 }
 
 export function isTrivialTurnFoldEvent(event: TurnFoldEventInput): boolean {
+  // Status and diagnostics receipts are trivial even when the fold projection
+  // has no richer view of them. Projecting them to `unknown` first would make
+  // a turn of only those receipts look like real work.
+  if (TRIVIAL_EVENT_TYPES.has(event.type)) return true;
   return isTrivialTurnFoldProjection(projectTurnFoldEvent(event));
 }
 

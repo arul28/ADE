@@ -615,7 +615,7 @@ describe("mapDroidSdkMessageToChatEvents — web tools", () => {
 describe("mapDroidSdkRunResultToDoneEvent", () => {
   it("clears unmatched web tool inputs at the end of a turn", () => {
     const state = createDroidSdkEventMapperState();
-    state.webToolInputsByUseId?.set("never-returned", { url: "https://example.dev" });
+    state.webToolInputsByUseId = new Map([["never-returned", { url: "https://example.dev" }]]);
 
     expect(mapDroidSdkRunResultToDoneEvent({ success: true }, { turnId: "turn-1", model: "droid", state }))
       .toMatchObject({ type: "done", turnId: "turn-1" });

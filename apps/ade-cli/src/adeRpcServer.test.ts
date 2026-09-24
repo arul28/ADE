@@ -2667,9 +2667,13 @@ describe("adeRpcServer", () => {
   it("omits activity guidance when the runtime cannot accept activity reports", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionActivityReportingEnabled = false;
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "chat-agent",
+      laneId: "lane-1",
+    });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "agent", chatSessionId: "chat-agent", callerId: "agent-1" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",

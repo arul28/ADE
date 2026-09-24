@@ -291,7 +291,8 @@ describe("deriveChatSources", () => {
       ["turn-1", 2],
       ["turn-2", 1],
     ]);
-    expect(derived.total).toBe(3);
+    expect(derived.apps.map((source) => source.title)).toEqual(["github"]);
+    expect(derived.total).toBe(4);
     expect(deriveChatSources([]).total).toBe(0);
   });
 
