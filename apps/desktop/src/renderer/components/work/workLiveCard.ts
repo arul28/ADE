@@ -196,9 +196,11 @@ export function selectWorkLiveCardTool(args: {
  * the tab id AND the pane's own element being mounted, so a tab state that
  * reads otherwise for a moment cannot put a second picture beside the pane.
  *
- * `present` also covers a player that holds the lane's decoder before its first
- * frame. The decoder lives in the player's box, so the box mounts (hidden) to
- * produce the frame that then makes it visible.
+ * A player that holds the lane's decoder is in view too, before its first
+ * frame. It used to mount hidden until a frame arrived, and a stream that sent
+ * no frame kept an encoder and a reader running behind a player nobody could
+ * see (the owner's 2026-09-24 report). Now the player shows the last frame, or
+ * "Connecting video", or says the display sent no picture.
  */
 export function macDesktopFloatState(args: {
   active: boolean;
@@ -211,7 +213,7 @@ export function macDesktopFloatState(args: {
   hasPicture: boolean;
   off: boolean;
   floated: boolean;
-  /** The player holds the lane's decoder right now. */
+  /** The player holds the lane's decoder: its stream is starting, playing or failed. */
   decoding: boolean;
   /** The tool filling the tools pane, or null when the pane is closed. */
   paneTool: WorkSidebarTab | null;
@@ -225,7 +227,7 @@ export function macDesktopFloatState(args: {
     && args.supported
     && args.authorized
     && !args.dismissed
-    && (args.hasPicture || args.off || args.floated),
+    && (args.hasPicture || args.off || args.floated || args.decoding),
   );
   return {
     present: wanted || args.decoding,

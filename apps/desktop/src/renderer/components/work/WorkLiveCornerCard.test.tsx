@@ -16,7 +16,7 @@ import {
   MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS,
   resetMacDesktopLiveViewLeasesForTests,
 } from "../chat/macDesktopLiveViewLease";
-import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
+import { FIRST_FRAME_TIMEOUT_MS, RECOVER_MAX_TRIES, useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import {
   noteWorkSurfaceMounted,
   resetWorkToolOnScreenForTests,
@@ -1459,6 +1459,65 @@ describe("Mac Desktop floating preview on by default", () => {
 
     act(() => release());
     expect(await findMacPlayer()).toBeTruthy();
+  });
+
+  it("regression: a stream that sends no picture is in view, says so, stops re-dialling, and lets go", async () => {
+    // The owner's 2026-09-24 report: the default-on player asked for the
+    // lane's stream, its reader got no frame, and the player stayed hidden
+    // (it mounted hidden until a first frame) while it restarted the encoder
+    // behind it. Now it is in view from the start, says "Connecting video",
+    // and once the re-dials are spent it says so and offers Retry.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      withLaneDisplay();
+      // The real decoder, reading a body that never carries a frame.
+      (globalThis as unknown as { VideoDecoder: unknown }).VideoDecoder = class {
+        state = "unconfigured";
+        decodeQueueSize = 0;
+        configure(): void {}
+        decode(): void {}
+        close(): void { this.state = "closed"; }
+      };
+      (globalThis as unknown as { EncodedVideoChunk: unknown }).EncodedVideoChunk = class {};
+      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+      const readers: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        readers.push(String(input));
+        return { ok: true, status: 200, body: new ReadableStream({ start() {} }) } as unknown as Response;
+      });
+
+      renderCard({ activeTool: null, sessionLaneId: "lane-1" });
+      await waitFor(() => expect(readers).toHaveLength(1));
+      const player = await findMacPlayer();
+      expect(within(player).getByText("Connecting video…")).toBeTruthy();
+
+      // Every address that draws nothing is re-dialled a few times, no more.
+      for (let step = 0; step < 12; step += 1) {
+        await act(async () => { vi.advanceTimersByTime(FIRST_FRAME_TIMEOUT_MS); });
+      }
+      expect(macDesktopStartStream.mock.calls.length).toBeLessThanOrEqual(1 + RECOVER_MAX_TRIES);
+      expect(within(player).getByText("No picture from the display")).toBeTruthy();
+      // ...and holds no encoder while it says so: the viewer lets go.
+      await act(async () => { vi.advanceTimersByTime(MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS + 50); });
+      expect(macDesktopStopStream).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", localViewer: true },
+        null,
+      );
+      expect(within(player).getByText("No picture from the display")).toBeTruthy();
+
+      const calls = macDesktopStartStream.mock.calls.length;
+      await act(async () => {
+        fireEvent.click(within(player).getByRole("button", { name: "Retry" }));
+      });
+      await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledTimes(calls + 1));
+      expect(macDesktopStartStream).toHaveBeenLastCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", fresh: true },
+        null,
+      );
+      await waitFor(() => expect(within(player).queryByText("No picture from the display")).toBeNull());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

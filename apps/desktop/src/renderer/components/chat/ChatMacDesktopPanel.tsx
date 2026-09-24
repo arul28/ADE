@@ -1779,7 +1779,7 @@ export function ChatMacDesktopPanel({
     >
       <span className="min-w-0 flex-1">
         <span className="font-medium">Stop Mac Desktop?</span>
-        <span className="text-muted-fg"> Apps it opened quit. Windows you moved here go back to your main screen.</span>
+        <span className="text-muted-fg"> Apps it opened quit, even with unsaved work. Windows you moved here go back to your main screen.</span>
       </span>
       <button
         type="button"

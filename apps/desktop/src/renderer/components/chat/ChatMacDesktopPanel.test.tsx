@@ -1027,8 +1027,8 @@ describe("ChatMacDesktopPanel way out", () => {
       releasedWindows: 0,
       quitApps: ["Safari"],
       appsLeftOpen: [
-        { pid: 41, appName: "TextEdit", message: "TextEdit did not quit, probably because it has unsaved work. It moved to your screen." },
-        { pid: 42, appName: "Pages", message: "Pages did not quit, probably because it has unsaved work. It moved to your screen." },
+        { pid: 41, appName: "TextEdit", message: "TextEdit did not quit, even when forced. It moved to your screen." },
+        { pid: 42, appName: "Pages", message: "Pages did not quit, even when forced. It moved to your screen." },
       ],
     });
     renderPanel();
@@ -1039,7 +1039,7 @@ describe("ChatMacDesktopPanel way out", () => {
     const off = await screen.findByTestId("mac-desktop-off");
     const lines = await within(off).findAllByTestId("mac-desktop-app-left-open");
     expect(lines.map((line) => line.textContent)).toEqual([
-      expect.stringContaining("TextEdit did not quit, probably because it has unsaved work. It moved to your screen."),
+      expect.stringContaining("TextEdit did not quit, even when forced. It moved to your screen."),
       expect.stringContaining("Pages did not quit"),
     ]);
 
@@ -1076,7 +1076,7 @@ describe("ChatMacDesktopPanel way out", () => {
           type: "display-destroyed",
           laneId: "lane-1",
           reason: "stopped",
-          appsLeftOpen: [{ pid: 41, appName: "TextEdit", message: "TextEdit did not quit, probably because it has unsaved work. It moved to your screen." }],
+          appsLeftOpen: [{ pid: 41, appName: "TextEdit", message: "TextEdit did not quit, even when forced. It moved to your screen." }],
         });
       }
     });

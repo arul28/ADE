@@ -96,6 +96,12 @@ export type MacDesktopLiveView = {
   onStatus: (status: H264VideoStatus, error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onCanvas: (canvas: HTMLCanvasElement | null) => void;
+  /**
+   * The automatic re-dials are spent and there is still no picture. Nothing
+   * asks again by itself until `restart()`, so a surface says so instead of
+   * showing "Connecting" forever.
+   */
+  gaveUp: boolean;
   /** Tear the stream down and build it again, budget included. */
   restart: () => void;
 };
@@ -112,6 +118,13 @@ export function useMacDesktopLiveView(args: {
    * back instead of leaving a passive pane. Defaults to the pane.
    */
   priority?: number;
+  /**
+   * Let go of the stream once the automatic re-dials are spent, so no encoder
+   * runs for a surface that says "no picture". `restart()` takes it back. The
+   * floating player opts in; the pane does not, because letting go there
+   * would hand the decoder to a hidden player that starts it all again.
+   */
+  releaseWhenGivenUp?: boolean;
 }): MacDesktopLiveView {
   const { laneId, runtimePin, enabled } = args;
   const chatSessionId = args.chatSessionId ?? null;
@@ -125,6 +138,15 @@ export function useMacDesktopLiveView(args: {
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
   const [resolveFailures, setResolveFailures] = useState(0);
   const [restartNonce, setRestartNonce] = useState(0);
+  const [gaveUp, setGaveUp] = useState(false);
+  /**
+   * The stream was let go after giving up (`releaseWhenGivenUp`). Separate
+   * from `gaveUp` so Retry can take the stream back while the surface still
+   * says "no picture" until the new start is actually under way.
+   */
+  const [letGo, setLetGo] = useState(false);
+  const releaseWhenGivenUp = args.releaseWhenGivenUp === true;
+  const holding = enabled && !letGo;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pinRef = useRef(runtimePin);
@@ -141,7 +163,7 @@ export function useMacDesktopLiveView(args: {
 
   const pinKey = runtimePin?.key ?? null;
   useEffect(() => {
-    if (!enabled || !laneId) {
+    if (!holding || !laneId) {
       setOwnsDecoder(false);
       return undefined;
     }
@@ -159,7 +181,7 @@ export function useMacDesktopLiveView(args: {
       setOwnsDecoder(false);
       lease.release();
     };
-  }, [chatSessionId, enabled, laneId, pinKey, priority]);
+  }, [chatSessionId, holding, laneId, pinKey, priority]);
 
   const wanted = ownsDecoder && enabled && Boolean(laneId);
   const wantedRef = useRef(wanted);
@@ -185,9 +207,17 @@ export function useMacDesktopLiveView(args: {
    * again, not restarted.
    */
   const freshNextRef = useRef(false);
+  const releaseWhenGivenUpRef = useRef(releaseWhenGivenUp);
+  releaseWhenGivenUpRef.current = releaseWhenGivenUp;
   const scheduleRecover = useCallback((options?: { fresh?: boolean }) => {
     if (recoverTimerRef.current != null) return;
-    if (recoverTriesRef.current >= RECOVER_MAX_TRIES) return;
+    if (recoverTriesRef.current >= RECOVER_MAX_TRIES) {
+      if (wantedRef.current) {
+        setGaveUp(true);
+        if (releaseWhenGivenUpRef.current) setLetGo(true);
+      }
+      return;
+    }
     recoverTriesRef.current += 1;
     recoverTimerRef.current = setTimeout(() => {
       recoverTimerRef.current = null;
@@ -199,10 +229,19 @@ export function useMacDesktopLiveView(args: {
   useEffect(() => () => {
     if (recoverTimerRef.current != null) clearTimeout(recoverTimerRef.current);
   }, []);
-  // A new lane is a new story: its failures start from zero.
+  // A new lane is a new story: its failures start from zero. So is a surface
+  // that stopped wanting the lane and wants it again.
   useEffect(() => {
     recoverTriesRef.current = 0;
+    setGaveUp(false);
+    setLetGo(false);
   }, [laneId]);
+  useEffect(() => {
+    if (enabled) return;
+    recoverTriesRef.current = 0;
+    setGaveUp(false);
+    setLetGo(false);
+  }, [enabled]);
 
   // The host says this lane's capture ended, or failed, while we read it.
   useEffect(() => {
@@ -242,7 +281,10 @@ export function useMacDesktopLiveView(args: {
       // away. Ask for it again rather than keep a dead address.
       if (wantedRef.current) scheduleRecover();
     }
-    if (next === "playing") recoverTriesRef.current = 0;
+    if (next === "playing") {
+      recoverTriesRef.current = 0;
+      setGaveUp(false);
+    }
     setStatus(next === "playing" ? "playing" : next === "error" ? "error" : "starting");
     setError(nextError);
   }, [scheduleRecover]);
@@ -250,6 +292,9 @@ export function useMacDesktopLiveView(args: {
   const restart = useCallback(() => {
     setResolveFailures(0);
     recoverTriesRef.current = 0;
+    // `gaveUp` clears when the new start begins, so the surface does not
+    // blink between "no picture" and nothing while the stream is taken back.
+    setLetGo(false);
     freshNextRef.current = true;
     setRestartNonce((nonce) => nonce + 1);
   }, []);
@@ -266,6 +311,8 @@ export function useMacDesktopLiveView(args: {
     setResolveFailures(0);
     setStatus("starting");
     setError(null);
+    // A start is under way again, so the viewer has not given up on it yet.
+    setGaveUp(false);
 
     const fresh = freshNextRef.current;
     freshNextRef.current = false;
@@ -388,6 +435,7 @@ export function useMacDesktopLiveView(args: {
     onStatus,
     onDimensions,
     onCanvas,
+    gaveUp,
     restart,
   };
 }

@@ -291,6 +291,8 @@ export function MacDesktopMiniPlayer({
     ),
     chatSessionId,
     priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+    // "No picture from the display" holds no encoder; Retry asks again.
+    releaseWhenGivenUp: true,
   });
   const decoderPlaying = Boolean(live.url) && live.status === "playing";
   // The pane's own element, by the key it registers under: see `macDesktopFloatState`.
@@ -306,7 +308,11 @@ export function MacDesktopMiniPlayer({
     hasPicture: Boolean(storedFrame) || decoderPlaying,
     off,
     floated,
-    decoding: Boolean(live.url),
+    // From the start, not from the address: a re-dial clears the address, and
+    // keyed on it the player blinked out and back on every retry. Not once the
+    // display is gone: a player nobody floated leaves with it. A player that
+    // gave up has let go of the stream and still says so.
+    decoding: (live.status !== "idle" || live.gaveUp) && !macScope.displayGone,
     paneTool,
     paneMounted,
   });
@@ -500,9 +506,33 @@ function MacDesktopMiniPlayerBox({
             />
           </div>
         ) : null}
-        {!storedFrame && !decoderPlaying && !off ? (
-          <p className="absolute inset-0 flex items-center justify-center font-sans text-[11px] text-muted-fg">
-            Connecting…
+        {!decoderPlaying && !off && (live.gaveUp || live.status === "error") ? (
+          /* The stream sent no picture, or failed. Said over the last frame
+             too: a still picture must not pass for a live one. */
+          <div
+            data-mac-mini-no-picture=""
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface/85 px-4 text-center"
+          >
+            <p className="font-sans text-[12px] text-fg/85">No picture from the display</p>
+            <button
+              type="button"
+              className={cn(
+                "rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85",
+                "hover:bg-white/[0.07] hover:text-fg",
+              )}
+              // The picture moves the player; this button must not.
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={live.restart}
+            >
+              Retry
+            </button>
+          </div>
+        ) : !storedFrame && !decoderPlaying && !off ? (
+          <p
+            data-mac-mini-connecting=""
+            className="absolute inset-0 flex items-center justify-center font-sans text-[12px] text-fg/70"
+          >
+            Connecting video…
           </p>
         ) : null}
       </div>

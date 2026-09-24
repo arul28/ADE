@@ -897,9 +897,11 @@ describe("macDesktopFloatState", () => {
     expect(macDesktopFloatState({ ...BASE, hasPicture: false, floated: true }).visible).toBe(true);
   });
 
-  it("mounts hidden while it decodes the first frame", () => {
+  it("is in view while it decodes the first frame, not hidden behind it", () => {
     expect(macDesktopFloatState({ ...BASE, hasPicture: false, decoding: true }))
-      .toEqual({ present: true, visible: false });
+      .toEqual({ present: true, visible: true });
+    expect(macDesktopFloatState({ ...BASE, hasPicture: false, decoding: true, paneMounted: true }).visible)
+      .toBe(false);
   });
 
   it("shows nothing to a chat that may not see it, or that turned it off", () => {
