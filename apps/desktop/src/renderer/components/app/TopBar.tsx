@@ -399,9 +399,6 @@ function ShellConnectionChip({
   );
 }
 
-/** The top bar's small anchored menus (connections/usage, machine switcher). */
-const TOP_BAR_MENU_CLASS =
-  "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45";
 
 function HeaderStatusMenu({
   remoteConnected,
@@ -499,7 +496,7 @@ function HeaderStatusMenu({
               ref={menuRef}
               role="menu"
               aria-label="Connections and usage"
-              className={TOP_BAR_MENU_CLASS}
+              className={"fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"}
               style={{ top: menuPos.top, right: menuPos.right }}
             >
               {children(close)}
@@ -570,7 +567,7 @@ function MachineSwitcherMenu({
       ref={menuRef}
       role="menu"
       aria-label={`Machines for ${group.displayName}`}
-      className={TOP_BAR_MENU_CLASS}
+      className={"fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"}
       style={
         {
           left: anchor.left,

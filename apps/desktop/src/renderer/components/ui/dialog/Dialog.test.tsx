@@ -79,18 +79,14 @@ describe("Dialog Escape", () => {
 });
 
 describe("Dialog outside interactions", () => {
-  it("stays open when the user clicks a toast or the floating banner above it", async () => {
+  it("stays open when the user clicks a toast above it", async () => {
     const onOpenChange = vi.fn();
     const toasts = document.createElement("div");
     toasts.setAttribute("data-ade-toast-viewport", "");
     const toastAction = document.createElement("button");
     toasts.appendChild(toastAction);
-    const banner = document.createElement("div");
-    banner.setAttribute("data-testid", "app-banner-floating");
-    const bannerAction = document.createElement("button");
-    banner.appendChild(bannerAction);
     const elsewhere = document.createElement("button");
-    document.body.append(toasts, banner, elsewhere);
+    document.body.append(toasts, elsewhere);
 
     try {
       render(
@@ -102,14 +98,12 @@ describe("Dialog outside interactions", () => {
 
       fireEvent.pointerDown(toastAction);
       fireEvent.focusIn(toastAction);
-      fireEvent.pointerDown(bannerAction);
       expect(onOpenChange).not.toHaveBeenCalled();
 
       fireEvent.pointerDown(elsewhere);
       expect(onOpenChange).toHaveBeenCalledWith(false);
     } finally {
       toasts.remove();
-      banner.remove();
       elsewhere.remove();
     }
   });

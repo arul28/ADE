@@ -113,10 +113,10 @@ export type DialogProps = {
 };
 
 /**
- * App-level surfaces that stack above an open dialog (toasts, the floating
- * banner). Interacting with them is not an outside click on the dialog.
+ * The toast viewport stacks above an open dialog (Z_LAYERS.toast), so pressing
+ * a toast's action is not an outside click on the dialog.
  */
-const ABOVE_DIALOG_SURFACES = '[data-ade-toast-viewport],[data-testid="app-banner-floating"]';
+const ABOVE_DIALOG_SURFACES = "[data-ade-toast-viewport]";
 
 function isAboveDialogSurface(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(ABOVE_DIALOG_SURFACES) !== null;

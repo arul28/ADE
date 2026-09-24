@@ -26,6 +26,10 @@
     "apps/desktop/src/renderer/components/app/TabNav.tsx": {
       "ade-ui/no-fixed-overlay": 1
     },
+    "apps/desktop/src/renderer/components/app/TopBar.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
     "apps/desktop/src/renderer/components/capture/CaptureFlyIn.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1

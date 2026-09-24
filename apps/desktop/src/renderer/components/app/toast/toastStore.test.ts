@@ -77,6 +77,12 @@ describe("toastStore", () => {
     expect(getToasts().some((t) => t.id === timedA)).toBe(false);
   });
 
+  it("always shows the arriving timed toast, even when five sticky toasts fill the stack", () => {
+    const sticky = [1, 2, 3, 4, 5].map((n) => showToast({ title: `s${n}`, durationMs: 0 }));
+    const undo = showToast({ title: "Moved to Done · Undo" });
+    expect(getToasts().map((t) => t.id)).toEqual([...sticky.slice(1), undo]);
+  });
+
   it("auto-dismisses after the default duration", () => {
     showToast({ title: "hi" });
     expect(getToasts()).toHaveLength(1);

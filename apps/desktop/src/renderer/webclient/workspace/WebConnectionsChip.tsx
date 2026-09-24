@@ -166,7 +166,7 @@ export function WebConnectionsChip() {
     const inDialog = (target: EventTarget | null) =>
       target instanceof Element
       && !popoverRef.current?.contains(target)
-      && target.closest('[role="dialog"],[role="alertdialog"]') !== null;
+      && target.closest('[role="dialog"],[role="alertdialog"],.ade-dialog-scrim') !== null;
     const onPointerDown = (event: PointerEvent) => {
       // The popover lives in a body portal, so it is outside rootRef's subtree
       // and needs its own containment check or every click inside it closes it.

@@ -124,9 +124,11 @@ function isSticky(toast: Toast): boolean {
  * waits for an answer) only go when every toast is sticky, so a burst of
  * "Lane created" events cannot push them off screen.
  */
-function oldestEvictableIndex(stack: readonly Toast[]): number {
-  const timed = stack.findIndex((t) => !isSticky(t));
-  return timed >= 0 ? timed : 0;
+function oldestEvictableIndex(stack: readonly Toast[], arrivingId: string): number {
+  // The toast being shown right now always survives: the user just caused it.
+  const timed = stack.findIndex((t) => t.id !== arrivingId && !isSticky(t));
+  if (timed >= 0) return timed;
+  return stack.findIndex((t) => t.id !== arrivingId);
 }
 
 /**
@@ -151,7 +153,7 @@ export function showToast(input: ToastInput): string {
   } else {
     const next = [...toasts, toast];
     while (next.length > MAX_TOASTS) {
-      const [dropped] = next.splice(oldestEvictableIndex(next), 1);
+      const [dropped] = next.splice(oldestEvictableIndex(next, id), 1);
       clearTimer(dropped.id);
       timers.delete(dropped.id);
     }

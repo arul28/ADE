@@ -105,7 +105,12 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
       type="text"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={submitEdit}
+      onBlur={(e) => {
+        // Tabbing to the × clears the goal; committing the draft first would
+        // send a second write. (A mouse press on × is stopped in onMouseDownCapture.)
+        if ((e.relatedTarget as HTMLElement | null)?.closest(".ade-notice-close")) return;
+        submitEdit();
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
