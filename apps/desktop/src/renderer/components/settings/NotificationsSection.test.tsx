@@ -25,7 +25,7 @@ function installAdeMock() {
       get: vi.fn(async () => ({
         shared: {},
         local: {},
-        effective: { git: { laneBannerBudget: 2 } },
+        effective: { git: {} },
       })),
       save: saveProjectConfig,
     },

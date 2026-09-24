@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { CaretDown, Code } from "@phosphor-icons/react";
-import { useClickOutside } from "../../../hooks/useClickOutside";
+import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
 import { inputCls, textareaCls } from "../designTokens";
 import { variablesForTrigger } from "../variableCatalog";
@@ -20,13 +20,13 @@ function VariableButton({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  useClickOutside(wrapRef, () => setOpen(false), open);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
   const groups = variablesForTrigger(triggerType);
 
   return (
-    <div ref={wrapRef} className={cn("relative", className)}>
+    <div className={cn("relative", className)}>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         title="Insert variable"
@@ -41,31 +41,36 @@ function VariableButton({
         Insert variable
         <CaretDown size={9} weight="bold" className={cn("transition-transform", open && "rotate-180")} />
       </button>
-      {open ? (
-        <div className="absolute right-0 z-40 mt-1 max-h-[280px] w-[220px] overflow-y-auto rounded-lg border border-white/[0.08] bg-surface-overlay p-1 shadow-float">
-          {groups.map((group) => (
-            <div key={group.title} className="mb-1 last:mb-0">
-              <div className="px-2 pb-0.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/50">
-                {group.title}
-              </div>
-              {group.variables.map((variable) => (
-                <button
-                  key={variable.token}
-                  type="button"
-                  onClick={() => {
-                    onInsert(variable.token);
-                    setOpen(false);
-                  }}
-                  className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left hover:bg-white/[0.05]"
-                >
-                  <span className="text-[11px] text-fg">{variable.label}</span>
-                  <span className="truncate font-mono text-[9.5px] text-muted-fg/50">{variable.token}</span>
-                </button>
-              ))}
+      {/* Portalled so the builder's scroll pane cannot cut the list off. */}
+      <AnchoredMenu
+        open={open}
+        anchorRef={buttonRef}
+        onClose={() => setOpen(false)}
+        placement="bottom-end"
+        className="max-h-[280px] w-[220px] overflow-y-auto rounded-lg border border-white/[0.08] bg-surface-overlay p-1 shadow-float"
+      >
+        {groups.map((group) => (
+          <div key={group.title} className="mb-1 last:mb-0">
+            <div className="px-2 pb-0.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/50">
+              {group.title}
             </div>
-          ))}
-        </div>
-      ) : null}
+            {group.variables.map((variable) => (
+              <button
+                key={variable.token}
+                type="button"
+                onClick={() => {
+                  onInsert(variable.token);
+                  setOpen(false);
+                }}
+                className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-left hover:bg-white/[0.05]"
+              >
+                <span className="text-[11px] text-fg">{variable.label}</span>
+                <span className="truncate font-mono text-[9.5px] text-muted-fg/50">{variable.token}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </AnchoredMenu>
     </div>
   );
 }

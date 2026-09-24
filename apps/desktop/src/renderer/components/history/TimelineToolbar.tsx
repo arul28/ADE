@@ -206,9 +206,10 @@ export function TimelineToolbar({
   const focusLaneHasWorktree = Boolean(focusLane?.worktreePath?.trim());
 
   return (
-    <div className="flex flex-col gap-2 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-3 py-2">
-      {/* ── Row 0: Surface + lane (commits) ──────────────────── */}
-      <div className="flex items-center gap-2">
+    <div className="flex shrink-0 flex-col">
+      {/* ── Row 0: Surface + lane (commits). The page's top rail, the same
+          height and hairline as the sidebar tab row. ── */}
+      <div className="ade-page-rail gap-2 px-3">
         <div className="flex items-center gap-0.5">
           {SURFACE_OPTIONS.map(({ value, label, Icon }) => (
             <button
@@ -216,7 +217,7 @@ export function TimelineToolbar({
               type="button"
               onClick={() => setSurface(value)}
               className={cn(
-                "flex h-7 items-center gap-1 rounded-md border px-2 font-mono text-[10px] font-bold uppercase tracking-[0.5px] transition-colors",
+                "flex h-6 items-center gap-1 rounded-md border px-2 font-mono text-[10px] font-bold uppercase tracking-[0.5px] transition-colors",
                 surface === value
                   ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
                   : "border-transparent text-[var(--color-muted-fg)] hover:bg-white/[0.04]",
@@ -233,7 +234,7 @@ export function TimelineToolbar({
               value={focusLaneId ?? ""}
               onChange={(e) => setFocusLaneId(e.target.value || null)}
               aria-label="Lane"
-              className="h-7 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
+              className="h-6 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
             >
               <option value="">Select lane…</option>
               {lanes.map((lane) => (
@@ -252,8 +253,9 @@ export function TimelineToolbar({
         ) : null}
       </div>
 
-      {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
       {showActivityControls ? (
+      <div className="flex flex-col gap-2 border-b border-white/[0.06] px-3 py-2">
+      {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
       <div className="flex items-center gap-3">
         {/* View mode toggle */}
         <div className="flex items-center gap-0.5">
@@ -350,10 +352,8 @@ export function TimelineToolbar({
 
         <ColumnSettingsMenu columns={columns} onToggleColumn={toggleColumn} />
       </div>
-      ) : null}
 
       {/* ── Row 2: Category · Status · Time · Lanes ────────── */}
-      {showActivityControls ? (
       <div className="flex flex-wrap items-center gap-1.5" data-tour="history.filter">
         {/* Section label */}
         <span className="mr-1 font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
@@ -509,6 +509,7 @@ export function TimelineToolbar({
           </Button>
         )}
       </div>
+      </div>
       ) : null}
     </div>
   );
@@ -594,7 +595,7 @@ function LaneGitActionsMenu({
           disabled={!laneId}
           title={laneId ? "Lane git actions" : "Select a lane first"}
           className={cn(
-            "flex h-7 shrink-0 items-center gap-1 rounded-md border px-2",
+            "flex h-6 shrink-0 items-center gap-1 rounded-md border px-2",
             "border-white/[0.06] bg-white/[0.03] font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
             "text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40",
           )}

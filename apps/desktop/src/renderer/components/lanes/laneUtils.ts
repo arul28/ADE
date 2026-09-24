@@ -1,7 +1,6 @@
 import type {
   LaneSummary
 } from "../../../shared/types";
-import type { PaneSplit } from "../ui/PaneTilingLayout";
 
 /* ---- Sort helpers ---- */
 
@@ -15,48 +14,6 @@ export function sortLanesForTabs<T extends { laneType: string; createdAt: string
     if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
     return 0;
   });
-}
-
-export function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
-  const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-  const childrenByParent = new Map<string, LaneSummary[]>();
-  const roots: LaneSummary[] = [];
-  const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
-  const primaryId = primary?.id ?? null;
-
-  for (const lane of lanes) {
-    if (lane.laneType === "primary") { roots.push(lane); continue; }
-    const effectiveParentId = lane.parentLaneId && laneById.has(lane.parentLaneId) ? lane.parentLaneId : primaryId;
-    if (!effectiveParentId || effectiveParentId === lane.id) { roots.push(lane); continue; }
-    const children = childrenByParent.get(effectiveParentId) ?? [];
-    children.push(lane);
-    childrenByParent.set(effectiveParentId, children);
-  }
-
-  const byCreatedAsc = (a: LaneSummary, b: LaneSummary) => {
-    const aTs = Date.parse(a.createdAt);
-    const bTs = Date.parse(b.createdAt);
-    if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
-    return a.name.localeCompare(b.name);
-  };
-  roots.sort((a, b) => {
-    const aPrimary = a.laneType === "primary" ? 1 : 0;
-    const bPrimary = b.laneType === "primary" ? 1 : 0;
-    if (aPrimary !== bPrimary) return bPrimary - aPrimary;
-    return byCreatedAsc(a, b);
-  });
-  for (const [, children] of childrenByParent.entries()) {
-    children.sort(byCreatedAsc);
-  }
-
-  const out: LaneSummary[] = [];
-  const visit = (lane: LaneSummary) => {
-    out.push(lane);
-    for (const child of childrenByParent.get(lane.id) ?? []) visit(child);
-  };
-  for (const root of roots) visit(root);
-  const seen = new Set(out.map((lane) => lane.id));
-  return out.concat(lanes.filter((lane) => !seen.has(lane.id)).sort(byCreatedAsc));
 }
 
 export function mergeUnique(...lists: string[][]): string[] {
@@ -74,14 +31,13 @@ export function mergeUnique(...lists: string[][]): string[] {
 
 /* ---- Filter helpers ---- */
 
-export function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, token: string): boolean {
+export function matchesLaneFilterToken(lane: LaneSummary, token: string): boolean {
   const normalized = token.trim().toLowerCase();
   if (!normalized.length) return true;
   if (normalized.startsWith("is:")) {
     const value = normalized.slice(3);
     if (value === "dirty") return lane.status.dirty;
     if (value === "clean") return !lane.status.dirty;
-    if (value === "pinned") return isPinned;
     if (value === "primary") return lane.laneType === "primary";
     if (value === "worktree") return lane.laneType === "worktree";
     if (value === "attached") return lane.laneType === "attached";
@@ -94,49 +50,16 @@ export function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, tok
     lane.worktreePath, lane.folder ?? "", lane.tags.join(" "),
     lane.status.dirty ? "dirty modified changed" : "clean",
     lane.status.ahead > 0 ? `ahead ahead:${lane.status.ahead}` : "ahead:0",
-    lane.status.behind > 0 ? `behind behind:${lane.status.behind}` : "behind:0",
-    isPinned ? "pinned" : ""
+    lane.status.behind > 0 ? `behind behind:${lane.status.behind}` : "behind:0"
   ].join(" ").toLowerCase();
   return indexedText.includes(normalized);
 }
 
-export function laneMatchesFilter(lane: LaneSummary, isPinned: boolean, query: string): boolean {
+export function laneMatchesFilter(lane: LaneSummary, query: string): boolean {
   const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
-  return tokens.every((token) => matchesLaneFilterToken(lane, isPinned, token));
+  return tokens.every((token) => matchesLaneFilterToken(lane, token));
 }
-
-/* ---- Default tiling layouts ---- */
-
-/** Work + Git only — stack graph lives in the lanes header; file/commit diffs render inside Git Actions. */
-export const LANES_TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "work" }, defaultSize: 38, minSize: 22 },
-    { node: { type: "pane", id: "git-actions" }, defaultSize: 62, minSize: 28 }
-  ]
-};
-
-/** Emphasize the Work pane (wider work column, narrower git). */
-export const LANES_TILING_WORK_FOCUS_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "work" }, defaultSize: 62, minSize: 35 },
-    { node: { type: "pane", id: "git-actions" }, defaultSize: 38, minSize: 18 }
-  ]
-};
-
-export const LANES_TILING_LAYOUT_VERSION = "v8";
-
-export const GIT_ACTIONS_FULLSCREEN_TREE: PaneSplit = {
-  type: "split",
-  direction: "vertical",
-  children: [
-    { node: { type: "pane", id: "git-actions" }, defaultSize: 100, minSize: 15 }
-  ]
-};
 
 /* ---- Misc types ---- */
 
@@ -186,8 +109,6 @@ export function formatBranchCheckoutError(input: string, laneName?: string): str
   }
   return `Cannot switch branches while ${where} uncommitted changes. Commit, stash, or discard them first.`;
 }
-
-export const RESIZE_TARGET_MINIMUM_SIZE = { coarse: 37, fine: 27 } as const;
 
 export function validateBranchName(input: string): { ok: boolean; reason?: string } {
   const name = input.trim();

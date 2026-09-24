@@ -14,6 +14,7 @@ import type {
 } from "../../../../shared/types/prs";
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import { Banner } from "../../ui/notice/Banner";
+import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import {
   buildDefaultCommitMessage,
@@ -72,7 +73,7 @@ export const PrMergeDialog = memo(function PrMergeDialog({
   const [showCli, setShowCli] = useState(false);
   const [staleHead, setStaleHead] = useState(false);
 
-  const methodMenuRef = useRef<HTMLDivElement | null>(null);
+  const methodButtonRef = useRef<HTMLButtonElement | null>(null);
   // Head SHA captured when the dialog opened — FROZEN; drives the stale-head
   // guard (submitted as expectedHeadSha). Never advanced while the dialog is open.
   const openedHeadShaRef = useRef<string | null>(null);
@@ -150,15 +151,6 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     if (!canBypass) setBypassRules(false);
   }, [canBypass]);
 
-  useEffect(() => {
-    if (!methodMenuOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (!methodMenuRef.current?.contains(event.target as Node)) setMethodMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [methodMenuOpen]);
-
   const handleResetDefaults = useCallback(() => {
     const defaults = computeDefaults(method);
     setCommitTitle(defaults.title);
@@ -226,8 +218,9 @@ export const PrMergeDialog = memo(function PrMergeDialog({
           <span className="text-[10px] font-semibold uppercase tracking-[0.08em]" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
             Merge method
           </span>
-          <div className="relative" ref={methodMenuRef}>
+          <div className="relative">
             <button
+              ref={methodButtonRef}
               type="button"
               onClick={() => setMethodMenuOpen((o) => !o)}
               className="flex h-9 w-full items-center justify-between rounded-md px-3 text-[12px] font-medium"
@@ -245,31 +238,34 @@ export const PrMergeDialog = memo(function PrMergeDialog({
               </span>
               <CaretDown size={12} weight="bold" style={{ color: COLORS.textMuted }} />
             </button>
-            {methodMenuOpen ? (
-              <div
-                className="absolute left-0 top-full z-30 mt-1 w-full rounded-md py-1 shadow-lg"
-                style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}` }}
-              >
-                {MERGE_METHODS.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => handleSelectMethod(m)}
-                    className="flex w-full items-center justify-between px-3 py-2 text-left text-[12px]"
-                    style={{
-                      color: method === m ? COLORS.accent : COLORS.textPrimary,
-                      fontFamily: SANS_FONT,
-                      background: "transparent",
-                      border: "none",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {mergeMethodLabel(m)}
-                    <span style={{ color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 10 }}>{mergeMethodShortLabel(m)}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            {/* Portalled: the dialog body scrolls and would clip the list. */}
+            <AnchoredMenu
+              open={methodMenuOpen}
+              anchorRef={methodButtonRef}
+              onClose={() => setMethodMenuOpen(false)}
+              matchAnchorWidth
+              className="rounded-md py-1 shadow-lg"
+              style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}` }}
+            >
+              {MERGE_METHODS.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => handleSelectMethod(m)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-[12px]"
+                  style={{
+                    color: method === m ? COLORS.accent : COLORS.textPrimary,
+                    fontFamily: SANS_FONT,
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  {mergeMethodLabel(m)}
+                  <span style={{ color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 10 }}>{mergeMethodShortLabel(m)}</span>
+                </button>
+              ))}
+            </AnchoredMenu>
           </div>
         </div>
 

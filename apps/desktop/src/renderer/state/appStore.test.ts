@@ -1166,19 +1166,13 @@ describe("appStore", () => {
     it("keeps Lanes-tab view state per project", () => {
       useAppStore.getState().setWorkViewState("/proj-one", {
         lanesFilter: "auth",
-        lanesPinnedLaneIds: ["lane-1"],
-        lanesExpandedLaneId: "lane-1",
       });
       useAppStore.getState().setWorkViewState("/proj-two", { lanesFilter: "docs" });
 
       const one = useAppStore.getState().getWorkViewState("/proj-one");
       expect(one.lanesFilter).toBe("auth");
-      expect(one.lanesPinnedLaneIds).toEqual(["lane-1"]);
-      expect(one.lanesExpandedLaneId).toBe("lane-1");
       const two = useAppStore.getState().getWorkViewState("/proj-two");
       expect(two.lanesFilter).toBe("docs");
-      expect(two.lanesPinnedLaneIds).toEqual([]);
-      expect(two.lanesExpandedLaneId).toBeNull();
     });
 
     it("keeps Work-sidebar lane ordering and chip filters per project", () => {

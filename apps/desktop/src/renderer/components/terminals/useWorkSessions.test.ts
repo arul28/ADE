@@ -420,7 +420,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -642,7 +641,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -849,7 +847,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -1069,7 +1066,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedLaneIds: [],
       workCollapsedSectionIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
       workSidebarOpen: false,
       // From the real default rather than by hand: the by-hand copies drifted
       // when `workSidebarTab` was renamed and kept a key the type no longer has.
@@ -1159,7 +1155,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedLaneIds: [],
       workCollapsedSectionIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
       workSidebarOpen: false,
       // From the real default rather than by hand: the by-hand copies drifted
       // when `workSidebarTab` was renamed and kept a key the type no longer has.
@@ -2249,7 +2244,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2316,7 +2310,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-time",
       workCollapsedLaneIds: ["lane-1"],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: true,
       workSidebarOpen: true,
     };
     let nextState: typeof previousState | null = null;
@@ -2382,7 +2375,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2420,7 +2412,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2532,7 +2523,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2578,7 +2568,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2649,7 +2638,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
       workCollapsedSectionIds: ["status:running", "status:settled"],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2707,7 +2695,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2795,7 +2782,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2875,7 +2861,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2972,7 +2957,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           sessionListOrganization: "by-lane",
           workCollapsedLaneIds: [],
           workCollapsedTabGroupIds: [],
-          workFocusSessionsHidden: false,
         },
       },
     };
@@ -3096,7 +3080,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           sessionListOrganization: "by-lane",
           workCollapsedLaneIds: [],
           workCollapsedTabGroupIds: [],
-          workFocusSessionsHidden: false,
         },
       },
     };
@@ -3147,7 +3130,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -3227,7 +3209,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
     };
 
     listSessionsCachedMock
@@ -3312,7 +3293,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
     };
 
     listSessionsCachedMock
@@ -3937,7 +3917,6 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
           workCollapsedLaneIds: [] as string[],
           workCollapsedTabGroupIds: [] as string[],
           workCollapsedSectionIds: [] as string[],
-          workFocusSessionsHidden: false,
           ...patch,
         },
       },

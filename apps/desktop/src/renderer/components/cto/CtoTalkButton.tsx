@@ -72,8 +72,8 @@ const TALK_CSS = `
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 29px;
-  padding: 0 12px;
+  height: 22px;
+  padding: 0 10px;
   border-radius: 999px;
   white-space: nowrap;
   font-size: 11.5px;

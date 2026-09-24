@@ -7,8 +7,8 @@ import {
   Sparkle,
   X,
 } from "@phosphor-icons/react";
-import { useClickOutside } from "../../hooks/useClickOutside";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 import { textareaCls } from "./designTokens";
 import { INPUT_CLS, INPUT_STYLE } from "./shared";
@@ -132,17 +132,7 @@ function ActionPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-
-  useClickOutside(wrapRef, () => setOpen(false), open);
-  useEffect(() => {
-    if (!open) return;
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("keydown", escape);
-    return () => document.removeEventListener("keydown", escape);
-  }, [open]);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
 
   const matches = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -201,8 +191,9 @@ function ActionPicker({
   );
 
   return (
-    <div ref={wrapRef} className="relative">
+    <div className="relative">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
         className={cn(
@@ -220,75 +211,82 @@ function ActionPicker({
         />
       </button>
 
-      {open ? (
-        <div className="absolute left-0 right-0 z-30 mt-1.5 max-h-[420px] overflow-hidden rounded-xl border border-white/[0.08] bg-surface-overlay shadow-2xl">
-          <div className="flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.04] px-2.5 py-2">
-            <MagnifyingGlass size={11} weight="bold" className="text-muted-fg/70" />
-            <input
-              autoFocus
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search by domain, action, or description"
-              className="flex-1 bg-transparent text-[12px] text-fg placeholder:text-muted-fg/55 focus:outline-none"
-            />
-            {search ? (
-              <button
-                type="button"
-                onClick={() => setSearch("")}
-                className="rounded p-0.5 text-muted-fg/70 hover:text-fg"
-              >
-                <X size={11} weight="bold" />
-              </button>
-            ) : null}
-          </div>
-          <div className="max-h-[360px] overflow-y-auto p-1">
-            {grouped.length === 0 ? (
-              <div className="px-3 py-4 text-center text-[11px] text-muted-fg/70">
-                No actions match "{search}".
-              </div>
-            ) : (
-              grouped.map(([domain, items]) => (
-                <div key={domain} className="mb-1">
-                  <div className="px-2 pb-1 pt-1.5 text-[9px] font-semibold uppercase tracking-[1.5px] text-accent">
-                    {domain}
-                  </div>
-                  {items.map((item) => {
-                    const active = item.domain === value.domain && item.action === value.action;
-                    return (
-                      <button
-                        key={`${item.domain}.${item.action}`}
-                        type="button"
-                        onClick={() => {
-                          onChange({ domain: item.domain, action: item.action });
-                          setOpen(false);
-                          setSearch("");
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left",
-                          active ? "bg-accent/15" : "hover:bg-white/[0.05]",
-                        )}
-                      >
-                        <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-1.5">
-                            <span className="text-[12px] font-medium text-fg">{item.label}</span>
-                            <span className="text-[10px] text-muted-fg/70">{item.action}</span>
-                          </span>
-                          {item.description ? (
-                            <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/70">
-                              {item.description}
-                            </span>
-                          ) : null}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))
-            )}
-          </div>
+      {/* Portalled so the builder's scroll pane cannot cut the list off. */}
+      <AnchoredMenu
+        open={open}
+        anchorRef={buttonRef}
+        onClose={() => setOpen(false)}
+        offset={6}
+        matchAnchorWidth
+        remeasureKey={search}
+        className="max-h-[420px] overflow-hidden rounded-xl border border-white/[0.08] bg-surface-overlay shadow-2xl"
+      >
+        <div className="flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.04] px-2.5 py-2">
+          <MagnifyingGlass size={11} weight="bold" className="text-muted-fg/70" />
+          <input
+            autoFocus
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search by domain, action, or description"
+            className="flex-1 bg-transparent text-[12px] text-fg placeholder:text-muted-fg/55 focus:outline-none"
+          />
+          {search ? (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className="rounded p-0.5 text-muted-fg/70 hover:text-fg"
+            >
+              <X size={11} weight="bold" />
+            </button>
+          ) : null}
         </div>
-      ) : null}
+        <div className="max-h-[360px] overflow-y-auto p-1">
+          {grouped.length === 0 ? (
+            <div className="px-3 py-4 text-center text-[11px] text-muted-fg/70">
+              No actions match "{search}".
+            </div>
+          ) : (
+            grouped.map(([domain, items]) => (
+              <div key={domain} className="mb-1">
+                <div className="px-2 pb-1 pt-1.5 text-[9px] font-semibold uppercase tracking-[1.5px] text-accent">
+                  {domain}
+                </div>
+                {items.map((item) => {
+                  const active = item.domain === value.domain && item.action === value.action;
+                  return (
+                    <button
+                      key={`${item.domain}.${item.action}`}
+                      type="button"
+                      onClick={() => {
+                        onChange({ domain: item.domain, action: item.action });
+                        setOpen(false);
+                        setSearch("");
+                      }}
+                      className={cn(
+                        "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left",
+                        active ? "bg-accent/15" : "hover:bg-white/[0.05]",
+                      )}
+                    >
+                      <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-[12px] font-medium text-fg">{item.label}</span>
+                          <span className="text-[10px] text-muted-fg/70">{item.action}</span>
+                        </span>
+                        {item.description ? (
+                          <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/70">
+                            {item.description}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </div>
+      </AnchoredMenu>
     </div>
   );
 }

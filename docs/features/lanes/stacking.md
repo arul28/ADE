@@ -217,8 +217,8 @@ When the parent head sha changes, dismiss state is reset so a fresh
 suggestion can re-appear.
 
 The renderer subscribes via `ade.lanes.rebaseSuggestions.event` and
-surfaces a banner on lane rows plus a `LaneRebaseBanner` inline with
-Rebase Now / Snooze banner / Hide banner actions. Those controls only
+surfaces a mark on lane rows plus one notice at the top of the lane
+dashboard with Rebase and Dismiss actions. Those controls only
 change suggestion visibility; PR workflow rebase needs come from
 `conflictService.scanRebaseNeeds()` and remain actionable while the lane
 is still behind.
@@ -257,7 +257,7 @@ Key behaviors:
   and integration-source chips for integration lanes.
 - `LanesPage` passes `integrationSourcesByLaneId` built via
   `buildIntegrationSourcesByLaneId` from `renderer/lib/integrationLanes.ts`.
-- `LaneRebaseBanner` is conditionally rendered above the lane detail
+- The lane dashboard's rebase notice is rendered above the hero
   when `listRebaseSuggestions` returns a suggestion that is neither
   dismissed nor deferred. PR workflow banners use rebase-need drift and
   route hide/snooze actions back to `rebaseSuggestionService`, so hiding

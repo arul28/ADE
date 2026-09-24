@@ -277,7 +277,7 @@ function ManageLaneHeaderDetails({
   );
 }
 
-type ManageLaneTab = "appearance" | "stack" | "archive" | "delete";
+export type ManageLaneTab = "appearance" | "stack" | "archive" | "delete";
 
 type ManageLaneTabDef = {
   id: ManageLaneTab;
@@ -377,6 +377,7 @@ export function ManageLaneDialog({
   onAppearanceChanged,
   onStackReorganized,
   runtimePin,
+  initialTab,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -397,6 +398,8 @@ export function ManageLaneDialog({
   onAppearanceChanged?: () => void | Promise<void>;
   onStackReorganized?: () => void | Promise<void>;
   runtimePin?: OpenProjectBinding | null;
+  /** Tab to open on, e.g. "archive" for the sidebar's "Archive all". Defaults to Delete. */
+  initialTab?: ManageLaneTab | null;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
@@ -425,11 +428,13 @@ export function ManageLaneDialog({
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
   }, [singleLaneType]);
-  // Manage Lane always opens on Delete — it's the first tab and the action
-  // users reach for most. Other tabs (appearance, restack, archive) are opt-in.
+  // Manage Lane opens on Delete — it's the first tab and the action users
+  // reach for most. Other tabs (appearance, restack, archive) are opt-in, or
+  // picked by the caller (the sidebar's "Archive all" opens on Archive).
   const defaultTab = React.useMemo((): ManageLaneTab => {
+    if (initialTab && tabDefs.some((tab) => tab.id === initialTab)) return initialTab;
     return tabDefs.some((tab) => tab.id === "delete") ? "delete" : tabDefs[0]?.id ?? "archive";
-  }, [tabDefs]);
+  }, [initialTab, tabDefs]);
 
   // Reset transient state when dialog closes or active lane changes.
   useEffect(() => {

@@ -73,17 +73,6 @@ export type GitHubTabProps = {
   onDetailTabChange?: (tab: PrDetailRouteTab) => void;
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
-  relocateHeaderChrome?: boolean;
-  onHeaderChromeChange?: (state: GitHubHeaderChromeState | null) => void;
-};
-
-export type GitHubHeaderChromeState = {
-  repoLabel: string;
-  syncing: boolean;
-  syncedAt: string | null;
-  onSync: () => void;
-  searchQuery: string;
-  onSearchQueryChange: (value: string) => void;
 };
 
 export function GitHubTab({
@@ -96,8 +85,6 @@ export function GitHubTab({
   onDetailTabChange,
   onRefreshAll,
   onOpenRebaseTab,
-  relocateHeaderChrome = false,
-  onHeaderChromeChange,
 }: GitHubTabProps) {
   const navigate = useNavigate();
   const appStore = useAppStoreApi();
@@ -606,25 +593,6 @@ export function GitHubTab({
 
   const repoLabel = snapshot?.repo ? `${snapshot.repo.owner}/${snapshot.repo.name}` : "";
 
-  React.useEffect(() => {
-    if (!relocateHeaderChrome || !onHeaderChromeChange) return;
-    onHeaderChromeChange({
-      repoLabel,
-      syncing,
-      syncedAt: snapshot?.syncedAt ?? null,
-      onSync: () => {
-        void handleSync();
-      },
-      searchQuery,
-      onSearchQueryChange: setSearchQuery,
-    });
-  }, [handleSync, onHeaderChromeChange, relocateHeaderChrome, repoLabel, searchQuery, snapshot?.syncedAt, syncing]);
-
-  React.useEffect(() => {
-    if (!relocateHeaderChrome || !onHeaderChromeChange) return;
-    return () => onHeaderChromeChange(null);
-  }, [onHeaderChromeChange, relocateHeaderChrome]);
-
   const handleSelectItem = React.useCallback((item: GitHubPrListItem) => {
     hasInitializedSelectionRef.current = true;
     setSelectedItemId(item.id);
@@ -819,7 +787,6 @@ export function GitHubTab({
     <>
       <GitHubTabView
         chrome={{
-          relocated: relocateHeaderChrome,
           searchQuery,
           onSearchQueryChange: setSearchQuery,
           repoLabel,

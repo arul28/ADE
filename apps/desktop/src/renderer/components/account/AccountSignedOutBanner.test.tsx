@@ -149,6 +149,15 @@ describe("AccountSignedOutBanner", () => {
 
     expect(signedOutBanner()).toBeNull();
   });
+
+  it("hides on the Account section of Settings, and only there", () => {
+    renderBanner("/settings?tab=account");
+    expect(signedOutBanner()).toBeNull();
+
+    cleanup();
+    renderBanner("/settings?tab=appearance");
+    expect(signedOutBanner()).toBeTruthy();
+  });
 });
 
 /**
