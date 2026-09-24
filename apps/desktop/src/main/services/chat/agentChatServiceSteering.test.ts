@@ -616,7 +616,7 @@ describe("createAgentChatService", () => {
         let releaseTurn!: () => void;
         const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
         const neverSettles = new Promise<void>(() => {});
-        const stopTask = vi.fn(() => neverSettles);
+        const stopTask = vi.fn((_taskId: string) => neverSettles);
         const queryInterrupt = vi.fn(() => neverSettles);
         const stream = vi.fn(() => (async function* () {
           streamCall += 1;

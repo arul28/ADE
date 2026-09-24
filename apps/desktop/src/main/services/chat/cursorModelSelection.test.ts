@@ -284,7 +284,10 @@ describe("resolving a Cursor model selection against the catalog", () => {
     [{ status: "unknown-model" } as const, /does not list model composer-2/],
     [{ status: "partial", params: [], unmet: ["fast"] } as const, /could not verify the selected model settings \(fast tier\)/],
   ])("names the cause of a %o selection a fail-closed caller refuses", (selection, cause) => {
-    expect(describeCursorSdkModelSelectionFailure("composer-2", selection)).toMatch(cause);
+    expect(describeCursorSdkModelSelectionFailure(
+      "composer-2",
+      selection as Parameters<typeof describeCursorSdkModelSelectionFailure>[1],
+    )).toMatch(cause);
   });
 
   it("does not let standard tier variants overwrite selected Cursor reasoning params", async () => {

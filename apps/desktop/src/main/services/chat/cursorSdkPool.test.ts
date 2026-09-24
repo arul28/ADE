@@ -189,6 +189,107 @@ class ExitingBeforeInitChild extends EventEmitter {
   }
 }
 
+class FailingInitChild extends FakeSdkChild {
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "init" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: false,
+          error: "Cursor SDK init failed: listen EINVAL: invalid argument (code=EINVAL)",
+        });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+class FailingSendChild extends FakeSdkChild {
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "send" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: false,
+          error: "Cursor rate limited this request: [resource_exhausted] Error",
+          errorCode: "rate_limited",
+          errorDetail: {
+            message: "[resource_exhausted] Error",
+            code: "resource_exhausted",
+            status: 429,
+            requestId: "req-cursor-1",
+            operation: "Agent.send",
+            endpoint: "/agent/send",
+            isRetryable: true,
+          },
+        });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+class OneShotSdkChild extends FakeSdkChild {
+  constructor(private readonly runResult: unknown = { status: "finished", result: " named it " }) {
+    super();
+  }
+
+  override send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
+    if (message.type === "send" && message.requestId) {
+      this.sent.push(message);
+      const requestId = message.requestId;
+      queueMicrotask(() => {
+        this.emit("message", { type: "response", requestId, ok: true, result: this.runResult });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+class StalledSendChild extends FakeSdkChild {
+  cancelCount = 0;
+
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "send") {
+      this.sent.push(message);
+      return true;
+    }
+    if (message.type === "cancel" && message.requestId) {
+      this.cancelCount += 1;
+      const requestId = message.requestId;
+      queueMicrotask(() => {
+        this.emit("message", { type: "response", requestId, ok: true, result: null });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
+class RejectingSendChild extends FakeSdkChild {
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "send" && message.requestId) {
+      this.sent.push(message);
+      const requestId = message.requestId;
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId,
+          ok: false,
+          error: "Cursor SDK worker is not initialized.",
+        });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
 /** Answers `send` with a terminal run result, the way a one-shot run ends. */
 function oneShotChild(runResult: unknown = { status: "finished", result: " named it " }): FakeSdkChild {
   return new FakeSdkChild({ send: { ok: true, result: runResult } });

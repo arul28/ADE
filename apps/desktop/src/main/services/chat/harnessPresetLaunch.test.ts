@@ -447,6 +447,7 @@ describe("resolveHarnessPresetPlan — account source", () => {
     expect(plan.env.CODEX_HOME).toBeDefined();
     expect(plan.env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
   });
+});
 
 describe("resolveHarnessPresetPlan — unsupported sources", () => {
   // Unsupported is a value, not a throw: each row names why the launch falls
