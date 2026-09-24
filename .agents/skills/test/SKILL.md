@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts, turn accepted /quality correctness findings into named regression tests, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests), then run CI-mirrored shards and harvest the early PR. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
 ---
 
 # /test — Test Suite Steward
@@ -22,24 +22,75 @@ the branch still contains a verified finding awaiting an author decision, and
 committing a knowingly failing test is not a substitute for fixing it. Resume
 after the decision and the corresponding `/quality` fix.
 
-Build a correctness inventory from the completed quality summary. Itemize
-**every accepted correctness finding** by a stable finding name and original
-`file:line`; aggregate counts such as "5 findings covered" are not sufficient.
-For each item, provide exactly one of:
+Take two inputs from the quality summary: the **"For /test" list** (CI failures
+caused by the test itself, and coverage gaps) and the **accepted correctness
+findings**. A fixed bug does not earn a test by default. For each correctness
+finding, decide in this order and stop at the first match:
 
-- a named regression test that pins the public contract and would fail on the
-  pre-fix behavior, or
-- an explicit alternate verification: the exact command/check, the observed
-  evidence, and why a regression test is not appropriate.
+1. **Already caught.** An existing test fails on the pre-fix code. Name it.
+   Nothing to add.
+2. **Almost caught.** An existing test covers the same contract but misses this
+   input. Add a row to its `it.each` table or an assertion to it.
+3. **Genuine behavior gap.** No test covers the contract, and the contract is
+   behavior a caller or user depends on. Add one test through the public seam
+   that fails on the pre-fix code.
+4. **No test.** The fix is structural, visual, a one-off typo, or only
+   testable by pinning the implementation. Record why in one line.
 
-Existing coverage counts only when you name the specific test and confirm that
-it exercises the finding's failure mode. Structural maintainability findings do
-not require artificial tests when existing coverage already proves the
-behavior-preserving move. No quality result available → derive the same
-itemized correctness inventory from the diff and state that quality evidence
-was unavailable.
+Name each finding individually in the summary with its outcome; a count such
+as "5 findings covered" is not enough.
+
+Handle the rest of the "For /test" list too:
+
+- **CI failures caused by a test.** In Pass 1, decide whether the test is
+  right. If it pins implementation (Test value rules), rewrite or delete it.
+  If it tests real behavior and the code is right, fix the test's setup. Never
+  bend product code to fit a change-detector test.
+- **Coverage gaps from `/quality`.** Take each one through the same four-step
+  order as a correctness finding, in Pass 3.
+
+List both groups in the summary with their outcome. No quality result available → derive
+the findings from the diff and say that quality evidence was unavailable.
 
 **Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
+
+---
+
+## Test value rules (apply to every test you add, keep, or edit)
+
+The suite is about 25,000 tests. Most of them test real behavior, but the
+weak ones cluster in "regression:" and "no longer" tests written to satisfy
+a finding. These rules stop that. They are the same rules as **Writing tests** in
+`AGENTS.md` and `CLAUDE.md`, which every agent follows while it works; this
+skill enforces them on the branch.
+
+- **Tests come after validation.** This skill is where new tests are written.
+  The work phase validated the change by hand, in the app, or with an agent,
+  and listed the failure modes. Use that list and that evidence. When the
+  change was never validated, validate it first (App Control, browser, iOS
+  simulator, CLI), then write the tests.
+- **Test the failure modes, not the diff.** Start from the failure-mode list.
+  When there is none, write it first. Test those, not the lines of the fix.
+- **No tautological tests.** Do not assert that a mock returns what you told
+  it to return, that arguments pass through unchanged, or that a constant
+  string contains its own substrings. Do not compute the expected value with
+  the code under test.
+- **No change-detector tests.** Do not read source files (`readFileSync` of
+  `.ts`, `.tsx`, `.swift`) to grep for code or statement order. Do not pin CSS
+  classes, pixel values, SVG paths, exact copy, or the call order of internal
+  helpers. Do not assert that a removed button or field stays removed. A test
+  must fail only when behavior breaks, never when a refactor keeps behavior.
+- **No regression test without a gap.** A bug fix gets a new test only under
+  rule 3 above.
+- **Combine before you add.** Trivial cases of one contract are one
+  `it.each` table. Extend an existing test before you write a new one.
+- **Double-check every test you wrote.** Revert the fix locally or break the
+  behavior on purpose and confirm the test fails. A test that still passes
+  proves nothing — delete it.
+
+End-to-end tests are not a replacement for these. The best tests in this repo
+are service-level tests of races and seams (process kill guards, multi-brain
+claims, token refresh ordering) that an E2E run cannot reach reliably.
 
 ---
 
@@ -179,6 +230,8 @@ Search the suite (or at minimum the changed feature folder) for:
 - A test file where `vi.mock(` count > `expect(` count — over-mocked; the test is mostly fixture. Either trim mocks or delete.
 - `expect(x).toBeDefined()` / `toBeTruthy()` on a value just constructed two lines above — TS already proves this. Replace with a real behavioral assertion or delete.
 - `await Promise.resolve()` immediately followed by `expect(...)` with no real async work in between — fake-async. Verify the test actually exercises the async path; if not, delete.
+- Tests that break the **Test value rules**: source-file reads for code text, CSS class / pixel / SVG / exact-copy pins, "removed X stays removed", mock echo. Rewrite as a behavior test through the public seam, or delete.
+- `regression:` / `no longer` tests in the touched folder that pin one past bug instance. Keep only the ones that test a general contract; fold near-duplicates into an `it.each`.
 
 ### 1d. Trivial-assertion files
 
@@ -236,7 +289,8 @@ Forbidden naming patterns (these are fragmentation signals):
 
 ## Pass 3: ADD (only if needed)
 
-Goal: prove the feature's **public contract**. Not its internals.
+Goal: prove the feature's **public contract**. Not its internals. Write the
+failure modes first (see **Test value rules**), then the tests.
 
 ### 3a. What to test
 
@@ -281,9 +335,15 @@ Fix until passing before moving to the next.
 
 ## Parity Passes (4–8)
 
-After the test-suite work above, run five parity reviewers that keep docs, iOS, the CLI, the TUI, and the published SDK packages in lockstep with the desktop changes on this branch. They are independent of one another and of Passes 1–3.
+After the test-suite work above, the parity passes keep docs, iOS, the CLI, the TUI, and the published SDK packages in lockstep with the changes on this branch. They are independent of one another and of Passes 1–3.
 
-**Preferred: TeamCreate** for these five passes so progress is tracked and a single completion event surfaces the batch. Per the global git-worktrees policy, do not pass worktree isolation. Fallback: parallel `Agent` calls in a single tool-call round if TeamCreate is unavailable.
+**Triage first. The number of agents is not fixed.** Map the changed paths (`git diff "$TEST_REVIEW_BASE" --name-only` plus untracked files) to the surfaces each pass owns, using the trigger paths in each pass below:
+
+- **No trigger path changed** → skip the pass. Record "not applicable — <reason>" in the summary.
+- **A small or obvious check** (one README line, one type field, one renamed flag) → do it yourself in the main loop. Do not start an agent.
+- **Real parity work** → start one agent for that pass with the prompt below.
+
+A diff that changes only skills, docs, or tests usually needs no parity agent. A UI-only renderer change usually needs only Pass 4. Start agents only for the passes that need one. When you start several, use **TeamCreate** or parallel `Agent` calls in one round. Per the global git-worktrees policy, do not pass worktree isolation.
 
 ---
 
@@ -685,7 +745,7 @@ Report:
 - typecheck/test/preflight/validate-docs results
 ```
 
-Wait for all five parity agents to complete before moving to Verification.
+Wait for every parity agent you started to complete before moving to Verification.
 
 ### Windows parity and Computer Use evidence
 
@@ -725,7 +785,7 @@ named helper whose contract a test can pin.
 
 ## Verification
 
-After all seven passes:
+After the passes that applied:
 
 1. **Run the affected shards**, not the full suite (`/finalize` runs everything):
    ```bash
@@ -744,6 +804,21 @@ After all seven passes:
    MCP server tests live in `apps/mcp-server/` and are picked up by its own vitest config. Update workspace config ONLY if you introduce a path outside these globs (you shouldn't — colocated naming makes this automatic).
 
 3. **Do not run** typecheck, lint, or the full sharded suite — that's `/finalize`'s job.
+
+## Harvest and push (when an early PR exists)
+
+After verification, follow **Early PR and harvests → Harvest** in
+`docs/playbooks/ship-lane.md`. It reads round 1 leftovers or round 2 —
+whatever finished while this skill ran — and does not wait for the rest.
+
+- Rerun each failed CI test file locally and fix the real failures. Apply the
+  Test value rules: when a failing test pins implementation, rewrite or
+  delete it instead of bending the code to it.
+- Verify each new bot comment against the code, then fix it or reject it.
+- Commit, then apply the push rule. A push first runs Commit-bound quality
+  revalidation, which reviews only what `/test` changed since
+  `qualityReviewedSha`. When a bot is still in flight, hold the commits;
+  `/ship` pushes them.
 
 ---
 
@@ -803,9 +878,20 @@ Added:
 - Or "none — feature was visual / fully covered by consolidation"
 
 Quality correctness findings:
-- <stable finding name> (`file:line`) — regression: `<test file> :: <test name>`
-- <stable finding name> (`file:line`) — alternate verification: `<exact command/check>` → `<observed evidence>`; no regression test because <specific reason>
+- <stable finding name> (`file:line`) — already caught: `<test file> :: <test name>`
+- <stable finding name> (`file:line`) — extended: `<test file> :: <test name>` (+<n> it.each rows / assertions)
+- <stable finding name> (`file:line`) — gap closed: `<test file> :: <test name>` (fails on pre-fix code: yes)
+- <stable finding name> (`file:line`) — no test: <structural | visual | one-off | only implementation-pinnable>
 - Or "none — /quality accepted no correctness findings"
+
+From the "For /test" list:
+- <failing test file :: name> — <rewritten | deleted | setup fixed> — <reason>
+- <coverage gap> — <already caught | extended | gap closed | no test> — <test or reason>
+- Or "none"
+
+PR harvest:
+- PR #<n> — CI: <n failed → n fixed | green | n running>; bots: <n fixed, n stale, n rejected | pending: names>
+- Push: <pushed <sha> | held — <bot> in flight; /ship pushes it | no PR>
 
 Parity:
 - Windows: <proven — evidence | capability "<name>" not achievable: <OS reason>; macOS/Linux <keep|lose> it; recommend <hidden|disabled-with-reason|removed> — AWAITING DECISION> — PASS / blocked
@@ -843,8 +929,13 @@ Mark **completed** only if all of:
 6. The summary is the *only* thing you output.
 7. `docs/logging.md` exists, was read, and every analytics-applicable change is covered or has an explicit not-applicable rationale.
 8. Every accepted correctness finding from `/quality` appears individually in
-   the summary with a named regression test or explicit alternate verification.
+   the summary with one of the four outcomes (already caught, extended, gap
+   closed, no test with a reason). No new test breaks the Test value rules, and
+   each new test was seen to fail on broken behavior.
 9. The Windows parity line is `PASS` — the branch works on Windows, or a human
    decision (hidden / disabled-with-reason / removed) is recorded for each named
    capability and covered by a test. A branch whose Windows behavior is unknown
    or knowingly broken is **blocked**, never completed.
+10. When an early PR exists, the harvest ran, every finished CI failure and
+    bot comment is fixed or rejected with a reason, and the push rule was
+    applied (pushed, or held with the in-flight bot named).
