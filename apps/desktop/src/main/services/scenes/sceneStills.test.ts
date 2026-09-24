@@ -111,9 +111,9 @@ describe("scene still filing", () => {
    * snapshot. Before the tag, every settled scene buried real proof under
    * pictures nobody asked to keep.
    */
-  it("keeps stills out of the proof drawer while proof stays visible", () => {
+  it("keeps stills out of the proof drawer while proof stays visible", async () => {
     fileStill({ title: "Generated view", scopeKey: "row-1:aa" });
-    broker.ingest({
+    await broker.ingestAsync({
       backend: { name: "cto", style: "manual" },
       owners: [{ kind: "chat_session", id: "chat-1" }],
       inputs: [{ kind: "browser_verification", title: "Checkout", text: "{}" }],

@@ -536,7 +536,7 @@ func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil) -> WorkC
     onRetryLoad: {},
     onOpenFile: { _ in },
     onOpenPr: { _ in },
-    onLoadArtifact: { _ in },
+    onLoadArtifact: { _, _ in },
     onRefreshArtifacts: {},
     onCancelSteer: { _ in },
     onEditSteer: { _, _ in },
@@ -1186,7 +1186,8 @@ enum WorkProofPreviewData {
       runtime: "iOS 26.0",
       state: "Booted"
     ),
-    stream: AppleDeviceStatusStream(running: true)
+    stream: AppleDeviceStatusStream(running: true),
+    laneDevice: AppleDeviceStatusLaneDevice(udid: "preview-udid")
   )
 }
 
@@ -1242,7 +1243,7 @@ struct ADEPreviewScreenHost: View {
         isRefreshing: false,
         refreshError: nil,
         onRefresh: {},
-        onLoadArtifact: { _ in }
+        onLoadArtifact: { _, _ in }
       )
     case .proofEmpty:
       WorkProofSheet(
@@ -1251,14 +1252,14 @@ struct ADEPreviewScreenHost: View {
         isRefreshing: false,
         refreshError: nil,
         onRefresh: {},
-        onLoadArtifact: { _ in }
+        onLoadArtifact: { _, _ in }
       )
     case .proofViewer:
       WorkProofViewer(
         artifacts: WorkProofPreviewData.artifacts.reversed(),
         artifactContent: WorkProofPreviewData.content,
         initialArtifactId: "proof-1",
-        onLoadArtifact: { _ in }
+        onLoadArtifact: { _, _ in }
       )
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())

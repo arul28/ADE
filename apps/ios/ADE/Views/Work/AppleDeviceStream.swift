@@ -26,6 +26,14 @@ struct AppleDeviceStatus: Codable, Equatable {
   var stream: AppleDeviceStatusStream?
   var recording: AppleDeviceStatusRecording?
   var owner: AppleDeviceStatusOwner?
+  /// The device this lane owns (created or attached), when it has one. `device`
+  /// can be a booted simulator the host picked for a lane with none, so only a
+  /// `device` whose udid matches this one is the lane's. Absent from older hosts.
+  var laneDevice: AppleDeviceStatusLaneDevice?
+}
+
+struct AppleDeviceStatusLaneDevice: Codable, Equatable {
+  var udid: String?
 }
 
 struct AppleDeviceStatusDevice: Codable, Equatable {

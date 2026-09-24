@@ -52,7 +52,7 @@ ADE injects `ADE_LANE_ID` and `ADE_CHAT_SESSION_ID` into every agent it launches
 
 ### Showing a surface to the user
 
-`ade ui show apple | floating-apple | browser | proof` asks the desktop window that has your chat in front to open that surface (`ade apple show` is the Apple alias). It prints `shown`, `held` (a window has the project but the user cannot see your chat yet — another chat is in front or the window is hidden; it opens when the user goes there) or `no_desktop` (exit 1, nothing was shown — tell the user rather than claiming it opened).
+`ade ui show apple | floating-apple | browser | proof` asks the desktop window that has your chat in front to open that surface (`ade apple show` is the Apple alias). It prints `shown`, `held` (a window has the project but the user cannot see your chat yet — another chat is in front or the window is hidden; it opens when the user goes there) or `no_desktop` (exit 1, nothing was shown — tell the user rather than claiming it opened). A shell with no `ADE_CHAT_SESSION_ID` (an OpenCode agent shell, for one) cannot use it; ask the user to open the surface.
 
 ## Runtime daemon vs. desktop bridge
 
@@ -258,6 +258,23 @@ They are two separate signals on the row the user is looking at:
 - **The next accepted user message clears the hand-raise** and the row returns
   to **Working** while the reply is handled. If the reply does not unblock you,
   leave an updated note and `ask` again.
+
+#### Activity detail on the card
+
+ADE derives the parent state automatically. Some provider adapters also
+surface structured activity, such as Plan mode or a background monitor. ADE
+offers agent-reported activity only when the current provider can invoke the
+session's ADE CLI. When available, session-specific guidance gives the exact
+command and allowed values. For tracked terminals, `ade chat activity` targets
+`ADE_ACTIVITY_SESSION_ID`, while other ADE commands continue to use the owning
+chat in `ADE_CHAT_SESSION_ID`. Use that guidance to report or clear a detail;
+when it is absent, do not try to set one.
+
+An activity report refines a Working card and never moves it to Needs you,
+Waiting, or Done. ADE clears it when a new user turn is accepted. Update it
+when the work changes; do not keep a stale label. Each card shows at most one
+status: Needs you has priority, otherwise one current activity detail occupies
+the label in place of generic Working.
 
 #### Board and status
 

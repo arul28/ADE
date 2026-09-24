@@ -157,6 +157,7 @@ function createFixture(options?: { configured?: boolean; modelId?: string }): Fi
 
 function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
   modelId?: string;
+  thinkingLevel?: string | null;
   tools?: string[];
   session?: { sessionFile?: string; sessionId?: string };
   askUserTool?: boolean;
@@ -171,7 +172,7 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
   agentDir: string;
   sessionRoot: string;
   modelRef: { provider: string; id: string };
-  thinkingLevel: string;
+  thinkingLevel: string | null;
   systemPrompt: string;
   tools?: string[];
   session?: { sessionFile?: string; sessionId?: string };
@@ -197,7 +198,7 @@ function installedPiArgs(fixture: Fixture, poolKey: string, options?: {
     agentDir: fixture.agentDir,
     sessionRoot: fixture.sessionRoot,
     modelRef: { provider: "ade-local", id: options?.modelId ?? "test-model" },
-    thinkingLevel: "off",
+    thinkingLevel: options?.thinkingLevel === undefined ? "off" : options.thinkingLevel,
     systemPrompt: "You are the isolated ADE Pi integration test model.",
     ...(options?.tools ? { tools: options.tools } : {}),
     ...(options?.session ? { session: options.session } : {}),
@@ -323,8 +324,83 @@ describeInstalledPi("installed Pi SDK worker", () => {
       providerRoute: "pi-sdk",
       piProviderId: "ade-local",
       piModelId: "test-model",
+      // The fixture model maps xhigh and max, so Pi offers every level.
+      reasoningTiers: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     });
     expect(sessionFiles(fixture)).toEqual([]);
+  });
+
+  // Pi saves a session's thinking level as the user's global default. Through
+  // ADE that rewrote the level every Pi CLI launch starts on, and clearing the
+  // effort in ADE left the session on whatever level it last had.
+  it("never writes the user's Pi settings, and a cleared level returns the session to Pi's default", async () => {
+    const fixture = createFixture();
+    const settingsPath = path.join(fixture.agentDir, "settings.json");
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ defaultThinkingLevel: "low" }, null, 2)}\n`);
+    const before = fs.readFileSync(settingsPath, "utf8");
+
+    const connection = await acquireTracked(fixture, `thinking:${Date.now()}`, { thinkingLevel: "high" });
+    expect(connection.pooled.ready?.thinkingLevel).toBe("high");
+    await connection.pooled.sendPrompt({ prompt: "write the session header" });
+    await nextRequest();
+    const sessionFile = connection.pooled.sessionFile!;
+    await waitFor(() => fs.existsSync(sessionFile));
+
+    expect((await connection.pooled.setThinking("xhigh")).thinkingLevel).toBe("xhigh");
+    // Round-trip once more so any write Pi queued has had its turn.
+    await connection.pooled.getContextUsage();
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(before);
+
+    expect((await connection.pooled.setThinking(null)).thinkingLevel).toBe("low");
+    await connection.pooled.getContextUsage();
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(before);
+    const levels = fs.readFileSync(sessionFile, "utf8").split(/\r?\n/u).filter(Boolean)
+      .map((line) => JSON.parse(line) as { type?: string; thinkingLevel?: string })
+      .filter((entry) => entry.type === "thinking_level_change")
+      .map((entry) => entry.thinkingLevel);
+    // The reset is the session's own record, so a resume keeps it.
+    expect(levels.at(-1)).toBe("low");
+  });
+
+  it("resumes a chat with no level on Pi's default, not the level its file recorded", async () => {
+    const fixture = createFixture();
+    const settingsPath = path.join(fixture.agentDir, "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({ defaultThinkingLevel: "minimal" }));
+    const before = fs.readFileSync(settingsPath, "utf8");
+
+    const first = await acquireTracked(fixture, `thinking-resume:first:${Date.now()}`, { thinkingLevel: "high" });
+    await first.pooled.sendPrompt({ prompt: "persist this native session" });
+    await nextRequest();
+    const original = { sessionFile: first.pooled.sessionFile!, sessionId: first.pooled.sessionId! };
+    await waitFor(() => fs.existsSync(original.sessionFile));
+    await disposeConnection(first);
+
+    const resumed = await acquireTracked(fixture, `thinking-resume:cleared:${Date.now()}`, {
+      session: original,
+      thinkingLevel: null,
+    });
+    expect(resumed.pooled.ready?.thinkingLevel).toBe("minimal");
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(before);
+  });
+
+  // Pi's CLI resolver takes a partial id to its nearest match, and invents a
+  // custom model id when nothing matches. Either would run another model.
+  it("runs only the exact model it was given, at start and on a switch", async () => {
+    const fixture = createFixture();
+    await expect(acquirePiSdkConnection(installedPiArgs(fixture, `exact:start:${Date.now()}`, { modelId: "test-mod" })))
+      .rejects.toThrow(/"ade-local\/test-mod" is unavailable/u);
+
+    const connection = await acquireTracked(fixture, `exact:switch:${Date.now()}`);
+    await expect(connection.pooled.setModel({ provider: "ade-local", id: "test-mod" }))
+      .rejects.toThrow(/"ade-local\/test-mod" is unavailable/u);
+    await expect(connection.pooled.setModel({ provider: "ade-other", id: "test-model" }))
+      .rejects.toThrow(/no provider "ade-other"/u);
+
+    // The exact pick switches, and Pi's own default model stays the user's.
+    const switched = await connection.pooled.setModel({ provider: "ade-local", id: "test-model" });
+    expect(switched.currentModel).toMatchObject({ provider: "ade-local", id: "test-model" });
+    await connection.pooled.getContextUsage();
+    expect(fs.existsSync(path.join(fixture.agentDir, "settings.json"))).toBe(false);
   });
 
   // The shipped bug in one test: ADE authorized a session root that Pi never

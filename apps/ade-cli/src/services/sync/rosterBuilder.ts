@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
+import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
 import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
   SyncRosterChat,
@@ -130,6 +131,7 @@ type TerminalSessionRow = {
   tool_type: string | null;
   title: string | null;
   status: string | null;
+  ended_at: string | null;
   last_output_preview: string | null;
   last_output_at: string | null;
   pinned: number | null;
@@ -137,6 +139,8 @@ type TerminalSessionRow = {
   started_at: string | null;
   settled_at: string | null;
   status_note: string | null;
+  activity_status_json: string | null;
+  activity_status_changed_at: string | null;
   attention_requested_at: string | null;
   attention_message: string | null;
   last_turn_failed_at: string | null;
@@ -286,6 +290,12 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
           const statusNoteColumn = hasColumn(activeDb, "terminal_sessions", "status_note")
             ? "status_note"
             : "null as status_note";
+          const activityStatusColumn = hasColumn(activeDb, "terminal_sessions", "activity_status_json")
+            ? "activity_status_json"
+            : "null as activity_status_json";
+          const activityStatusChangedAtColumn = hasColumn(activeDb, "terminal_sessions", "activity_status_changed_at")
+            ? "activity_status_changed_at"
+            : "null as activity_status_changed_at";
           const attentionRequestedAtColumn = hasColumn(activeDb, "terminal_sessions", "attention_requested_at")
             ? "attention_requested_at"
             : "null as attention_requested_at";
@@ -304,9 +314,9 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
           return activeDb
             .prepare(
               `
-                select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, last_output_preview,
+                select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, ended_at, last_output_preview,
                        last_output_at, pinned, exit_code, started_at,
-                       ${settledAtColumn}, ${statusNoteColumn}, ${attentionRequestedAtColumn},
+                       ${settledAtColumn}, ${statusNoteColumn}, ${activityStatusColumn}, ${activityStatusChangedAtColumn}, ${attentionRequestedAtColumn},
                        ${attentionMessageColumn}, ${lastTurnFailedAtColumn},
                        ${snoozedUntilColumn}, ${snoozedAtColumn}
                 from terminal_sessions
@@ -521,14 +531,18 @@ async function buildRosterProject(
     const countsTowardAttention = isRosterTopLevelToolType(row.tool_type)
       || normalizedParentSessionId(row) != null;
     if ((status === "awaiting" || status === "failed") && countsTowardAttention) attentionCount += 1;
-    const lastActivityAt = latestActivityTimestamp(
+    const activityStatus = normalizeSessionActivityReport(row.activity_status_json);
+    const activityStatusChangedAt = row.activity_status_changed_at ?? activityStatus?.updatedAt ?? null;
+    const lifecycleUpdatedAt = latestActivityTimestamp(
       live?.lastActivityAt,
       row.attention_requested_at,
       row.settled_at,
       row.last_turn_failed_at,
+      row.ended_at,
       row.last_output_at,
       row.started_at,
     );
+    const lastActivityAt = latestActivityTimestamp(lifecycleUpdatedAt, activityStatusChangedAt);
     chats.push({
       id: row.id,
       laneId: row.lane_id,
@@ -542,9 +556,12 @@ async function buildRosterProject(
       ...(awaitingInput ? { awaitingInput: true } : {}),
       ...(row.pinned ? { pinned: true } : {}),
       lastActivityAt,
+      lifecycleUpdatedAt,
+      activityStatusChangedAt,
       preview: truncatePreview(row.last_output_preview),
       settledAt: row.settled_at,
       statusNote: normalizeSessionStatusNote(row.status_note),
+      activityStatus,
       attentionRequestedAt: row.attention_requested_at,
       attentionMessage: row.attention_message,
       lastTurnFailedAt: row.last_turn_failed_at,

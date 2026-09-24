@@ -36,8 +36,8 @@ export { laneWorkViewScopeKey as workToolScopeKey };
  * those would say what was being worked on. Returning to the picker emits
  * nothing: a null tool is not a tool.
  *
- * A per-tool 24-hour deduplication key holds this to at most SIX accepted
- * events per installation per UTC day (one per id) no matter how often the user
+ * A per-tool 24-hour deduplication key holds this to at most one accepted
+ * event per tool id per installation per UTC day no matter how often the user
  * flips between panes, which is well inside the existing `ade_feature_used`
  * 140-per-day / 30-per-minute limits and the shared 200-event ceiling. No
  * ceiling was raised. The dashboard spec is deliberately untouched: no card
@@ -273,6 +273,9 @@ export const WORK_TOOL_PUBLISH_DEBOUNCE_MS = 250;
  *
  * Failures are swallowed on purpose. This is a mirror for other devices; a
  * runtime that cannot take the publish must not disturb the pane it describes.
+ * One retry comes first: an older runtime rejects a tool it does not know
+ * (for example "pr"), and that drops the strip too. The retry sends no active
+ * tool, so the other devices still see which tabs are open.
  */
 function usePublishActiveWorkTool(
   laneId: string | null,
@@ -315,8 +318,20 @@ function usePublishActiveWorkTool(
     const timer = window.setTimeout(() => {
       const current = latest.current;
       if (!current.laneId) return;
-      void publish(current.laneId, current.tool, [...current.openTools], current.pin).catch(() => {});
+      const openToolsSnapshot = [...current.openTools];
+      void publish(current.laneId, current.tool, openToolsSnapshot, current.pin).catch((error: unknown) => {
+        // An older runtime rejects a tool id it does not know. Only that case
+        // retries without the active tool; any other failure keeps the last
+        // published state rather than telling other devices "no tool".
+        if (current.tool === null || !current.laneId || !isUnknownToolError(error)) return;
+        return publish(current.laneId, null, openToolsSnapshot, current.pin);
+      }).catch(() => {});
     }, WORK_TOOL_PUBLISH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [laneId, tool, stripKey, republishToken, pinKey]);
+}
+
+function isUnknownToolError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unknown tool/i.test(message);
 }

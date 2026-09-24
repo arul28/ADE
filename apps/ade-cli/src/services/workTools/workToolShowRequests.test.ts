@@ -67,6 +67,32 @@ describe("workToolShowRequests", () => {
     expect(service.acknowledgeShow({ requestId, status: "shown" })).toEqual({ ok: false });
   });
 
+  it("says the surface was opened when the desktop acted but could not confirm it is on screen", async () => {
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "apple", chatSessionId: "chat-1" });
+    service.acknowledgeShow({ requestId: emitted[0]!.requestId, status: "held", desktopLabel: "MacBook", opened: true });
+    await vi.advanceTimersByTimeAsync(200);
+    const result = await pending;
+    expect(result.status).toBe("held");
+    expect(result.message).toBe(
+      "Opened the Apple device in the tools pane on MacBook, but the window is not in front, so the user may not see it yet.",
+    );
+  });
+
+  it("regression: a later held answer that opened the tool keeps `opened`", async () => {
+    const { service, emitted } = setup();
+    const pending = service.show({ surface: "apple", chatSessionId: "chat-1" });
+    const requestId = emitted[0]!.requestId;
+    service.acknowledgeShow({ requestId, status: "held", desktopLabel: "Studio" });
+    service.acknowledgeShow({ requestId, status: "held", desktopLabel: "MacBook", opened: true });
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(pending).resolves.toMatchObject({
+      status: "held",
+      desktopLabel: "MacBook",
+      message: expect.stringMatching(/^Opened the Apple device/),
+    });
+  });
+
   it("refuses an unknown surface and a request with no chat", async () => {
     const { service, emitted } = setup();
     await expect(service.show({ surface: "terminal", chatSessionId: "chat-1" })).rejects.toThrow(/needs a surface/);

@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { IosSimH264Video, isWebCodecsAvailable } from "../chat/IosSimH264Video";
 import { cn } from "../ui/cn";
+import type { AppleDeviceOrientation } from "../../../shared/types";
 import {
   AppleDevice3DView,
   type AppleDevice3DFailure,
   type AppleDeviceFamily,
-  type AppleDeviceOrientation,
 } from "./AppleDevice3DView";
 import {
   AppleDeviceFlatView,

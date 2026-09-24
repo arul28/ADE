@@ -33,6 +33,9 @@ export type AdeProvider =
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 
+/** Collaboration mode accepted by the Codex app-server for an active turn/start. */
+export type AgentChatCodexCollaborationMode = "default" | "plan";
+
 export type AgentChatPermissionMode =
   | "default"
   | "auto"
@@ -398,6 +401,10 @@ export type AgentChatSessionSummary = {
   title?: string | null;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
+  /** Accepted Codex app-server collaboration mode, when a live runtime reports one. */
+  codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
+  /** True when a live Codex runtime confirms there is no accepted turn mode. */
+  codexEffectiveCollaborationModeWasCleared?: boolean;
   status: AgentChatSessionStatus;
   startedAt: string;
   endedAt: string | null;

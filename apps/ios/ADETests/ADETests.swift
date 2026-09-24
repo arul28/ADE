@@ -11175,7 +11175,20 @@ final class ADETests: XCTestCase {
     session.attentionRequestedAt = "2026-03-17T00:13:00.000Z"
     session.attentionMessage = "Choose the release target"
     session.lastTurnFailedAt = "2026-03-17T00:14:00.000Z"
-    try database.replaceTerminalSessions([session])
+    session.lastActivityAt = "2026-03-17T00:15:30.000Z"
+    session.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: "2026-03-17T00:15:00.000Z"
+    )
+    session.activityStatusChangedAt = "2026-03-17T00:16:00.000Z"
+    var outputlessSession = session
+    outputlessSession.id = "session-no-output"
+    outputlessSession.startedAt = "2026-03-17T00:00:00.000Z"
+    outputlessSession.lastActivityAt = nil
+    outputlessSession.activityStatus = nil
+    outputlessSession.activityStatusChangedAt = nil
+    try database.replaceTerminalSessions([session, outputlessSession])
 
     let stored = try XCTUnwrap(database.fetchSessions().first)
     XCTAssertEqual(stored.chatSessionId, "chat-abc")
@@ -11184,6 +11197,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(stored.attentionRequestedAt, "2026-03-17T00:13:00.000Z")
     XCTAssertEqual(stored.attentionMessage, "Choose the release target")
     XCTAssertEqual(stored.lastTurnFailedAt, "2026-03-17T00:14:00.000Z")
+    XCTAssertEqual(stored.lastActivityAt, "2026-03-17T00:15:30.000Z")
+    XCTAssertNil(database.fetchSession(id: "session-no-output")?.lastActivityAt)
+    XCTAssertEqual(stored.activityStatus?.value, "testing")
+    XCTAssertEqual(stored.activityStatus?.source, "agent")
+    XCTAssertEqual(stored.activityStatusChangedAt, "2026-03-17T00:16:00.000Z")
 
     // Round-trip via JSON to confirm the wire-format Codable layer preserves the field too.
     let encoded = try JSONEncoder().encode(stored)
@@ -11194,6 +11212,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(decoded.attentionRequestedAt, stored.attentionRequestedAt)
     XCTAssertEqual(decoded.attentionMessage, stored.attentionMessage)
     XCTAssertEqual(decoded.lastTurnFailedAt, stored.lastTurnFailedAt)
+    XCTAssertEqual(decoded.lastActivityAt, stored.lastActivityAt)
+    XCTAssertEqual(decoded.activityStatus, stored.activityStatus)
+    XCTAssertEqual(decoded.activityStatusChangedAt, stored.activityStatusChangedAt)
 
     // Decoding a payload that omits the new field (older desktop builds) still succeeds.
     let legacyJson = """
@@ -11217,6 +11238,9 @@ final class ADETests: XCTestCase {
     XCTAssertNil(legacy.attentionRequestedAt)
     XCTAssertNil(legacy.attentionMessage)
     XCTAssertNil(legacy.lastTurnFailedAt)
+    XCTAssertNil(legacy.lastActivityAt)
+    XCTAssertNil(legacy.activityStatus)
+    XCTAssertNil(legacy.activityStatusChangedAt)
 
     database.close()
   }
@@ -18982,6 +19006,95 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
+  func testPlanningSummaryAndLiveModeUpdatesDecodeCodexAndACPSignals() throws {
+    func decodeSummary(_ provider: String, extra: [String: Any]) throws -> AgentChatSessionSummary {
+      let payload: [String: Any] = [
+        "sessionId": "chat-planning",
+        "laneId": "lane-1",
+        "provider": provider,
+        "model": "test-model",
+        "status": "running",
+        "startedAt": "2026-03-25T00:00:00.000Z",
+        "lastActivityAt": "2026-03-25T00:00:01.000Z",
+      ].merging(extra) { _, new in new }
+      return try JSONDecoder().decode(
+        AgentChatSessionSummary.self,
+        from: JSONSerialization.data(withJSONObject: payload)
+      )
+    }
+
+    var codex = try decodeSummary("codex", extra: [
+      "interactionMode": "plan",
+      "codexEffectiveCollaborationMode": "default",
+    ])
+    XCTAssertFalse(workSessionIsPlanning(summary: codex), "requested Plan is not evidence of accepted Codex Plan")
+
+    codex.codexEffectiveCollaborationMode = "plan"
+    XCTAssertTrue(workSessionIsPlanning(summary: codex))
+    let acceptedDefault = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "codexEffectiveCollaborationMode": "default",
+      ])
+    )
+    XCTAssertTrue(acceptedDefault.hasAnyField)
+    codex.applyModeUpdate(acceptedDefault)
+    XCTAssertFalse(workSessionIsPlanning(summary: codex))
+    XCTAssertEqual(codex.codexEffectiveCollaborationMode, "default")
+
+    var liveCodex = try decodeSummary("codex", extra: ["codexEffectiveCollaborationMode": "plan"])
+    var clearedCodex = liveCodex
+    let clearCodex = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "codexEffectiveCollaborationMode": NSNull(),
+      ])
+    )
+    XCTAssertTrue(clearCodex.codexEffectiveCollaborationModeWasCleared)
+    XCTAssertTrue(clearCodex.hasAnyField)
+    clearedCodex.applyModeUpdate(clearCodex)
+    liveCodex.mergeModeFields(from: clearedCodex)
+    XCTAssertNil(liveCodex.codexEffectiveCollaborationMode)
+    XCTAssertFalse(workSessionIsPlanning(summary: liveCodex))
+
+    var cachedPlan = try decodeSummary("codex", extra: ["codexEffectiveCollaborationMode": "plan"])
+    let refreshedClear = try decodeSummary("codex", extra: [
+      "codexEffectiveCollaborationModeWasCleared": true,
+    ])
+    cachedPlan.mergeModeFields(from: refreshedClear)
+    XCTAssertNil(cachedPlan.codexEffectiveCollaborationMode)
+    XCTAssertFalse(workSessionIsPlanning(summary: cachedPlan))
+
+    var cachedPlanFromOlderHost = try decodeSummary(
+      "codex",
+      extra: ["codexEffectiveCollaborationMode": "plan"]
+    )
+    let olderHostSummary = try decodeSummary("codex", extra: [:])
+    cachedPlanFromOlderHost.mergeModeFields(from: olderHostSummary)
+    XCTAssertEqual(cachedPlanFromOlderHost.codexEffectiveCollaborationMode, "plan")
+    XCTAssertTrue(workSessionIsPlanning(summary: cachedPlanFromOlderHost))
+
+    var qwen = try decodeSummary("qwen", extra: [
+      "acpConfigSnapshot": ["currentModeId": "plan"],
+    ])
+    XCTAssertEqual(qwen.acpConfigSnapshot, .object(["currentModeId": .string("plan")]))
+    XCTAssertTrue(workSessionIsPlanning(summary: qwen))
+    let clearACP = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "acpConfigSnapshot": NSNull(),
+      ])
+    )
+    XCTAssertTrue(clearACP.acpConfigSnapshotWasCleared)
+    XCTAssertTrue(clearACP.hasAnyField)
+    qwen.applyModeUpdate(clearACP)
+    XCTAssertNil(qwen.acpConfigSnapshot)
+    XCTAssertFalse(workSessionIsPlanning(summary: qwen))
+  }
+
   func testAgentChatSessionSummaryPreservesExplicitCursorModeClear() throws {
     let payload: [String: Any] = [
       "sessionId": "chat-cleared",
@@ -23821,6 +23934,53 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
   }
 
+  /// A stale load deletes only its own file, never the one another load of
+  /// the same artifact published.
+  func testWorkArtifactVideoTempURLIsUniquePerLoad() throws {
+    let stale = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    let current = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    XCTAssertNotEqual(stale, current)
+    XCTAssertTrue(current.lastPathComponent.hasPrefix("ade-work-artifact-art-1-"))
+    XCTAssertEqual(current.pathExtension, "mp4")
+    try Data([0x00]).write(to: stale)
+    try Data([0x00]).write(to: current)
+    defer { try? FileManager.default.removeItem(at: current) }
+
+    workRemoveLoadedArtifactTempFile(.video(stale))
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
+  }
+
+  /// A row that appears must not download a large proof video: it shows the
+  /// size, and only a tap on play downloads it.
+  func testALargeVideoIsOnlySizedOnPreviewAndDownloadsOnPlay() {
+    XCTAssertEqual(workArtifactEagerVideoMaxBytes, 8 * 1024 * 1024)
+    XCTAssertTrue(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes + 1))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .play, sizeBytes: 50_000_000))
+  }
+
+  /// A cancelled load (the row scrolled away) stays unloaded, so the next
+  /// appear retries. It is not shown as an error.
+  func testACancelledVideoLoadStaysUnloadedSoTheNextAppearRetries() {
+    XCTAssertEqual(workArtifactVideoLoadFailure(CancellationError()), .retryLater)
+    let legacy = NSError(
+      domain: "ADE",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported file action: readArtifactRange"]
+    )
+    XCTAssertEqual(workArtifactVideoLoadFailure(legacy), .useWholeFileRead)
+    let offline = NSError(
+      domain: "ADE",
+      code: 16,
+      userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
+    )
+    XCTAssertEqual(workArtifactVideoLoadFailure(offline), .show)
+    let other = NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"])
+    XCTAssertEqual(workArtifactVideoLoadFailure(other), .show)
+  }
+
   func testParseANSISegmentsTracksForegroundColors() {
     let segments = parseANSISegments("\u{001B}[31mError\u{001B}[0m plain \u{001B}[32mOK\u{001B}[0m")
 
@@ -28255,6 +28415,7 @@ final class RosterDeltaTests: XCTestCase {
   }
 
   func testRosterLifecyclePayloadBuildsSettledAndAttentionCanonicalStates() throws {
+    let now = ISO8601DateFormatter().date(from: "2026-07-23T10:05:00Z")!
     let settledData = Data("""
       {
         "id": "chat-settled",
@@ -28271,14 +28432,15 @@ final class RosterDeltaTests: XCTestCase {
 
     XCTAssertEqual(settledSession.settledAt, "2026-07-23T10:00:00.000Z")
     XCTAssertEqual(settledSession.statusNote, "Shipped the lifecycle mirror")
-    XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil).phase, .settled)
+    XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil, now: now).phase, .settled)
     XCTAssertEqual(
       workSessionGroups(
         organization: .byStatus,
         sessions: [settledSession],
         chatSummaries: [:],
         archivedSessionIds: [],
-        orderedLanes: []
+        orderedLanes: [],
+        now: now
       ).map(\.id),
       [workSettledSectionId]
     )
@@ -28286,9 +28448,9 @@ final class RosterDeltaTests: XCTestCase {
     var activeSettledSession = settledSession
     activeSettledSession.status = "running"
     activeSettledSession.runtimeState = "running"
-    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil).phase, .running)
+    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil, now: now).phase, .running)
     activeSettledSession.runtimeState = "idle"
-    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil).phase, .settled)
+    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil, now: now).phase, .settled)
 
     let attentionData = Data("""
       {
@@ -28308,7 +28470,7 @@ final class RosterDeltaTests: XCTestCase {
 
     XCTAssertEqual(attentionSession.attentionMessage, "Choose the release target")
     XCTAssertEqual(attentionSession.lastTurnFailedAt, "2026-07-23T09:30:00.000Z")
-    XCTAssertEqual(workCanonicalSessionState(session: attentionSession, summary: nil).phase, .needsYou)
+    XCTAssertEqual(workCanonicalSessionState(session: attentionSession, summary: nil, now: now).phase, .needsYou)
   }
 
   func testRosterCleanExitAndLegacyPayloadRemainCompatible() throws {

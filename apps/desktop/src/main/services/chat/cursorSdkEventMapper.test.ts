@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   type CursorSdkEventMapperMeta,
+  createCursorSdkEventMapperState,
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
   mapTurnEndedTokensToEvent,
@@ -10,6 +11,7 @@ function mapperMeta(overrides: Partial<CursorSdkEventMapperMeta> = {}): CursorSd
   return {
     turnId: "turn-1",
     cwd: "/repo",
+    state: createCursorSdkEventMapperState(),
     ...overrides,
   };
 }
@@ -288,7 +290,154 @@ describe("Cursor SDK event mapper", () => {
       status: "failed",
       model: "composer-2",
       modelId: "cursor/composer-2",
+      account: { provider: "cursor", kind: "subscription" },
     });
+  });
+
+  it("reads the SDK run total, the login email, and the auto-served model into done", () => {
+    const done = mapCursorSdkRunResultToDoneEvent({
+      status: "finished",
+      // `RunResult.usage` is the SDK's `TokenUsage`: cache writes are `cacheWriteTokens`.
+      usage: {
+        inputTokens: 1_200,
+        outputTokens: 340,
+        cacheReadTokens: 9_000,
+        cacheWriteTokens: 450,
+        totalTokens: 10_990,
+        reasoningTokens: 120,
+      },
+      adeTurnTelemetry: { accountEmail: "dev@example.com", servedModel: "gpt-5.5" },
+    }, { turnId: "turn-1", model: "auto" });
+    expect(done).toMatchObject({
+      status: "completed",
+      model: "auto",
+      servedModel: "gpt-5.5",
+      usage: {
+        inputTokens: 1_200,
+        outputTokens: 340,
+        cacheReadTokens: 9_000,
+        cacheCreationTokens: 450,
+        reasoningTokens: 120,
+      },
+      account: { provider: "cursor", kind: "subscription", email: "dev@example.com" },
+    });
+    expect(done.usage).not.toHaveProperty("contextTokens");
+    expect(done).not.toHaveProperty("costUsd");
+  });
+
+  describe("preCompact hook compaction", () => {
+    it("emits the measured occupancy, then a provider-reported compaction start", () => {
+      const events = mapCursorSdkMessageToChatEvents({
+        type: "ade_cursor_compaction",
+        phase: "started",
+        seq: 1,
+        trigger: "auto",
+        contextTokens: 150_000,
+        contextWindowSize: 200_000,
+        contextUsagePercent: 75,
+        model: "claude-4.6-sonnet",
+      }, mapperMeta());
+      expect(events).toEqual([
+        {
+          type: "context_usage",
+          origin: "live",
+          state: "measured",
+          turnId: "turn-1",
+          usage: {
+            categories: [],
+            totalTokens: 150_000,
+            maxTokens: 200_000,
+            percentage: 75,
+            model: "claude-4.6-sonnet",
+          },
+        },
+        {
+          type: "context_compact",
+          trigger: "auto",
+          state: "started",
+          turnId: "turn-1",
+          compactionId: "turn-1",
+          provider: "cursor",
+          detection: "provider",
+          preTokens: 150_000,
+        },
+      ]);
+    });
+
+    it("skips the occupancy snapshot when the window size is missing", () => {
+      const events = mapCursorSdkMessageToChatEvents({
+        type: "ade_cursor_compaction",
+        phase: "started",
+        seq: 1,
+        trigger: "manual",
+        contextTokens: 150_000,
+      }, mapperMeta());
+      expect(events.map((event) => event.type)).toEqual(["context_compact"]);
+      expect(events[0]).toMatchObject({ trigger: "manual", state: "started" });
+    });
+
+    it("closes with a duration and keys a second compaction apart from the first", () => {
+      expect(mapCursorSdkMessageToChatEvents({
+        type: "ade_cursor_compaction",
+        phase: "completed",
+        seq: 2,
+        trigger: "auto",
+        contextTokens: 190_000,
+        durationMs: 3_100,
+        closedBy: "summary",
+      }, mapperMeta())).toEqual([{
+        type: "context_compact",
+        trigger: "auto",
+        state: "completed",
+        turnId: "turn-1",
+        compactionId: "turn-1:compact-2",
+        provider: "cursor",
+        detection: "provider",
+        preTokens: 190_000,
+        durationMs: 3_100,
+      }]);
+    });
+
+    it("marks a compaction cut off by a cancelled run as interrupted", () => {
+      expect(mapCursorSdkMessageToChatEvents({
+        type: "ade_cursor_compaction",
+        phase: "failed",
+        seq: 1,
+        trigger: "auto",
+        durationMs: 800,
+        failReason: "interrupted",
+      }, mapperMeta())).toEqual([expect.objectContaining({
+        type: "context_compact",
+        state: "failed",
+        failReason: "interrupted",
+        durationMs: 800,
+      })]);
+    });
+
+    it("keeps the status-text fallback only when the hook did not report", () => {
+      const status = { type: "status", status: "RUNNING", message: "Summarizing chat context" };
+      expect(mapCursorSdkMessageToChatEvents(status, mapperMeta()).map((event) => event.type))
+        .toEqual(["context_compact", "activity"]);
+      expect(mapCursorSdkMessageToChatEvents({ ...status, adePreCompactHook: true }, mapperMeta())
+        .map((event) => event.type)).toEqual(["activity"]);
+    });
+  });
+
+  it("pairs a text-signalled compaction across events through the state the service owns", () => {
+    const state = createCursorSdkEventMapperState();
+    const compacting = { type: "status", status: "RUNNING", message: "Summarizing chat context" };
+    const working = { type: "status", status: "RUNNING", message: "Editing files" };
+    const compactStates = (message: unknown, turnId = "turn-1") => mapCursorSdkMessageToChatEvents(
+      message,
+      mapperMeta({ turnId, state }),
+    ).flatMap((event) => (event.type === "context_compact" ? [event.state] : []));
+    expect(compactStates(compacting)).toEqual(["started"]);
+    expect(compactStates(compacting)).toEqual([]);
+    expect(compactStates(working)).toEqual(["completed"]);
+    expect(state.textCompactionTurnId).toBeNull();
+    // A compaction left open by one turn does not close on the next.
+    compactStates(compacting);
+    expect(compactStates(working, "turn-2")).toEqual([]);
   });
 
   it("propagates runtime: cloud onto assistant text events", () => {
@@ -680,7 +829,7 @@ describe("Cursor SDK event mapper", () => {
 
   it("maps TurnEnded usage updates to a tokens event", () => {
     const ev = mapTurnEndedTokensToEvent(
-      { usage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 3, cacheCreationTokens: 5 } },
+      { usage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 3, cacheCreationTokens: 5, reasoningTokens: 7 } },
       { turnId: "turn-1", itemId: "msg-7", runtime: "cloud" },
     );
     expect(ev).toEqual({
@@ -692,6 +841,7 @@ describe("Cursor SDK event mapper", () => {
       outputTokens: 20,
       cacheReadTokens: 3,
       cacheWriteTokens: 5,
+      reasoningTokens: 7,
     });
   });
 

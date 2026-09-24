@@ -74,6 +74,8 @@ import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
 import { ToastStack } from "./toast/ToastStack";
+import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunchesSlideOut";
+import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
@@ -102,7 +104,7 @@ type AutoLinkToast = {
 };
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
+  const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
@@ -113,7 +115,6 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/lanes",
   "/files",
   "/work",
-  "/graph",
   "/prs",
   "/history",
   "/automations",
@@ -202,7 +203,6 @@ function serializeLocationRoute(location: ReturnType<typeof useLocation>): strin
     "/lanes",
     "/files",
     "/work",
-    "/graph",
     "/prs",
     "/history",
     "/automations",
@@ -334,6 +334,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectRevision = useAppStore((s) => s.projectRevision);
+  // One launch feed for the whole window; the slide-out renders only when it
+  // has a background chat or CLI launch of ours to show.
+  useChatLaunchSync();
+  const chatLaunchesVisible = useChatLaunchSlideOutVisible();
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -1149,7 +1153,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/lanes": "tab-tint-lanes",
       "/files": "tab-tint-files",
       "/work": "tab-tint-work",
-      "/graph": "tab-tint-graph",
       "/prs": "tab-tint-prs",
       "/history": "tab-tint-history",
       "/automations": "tab-tint-automations",
@@ -1363,7 +1366,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             {children}
           </div>
-          {staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 || storeToasts.length > 0 ? (
+          {staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 || storeToasts.length > 0 || chatLaunchesVisible ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {staleCliNotice ? (
                 <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
@@ -1718,6 +1721,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 );
               })}
               <ToastStack />
+              {chatLaunchesVisible ? <ChatLaunchesSlideOut /> : null}
             </div>
           ) : null}
         </main>

@@ -8,32 +8,48 @@ import SwiftUI
 enum WorkToolChipKind: Equatable {
   /// The lane's Apple device, while it is up. Opens `AppleDeviceViewer`.
   /// `family` is the status's raw family, for the glyph.
-  case simulator(family: String?)
-  /// The desktop browser's tabs. Opens `WorkToolsSheet`.
-  case browser
+  case simulator(name: String, family: String?)
+  /// The desktop browser's tabs. Opens `WorkToolsSheet`. `agentUsing`: a chat
+  /// in this lane is driving the browser right now.
+  case browser(tabCount: Int, agentUsing: Bool)
   /// What App Control is attached to. Opens `WorkToolsSheet`.
-  case appControl
+  case appControl(appName: String)
   /// The lane's private macOS screen, while it has one. Opens
-  /// `MacDesktopViewer`.
-  case macDesktop
+  /// `MacDesktopViewer`. `streamLive`: frames flow at full rate.
+  /// `agentDriving`: an agent holds the screen's input lease.
+  case macDesktop(streamLive: Bool, agentDriving: Bool)
+
+  /// The SF Symbol on the chip. A simulator's follows its device family, so
+  /// an Apple Watch does not show as an iPhone.
+  var symbolName: String {
+    switch self {
+    case .simulator(_, let family): return appleDeviceFamilySymbol(family)
+    case .browser: return "globe"
+    case .appControl: return "macwindow"
+    case .macDesktop: return "desktopcomputer"
+    }
+  }
 }
 
 struct WorkToolChip: Equatable, Identifiable {
   let kind: WorkToolChipKind
-  let label: String
-  /// Browser chip only: a chat in this lane is driving the browser right now.
-  var agentUsingBrowser: Bool = false
-  /// Mac Desktop chip only: frames are flowing at full rate.
-  var streamLive: Bool = false
-  /// Mac Desktop chip only: an agent holds the lane screen's input lease.
-  var agentDriving: Bool = false
+
+  /// The chip's full name, derived from `kind` so the two cannot drift.
+  var label: String {
+    switch kind {
+    case .simulator(let name, _): return name
+    case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
+    case .appControl(let appName): return appName
+    case .macDesktop: return "Mac Desktop"
+    }
+  }
 
   /// The text on the chip. The simulator chip already shows the device icon,
   /// so it drops the family word: "iPhone 16 Pro" shows as "16 Pro". VoiceOver
   /// still reads the full `label`.
   var displayLabel: String {
-    guard case .simulator = kind else { return label }
-    return appleDeviceChipModelName(label)
+    guard case .simulator(let name, _) = kind else { return label }
+    return appleDeviceChipModelName(name)
   }
 
   var id: String {
@@ -50,7 +66,7 @@ struct WorkToolChip: Equatable, Identifiable {
 /// simulator, Mac Desktop, browser, App Control. The two screens the phone can
 /// watch lead.
 ///
-/// - Simulator: only while the lane's device is up (`appleDeviceRunningName`).
+/// - Simulator: only while the lane's own device is up (`appleDeviceRunningName`).
 ///   A device the lane keeps after Shut down is not advertised.
 /// - Mac Desktop: only while the lane holds a display on a host that can host
 ///   one. Live dot while frames flow at full rate; accent while an agent
@@ -62,7 +78,7 @@ struct WorkToolChip: Equatable, Identifiable {
 func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   if let name = appleDeviceRunningName(appleDevice) {
-    chips.append(WorkToolChip(kind: .simulator(family: appleDevice?.device?.family), label: name))
+    chips.append(WorkToolChip(kind: .simulator(name: name, family: appleDevice?.device?.family)))
   }
   if let chip = macDesktopToolChip(state?.macDesktop) {
     chips.append(chip)
@@ -70,17 +86,11 @@ func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) 
   let tabCount = state?.browser?.tabs.count ?? 0
   let agentUsingBrowser = workToolsAgentIsUsingBrowser(state)
   if tabCount > 0 || agentUsingBrowser {
-    let label: String
-    switch tabCount {
-    case 0: label = "Browser"
-    case 1: label = "1 tab"
-    default: label = "\(tabCount) tabs"
-    }
-    chips.append(WorkToolChip(kind: .browser, label: label, agentUsingBrowser: agentUsingBrowser))
+    chips.append(WorkToolChip(kind: .browser(tabCount: tabCount, agentUsing: agentUsingBrowser)))
   }
   if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
      !appName.isEmpty {
-    chips.append(WorkToolChip(kind: .appControl, label: appName))
+    chips.append(WorkToolChip(kind: .appControl(appName: appName)))
   }
   return chips
 }
@@ -91,12 +101,19 @@ func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) 
 func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip? {
   guard let macDesktop, macDesktop.supported, macDesktop.display != nil else { return nil }
   let stream = macDesktop.stream
-  return WorkToolChip(
-    kind: .macDesktop,
-    label: "Mac Desktop",
+  return WorkToolChip(kind: .macDesktop(
     streamLive: stream?.running == true && stream?.idle != true,
     agentDriving: macDesktop.lease?.holder == "agent"
-  )
+  ))
+}
+
+/// "Browser" with no tabs, "1 tab", "N tabs".
+func workBrowserChipLabel(tabCount: Int) -> String {
+  switch tabCount {
+  case ...0: return "Browser"
+  case 1: return "1 tab"
+  default: return "\(tabCount) tabs"
+  }
 }
 
 /// Whether a chat in this lane is driving the browser right now. Derived on the
@@ -106,13 +123,6 @@ func workToolsAgentIsUsingBrowser(_ state: WorkToolsLaneState?) -> Bool {
   !(state?.agentBrowserPresence ?? []).isEmpty
 }
 
-/// The lane's device name while it is up ("iPhone 16 Pro"), nil otherwise.
-///
-/// Up means simctl reports it `Booted`, or the host is streaming it. A device
-/// the lane keeps after Shut down carries its own `state` ("Shutdown"), and a
-/// status with no device state at all is not evidence the device is on, so
-/// both read as off. The host fills a missing name with the udid; that is not
-/// a name, so the family ("iPhone") stands in for it.
 /// A device name without its leading family word: "iPhone 16 Pro" -> "16 Pro",
 /// "iPad Air (M2)" -> "Air (M2)". A name that is only the family word, or that
 /// does not start with one, stays as it is.
@@ -129,12 +139,24 @@ func appleDeviceChipModelName(_ name: String) -> String {
   return name
 }
 
+/// The lane's device name while it is up ("iPhone 16 Pro"), nil otherwise.
+///
+/// The lane's means `laneDevice` names the same udid as `device`: for a lane
+/// with no device the host reports any booted iPhone on the Mac, which is not
+/// this lane's to show. Up means simctl reports it `Booted`, or the host is
+/// streaming it. A device the lane keeps after Shut down carries its own
+/// `state` ("Shutdown"), and a status with no device state at all is not
+/// evidence the device is on, so both read as off. The host fills a missing
+/// name with the udid; that is not a name, so the family ("iPhone") stands in.
 func appleDeviceRunningName(_ status: AppleDeviceStatus?) -> String? {
-  guard let device = status?.device else { return nil }
+  guard let device = status?.device,
+        let udid = device.udid, !udid.isEmpty,
+        status?.laneDevice?.udid == udid
+  else { return nil }
   let booted = device.state?.caseInsensitiveCompare("Booted") == .orderedSame
   guard booted || status?.stream?.running == true else { return nil }
   let name = device.name?.trimmingCharacters(in: .whitespacesAndNewlines)
-  let usableName = (name?.isEmpty == false && name != device.udid) ? name : nil
+  let usableName = (name?.isEmpty == false && name != udid) ? name : nil
   return usableName ?? appleDeviceFamilyLabel(device.family) ?? "Simulator"
 }
 
@@ -157,16 +179,43 @@ final class WorkLaneToolsModel: ObservableObject {
   /// the user opened to watch, whereas these chips sit behind every chat.
   static let refreshInterval: Duration = .seconds(10)
 
+  /// The surface a chip opened.
+  enum Surface {
+    case appleDevice
+    case macDesktop
+    case toolsSheet
+  }
+
   @Published private(set) var chips: [WorkToolChip] = []
+  @Published var presented: Surface?
   /// Handed to `AppleDeviceViewer` as its first frame of state. Not published.
   private(set) var appleStatus: AppleDeviceStatus?
   /// Handed to `MacDesktopViewer` the same way. Not published.
   private(set) var macDesktopState: WorkToolsMacDesktopState?
+
   /// True while the tools sheet or the device viewer is up. Both poll the same
   /// reads faster and are the authoritative view, so a tick here would be a
   /// duplicate RPC for chips nobody can see. The next tick after dismissal
   /// catches up.
-  var paused = false
+  var paused: Bool { presented != nil }
+
+  /// `macDesktopStream`: the host can stream the lane's screen. A host
+  /// without the live stream can still describe the screen, so the sheet shows
+  /// its last still instead of a viewer that could only fail.
+  func open(_ chip: WorkToolChip, macDesktopStream: Bool) {
+    switch chip.kind {
+    case .simulator: presented = .appleDevice
+    case .macDesktop: presented = macDesktopStream ? .macDesktop : .toolsSheet
+    case .browser, .appControl: presented = .toolsSheet
+    }
+  }
+
+  func isPresented(_ surface: Surface) -> Binding<Bool> {
+    Binding(
+      get: { self.presented == surface },
+      set: { if !$0, self.presented == surface { self.presented = nil } }
+    )
+  }
 
   func run(laneId: String, syncService: SyncService) async {
     chips = []
@@ -221,6 +270,45 @@ struct WorkLaneToolsPreview {
 }
 #endif
 
+/// The chips' poll and the surfaces they open, on the chat view.
+struct WorkLaneToolsPresenter: ViewModifier {
+  @ObservedObject var model: WorkLaneToolsModel
+  let laneId: String
+  /// False for a personal chat, which has no lane.
+  let enabled: Bool
+  #if DEBUG
+  var preview: WorkLaneToolsPreview?
+  #endif
+  @EnvironmentObject private var syncService: SyncService
+
+  func body(content: Content) -> some View {
+    content
+      .task(id: laneId) {
+        #if DEBUG
+        if let preview {
+          model.installPreview(state: preview.state, appleStatus: preview.appleStatus)
+          return
+        }
+        #endif
+        guard enabled else { return }
+        await model.run(laneId: laneId, syncService: syncService)
+      }
+      .sheet(isPresented: model.isPresented(.toolsSheet)) {
+        WorkToolsSheet(laneId: laneId)
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
+      }
+      // Presented exactly as `AppleDeviceCard` presents it: full screen, seeded
+      // with the last status so the first frame is not an empty viewer.
+      .fullScreenCover(isPresented: model.isPresented(.appleDevice)) {
+        AppleDeviceViewer(laneId: laneId, initialStatus: model.appleStatus)
+      }
+      .fullScreenCover(isPresented: model.isPresented(.macDesktop)) {
+        MacDesktopViewer(laneId: laneId, initialState: model.macDesktopState)
+      }
+  }
+}
+
 // MARK: - Chip view
 
 /// One lane tool chip in the chat's badge row. Same capsule as the PR and chat
@@ -251,19 +339,12 @@ struct WorkLaneToolChipView: View {
     }
   }
 
-  private var symbol: String {
-    switch chip.kind {
-    case .simulator(let family): return family == "ipad" ? "ipad" : "iphone"
-    case .browser: return "globe"
-    case .appControl: return "macwindow"
-    case .macDesktop: return "desktopcomputer"
-    }
-  }
+  private var symbol: String { chip.kind.symbolName }
 
   private var showsLiveDot: Bool {
     switch chip.kind {
     case .simulator: return true
-    case .macDesktop: return chip.streamLive
+    case .macDesktop(let streamLive, _): return streamLive
     case .browser, .appControl: return false
     }
   }
@@ -272,26 +353,32 @@ struct WorkLaneToolChipView: View {
   /// while an agent is driving them, which is the signal the old Tools row
   /// carried as a globe.
   private var tint: Color {
-    chip.agentUsingBrowser || chip.agentDriving ? ADEColor.accent : ADEColor.textSecondary
+    switch chip.kind {
+    case .browser(_, agentUsing: true), .macDesktop(_, agentDriving: true): return ADEColor.accent
+    default: return ADEColor.textSecondary
+    }
   }
 
-  private var accessibilityText: String {
-    switch chip.kind {
-    case .simulator:
-      return "\(chip.label) running on your Mac. Tap to watch."
-    case .browser:
-      let base = chip.label == "Browser" ? "Browser on your Mac" : "Browser on your Mac, \(chip.label)"
-      return chip.agentUsingBrowser
-        ? "\(base). An agent is using the browser. Tap for details."
-        : "\(base). Tap for details."
-    case .appControl:
-      return "App Control on your Mac, \(chip.label). Tap for details."
-    case .macDesktop:
-      var text = "This lane's Mac Desktop"
-      if chip.streamLive { text += ", live" }
-      if chip.agentDriving { text += ". An agent is driving it" }
-      return text + ". Tap to watch."
-    }
+  private var accessibilityText: String { workToolChipAccessibilityText(chip) }
+}
+
+/// What VoiceOver reads for a chip.
+func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
+  switch chip.kind {
+  case .simulator:
+    return "\(chip.label) running on your Mac. Tap to watch."
+  case .browser(let tabCount, let agentUsing):
+    let base = tabCount > 0 ? "Browser on your Mac, \(chip.label)" : "Browser on your Mac"
+    return agentUsing
+      ? "\(base). An agent is using the browser. Tap for details."
+      : "\(base). Tap for details."
+  case .appControl:
+    return "App Control on your Mac, \(chip.label). Tap for details."
+  case .macDesktop(let streamLive, let agentDriving):
+    var text = "This lane's Mac Desktop"
+    if streamLive { text += ", live" }
+    if agentDriving { text += ". An agent is driving it" }
+    return text + ". Tap to watch."
   }
 }
 
@@ -310,6 +397,7 @@ func workToolsDisplayName(_ toolId: String?) -> String? {
   case "app-control": return "App Control"
   case "browser": return "Browser"
   case "mac-desktop": return "Mac Desktop"
+  case "pr": return "PR"
   default: return toolId
   }
 }

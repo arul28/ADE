@@ -13,6 +13,7 @@ import {
   type IosSimulatorScreenshot,
 } from "../../../shared/types/iosSimulator";
 import { createIosDeviceHub, type IosDeviceHubDeps } from "./iosDeviceHub";
+import { createSimulatorPower } from "./simulatorPower";
 import type { IosEventLogProcess } from "./iosEventLog";
 import {
   IOS_ACCESSIBILITY_PREFERENCES,
@@ -135,7 +136,8 @@ function createHarness(options: {
   appSessionOwner?: string | null;
   /** The device the app session runs on, when a test sets an app owner. */
   appSessionDeviceUdid?: string | null;
-  resetHelperDevice?: IosDeviceHubDeps["resetHelperDevice"];
+  /** Sees every helper reset the power module sends. */
+  resetHelperDevice?: (udid: string) => Promise<void>;
 } = {}): Harness {
   const runs: RecordedRun[] = [];
   /** One entry per spawned log stream, so a test can see what it filters on. */
@@ -163,21 +165,37 @@ function createHarness(options: {
 
   const catalog: IosSimulatorDevice[] = [device, ...(options.otherDevices ?? [])];
 
+  const run: IosDeviceHubDeps["run"] = async (file, args, runOptions) => {
+    runs.push({ file, args, timeoutMs: runOptions?.timeoutMs });
+    // A booted device reports itself booted on the next read. Without that
+    // the fixture would let a second open see a shut-down device, which is
+    // the one state the ownership rules never have to deal with.
+    if (file === "xcrun" && args[0] === "simctl" && (args[1] === "boot" || args[1] === "shutdown")) {
+      const target = catalog.find((entry) => entry.udid === args[2]);
+      if (target) target.state = args[1] === "boot" ? "Booted" : "Shutdown";
+    }
+    return { stdout: "", stderr: "" };
+  };
+  // The real power module over the fake `run`, so boot and shutdown land in
+  // `runs` the way the service's would.
+  const power = createSimulatorPower({
+    run,
+    waitForBootStatus: async (target) => {
+      await run("xcrun", ["simctl", "bootstatus", target.udid, "-b"], { timeoutMs: 120_000 });
+    },
+    invalidateDeviceList: () => {},
+    resetHelperDevice: async (udid) => {
+      await options.resetHelperDevice?.(udid);
+    },
+    stopDeviceRecording: async () => {},
+  });
+
   const deps: IosDeviceHubDeps = {
-    ...(options.resetHelperDevice ? { resetHelperDevice: options.resetHelperDevice } : {}),
+    bootDevice: (target) => power.bootDevice(target),
+    powerOffDevice: (udid) => power.powerOffDevice(udid, "hub-power"),
     getAppSessionOwner: () => appSessionOwner,
     getAppSessionDeviceUdid: () => options.appSessionDeviceUdid ?? null,
-    run: async (file, args, runOptions) => {
-      runs.push({ file, args, timeoutMs: runOptions?.timeoutMs });
-      // A booted device reports itself booted on the next read. Without that
-      // the fixture would let a second open see a shut-down device, which is
-      // the one state the ownership rules never have to deal with.
-      if (file === "xcrun" && args[0] === "simctl" && (args[1] === "boot" || args[1] === "shutdown")) {
-        const target = catalog.find((entry) => entry.udid === args[2]);
-        if (target) target.state = args[1] === "boot" ? "Booted" : "Shutdown";
-      }
-      return { stdout: "", stderr: "" };
-    },
+    run,
     // A log stream the test drives by hand, so a case can put a line on the
     // wire without forking `simctl`.
     spawnLogStream: (_deviceUdid, predicate): IosEventLogProcess => {
@@ -310,7 +328,8 @@ describe("iosDeviceHub device sessions", () => {
     const harness = createHarness({ device: { state: "Booted" } });
     const session = await harness.hub.openDevice({ chatSessionId: "chat-a" });
 
-    expect(harness.runs).toEqual([]);
+    // No boot. `bootstatus` still runs, and returns at once for a booted device.
+    expect(harness.runArgs()).toEqual([["simctl", "bootstatus", UDID, "-b"]]);
     expect(session.bootedByAde).toBe(false);
   });
 
@@ -1106,6 +1125,8 @@ describe("captureProofBundle containment", () => {
    */
   const hubFor = (buildRoot: string) => createIosDeviceHub({
     run: async () => ({ stdout: "", stderr: "" }),
+    bootDevice: async () => false,
+    powerOffDevice: async () => false,
     spawnLogStream: (): IosEventLogProcess => {
       throw new Error("No containment test starts the log stream.");
     },

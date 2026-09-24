@@ -1,7 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
-import { assertFts5Available, SearchIndexFts5UnavailableError } from "./searchIndexDb";
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertFts5Available, openSearchIndexDb, SearchIndexFts5UnavailableError } from "./searchIndexDb";
+
+// The same builtin class the index module loads, so its prototype can be spied.
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: { prototype: DatabaseSyncType };
+};
 
 describe("search index FTS5 capability", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("names a missing module instead of letting a bare error escape", () => {
     // A dev brain's SQLite had no FTS5, so `CREATE VIRTUAL TABLE … USING
     // fts5` threw "no such module: fts5" from inside the DDL. The caller read
@@ -37,5 +51,23 @@ describe("search index FTS5 capability", () => {
     expect(statements[0]).toContain("temp.ade_fts5_probe");
     expect(statements[0]).toContain("USING fts5");
     expect(statements[1]).toContain("DROP TABLE IF EXISTS temp.ade_fts5_probe");
+  });
+
+  it("closes the handle it opened when the runtime has no FTS5", () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-fts5-close-"));
+    const realExec = DatabaseSync.prototype.exec;
+    vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSyncType, sql: string) {
+      if (sql.includes("USING fts5")) throw new Error("no such module: fts5");
+      return realExec.call(this, sql);
+    });
+    const close = vi.spyOn(DatabaseSync.prototype, "close");
+    try {
+      expect(() => openSearchIndexDb(cacheDir)).toThrow(SearchIndexFts5UnavailableError);
+      // One open, one close: the handle does not outlive the failed probe.
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 });

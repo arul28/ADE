@@ -84,6 +84,7 @@ describe("chatSessionProjection", () => {
 
   it("projects current plan mode without changing idle chat lifecycle", () => {
     const projected = projectChatOntoSession(session(), chat({
+      provider: "claude",
       interactionMode: "plan",
       permissionMode: "plan",
     }));
@@ -91,6 +92,78 @@ describe("chatSessionProjection", () => {
     expect(projected.chatActivityMode).toBe("planning");
     expect(projected.runtimeState).toBe("idle");
     expect(projected.activeBackgroundTaskCount).toBe(0);
+  });
+
+  it("projects Planning from exact provider-reported current modes", () => {
+    const planningChats: Array<Partial<AgentChatSessionSummary>> = [
+      { provider: "claude", interactionMode: "plan" },
+      { provider: "codex", codexEffectiveCollaborationMode: "plan" },
+      { provider: "cursor", cursorModeId: "plan" },
+      { provider: "cursor", cursorModeId: "plan", cursorModeSnapshot: { currentModeId: "agent", availableModeIds: ["agent", "plan"] } },
+      { provider: "cursor", cursorModeSnapshot: {
+        currentModeId: "plan",
+        availableModeIds: ["agent", "plan"],
+      } },
+      { provider: "droid", interactionMode: "plan" },
+      { provider: "opencode", opencodePermissionMode: "plan" },
+      { provider: "qwen", acpConfigSnapshot: { currentModeId: "plan" } },
+      { provider: "kimi", acpConfigSnapshot: {
+        configOptions: [{
+          id: "mode",
+          name: "Mode",
+          type: "select",
+          currentValue: "plan",
+          options: [{ value: "default", label: "Default" }, { value: "plan", label: "Plan" }],
+        }],
+      } },
+      { provider: "copilot", acpConfigSnapshot: {
+        currentModeId: "https://agentclientprotocol.com/protocol/session-modes#plan",
+      } },
+    ];
+
+    for (const currentMode of planningChats) {
+      expect(projectChatOntoSession(session(), chat(currentMode)).chatActivityMode)
+        .toBe("planning");
+    }
+  });
+
+  it("does not infer Planning from legacy permission labels, available modes, or Grok", () => {
+    const nonPlanningChats: Array<Partial<AgentChatSessionSummary>> = [
+      { provider: "codex", permissionMode: "plan", interactionMode: "plan" },
+      { provider: "codex", codexEffectiveCollaborationMode: "default", permissionMode: "plan" },
+      {
+        provider: "codex",
+        codexConfigSource: "flags",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "read-only",
+      },
+      {
+        provider: "codex",
+        codexConfigSource: "config-toml",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "read-only",
+      },
+      { provider: "cursor", cursorModeId: "agent", interactionMode: "plan" },
+      { provider: "cursor", cursorModeId: "agent", cursorModeSnapshot: { currentModeId: "plan", availableModeIds: ["agent", "plan"] } },
+      { provider: "cursor", cursorModeId: null, cursorModeSnapshot: { currentModeId: "plan", availableModeIds: ["agent", "plan"] } },
+      { provider: "cursor", cursorModeIdWasCleared: true, cursorModeSnapshot: { currentModeId: "plan", availableModeIds: ["agent", "plan"] } },
+      { provider: "droid", droidPermissionMode: "read-only" },
+      { provider: "droid", permissionMode: "plan" },
+      { provider: "opencode", permissionMode: "plan", interactionMode: "plan" },
+      { provider: "qwen", acpConfigSnapshot: {
+        currentModeId: "default",
+        availableModeIds: ["default", "plan"],
+      } },
+      { provider: "kimi", acpConfigSnapshot: {
+        configOptions: [{ id: "mode", name: "Mode", type: "boolean", currentValue: true }],
+      } },
+      { provider: "grok", acpConfigSnapshot: { currentModeId: "plan" } },
+    ];
+
+    for (const currentMode of nonPlanningChats) {
+      expect(projectChatOntoSession(session(), chat(currentMode)).chatActivityMode)
+        .toBeNull();
+    }
   });
 
   it("projects authoritative background count and the next armed wake", () => {

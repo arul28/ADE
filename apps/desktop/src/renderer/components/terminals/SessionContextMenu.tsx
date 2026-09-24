@@ -201,8 +201,8 @@ type SessionContextMenuProps = {
     binding?: OpenProjectBinding | null,
   ) => void;
   /**
-   * Opens this chat's Handoff surface in the chat pane — the same two
-   * destinations the Chat actions → Handoff tab offers. The menu cannot open
+   * Opens a handoff destination (local or another machine) in the chat pane.
+   * The menu cannot open
    * those views itself: they are stateful inside `AgentChatPane`, so it records
    * the intent and the pane acts on it (see `chatHandoffIntent`).
    */

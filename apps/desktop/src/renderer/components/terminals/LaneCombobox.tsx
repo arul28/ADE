@@ -8,6 +8,7 @@ import { LaneLogoMark, laneDisplayColor } from "./LaneChip";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
+import { usePortalContainer } from "../ui/portalContainer";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 
 /**
@@ -316,6 +317,7 @@ export function LaneCombobox({
   fullWidth = false,
   "aria-label": ariaLabel = "Select lane",
 }: LaneComboboxProps) {
+  const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -663,7 +665,7 @@ export function LaneCombobox({
               </div>
             </motion.div>
           </div>,
-            document.body,
+            portalContainer ?? document.body,
           )
         : null}
     </>

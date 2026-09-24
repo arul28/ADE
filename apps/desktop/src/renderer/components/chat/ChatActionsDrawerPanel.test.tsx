@@ -1,44 +1,40 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 
 afterEach(cleanup);
 
-function commonProps() {
-  return {
-    onTabChange: vi.fn(),
-    onClose: vi.fn(),
-    agentsContent: <div>Agents body</div>,
-    proofContent: <div>Proof body</div>,
-    handoffContent: <div>Handoff body</div>,
-  };
-}
-
 describe("ChatActionsDrawerPanel", () => {
-  it("shows Sources as the first Codex-specific action tab", () => {
-    const props = commonProps();
+  it("stacks progress, proof, and extra provider sections in one scroll", () => {
     render(
       <ChatActionsDrawerPanel
-        {...props}
-        tab="sources"
-        sourcesContent={<div>Sources body</div>}
-        missionsContent={<div>Missions body</div>}
+        agentsContent={<div>Agents body</div>}
+        proofContent={<div>Proof body</div>}
+        extras={<div>Sources body</div>}
       />,
     );
 
-    expect(screen.getByText("Sources body")).toBeTruthy();
-    const tabs = screen.getAllByRole("button").map((button) => button.getAttribute("aria-label"));
-    expect(tabs.slice(0, 5)).toEqual(["Sources", "Missions", "Agents", "Proof", "Handoff"]);
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
-    expect(props.onTabChange).toHaveBeenCalledWith("agents");
+    const agents = screen.getByText("Agents body");
+    const proof = screen.getByText("Proof body");
+    const sources = screen.getByText("Sources body");
+    expect(agents.compareDocumentPosition(proof) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(proof.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Agents" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Proof" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Handoff" })).toBeNull();
   });
 
-  it("falls back to Agents when a persisted Sources tab is unavailable", () => {
-    render(<ChatActionsDrawerPanel {...commonProps()} tab="sources" />);
+  it("omits proof when there is nothing to show", () => {
+    render(
+      <ChatActionsDrawerPanel
+        agentsContent={<div>Agents body</div>}
+        proofContent={null}
+      />,
+    );
 
     expect(screen.getByText("Agents body")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Sources" })).toBeNull();
+    expect(screen.queryByText("Proof body")).toBeNull();
   });
 });

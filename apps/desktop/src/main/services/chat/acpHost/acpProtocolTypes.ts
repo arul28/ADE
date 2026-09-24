@@ -488,8 +488,34 @@ export type AcpSessionUpdate =
   | { sessionUpdate: "config_option_update"; configOptions: AcpSessionConfigOption[]; _meta?: AcpMeta }
   | { sessionUpdate: "session_info_update"; title?: string | null; updatedAt?: string | null; _meta?: AcpMeta }
   | ({ sessionUpdate: "usage_update" } & AcpUsageUpdate)
-  | { sessionUpdate: "compaction_update"; _meta?: AcpMeta }
-  | { sessionUpdate: "compaction_summary_chunk"; _meta?: AcpMeta };
+  | ({ sessionUpdate: "compaction_update" } & AcpCompactionUpdate)
+  | ({ sessionUpdate: "compaction_summary_chunk" } & AcpCompactionSummaryChunk);
+
+/**
+ * ACP session-compaction RFD status. The enum is open: a value this host does
+ * not know is kept on the wire and ignored, never read as a lifecycle step.
+ */
+export type AcpCompactionStatus = "in_progress" | "completed" | "failed" | "cancelled" | (string & {});
+
+/**
+ * `session/update` variant `compaction_update` (session-compaction RFD). The
+ * first update for a `compactionId` opens the entity; later ones patch it.
+ * Fields are optional here because the host reads them tolerantly.
+ */
+export type AcpCompactionUpdate = {
+  compactionId?: string;
+  status?: AcpCompactionStatus;
+  summary?: AcpContentBlock[] | null;
+  error?: string | null;
+  _meta?: AcpMeta;
+};
+
+/** `session/update` variant `compaction_summary_chunk`: one streamed summary block. */
+export type AcpCompactionSummaryChunk = {
+  compactionId?: string;
+  content?: AcpContentBlock;
+  _meta?: AcpMeta;
+};
 
 export type AcpSessionNotification = {
   sessionId: AcpSessionId;

@@ -4,7 +4,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { pipeline } from "node:stream/promises";
 
-import { ARTIFACT_RANGE_READ_MAX_BYTES, parseArtifactMediaPath } from "../../../shared/artifactStreamUrl";
+import { parseArtifactMediaPath } from "../../../shared/artifactStreamUrl";
 import {
   REMOTE_ARTIFACT_CHUNK_BYTES,
   artifactStreamMimeType,
@@ -13,6 +13,7 @@ import {
   resolveByteRange,
   resolveContainedArtifactFile,
   type RemoteArtifactRangeReader,
+  type RequestedByteRange,
 } from "./artifactStreamProtocol";
 
 /**
@@ -81,6 +82,31 @@ function mediaHeaders(fileName: string, start: number, end: number, size: number
   return headers;
 }
 
+/**
+ * Writes the status line for a request against a file of `size`: 416, an
+ * empty 200, or the 200/206 head. Returns the bytes to send, or null when the
+ * response is already complete.
+ */
+function writeRangeHead(
+  res: http.ServerResponse,
+  range: RequestedByteRange | null,
+  size: number,
+  fileName: string,
+): { start: number; end: number } | null {
+  const bytes = resolveByteRange(range, size);
+  if (!bytes) {
+    if (range) sendUnsatisfiable(res, size);
+    else {
+      // An empty file with no Range asked for.
+      res.writeHead(200, mediaHeaders(fileName, 0, -1, 0, false));
+      res.end();
+    }
+    return null;
+  }
+  res.writeHead(range ? 206 : 200, mediaHeaders(fileName, bytes.start, bytes.end, size, Boolean(range)));
+  return bytes;
+}
+
 function tokensMatch(expected: Buffer, given: string): boolean {
   const candidate = Buffer.from(given, "utf8");
   // Length is not secret; the bytes are.
@@ -126,18 +152,8 @@ async function serveLocal(
     sendText(res, 404, "Not found");
     return;
   }
-  const range = parseRangeHeader(req.headers.range);
-  const bytes = resolveByteRange(range, file.size);
-  if (!bytes) {
-    if (range) sendUnsatisfiable(res, file.size);
-    else {
-      // An empty file with no Range asked for.
-      res.writeHead(200, { ...mediaHeaders(file.filePath, 0, -1, 0, false) });
-      res.end();
-    }
-    return;
-  }
-  res.writeHead(range ? 206 : 200, mediaHeaders(file.filePath, bytes.start, bytes.end, file.size, Boolean(range)));
+  const bytes = writeRangeHead(res, parseRangeHeader(req.headers.range), file.size, file.filePath);
+  if (!bytes) return;
   if (req.method === "HEAD") {
     res.end();
     return;
@@ -165,7 +181,7 @@ async function serveRemote(
   const read = async (offset: number, length: number) => decodeRemoteArtifactChunk(await reader({
     ...target,
     offset,
-    length: Math.max(1, Math.min(length, REMOTE_ARTIFACT_CHUNK_BYTES, ARTIFACT_RANGE_READ_MAX_BYTES)),
+    length: Math.max(1, Math.min(length, REMOTE_ARTIFACT_CHUNK_BYTES)),
   }));
 
   const range = parseRangeHeader(req.headers.range);
@@ -182,19 +198,9 @@ async function serveRemote(
     return;
   }
 
-  const totalSize = probe.totalSize;
-  const bytes = resolveByteRange(range, totalSize);
-  if (!bytes) {
-    if (range) sendUnsatisfiable(res, totalSize);
-    else {
-      // An empty file with no Range asked for.
-      res.writeHead(200, mediaHeaders(target.relativePath, 0, -1, 0, false));
-      res.end();
-    }
-    return;
-  }
+  const bytes = writeRangeHead(res, range, probe.totalSize, target.relativePath);
+  if (!bytes) return;
   const { start, end } = bytes;
-  res.writeHead(range ? 206 : 200, mediaHeaders(target.relativePath, start, end, totalSize, Boolean(range)));
   if (head || gone) {
     res.end();
     return;
@@ -227,6 +233,8 @@ export function createArtifactMediaServer(deps: ArtifactMediaServerDeps): Artifa
   const expectedToken = Buffer.from(token, "utf8");
   let server: http.Server | null = null;
   let starting: Promise<string> | null = null;
+  /** Bumped by `close()`, so a start still binding knows it was cancelled. */
+  let generation = 0;
   let hostHeader = "";
 
   const handle = (req: http.IncomingMessage, res: http.ServerResponse): void => {
@@ -261,10 +269,17 @@ export function createArtifactMediaServer(deps: ArtifactMediaServerDeps): Artifa
   };
 
   const start = (): Promise<string> => new Promise((resolve, reject) => {
+    const startedIn = generation;
     const next = http.createServer(handle);
     next.once("error", reject);
     next.listen(0, "127.0.0.1", () => {
       next.off("error", reject);
+      // `close()` ran while this was still binding.
+      if (startedIn !== generation) {
+        next.close();
+        reject(new Error("The media server is closed."));
+        return;
+      }
       const { port } = next.address() as AddressInfo;
       hostHeader = `127.0.0.1:${port}`;
       server = next;
@@ -275,15 +290,17 @@ export function createArtifactMediaServer(deps: ArtifactMediaServerDeps): Artifa
   return {
     baseUrl() {
       if (!starting) {
-        starting = start().catch((error: unknown) => {
+        const attempt: Promise<string> = start().catch((error: unknown) => {
           // Let the next caller try again rather than caching a failure.
-          starting = null;
+          if (starting === attempt) starting = null;
           throw error;
         });
+        starting = attempt;
       }
       return starting;
     },
     async close() {
+      generation += 1;
       const current = server;
       server = null;
       starting = null;

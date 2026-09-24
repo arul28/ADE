@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDroidSdkEventMapperState,
   mapDroidSdkMessageToChatEvents,
+  mapDroidSdkRunResultToDoneEvent,
 } from "./droidSdkEventMapper";
 
 function map(message: unknown) {
@@ -53,6 +54,32 @@ describe("mapDroidSdkMessageToChatEvents — AGI mission workers", () => {
       status: "completed",
     });
     expect((events[0] as { summary: string }).summary).toContain("0");
+  });
+
+  it("carries derived token usage from the worker settings payload", () => {
+    const events = map({
+      type: "mission_worker_completed",
+      workerSessionId: "worker-usage",
+      exitCode: 0,
+      tokenUsage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheReadTokens: 3,
+        cacheCreationTokens: 4,
+        thinkingTokens: 5,
+      },
+    });
+    expect(events[0]).toMatchObject({
+      type: "subagent_result",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 4,
+        reasoningTokens: 5,
+        usageConfidence: "derived",
+      },
+    });
   });
 
   it("maps a non-zero exit code to a failed subagent_result", () => {
@@ -237,5 +264,267 @@ describe("mapDroidSdkMessageToChatEvents — structured assistant content", () =
       message: "Usage limit reached",
       turnId: "turn-1",
     }]);
+  });
+});
+
+describe("mapDroidSdkMessageToChatEvents — Droid telemetry", () => {
+  it("maps thinking tokens to reasoning tokens and keeps the latest cumulative update", () => {
+    const state = createDroidSdkEventMapperState();
+    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
+      turnId: "turn-1",
+      cwd: "/work",
+      state,
+    });
+
+    expect(mapWithState({
+      type: "token_usage_update",
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheCreationTokens: 1,
+      cacheReadTokens: 2,
+      thinkingTokens: 3,
+    })[0]).toMatchObject({
+      type: "tokens",
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheWriteTokens: 1,
+      cacheReadTokens: 2,
+      reasoningTokens: 3,
+    });
+
+    mapWithState({
+      type: "token_usage_update",
+      inputTokens: 30,
+      outputTokens: 40,
+      cacheCreationTokens: 4,
+      cacheReadTokens: 5,
+      thinkingTokens: 6,
+    });
+    expect(mapDroidSdkRunResultToDoneEvent({ success: true }, {
+      turnId: "turn-1",
+      model: "claude-sonnet-5",
+      state,
+    })).toMatchObject({
+      usage: {
+        inputTokens: 30,
+        outputTokens: 40,
+        cacheCreationTokens: 4,
+        cacheReadTokens: 5,
+        reasoningTokens: 6,
+      },
+      account: { provider: "droid", kind: "subscription" },
+    });
+  });
+
+  it("maps provider context stats to a live measured context_usage event", () => {
+    expect(map({
+      type: "context_stats",
+      contextStats: {
+        used: 900,
+        remaining: 1_100,
+        limit: 2_000,
+        accuracy: "estimated",
+        updatedAt: "2026-09-23T12:00:00.000Z",
+      },
+    })).toEqual([{
+      type: "context_usage",
+      usage: {
+        categories: [
+          { name: "Used", tokens: 900, percentage: 45, kind: "used" },
+          { name: "Free", tokens: 1_100, percentage: 55, kind: "free" },
+        ],
+        totalTokens: 900,
+        maxTokens: 2_000,
+        rawMaxTokens: 2_000,
+        percentage: 45,
+      },
+      origin: "live",
+      state: "measured",
+      capturedAt: "2026-09-23T12:00:00.000Z",
+      turnId: "turn-1",
+    }]);
+  });
+
+  it("recognizes Droid's compaction enum and keeps the tagged start sample as the pre-size", () => {
+    const state = createDroidSdkEventMapperState();
+    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
+      turnId: "turn-1",
+      cwd: "/work",
+      state,
+    });
+    const stats = (used: number, updatedAt: string) => ({
+      used,
+      remaining: 2_000 - used,
+      limit: 2_000,
+      accuracy: "exact",
+      updatedAt,
+    });
+    expect(mapWithState({ type: "working_state_changed", state: "compacting_conversation" })).toContainEqual(
+      expect.objectContaining({ type: "context_compact", state: "started", provider: "droid", detection: "provider" }),
+    );
+    // The start sample lands mid-compaction: it is the pre-size, not a meter reading.
+    expect(mapWithState({
+      type: "context_stats",
+      phase: "compaction_start",
+      contextStats: stats(1_800, "2026-09-23T12:00:00.000Z"),
+    })).toEqual([]);
+
+    const completed = mapWithState({ type: "working_state_changed", state: "idle" });
+    expect(completed).toEqual([expect.objectContaining({
+      type: "context_compact",
+      state: "completed",
+      provider: "droid",
+      detection: "provider",
+      preTokens: 1_800,
+    })]);
+    expect(completed[0]).not.toHaveProperty("postTokens");
+    // The post sample arrives after the marker and moves the meter.
+    expect(mapWithState({ type: "context_stats", contextStats: stats(700, "2026-09-23T12:00:01.000Z") })).toEqual([
+      expect.objectContaining({ type: "context_usage", usage: expect.objectContaining({ totalTokens: 700 }) }),
+    ]);
+  });
+
+  it("drops a compaction start sample that lands after the compaction closed", () => {
+    const state = createDroidSdkEventMapperState();
+    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
+      turnId: "turn-1",
+      cwd: "/work",
+      state,
+    });
+    mapWithState({ type: "working_state_changed", state: "compacting_conversation" });
+    mapWithState({ type: "working_state_changed", state: "streaming_assistant_message" });
+    expect(mapWithState({
+      type: "context_stats",
+      phase: "compaction_start",
+      contextStats: { used: 1_800, remaining: 200, limit: 2_000, accuracy: "exact", updatedAt: "2026-09-23T12:00:00.000Z" },
+    })).toEqual([]);
+    expect(state.compactionPreTokens).toBeUndefined();
+  });
+
+  it("keeps a trailing sample on the turn that took it, even after the next turn started", () => {
+    const state = createDroidSdkEventMapperState();
+    const mapTurnTwo = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
+      turnId: "turn-2",
+      cwd: "/work",
+      state,
+    });
+    const stats = { used: 900, remaining: 1_100, limit: 2_000, accuracy: "exact", updatedAt: "2026-09-23T12:00:00.000Z" };
+    expect(mapTurnTwo({ type: "context_stats", contextStats: stats, turnId: "turn-1" })).toEqual([
+      expect.objectContaining({ type: "context_usage", turnId: "turn-1" }),
+    ]);
+    // An unstamped sample (an older worker) still takes the current turn.
+    expect(mapTurnTwo({ type: "context_stats", contextStats: stats })).toEqual([
+      expect.objectContaining({ type: "context_usage", turnId: "turn-2" }),
+    ]);
+    // Turn one's compaction-start sample never seeds turn two's compaction.
+    mapTurnTwo({ type: "working_state_changed", state: "compacting_conversation" });
+    expect(mapTurnTwo({ type: "context_stats", phase: "compaction_start", contextStats: stats, turnId: "turn-1" }))
+      .toEqual([]);
+    expect(state.compactionPreTokens).toBeUndefined();
+    mapTurnTwo({ type: "context_stats", phase: "compaction_start", contextStats: stats, turnId: "turn-2" });
+    expect(state.compactionPreTokens).toBe(900);
+  });
+
+  it("closes a compaction on any non-compacting state, once", () => {
+    const state = createDroidSdkEventMapperState();
+    const mapWithState = (message: unknown) => mapDroidSdkMessageToChatEvents(message, {
+      turnId: "turn-1",
+      cwd: "/work",
+      state,
+    });
+    mapWithState({ type: "working_state_changed", state: "compacting_conversation" });
+    const closed = mapWithState({ type: "working_state_changed", state: "streaming_assistant_message" });
+    expect(closed.filter((event) => event.type === "context_compact")).toEqual([
+      expect.objectContaining({ state: "completed" }),
+    ]);
+    expect(mapWithState({ type: "working_state_changed", state: "idle" })).toEqual([]);
+  });
+
+  it("does not put context occupancy on done", () => {
+    const state = createDroidSdkEventMapperState();
+    mapDroidSdkMessageToChatEvents({
+      type: "context_stats",
+      contextStats: { used: 900, remaining: 1_100, limit: 2_000, accuracy: "exact", updatedAt: "2026-09-23T12:00:00.000Z" },
+    }, { turnId: "turn-1", cwd: "/work", state });
+    const done = mapDroidSdkRunResultToDoneEvent({ success: true, tokenUsage: { inputTokens: 5 } }, {
+      turnId: "turn-1",
+      model: "claude-sonnet-5",
+      state,
+    });
+    expect(done.usage).toEqual({ inputTokens: 5 });
+  });
+
+  it("reports a served model only when the provider changed it beyond custom prefix normalization", () => {
+    const state = createDroidSdkEventMapperState();
+    expect(mapDroidSdkRunResultToDoneEvent({
+      success: true,
+      modelId: "claude-opus-5",
+    }, {
+      turnId: "turn-1",
+      model: "custom:claude-sonnet-5",
+      requestedModel: "custom:claude-sonnet-5",
+      state,
+    })).toMatchObject({ servedModel: "claude-opus-5" });
+    expect(mapDroidSdkRunResultToDoneEvent({
+      success: true,
+      modelId: "claude-sonnet-5",
+    }, {
+      turnId: "turn-1",
+      model: "custom:claude-sonnet-5",
+      requestedModel: "custom:claude-sonnet-5",
+      state,
+    })).not.toHaveProperty("servedModel");
+  });
+
+  it("reports the model the assistant message names, not the settings read back", () => {
+    // Droid SDK 0.9.1: an `auto` router slot picks the model per turn and
+    // stamps it on the assistant message; the run result's `modelId` is only
+    // the session setting.
+    const state = createDroidSdkEventMapperState();
+    mapDroidSdkMessageToChatEvents({
+      type: "assistant",
+      text: "Done.",
+      message: {
+        id: "msg-1",
+        role: "assistant",
+        content: [{ type: "text", text: "Done." }],
+        modelId: "gpt-6-astra",
+        routerId: "auto",
+        reasoningEffort: "high",
+      },
+    }, { turnId: "turn-1", cwd: "/work", state });
+    expect(mapDroidSdkRunResultToDoneEvent({ success: true, modelId: "claude-sonnet-5" }, {
+      turnId: "turn-1",
+      model: "claude-sonnet-5",
+      requestedModel: "claude-sonnet-5",
+      state,
+    })).toMatchObject({ servedModel: "gpt-6-astra" });
+
+    const sameModel = createDroidSdkEventMapperState();
+    mapDroidSdkMessageToChatEvents({
+      type: "assistant",
+      message: { id: "msg-2", role: "assistant", content: [], modelId: "claude-sonnet-5" },
+    }, { turnId: "turn-2", cwd: "/work", state: sameModel });
+    expect(mapDroidSdkRunResultToDoneEvent({ success: true }, {
+      turnId: "turn-2",
+      model: "claude-sonnet-5",
+      requestedModel: "claude-sonnet-5",
+      state: sameModel,
+    })).not.toHaveProperty("servedModel");
+  });
+
+  it("names a bring-your-own-key custom model's account api_key", () => {
+    const state = createDroidSdkEventMapperState();
+    expect(mapDroidSdkRunResultToDoneEvent({ success: true }, {
+      turnId: "turn-1",
+      model: "Claude Sonnet 5 (BYOK)",
+      requestedModel: "custom:claude-sonnet-5",
+      state,
+    }).account).toEqual({ provider: "droid", kind: "api_key" });
+    expect(mapDroidSdkRunResultToDoneEvent({ success: true }, {
+      turnId: "turn-1",
+      model: "claude-sonnet-5",
+      state,
+    }).account).toEqual({ provider: "droid", kind: "subscription" });
   });
 });

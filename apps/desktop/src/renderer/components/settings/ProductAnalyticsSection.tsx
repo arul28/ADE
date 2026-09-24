@@ -58,7 +58,7 @@ export function ProductAnalyticsSection() {
       <SettingsCard
         anchor="product-analytics"
         title="Anonymous product analytics"
-        description="Help improve ADE by sharing bounded, anonymous usage events."
+        description="Help improve ADE by sharing anonymous usage events and a daily usage summary."
         control={
           <SettingsToggle
             label="Share anonymous usage analytics"
@@ -73,6 +73,11 @@ export function ProductAnalyticsSection() {
           It sends only allowlisted feature, screen, outcome, version, and aggregate usage
           counts—never prompts, code, file or terminal content, repository names or paths, command
           arguments, or recordings.
+        </p>
+        <p style={{ margin: "8px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
+          ADE also sends one usage summary a day to ADE's own servers: the providers and models you
+          used, token counts, costs, your plan tier, and the local hour of each turn. It never
+          includes prompts, file paths, or account emails.
         </p>
         <p style={{ margin: "8px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5 }}>
           {footnote}

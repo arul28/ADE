@@ -111,6 +111,14 @@ export type AppleStatusPayload = {
   };
   recording: { active: boolean; id: string | null; startedAt: string | null; mode: "auto" | "manual" | null } | null;
   /**
+   * The device this lane itself holds, or null.
+   *
+   * `device` can be the host's fallback (any booted simulator) when the lane
+   * holds none. The phone's simulator chip shows only when this names the same
+   * udid, so it never offers another lane's device as this lane's.
+   */
+  laneDevice: { udid: string } | null;
+  /**
    * The claiming chat.
    *
    * `chatTitle` is resolved by the host, not by the viewer: a phone enters the
@@ -186,6 +194,7 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
   // session (`open-device`); an owner that only read `activeSession` reported a
   // device-session claim as unclaimed, which let any remote caller drive it.
   const ownerSessionId = asString(activeSession?.chatSessionId) ?? asString(deviceSession?.chatSessionId);
+  const laneUdid = asString(laneDevice?.udid);
   return {
     laneId,
     unavailable: source.supported === false
@@ -225,6 +234,7 @@ export function buildAppleStatusPayload(laneId: string, status: unknown): AppleS
         mode: recording.mode === "manual" ? "manual" : recording.mode === "auto" ? "auto" : null,
       }
       : null,
+    laneDevice: laneUdid ? { udid: laneUdid } : null,
     owner: ownerSessionId
       ? { chatSessionId: ownerSessionId, chatTitle: null }
       : null,

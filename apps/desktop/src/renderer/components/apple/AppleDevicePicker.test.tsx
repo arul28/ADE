@@ -323,6 +323,38 @@ describe("AppleDevicePicker create a new one", () => {
     expect(onCreate).toHaveBeenCalledWith("pad");
   });
 
+  it("moves the copy-source selection with arrow keys", () => {
+    const { container, onCreate } = renderPicker();
+    const group = screen.getByRole("radiogroup", { name: "Device to copy" });
+    const radio = (udid: string) =>
+      container.querySelector(`[data-apple-create-source="${udid}"]`) as HTMLElement;
+    const checked = () =>
+      within(group).getAllByRole("radio").find((el) => el.getAttribute("aria-checked") === "true");
+    // Sources by name: pad, max, watch. The default (newest iPhone) is the one Tab stop.
+    expect(radio("max").tabIndex).toBe(0);
+    expect(radio("pad").tabIndex).toBe(-1);
+    expect(radio("watch").tabIndex).toBe(-1);
+
+    fireEvent.keyDown(radio("max"), { key: "ArrowDown" });
+    expect(checked()).toBe(radio("watch"));
+    expect(document.activeElement).toBe(radio("watch"));
+    expect(radio("watch").tabIndex).toBe(0);
+    expect(radio("max").tabIndex).toBe(-1);
+
+    fireEvent.keyDown(radio("watch"), { key: "ArrowDown" });
+    expect(checked()).toBe(radio("pad"));
+    fireEvent.keyDown(radio("pad"), { key: "ArrowUp" });
+    expect(checked()).toBe(radio("watch"));
+    fireEvent.keyDown(radio("watch"), { key: "Home" });
+    expect(checked()).toBe(radio("pad"));
+    expect(document.activeElement).toBe(radio("pad"));
+    fireEvent.keyDown(radio("pad"), { key: "End" });
+    expect(checked()).toBe(radio("watch"));
+
+    fireEvent.click(screen.getByLabelText("Create a new simulator for this lane"));
+    expect(onCreate).toHaveBeenCalledWith("watch");
+  });
+
   it("says when the lane's registered device is gone, where the fix is", () => {
     const { container } = renderPicker({
       laneDevice: laneDevice({ udid: "deleted-in-xcode", name: "Old clone" }),

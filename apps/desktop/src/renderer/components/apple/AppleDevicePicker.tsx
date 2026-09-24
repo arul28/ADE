@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowsClockwise, Copy, DotsThree, Trash } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
@@ -37,36 +37,15 @@ import {
   appleDefaultTemplateUdid,
   appleDeviceDiskLabel,
   appleOwnerLaneLabel,
+  isAppleCloneSource,
   partitionApplePickerDevices,
 } from "./applePickerInventory";
 
 /**
- * The pane's front door, rebuilt in round 6 to the owner's own layout.
- *
- * Round 5 led with a summary box — the runtime, a count of simulators, a count
- * running, and a sentence explaining that one runtime serves many devices. The
- * owner read all of it and asked for it to go: he can see how many devices he
- * has by looking at them, and a paragraph at the top of a picker is a paragraph
- * between him and the thing he came to click. The same went for the two
- * captions under the headings and the line at the foot of the page.
- *
- * What is left is a list, and the page says what it knows in the list:
- *
- * 1. **Available**, and beside the word, one glyph per device he owns — three
- *    iPhones and two iPads read as three iPhones and two iPads at a glance,
- *    which is the counting the deleted box was doing in prose.
- * 2. A group per device family, so an iPad is never filed under iPhone.
- * 3. One card per device: its glyph, its name, its OS and its model, and a
- *    menu. The whole card starts it.
- * 4. A device another lane holds says TAKEN, has no menu and does not respond
- *    to a click. There is no Take over here any more; the owner asked for the
- *    panel not to offer a device that is on hold elsewhere, and the CLI keeps
- *    `--force` for the rare recovery.
- * 5. **Create a new one** at the foot: the installed devices a copy can be made
- *    from, each with what that copy costs, and one button.
- *
- * A refresh button sits at the top right of the pane, where a refresh belongs,
- * rather than in the page's last line.
+ * The pane's front door: an "Available" heading with one glyph per installed
+ * device, a group per device family, one card per device (a device another
+ * lane holds says TAKEN and cannot be started here), and "Create a new one" at
+ * the foot. Refresh sits at the top right.
  */
 
 export type AppleDevicePickerProps = {
@@ -162,41 +141,13 @@ export function AppleDevicePicker({
     [installed, laneDevice, owners],
   );
 
-  /**
-   * Every installed device, in one list, each carrying what it is TO THIS LANE.
-   *
-   * The page used to run a section per state, which split five simulators into
-   * a hero, a group of four and a third section the owner had to scroll to.
-   * Family is the only grouping now; state is a tag on the card. So the count
-   * beside "Available" and the number of cards on the page are the same number,
-   * which is what went wrong when he counted four and had five.
-   */
-  const entries = useMemo(() => {
-    const takenBy = new Map(partition.elsewhere.map((entry) => [entry.simulator.udid, entry.owner]));
-    return installed.map((simulator) => ({
-      simulator,
-      owner: takenBy.get(simulator.udid) ?? null,
-      mine: partition.mine?.udid === simulator.udid,
-    }));
-  }, [installed, partition.elsewhere, partition.mine]);
-
-  const groups = useMemo(
-    () => groupAppleSimulatorsByFamily(entries.map((entry) => entry.simulator)),
-    [entries],
-  );
-  const stateFor = useMemo(
-    () => new Map(entries.map((entry) => [entry.simulator.udid, entry])),
-    [entries],
-  );
-
-  const freeCount = partition.available.length;
-  const cannotClone = useMemo(
-    () => new Set(
-      entries
-        .filter((entry) => entry.owner || isAppleSimulatorBooted(entry.simulator))
-        .map((entry) => entry.simulator.udid),
-    ),
-    [entries],
+  // Family is the only grouping; what a device is to this lane is a tag on its
+  // card, so the count beside "Available" matches the cards on the page.
+  const groups = useMemo(() => groupAppleSimulatorsByFamily(installed), [installed]);
+  /** Devices another lane holds, with who holds them. */
+  const takenBy = useMemo(
+    () => new Map(partition.elsewhere.map((entry) => [entry.simulator.udid, entry.owner])),
+    [partition.elsewhere],
   );
 
   const defaultTemplate = useMemo(
@@ -217,7 +168,12 @@ export function AppleDevicePicker({
       ) : (
         <>
           <div className="flex min-w-0 items-center justify-between gap-2">
-            <AvailableHeading entries={entries} freeCount={freeCount} />
+            <AvailableHeading
+              groups={groups}
+              takenBy={takenBy}
+              installedCount={installed.length}
+              freeCount={partition.available.length}
+            />
             <RefreshButton refreshing={refreshing} onRefresh={onRefresh} />
           </div>
 
@@ -235,30 +191,27 @@ export function AppleDevicePicker({
                 className="grid min-w-0 gap-2"
                 style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
               >
-                {group.devices.map((simulator) => {
-                  const entry = stateFor.get(simulator.udid);
-                  return (
-                    <DeviceCard
-                      key={simulator.udid}
-                      simulator={simulator}
-                      family={group.family}
-                      owner={entry?.owner ?? null}
-                      mine={entry?.mine ?? false}
-                      disk={disk}
-                      pending={pending === simulator.udid}
-                      disabled={busy}
-                      onStart={() => onStart(simulator.udid)}
-                      {...(onDelete ? { onDelete: () => onDelete(simulator.udid) } : {})}
-                    />
-                  );
-                })}
+                {group.devices.map((simulator) => (
+                  <DeviceCard
+                    key={simulator.udid}
+                    simulator={simulator}
+                    family={group.family}
+                    owner={takenBy.get(simulator.udid) ?? null}
+                    mine={partition.mine?.udid === simulator.udid}
+                    disk={disk}
+                    pending={pending === simulator.udid}
+                    disabled={busy}
+                    onStart={() => onStart(simulator.udid)}
+                    {...(onDelete ? { onDelete: () => onDelete(simulator.udid) } : {})}
+                  />
+                ))}
               </div>
             </section>
           ))}
 
           <CreateSection
             templates={templates}
-            cannotClone={cannotClone}
+            heldElsewhere={takenBy}
             value={selectedSource}
             disk={disk}
             measuringDisk={measuringDisk}
@@ -319,20 +272,16 @@ function PickerPage({
  * "available" means. The glyphs are all of them.
  */
 function AvailableHeading({
-  entries,
+  groups,
+  takenBy,
+  installedCount,
   freeCount,
 }: {
-  entries: readonly { simulator: AppleInstalledSimulator; owner: AppleSimulatorOwner | null }[];
+  groups: ReturnType<typeof groupAppleSimulatorsByFamily>;
+  takenBy: ReadonlyMap<string, AppleSimulatorOwner>;
+  installedCount: number;
   freeCount: number;
 }) {
-  const byFamily = useMemo(
-    () => groupAppleSimulatorsByFamily(entries.map((entry) => entry.simulator)),
-    [entries],
-  );
-  const takenUdids = useMemo(
-    () => new Set(entries.filter((entry) => entry.owner).map((entry) => entry.simulator.udid)),
-    [entries],
-  );
   return (
     <h3
       data-apple-picker-section="Available"
@@ -343,7 +292,7 @@ function AvailableHeading({
         {freeCount}
       </span>
       <span data-apple-inventory-glyphs="" className="ml-2 flex shrink-0 items-center gap-2">
-        {byFamily.map((group) => {
+        {groups.map((group) => {
           const Glyph = FAMILY_GLYPH[group.family];
           return (
             <span key={group.family} className="flex shrink-0 items-center gap-0.5">
@@ -352,10 +301,10 @@ function AvailableHeading({
                   key={simulator.udid}
                   size={15}
                   aria-hidden="true"
-                  data-apple-glyph={takenUdids.has(simulator.udid) ? "taken" : "free"}
+                  data-apple-glyph={takenBy.has(simulator.udid) ? "taken" : "free"}
                   className={cn(
                     "shrink-0",
-                    takenUdids.has(simulator.udid) ? "text-muted-fg/55" : "text-fg",
+                    takenBy.has(simulator.udid) ? "text-muted-fg/55" : "text-fg",
                   )}
                 />
               ))}
@@ -364,7 +313,7 @@ function AvailableHeading({
         })}
       </span>
       <span className="sr-only">
-        {`${entries.length} installed, ${freeCount} available`}
+        {`${installedCount} installed, ${freeCount} available`}
       </span>
     </h3>
   );
@@ -580,6 +529,16 @@ function DeviceMenu({
   );
 }
 
+/** ARIA radiogroup keys: arrows step and wrap, Home and End jump. */
+const RADIO_KEY_MOVES = new Map<string, 1 | -1 | "first" | "last">([
+  ["ArrowDown", 1],
+  ["ArrowRight", 1],
+  ["ArrowUp", -1],
+  ["ArrowLeft", -1],
+  ["Home", "first"],
+  ["End", "last"],
+]);
+
 /**
  * Make another one, at the foot of the page where the owner put it.
  *
@@ -592,7 +551,7 @@ function DeviceMenu({
  */
 function CreateSection({
   templates,
-  cannotClone,
+  heldElsewhere,
   value,
   disk,
   measuringDisk,
@@ -603,8 +562,8 @@ function CreateSection({
   onCreate,
 }: {
   templates: readonly AppleInstalledSimulator[];
-  /** Udids no clone can be made from: booted, or held by another lane. */
-  cannotClone: ReadonlySet<string>;
+  /** Devices another lane holds; no copy is made from them. */
+  heldElsewhere: Pick<ReadonlySet<string>, "has">;
   value: string | null;
   disk: AppleDeviceDiskUsage | null | undefined;
   measuringDisk: boolean;
@@ -615,20 +574,29 @@ function CreateSection({
   onChange: (udid: string) => void;
   onCreate: () => void;
 }) {
-  /*
-   * Only devices a clone can actually be made FROM.
-   *
-   * `simctl clone` fails on a booted device, and a device another lane holds is
-   * not this panel's to copy. The list used to offer every installed device, so
-   * the top row on the owner's machine was a booted simulator on hold
-   * elsewhere — a source that could only ever fail.
-   */
-  const sources = templates.filter((entry) => !cannotClone.has(entry.udid));
+  // Only devices a copy can actually be made from.
+  const sources = templates.filter((entry) => isAppleCloneSource(entry, heldElsewhere));
+  // Roving tabindex: the checked radio is the group's one Tab stop, or the
+  // first one while none is checked.
+  const focusUdid = sources.some((entry) => entry.udid === value) ? value : sources[0]?.udid ?? null;
   const costFor = (simulator: AppleInstalledSimulator): string => {
     const size = appleDeviceDiskLabel(disk, simulator.udid);
     if (size) return `${simulator.runtime} · copy costs about ${size}, no download`;
     if (measuringDisk) return `${simulator.runtime} · measuring…`;
     return `${simulator.runtime} · already installed, no download`;
+  };
+  const onRadioKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const move = RADIO_KEY_MOVES.get(event.key);
+    if (!move || sources.length === 0 || disabled) return;
+    event.preventDefault();
+    let next = 0;
+    if (move === "last") next = sources.length - 1;
+    else if (move !== "first") {
+      const current = sources.findIndex((entry) => entry.udid === focusUdid);
+      next = (current + move + sources.length) % sources.length;
+    }
+    onChange(sources[next]!.udid);
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
   };
   return (
     <section
@@ -652,6 +620,7 @@ function CreateSection({
           role="radiogroup"
           aria-label="Device to copy"
           className="flex min-w-0 flex-col"
+          onKeyDown={onRadioKeyDown}
         >
           {sources.map((simulator) => {
             const selected = simulator.udid === value;
@@ -661,6 +630,7 @@ function CreateSection({
                 type="button"
                 role="radio"
                 aria-checked={selected}
+                tabIndex={simulator.udid === focusUdid ? 0 : -1}
                 disabled={disabled}
                 data-apple-create-source={simulator.udid}
                 onClick={() => onChange(simulator.udid)}

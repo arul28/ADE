@@ -1,39 +1,68 @@
+import { useCallback, useRef } from "react";
+
 /**
- * Is a Work tool really on screen?
+ * Is a surface (a Work tool, a chat drawer) really on screen?
  *
  * `ade ui show` must not answer "shown" for a surface the user cannot see.
  * Writing "open the Apple tool" into the store is only a request: the tools
  * pane slides open on an animation, the tool mounts a commit later, and in a
  * window that is hidden or on another Space the animation never runs at all
- * (the pane stayed 19px wide in the 2026-09-23 repro). So a show waits for
- * the tool itself to mount, the pane to have real width, and the window to be
- * visible — and says so only then.
+ * (the pane stayed 19px wide in the 2026-09-23 repro). So a show waits for the
+ * surface's own element to mount, its pane to have real width, and the window
+ * to be visible — and says so only then.
  */
 
-type ToolKey = string;
+const mounted = new Map<string, Set<Element>>();
+const floating = new Map<string, number>();
 
-const mounted = new Map<ToolKey, number>();
-
-function keyFor(tool: string, laneId: string | null): ToolKey {
-  return `${tool}\u0000${laneId ?? ""}`;
+/**
+ * One surface on one machine. `id` is the lane for a Work tool and the chat for
+ * a chat drawer; the machine is `workRuntimeScopeKey`, because two machines can
+ * each have a lane with the same id.
+ */
+export function workSurfaceKey(surface: string, scopeKey: string, id: string | null): string {
+  return `${surface}\u0000${scopeKey}\u0000${id ?? ""}`;
 }
 
-/** Called by a tool panel on mount; the return value is its unmount. */
-export function noteWorkToolMounted(tool: string, laneId: string | null): () => void {
-  const key = keyFor(tool, laneId);
-  mounted.set(key, (mounted.get(key) ?? 0) + 1);
+/** Called with the surface's element on mount; the return value is its unmount. */
+export function noteWorkSurfaceMounted(key: string, element: Element): () => void {
+  const elements = mounted.get(key) ?? new Set<Element>();
+  elements.add(element);
+  mounted.set(key, elements);
+  return () => {
+    elements.delete(element);
+    if (elements.size === 0 && mounted.get(key) === elements) mounted.delete(key);
+  };
+}
+
+/** A ref that registers its element under `key` while it is mounted. */
+export function useWorkSurfaceMountRef<T extends Element>(key: string | null): (element: T | null) => void {
+  const releaseRef = useRef<(() => void) | null>(null);
+  return useCallback((element: T | null) => {
+    releaseRef.current?.();
+    releaseRef.current = key && element ? noteWorkSurfaceMounted(key, element) : null;
+  }, [key]);
+}
+
+/**
+ * A floating surface (the Mac Desktop card) is not laid out in the tools pane,
+ * and in picture in picture it has no box at all, so only its own "I am
+ * showing" and the window count. The return value is its unshow.
+ */
+export function noteFloatingWorkSurfaceShown(key: string): () => void {
+  floating.set(key, (floating.get(key) ?? 0) + 1);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const next = (mounted.get(key) ?? 1) - 1;
-    if (next > 0) mounted.set(key, next);
-    else mounted.delete(key);
+    const next = (floating.get(key) ?? 1) - 1;
+    if (next > 0) floating.set(key, next);
+    else floating.delete(key);
   };
 }
 
-export function isWorkToolMounted(tool: string, laneId: string | null): boolean {
-  return (mounted.get(keyFor(tool, laneId)) ?? 0) > 0;
+export function isWorkSurfaceMounted(key: string): boolean {
+  return (mounted.get(key)?.size ?? 0) > 0 || (floating.get(key) ?? 0) > 0;
 }
 
 /** The window is showing, so anything laid out in it can be seen. */
@@ -52,52 +81,39 @@ export function setDocumentVisibleForTests(visible: boolean | null): void {
 /** Narrower than this and the pane is still sliding open, or stuck closed. */
 const MIN_VISIBLE_PANE_WIDTH_PX = 160;
 
-function defaultPaneVisible(): boolean {
+/**
+ * Measured on the tools pane that holds the element when there is one: a tool
+ * inside a pane that is a sliver wide can still report its own full width.
+ */
+function laidOut(element: Element): boolean {
+  const box = element.closest("[data-work-sidebar-pane]") ?? element;
+  return box.getBoundingClientRect().width >= MIN_VISIBLE_PANE_WIDTH_PX;
+}
+
+export function isWorkSurfaceOnScreen(key: string): boolean {
   if (!isDocumentVisible()) return false;
-  for (const pane of document.querySelectorAll<HTMLElement>("[data-work-sidebar-pane]")) {
-    if (pane.getBoundingClientRect().width >= MIN_VISIBLE_PANE_WIDTH_PX) return true;
+  if ((floating.get(key) ?? 0) > 0) return true;
+  for (const element of mounted.get(key) ?? []) {
+    if (element.isConnected && laidOut(element)) return true;
   }
   return false;
 }
 
-let paneVisibleProbe: () => boolean = defaultPaneVisible;
-
-/** Test seam: jsdom lays nothing out, so a test says whether the pane is visible. */
-export function setWorkToolsPaneVisibleProbeForTests(probe: (() => boolean) | null): void {
-  paneVisibleProbe = probe ?? defaultPaneVisible;
-}
-
 /**
- * `inPane: false` is for a floating surface (the Mac Desktop card): it is not
- * laid out in the tools pane, so only its own mount and the window count.
- */
-export type WorkToolOnScreenOptions = { inPane?: boolean };
-
-export function isWorkToolOnScreen(
-  tool: string,
-  laneId: string | null,
-  options: WorkToolOnScreenOptions = {},
-): boolean {
-  if (!isWorkToolMounted(tool, laneId)) return false;
-  return options.inPane === false ? isDocumentVisible() : paneVisibleProbe();
-}
-
-/**
- * Resolve true once the tool is on screen, or false after `timeoutMs`.
+ * Resolve true once the surface is on screen, or false after `timeoutMs`.
  * Timers, not animation frames: a hidden window runs no frames, and that is
  * exactly the case that has to end in false rather than hang.
  */
-export function waitForWorkToolOnScreen(
-  tool: string,
-  laneId: string | null,
-  options: WorkToolOnScreenOptions & { timeoutMs?: number; intervalMs?: number } = {},
+export function waitForWorkSurfaceOnScreen(
+  key: string,
+  options: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 3_000;
   const intervalMs = options.intervalMs ?? 100;
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const check = () => {
-      if (isWorkToolOnScreen(tool, laneId, options)) {
+      if (isWorkSurfaceOnScreen(key)) {
         resolve(true);
         return;
       }
@@ -114,6 +130,6 @@ export function waitForWorkToolOnScreen(
 /** Test seam. */
 export function resetWorkToolOnScreenForTests(): void {
   mounted.clear();
-  paneVisibleProbe = defaultPaneVisible;
+  floating.clear();
   documentVisibleOverride = null;
 }

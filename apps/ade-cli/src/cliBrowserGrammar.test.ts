@@ -608,15 +608,24 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * are launch-surface readers no browser subcommand reaches, so nothing they
  * read needs a `BROWSER_VALUE_FLAGS` entry.
  *
- * 108 → 110: the CLI hand-off to $ADE_CLI_PATH (f004e42c2) wraps the entry in
- * `runMainAndExit` and `runMainUnlessDelegated`. Both reach argv only through
- * `main()` and read no browser flag of their own.
+ * 108 since `buildChatLaunchPlan`: `ade chat launch` reads its new-lane launch
+ * flags in one builder, apart from `buildChatPlan`'s session-scoped readers.
  *
- * 110 → 112: `ade ui show` and `ade apple show` (982bd4422) add
- * `readWorkToolShowScope` and `buildUiPlan`. They read `--session`, `--lane`
- * and `--surface`, never a browser flag.
+ * 110 since `ade ui show` and CLI delegation: `buildUiPlan` reads the show
+ * surface and scope, and `runMainAndExit` / `runUnlessDelegated` run the CLI
+ * when no delegation took the call. None of them is a browser subcommand.
+ *
+ * 111 since `readIgnoreOwnershipArg`: the Apple ownership verbs read
+ * `--ignore-ownership` through one reader. Not a browser flag.
+ *
+ * 112: the Apple lane's readers above plus `buildChatLaunchPlan`, which came
+ * from main while this lane was open.
+ *
+ * 113 since `buildMacDesktopPlan`: every `ade mac-desktop` subcommand reads its
+ * argv through that one plan builder. Its flags are `MAC_DESKTOP_VALUE_FLAGS`,
+ * not browser flags.
  */
-const ARGV_READER_COUNT = 112;
+const ARGV_READER_COUNT = 113;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

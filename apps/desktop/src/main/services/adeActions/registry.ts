@@ -141,10 +141,13 @@ import {
   releaseLaneRuntimeResources,
   restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
+import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes/laneEnvironmentSetup";
 import {
-  mergeLaneEnvInitConfig,
-  mergeLaneOverrides,
-} from "../lanes/laneEnvInitMerge";
+  parseChatLaunchArgs,
+  parseChatLaunchCompleteClientArgs,
+  parseChatLaunchIdArgs,
+  parseChatLaunchQueueMessageArgs,
+} from "../chat/chatLaunchArgs";
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
@@ -182,6 +185,8 @@ import { providerAccountAnalyticsCapture } from "../analytics/featureProductAnal
 // module's whole service graph to get it. Re-exported here because this is
 // where every existing caller looks for them.
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACTION_ALLOWLIST, isAutomationAllowedAdeAction } from "./actionPolicy";
+import type { AutomationAdeActionRegistry } from "../automations/automationService";
 import {
   asActionRecord,
   optionalNonEmptyString,
@@ -215,6 +220,7 @@ export {
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "./actionPolicy";
@@ -575,6 +581,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   const agentChatService = runtime.agentChatService;
   if (!agentChatService) return null;
   const base = agentChatService as unknown as OpaqueService;
+  const launches = () => requireService(runtime.chatLaunchService, "Chat launch service not available.");
   const service: OpaqueService = {
     ...base,
     ensureCtoSession: async (args?: { modelId?: string | null; reasoningEffort?: string | null }) => {
@@ -587,6 +594,18 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         permissionMode: "full-auto",
       });
     },
+    // New-lane launches (shared/types/chatLaunch.ts). Brain-owned end to end;
+    // payloads go through the same parser as the sync `chat.startLaunch` …
+    // commands (chat/chatLaunchArgs.ts), and the service auto-picks an empty model.
+    startLaunch: (args?: unknown) => launches().start(parseChatLaunchArgs(args)),
+    getLaunch: (args?: unknown) =>
+      runtime.chatLaunchService?.get(parseChatLaunchIdArgs(args, "chat.getLaunch")) ?? null,
+    listLaunches: () => runtime.chatLaunchService?.list() ?? [],
+    cancelLaunch: (args?: unknown) => launches().cancel(parseChatLaunchIdArgs(args, "chat.cancelLaunch")),
+    retryLaunch: (args?: unknown) => launches().retry(parseChatLaunchIdArgs(args, "chat.retryLaunch")),
+    startLaunchNow: (args?: unknown) => launches().startNow(parseChatLaunchIdArgs(args, "chat.startLaunchNow")),
+    queueLaunchMessage: (args?: unknown) => launches().queueMessage(parseChatLaunchQueueMessageArgs(args)),
+    completeLaunchClient: (args?: unknown) => launches().completeClient(parseChatLaunchCompleteClientArgs(args)),
     getParallelLaunchState: (args?: { parentLaneId?: string }) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
@@ -907,11 +926,16 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         readStringActionArg(args, "sessionId"),
       );
       if (!summary) return null;
+      const sessionActivity = runtime.sessionService?.getByChatSessionId?.(summary.sessionId);
       // The host zone is added here rather than on `AgentChatSessionSummary`
       // itself so the per-row list payload does not carry the same constant N
       // times; `chat.createScheduledWork` reports the same value the same way.
       // See `AdeChatSessionSummaryActionResult` for the full reasoning.
-      return { ...summary, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+      return {
+        ...summary,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        ...(sessionActivity ? { activityStatus: sessionActivity.activityStatus ?? null } : {}),
+      };
     };
   }
   if (typeof base.getTurnStatus === "function") {
@@ -1376,6 +1400,18 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       return { ok: true, sessionId };
     },
+    setSessionActivity: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.setSessionActivity");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const value = record.value;
+      if (value !== null && typeof value !== "string") {
+        throw new Error("setSessionActivity requires a supported string `value` or null.");
+      }
+      if (!sessionService.setSessionActivity(sessionId, value)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId, value };
+    },
     // -----------------------------------------------------------------------
     // There is deliberately NO `settleSelfSession` / `unsettleSelfSession`
     // pair here any more (removed 2026-07). An agent used to be able to file
@@ -1611,6 +1647,20 @@ async function resolveLaneOverlayContextForRuntime(runtime: AdeRuntime, laneId: 
   );
 }
 
+/** Deps for the shared `runLaneEnvironmentSetup` (lane.initEnv / lane.applyTemplate). */
+function laneEnvironmentSetupDeps(
+  runtime: AdeRuntime,
+  laneEnvironmentService: NonNullable<AdeRuntime["laneEnvironmentService"]>,
+): LaneEnvironmentSetupDeps {
+  return {
+    laneService: runtime.laneService,
+    projectConfigService: runtime.projectConfigService,
+    portAllocationService: runtime.portAllocationService,
+    laneEnvironmentService,
+    laneTemplateService: runtime.laneTemplateService ?? null,
+  };
+}
+
 async function ensureLanePreviewInfo(runtime: AdeRuntime, laneId: string): Promise<LanePreviewInfo | null> {
   const laneProxyService = runtime.laneProxyService;
   const portAllocationService = runtime.portAllocationService;
@@ -1817,12 +1867,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     initEnv: async (args?: { laneId?: string }): Promise<LaneEnvInitProgress> => {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
-      if (!context.envInitConfig) {
-        const now = new Date().toISOString();
-        return { laneId, steps: [], startedAt: now, completedAt: now, overallStatus: "completed" };
-      }
-      return laneEnvironmentService.initLaneEnvironment(context.lane, context.envInitConfig, context.overrides);
+      return runLaneEnvironmentSetup(laneEnvironmentSetupDeps(runtime, laneEnvironmentService), { laneId });
     },
     getEnvStatus: (args?: { laneId?: string }) =>
       runtime.laneEnvironmentService?.getProgress(requireNonEmptyString(args?.laneId, "laneId")) ?? null,
@@ -1838,21 +1883,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       requireService(runtime.laneTemplateService, "Lane template service not available.").setDefaultTemplateId(args?.templateId ?? null);
     },
     applyTemplate: async (args?: ApplyLaneTemplateArgs): Promise<LaneEnvInitProgress> => {
-      const laneTemplateService = requireService(runtime.laneTemplateService, "Lane template service not available.");
+      // runLaneEnvironmentSetup throws "Lane template service not available." itself.
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const templateId = requireNonEmptyString(args?.templateId, "templateId");
-      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
-      const template = laneTemplateService.getTemplate(templateId);
-      if (!template) throw new Error(`Template not found: ${templateId}`);
-      const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);
-      const mergedOverrides = mergeLaneOverrides(context.overrides, {
-        ...(template.envVars ? { env: template.envVars } : {}),
-        ...(!context.overrides.portRange && template.portRange ? { portRange: template.portRange } : {}),
-        envInit: templateEnvInit,
-      });
-      const mergedEnvInitConfig = mergeLaneEnvInitConfig(context.envInitConfig, templateEnvInit) ?? templateEnvInit;
-      return laneEnvironmentService.initLaneEnvironment(context.lane, mergedEnvInitConfig, mergedOverrides);
+      return runLaneEnvironmentSetup(laneEnvironmentSetupDeps(runtime, laneEnvironmentService), { laneId, templateId });
     },
     saveTemplate: (args?: { template?: unknown }) => {
       const template = args?.template;
@@ -2376,36 +2411,6 @@ function buildTilingTreeDomainService(runtime: AdeRuntime): TilingTreeService | 
       }
       runtime.db.setJson(`tiling_tree:${layoutId}`, tree);
       return { layoutId, tree };
-    },
-  };
-}
-
-type GraphStateService = {
-  get(): unknown;
-  set(args: { state?: unknown }): { projectId: string; state: unknown };
-};
-
-function buildGraphStateDomainService(runtime: AdeRuntime): GraphStateService | null {
-  if (!runtime.db) return null;
-  return {
-    // graph_state is strictly scoped to the current runtime project. The caller
-    // cannot override `projectId`; the field is intentionally absent from the
-    // args surface to prevent cross-project reads/writes via `run_ade_action`.
-    get() {
-      const projectId = runtime.projectId;
-      return runtime.db.getJson(`graph_state:${projectId}`);
-    },
-    set(args) {
-      const projectId = runtime.projectId;
-      if (!args || !Object.prototype.hasOwnProperty.call(args, "state")) {
-        throw new Error("Missing required 'state'. Pass an explicit null to clear.");
-      }
-      const state = args.state;
-      if (state !== null && (typeof state !== "object" || Array.isArray(state))) {
-        throw new Error("Expected 'state' to be a plain object or null.");
-      }
-      runtime.db.setJson(`graph_state:${projectId}`, state);
-      return { projectId, state };
     },
   };
 }
@@ -3431,7 +3436,6 @@ export function getAdeActionDomainServices(
     terminal: toService(buildTerminalDomainService(runtime)),
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),
-    graph_state: toService(buildGraphStateDomainService(runtime)),
     work_tools: toService(runtime.workToolsStateService),
     computer_use_artifacts: toService(buildComputerUseArtifactsDomainService(runtime)),
     ios_simulator: toService(runtime.iosSimulatorService),
@@ -3445,5 +3449,31 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
+  };
+}
+
+/**
+ * The action lookup `ade-action` automation steps run through. Same allowlist
+ * and rule as `run_ade_action`; `getServices` is read on every call, so
+ * late-bound services are seen.
+ */
+export function createAutomationAdeActionLookup(
+  getServices: () => Partial<Record<AdeActionDomain, unknown>>,
+): AutomationAdeActionRegistry {
+  return {
+    isAllowed(domain, action) {
+      return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
+    },
+    getService(domain) {
+      return (getServices()[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
+    },
+    listDomains() {
+      return Object.keys(ADE_ACTION_ALLOWLIST);
+    },
+    listActions(domain) {
+      return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
+        // Same rule as `isAllowed`, so nothing listed is refused when run.
+        .filter((action) => isAutomationAllowedAdeAction(domain as AdeActionDomain, action));
+    },
   };
 }

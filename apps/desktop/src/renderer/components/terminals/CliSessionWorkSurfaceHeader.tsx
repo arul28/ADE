@@ -232,6 +232,7 @@ export function CliSessionWorkSurfaceHeader({
   onTogglePrPane,
   prPaneOpen,
   runtimePin = null,
+  prBadgeOnly = false,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -242,12 +243,13 @@ export function CliSessionWorkSurfaceHeader({
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
-  /** When set, the PR pill toggles the floating PR pane over the terminal
-   * instead of opening the inline slide-out menu. */
+  /** When set, the PR pill opens the PR tools tab. */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
   /** See `ChatGitToolbar.runtimePin`. */
   runtimePin?: OpenProjectBinding | null;
+  /** Hide the create button until a pull request exists. */
+  prBadgeOnly?: boolean;
 }) {
   const navigate = useNavigate();
   const lane = lanes.find((entry) => entry.id === session.laneId) ?? null;
@@ -284,6 +286,7 @@ export function CliSessionWorkSurfaceHeader({
       onTogglePrPane={onTogglePrPane}
       prPaneOpen={prPaneOpen}
       runtimePin={runtimePin}
+      prBadgeOnly={prBadgeOnly}
       onContextMenu={
         onContextMenu
           ? (event) => {

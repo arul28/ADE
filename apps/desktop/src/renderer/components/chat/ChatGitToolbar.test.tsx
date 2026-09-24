@@ -103,6 +103,7 @@ function renderToolbar(props: {
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
   runtimePin?: any;
+  linkedPrOnly?: boolean;
 } = {}) {
   return render(
     <MemoryRouter initialEntries={["/work"]}>
@@ -337,6 +338,34 @@ describe("ChatGitToolbar", () => {
 
     expect(await screen.findByLabelText("GitHub Stack 2 of 4")).toBeTruthy();
     expect(screen.getByRole("button", { name: /PR #965/ }).title).toContain("Stacked PR");
+  });
+
+  it("renders the chat-header PR mark as status color plus text, with no border", async () => {
+    const onTogglePrPane = vi.fn();
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      title: "Header PR",
+      state: "open",
+      checksStatus: "failing",
+      reviewStatus: "none",
+      githubPrNumber: 42,
+      githubUrl: "https://github.com/acme/ade/pull/42",
+      additions: 1,
+      deletions: 0,
+      updatedAt: null,
+    } as any);
+
+    renderToolbar({ onTogglePrPane, linkedPrOnly: true });
+
+    const badge = await screen.findByTestId("chat-header-pr-badge");
+    expect(badge.textContent).toContain("PR #42");
+    expect(badge.className).not.toContain("border");
+    expect(badge.querySelector("svg")?.getAttribute("style")).toContain("color");
+    expect(screen.queryByLabelText(/GitHub Stack/)).toBeNull();
+    fireEvent.click(badge);
+    expect(onTogglePrPane).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "ADE" })).toBeNull();
   });
 
   it("resolves the linked PR on first remote PR click before routing", async () => {

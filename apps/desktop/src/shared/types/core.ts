@@ -738,7 +738,7 @@ export type KeybindingDefinition = {
   id: string;
   description: string;
   defaultBinding: string;
-  scope: "global" | "lanes" | "work" | "files" | "graph" | "conflicts" | "history";
+  scope: "global" | "lanes" | "work" | "files" | "conflicts" | "history";
 };
 
 export type KeybindingsSnapshot = {

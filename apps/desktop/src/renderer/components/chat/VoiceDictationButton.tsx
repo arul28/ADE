@@ -110,7 +110,7 @@ export function VoiceDictationButton({
         onClick={handleStart}
         disabled={disabled}
         className={cn(
-          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97]",
+          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
           "text-muted-fg/35 hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)]",
           disabled ? "cursor-not-allowed opacity-40" : "",
           className,

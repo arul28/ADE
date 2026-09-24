@@ -3,7 +3,7 @@ import {
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
-import { APPLE_AGENT_ACTIONS } from "../../../shared/types/iosSimulator";
+import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -244,6 +244,18 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
   agent: 2,
   cto: 3,
 };
+
+/**
+ * Actions only the person may take. Allowed on the bus so a user client can
+ * call them; refused to agent callers by the RPC server and to automations.
+ */
+export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  ios_simulator: APPLE_USER_ONLY_ACTIONS,
+};
+
+export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
+  return ADE_ACTION_USER_ONLY[domain]?.includes(action) ?? false;
+}
 
 export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
   const rule = ADE_ACTION_CTO_ONLY[domain];
@@ -530,6 +542,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resolveReviewThread",
     "retargetBase",
     "reopenPr",
+    "setDraft",
+    "setAutoMerge",
     "replyToReviewThread",
     "rerunChecks",
     "regenerateAiSummary",
@@ -591,6 +605,14 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "killDroidWorker",
     "launchCli",
     "launchHeadless",
+    "startLaunch",
+    "getLaunch",
+    "listLaunches",
+    "cancelLaunch",
+    "retryLaunch",
+    "startLaunchNow",
+    "queueLaunchMessage",
+    "completeLaunchClient",
     "createScheduledWork",
     "listScheduledWork",
     "getScheduledWorkState",
@@ -735,6 +757,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "moveOnBoard",
     "readTranscriptTail",
     "requestSessionAttention",
+    "setSessionActivity",
     "setSessionStatusNote",
     "setSettleOverride",
     "undoBoardMove",
@@ -825,6 +848,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "consumeResetCredit",
     "forceRefresh",
     "getAdeUsageStats",
+    "getTurnUsageSummary",
     "getUsageSnapshot",
     "noteQuotaDemand",
     "refreshHistory",
@@ -859,7 +883,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat", "reattachChatCli"],
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
-  graph_state: ["get", "set"],
   // Read-only for everyone except the desktop that owns the pane:
   // `setActiveTool` is how a desktop renderer publishes which tool it has open
   // so phones and the hosted web client can mirror it. `show` is an agent
@@ -890,7 +913,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // retyped: `getStatus().capabilities` reports it to agents and `apple.invoke`
   // gates the phone/web client on it, and three hand-kept copies is how an
   // action ships reachable on one surface and unnamed on the other two.
-  ios_simulator: [...APPLE_AGENT_ACTIONS],
+  ios_simulator: [...APPLE_AGENT_ACTIONS, ...APPLE_USER_ONLY_ACTIONS],
   /*
    * Mac Desktop: one private macOS screen per lane.
    *
@@ -1087,7 +1110,8 @@ export function isAllowedAdeAction(domain: AdeActionDomain, action: string): boo
 }
 
 /**
- * What an `ade-action` automation step may call: allowlisted AND not CTO-only.
+ * What an `ade-action` automation step may call: allowlisted, not CTO-only,
+ * and not user-only.
  *
  * An automation runs unattended with no human role behind it, so it is held to
  * the agent tier — the CTO gate exists precisely to keep unattended callers out
@@ -1097,5 +1121,7 @@ export function isAutomationAllowedAdeAction(
   domain: AdeActionDomain,
   action: string,
 ): boolean {
-  return isAllowedAdeAction(domain, action) && !isCtoOnlyAdeAction(domain, action);
+  return isAllowedAdeAction(domain, action)
+    && !isCtoOnlyAdeAction(domain, action)
+    && !isUserOnlyAdeAction(domain, action);
 }

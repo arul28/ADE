@@ -87,41 +87,23 @@ and in tests.
   `canAcceptScheduledTurn(sessionId)` is the scheduler's non-mutating delivery
   boundary: ended tracked CLIs are resumable, while live CLIs require a
   provider-specific visible composer marker plus the short quiet window before
-  a durable prompt may be submitted. It also owns the richer CLI state
-  projection: each `PtyEntry` carries an optional `TuiMarkerState` (created at
-  spawn only for tracked agent CLI tool types, so shells and unknown tools
-  allocate nothing) that is folded on the same chunk the OSC 133 scan already
-  reads, plus a `previewCursor` threaded through `derivePreviewFromChunk`. The
-  runtime-state entry gains `runningSince`, stamped only on a
-  non-running → running *transition* and cleared on every non-running state —
+  a durable prompt may be submitted. CLI card status comes from host lifecycle
+  and explicit ADE attention requests: PTY output and OSC 133 can establish
+  liveness, and output silence can establish idle, but painted TUI text is not
+  parsed into Planning or Needs you. An agent's `ade chat ask` still marks a
+  tracked CLI as waiting for the user through ADE's explicit attention path.
+  The service also owns a `previewCursor` threaded through
+  `derivePreviewFromChunk`. The runtime-state entry gains `runningSince`, which
+  is stamped only on a non-running → running *transition* and cleared on every
+  non-running state —
   not `lastActivityAt`, which is re-stamped on every output tick and would
   render as "time since last write". `anchorTurnStart` / `isTurnSubmitWrite`
   re-anchor that turn when a user write ends in a newline (a literal Enter;
-  bracketed-paste payloads contain newlines but never end in one), and the same
-  write path calls `clearTuiWaitingInput`. The shared session-row projection —
+  bracketed-paste payloads contain newlines but never end in one). The shared
+  session-row projection —
   the one chokepoint desktop, lane snapshots, web, and iOS all read — then
-  emits `currentTurnStartedAt` for non-chat rows, the `tuiRowOverlay` spread,
-  and `runtimeState: "waiting-input"` when a marker latch is live.
-  ~4,450 lines.
-- `apps/desktop/src/main/utils/terminalTuiMarkers.ts` — the TUI marker packs
-  that give PTY-backed CLIs the same vocabulary chat sessions already have
-  (planning / waiting-on-you), mapped onto the existing `chatActivityMode` and
-  `runtimeState` fields so no surface needs new rendering. `PACKS` is keyed by
-  `TerminalResumeProvider` and covers claude, codex, cursor, opencode, and
-  droid; anything without a pack resolves to null and does zero scanning.
-  `scanTuiMarkers` does one bounded pass per chunk (`MAX_CHUNK_SCAN_CHARS =
-  8_000` head plus the same tail, joined, with a `CARRY_CHARS = 512` carry
-  across chunk boundaries) and `tuiActivityFromState` resolves it. The two
-  marker shapes are deliberately asymmetric: **planning is a footer state**, so
-  it is sticky with a `PLANNING_TTL_MS = 60_000` decay and needs no
-  "left plan mode" event (none is reliably printed); **waiting-input is an
-  event**, so it is an edge-triggered latch armed only when currently null and
-  cleared only by evidence — a `working` marker painting after the prompt, or
-  `clearTuiWaitingInput` when the user types. `WAITING_TTL_MS` (30 minutes)
-  exists to bound a false positive, not to time out a human. Where a window
-  contains both a prompt and the spinner that replaced it, the later match
-  wins, and waiting-input outranks planning because it is the actionable one.
-  Failure needs no markers: a nonzero exit already lands as `status: "failed"`.
+  emits `currentTurnStartedAt` for non-chat rows. `runtimeState: "waiting-input"`
+  comes from explicit ADE attention requests; it is not inferred from TUI text.
 - `apps/desktop/src/main/utils/terminalPreview.ts` — the one-line session
   preview builder. It is a real column-cursor model (`PreviewCursorState`,
   `createPreviewCursorState`, `derivePreviewFromChunk`) over a mutable cell
@@ -138,8 +120,6 @@ and in tests.
   often enough that per-chunk stripping leaked `[53;37H` into previews as
   literal text — and on overflow the carried tail is re-anchored on its last
   `ESC` so a blind slice cannot write escape garbage into the preview.
-- `apps/desktop/src/main/utils/terminalTuiMarkers.test.ts` — pack matching,
-  latch arming/clearing, and ordering coverage.
 - `apps/desktop/src/main/services/pty/supervisedPtyHost.ts` and
   `ptyHostWorker.ts` — isolated node-pty worker host. Local runtimes fork the
   worker from the built desktop files; remote runtimes can receive
@@ -172,7 +152,9 @@ and in tests.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
   normalization, `reattach`, `reconcileStaleRunningSessions`, and the durable
-  settled/status-note/attention/last-turn-failure mutations. Normalized
+  settled/status-note/attention/last-turn-failure mutations. It also stores
+  fixed-value, host-timestamped agent activity reports without changing the
+  parent lifecycle phase, and clears them when a new turn is accepted. Normalized
   `TerminalResumeMetadata` retains optional `orchestrationParentSessionId` /
   `spawnKind`; tracked agent CLI rows project those fields onto
   `TerminalSessionSummary`, and resume-command backfill merges the existing
@@ -373,6 +355,50 @@ Shared types and IPC:
   and it carries no command lines or environments. `ade session show` is its
   consumer; it exists so "this chat is holding a warm agent process open" is
   answerable without dropping to `ps`.
+
+  #### Provider signal boundaries
+
+  Parent phases use the same host lifecycle rules for every provider. Provider
+  adapters contribute **Needs you** only from structured input/permission
+  requests; tracked PTY CLIs also get explicit `ade chat ask`. PTY text is never
+  parsed into a status. Agent-reported activity requires both the
+  runtime-resolved ADE CLI executable and this runtime's RPC socket, and is
+  disabled for embedded runtimes. Each provider path is advertised only when
+  its command/tool and permission route is verified. Native Plan and
+  agent-reported activity have narrower capability gates:
+
+  | Provider path | Structured Plan signal | Agent-reported activity detail |
+  | --- | --- | --- |
+  | Claude SDK | Current `interactionMode` | Available outside Plan mode when the session runtime resolves the ADE CLI path |
+  | Codex app-server | The accepted `turn/start` collaboration mode | Available in effective default mode, except external `config.toml` sessions |
+  | Cursor SDK | Local `currentMode` | Available in local Agent mode; omitted in Cursor Cloud and other modes |
+  | Droid SDK | Explicit `interactionMode` | Available only with explicit write-capable, non-AGI, non-Spec permission |
+  | OpenCode SDK | Current permission mode | Available outside Plan and external `config-toml` modes |
+  | Pi SDK | No current-mode signal | Available in non-personal POSIX sessions outside Plan when Bash is allowlisted and the ADE CLI resolves |
+  | ACP Qwen | Structured ACP configuration | Not currently offered: ADE injects its CLI path but does not wire verified activity guidance or a command tool |
+  | ACP Kimi / Grok / Copilot | Structured configuration varies by provider | Not currently offered: ADE does not wire activity guidance or a session-scoped command tool; these providers share pooled processes |
+  | Tracked PTY CLI | No Plan inference from terminal text | Activity guidance for Codex and OpenCode outside Plan / external `config-toml`, write-capable non-AGI Droid, Pi full-auto, and Cursor launches with an initial prompt. Windows guidance includes PowerShell and cmd forms plus a PowerShell bridge for Git Bash, and tells the agent to use only the form matching its command shell; if none applies, it leaves activity unchanged. Claude is omitted because its shell fallback drops the activity instruction, and blank Cursor launches remain omitted. `ADE_ACTIVITY_SESSION_ID` scopes reports to the terminal row while `ADE_CHAT_SESSION_ID` remains the owning chat. |
+
+  ACP omission is an ADE wiring gap, not a protocol impossibility. ADE passes
+  the resolved CLI path into ACP environments but currently does not provide a
+  verified command tool or send session-specific activity instructions; each
+  dialect disables ADE's terminal capability. Qwen has a private process, but
+  Kimi, Grok, and Copilot share pooled processes, so their activity reports need
+  an explicit protocol-session target rather than a process environment id.
+
+  Claude, Cursor, Droid, and OpenCode expose pending requests through their
+  provider events; Codex uses app-server input/permission events; Pi uses its
+  approval and AskUser events; ACP providers use `session/request_permission`.
+  Cursor and Droid retain their normalized pending request while waiting, so the
+  card can reconstruct **Needs you** after the renderer reloads. Host task
+  lifecycle events own automatic **Monitoring** detection; an agent's
+  `monitoring` report remains a separate signal.
+
+  Codex Planning uses the collaboration mode in the active `turn/start` request
+  only after the app-server accepts it. Approval and sandbox settings do not
+  imply Plan; when native Plan is unavailable and ADE falls back to `default`,
+  the card stays Working (or shows a valid agent-reported activity detail).
+
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
   `"settled"` behaves like a declared settle, and `"active"` is an explicit
@@ -423,6 +449,11 @@ Shared types and IPC:
   map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
   is the nested-compact filter: the status word is painted only for Needs you
   or a red Failed tone.
+- `apps/desktop/src/shared/types/sessions.ts` — the fixed six-value activity
+  vocabulary. `apps/desktop/src/shared/sessionActivity.ts` imports it and
+  normalizes one host-timestamped agent report at the boundary.
+  The report refines a card's single status slot without moving its parent phase;
+  `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
   `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
@@ -726,7 +757,9 @@ Renderer surfaces:
   active tool**: `terminal` (attached shells), `browser` (mounts
   `ChatBuiltInBrowserPanel` over the current ADE window's
   `WebContentsView`-backed built-in browser), `git` (lane git actions +
-  selection-driven diff), `files` (mounts `FilesTab` in `embedded` mode
+  selection-driven diff), `pr` (the lane's pull request: the create form
+  when none is open, and the PRs detail view stacked for the narrow pane
+  when one is), `files` (mounts `FilesTab` in `embedded` mode
   with the lane worktree pre-selected), `ios` (mounts
   `ChatIosSimulatorPanel` against the active lane), `app-control`
   (mounts `ChatAppControlPanel`). Which tool is open persists **per lane**; open/closed and width
@@ -839,7 +872,10 @@ Renderer surfaces:
   plus one in `WORK_TOOL_DEFINITIONS`.
 - `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
-  `WorkToolPickerBackdrop.tsx` is only the React shell. The shader module is
+  `WorkToolPickerBackdrop.tsx` is only the React shell. The shell takes a
+  `variant`: `pane` (the new-chat surface and the tools picker) or `header`
+  (the chat header bar: a wider slice of the same mesh, with more drift and a
+  stronger pointer bloom, from `HEADER_SLICE` and `headerBackdropScale`). The shader module is
   data: the two GLSL programs, the light and dark palettes (`backdropThemeFor`
   — no colour is named in the fragment shader; dark walks `--color-bg` through
   `--color-accent-deep`, indigo `#6366F1`, `--color-accent`, and
@@ -865,6 +901,20 @@ Renderer surfaces:
   surfaces outside the Work page file instead of writing pane state directly,
   the pushed-diagnostics fold behind the red activity dots, and the two-unit
   splitter clamp.
+- `apps/desktop/src/renderer/components/terminals/useWorkShowRequests.ts`,
+  `apps/desktop/src/renderer/lib/workToolShowRequests.ts`,
+  `apps/desktop/src/renderer/lib/workToolOnScreen.ts` — the Work page's side
+  of `ade ui show`. The page registers a handler only while Work is on screen,
+  and only for the session in front. A request for another chat is held until
+  the user opens it. A show answers `shown` only when the surface is mounted,
+  its pane has real width, and the window is visible. The same hook decides
+  whether an agent's automatic request may raise the floating Apple player.
+  See [chat › Agents open panes](../chat/README.md#agents-open-panes-ade-ui-show).
+- `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`,
+  `LaneAppleDeviceMarker.tsx` — the small Apple mark beside a lane name in the
+  Work session list (`SessionListPane`, `SessionCard`) when that lane holds a
+  simulator. A booted device reads a little stronger. The tooltip names the
+  device.
 - `apps/desktop/src/renderer/components/terminals/workToolChrome.tsx` — the one
   chrome vocabulary every tool panel spends instead of inventing: a single
   40 px row per tool under the pane's 32 px header, ghost controls that change
@@ -880,6 +930,18 @@ Renderer surfaces:
   just-opened shell was still absent from the daemon's list, a finished split
   pane was filtered out of it). When no panel is mounted the count is absent
   and the pane falls back to its own read.
+- `apps/desktop/src/renderer/components/terminals/useAttachedTerminalShells.ts`
+  — the shells attached to one chat or CLI session: `panelCount` from
+  `workTerminalShells.ts` (null when no panel is mounted) and `titles` from
+  the terminal list (null before the first read, while disabled, or after a
+  failed read). Attached shells have no status event, so the list is read
+  again only when a shell can have changed: a session is created or deleted, a
+  PTY exits, the panel count changes, or the caller's `refreshKey` changes. It
+  is not a poll. `attachedShellCount` prefers the panel count.
+  `hasAttachedTerminalShell` gates the chat header's **Open terminal** icon,
+  which opens the Terminal Work tool. `useWorkToolStatuses` uses the same hook
+  for the Terminal tool's status line, and passes `enabled: false` while the
+  machine is offline.
 - `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`,
   `NativeToolFeedsContext.tsx` — the one browser/App Control/simulator
   subscription set, mounted once by `TerminalsPage` and shared with both the
@@ -917,14 +979,14 @@ Renderer surfaces:
   own `renderCardCore`, so click, context menu, hover card, PR pill, provider
   glyph, and lineage chip are literally the same component in both views.
 - `apps/desktop/src/renderer/components/terminals/AutoHandoffModal.tsx` —
-  the front door to the automation platform from the chat context menu and the
-  Chat actions → Handoff tab: it arms rules that hand a chat to another model
+  the front door to the automation platform from the chat context menu's
+  **Hand off…** submenu: it arms rules that hand a chat to another model
   when it dies. Pure layer first
   (`AUTO_HANDOFF_CONDITIONS`, `AUTO_HANDOFF_LANE_TARGETS`,
   `autoHandoffRuleId`, `buildAutoHandoffDrafts`, `formFromRules`,
   `selectAutoHandoffRulesForSession`, `staleAutoHandoffRuleIds`,
   `autoHandoffFormIsValid`), then the dialog. `loadAutoHandoffRulesForSession`
-  is the one canonical async read both entry points use to seed the editor with
+  is the one canonical async read the menu uses to seed the editor with
   a chat's existing rules (`null` when the automations surface is unreadable or
   the read fails — deliberately distinct from `[]`, "authoritatively no rules",
   so a failed read can never delete rules it never saw), and
@@ -1157,6 +1219,22 @@ Renderer surfaces:
   when the read resolved inside the scope that asked for it, so a response
   landing after a project-tab switch cannot suppress the new scope's first lane
   read.
+- `apps/desktop/src/renderer/components/terminals/useChatLaunchCliDriver.ts` —
+  the hand-off for brain-owned new-lane CLI launches. The brain sets up the
+  lane and parks a CLI launch at phase `awaiting-client`, because the
+  terminal is a renderer concern. `TerminalsPage` mounts this hook next to
+  `useWorkSessions` (not in the draft pane, so a launch still completes after
+  the user leaves the draft); for each launch this window started
+  (`originClientId`) it starts the PTY through the same `launchPtySession`
+  path every Work CLI launch uses, with the launch's mode as the disposition,
+  then reports the session with `chatLaunch.completeClient({ launchId,
+  sessionId })` — or `{ launchId, error }` on failure. A module-level
+  in-flight set keeps a Work remount from starting one launch twice. A window
+  reloaded mid-launch no longer holds the prepared launch and reports that
+  instead of hanging; if the brain does not take the reported session (the
+  launch was cancelled meanwhile, or is gone), the driver disposes the PTY it
+  just started. See
+  [Chat › New-lane launches](../chat/composer-and-ui.md#new-lane-launches).
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   full-bleed three-line Work row. Line one adapts pin, singleton lane, spawn
   lineage, drifted branch, diff, and last-activity identity around
@@ -1186,8 +1264,8 @@ Renderer surfaces:
   `Naming lane…` placeholder while background identity generation is active.
   The title still warm-highlights when background AI naming lands, and
   `disabledReason` blocks selection, dragging, and the context menu during lane
-  deletion. Selection/hover use the row background; non-prominent lifecycle
-  states recede instead of spending lane-tinted card surfaces.
+  deletion. Selection/hover use the row background, and rows do not spend
+  lane-tinted card surfaces. Rows do not fade by state.
 - `apps/desktop/src/renderer/state/laneNamingStore.ts` — ephemeral,
   renderer-only zustand store tracking which lanes have an AI
   auto-naming pass in flight. `setLaneNaming(laneId, on)` is the
@@ -1251,10 +1329,24 @@ Renderer surfaces:
   refreshes with bounded retry; failed/cancelled deletes and cleanup warnings
   are surfaced through shared toasts.
 - `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx` —
-  shared single-row Work surface header chrome used by both embedded
-  chats and tracked agent CLI terminals. It owns the title, lane chip,
-  Claude cache badge, lane git toolbar slot, and trailing-action
-  placement so chat and CLI surfaces share one visual shell.
+  the two single-row Work surface headers. Both use one set of shared parts
+  (`useWorkSurfaceHeaderParts`: grid-tile title drag props, the title shimmer
+  state, the lane git toolbar, and the Tools toggle).
+  - `WorkSurfaceHeader` is the CLI session header: title and lane chip on
+    the left, then the git toolbar, trailing actions, the optional
+    `actionsToggle`, and the Tools toggle on the right.
+  - `CenteredWorkSurfaceHeader` is the ADE chat header. It has no lane chip.
+    A header slice of the new-chat mesh (`WorkToolPickerBackdrop`
+    `variant="header"`) paints behind it. The thread title is centered over
+    that mesh. The snooze chip, Claude cache badge, trailing actions, git
+    toolbar, `actionsToggle` (the chat progress icon), and Tools toggle are
+    in the right cluster.
+  - `prBadgeOnly` hides the create-PR button. The PR badge still shows when
+    the lane has a pull request. Chat and CLI surfaces both pass it, so a
+    pull request opens only from the lane's PR Work tool or the PRs tab.
+  - `WorkHeaderPaneToggles.tsx` exports `WORK_HEADER_ICON_BUTTON_CLASS`, the
+    white bold header glyph that the Tools toggle and the icons beside it
+    (browser presence, open terminal, chat progress) share.
 - `apps/desktop/src/renderer/components/work/ClaudeLoginPromptButton.tsx` —
   dismissible Claude auth recovery CTA. Chat headers render it after a
   Claude SDK auth error; CLI headers render it when a Claude terminal
@@ -1433,7 +1525,14 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
-  `ade.workViewState.v1`. It also owns the board's renderer-side derivation:
+  `ade.workViewState.v1`. It keeps the host roster in `hostSessions` and
+  derives `sessions` by merging stand-in rows for new-lane chat launches whose
+  chat the roster (or the cross-machine slice) does not list yet; launch rows
+  are never written to `sessionsCacheByProject` and never count as running for
+  refresh cadence. `SessionListPane` groups a launch's rows under the lane the
+  brain is still creating (named from the launch, not shown as an orphan
+  lane), and `SessionCard` shows the launch's status line in the preview slot and
+  "Setting up" / "Setup failed" in the status slot while it is pending. It also owns the board's renderer-side derivation:
   `buildWorkBoardModel` and the PR half `lanePrWaitingReason`, exposed as
   `workBoardBuckets` and `workBoardWaitingReasons`. Lane/status deeplinks layer a transient
   `deeplinkViewOverride` over the saved project state instead of rewriting
@@ -1979,6 +2078,12 @@ hand translation at the drop handler.
 | **Waiting** | snoozed rows, plus running rows whose lane PR is mid-CI or has a review requested | **no** |
 | **Done** | resting rows (`ready`/`idle`), then ended rows, then settled rows | yes |
 
+Each card shows at most one status label and icon. In Kanban, the column names
+the parent state, so the card does not repeat it. A current activity detail can
+occupy the card's one status slot; **Needs you** takes that slot whenever input
+is pending. The list view uses the same single effective status, so an activity
+detail replaces the generic **Working** label instead of appearing beside it.
+
 The first column takes the `needs_you` phase, **not** the list's whole
 `awaiting-input` partition. That partition is a container holding three phases —
 `needs_you`, `ready` and `idle` — which is why the list names it "Your move" and
@@ -2386,8 +2491,9 @@ in-memory reset stays separate.
   right `WorkSidebar` open/width) to `localStorage` under
   `ade.workViewState.v1`. The sidebar fields are
   `workSidebarOpen: boolean`, `workSidebarWidthPct: number` (clamped to
-  26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "files" |
-  "ios" | "app-control" | null` (null = the picker page).
+  26–55), and `workSidebarTool: "terminal" | "browser" | "git" | "pr" | "files" |
+  "ios" | "app-control" | null` (null = the picker page). The PR tool is
+  per lane: no pull request, one open, or several.
   `workSidebarTool` is read and written on the **lane** scope, falling back
   to the project scope when no lane is bound; the other two are always
   project-wide. Lane-scoped state uses a composite
@@ -2564,17 +2670,12 @@ degrades to "no ADE prompt" rather than a failed launch.
   that is not running it. Similarly, only `markLastTurnFailed` applies the
   strictly-newer-than-`snoozed_at` comparison — drop it and the error the user
   snoozed on top of instantly re-wakes the row, making snooze a no-op.
-- **TUI-marker needs-you rides on `attentionSource: "provider_structured"`, and
-  that label is a known mislabel.** The value is supposed to mean the provider
-  told us it is blocked; for a marker latch the evidence is regex heuristics
-  over painted output. It is load-bearing anyway, because
-  `canonicalSessionState` derives `needs_you` from `pendingInputItemId`,
-  `attentionRequestedAt`, or `provider_structured` and ignores
-  `runtimeState: "waiting-input"` entirely — dropping the label would remove
-  the badge *and* leave the row unsettleable. `SessionStatusSlot` therefore
-  always allows dismissing a `provider_structured` needs-you. The real fix is a
-  heuristic-waiting tier in the canonical layer, which is a shared-contract
-  change across all five surfaces.
+- **PTY text does not create semantic card states.** Painted prompt text is not
+  sufficient evidence that a CLI is blocked on the user, and plan-looking text
+  is not a reliable mode event, so the PTY service does not regex-scan it.
+  Tracked CLI `Needs you` comes from an explicit ADE request such as
+  `ade chat ask`; liveness and idle come from the PTY host. Structured provider
+  input remains a separate adapter event with its own provenance.
 - **Never stamp `provider_structured` without an item id.** Because
   `canonicalSessionState` treats that source as a needs-you trigger in its own
   right, independent of the item id, stamping it alongside a null

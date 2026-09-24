@@ -17,6 +17,8 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 
+import { resolveDetachedDevInvocation } from "./dev-shared.mjs";
+
 const [logPath, command, ...args] = process.argv.slice(2);
 if (!logPath || !command) {
   process.stderr.write("usage: node scripts/dev-detached.mjs <logfile> <command> [args...]\n");
@@ -27,11 +29,22 @@ if (!logPath || !command) {
 // report", and a stale report from the previous run would satisfy that wait
 // before this launch had done anything.
 const fd = fs.openSync(logPath, "w");
-const child = spawn(command, args, {
+const invocation = resolveDetachedDevInvocation(command, args);
+const child = spawn(invocation.command, invocation.args, {
   detached: true,
   stdio: ["ignore", fd, fd],
   env: process.env,
+  windowsHide: invocation.windowsHide,
+  windowsVerbatimArguments: invocation.windowsVerbatimArguments,
 });
-child.unref();
 fs.closeSync(fd);
-process.stdout.write(`${child.pid}\n`);
+// The pid is printed only once the child exists. A command that cannot start
+// (ENOENT) reports the failure and exits non-zero instead of printing "undefined".
+child.once("spawn", () => {
+  child.unref();
+  process.stdout.write(`${child.pid}\n`);
+});
+child.once("error", (error) => {
+  process.stderr.write(`dev-detached: could not start ${command}: ${error.message}\n`);
+  process.exit(1);
+});

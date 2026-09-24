@@ -8,6 +8,7 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDetachArgs,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -154,7 +155,6 @@ import type {
   DevToolsCheckResult,
   DiffChanges,
   DockLayout,
-  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -441,8 +441,6 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
-  GitSyncStatuses,
-  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -568,6 +566,8 @@ import type {
   SubmitPrReviewArgs,
   ClosePrArgs,
   ReopenPrArgs,
+  SetPrAutoMergeArgs,
+  SetPrDraftArgs,
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
@@ -579,8 +579,6 @@ import type {
   LaneLinearIssue,
   LaneSummary,
   ImportBranchLaneArgs,
-  MergeSimulationArgs,
-  MergeSimulationResult,
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
@@ -673,6 +671,12 @@ import type {
   RestoreLaneResult,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
+  ChatLaunchArgs,
+  ChatLaunchCompleteClientArgs,
+  ChatLaunchEvent,
+  ChatLaunchIdArgs,
+  ChatLaunchQueueMessageArgs,
+  ChatLaunchSnapshot,
   LaneOverlayOverrides,
   LaneTemplate,
   LaneListSnapshot,
@@ -1951,6 +1955,17 @@ declare global {
           cb: (ev: TerminalSessionChangedEvent) => void,
         ) => () => void;
       };
+      chatLaunch: {
+        start: (args: ChatLaunchArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
+        get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        list: (pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot[]>;
+        cancel: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        retry: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
+        completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        onEvent: (cb: (event: ChatLaunchEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+      };
       agentChat: {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
         getSummary: (
@@ -2481,6 +2496,11 @@ declare global {
           args?: AppleDeviceDeleteArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        /** The lane gives up its device and the simulator stays installed. */
+        deviceDetach: (
+          args?: AppleDeviceDetachArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleLaneDevice | null>;
         deviceDeleteInstalled: (
           args: AppleDeviceDeleteInstalledArgs,
           pin?: OpenProjectBinding | null,
@@ -3452,10 +3472,6 @@ declare global {
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitUpstreamSyncStatus>;
-        getSyncStatuses: (
-          args: GitSyncStatusesArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<GitSyncStatuses>;
         getOriginRemote: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
@@ -3516,13 +3532,9 @@ declare global {
         ) => Promise<ConflictStatus>;
         listOverlaps: (args: ListOverlapsArgs) => Promise<ConflictOverlap[]>;
         getRiskMatrix: () => Promise<RiskMatrixEntry[]>;
-        simulateMerge: (
-          args: MergeSimulationArgs,
-        ) => Promise<MergeSimulationResult>;
         runPrediction: (
           args?: RunConflictPredictionArgs,
         ) => Promise<BatchAssessmentResult>;
-        getBatchAssessment: () => Promise<BatchAssessmentResult>;
         listProposals: (laneId: string) => Promise<ConflictProposal[]>;
         prepareProposal: (
           args: PrepareConflictProposalArgs,
@@ -3869,6 +3881,8 @@ declare global {
         ) => Promise<SubmitPrReviewResult>;
         close: (args: ClosePrArgs) => Promise<void>;
         reopen: (args: ReopenPrArgs) => Promise<void>;
+        setDraft: (args: SetPrDraftArgs) => Promise<void>;
+        setAutoMerge: (args: SetPrAutoMergeArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
         aiReviewSummary: (
           args: AiReviewSummaryArgs,
@@ -3916,10 +3930,6 @@ declare global {
       tilingTree: {
         get: (layoutId: string) => Promise<unknown>;
         set: (layoutId: string, tree: unknown) => Promise<void>;
-      };
-      graphState: {
-        get: (projectId: string) => Promise<GraphPersistedState | null>;
-        set: (projectId: string, state: GraphPersistedState) => Promise<void>;
       };
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {

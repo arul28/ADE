@@ -65,7 +65,6 @@ docs/
     ├── sync-and-multi-device/             # CRDT sync, account Activity, iOS, remote commands, session handoff
     ├── terminals-and-sessions/            # PTY, sessions, and UI surfaces
     ├── web-client/                        # owner-only hosted browser client over sync WebSocket
-    └── workspace-graph/                   # React Flow canvas + data sources
 ```
 
 ## Conventions

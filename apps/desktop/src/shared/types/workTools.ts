@@ -40,6 +40,7 @@ export const WORK_TOOL_IDS = [
   "app-control",
   "browser",
   "mac-desktop",
+  "pr",
 ] as const;
 
 export type WorkToolId = (typeof WORK_TOOL_IDS)[number];

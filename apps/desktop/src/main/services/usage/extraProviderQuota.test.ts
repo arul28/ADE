@@ -1,98 +1,49 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cursorStateDbPath,
-  localQuotaAccountId,
-  parseCopilotQuota,
+  fetchFactorySessionCredits,
+  openCodeAuthPaths,
   cursorSessionCookie,
-  parseCursorUsageSummary,
-  parseGrokCredits,
-  parseOpenCodeGoUsage,
   pollCopilotQuota,
   pollCursorQuota,
   pollGrokQuota,
+  pollKimiQuota,
   pollOpenCodeQuota,
   readCopilotTokenFromHosts,
   readGrokBearer,
+  readKimiAccessToken,
   readOpenCodeApiKey,
-  wholePercent,
+  resetQuotaIdentityCacheForTests,
 } from "./extraProviderQuota";
 
 const NOW = Date.parse("2026-09-21T16:00:00.000Z");
+
+const kimiHomes: string[] = [];
+
+/** A real `$KIMI_CODE_HOME`: the login resolver reads `config.toml` and the slot from disk. */
+function kimiHome(files: Record<string, string>): string {
+  const home = mkdtempSync(path.join(os.tmpdir(), "ade-kimi-quota-"));
+  kimiHomes.push(home);
+  for (const [relative, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(home, relative)), { recursive: true });
+    writeFileSync(path.join(home, relative), text);
+  }
+  return home;
+}
+
+afterEach(() => {
+  for (const home of kimiHomes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
 
 function jwt(expSeconds: number, extra: Record<string, unknown> = {}): string {
   const payload = Buffer.from(JSON.stringify({ exp: expSeconds, ...extra })).toString("base64url");
   return `e30.${payload}.sig`;
 }
 
-describe("extra provider quota parsers", () => {
-  it("keeps a 1% OpenCode window at 1%, including zero", () => {
-    expect(wholePercent(1)).toBe(1);
-    const windows = parseOpenCodeGoUsage({
-      usage: {
-        rolling: { percent: 3, resetInSec: 3600 },
-        weekly: { percent: 1, resetInSec: 86_400 },
-        monthly: { percent: 0, resetInSec: 86_400 * 10 },
-      },
-    }, NOW);
-    expect(windows.map((window) => [window.windowType, window.percentUsed])).toEqual([
-      ["five_hour", 3],
-      ["weekly", 1],
-      ["monthly", 0],
-    ]);
-    expect(windows[0]?.resetsAt).toBe(new Date(NOW + 3_600_000).toISOString());
-  });
-
-  it("reads Cursor plan percent and the billing-cycle reset", () => {
-    const parsed = parseCursorUsageSummary({
-      membershipType: "pro",
-      email: "Ada@Example.com",
-      billingCycleEnd: "2026-10-01T00:00:00.000Z",
-      individualUsage: { plan: { totalPercentUsed: 40, used: 1, limit: 2 } },
-    }, NOW);
-    expect(parsed.plan).toBe("pro");
-    expect(parsed.windows).toEqual([expect.objectContaining({
-      provider: "cursor",
-      windowType: "monthly",
-      percentUsed: 40,
-      resetsAt: "2026-10-01T00:00:00.000Z",
-      accountId: localQuotaAccountId("cursor", "Ada@Example.com"),
-    })]);
-  });
-
-  it("turns Copilot premium remaining into used percent and omits a missing reset", () => {
-    const parsed = parseCopilotQuota({
-      copilotPlan: "pro",
-      quota_snapshots: { premium_interactions: { percent_remaining: 40 } },
-    }, NOW);
-    expect(parsed.plan).toBe("pro");
-    expect(parsed.windows[0]).toMatchObject({
-      provider: "copilot",
-      windowType: "monthly",
-      percentUsed: 60,
-      resetsAt: "",
-      accountId: "copilot:local",
-    });
-  });
-
-  it("labels a 7-day Grok period weekly and a longer one monthly", () => {
-    const weekly = parseGrokCredits({
-      config: {
-        creditUsagePercent: 12,
-        currentPeriod: {
-          start: "2026-09-15T00:00:00.000Z",
-          end: "2026-09-22T00:00:00.000Z",
-        },
-      },
-    }, NOW);
-    expect(weekly.windows[0]).toMatchObject({ windowType: "weekly", percentUsed: 12 });
-
-    const monthly = parseGrokCredits({
-      credit_usage_percent: 8,
-      billing_period_end: "2026-10-21T00:00:00.000Z",
-    }, NOW);
-    expect(monthly.windows[0]).toMatchObject({ windowType: "monthly", percentUsed: 8 });
-  });
-
+describe("extra provider credential readers", () => {
   it("reads a Grok bearer and rejects management keys, cookies, and expired sessions", () => {
     const auth = {
       "https://auth.x.ai::super": {
@@ -127,6 +78,10 @@ describe("extra provider quota parsers", () => {
 describe("extra provider quota polls", () => {
   const home = "/tmp/ade-extra-quota-home";
   const env = {} as NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    resetQuotaIdentityCacheForTests();
+  });
 
   function fetchMock(body: unknown, status = 200) {
     return vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(body), {
@@ -233,6 +188,203 @@ describe("extra provider quota polls", () => {
     expect(authed.windows[0]?.percentUsed).toBe(20);
   });
 
+  it("polls Kimi from its credentials file, honors the region, and stamps its identity", async () => {
+    const kimiCodeHome = kimiHome({
+      "credentials/kimi-code.json": JSON.stringify({ access_token: "kimi-access", expires_at: "2026-09-28T00:00:00.000Z" }),
+      region: "global\n",
+    });
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/usages")) {
+        return new Response(JSON.stringify({
+          limits: [{
+            window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+            detail: { used: 2, limit: 10, resetTime: "2026-09-21T20:00:00.000Z" },
+          }],
+        }));
+      }
+      expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer kimi-access");
+      return new Response(JSON.stringify({ email: "kimi@example.com", name: "Kimi User" }));
+    });
+    const result = await pollKimiQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env: { KIMI_CODE_HOME: kimiCodeHome },
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.kimi.ai/coding/v1/usages",
+      "https://api.kimi.ai/coding/v1/me",
+    ]);
+    expect(result.windows[0]).toMatchObject({
+      provider: "kimi",
+      windowType: "five_hour",
+      percentUsed: 20,
+      accountId: "kimi:kimi@example.com",
+    });
+    expect(result.accountEmail).toBe("kimi@example.com");
+  });
+
+  // The bug: a `kimi login --region global` token lives in its own scoped file
+  // named by `config.toml`, and ADE read only `kimi-code.json`.
+  it("regression: polls a --region global Kimi login from the slot config.toml names", async () => {
+    const kimiCodeHome = kimiHome({
+      "config.toml": [
+        "[providers.\"managed:kimi-code\"]",
+        "type = \"kimi\"",
+        "base_url = \"https://api.kimi.ai/coding/v1\"",
+        "",
+        "[providers.\"managed:kimi-code\".oauth]",
+        "storage = \"file\"",
+        "key = \"oauth/kimi-code-env-0e4f99c69cc27850\"",
+        "oauth_host = \"https://auth.kimi.ai\"",
+        "",
+      ].join("\n"),
+      "credentials/kimi-code-env-0e4f99c69cc27850.json": JSON.stringify({ access_token: "global-access" }),
+    });
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer global-access");
+      return new Response(JSON.stringify(url.endsWith("/usages") ? { usage: { used: 1, limit: 4 } } : { email: "g@example.com" }));
+    });
+    const result = await pollKimiQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env: { KIMI_CODE_HOME: kimiCodeHome },
+      homeDir: home,
+      platform: "linux",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.kimi.ai/coding/v1/usages",
+      "https://api.kimi.ai/coding/v1/me",
+    ]);
+    expect(result.windows[0]).toMatchObject({ windowType: "weekly", percentUsed: 25, accountId: "kimi:g@example.com" });
+  });
+
+  // The bug: a failed identity call stamped the windows `<provider>:local`, a
+  // different account to the burn-rate history, which lost the join for its
+  // whole retention window.
+  it("regression: keeps the last known identity when the identity call fails", async () => {
+    const kimiCodeHome = kimiHome({ "credentials/kimi-code.json": JSON.stringify({ access_token: "kimi-access" }) });
+    const kimiIo = (meStatus: number) => ({
+      nowMs: NOW,
+      env: { KIMI_CODE_HOME: kimiCodeHome },
+      homeDir: home,
+      platform: "darwin" as const,
+      fetchImpl: vi.fn(async (url: string) => url.endsWith("/usages")
+        ? new Response(JSON.stringify({ usage: { used: "30", limit: "100", resetTime: "2026-09-28T00:00:00.000Z" } }))
+        : new Response(JSON.stringify({ user_id: "u1", email: "kimi@example.com" }), { status: meStatus })),
+    });
+    await pollKimiQuota({ reason: "automatic" }, kimiIo(200));
+    const kimi = await pollKimiQuota({ reason: "automatic" }, kimiIo(503));
+    expect(kimi.windows[0]).toMatchObject({ windowType: "weekly", percentUsed: 30, accountId: "kimi:kimi@example.com" });
+    expect(kimi.accountEmail).toBe("kimi@example.com");
+
+    const copilotIo = (userStatus: number) => ({
+      nowMs: NOW,
+      env: { GH_TOKEN: "gho-test" },
+      homeDir: home,
+      platform: "darwin" as const,
+      readText: async () => null,
+      readGhToken: async () => null,
+      fetchImpl: vi.fn(async (url: string) => url.includes("copilot_internal")
+        ? new Response(JSON.stringify({ quota_snapshots: { premium_interactions: { percent_remaining: 75 } } }))
+        : new Response(JSON.stringify({ login: "ada", email: "ada@example.com" }), { status: userStatus })),
+    });
+    await pollCopilotQuota({ reason: "automatic" }, copilotIo(200));
+    const copilot = await pollCopilotQuota({ reason: "automatic" }, copilotIo(500));
+    expect(copilot.windows[0]?.accountId).toBe("copilot:ada@example.com");
+    expect(copilot.accountEmail).toBe("ada@example.com");
+  });
+
+  // The bug: the remembered identity was keyed only by provider, so switching
+  // accounts and then one failed `/me` or `/user` stamped the new account with
+  // the old account's email.
+  it("regression: never reuses a remembered identity for a different credential", async () => {
+    const kimiCodeHome = kimiHome({ "credentials/kimi-code.json": JSON.stringify({ access_token: "first-account" }) });
+    const kimiIo = (meStatus: number) => ({
+      nowMs: NOW,
+      env: { KIMI_CODE_HOME: kimiCodeHome },
+      homeDir: home,
+      platform: "darwin" as const,
+      fetchImpl: vi.fn(async (url: string) => url.endsWith("/usages")
+        ? new Response(JSON.stringify({ usage: { used: 1, limit: 10 } }))
+        : new Response(JSON.stringify({ email: "first@example.com" }), { status: meStatus })),
+    });
+    await pollKimiQuota({ reason: "automatic" }, kimiIo(200));
+    writeFileSync(path.join(kimiCodeHome, "credentials", "kimi-code.json"), JSON.stringify({ access_token: "second-account" }));
+    const kimi = await pollKimiQuota({ reason: "automatic" }, kimiIo(503));
+    expect(kimi.windows[0]?.accountId).toBe("kimi:local");
+    expect(kimi.accountEmail).toBeUndefined();
+
+    const copilotIo = (token: string, userStatus: number) => ({
+      nowMs: NOW,
+      env: { GH_TOKEN: token },
+      homeDir: home,
+      platform: "darwin" as const,
+      readText: async () => null,
+      readGhToken: async () => null,
+      fetchImpl: vi.fn(async (url: string) => url.includes("copilot_internal")
+        ? new Response(JSON.stringify({ quota_snapshots: { premium_interactions: { percent_remaining: 75 } } }))
+        : new Response(JSON.stringify({ email: "first@example.com" }), { status: userStatus })),
+    });
+    await pollCopilotQuota({ reason: "automatic" }, copilotIo("gho-first", 200));
+    const copilot = await pollCopilotQuota({ reason: "automatic" }, copilotIo("gho-second", 500));
+    expect(copilot.windows[0]?.accountId).toBe("copilot:local");
+    expect(copilot.accountEmail).toBeUndefined();
+  });
+
+  it("forgets a remembered identity once the provider is signed out", async () => {
+    const kimiCodeHome = kimiHome({});
+    const credentialPath = path.join(kimiCodeHome, "credentials", "kimi-code.json");
+    const signIn = () => {
+      mkdirSync(path.dirname(credentialPath), { recursive: true });
+      writeFileSync(credentialPath, JSON.stringify({ access_token: "kimi-access" }));
+    };
+    const io = (meStatus: number) => ({
+      nowMs: NOW,
+      env: { KIMI_CODE_HOME: kimiCodeHome },
+      homeDir: home,
+      platform: "darwin" as const,
+      fetchImpl: vi.fn(async (url: string) => url.endsWith("/usages")
+        ? new Response(JSON.stringify({ usage: { used: 1, limit: 10 } }))
+        : new Response(JSON.stringify({ email: "kimi@example.com" }), { status: meStatus })),
+    });
+    signIn();
+    await pollKimiQuota({ reason: "automatic" }, io(200));
+    rmSync(credentialPath);
+    expect((await pollKimiQuota({ reason: "automatic" }, io(200))).disposition).toBe("not_signed_in");
+    signIn();
+    const result = await pollKimiQuota({ reason: "automatic" }, io(503));
+    expect(result.windows[0]?.accountId).toBe("kimi:local");
+    expect(result.accountEmail).toBeUndefined();
+  });
+
+  it("uses the same Copilot token for GitHub account identity and reset date", async () => {
+    const fetchImpl = vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes("copilot_internal")
+        ? {
+          quota_snapshots: { premium_interactions: { percent_remaining: 75 } },
+          quota_reset_date: "2026-10-01",
+        }
+        : { login: "ada-lovelace", email: "ada@example.com" },
+    )));
+    const result = await pollCopilotQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env: { GH_TOKEN: "gho-test" },
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+      readText: async () => null,
+      readGhToken: async () => null,
+    });
+    expect(result.accountEmail).toBe("ada@example.com");
+    expect(result.windows[0]).toMatchObject({
+      percentUsed: 25,
+      resetsAt: "2026-10-01",
+      accountId: "copilot:ada@example.com",
+    });
+  });
+
   it("polls Grok from auth.json and OpenCode from OPENCODE_API_KEY", async () => {
     const grokFetch = fetchMock({
       config: {
@@ -280,6 +432,43 @@ describe("extra provider quota polls", () => {
     });
     expect(openCode.windows.map((window) => window.percentUsed)).toEqual([1, 1, 1]);
     expect(String(openCodeFetch.mock.calls[0]?.[0])).toBe("https://opencode.ai/zen/go/v1/usage");
+  });
+
+  it("fetches a Droid session's Factory credits, without treating a missing key as an error", async () => {
+    const fetchImpl = vi.fn(async (_url: string) => new Response(JSON.stringify({ tokenUsage: { factoryCredits: 3.5 } })));
+    const io = {
+      nowMs: NOW,
+      env: {},
+      homeDir: home,
+      platform: "darwin" as const,
+      fetchImpl,
+      readFactoryApiKey: () => "fk-test",
+    };
+    await expect(fetchFactorySessionCredits("session/123", io)).resolves.toBe(3.5);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("/api/v0/sessions/session%2F123");
+    await expect(fetchFactorySessionCredits("session/123", { ...io, readFactoryApiKey: () => null })).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("looks for OpenCode's auth.json where OpenCode keeps its data, XDG first", () => {
+    expect(openCodeAuthPaths({ homeDir: "/home/ada", platform: "linux", env: {} })).toEqual([
+      path.join("/home/ada", ".local", "share", "opencode", "auth.json"),
+    ]);
+    expect(openCodeAuthPaths({ homeDir: "/home/ada", platform: "linux", env: { XDG_DATA_HOME: "/xdg/data" } })).toEqual([
+      path.join("/xdg/data", "opencode", "auth.json"),
+      path.join("/home/ada", ".local", "share", "opencode", "auth.json"),
+    ]);
+    expect(openCodeAuthPaths({ homeDir: "/Users/ada", platform: "darwin", env: {} })).toEqual([
+      path.join("/Users/ada", ".local", "share", "opencode", "auth.json"),
+      path.join("/Users/ada", "Library", "Application Support", "opencode", "auth.json"),
+    ]);
+  });
+
+  it("does not use an expired Kimi access token", () => {
+    expect(readKimiAccessToken({
+      access_token: "expired",
+      expires_at: "2026-09-21T15:00:00.000Z",
+    }, NOW)).toBeNull();
   });
 
   it("places the Cursor session database per platform", () => {

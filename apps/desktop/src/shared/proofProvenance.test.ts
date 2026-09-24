@@ -35,13 +35,23 @@ describe("proof provenance", () => {
     expect(plain(proofSourceLine(cut, "en-US"))).toBe("Recorded by ADE · 10:24–10:27 AM · idle cut 2:07");
     expect(proofSourceLine(readProofProvenance({ proofSource: "ade-recorder", idleCutMs: 400 }))).toBe("Recorded by ADE");
     expect(readProofProvenance({ idleCutMs: "lots" }).idleCutMs).toBeNull();
+  });
+
+  // Same cases as the phone's `workProofDuration`.
+  it("formats a duration as m:ss, or h:mm:ss from an hour", () => {
+    expect(formatProofDuration(23_000)).toBe("0:23");
     expect(formatProofDuration(3_842_000)).toBe("1:04:02");
+    expect(formatProofDuration(59_600)).toBe("1:00");
+    expect(formatProofDuration(-5_000)).toBe("0:00");
   });
 
   it("says a day period once, keeps two different ones, and has none in 24-hour time", () => {
     expect(plain(formatProofClockRange(at(11, 58), at(12, 2), "en-US"))).toBe("11:58 AM–12:02 PM");
     expect(plain(formatProofClockRange(at(10, 24), at(10, 24), "en-US"))).toBe("10:24 AM");
     expect(formatProofClockRange(at(10, 24), at(10, 25), "en-GB")).toBe("10:24–10:25");
+    // A dotted period is kept whole: not "10:24 a.–10:25 a.m.".
+    expect(plain(formatProofClockRange(at(10, 24), at(10, 25), "en-CA"))).toBe("10:24–10:25 a.m.");
+    expect(plain(formatProofClockRange(at(10, 24), at(13, 25), "en-CA"))).toBe("10:24 a.m.–1:25 p.m.");
   });
 
   it("writes the older line only when flagged", () => {

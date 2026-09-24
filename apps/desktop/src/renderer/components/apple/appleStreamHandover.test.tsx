@@ -42,7 +42,7 @@ import { closeWorkToolForReal } from "../terminals/closeWorkToolForReal";
 
 const LANE = "lane-1";
 const UDID = "UDID-1";
-const KEY = appleStreamLeaseKey({ pinKey: null, laneId: LANE, deviceUdid: UDID });
+const KEY = appleStreamLeaseKey({ pin: null, bound: null, laneId: LANE, deviceUdid: UDID });
 
 let calls: string[] = [];
 
@@ -100,7 +100,7 @@ beforeEach(() => {
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
   installApi();
-  noteAppleMiniPlayerLaneDevice(LANE, { udid: UDID, name: "ADE Repro", runtime: null, family: "iphone" });
+  noteAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null }, { udid: UDID, name: "ADE Repro", runtime: null, family: "iphone" });
 });
 
 afterEach(() => {
@@ -171,12 +171,12 @@ describe("open → close → open again", () => {
 
 describe("a release from a stream that has already ended", () => {
   it("cannot stop the one running now", () => {
-    const stale = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: null });
+    const stale = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
     expect(stale.first).toBe(true);
     // That run ends…
     expect(releaseAppleStreamLease(KEY, stale.epoch).last).toBe(true);
     // …and a new one starts.
-    const fresh = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: null });
+    const fresh = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
     expect(fresh.first).toBe(true);
     expect(fresh.epoch).not.toBe(stale.epoch);
 
@@ -195,10 +195,10 @@ describe("a release from a stream that has already ended", () => {
 
 describe("forgetting a lane's leases", () => {
   it("drops viewers and parked holds for that lane only, and stops nothing", () => {
-    const other = appleStreamLeaseKey({ pinKey: null, laneId: "lane-2", deviceUdid: "UDID-2" });
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: null });
+    const other = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-2", deviceUdid: "UDID-2" });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
     acquireAppleStreamLease(KEY); // a parked hold: a count with no viewer
-    acquireAppleStreamLease(other, { laneId: "lane-2", deviceUdid: "UDID-2", pinKey: null });
+    acquireAppleStreamLease(other, { laneId: "lane-2", deviceUdid: "UDID-2", pinKey: "bound" });
 
     forgetAppleStreamLeasesForLane(LANE);
     expect(appleStreamLeaseCount(KEY)).toBe(0);
@@ -253,7 +253,7 @@ describe("the pane and the floating player name the same machine two ways", () =
 
     expect(calls).not.toContain("stop");
     // One bucket, one viewer left in it.
-    expect(appleStreamLeaseCount(appleStreamLeaseKey({ pinKey: "local:/repo", laneId: LANE, deviceUdid: UDID }))).toBe(1);
+    expect(appleStreamLeaseCount(appleStreamLeaseKey({ pin: playerPin, bound: null, laneId: LANE, deviceUdid: UDID }))).toBe(1);
   });
 });
 

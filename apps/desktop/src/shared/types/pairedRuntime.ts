@@ -59,6 +59,11 @@ export type PairedRuntimeForwardClosePayload = {
   reason?: string | null;
 };
 
+/** Ask the peer to stop reading its TCP socket until `fwd_resume`. */
+export type PairedRuntimeForwardPausePayload = {
+  forwardId: string;
+};
+
 type PairedRuntimeEnvelopeBase<TType extends string> = {
   version: 1;
   type: TType;
@@ -103,6 +108,14 @@ export type PairedRuntimeForwardCloseEnvelope = PairedRuntimeEnvelopeWithPayload
   "fwd_close",
   PairedRuntimeForwardClosePayload
 >;
+export type PairedRuntimeForwardPauseEnvelope = PairedRuntimeEnvelopeWithPayload<
+  "fwd_pause",
+  PairedRuntimeForwardPausePayload
+>;
+export type PairedRuntimeForwardResumeEnvelope = PairedRuntimeEnvelopeWithPayload<
+  "fwd_resume",
+  PairedRuntimeForwardPausePayload
+>;
 
 export type PairedRuntimeSyncEnvelope =
   | PairedRuntimeRpcOpenEnvelope
@@ -110,7 +123,9 @@ export type PairedRuntimeSyncEnvelope =
   | PairedRuntimeRpcCloseEnvelope
   | PairedRuntimeForwardOpenEnvelope
   | PairedRuntimeForwardDataEnvelope
-  | PairedRuntimeForwardCloseEnvelope;
+  | PairedRuntimeForwardCloseEnvelope
+  | PairedRuntimeForwardPauseEnvelope
+  | PairedRuntimeForwardResumeEnvelope;
 
 export type PairedRuntimeFeatureFlags = {
   /**

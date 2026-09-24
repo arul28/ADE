@@ -3,6 +3,7 @@ import type { AppleDeviceListResult, IosSimulatorEventPayload } from "../../../s
 import { supportsIosSimulatorPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { applePowerFromPhase } from "./appleDeviceState";
 
 /**
  * Which lanes on the tab's machine hold an Apple device, for the Work sidebar.
@@ -41,7 +42,7 @@ export function laneAppleDeviceLabel(device: LaneAppleDevice): string {
 }
 
 /** One string per claim set, so a changed claim is one comparison. */
-export function laneAppleClaimSignature(owners: ReadonlyArray<{ laneId: string; udid: string }>): string {
+function laneAppleClaimSignature(owners: ReadonlyArray<{ laneId: string; udid: string }>): string {
   return owners
     .map((owner) => `${owner.laneId}=${owner.udid}`)
     .sort()
@@ -167,11 +168,8 @@ export function useLaneAppleDevices(args: {
       if (event.type !== "apple.device.state" && event.type !== "session-released") return;
       if (event.type === "apple.device.state") {
         const current = devicesRef.current.get(event.laneId);
-        const running = event.phase === "booted" || event.phase === "streaming"
-          ? true
-          : event.phase === "stopped"
-            ? false
-            : null;
+        const power = applePowerFromPhase(event.phase);
+        const running = power === null ? null : power === "on";
         if (current && current.udid === event.udid && running != null && current.running !== running) {
           const next = new Map(devicesRef.current);
           next.set(event.laneId, { ...current, running });

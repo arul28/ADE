@@ -99,8 +99,8 @@ const textareaStyle: React.CSSProperties = {
 };
 
 const errorBannerStyle: React.CSSProperties = {
-  background: `${C.error}0D`,
-  border: `1px solid ${C.error}33`,
+  background: `color-mix(in srgb, ${C.error} 5%, transparent)`,
+  border: `1px solid color-mix(in srgb, ${C.error} 20%, transparent)`,
   borderRadius: 0,
   padding: "10px 14px",
   fontSize: 11,
@@ -174,7 +174,7 @@ function Stepper({ currentStep }: { currentStep: number }) {
                     : `2px dashed ${C.textDisabled}`,
                 borderRadius: 0,
                 background: isCompleted
-                  ? `${C.success}18`
+                  ? `color-mix(in srgb, ${C.success} 9%, transparent)`
                   : isActive
                     ? C.accentSubtleBg
                     : "transparent",
@@ -387,8 +387,8 @@ function LaneCheckboxList({
                   fontSize: 10,
                   fontFamily: MONO_FONT,
                   color: C.warning,
-                  background: `${C.warning}18`,
-                  border: `1px solid ${C.warning}30`,
+                  background: `color-mix(in srgb, ${C.warning} 9%, transparent)`,
+                  border: `1px solid color-mix(in srgb, ${C.warning} 19%, transparent)`,
                   padding: "2px 6px",
                 }}
               >
@@ -420,8 +420,8 @@ function LaneWarningPanel({
     <div
       style={{
         marginTop: 12,
-        background: `${C.warning}12`,
-        border: `1px solid ${C.warning}30`,
+        background: `color-mix(in srgb, ${C.warning} 7%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${C.warning} 19%, transparent)`,
         padding: 12,
       }}
     >
@@ -464,7 +464,7 @@ function LaneWarningPanel({
                 onClick={() => onOpenRebase(primaryRebaseLaneId)}
                 style={{
                   background: "transparent",
-                  border: `1px solid ${C.warning}45`,
+                  border: `1px solid color-mix(in srgb, ${C.warning} 27%, transparent)`,
                   color: C.warning,
                   fontFamily: MONO_FONT,
                   fontSize: 10,
@@ -1109,7 +1109,7 @@ export function CreatePrModal({
           <Stepper currentStep={numericStep} />
 
           {branchLoadError ? (
-            <div role="alert" style={{ padding: "8px 24px", fontSize: 11, color: C.error, background: `${C.error}10` }}>
+            <div role="alert" style={{ padding: "8px 24px", fontSize: 11, color: C.error, background: `color-mix(in srgb, ${C.error} 6%, transparent)` }}>
               Could not load branch list: {branchLoadError}
             </div>
           ) : null}
@@ -1469,7 +1469,7 @@ export function CreatePrModal({
                             padding: "4px 8px",
                             borderRadius: 0,
                             color: outcomeColor(proposal.overallOutcome),
-                            background: `${outcomeColor(proposal.overallOutcome)}18`,
+                            background: `color-mix(in srgb, ${outcomeColor(proposal.overallOutcome)} 9%, transparent)`,
                           }}>
                             {proposal.overallOutcome.toUpperCase()}
                           </span>
@@ -1512,7 +1512,7 @@ export function CreatePrModal({
                                 <div key={i} style={{
                                   fontSize: 11,
                                   fontFamily: "var(--font-sans)",
-                                  color: `${C.warning}99`,
+                                  color: `color-mix(in srgb, ${C.warning} 60%, transparent)`,
                                   paddingLeft: 8,
                                   lineHeight: "18px",
                                 }}>
@@ -1798,7 +1798,7 @@ export function CreatePrModal({
                           padding: "4px 8px",
                           borderRadius: 0,
                           color: outcomeColor(proposal.overallOutcome),
-                          background: `${outcomeColor(proposal.overallOutcome)}18`,
+                          background: `color-mix(in srgb, ${outcomeColor(proposal.overallOutcome)} 9%, transparent)`,
                         }}>
                           {proposal.overallOutcome.toUpperCase()}
                         </span>

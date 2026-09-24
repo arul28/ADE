@@ -577,24 +577,21 @@ export async function openSyncRuntimeTransport(
   const closeCallbacks = new Set<(info?: RuntimeRpcTransportCloseInfo) => void>();
   let closed = false;
   let closeNotified = false;
-  let closeDetail: string | null = null;
+  // Built once by the first close, and handed to every callback after it.
+  let closeInfo: RuntimeRpcTransportCloseInfo | undefined;
   let removeEnvelope = () => {};
   let removeError = () => {};
   let removeClose = () => {};
 
-  let closeSuperseded = false;
-  const closeInfoForCallbacks = (): RuntimeRpcTransportCloseInfo | undefined =>
-    closeDetail || closeSuperseded
-      ? { ...(closeDetail ? { detail: closeDetail } : {}), ...(closeSuperseded ? { superseded: true } : {}) }
-      : undefined;
   const notifyClose = (detail?: string | null, superseded = false): void => {
     if (closeNotified) return;
     closeNotified = true;
-    closeDetail = detail ?? null;
-    closeSuperseded = superseded;
+    closeInfo = detail || superseded
+      ? { ...(detail ? { detail } : {}), ...(superseded ? { superseded: true } : {}) }
+      : undefined;
     for (const callback of [...closeCallbacks]) {
       try {
-        callback(closeInfoForCallbacks());
+        callback(closeInfo);
       } catch {
         // Continue notifying the remaining transport consumers.
       }
@@ -664,7 +661,7 @@ export async function openSyncRuntimeTransport(
       errorCallbacks.add(callback);
     },
     onClose(callback) {
-      if (closeNotified) queueMicrotask(() => callback(closeInfoForCallbacks()));
+      if (closeNotified) queueMicrotask(() => callback(closeInfo));
       else closeCallbacks.add(callback);
     },
     write(data) {
@@ -689,8 +686,9 @@ export async function openSyncRuntimeTransport(
         // Closing the WebSocket below is sufficient when the frame cannot send.
       }
       cleanup();
-      connection.close(1000, "Desktop RPC client closed.");
-      notifyClose("closed by this computer (Desktop RPC client closed.)");
+      const localClose = { code: 1000, reason: "Desktop RPC client closed.", local: true };
+      connection.close(localClose.code, localClose.reason);
+      notifyClose(describeSyncConnectionClose(localClose));
     },
   };
 

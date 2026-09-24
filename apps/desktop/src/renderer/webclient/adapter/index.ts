@@ -4,6 +4,7 @@ import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
 import { createAgentChatNamespace } from "./agentChat";
+import { createChatLaunchNamespace } from "./chatLaunch";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAttentionNamespace } from "./attention";
 import { createAppNamespace, webKeepAwakeMethods, webUpdateMethods } from "./app";
@@ -94,6 +95,12 @@ export function createAdeWebAdapter(
     })
   );
 
+  // Pushed new-lane launch updates. Guarded: test doubles and older sync
+  // clients may not expose the listener.
+  if (typeof client.onChatLaunchEvent === "function") {
+    addDispose(client.onChatLaunchEvent((event) => events.emit("chatLaunchEvent", event)));
+  }
+
   const { sessions, pty, terminal } = createSessionsPtyNamespaces(infra);
   const { git, diff, conflicts } = createGitNamespaces(infra);
   const misc = createMiscNamespaces(infra);
@@ -110,6 +117,7 @@ export function createAdeWebAdapter(
     lanes: createLanesNamespace(infra),
     sessions,
     agentChat: createAgentChatNamespace(infra),
+    chatLaunch: createChatLaunchNamespace(infra),
     personalChats: createPersonalChatsNamespace(infra),
     pty,
     terminal,
@@ -134,7 +142,6 @@ export function createAdeWebAdapter(
     zoom: misc.zoom,
     layout: misc.layout,
     tilingTree: misc.tilingTree,
-    graphState: misc.graphState,
     workTools: misc.workTools,
     tests: misc.tests,
     projectConfig: misc.projectConfig,

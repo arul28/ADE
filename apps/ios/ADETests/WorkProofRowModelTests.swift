@@ -133,6 +133,50 @@ final class WorkProofRowModelTests: XCTestCase {
         XCTAssertEqual(lines.source, "Recorded by ADE · 11:58 AM–12:02 PM")
     }
 
+    /// Same line as the desktop's `proofSourceLine`: the idle cut says why the
+    /// video is shorter than the times it spans.
+    func testRecorderRowSaysHowMuchStillTimeWasCut() {
+        let lines = workProofProvenanceLines(
+            #"{"proofSource":"ade-recorder","recordedFrom":"2026-09-23T10:24:00Z","recordedTo":"2026-09-23T10:27:00Z","idleCutMs":127000}"#,
+            formatClock: fixedClock
+        )
+        XCTAssertEqual(lines.source, "Recorded by ADE · 10:24–10:27 AM · idle cut 2:07")
+        XCTAssertEqual(
+            workProofProvenanceLines(#"{"proofSource":"ade-recorder","idleCutMs":400}"#).source,
+            "Recorded by ADE"
+        )
+        XCTAssertEqual(
+            workProofProvenanceLines(#"{"proofSource":"ade-recorder","idleCutMs":"lots"}"#).source,
+            "Recorded by ADE"
+        )
+        XCTAssertEqual(workProofIdleCutLabel(3_842_000), "idle cut 1:04:02")
+    }
+
+    /// Same cases as the desktop's `formatProofDuration`.
+    func testDurationMatchesTheDesktopFormat() {
+        XCTAssertEqual(workProofDuration(23_000), "0:23")
+        XCTAssertEqual(workProofDuration(3_842_000), "1:04:02")
+        XCTAssertEqual(workProofDuration(59_600), "1:00")
+        XCTAssertEqual(workProofDuration(-5_000), "0:00")
+    }
+
+    /// A dotted day period is kept whole: not "10:24 a.–10:25 a.m.".
+    func testRangeKeepsADottedDayPeriodWhole() {
+        let canadian: (Date) -> String = { date in
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(identifier: "UTC")
+            formatter.dateFormat = "h:mm"
+            let hour = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "UTC")!, from: date).hour ?? 0
+            return formatter.string(from: date) + (hour < 12 ? " a.m." : " p.m.")
+        }
+        let from = ISO8601DateFormatter().date(from: "2026-09-23T10:24:00Z")!
+        let to = ISO8601DateFormatter().date(from: "2026-09-23T10:25:00Z")!
+        let afternoon = ISO8601DateFormatter().date(from: "2026-09-23T13:25:00Z")!
+        XCTAssertEqual(workProofClockRange(from, to, formatClock: canadian), "10:24–10:25 a.m.")
+        XCTAssertEqual(workProofClockRange(from, afternoon, formatClock: canadian), "10:24 a.m.–1:25 p.m.")
+    }
+
     func testCaptureAndAttachLines() {
         XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"ade-capture"}"#).source, "Captured by ADE")
         XCTAssertEqual(workProofProvenanceLines(#"{"proofSource":"attached"}"#).source, "Attached by the agent")

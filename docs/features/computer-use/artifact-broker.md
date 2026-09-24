@@ -2,7 +2,7 @@
 
 The broker is the normalization layer after external computer-use execution has happened. External tools perform the actual clicks, keystrokes, and captures. The broker ingests their output, stores it canonically, links it to owners (runs, chats, PRs, Linear issues), reports whether the stored bytes still exist, and owns deletion/recovery.
 
-The broker runs inside the ADE runtime (`ade serve`) that owns the project. Artifacts are written to that runtime machine's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.proof.*` → preload → runtime JSON-RPC → broker; the desktop main process is no longer the owner of this state.
+The broker runs inside the ADE runtime (`ade serve`) that owns the project. Artifacts are written to that runtime machine's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.computerUse.*` → preload → runtime JSON-RPC → broker. The desktop main process does not own this state. The one exception is `computerUse.mediaBaseUrl`, which main answers itself for the loopback video server.
 
 ## Source file map
 

@@ -12,6 +12,7 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createPrService } from "./prService";
 import { extractFirstJsonObject } from "../ai/utils";
 import { asString, nowIso } from "../shared/utils";
+import { isPrBotAuthor } from "../../../shared/prBotIdentity";
 
 type PrSummaryServiceDeps = {
   db: AdeDb;
@@ -33,18 +34,13 @@ function toStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
-function isBotLogin(login: string | null | undefined): boolean {
-  const l = (login ?? "").toLowerCase();
-  return l.includes("bot") || l.includes("greptile") || l.includes("seer") || l.includes("coderabbit");
-}
-
 function summarizeBotReviews(comments: PrComment[], reviews: PrReview[]): string {
   const commentParts = comments
-    .filter((c) => isBotLogin(c.author))
+    .filter((c) => isPrBotAuthor(c.author, c.authorIsBot))
     .slice(0, 5)
     .map((c) => `- @${c.author}: ${(c.body ?? "").slice(0, 280)}`);
   const reviewParts = reviews
-    .filter((r) => isBotLogin(r.reviewer) && (r.body ?? "").trim().length > 0)
+    .filter((r) => isPrBotAuthor(r.reviewer, r.reviewerIsBot) && (r.body ?? "").trim().length > 0)
     .slice(0, 3)
     .map((r) => `- @${r.reviewer} [${r.state}]: ${(r.body ?? "").slice(0, 280)}`);
   const all = [...commentParts, ...reviewParts];

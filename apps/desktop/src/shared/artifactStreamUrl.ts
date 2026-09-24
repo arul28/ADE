@@ -20,6 +20,8 @@
  * refuses anything that lands outside it.
  */
 
+import { foldsCase, pathFlavorOf } from "./pathCase";
+
 /** The most a single remote range read returns. Bounds each RPC answer. */
 export const ARTIFACT_RANGE_READ_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -65,8 +67,16 @@ function withoutTrailingSlash(value: string): string {
  * Accepts the stored `ade-artifact://project/<path>` form, a plain relative
  * path, or an absolute path inside `projectRoot`. An absolute path anywhere
  * else, a web URL, and any path with `..` in it answer null.
+ *
+ * The root may belong to another machine, so its own shape sets the case rule:
+ * a drive-letter or UNC root compares without case, a POSIX root exactly. This
+ * check grants a path, so it never folds on a guess; it is only a first gate,
+ * and the machine holding the file still jails it inside `.ade/artifacts`.
  */
-export function projectRelativeArtifactPath(uri: string, projectRoot: string | null | undefined): string | null {
+export function projectRelativeArtifactPath(
+  uri: string,
+  projectRoot: string | null | undefined,
+): string | null {
   const text = uri.trim();
   if (!text || /^https?:\/\//i.test(text)) return null;
 
@@ -76,12 +86,8 @@ export function projectRelativeArtifactPath(uri: string, projectRoot: string | n
     const safe = segments ? safeSegments(segments) : null;
     return safe ? safe.join("/") : null;
   }
-  if (/^ade-artifact:\/\//i.test(text)) {
-    const decoded = decodeSegments(text.replace(/^ade-artifact:\/\/[^/]*/i, ""));
-    if (!decoded) return null;
-    candidate = `/${decoded.join("/")}`;
-  } else if (/^file:\/\//i.test(text)) {
-    const decoded = decodeSegments(text.replace(/^file:\/\/[^/]*/i, ""));
+  if (/^(?:ade-artifact|file):\/\//i.test(text)) {
+    const decoded = decodeSegments(text.replace(/^(?:ade-artifact|file):\/\/[^/]*/i, ""));
     if (!decoded) return null;
     candidate = `/${decoded.join("/")}`;
   } else {
@@ -94,10 +100,10 @@ export function projectRelativeArtifactPath(uri: string, projectRoot: string | n
   if (isAbsolutePath(candidate)) {
     const root = withoutTrailingSlash((projectRoot ?? "").trim().replace(/\\/g, "/"));
     if (!root) return null;
-    const windows = /^[a-zA-Z]:\//.test(root);
-    const inside = windows
-      ? candidate.toLowerCase().startsWith(`${root.toLowerCase()}/`)
-      : candidate.startsWith(`${root}/`);
+    const head = candidate.slice(0, root.length + 1);
+    const inside = foldsCase(pathFlavorOf(root))
+      ? head.toLowerCase() === `${root}/`.toLowerCase()
+      : head === `${root}/`;
     if (!inside) return null;
     candidate = candidate.slice(root.length + 1);
   }
@@ -113,6 +119,18 @@ function encodePath(relativePath: string): string {
 export function localArtifactStreamUrl(uri: string, projectRoot: string | null | undefined): string | null {
   const relative = projectRelativeArtifactPath(uri, projectRoot);
   return relative ? `ade-artifact://project/${encodePath(relative)}` : null;
+}
+
+/**
+ * The `<img>` source for a stored proof image on this computer: an
+ * `ade-artifact://` uri as is, a project-relative path as its stream URL.
+ * With no project root, an absolute path or a web URL answers null.
+ */
+export function artifactImageSrc(uri: string | null | undefined): string | null {
+  const text = uri?.trim();
+  if (!text) return null;
+  if (/^ade-artifact:\/\//i.test(text)) return text;
+  return localArtifactStreamUrl(text, null);
 }
 
 /** Where a media server path points, after the token. */

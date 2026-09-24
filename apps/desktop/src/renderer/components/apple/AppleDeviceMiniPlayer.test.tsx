@@ -22,6 +22,7 @@ const stream = {
   frameVersion: 1,
   state: "live" as string,
   error: null as string | null,
+  gaveUp: false,
   reconnect: vi.fn(),
   /** What the player last asked the stream for — `hidden` is the lease. */
   lastArgs: null as null | { hidden: boolean; enabled: boolean },
@@ -46,6 +47,7 @@ vi.mock("./useAppleDeviceStream", () => ({
       noteFrame: vi.fn(),
       reconnect: stream.reconnect,
       applyStreamEvent: vi.fn(),
+      gaveUp: stream.gaveUp,
     };
   },
 }));
@@ -102,6 +104,7 @@ beforeEach(() => {
   stream.frameVersion = 1;
   stream.state = "live";
   stream.error = null;
+  stream.gaveUp = false;
   stream.reconnect = vi.fn();
   pipSessions.length = 0;
   stream.lastArgs = null;
@@ -267,10 +270,10 @@ describe("AppleDeviceMiniPlayer", () => {
     });
 
     it("hands the handover's lease back once it is mounted, and never lets the count reach zero", () => {
-      const key = appleStreamLeaseKey({ pinKey: null, laneId: "lane-1", deviceUdid: "pro" });
+      const key = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid: "pro" });
       // The pane, open and streaming.
-      acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: null });
-      noteAppleMiniPlayerLaneDevice("lane-1", { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
+      acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: "bound" });
+      noteAppleMiniPlayerLaneDevice({ laneId: "lane-1", runtimePin: null }, { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
       render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
 
       act(() => {
@@ -414,9 +417,9 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
     try {
       const stopStream = vi.fn(() => Promise.resolve());
       (window as unknown as { ade: unknown }).ade = { iosSimulator: { tap: vi.fn(), stopStream } };
-      const key = appleStreamLeaseKey({ pinKey: null, laneId: "lane-1", deviceUdid: "pro" });
-      const pane = acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: null });
-      noteAppleMiniPlayerLaneDevice("lane-1", { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
+      const key = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid: "pro" });
+      const pane = acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: "bound" });
+      noteAppleMiniPlayerLaneDevice({ laneId: "lane-1", runtimePin: null }, { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
       // The pane closes while the new-chat screen is in front.
       render(<AppleDeviceMiniPlayer surface={null} onOpenInPane={vi.fn()} />);
       act(() => {
@@ -440,9 +443,9 @@ describe("AppleDeviceMiniPlayer, per surface", () => {
   });
 
   it("gives the handover's hold back once the player is shown after all", () => {
-    const key = appleStreamLeaseKey({ pinKey: null, laneId: "lane-1", deviceUdid: "pro" });
-    acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: null });
-    noteAppleMiniPlayerLaneDevice("lane-1", { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
+    const key = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-1", deviceUdid: "pro" });
+    acquireAppleStreamLease(key, { laneId: "lane-1", deviceUdid: "pro", pinKey: "bound" });
+    noteAppleMiniPlayerLaneDevice({ laneId: "lane-1", runtimePin: null }, { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.2", family: "iphone" });
     const view = render(<AppleDeviceMiniPlayer surface={null} onOpenInPane={vi.fn()} />);
     act(() => {
       handoffAppleMiniPlayer({ laneId: "lane-1", chatSessionId: "chat-1", runtimePin: null });
@@ -581,6 +584,24 @@ describe("AppleDeviceMiniPlayer, picture in picture", () => {
     expect(pipSessions[0]!.stop).toHaveBeenCalled();
     expect(host().hasAttribute("data-apple-mini-pip")).toBe(false);
     expect(host().hasAttribute("hidden")).toBe(false);
+  });
+
+  /* Regression (A2-8): the hook recovers from a stop by itself, so a
+   * transient idle must not close the user's PiP window. */
+  it("keeps PiP through a transient idle, and ends it once the reconnects give up", async () => {
+    const view = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    act(() => openAppleMiniPlayer(TARGET));
+    await enterPip();
+
+    stream.state = "idle";
+    view.rerender(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    expect(pipSessions[0]!.stop).not.toHaveBeenCalled();
+    expect(host().hasAttribute("data-apple-mini-pip")).toBe(true);
+
+    stream.gaveUp = true;
+    view.rerender(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
+    expect(pipSessions[0]!.stop).toHaveBeenCalled();
+    expect(host().hasAttribute("data-apple-mini-pip")).toBe(false);
   });
 
   it("ends PiP when the player closes", async () => {

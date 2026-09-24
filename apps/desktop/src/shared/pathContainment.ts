@@ -1,4 +1,8 @@
 import path from "node:path";
+// The Pi lease child loads this file through `pathCompare.ts` with Node's
+// strip-types loader, which needs the source extension.
+// @ts-expect-error TS5097: the strip-types child loader requires the source extension.
+import { foldsCase, type ContainmentPlatform } from "./pathCase.ts";
 
 /**
  * The LEXICAL answer to "is this path inside that directory", and to "are these
@@ -27,43 +31,9 @@ import path from "node:path";
  * package need it; the CLI already imports across that boundary.
  */
 
-/**
- * The platform whose path rules apply.
- *
- * `"posix"` is the flavor, not an OS: it selects POSIX path grammar and
- * case-sensitive comparison. A real `NodeJS.Platform` selects both the grammar
- * and the case rule for that OS, which is what a caller comparing paths on the
- * machine it is running on wants.
- */
-export type ContainmentPlatform = NodeJS.Platform | "posix";
-
 /** Windows path grammar for win32, POSIX grammar everywhere else. */
 export function pathApiFor(platform: ContainmentPlatform): path.PlatformPath {
   return platform === "win32" ? path.win32 : path.posix;
-}
-
-/**
- * Whether comparison folds case on this platform.
- *
- * `win32` and `darwin` yes, everything else no. Windows path components are
- * case-insensitive, and macOS volumes are case-insensitive by default, so
- * `~/.ADE` and `~/.ade` are one directory on both. Linux is case-sensitive, so
- * folding there would make two different directories compare equal.
- *
- * The bare flavor `"posix"` does NOT fold. That is deliberate and it is the
- * difference between the two kinds of caller:
- *
- *  - A guard that REFUSES a path (is this inside ADE's own state directory?)
- *    must fold, because a missed fold skips the refusal while the OS opens the
- *    very same folder. Those callers pass a real platform.
- *  - A containment check that GRANTS a path (is this write inside the host's
- *    sandboxRoot?) must not fold on an assumption it cannot verify. A
- *    case-sensitive APFS volume exists, and folding there would admit a write
- *    the host never approved. Those callers pass the flavor, so an unfolded
- *    mismatch falls through to the policy's fallback — a prompt, not a grant.
- */
-export function foldsCase(platform: ContainmentPlatform): boolean {
-  return platform === "win32" || platform === "darwin";
 }
 
 /**

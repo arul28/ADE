@@ -151,8 +151,8 @@ export const APPLE_AGENT_ACTIONS = [
   "deviceAttach",
   "deviceStart",
   "deviceStop",
+  "deviceDetach",
   "deviceDelete",
-  "deviceDeleteInstalled",
 
   /* Video. */
   "startStream",
@@ -234,6 +234,16 @@ export const APPLE_AGENT_ACTIONS = [
 ] as const;
 
 export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
+
+/**
+ * `ios_simulator` actions only the person may take, from a device picker.
+ *
+ * The action domain allows them, so the desktop and the web client can call
+ * them. Agents are never told about them (`getStatus().capabilities` reports
+ * {@link APPLE_AGENT_ACTIONS} only), the RPC server refuses them to agent
+ * callers, and automations cannot run them.
+ */
+export const APPLE_USER_ONLY_ACTIONS = ["deviceDeleteInstalled"] as const;
 
 /** The live recording, as `getStatus` reports it. */
 export type IosSimulatorStatusRecording = {
@@ -866,6 +876,8 @@ export type IosSimulatorEventPayload =
   | AppleDeviceStateEvent
   | AppleRecordingStateEvent;
 
+export type AppleRecordingPhase = "started" | "updated" | "stopped";
+
 /**
  * A lane's recording started, changed, or stopped, whoever asked for it.
  *
@@ -876,7 +888,7 @@ export type IosSimulatorEventPayload =
 export type AppleRecordingStateEvent = {
   type: "apple.recording.state";
   laneId: string;
-  phase: "started" | "updated" | "stopped";
+  phase: AppleRecordingPhase;
   recordingId: string;
   chatSessionId: string | null;
 };
@@ -1549,10 +1561,31 @@ export type AppleDeviceListResult = {
   disk?: AppleDeviceDiskUsage | null;
 };
 
+/**
+ * `deviceDelete`: the lane gives up its device for good. Same single-owner
+ * rule as `deviceDetach`; `force` does not step around it.
+ */
 export type AppleDeviceDeleteArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /** Detach an attached device instead of refusing it. */
   force?: boolean | null;
+  /** Delete for whoever is running, without claiming to be them (the Work pane). */
+  ignoreOwnership?: boolean | null;
+};
+
+/**
+ * `deviceDetach`: the lane gives up its device; the simulator stays installed.
+ * Same single-owner rule as `deviceStop`: refused while another chat owns the
+ * lane's session, unless `force` or `ignoreOwnership` is passed.
+ */
+export type AppleDeviceDetachArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** Detach a device another chat is driving as well. */
+  force?: boolean | null;
+  /** Detach for whoever is running, without claiming to be them (the Work pane). */
+  ignoreOwnership?: boolean | null;
 };
 
 /**
@@ -1568,9 +1601,9 @@ export type AppleDeviceDeleteInstalledArgs = {
    * The owner said yes to THIS device, by name, in a confirmation.
    *
    * Required, and deliberately not defaulted. Deleting a simulator is not
-   * recoverable, the owner's standing rule is that nothing deletes one without
-   * their approval, and this verb is reachable by any agent because ADE keeps
-   * one action list per domain. A caller that has to write the claim out
+   * recoverable, and the owner's standing rule is that nothing deletes one
+   * without their approval. The RPC server takes this verb from user clients
+   * only; an agent is refused. A caller that has to write the claim out
    * cannot arrive here by drifting through a default.
    */
   confirmedByUser: true;
@@ -1803,7 +1836,8 @@ export type AppleRotateResult = {
   frameAfter: AppleRotateFrame | null;
 };
 
-export type AppleRecordStartArgs = {
+/** Which lane's recordings a record verb acts on. */
+export type AppleRecordScopeArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
   /**
@@ -1814,6 +1848,9 @@ export type AppleRecordStartArgs = {
    * caller's recording filed against whichever lane owned the DEVICE.
    */
   projectRoot?: string | null;
+};
+
+export type AppleRecordStartArgs = AppleRecordScopeArgs & {
   overlays?: boolean | null;
   label?: string | null;
   /**
@@ -1828,27 +1865,14 @@ export type AppleRecordStartArgs = {
   maxSeconds?: number | null;
 };
 
-export type AppleRecordStopArgs = {
-  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
-  projectRoot?: string | null;
-  laneId?: string | null;
-  chatSessionId?: string | null;
+export type AppleRecordStopArgs = AppleRecordScopeArgs & {
   keep?: boolean | null;
   discard?: boolean | null;
 };
 
-export type AppleRecordListArgs = {
-  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
-  projectRoot?: string | null;
-  laneId?: string | null;
-  chatSessionId?: string | null;
-};
+export type AppleRecordListArgs = AppleRecordScopeArgs;
 
-export type AppleRecordDeleteArgs = {
-  /** The caller's workspace, so a lane-less caller is placed by where it stands. */
-  projectRoot?: string | null;
-  laneId?: string | null;
-  chatSessionId?: string | null;
+export type AppleRecordDeleteArgs = AppleRecordScopeArgs & {
   id: string;
   force?: boolean | null;
   /**

@@ -214,6 +214,7 @@ export function createAppleDeviceNamespace(
     deviceStart: (async (args?: unknown) => invoke("deviceStart", args ?? {}, false)) as never,
     deviceStop: (async (args?: unknown) => invoke("deviceStop", args ?? {}, false)) as never,
     deviceDelete: (async (args?: unknown) => invoke("deviceDelete", args ?? {}, false)) as never,
+    deviceDetach: (async (args?: unknown) => invoke("deviceDetach", args ?? {}, false)) as never,
     deviceDeleteInstalled: (async (args?: unknown) => invoke("deviceDeleteInstalled", args ?? {}, false)) as never,
 
     recordList: (async (args?: unknown) => call(

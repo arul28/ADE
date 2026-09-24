@@ -59,14 +59,14 @@ afterEach(() => {
 
 describe("chatCompanionUiState persistence", () => {
   it("stamps and round-trips savedAtMs on write", () => {
-    writeAt("chat-1", 1_700_000_000_000, { prPaneOpen: true });
+    writeAt("chat-1", 1_700_000_000_000, { iosSimulatorOpen: true });
     resetChatCompanionUiStateCacheForTests();
 
     expect(storedRecord("chat-1")?.savedAtMs).toBe(1_700_000_000_000);
     // The timestamp is storage metadata: it must not leak into the UI state.
     expect(readChatCompanionUiState("chat-1")).toEqual({
       ...DEFAULT_CHAT_COMPANION_UI_STATE,
-      prPaneOpen: true,
+      iosSimulatorOpen: true,
     });
   });
 
@@ -80,13 +80,12 @@ describe("chatCompanionUiState persistence", () => {
   it("degrades garbage field types to the defaults", () => {
     window.localStorage.setItem(
       chatCompanionUiStorageKey("chat-1"),
-      JSON.stringify({ prPaneOpen: "yes", chatActionsOpen: 1, chatActionsTab: "nope" }),
+      JSON.stringify({ iosSimulatorOpen: "yes", chatActionsOpen: 1 }),
     );
     resetChatCompanionUiStateCacheForTests();
     const restored = readChatCompanionUiState("chat-1");
-    expect(restored.prPaneOpen).toBe(false);
+    expect(restored.iosSimulatorOpen).toBe(false);
     expect(restored.chatActionsOpen).toBe(false);
-    expect(restored.chatActionsTab).toBe("agents");
   });
 });
 
@@ -95,26 +94,24 @@ describe("patchChatCompanionUiState", () => {
     writeChatCompanionUiState("chat-1", {
       ...DEFAULT_CHAT_COMPANION_UI_STATE,
       chatActionsOpen: true,
-      chatActionsTab: "proof",
       terminalDrawerOpen: true,
     });
 
-    patchChatCompanionUiState("chat-1", { prPaneOpen: true });
+    patchChatCompanionUiState("chat-1", { iosSimulatorOpen: true });
     resetChatCompanionUiStateCacheForTests();
 
     const restored = readChatCompanionUiState("chat-1");
     // The other owner's fields survive a single-field patch.
-    expect(restored.prPaneOpen).toBe(true);
+    expect(restored.iosSimulatorOpen).toBe(true);
     expect(restored.chatActionsOpen).toBe(true);
-    expect(restored.chatActionsTab).toBe("proof");
     expect(restored.terminalDrawerOpen).toBe(true);
   });
 
   it("patches a key that has nothing stored yet, starting from the defaults", () => {
-    const next = patchChatCompanionUiState("chat-new", { prPaneOpen: true });
-    expect(next).toEqual({ ...DEFAULT_CHAT_COMPANION_UI_STATE, prPaneOpen: true });
+    const next = patchChatCompanionUiState("chat-new", { iosSimulatorOpen: true });
+    expect(next).toEqual({ ...DEFAULT_CHAT_COMPANION_UI_STATE, iosSimulatorOpen: true });
     resetChatCompanionUiStateCacheForTests();
-    expect(readChatCompanionUiState("chat-new").prPaneOpen).toBe(true);
+    expect(readChatCompanionUiState("chat-new").iosSimulatorOpen).toBe(true);
   });
 });
 
@@ -150,7 +147,7 @@ describe("pruneChatCompanionUiState", () => {
     // Written last, so only the missing timestamp can make it the first victim.
     window.localStorage.setItem(
       chatCompanionUiStorageKey("legacy"),
-      JSON.stringify({ prPaneOpen: true }),
+      JSON.stringify({ iosSimulatorOpen: true }),
     );
 
     expect(pruneChatCompanionUiState(2)).toBe(1);
@@ -163,13 +160,13 @@ describe("pruneChatCompanionUiState", () => {
     // first thing evicted. Write order alone must decide.
     writeAt("chat-old-1", 1_000);
     writeAt("chat-old-2", 2_000);
-    writeAt("term-session-9f2a", 3_000, { prPaneOpen: true });
+    writeAt("term-session-9f2a", 3_000, { iosSimulatorOpen: true });
 
     expect(pruneChatCompanionUiState(1)).toBe(2);
     // The newest key survives whichever surface wrote it.
     expect(companionKeysInStorage()).toEqual(["term-session-9f2a"]);
     resetChatCompanionUiStateCacheForTests();
-    expect(readChatCompanionUiState("term-session-9f2a").prPaneOpen).toBe(true);
+    expect(readChatCompanionUiState("term-session-9f2a").iosSimulatorOpen).toBe(true);
 
     // ...and the mirror case: an old CLI key is not privileged either.
     window.localStorage.clear();
@@ -209,19 +206,19 @@ describe("pruneChatCompanionUiState", () => {
     }
     // Both surfaces keep re-writing their own live key; both must survive.
     writeAt("chat-live", 9_000, { chatActionsOpen: true });
-    writeAt("term-live", 9_001, { prPaneOpen: true });
+    writeAt("term-live", 9_001, { iosSimulatorOpen: true });
 
     const keys = companionKeysInStorage();
     expect(keys.length).toBe(200);
     expect(keys).toContain("chat-live");
     expect(keys).toContain("term-live");
     resetChatCompanionUiStateCacheForTests();
-    expect(readChatCompanionUiState("term-live").prPaneOpen).toBe(true);
+    expect(readChatCompanionUiState("term-live").iosSimulatorOpen).toBe(true);
     expect(readChatCompanionUiState("chat-live").chatActionsOpen).toBe(true);
   });
 
   it("survives an app restart (localStorage, not sessionStorage)", () => {
-    writeChatCompanionUiState("chat-1", { ...DEFAULT_CHAT_COMPANION_UI_STATE, prPaneOpen: true });
+    writeChatCompanionUiState("chat-1", { ...DEFAULT_CHAT_COMPANION_UI_STATE, iosSimulatorOpen: true });
     expect(window.localStorage.getItem(chatCompanionUiStorageKey("chat-1"))).toBeTruthy();
     expect(window.sessionStorage.getItem(chatCompanionUiStorageKey("chat-1"))).toBeNull();
   });
@@ -234,8 +231,7 @@ describe("pruneChatCompanionUiState", () => {
     resetChatCompanionUiStateCacheForTests();
     const restored = readChatCompanionUiState("chat-1");
     expect(restored.chatActionsOpen).toBe(true);
-    expect(restored.chatActionsTab).toBe("proof");
-    expect(restored.prPaneOpen).toBe(false);
+    expect(restored.iosSimulatorOpen).toBe(false);
   });
 });
 

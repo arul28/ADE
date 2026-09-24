@@ -6,7 +6,7 @@ import type {
   MacDesktopStatus,
   OpenProjectBinding,
 } from "../../../shared/types";
-import type { WorkSidebarTab } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { isWorkLivePreviewDisabled } from "../../state/workLiveCardState";
 import { cn } from "../ui/cn";
 import { clearMacDesktopFrame, useMacDesktopFrame } from "../chat/macDesktopFrameStore";
@@ -15,7 +15,8 @@ import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import { MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY } from "../chat/macDesktopLiveViewLease";
 import { macDesktopErrorText } from "../chat/macDesktopErrorText";
 import { closeWorkLiveCardForChat, useChatCompanionUiState } from "../chat/chatCompanionUiState";
-import { noteWorkToolMounted } from "../../lib/workToolOnScreen";
+import { noteFloatingWorkSurfaceShown, workSurfaceKey } from "../../lib/workToolOnScreen";
+import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import {
   FloatingPlayerShell,
   useCanvasPictureInPicture,
@@ -210,6 +211,8 @@ export function MacDesktopMiniPlayer({
 }) {
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
+  const boundBinding = useAppStore((s) => s.projectBinding);
+  const scopeKey = workRuntimeScopeKey(runtimePin, boundBinding);
 
   const macScope = useMacDesktopChatScope({ enabled: supported, laneId, chatSessionId, runtimePin });
   /**
@@ -330,6 +333,7 @@ export function MacDesktopMiniPlayer({
   return (
     <MacDesktopMiniPlayerBox
       laneId={laneId}
+      onScreenKey={workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, scopeKey, laneId)}
       visible={visible}
       live={live}
       storedFrame={storedFrame?.dataUrl ?? null}
@@ -348,6 +352,7 @@ export function MacDesktopMiniPlayer({
 
 function MacDesktopMiniPlayerBox({
   laneId,
+  onScreenKey,
   visible,
   live,
   storedFrame,
@@ -362,6 +367,8 @@ function MacDesktopMiniPlayerBox({
   onClose,
 }: {
   laneId: string;
+  /** The `workToolOnScreen` key for this card on this lane and machine. */
+  onScreenKey: string;
   /** False while hidden (the pane shows the desktop): mounted, so it keeps its place. */
   visible: boolean;
   live: ReturnType<typeof useMacDesktopLiveView>;
@@ -398,8 +405,8 @@ function MacDesktopMiniPlayerBox({
   // `ade ui show floating-mac-desktop` answers "shown" only while this is set.
   const shown = visible || pip.active;
   useLayoutEffect(
-    () => (shown ? noteWorkToolMounted(MAC_DESKTOP_CARD_ON_SCREEN_KEY, laneId) : undefined),
-    [laneId, shown],
+    () => (shown ? noteFloatingWorkSurfaceShown(onScreenKey) : undefined),
+    [onScreenKey, shown],
   );
 
   return (

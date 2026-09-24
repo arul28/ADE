@@ -8,12 +8,9 @@ import React, {
 } from "react";
 import { AppleLogo } from "../ui/appleIcons";
 import type {
-  AppleDeviceDiskUsage,
   AppleDeviceOrientation,
   AppleDeviceStartArgs,
-  AppleInstalledSimulator,
   AppleLaneDevice,
-  AppleSimulatorOwner,
   IosElementContextItem,
   IosSimulatorStatus,
   OpenProjectBinding,
@@ -22,7 +19,6 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
 import type { AppleDevice3DFailure } from "./AppleDevice3DView";
-import { AppleInspectOverlay } from "./AppleInspectOverlay";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
 import { AppleDeviceRail } from "./AppleDeviceRail";
@@ -35,9 +31,10 @@ import {
 } from "./AppleDeviceStatusStrip";
 import { appleDeviceIdentity, type AppleDeviceFamilyId } from "./appleDeviceFamily";
 import {
-  appleCommandForElement,
-  appleElementContextItem,
   appleInputAllowed,
+  appleLaneDeviceBooted,
+  applePowerFromPhase,
+  appleStatusSaysBooted,
   appleObservedOrientationFamily,
   appleOrientationFamily,
   appleRailVisible,
@@ -47,13 +44,16 @@ import {
   type AppleDeviceState,
   type AppleViewMode,
 } from "./appleDeviceState";
-import { inspectContextFor, type IosSimulatorSnapshotElement } from "./appleInspectGeometry";
+import type { IosSimulatorSnapshotElement } from "./appleInspectGeometry";
 import { recordingElapsedMs, useAppleRecordings } from "./appleRecording";
 import { RecordingPill } from "../shared/RecordingReceipt";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { AppleRecordingSavedRow } from "./AppleRecordingSavedRow";
 import { isAppleDeviceOffError } from "./appleErrors";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
+import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleDeviceStartTracker";
+import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
+import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 
@@ -66,24 +66,6 @@ import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
  * preview — with the rail floating on the right of the picture and the tools
  * drawer overlaying it (or docked beside it at ≥700px).
  */
-
-const STATUS_POLL_MS = 6_000;
-
-/**
- * How often a loading card that has not moved re-reads the truth.
- *
- * The card used to wait on exactly one thing — the `deviceStart` promise, or
- * the stream hook — and when that answer never came it sat on "Booting
- * device" until the pane was remounted, over a device that was already
- * streaming. A re-read every few seconds is what makes that impossible.
- */
-export const APPLE_LOADING_RECHECK_MS = 8_000;
-/**
- * Past this a start has failed whatever its promise says: `bootstatus` gives
- * up at 90s and the helper's capture at 30s. The card turns into the "taking
- * too long" sentence with Start, instead of spinning.
- */
-export const APPLE_START_GIVE_UP_MS = 150_000;
 
 /**
  * The drawer is lazy on purpose: it pulls nine sections, the event log and
@@ -133,37 +115,6 @@ export function AppleDevicePane({
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
-  const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
-  const [installed, setInstalled] = useState<AppleInstalledSimulator[]>([]);
-  const [laneDevice, setLaneDevice] = useState<AppleLaneDevice | null>(null);
-  /**
-   * Who owns the OTHER installed simulators (round 5's picker).
-   *
-   * The picker cannot tell a free device from one lane B is mid-test in
-   * without this, which is how it came to offer Open on a device it should
-   * not have — and how an agent came to ask a human for permission instead of
-   * creating its own.
-   */
-  const [owners, setOwners] = useState<AppleSimulatorOwner[]>([]);
-  /** Measured by a SECOND `deviceList`, after the list has painted. */
-  const [disk, setDisk] = useState<AppleDeviceDiskUsage | null>(null);
-  const [measuringDisk, setMeasuringDisk] = useState(false);
-  const [listNonce, setListNonce] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const [pendingStart, setPendingStart] = useState<string | null>(null);
-  const pendingStartRef = useRef<string | null>(null);
-  pendingStartRef.current = pendingStart;
-  /** Which `start` call is current, so an older one settling late changes nothing. */
-  const startTokenRef = useRef(0);
-  /**
-   * A device the service just told us is off (`APPLE_DEVICE_OFF`).
-   *
-   * Wins over every "booted" reading until something says it is on again: a
-   * start, a boot event, or a fresh `simctl` read. Without it a status read
-   * that still said Booted would ask for the stream again and again.
-   */
-  const [offUdid, setOffUdid] = useState<string | null>(null);
   const [loadingStage, setLoadingStage] = useState<AppleLoadingStage>("starting");
   const [startError, setStartError] = useState<unknown>(null);
   const [error, setError] = useState<unknown>(null);
@@ -189,10 +140,6 @@ export function AppleDevicePane({
    */
   const [orientation, setOrientation] = useState<AppleDeviceOrientation>("portrait");
   const [rotating, setRotating] = useState(false);
-  const [inspectOn, setInspectOn] = useState(false);
-  const [inspectElements, setInspectElements] = useState<IosSimulatorSnapshotElement[]>([]);
-  const [inspectHovered, setInspectHovered] = useState<string | null>(null);
-  const [inspectSelected, setInspectSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
   const [screenshotPending, setScreenshotPending] = useState(false);
@@ -200,16 +147,37 @@ export function AppleDevicePane({
   const [hidden, setHidden] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
 
-  const refreshList = useCallback(() => setListNonce((nonce) => nonce + 1), []);
+  const {
+    status,
+    installed,
+    laneDevice,
+    owners,
+    disk,
+    measuringDisk,
+    refreshing,
+    bootedRead,
+    refreshList,
+    dropLaneDevice,
+    markInstalledState,
+  } = useAppleLaneDeviceList({
+    laneId,
+    sessionId,
+    hidden,
+    runtimePinRef,
+    onError: setError,
+  });
 
-  /** Patch one device's power in the listed state, ahead of the re-read that confirms it. */
-  const markInstalledState = useCallback((udid: string, next: "Booted" | "Shutdown") => {
-    setInstalled((current) => (
-      current.some((entry) => entry.udid === udid && entry.state !== next)
-        ? current.map((entry) => (entry.udid === udid ? { ...entry, state: next } : entry))
-        : current
-    ));
-  }, []);
+  const deviceUdid = laneDevice?.udid ?? null;
+  const statusSaysBooted = appleStatusSaysBooted(status, deviceUdid);
+  const startTracker = useAppleDeviceStartTracker({ deviceUdid, statusSaysBooted, bootedRead });
+  const {
+    pending: pendingStart,
+    offUdid,
+    markOff,
+    clearOff,
+    begin: beginStart,
+    settle: settleStart,
+  } = startTracker;
 
   /* ── size + visibility ─────────────────────────────────────────────────── */
 
@@ -257,78 +225,6 @@ export function AppleDevicePane({
     };
   }, []);
 
-  /* ── status + devices ──────────────────────────────────────────────────── */
-
-  useEffect(() => {
-    let cancelled = false;
-    const read = async () => {
-      try {
-        const next = await window.ade.iosSimulator.getStatus(runtimePinRef.current);
-        if (!cancelled) setStatus(next);
-      } catch (cause: unknown) {
-        if (!cancelled) setError(cause);
-      }
-    };
-    void read();
-    const timer = window.setInterval(() => {
-      if (!hidden) void read();
-    }, STATUS_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [hidden, listNonce]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setRefreshing(true);
-    void window.ade.iosSimulator
-      .deviceList({ laneId, chatSessionId: sessionId, installed: true }, runtimePinRef.current)
-      .then((next) => {
-        if (cancelled) return;
-        setInstalled(next.installed);
-        setLaneDevice(next.lane);
-        const laneUdid = next.lane?.udid ?? null;
-        if (laneUdid && next.installed.find((entry) => entry.udid === laneUdid)?.state === "Booted") {
-          setOffUdid((current) => (current === laneUdid ? null : current));
-        }
-        setOwners(next.owners ?? []);
-        /*
-         * Disk is the picker's line and nothing else's, and the picker is on
-         * screen exactly when this lane owns no device. So it is asked for in
-         * a second, `installed: false` call that only measures — the first
-         * call must not wait behind a `du` over a 20 GB device store, which
-         * on this owner's machine is the difference between a list that
-         * paints and a list that hangs.
-         */
-        if (next.lane || next.installed.length === 0) return;
-        setMeasuringDisk(true);
-        void window.ade.iosSimulator
-          .deviceList(
-            { laneId, chatSessionId: sessionId, installed: false, disk: true },
-            runtimePinRef.current,
-          )
-          .then((measured) => {
-            if (!cancelled) setDisk(measured.disk ?? null);
-          })
-          // A measurement that fails costs the line its number, never the page.
-          .catch(() => undefined)
-          .finally(() => {
-            if (!cancelled) setMeasuringDisk(false);
-          });
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError(cause);
-      })
-      .finally(() => {
-        if (!cancelled) setRefreshing(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [laneId, listNonce, sessionId]);
-
-  const deviceUdid = laneDevice?.udid ?? null;
   const deviceUdidRef = useRef(deviceUdid);
   deviceUdidRef.current = deviceUdid;
   const installedForLane = useMemo(
@@ -344,32 +240,20 @@ export function AppleDevicePane({
     // The pane says "{name} is off." with Start, and re-reads the list.
     if (isAppleDeviceOffError(message)) {
       const udid = deviceUdidRef.current;
-      if (udid) setOffUdid(udid);
+      if (udid) markOff(udid);
       refreshList();
       return;
     }
     setError(new Error(message));
-  }, [refreshList]);
+  }, [markOff, refreshList]);
 
-  const statusSaysBooted = status?.activeDevice?.udid === deviceUdid && status?.activeDevice?.state === "Booted";
-  // A status read of this device as Booted is fresh `simctl` truth too.
-  useEffect(() => {
-    if (offUdid && statusSaysBooted && deviceUdid === offUdid) setOffUdid(null);
-  }, [deviceUdid, offUdid, statusSaysBooted]);
-
-  /*
-   * `simctl` is the truth about power. An open device session is not: it
-   * outlives a power-off, and reading it as "booted" is what asked for a
-   * stream on a device that was off. It still counts before the installed
-   * list has loaded.
-   */
-  const booted = deviceUdid !== null && deviceUdid === offUdid
-    ? false
-    : Boolean(
-      installedForLane
-        ? installedForLane.state === "Booted" || statusSaysBooted
-        : statusSaysBooted || (deviceUdid && status?.deviceSession?.deviceUdid === deviceUdid),
-    );
+  const booted = appleLaneDeviceBooted({
+    deviceUdid,
+    offUdid,
+    installedForLane,
+    statusSaysBooted,
+    sessionUdid: status?.deviceSession?.deviceUdid ?? null,
+  });
 
   const stream = useAppleDeviceStream({
     deviceUdid: booted ? deviceUdid : null,
@@ -394,54 +278,16 @@ export function AppleDevicePane({
     streamState: stream.state,
   });
 
-  /* ── a loading card that cannot hang ───────────────────────────────────── */
-
-  /*
-   * While the card is up, re-read the truth every few seconds: the device
-   * list and status (which land an off device on the Off card and a running
-   * one on the stream), and for a start in flight, whether the lane is
-   * already streaming — in which case the start is done, whatever its promise
-   * is doing. A start still going past `APPLE_START_GIVE_UP_MS` is given up
-   * with the "taking too long" sentence and Start.
-   */
-  const loading = state === "starting";
-  const streamReconnectRef = useRef(stream.reconnect);
-  streamReconnectRef.current = stream.reconnect;
-  useEffect(() => {
-    if (!loading) return undefined;
-    const since = Date.now();
-    const timer = window.setInterval(() => {
-      const pending = pendingStartRef.current;
-      refreshList();
-      if (!pending) {
-        // "Connecting video" with no start in flight: the device is up and
-        // only this viewer's stream is missing. Ask for it again — the
-        // service joins a capture another viewer (the floating player, a
-        // phone) is running, or opens one.
-        streamReconnectRef.current();
-        return;
-      }
-      const token = startTokenRef.current;
-      const settle = () => {
-        if (startTokenRef.current !== token) return;
-        startTokenRef.current += 1;
-        setPendingStart(null);
-      };
-      if (Date.now() - since >= APPLE_START_GIVE_UP_MS) {
-        settle();
-        setError(new Error(
-          `Simulator did not become ready within ${Math.round(APPLE_START_GIVE_UP_MS / 1000)}s. CoreSimulator may be stuck.`,
-        ));
-        return;
-      }
-      void window.ade.iosSimulator.getStreamStatus?.(runtimePinRef.current, { laneId, chatSessionId: sessionId })
-        .then((next) => {
-          if (next?.running) settle();
-        })
-        .catch(() => undefined);
-    }, APPLE_LOADING_RECHECK_MS);
-    return () => window.clearInterval(timer);
-  }, [laneId, loading, refreshList, sessionId]);
+  useAppleLoadingWatchdog(startTracker, {
+    loading: state === "starting",
+    hidden,
+    laneId,
+    chatSessionId: sessionId,
+    runtimePinRef,
+    refreshList,
+    reconnectStream: stream.reconnect,
+    onGiveUp: setError,
+  });
 
   /* ── service events ────────────────────────────────────────────────────── */
 
@@ -465,16 +311,17 @@ export function AppleDevicePane({
             refreshList();
             return;
           }
-          if (event.phase === "stopped") {
+          const power = applePowerFromPhase(event.phase);
+          if (power === "off") {
             // Powered off (the tab close, the CLI, another window): show the
             // Off card now rather than after the next read.
             markInstalledState(event.udid, "Shutdown");
             refreshList();
             return;
           }
-          if (event.phase === "booted" || event.phase === "streaming") {
+          if (power === "on") {
             markInstalledState(event.udid, "Booted");
-            setOffUdid((current) => (current === event.udid ? null : current));
+            clearOff(event.udid);
           }
           setLoadingStage(event.phase === "streaming" ? "streaming" : "starting");
           if (event.phase === "streaming") {
@@ -486,17 +333,13 @@ export function AppleDevicePane({
              * device" over a device that was already streaming, until the
              * pane was remounted. The event settles it too.
              */
-            startTokenRef.current += 1;
-            setPendingStart(null);
+            settleStart();
             refreshList();
           }
           return;
         }
         case "stream-started":
-          if (event.status.deviceUdid) {
-            const udid = event.status.deviceUdid;
-            setOffUdid((current) => (current === udid ? null : current));
-          }
+          if (event.status.deviceUdid) clearOff(event.status.deviceUdid);
           applyStreamEventRef.current(event.status);
           return;
         case "stream-status":
@@ -515,7 +358,7 @@ export function AppleDevicePane({
       }
     }, runtimePinRef.current);
     return unsubscribe;
-  }, [laneId, markInstalledState, refreshList]);
+  }, [clearOff, laneId, markInstalledState, refreshList, settleStart]);
 
   /* ── recordings ────────────────────────────────────────────────────────── */
 
@@ -569,131 +412,54 @@ export function AppleDevicePane({
 
   /* ── inspect (§A4) ─────────────────────────────────────────────────────── */
 
-  const toggleInspect = useCallback(() => {
-    setInspectOn((on) => !on);
-    setInspectSelected(null);
-    setInspectHovered(null);
-  }, []);
-
-  /**
-   * One snapshot per switch-on. The frames describe the screen as it was when
-   * Inspect was turned on; driving the device is off while it is on, so they
-   * cannot go stale underneath the pointer.
+  /*
+   * Free truth. The snapshot describes the interface as it really is, so an
+   * orientation the pane has wrong — a device someone rotated before this pane
+   * opened, or a rotate the device quietly ignored — is corrected here at no
+   * extra cost. Only the SHAPE is corrected: the tree cannot tell
+   * landscape-left from landscape-right.
    */
-  useEffect(() => {
-    if (!inspectOn || !deviceUdid || state !== "live") {
-      if (!inspectOn) setInspectElements([]);
-      return undefined;
-    }
-    let cancelled = false;
-    void window.ade.iosSimulator
-      .getScreenSnapshot({ deviceUdid, laneId, projectRoot }, runtimePinRef.current)
-      .then((snapshot) => {
-        if (cancelled) return;
-        const elements = snapshot.elements ?? [];
-        setInspectElements(elements);
-        /*
-         * Free truth. The snapshot describes the interface as it really is, so
-         * an orientation the pane has wrong — a device someone rotated before
-         * this pane opened, or a rotate the device quietly ignored — is
-         * corrected here at no extra cost. Only the SHAPE is corrected: the
-         * tree cannot tell landscape-left from landscape-right.
-         */
-        const observed = appleObservedOrientationFamily(elements);
-        if (observed) {
-          setOrientation((current) => (
-            appleOrientationFamily(current) === observed
-              ? current
-              : observed === "landscape" ? "landscape-left" : "portrait"
-          ));
-        }
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError(cause);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceUdid, inspectOn, laneId, projectRoot, state]);
-
-  // Escape closes the card wherever the focus happens to be (§A4).
-  useEffect(() => {
-    if (!inspectSelected) return undefined;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setInspectSelected(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [inspectSelected]);
-
-  const insertInspectElement = useMemo(() => {
-    if (!onAddContext && !onInsertDraft) return undefined;
-    return (element: IosSimulatorSnapshotElement) => {
-      try {
-        if (onAddContext) onAddContext(appleElementContextItem(element));
-        else onInsertDraft?.(inspectContextFor(element, inspectElements));
-      } catch (cause: unknown) {
-        // `workToolContextInsertion` throws with the reason when there is no
-        // chat, draft or CLI session to insert into. Say it, never swallow it.
-        setError(cause);
-      }
-    };
-  }, [inspectElements, onAddContext, onInsertDraft]);
-
-  const copyInspectElement = useCallback((element: IosSimulatorSnapshotElement) => {
-    void window.ade.app.writeClipboardText(appleCommandForElement(element)).catch(() => {});
+  const correctOrientation = useCallback((elements: IosSimulatorSnapshotElement[]) => {
+    const observed = appleObservedOrientationFamily(elements);
+    if (!observed) return;
+    setOrientation((current) => (
+      appleOrientationFamily(current) === observed
+        ? current
+        : observed === "landscape" ? "landscape-left" : "portrait"
+    ));
   }, []);
 
-  const renderInspectOverlay = useCallback((
-    deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
-  ) => {
-    if (!inspectOn) return null;
-    return (
-      <AppleInspectOverlay
-        elements={inspectElements}
-        deviceToView={deviceToView}
-        hoveredRef={inspectHovered}
-        selectedRef={inspectSelected}
-        onHover={setInspectHovered}
-        onSelect={setInspectSelected}
-        onInsertIntoChat={insertInspectElement}
-        onCopy={copyInspectElement}
-      />
-    );
-  }, [
-    copyInspectElement,
-    insertInspectElement,
-    inspectElements,
-    inspectHovered,
-    inspectOn,
-    inspectSelected,
-  ]);
+  const { inspectOn, toggleInspect, renderInspectOverlay } = useAppleInspect({
+    deviceUdid,
+    live: state === "live",
+    laneId,
+    projectRoot,
+    runtimePinRef,
+    onAddContext,
+    onInsertDraft,
+    onElements: correctOrientation,
+    onError: setError,
+  });
 
   /* ── actions ───────────────────────────────────────────────────────────── */
 
   const start = useCallback((args: AppleDeviceStartArgs, key: string) => {
-    const token = startTokenRef.current + 1;
-    startTokenRef.current = token;
-    setStartError(null);
-    setError(null);
-    setOffUdid(null);
-    setLoadingStage("starting");
-    setPendingStart(key);
     // Only the current start may settle the card. One that the `streaming`
     // event, the give-up timer or a newer start already replaced changes
     // nothing when its promise finally lands.
-    const current = () => startTokenRef.current === token;
+    const ticket = beginStart(key);
+    setStartError(null);
+    setError(null);
+    setLoadingStage("starting");
     void window.ade.iosSimulator.deviceStart(args, runtimePinRef.current)
       .then(() => {
         refreshList();
       })
       .catch((cause: unknown) => {
-        if (current()) setStartError(cause);
+        if (ticket()) setStartError(cause);
       })
-      .finally(() => {
-        if (current()) setPendingStart(null);
-      });
-  }, [refreshList]);
+      .finally(() => settleStart(ticket));
+  }, [beginStart, refreshList, settleStart]);
 
   const startInstalled = useCallback((udid: string) => {
     start({ laneId, chatSessionId: sessionId, udid }, udid);
@@ -727,11 +493,9 @@ export function AppleDevicePane({
   }, [deviceUdid, laneId, sessionId, start]);
 
   /*
-   * `deviceStop`, the verb that runs `simctl shutdown`. This used to be
-   * `closeDevice`, which only powers off a device the hub opened a session
-   * for — and the pane's own starts never open one, so Power off did nothing
-   * to a device the pane had started. `deviceStop` also announces `stopped`,
-   * which is what moves this pane and the tools card to "Off" at once.
+   * `deviceStop` runs `simctl shutdown` on any device, including one the pane
+   * started, and announces `stopped`, which moves this pane and the tools card
+   * to "Off" at once.
    */
   const powerOff = useCallback(() => {
     if (!deviceUdid) return;
@@ -751,19 +515,33 @@ export function AppleDevicePane({
 
   /**
    * "Switch device…" deletes or detaches this lane's device and returns to the
-   * picker. It is the ONLY way back, which is why `APPLE_DEVICE_EXISTS` can
-   * never reach a person: nothing else ever asks for a second one.
+   * picker. With "Choose another device" below, it is the only way back, which
+   * is why `APPLE_DEVICE_EXISTS` can never reach a person: nothing else ever
+   * asks for a second one.
    */
   const switchDevice = useCallback(() => {
     setConfirmSwitch(false);
     void window.ade.iosSimulator
-      .deviceDelete({ laneId, chatSessionId: sessionId, force: true }, runtimePinRef.current)
-      .then(() => {
-        setLaneDevice(null);
-        refreshList();
-      })
+      .deviceDelete(
+        { laneId, chatSessionId: sessionId, force: true, ignoreOwnership: ignoreChatOwnership },
+        runtimePinRef.current,
+      )
+      .then(dropLaneDevice)
       .catch((cause: unknown) => setError(cause));
-  }, [laneId, refreshList, sessionId]);
+  }, [dropLaneDevice, ignoreChatOwnership, laneId, sessionId]);
+
+  /**
+   * "Choose another device" on the Off card: one click, and it never deletes.
+   * The device can be off for reasons the person did not choose here (an
+   * agent, the CLI, a restart), so this only releases the lane's binding; the
+   * simulator stays installed and shows in the picker as free.
+   */
+  const chooseAnotherDevice = useCallback(() => {
+    void window.ade.iosSimulator
+      .deviceDetach({ laneId, chatSessionId: sessionId, ignoreOwnership: ignoreChatOwnership }, runtimePinRef.current)
+      .then(dropLaneDevice)
+      .catch((cause: unknown) => setError(cause));
+  }, [dropLaneDevice, ignoreChatOwnership, laneId, sessionId]);
 
   const screenshot = useCallback(() => {
     setScreenshotPending(true);
@@ -1056,13 +834,11 @@ export function AppleDevicePane({
             sentence={`${deviceName} is off.`}
             actionLabel="Start"
             onAction={restart}
-            /* No second confirm here. The device is already off, the person
-               already confirmed the shut down, and this button says what it
-               does; asking again was the owner's "double confirmation"
-               (2026-09-23). The rail's "Switch device…" on a RUNNING device
-               keeps its confirm. */
+            /* One click, no confirm (the owner's 2026-09-23 ask): it only
+               releases the device, it never deletes it. The rail's "Switch
+               device…" on a RUNNING device keeps its confirm. */
             secondaryActionLabel="Choose another device"
-            onSecondaryAction={switchDevice}
+            onSecondaryAction={chooseAnotherDevice}
           />
         )
         /* §A1: the ONE sentence a fallback to flat is allowed to say. */

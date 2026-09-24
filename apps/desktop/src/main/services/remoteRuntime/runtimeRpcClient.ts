@@ -1,4 +1,5 @@
 import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
+import { syntheticCallerId } from "../../../shared/syntheticCallerId";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
 export type RuntimeRpcTransportCloseInfo = {
@@ -133,7 +134,7 @@ export class RuntimeRpcClient {
       protocolVersion: "2025-06-18",
       clientInfo: { name: clientName, version },
       identity: {
-        callerId: `${clientName}:${process.pid}`,
+        callerId: syntheticCallerId(clientName),
         role: "cto",
       },
       ...(options.desktopBridgeAuthToken?.trim()

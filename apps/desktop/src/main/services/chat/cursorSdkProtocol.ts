@@ -109,7 +109,70 @@ export type CursorSdkWorkerInit = {
    * the ADE-owned shim location on its own.
    */
   agentSkillDirs?: string[];
+  /**
+   * Register ADE's `preCompact` hook so Cursor's compactions reach chat as
+   * provider-reported events. On unless this is `false` or the worker env sets
+   * `ADE_CURSOR_PRECOMPACT_HOOK=0`.
+   */
+  preCompactHook?: boolean;
 };
+
+/**
+ * `sdk_event` type the worker posts for a Cursor compaction seen through the
+ * `preCompact` hook. It rides the SDK message channel so the main process maps
+ * it next to the stream it interleaves with.
+ */
+export const CURSOR_SDK_COMPACTION_EVENT = "ade_cursor_compaction";
+
+export type CursorSdkCompactionWireEvent = {
+  type: typeof CURSOR_SDK_COMPACTION_EVENT;
+  phase: "started" | "completed" | "failed";
+  /** 1-based compaction count within the run. */
+  seq: number;
+  trigger: "manual" | "auto";
+  /** Context occupancy Cursor reported when it decided to compact. */
+  contextTokens?: number;
+  contextWindowSize?: number;
+  contextUsagePercent?: number;
+  model?: string;
+  durationMs?: number;
+  failReason?: "interrupted";
+  /** What closed it: Cursor's summary message, the next stream event, or the run ending. */
+  closedBy?: "summary" | "next_event" | "run_end";
+};
+
+/**
+ * Set on a forwarded local `status` event once the `preCompact` hook fired in
+ * the run, so the text-matching compaction fallback stays quiet.
+ */
+export const CURSOR_SDK_PRECOMPACT_HOOK_MARK = "adePreCompactHook";
+
+/** Key of the per-turn telemetry the worker attaches to a local run result. */
+export const CURSOR_SDK_TURN_TELEMETRY_KEY = "adeTurnTelemetry";
+
+export type CursorSdkTurnTelemetry = {
+  /** Cursor login email, from `Cursor.me()` or a hook payload's `user_email`. */
+  accountEmail?: string;
+  /** Concrete model a hook payload named while an `auto` selection ran. */
+  servedModel?: string;
+};
+
+/** What the worker returns from `agent.getUsage` when Cursor refuses it for the account. */
+export type CursorSdkUsageUnavailableResult = { adeUsageUnavailable: "feature_unavailable" };
+
+export const CURSOR_SDK_USAGE_UNAVAILABLE: CursorSdkUsageUnavailableResult = {
+  adeUsageUnavailable: "feature_unavailable",
+};
+
+/**
+ * `Agent.getUsage` answers `[feature_unavailable] This feature is not available
+ * for your account` on plans without the usage API. That is a capability, not
+ * a failure.
+ */
+export function isCursorSdkFeatureUnavailableText(...texts: Array<string | null | undefined>): boolean {
+  const joined = texts.filter(Boolean).join("\n").toLowerCase();
+  return joined.includes("feature_unavailable") || joined.includes("not available for your account");
+}
 
 /**
  * Worker-IPC image reference. Prefer `path` or `url` — never put multi-megabyte

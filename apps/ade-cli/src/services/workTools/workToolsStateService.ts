@@ -34,7 +34,7 @@ import {
   type WorkToolsObservationPreview,
 } from "../../../../desktop/src/shared/types/workTools";
 import type { WorkToolShowResult } from "../../../../desktop/src/shared/types/workToolShow";
-import type { WorkToolShowRequests } from "./workToolShowRequests";
+import type { AgentDeviceActivity, WorkToolShowRequests } from "./workToolShowRequests";
 
 /**
  * Aggregates the Work tools pane's state for one lane so read-only clients
@@ -220,9 +220,9 @@ export type WorkToolsStateService = {
   /** A desktop renderer answering {@link show}. User clients only. */
   acknowledgeShow(args: unknown): { ok: boolean };
   /** An agent drove this chat's Apple device; see `WorkToolShowRequests`. */
-  noteAgentAppleActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
+  noteAgentAppleActivity(args: AgentDeviceActivity): boolean;
   /** An agent drove this chat's lane Mac Desktop; see `WorkToolShowRequests`. */
-  noteAgentMacDesktopActivity(args: { laneId: string | null; chatSessionId: string | null }): void;
+  noteAgentMacDesktopActivity(args: AgentDeviceActivity): boolean;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -740,10 +740,12 @@ export function createWorkToolsStateService(
 
     setActiveTool(input) {
       const laneId = requireLaneId(input?.laneId, "work_tools.setActiveTool");
-      const tool = input?.tool ?? null;
-      if (tool !== null && !isWorkToolId(tool)) {
-        throw new Error(`work_tools.setActiveTool got an unknown tool "${String(tool)}".`);
-      }
+      // A newer desktop can publish a tool this runtime does not know yet.
+      // Do not throw: that drops the whole publish, the strip included. Read
+      // the unknown tool as "no known tool on screen" and keep the strip.
+      // Phones and web clients then see only tools they can render.
+      const requested: unknown = input?.tool;
+      const tool = isWorkToolId(requested) ? requested : null;
       const openTools = normalizeOpenTools(
         Array.isArray(input?.openTools) ? input.openTools : null,
         tool,
@@ -837,11 +839,11 @@ export function createWorkToolsStateService(
     },
 
     noteAgentAppleActivity(input) {
-      args.showRequests?.noteAgentAppleActivity(input);
+      return args.showRequests?.noteAgentAppleActivity(input) ?? false;
     },
 
     noteAgentMacDesktopActivity(input) {
-      args.showRequests?.noteAgentMacDesktopActivity(input);
+      return args.showRequests?.noteAgentMacDesktopActivity(input) ?? false;
     },
 
     flushPendingEvents() {

@@ -50,8 +50,6 @@ Renderer:
 
 | File | Responsibility |
 |------|---------------|
-| `renderer/components/graph/shared/RiskMatrix.tsx` | Animated pairwise risk grid |
-| `renderer/components/graph/shared/RiskTooltip.tsx` | Hover detail for a matrix cell |
 | `renderer/components/lanes/mergeSimulation/*` | Conflict file diff, merge simulation panel, language detection |
 | `renderer/components/shared/conflictResolver/ResolverTerminalModal.tsx` | External CLI resolver terminal modal |
 | `renderer/components/prs/ConflictFilePreview.tsx` | Conflict marker preview (re-used from PR flows) |
@@ -138,8 +136,10 @@ type BatchAssessmentResult = {
 };
 ```
 
-The renderer consumes this via `ade.conflicts.getBatchAssessment`
-and renders the matrix in the Graph tab.
+No renderer view shows the matrix. The data is available through the
+conflicts tools and actions: the CTO `getConflictRiskMatrix` tool and
+the `conflicts.getRiskMatrix` / `conflicts.getBatchAssessment` actions.
+The lane list snapshot also reads the batch assessment for lane badges.
 
 ## Conflict pack / export
 
@@ -220,10 +220,13 @@ Prediction + simulation:
 | `ade.conflicts.getLaneStatus` | Lane status badge |
 | `ade.conflicts.listOverlaps` | Per-peer overlap details |
 | `ade.conflicts.getRiskMatrix` | Full pairwise matrix |
-| `ade.conflicts.getBatchAssessment` | Full snapshot with progress metadata |
-| `ade.conflicts.simulateMerge` | One-off merge simulation between two lanes or lane-to-base |
 | `ade.conflicts.runPrediction` | Trigger prediction for a lane or subset of lanes |
 | `ade.conflicts.event` | Event stream: `prediction-progress`, `prediction-complete`, `prediction-updated` |
+
+The full snapshot (`getBatchAssessment`) and the one-off merge simulation
+(`simulateMerge`) have no IPC channel. Agents and scripts reach them through
+the `conflicts.getBatchAssessment` and `conflicts.simulateMerge` runtime
+actions and the CTO `simulateMerge` tool.
 
 Proposals (AI + apply/undo):
 

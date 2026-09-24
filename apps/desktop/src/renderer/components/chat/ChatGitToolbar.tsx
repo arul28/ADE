@@ -56,6 +56,8 @@ type ChatGitToolbarProps = {
    * shows the bare "PR" create button for a session that already has one.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** When set, the create button stays hidden until a pull request exists. */
+  linkedPrOnly?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -138,6 +140,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   onTogglePrPane,
   prPaneOpen,
   runtimePin = null,
+  linkedPrOnly = false,
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
@@ -475,6 +478,24 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     if (!linkedPr) return null;
     const allPrs = linkedPrs.length > 0 ? linkedPrs : [linkedPr];
     const label = formatPrBadgeLabel(linkedPr);
+    if (linkedPrOnly) {
+      const color = lanePrAttentionColor(lanePrAggregateAttention(allPrs));
+      return (
+        <button
+          type="button"
+          data-testid="chat-header-pr-badge"
+          className="inline-flex h-6 shrink-0 items-center gap-1.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)] transition-opacity hover:opacity-80"
+          onClick={() => {
+            if (onTogglePrPane) onTogglePrPane();
+          }}
+          title={`${label}: ${linkedPr.title}`}
+          aria-label={label}
+        >
+          <GitPullRequest size={16} weight="bold" style={{ color }} aria-hidden />
+          <span className="font-sans text-[11px] font-medium">{label}</span>
+        </button>
+      );
+    }
     return (
       <div className="group relative inline-flex items-center gap-1">
         <button
@@ -558,7 +579,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         ) : null}
       </div>
     );
-  }, [laneId, linkedPr, linkedPrs, navigate, onTogglePrPane, openPr, prPillActive]);
+  }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openPr, prPillActive]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {
@@ -678,6 +699,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // Render
   // -----------------------------------------------------------------------
 
+  if (linkedPrOnly && !prBadge && !runtime.error) return null;
+
   return (
     <div className="flex items-center gap-1.5">
       {/* Files-changed (dirty count) badge intentionally removed from the header —
@@ -692,7 +715,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
             {prMenuOpen ? prMenu : null}
           </AnimatePresence>
         </div>
-      ) : (
+      ) : linkedPrOnly ? null : (
         <div className="flex items-center gap-1.5">
           <button
             type="button"

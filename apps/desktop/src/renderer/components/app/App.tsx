@@ -89,9 +89,6 @@ const AutomationsTemplatesPage = React.lazy(() =>
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
 );
-const WorkspaceGraphPage = React.lazy(() =>
-  import("../graph/WorkspaceGraphPage").then((m) => ({ default: m.WorkspaceGraphPage }))
-);
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
 );
@@ -249,7 +246,6 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
     "/lanes",
     "/files",
     "/work",
-    "/graph",
     "/prs",
     "/history",
     "/automations",
@@ -483,11 +479,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <Route path="/files" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(FilesTab as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/graph" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(WorkspaceGraphPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
             </PageErrorBoundary>
           } />
           <Route path="/prs" element={

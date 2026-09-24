@@ -13,8 +13,14 @@ import type {
   AcpCloseBehavior,
   AcpModelSelectionBehavior,
   AcpSessionConfigBehavior,
+  AcpUsageBehavior,
+  AcpUsageSample,
+  AcpExtensionNotificationReader,
 } from "../acpHostTypes";
-import { ACP_METHOD } from "../acpProtocolTypes";
+import { ACP_METHOD, type AcpPromptUsage } from "../acpProtocolTypes";
+import { readFiniteNumber } from "../acpTelemetryReaders";
+import { uncachedInputTokens } from "../../../usage/tokenSplit";
+import { asRecord } from "../../../shared/utils";
 
 /** ADE's identity at `initialize`. */
 export const ADE_CLIENT_INFO = {
@@ -98,4 +104,65 @@ export function withOptionalEnv(
     if (typeof value === "string" && value.length) env[key] = value;
   }
   return env;
+}
+
+/**
+ * Read the ACP `session/prompt` result `usage` (the unstable Usage schema that
+ * Copilot and Kimi both implement). `inputTokens` there counts the cache, so
+ * the sample carries the uncached share.
+ */
+export function readAcpPromptUsage(promptUsage: AcpPromptUsage | null | undefined): AcpUsageSample | null {
+  if (!promptUsage) return null;
+  const input = readFiniteNumber(promptUsage.inputTokens);
+  const output = readFiniteNumber(promptUsage.outputTokens);
+  const total = readFiniteNumber(promptUsage.totalTokens);
+  const cacheRead = readFiniteNumber(promptUsage.cachedReadTokens);
+  const cacheWrite = readFiniteNumber(promptUsage.cachedWriteTokens);
+  const reasoning = readFiniteNumber(promptUsage.thoughtTokens);
+  const sample: AcpUsageSample = {
+    ...(input !== undefined ? { inputTokens: uncachedInputTokens(input, cacheRead, cacheWrite) } : {}),
+    ...(output !== undefined ? { outputTokens: output } : {}),
+    ...(total !== undefined ? { totalTokens: total } : {}),
+    ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
+    ...(cacheWrite !== undefined ? { cacheWriteTokens: cacheWrite } : {}),
+    ...(reasoning !== undefined ? { reasoningTokens: reasoning } : {}),
+  };
+  return Object.keys(sample).length ? sample : null;
+}
+
+/**
+ * The standard ACP usage reader: `usage_update` is context occupancy, and the
+ * prompt result `usage` is the turn's token counts. Either may be absent;
+ * absence stays absence.
+ */
+export const standardAcpUsage: AcpUsageBehavior = ({ usageUpdate, promptUsage }) => {
+  if (usageUpdate) {
+    return {
+      contextUsedTokens: usageUpdate.used,
+      contextWindowTokens: usageUpdate.size,
+      ...(usageUpdate.cost && usageUpdate.cost.currency.toUpperCase() === "USD"
+        ? { costUsd: usageUpdate.cost.amount }
+        : {}),
+    };
+  }
+  return readAcpPromptUsage(promptUsage);
+};
+
+/**
+ * Register an extension reader under both spellings of its method. The ACP
+ * SDK a provider ships decides whether extension methods carry the leading
+ * underscore (Grok 1.0.13 sent `x.ai/...`, 1.0.40 sends `_x.ai/...`).
+ */
+export function extensionMethodVariants(
+  method: string,
+  reader: AcpExtensionNotificationReader,
+): Record<string, AcpExtensionNotificationReader> {
+  const bare = method.replace(/^_/, "");
+  return { [bare]: reader, [`_${bare}`]: reader };
+}
+
+/** Session id an extension payload names, or `null` for a process-wide one. */
+export function extensionSessionId(params: unknown): string | null {
+  const sessionId = asRecord(params)?.sessionId;
+  return typeof sessionId === "string" && sessionId.length ? sessionId : null;
 }

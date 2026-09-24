@@ -440,23 +440,28 @@ Replication is not only a question of which *tables* cross the boundary. A few
 columns on tables that do replicate are decisions only the host can make, and
 the host refuses to let a controller author them.
 
-The current set is `terminal_sessions.settled_at`, `settle_override`, and
-`settle_source` (`HOST_AUTHORITATIVE_COLUMNS_BY_TABLE` in `syncHostService.ts`).
-A settle is decided by `sessionService`, the only place that can weigh it
-against live work. Because the table replicates and cr-sqlite merges
+The current set is `terminal_sessions.settled_at`, `settle_override`,
+`settle_source`, `activity_status_json`, and `activity_status_changed_at`
+(`HOST_AUTHORITATIVE_COLUMNS_BY_TABLE` in `syncHostService.ts`). `sessionService`
+decides settlement against live work and writes agent activity reports with a
+host timestamp. Because the table replicates and cr-sqlite merges
 last-writer-wins per column, a controller that writes its own optimistic
 `settled_at` sends a value carrying no host lifecycle revision — and it merges
 in regardless of what the host decided, so a host that *rejected* the settle
 still ends up with a settled row. That is a guard defeated by a merge rather
-than by a caller, which no amount of host-side checking closes.
+than by a caller, which no amount of host-side checking closes. The activity
+report fields have the same boundary: a phone-authored value could replace the
+host report through CRR even though the session action validates and timestamps
+reports on the host. Host-authored reports still replicate to phones and paired
+desktops.
 
 The filter drops those columns from inbound changesets **from phone peers
 only**. Two properties make it different from the table-level
 `SYNC_HOST_AUTHORITATIVE_TABLES` rule:
 
 - **It is peer-scoped, and deliberately so.** A paired desktop runs the same
-  `sessionService` chokepoint, so its settle writes are host-decided too and
-  must keep replicating; broadening the filter would silently stop settle
+  `sessionService` chokepoint, so its settle and activity writes are
+  host-decided too and must keep replicating; broadening the filter would stop
   propagating between two of one user's machines. Those writes are not applied
   blind, though: `applyChanges` reports settle-tuple columns whose value
   actually moved, and the receiving host re-asserts them through its own
@@ -1673,6 +1678,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   untrusted, binds the peer surface and canonical host project, strips claimed
   identity fields, and applies the peer's consent bit before dispatch. Paired
   consent never changes the machine-wide preference.
+- `appleRemoteCommands.ts` — the `apple.*` remote commands for the phone and
+  the hosted web client. `apple.invoke` is controller-only and calls one
+  `ios_simulator` method by name. It refuses any method outside the
+  `ios_simulator` action allowlist (`APPLE_AGENT_ACTIONS` plus
+  `APPLE_USER_ONLY_ACTIONS`). See [Apple device](../apple-device/README.md).
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
   peer client, device registry, draft persistence, pin store, and the
@@ -1886,7 +1896,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   winning `crsql_changes` row that would flip `brain_device_id`; brain
   handover stays on the explicit host-transfer RPC), the host-authoritative
   *column* filter (`HOST_AUTHORITATIVE_COLUMNS_BY_TABLE`:
-  `terminal_sessions.settled_at` / `settle_override` / `settle_source`,
+  `terminal_sessions.settled_at` / `settle_override` / `settle_source` /
+  `activity_status_json` / `activity_status_changed_at`,
   dropped from inbound changesets **from phone peers only** — see
   [Host-authoritative columns](#host-authoritative-columns-are-peer-scoped)),
   the inbound
@@ -1958,8 +1969,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   the top forever, since mobile has no way to clear it. `runningCount` counts
   chats whose status is `running` and that are **not snoozed**; a snoozed
   running chat is idle on Activity, so including it would disagree with the
-  Hub tree and the island. Each chat carries optional `snoozedUntil` /
-  `snoozedAt` so older hosts omit them and older phones ignore them. Previews
+  Hub tree and the island. Each roster session carries optional `snoozedUntil` /
+  `snoozedAt`, plus normalized `activityStatus` and its separate
+  host-authored `activityStatusChangedAt`; older hosts omit these fields and
+  older phones ignore them. Activity-report time contributes to row freshness
+  without replacing lifecycle freshness. Previews
   are hard-truncated (~120 chars). Also exports
   `createForeignChatTranscriptResolver({ projectRegistry })` — the resolver
   behind cross-project chat quick-look and its security boundary: it maps a
@@ -2344,9 +2358,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   default) resolve a **remote-first default base** on the host before
   creation: the project's `git.newLaneBaseSource` config (effective
   default `"remote"`) selects between a bounded remote fetch +
-  `origin/<primary base>` mapping and the legacy local primary tip; the
-  resolution helper is `apps/desktop/src/shared/defaultRemoteLaneBase.ts`
-  (shared with the desktop create-lane dialog's renderer-side default).
+  remote-tracking mapping (the local base branch's configured upstream,
+  else `origin/<primary base>`, verified to resolve to a commit) and the
+  legacy local primary tip; the resolution helper is
+  `apps/ade-cli/src/services/laneCreateRemoteBase.ts`, built on
+  `apps/desktop/src/shared/defaultRemoteLaneBase.ts` (shared with the
+  desktop create-lane dialog's renderer-side default).
+  New-lane chat launches (`chat.startLaunch` … `chat.completeLaunchClient`)
+  are brain-owned end to end; their progress is pushed to every peer of the
+  project as `chat_launch_event`. See
+  [Remote commands › New-lane launch commands](remote-commands.md#new-lane-launch-commands).
 - `deviceRegistryService.ts` (~670 lines) — synced `devices` table and
   `sync_cluster_state` singleton. Peer app provenance — `appVersion`,
   `appBuild`, `bundleIdentifier` — carried on `SyncPeerMetadata` (parsed from
@@ -3491,6 +3512,7 @@ Envelopes are JSON with fields:
         "chat_history" | "chat_tool_result" |
         "roster_subscribe" | "roster_unsubscribe" |
         "roster_snapshot" | "roster_delta" |
+        "chat_launch_event" |
         "brain_status" |
         "project_catalog_request" | "project_catalog" |
         "project_catalog_chunk" |
@@ -3498,6 +3520,7 @@ Envelopes are JSON with fields:
         "command" | "command_ack" | "command_result" |
         "rpc_open" | "rpc_data" | "rpc_close" |
         "fwd_open" | "fwd_data" | "fwd_close" |
+        "fwd_pause" | "fwd_resume" |
         "envelope_chunk",
   projectId?: string | null, // present on project-scoped envelopes
   requestId: string | null,
@@ -3790,11 +3813,11 @@ payload.
 | File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to a logical-offset transcript snapshot plus live PTY output. The host installs a snapshot barrier before capture, queues concurrent data/exit events (256 events / 2 MB), trims overlap at UTF-8 boundaries, and recaptures up to four times when the snapshot did not reach the queued watermark; it closes instead of flushing a gap or unreconstructable overflow. Web/iOS clients drop duplicate ranges, trim overlap, and issue one guarded `sinceOffset` recovery subscribe when a live chunk starts beyond their watermark. A delta appends only the missing suffix; a full snapshot is authoritative replacement even when its end equals the current watermark. ACK-capable input uses stable `inputId`s and a bounded host dedupe ledger so reconnect/timeout retry cannot type twice; legacy hosts receive one-shot input with no ambiguous retry. Viewport resize remains subscription-scoped and the last desktop size is restored after the last mobile viewer detaches | iOS Work tab, hosted web Work terminal |
 | Chat stream | Agent chat transcript events plus subscribed byte-cursor scrollback. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session). The host carries sequence high-water marks through shared-listener rehydration and seeds a recreated buffer from the agent event sequence persisted in session metadata/transcript state, so it never reuses a `(sessionId, seq)` pair. The field remains optional and old clients keep working unchanged. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to an authoritative snapshot. Optional live sends are marked delivered only after the WebSocket accepts the frame; a backpressured peer keeps its transcript offset in place and the pump stops at the first failed event so later chunks cannot overtake the missing one. A per-session hydration barrier blocks both the live broadcaster and transcript pump while a snapshot is captured. The pump resumes after the ack from the logical byte offset recorded before capture, so appends racing a slow snapshot arrive after the ack without a gap; snapshot overlap is removed by the normal delivery-key dedupe. The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Modern acks also return `cursorKind: "byte"`, `tailStartOffset`, and authoritative `hasOlderHistory`. A host advertising `chatHistoryPaging` accepts `chat_history` only for an already-subscribed session and matching project/personal/foreign scope; it reads the same authorized transcript path without switching projects or booting a runtime. Transient failures return `unavailable: true` and preserve the requested cursor. Snapshot and older-page transcript reads use asynchronous filesystem/zlib work; same-session tail reads coalesce, while archived gzip inflations are globally admitted with only the active inflate and newest queued destination retained. Small archives use a bounded memory cache; a larger archive is inflated at most once into an unlinked, process-private temporary file under a 256 MiB logical-size/LRU budget and a temporary-volume free-space guard, after which pages are random-access disk reads. Request cancellation propagates through queued work, file reads, and inflates, so disconnected clients cannot leave expensive transcript jobs running. Both event-history paging and the legacy `chat.getTranscript` route use append-stable logical byte cursors; the latter advertises `cursorKind: "byte"` so clients do not treat an offset as a dense entry index. Hosted-web and iOS older pages are capped at 256 KiB and a failed read preserves its byte cursor for retry. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint). The additive foreign-scope protocol remains available to controller reads, but iOS Hub taps activate the owning project before opening the chat. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change also rides this stream, so a mode switch made on one client (desktop ↔ iOS) patches every subscribed client's cached summary and composer controls live without a refetch | iOS Work tab, iOS Hub, controller chat |
-| Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended — so the mobile Hub renders every project's sessions at once **without activating each project**. Identity-bound chats (including each project's CTO) and all attached descendants are excluded from this ordinary roster; the optional `identityKey` marker lets clients reject stale or legacy leaked rows. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Transcripts are excluded from the roster and load on demand after a row tap activates the owning project; the Hub cover exposes switching/hydration progress and an error with Retry instead of silently ignoring an unhydrated project. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
+| Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended — so the mobile Hub renders every project's sessions at once **without activating each project**. Identity-bound chats (including each project's CTO) and all attached descendants are excluded from this ordinary roster; the optional `identityKey` marker lets clients reject stale or legacy leaked rows. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Roster session rows may also carry the normalized fixed-value `activityStatus` report and `activityStatusChangedAt`; this refines the Work card status slot without changing the roster phase or Activity group. Transcripts are excluded from the roster and load on demand after a row tap activates the owning project; the Hub cover exposes switching/hydration progress and an error with Retry instead of silently ignoring an unhydrated project. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.importExternalSession`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project hub |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project hub |
-| Paired desktop runtime | Full newline-delimited runtime JSON-RPC over `rpc_open` / `rpc_data` / `rpc_close`, plus host-loopback TCP previews over `fwd_open` / `fwd_data` / `fwd_close`. Same-account adoption or a Nearby PIN pairing obtains the required host grant internally; there is no user-facing Share link. Client-claimed device metadata never authorizes either channel | ADE desktop remote machines |
+| Paired desktop runtime | Full newline-delimited runtime JSON-RPC over `rpc_open` / `rpc_data` / `rpc_close`, plus host-loopback TCP previews over `fwd_open` / `fwd_data` / `fwd_close`, with `fwd_pause` / `fwd_resume` flow control. Same-account adoption or a Nearby PIN pairing obtains the required host grant internally; there is no user-facing Share link. Client-claimed device metadata never authorizes either channel | ADE desktop remote machines |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
 | Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the runtime decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop runtime presence heartbeat |
 

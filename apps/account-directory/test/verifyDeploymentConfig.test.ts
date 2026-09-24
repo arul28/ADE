@@ -23,6 +23,9 @@ const completeVars = {
   WEB_CLIENT_ORIGIN: "https://app.test",
   ONLINE_WINDOW_MS: "90000",
   DIAGNOSTICS_DAILY_GLOBAL_LIMIT: "400",
+  USAGE_RESEARCH_DAILY_GLOBAL_LIMIT: "20000",
+  USAGE_RESEARCH_RETENTION_DAYS: "180",
+  USAGE_RESEARCH_STORAGE_CEILING_MB: "4096",
 };
 
 const relayBinding = [{ binding: "ACTIVITY_RELAY", service: "ade-push-relay" }];
@@ -151,12 +154,13 @@ describe("account directory deployment preflight", () => {
       WEB_CLIENT_ORIGIN: "https://app.test",
     };
     const result = verify({ config: { vars, services: relayBinding, env: { production: { vars, services: relayBinding } } } });
-    expect(result.warnings).toEqual([
-      expect.stringContaining("ONLINE_WINDOW_MS is not set for the default environment"),
-      expect.stringContaining("DIAGNOSTICS_DAILY_GLOBAL_LIMIT is not set for the default environment"),
-      expect.stringContaining("ONLINE_WINDOW_MS is not set for the production environment"),
-      expect.stringContaining("DIAGNOSTICS_DAILY_GLOBAL_LIMIT is not set for the production environment"),
-    ]);
+    expect(result.warnings).toEqual(["default", "production"].flatMap((environment) => [
+      "ONLINE_WINDOW_MS",
+      "DIAGNOSTICS_DAILY_GLOBAL_LIMIT",
+      "USAGE_RESEARCH_DAILY_GLOBAL_LIMIT",
+      "USAGE_RESEARCH_RETENTION_DAYS",
+      "USAGE_RESEARCH_STORAGE_CEILING_MB",
+    ].map((name) => expect.stringContaining(`${name} is not set for the ${environment} environment`))));
   });
 
   it("warns when a defaulted var is set to something the Worker cannot parse", () => {

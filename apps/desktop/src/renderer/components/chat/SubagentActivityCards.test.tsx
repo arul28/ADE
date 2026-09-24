@@ -192,11 +192,11 @@ describe("SubagentResultCard", () => {
   });
 
   it.each([
-    ["user", null, "Stopped — interrupted"],
-    ["system", "the ADE brain restarted", "Stopped: the ADE brain restarted"],
-    ["foreign-brain", "another ADE brain took over this chat", "Stopped: another ADE brain took over this chat"],
-    ["provider", "the provider ended the turn", "Stopped: the provider ended the turn"],
-    ["unknown", null, "Stopped"],
+    ["user", null, "you interrupted"],
+    ["system", "the ADE brain restarted", "the ADE brain restarted"],
+    ["foreign-brain", "another ADE brain took over this chat", "another ADE brain took over this chat"],
+    ["provider", "the provider ended the turn", "the provider ended the turn"],
+    ["unknown", null, "stopped"],
   ] as const)("uses the stop source in the lone card headline (%s)", (stopSource, stopReason, expected) => {
     const { container } = render(
       <SubagentResultCard
@@ -224,8 +224,9 @@ describe("SubagentResultCard", () => {
         })}
       />,
     );
-    expect(container.textContent).toContain("Writing the report");
-    expect(container.textContent).toContain("report landed");
+    expect(container.textContent).toContain("the ADE brain restarted");
+    expect(container.textContent).not.toContain("report landed");
+    expect(container.textContent).not.toContain("work lost");
   });
 });
 
@@ -384,7 +385,7 @@ describe("SubagentStoppedGroupCard", () => {
       />,
     );
     expect(container.textContent).toContain("Explore auth flow · reading authRouter.ts");
-    expect(container.textContent).toContain("work lost");
-    expect(container.textContent).toContain("report landed");
+    expect(container.textContent).not.toContain("work lost");
+    expect(container.textContent).not.toContain("outcome");
   });
 });

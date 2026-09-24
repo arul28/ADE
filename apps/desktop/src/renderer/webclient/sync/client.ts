@@ -23,6 +23,7 @@ import type {
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../shared/types/account";
+import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
 import {
   accountMachineDisplayName,
   accountMachinePairedSyncEndpoints,
@@ -53,6 +54,7 @@ import {
   type WebClientStorage,
 } from "./envStore";
 import { randomHex, uuid } from "./ids";
+import { decodeChatLaunchEventPayload } from "./chatLaunchEvents";
 import {
   applyProjectHostHello,
   bindProjectHostRecoverySend,
@@ -160,6 +162,7 @@ type ClientEvents = {
   chatEvent: SyncChatEventPayload;
   macDesktopStreamRecord: SyncMacDesktopStreamRecordPayload;
   macDesktopStreamEnded: SyncMacDesktopStreamEndedPayload;
+  chatLaunchEvent: ChatLaunchEvent;
   projectCatalog: SyncProjectCatalogPayload;
   activeProjectChanged: AdeSyncActiveProjectChange;
 };
@@ -267,6 +270,7 @@ export class AdeSyncClient {
     chatEvent: new Set(),
     macDesktopStreamRecord: new Set(),
     macDesktopStreamEnded: new Set(),
+    chatLaunchEvent: new Set(),
     projectCatalog: new Set(),
     activeProjectChanged: new Set(),
   };
@@ -999,6 +1003,11 @@ export class AdeSyncClient {
       .some((descriptor) => descriptor.action === "macDesktop.takeControl");
   }
 
+  /** New-lane launch updates the host pushes as `chat_launch_event` envelopes. */
+  onChatLaunchEvent(listener: (payload: ChatLaunchEvent) => void): () => void {
+    return this.on("chatLaunchEvent", listener);
+  }
+
   onProjectCatalog(listener: (payload: SyncProjectCatalogPayload) => void): () => void {
     return this.on("projectCatalog", listener);
   }
@@ -1143,6 +1152,12 @@ export class AdeSyncClient {
       case "project_switch_result":
         this.handleProjectSwitchResult(envelope.requestId ?? null, envelope.payload as SyncProjectSwitchResultPayload);
         break;
+      case "chat_launch_event": {
+        // Typed, but still wire data from a host of any version: validate before fanning out.
+        const event = decodeChatLaunchEventPayload(envelope.payload);
+        if (event) this.emit("chatLaunchEvent", event);
+        break;
+      }
       default:
         break;
     }

@@ -839,48 +839,86 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// Loads one artifact's preview. A stored video larger than
+  /// `workArtifactEagerVideoMaxBytes` is only sized on `.preview` (rows and
+  /// cards show a play placeholder) and downloads on `.play`.
   @MainActor
-  func loadArtifactContent(_ artifact: ComputerUseArtifactSummary) async {
-    guard artifactContent[artifact.id] == nil else { return }
+  func loadArtifactContent(_ artifact: ComputerUseArtifactSummary, _ intent: WorkArtifactLoadIntent) async {
+    switch artifactContent[artifact.id] {
+    case .none: break
+    case .videoOnDemand where intent == .play: break
+    default: return
+    }
     guard !artifactContentLoadsInFlight.contains(artifact.id) else { return }
+    let scope = artifactLoadScope
     artifactContentLoadsInFlight.insert(artifact.id)
-    defer { artifactContentLoadsInFlight.remove(artifact.id) }
+    defer {
+      // A load that outlived its chat leaves the next chat's bookkeeping alone.
+      if scope.isActive { artifactContentLoadsInFlight.remove(artifact.id) }
+    }
+    func publish(_ content: WorkLoadedArtifactContent) {
+      guard scope.isActive else {
+        workRemoveLoadedArtifactTempFile(content)
+        return
+      }
+      setArtifactContent(content, for: artifact.id)
+    }
 
     let cacheKey = "work-artifact::\(artifact.id)::\(artifact.uri)"
+    let isVideo = workArtifactIsVideo(artifact)
 
-    if artifact.artifactKind != "video_recording", let cachedImage = ADEImageCache.shared.cachedImage(for: cacheKey) {
-      setArtifactContent(.image(cachedImage), for: artifact.id)
+    if !isVideo, let cachedImage = ADEImageCache.shared.cachedImage(for: cacheKey) {
+      publish(.image(cachedImage))
       return
     }
 
     if let directURL = URL(string: artifact.uri), directURL.scheme?.hasPrefix("http") == true {
-      if artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true) {
-        setArtifactContent(.remoteURL(directURL), for: artifact.id)
+      if isVideo {
+        publish(.remoteURL(directURL))
       } else if let image = try? await ADEImageCache.shared.loadRemoteImage(from: directURL, cacheKey: cacheKey) {
-        setArtifactContent(.image(image), for: artifact.id)
+        publish(.image(image))
       } else {
-        setArtifactContent(.error("The machine returned an unreadable image preview."), for: artifact.id)
+        publish(.error("The machine returned an unreadable image preview."))
       }
       return
     }
 
-    let isVideo = artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true)
+    let videoURL = workArtifactVideoTempURL(
+      artifactId: artifact.id,
+      fileExtension: fileExtension(for: artifact.mimeType, fallback: "mp4")
+    )
+
     if isVideo {
       // Pulled in slices: a long recording is larger than the whole-file read
       // allows. A host on an older build does not know the slice read, so that
-      // one case falls through to the whole-file read below.
-      let url = FileManager.default.temporaryDirectory
-        .appendingPathComponent("ade-work-artifact-\(artifact.id)")
-        .appendingPathExtension(fileExtension(for: artifact.mimeType, fallback: "mp4"))
+      // one case falls through to the whole-file read below, which the host
+      // caps at 8 MiB.
       do {
-        try await syncService.downloadArtifact(artifactId: artifact.id, uri: artifact.uri, to: url)
-        setArtifactContent(.video(url), for: artifact.id)
+        if intent == .preview {
+          let size = try await syncService.artifactSize(artifactId: artifact.id, uri: artifact.uri)
+          if workArtifactVideoWaitsForPlay(intent: intent, sizeBytes: size) {
+            publish(.videoOnDemand(sizeBytes: size))
+            return
+          }
+        }
+        try await syncService.downloadArtifact(
+          artifactId: artifact.id,
+          uri: artifact.uri,
+          to: videoURL,
+          shouldContinue: { scope.isActive }
+        )
+        publish(.video(videoURL))
         return
-      } catch let error where error.localizedDescription.contains("Unsupported file action") {
-        // Older host: use the whole-file read.
       } catch {
-        setArtifactContent(.error(artifactLoadErrorMessage(error)), for: artifact.id)
-        return
+        switch workArtifactVideoLoadFailure(error) {
+        case .retryLater:
+          return
+        case .useWholeFileRead:
+          break
+        case .show:
+          publish(.error(artifactLoadErrorMessage(error)))
+          return
+        }
       }
     }
 
@@ -894,24 +932,23 @@ extension WorkSessionDestinationView {
       }
 
       guard let data else {
-        setArtifactContent(.error("The machine returned an artifact payload that could not be decoded."), for: artifact.id)
+        publish(.error("The machine returned an artifact payload that could not be decoded."))
         return
       }
 
       if isVideo {
-        let url = FileManager.default.temporaryDirectory
-          .appendingPathComponent("ade-work-artifact-\(artifact.id)")
-          .appendingPathExtension(fileExtension(for: artifact.mimeType, fallback: "mp4"))
-        try data.write(to: url, options: .atomic)
-        setArtifactContent(.video(url), for: artifact.id)
+        try data.write(to: videoURL, options: .atomic)
+        publish(.video(videoURL))
       } else if let image = UIImage(data: data) {
         ADEImageCache.shared.store(data, for: cacheKey)
-        setArtifactContent(.image(image), for: artifact.id)
+        publish(.image(image))
       } else {
-        setArtifactContent(.text(blob.content), for: artifact.id)
+        publish(.text(blob.content))
       }
+    } catch is CancellationError {
+      return
     } catch {
-      setArtifactContent(.error(artifactLoadErrorMessage(error)), for: artifact.id)
+      publish(.error(artifactLoadErrorMessage(error)))
     }
   }
 
@@ -922,10 +959,12 @@ extension WorkSessionDestinationView {
       || raw.contains("file URL is invalid") {
       return "Preview isn't available on this device."
     }
+    // Older hosts send only the message text for these.
     if raw.contains("too large to sync") {
       return "This recording is too large for the machine's ADE version. Update ADE there to play it."
     }
-    if raw.contains("Can’t reach this computer") {
+    let nsError = error as NSError
+    if nsError.domain == "ADE", nsError.code == SyncService.fileRequestOfflineErrorCode {
       return "The machine that holds this proof is offline."
     }
     return "Preview unavailable."

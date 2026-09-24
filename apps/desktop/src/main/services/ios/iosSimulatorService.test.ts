@@ -2732,11 +2732,18 @@ describe("iosSimulatorService boot contract", () => {
     onShutdown?: (udid: string) => void;
     onBoot?: (udid: string) => void;
     helperPid?: () => number | null;
+    /** Answer a helper command; `undefined` falls through to the fake's default answer. */
+    helperAnswer?: (command: Record<string, unknown>) => Promise<Record<string, unknown>> | undefined;
   } = {}) {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const { run, calls, devices } = bootAwareRun(options);
     const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const defaultHelper = fakeSimHelper();
     const helper = fakeSimHelper({
+      ...(options.helperAnswer ? {
+        onSend: (command: Record<string, unknown>) =>
+          options.helperAnswer?.(command) ?? defaultHelper.client.send(command as never) as Promise<Record<string, unknown>>,
+      } : {}),
       ...(options.captureError ? {
         onSend: (command: Record<string, unknown>) => {
           if (command.type === "capture-start") throw new Error(options.captureError ?? "capture failed");
@@ -2777,18 +2784,98 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("deviceDeleteInstalled refuses to delete without the owner's confirmation", async () => {
-    // Not a formality. Deleting a simulator is not recoverable, the owner's
-    // standing rule is that nothing deletes one without their approval, and
-    // this verb is reachable by any agent because ADE keeps one action list
-    // per domain. A caller that must write the claim out cannot arrive here by
-    // drifting through a default.
+  it("deviceDeleteInstalled refuses to delete without the owner's confirmation, and does not coach a way past it", async () => {
+    // Deleting a simulator is not recoverable and is the user's call. The
+    // refusal names where the user makes it; it must not name the flag, which
+    // an agent would read as the next thing to pass.
     const { service, calls, dispose } = setup();
     try {
-      await expect(
-        service.deviceDeleteInstalled({ udid: "device-2" } as never),
-      ).rejects.toThrow(/confirmedByUser/);
+      const refusal = service.deviceDeleteInstalled({ udid: "device-2" } as never);
+      await expect(refusal).rejects.toThrow(/user's call/);
+      await expect(refusal).rejects.not.toThrow(/confirmedByUser/);
       expect(calls).not.toContain("xcrun simctl delete device-2");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: deviceDeleteInstalled stops an un-laned stream, the recording and the helper session before the delete", async () => {
+    // A stream from an un-laned caller kept reading the deleted device, and
+    // the helper kept its session for a device that no longer existed.
+    let sentAtShutdown: string[] = [];
+    const { service, calls, helper, dispose } = setup({
+      onShutdown: () => { sentAtShutdown = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`); },
+    });
+    try {
+      await service.startStream({ deviceUdid: "device-2", boot: true });
+      expect(service.getStreamStatus({}).running).toBe(true);
+
+      await service.deviceDeleteInstalled({ udid: "device-2", confirmedByUser: true });
+
+      expect(service.getStreamStatus({}).running).toBe(false);
+      expect(sentAtShutdown).toEqual(expect.arrayContaining([
+        "capture-stop device-2",
+        "record-stop device-2",
+        "device-reset device-2",
+      ]));
+      expect(calls.indexOf("xcrun simctl delete device-2")).toBeGreaterThan(calls.indexOf("xcrun simctl shutdown device-2"));
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceDeleteInstalled tears nothing down for a device a lane holds", async () => {
+    const { service, helper, dispose } = setup();
+    try {
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+      const sentBefore = helper.sent.length;
+
+      await expect(
+        service.deviceDeleteInstalled({ udid: "device-2", confirmedByUser: true }),
+      ).rejects.toThrow(/APPLE_DEVICE_OWNED_BY_LANE/);
+
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
+      expect(helper.sent.slice(sentBefore)).toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("deviceDetach returns a lane to the picker and keeps its clone installed and running", async () => {
+    // The off card's "Choose another device" (owner decision D2): one click,
+    // and it must never delete a simulator.
+    const { service, calls, events, dispose } = setup();
+    try {
+      await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-2" } });
+
+      const detached = await service.deviceDetach({ laneId: "lane-b" });
+
+      expect(detached).toMatchObject({ udid: "device-clone", origin: "clone", laneId: "lane-b" });
+      expect(calls).not.toContain("xcrun simctl delete device-clone");
+      expect(calls).not.toContain("xcrun simctl shutdown device-clone");
+      const list = await service.deviceList({ laneId: "lane-b" });
+      expect(list.lane).toBeNull();
+      expect(list.installed.map((device) => device.udid)).toContain("device-clone");
+      expect(service.getStreamStatus({ laneId: "lane-b" }).running).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "apple.device.state",
+        laneId: "lane-b",
+        udid: "device-clone",
+        phase: "released",
+      }));
+      // Nothing left to detach.
+      await expect(service.deviceDetach({ laneId: "lane-b" })).resolves.toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: tells agents about no user-only verb", async () => {
+    const { service, dispose } = setup();
+    try {
+      const status = await service.getStatus({ laneId: "lane-a" });
+      expect(status.capabilities).toContain("deviceDelete");
+      expect(status.capabilities).not.toContain("deviceDeleteInstalled");
     } finally {
       dispose();
     }
@@ -2947,6 +3034,110 @@ describe("iosSimulatorService boot contract", () => {
       await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
       await service.stopStream({ laneId: "lane-a", localViewer: true });
       expect(captureStops()).toBe(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: the last phone leaving lifts its bitrate cap for the Mac that is still watching", async () => {
+    // D11: the cap a remote viewer set stayed on the live encoder after it
+    // left, so the Mac's own view ran at the phone's bitrate until a restart.
+    const { service, helper, dispose } = setup();
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      const relay = createAppleStreamRelayForService({
+        service,
+        remoteBitrateKbpsCap: () => 1500,
+        hasLocalViewer: (laneId) => service.hasLocalViewer(laneId),
+        connect: (() => ({ onData: () => {}, onEnd: () => {}, close: () => {} })) as never,
+      });
+      const ticket = relay.issue({ laneId: "lane-a" });
+      const socketListeners = new Map<string, (...args: unknown[]) => void>();
+      const socket = {
+        send: vi.fn(),
+        close: vi.fn(),
+        on: (event: string, listener: (...args: unknown[]) => void) => { socketListeners.set(event, listener); },
+      };
+      expect(await relay.attach(socket as never, { ticket: ticket.ticket, token: ticket.token })).toBe(true);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBe(1500);
+      const sentBefore = helper.sent.length;
+
+      socketListeners.get("close")?.();
+
+      await vi.waitFor(() => expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBeNull());
+      const sentAfter = helper.sent.slice(sentBefore);
+      expect(sentAfter).toEqual([expect.objectContaining({ type: "capture-start", udid: "device-1", bitrateKbps: 0 })]);
+      // Lifted, not stopped: the Mac keeps watching the same capture.
+      expect(service.getStreamStatus({ laneId: "lane-a" }).running).toBe(true);
+      relay.dispose();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("liftStreamBitrateCap leaves a cap in place while a remote viewer still watches, and sends nothing when there is none", async () => {
+    const { service, helper, dispose } = setup();
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      const sentBefore = helper.sent.length;
+      await service.liftStreamBitrateCap({ laneId: "lane-a" });
+      expect(helper.sent.length).toBe(sentBefore);
+
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", bitrateKbps: 1500 });
+      service.setRemoteViewerProbe({ watching: () => true, adopt: () => {} });
+      const sentWithCap = helper.sent.length;
+      await service.liftStreamBitrateCap({ laneId: "lane-a" });
+      expect(helper.sent.length).toBe(sentWithCap);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBe(1500);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: a phone that rejoins while the cap is being lifted keeps its cap", async () => {
+    // L6: the lift cleared the cap only after the helper answered, so a rejoin
+    // during that wait saw its own cap still recorded, sent nothing, and then
+    // watched uncapped once the lift landed.
+    const lift: { finish: (() => void) | null } = { finish: null };
+    const { service, helper, dispose } = setup({
+      helperAnswer: (command) => (command.type === "capture-start" && command.bitrateKbps === 0
+        ? new Promise((resolve) => { lift.finish = () => resolve({ type: "capture-started" }); })
+        : undefined),
+    });
+    try {
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", localViewer: true });
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", bitrateKbps: 1500 });
+      const lifting = service.liftStreamBitrateCap({ laneId: "lane-a" });
+      await vi.waitFor(() => expect(lift.finish).not.toBeNull());
+
+      await service.startStream({ deviceUdid: "device-1", laneId: "lane-a", bitrateKbps: 1500 });
+      lift.finish?.();
+      await lifting;
+
+      const caps = helper.sent
+        .filter((command) => command.type === "capture-start")
+        .map((command) => command.bitrateKbps ?? null);
+      expect(caps.slice(-2)).toEqual([0, 1500]);
+      expect(service.getStreamStatus({ laneId: "lane-a" }).bitrateKbps).toBe(1500);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: a helper exit tells the pane the lane's recording stopped", async () => {
+    const { service, helper, events, dispose } = setup();
+    try {
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+      const recording = await service.recordStart({ laneId: "lane-a" });
+
+      helper.emit({ type: "helper-exited", pid: 4321, code: null, signal: "SIGKILL" });
+
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "apple.recording.state",
+        laneId: "lane-a",
+        phase: "stopped",
+        recordingId: recording.id,
+      }));
     } finally {
       dispose();
     }
@@ -3182,6 +3373,30 @@ describe("iosSimulatorService boot contract", () => {
       expect(phases()).toEqual(["starting", "booted", "streaming"]);
       const owned = await service.deviceList({ laneId: "lane-b", installed: false });
       expect(owned.lane).toMatchObject({ udid: "device-clone", origin: "clone" });
+    } finally {
+      dispose();
+    }
+  });
+
+  it("regression: deleting a lane's clone powers it off once, through the power path", async () => {
+    let sentAtShutdown: string[] = [];
+    const { service, calls, helper, dispose } = setup({
+      onShutdown: () => { sentAtShutdown = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`); },
+    });
+    try {
+      await service.deviceStart({ laneId: "lane-a", create: { sourceUdid: "device-2" } });
+      calls.length = 0;
+
+      await service.deviceDelete({ laneId: "lane-a", ignoreOwnership: true });
+
+      // One shutdown, not the power path's plus a raw one from the registry.
+      expect(calls.filter((call) => call === "xcrun simctl shutdown device-clone")).toHaveLength(1);
+      // The helper was reset before the power went.
+      expect(sentAtShutdown).toContain("device-reset device-clone");
+      const shutdownAt = calls.indexOf("xcrun simctl shutdown device-clone");
+      const deleteAt = calls.indexOf("xcrun simctl delete device-clone");
+      expect(deleteAt).toBeGreaterThan(shutdownAt);
+      expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane).toBeNull();
     } finally {
       dispose();
     }

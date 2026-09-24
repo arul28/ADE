@@ -4,15 +4,15 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  APPLE_DEVICE_ALREADY_RECORDING_CODE,
   APPLE_OWNED_BY_OTHER_SESSION_CODE,
   APPLE_RECORDING_PINNED_CODE,
   AUTO_RECORDING_MAX_MS,
   MANUAL_RECORDING_MAX_MS,
-  appleRecordingsDirectory,
   createSimRecordingService,
   type SimRecordingService,
 } from "./simRecordingService";
+import { appleRecordingsDirectory } from "./appleRecordingsStore";
+import { APPLE_DEVICE_ALREADY_RECORDING_CODE } from "../../../../shared/types/iosSimulator";
 import { SimHelperError, type SimHelperTransport } from "../simHelperClient";
 
 /**
@@ -693,6 +693,59 @@ describe("simRecordingService against the helper's per-device state", () => {
     await service.noteInput({ laneId: "lane-a", udid, chatSessionId: "chat-1", kind: "tap", x: 1, y: 2, source: "agent" });
     expect(helper.typed("record-start")).toHaveLength(2);
     expect(service.active({ laneId: "lane-a" })?.id).not.toBe(started.id);
+  });
+
+  /** Rebuild `service` with a change listener, for the tests that read it. */
+  const withChanges = (): Array<{ laneId: string; phase: string; recordingId: string; stopReason: unknown }> => {
+    const changes: Array<{ laneId: string; phase: string; recordingId: string; stopReason: unknown }> = [];
+    service.dispose();
+    service = createSimRecordingService({
+      transport: helper,
+      projectRoot: root,
+      artifactFiler: {
+        ingest(request) {
+          filed.push(request as Record<string, unknown>);
+          return { artifacts: [], links: [] };
+        },
+      },
+      onRecordingChange: ({ laneId, phase, recording }) => {
+        changes.push({ laneId, phase, recordingId: recording.id, stopReason: recording.stopReason ?? null });
+      },
+    });
+    return changes;
+  };
+
+  it("regression: a helper exit tells each lane its recording stopped", async () => {
+    // The pane re-reads its list only on this event. Without it a recording
+    // the dead helper held stayed "live" on screen.
+    const changes = withChanges();
+    const started = await service.start({ laneId: "lane-a", udid, chatSessionId: null });
+    helper.recording.clear();
+
+    const [ended] = service.helperExited();
+
+    expect(ended).toMatchObject({ id: started.id, stopReason: "helper-exited" });
+    expect(changes.at(-1)).toEqual({ laneId: "lane-a", phase: "stopped", recordingId: started.id, stopReason: "helper-exited" });
+  });
+
+  it("proof-bundle does not file a recording the helper died writing", async () => {
+    await service.start({ laneId: "lane-a", udid, chatSessionId: "chat-1" });
+    helper.recording.clear();
+    service.helperExited();
+
+    await expect(service.pinActiveOrLatest({ laneId: "lane-a", chatSessionId: "chat-1" })).resolves.toBeNull();
+    expect(filed).toEqual([]);
+  });
+
+  it("regression: a reclaimed orphan recording tells its lane it stopped", async () => {
+    const changes = withChanges();
+    helper.loseNextStartReply();
+    await service.start({ laneId: "lane-a", udid, chatSessionId: null }).catch(() => null);
+
+    const reclaimed = await service.stopDevice({ udid, reason: "device-off" });
+
+    expect(reclaimed).not.toBeNull();
+    expect(changes).toContainEqual({ laneId: "lane-a", phase: "stopped", recordingId: reclaimed!.id, stopReason: null });
   });
 
   it("marks a recording ended when the service is disposed under it", async () => {

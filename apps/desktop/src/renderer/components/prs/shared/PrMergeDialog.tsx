@@ -43,6 +43,10 @@ export type PrMergeDialogProps = {
   onMerge: (result: PrMergeDialogResult) => void;
   /** Persist the chosen method as the new default. */
   onMethodChange?: (method: MergeMethod) => void;
+  /** What merging now skips ("1 running check"), shown above the actions. */
+  skips?: string[];
+  /** Opened from "Merge anyway" as an admin: start with the bypass checked. */
+  preferBypass?: boolean;
 };
 
 const MERGE_METHODS: MergeMethod[] = ["squash", "merge", "rebase"];
@@ -57,6 +61,8 @@ export const PrMergeDialog = memo(function PrMergeDialog({
   actionBusy,
   onMerge,
   onMethodChange,
+  skips = [],
+  preferBypass = false,
 }: PrMergeDialogProps) {
   const [method, setMethod] = useState<MergeMethod>(defaultMethod);
   const [commitTitle, setCommitTitle] = useState("");
@@ -75,7 +81,7 @@ export const PrMergeDialog = memo(function PrMergeDialog({
   const acknowledgedHeadRef = useRef<string | null>(null);
 
   const showCommitEditor = method !== "rebase";
-  const canBypass = Boolean(status?.canBypass) && status?.mergeStateStatus === "blocked";
+  const canBypass = Boolean(status?.canBypass) && (status?.mergeStateStatus === "blocked" || status?.mergeStateStatus === "behind");
   const mergeEnabled = canAttemptMerge({ pr, status, bypassRules });
 
   const computeDefaults = useCallback(
@@ -99,7 +105,7 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     const defaults = computeDefaults(defaultMethod);
     setCommitTitle(defaults.title);
     setCommitBody(defaults.body);
-    setBypassRules(false);
+    setBypassRules(preferBypass && canBypass);
     setStaleHead(false);
     openedHeadShaRef.current = status?.headSha ?? null;
     acknowledgedHeadRef.current = status?.headSha ?? null;
@@ -336,6 +342,16 @@ export const PrMergeDialog = memo(function PrMergeDialog({
             <span style={{ fontFamily: MONO_FONT }}>{pr.baseBranch}</span> — no merge commit message.
           </div>
         )}
+
+        {skips.length > 0 ? (
+          <div
+            data-testid="pr-merge-skips"
+            className="rounded-md px-2.5 py-2 text-[11px]"
+            style={{ color: COLORS.warning, background: `color-mix(in srgb, ${COLORS.warning} 10%, transparent)`, fontFamily: SANS_FONT, lineHeight: 1.5 }}
+          >
+            Merging now skips: {skips.join(", ")}.
+          </div>
+        ) : null}
 
         {/* Bypass (admins only, only when blocked) */}
         {canBypass ? (

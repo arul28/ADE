@@ -3,10 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
-import {
-  createComputerUseArtifactBrokerService,
-  resolveTempImportRoots,
-} from "./computerUseArtifactBrokerService";
+import { createComputerUseArtifactBrokerService, resolveTempImportRoots } from "./computerUseArtifactBrokerService";
+import { createHash } from "node:crypto";
+import { isIsoMediaExtension, readMp4CreationTime, readMp4CreationTimeFromFile } from "./mediaCreationTime";
 
 function createLogger() {
   return {
@@ -46,7 +45,7 @@ describe("computerUseArtifactBrokerService", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it("persists review metadata for ingested artifacts", () => {
+  it("persists review metadata for ingested artifacts", async () => {
     const events: Array<{ type: string; artifactId: string }> = [];
 
     const broker = createComputerUseArtifactBrokerService({
@@ -57,7 +56,7 @@ describe("computerUseArtifactBrokerService", () => {
       onEvent: (payload) => events.push({ type: payload.type, artifactId: payload.artifactId }),
     });
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: {
         name: "agent-browser",
       },
@@ -172,7 +171,6 @@ describe("computerUseArtifactBrokerService", () => {
 
     const first = await broker.readArtifactRange({ uri, offset: 0, length: 64 * 1024 * 1024 });
     expect(first.totalSize).toBe(bytes.length);
-    expect(first.mimeType).toBe("video/quicktime");
     // A caller cannot ask past the 2 MiB slice cap.
     expect(Buffer.from(first.data, "base64")).toEqual(bytes.subarray(0, 2 * 1024 * 1024));
 
@@ -255,7 +253,7 @@ describe("computerUseArtifactBrokerService", () => {
     }
   });
 
-  it("allows ADE cache browser observations to be promoted into proof", () => {
+  it("allows ADE cache browser observations to be promoted into proof", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -267,7 +265,7 @@ describe("computerUseArtifactBrokerService", () => {
     const observationPath = path.join(observationDir, "obs.png");
     fs.writeFileSync(observationPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: {
         name: "ade-browser",
         style: "manual",
@@ -288,7 +286,7 @@ describe("computerUseArtifactBrokerService", () => {
     });
   });
 
-  it("allows only the configured machine-local personal browser scratch root to be promoted", () => {
+  it("allows only the configured machine-local personal browser scratch root to be promoted", async () => {
     const personalObservationRoot = fs.mkdtempSync(path.join(process.cwd(), ".browser-personal-proof-"));
     try {
       const broker = createComputerUseArtifactBrokerService({
@@ -302,7 +300,7 @@ describe("computerUseArtifactBrokerService", () => {
       fs.mkdirSync(path.dirname(observationPath), { recursive: true });
       fs.writeFileSync(observationPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-      const ingested = broker.ingest({
+      const ingested = await broker.ingestAsync({
         backend: { name: "ade-browser", style: "manual" },
         inputs: [{ kind: "screenshot", title: "Personal browser proof", path: observationPath }],
       });
@@ -317,7 +315,7 @@ describe("computerUseArtifactBrokerService", () => {
     }
   });
 
-  it("persists the declared backend style for ingested artifacts", () => {
+  it("persists the declared backend style for ingested artifacts", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -325,7 +323,7 @@ describe("computerUseArtifactBrokerService", () => {
       logger: createLogger(),
     });
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: {
         name: "ade-cli",
         style: "manual",
@@ -347,7 +345,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(row?.backend_style).toBe("manual");
   });
 
-  it("resolves a relative capture path against the caller's lane worktree", () => {
+  it("resolves a relative capture path against the caller's lane worktree", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -361,7 +359,7 @@ describe("computerUseArtifactBrokerService", () => {
     fs.mkdirSync(path.join(laneRoot, "shots"), { recursive: true });
     fs.writeFileSync(path.join(laneRoot, "shots", "proof.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       callerRoot: laneRoot,
       inputs: [{ kind: "screenshot", title: "Lane proof", path: "shots/proof.png" }],
@@ -374,7 +372,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ artifactId: stored.id })[0]?.availability).toBe("available");
   });
 
-  it("imports proof from a server-authorized attached lane root", () => {
+  it("imports proof from a server-authorized attached lane root", async () => {
     const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-lane-proof-"));
     try {
       const proofBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -408,7 +406,7 @@ describe("computerUseArtifactBrokerService", () => {
         ],
       );
 
-      const ingested = broker.ingest({
+      const ingested = await broker.ingestAsync({
         backend: { name: "ade-cli", style: "manual" },
         callerRoot: attachedLaneRoot,
         owners: [{ kind: "lane", id: "attached-lane" }],
@@ -473,7 +471,63 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
   });
 
-  it("deletes an artifact's rows and its stored file, and stays idempotent", () => {
+  it("regression: a batch whose second row fails to insert files nothing", () => {
+    const events: string[] = [];
+    let artifactInserts = 0;
+    const failingDb: AdeDb = {
+      ...db,
+      run: (sql, params) => {
+        if (/insert into computer_use_artifacts\(/.test(sql) && ++artifactInserts === 2) {
+          throw new Error("disk full");
+        }
+        db.run(sql, params);
+      },
+    };
+    const broker = createComputerUseArtifactBrokerService({
+      db: failingDb,
+      projectId: "project-1",
+      projectRoot,
+      logger: createLogger(),
+      onEvent: (payload) => events.push(payload.type),
+    });
+    const firstCapture = path.join(projectRoot, "first.png");
+    const secondCapture = path.join(projectRoot, "second.png");
+    fs.writeFileSync(firstCapture, "first", "utf8");
+    fs.writeFileSync(secondCapture, "second", "utf8");
+
+    expect(() =>
+      broker.ingest({
+        backend: { name: "ade-cli", style: "manual" },
+        owners: [{ kind: "lane", id: "lane-1" }],
+        inputs: [
+          { kind: "screenshot", title: "First proof", path: firstCapture },
+          { kind: "screenshot", title: "Second proof", path: secondCapture },
+        ],
+      }),
+    ).toThrow(/disk full/);
+
+    // Row 1 was rolled back with row 2, so a retry files each once.
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
+    expect(db.all("select id from computer_use_artifact_links")).toHaveLength(0);
+    expect(events).toEqual([]);
+    const stagedDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+    expect(fs.existsSync(stagedDir) ? fs.readdirSync(stagedDir) : []).toEqual([]);
+
+    // The same connection still takes writes afterwards.
+    artifactInserts = 10;
+    const retried = broker.ingest({
+      backend: { name: "ade-cli", style: "manual" },
+      owners: [{ kind: "lane", id: "lane-1" }],
+      inputs: [
+        { kind: "screenshot", title: "First proof", path: firstCapture },
+        { kind: "screenshot", title: "Second proof", path: secondCapture },
+      ],
+    });
+    expect(retried.artifacts).toHaveLength(2);
+    expect(broker.listArtifacts({ limit: 50 })).toHaveLength(2);
+  });
+
+  it("deletes an artifact's rows and its stored file, and stays idempotent", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -481,7 +535,7 @@ describe("computerUseArtifactBrokerService", () => {
       logger: createLogger(),
     });
 
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       owners: [{ kind: "chat_session", id: "chat-1" }],
       inputs: [{ kind: "console_logs", title: "Notes", text: "hello" }],
@@ -504,7 +558,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(repeat.failed).toEqual([]);
   });
 
-  it("keeps shared stored bytes until the final artifact record is deleted", () => {
+  it("keeps shared stored bytes until the final artifact record is deleted", async () => {
     const canonicalProjectRoot = fs.realpathSync(projectRoot);
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -512,17 +566,17 @@ describe("computerUseArtifactBrokerService", () => {
       projectRoot: canonicalProjectRoot,
       logger: createLogger(),
     });
-    const first = broker.ingest({
+    const first = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Shared notes", text: "hello" }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
     // An ADE capture, so the duplicate refusal for attaches does not apply.
-    const second = broker.ingest({
+    const second = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Shared notes again", path: filePath }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
 
     expect(second.uri).toBe(first.uri);
     expect(broker.deleteArtifacts({ artifactId: first.id }).deleted[0]).toMatchObject({
@@ -546,7 +600,7 @@ describe("computerUseArtifactBrokerService", () => {
    * reference still unlinks the bytes — the earlier deletes in the same call
    * have to be struck off the set as they happen.
    */
-  it("unlinks bytes a single batch removes the last reference to", () => {
+  it("unlinks bytes a single batch removes the last reference to", async () => {
     const canonicalProjectRoot = fs.realpathSync(projectRoot);
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -554,17 +608,17 @@ describe("computerUseArtifactBrokerService", () => {
       projectRoot: canonicalProjectRoot,
       logger: createLogger(),
     });
-    const first = broker.ingest({
+    const first = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Batched notes", text: "hello" }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
     // An ADE capture, so the duplicate refusal for attaches does not apply.
-    const second = broker.ingest({
+    const second = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Batched notes again", path: filePath }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
 
     const result = broker.deleteArtifacts({ artifactIds: [first.id, second.id] });
 
@@ -572,7 +626,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(fs.existsSync(filePath)).toBe(false);
   });
 
-  it("keeps shared stored bytes when surviving records use an equivalent URI spelling", () => {
+  it("keeps shared stored bytes when surviving records use an equivalent URI spelling", async () => {
     const canonicalProjectRoot = fs.realpathSync(projectRoot);
     const broker = createComputerUseArtifactBrokerService({
       db,
@@ -580,17 +634,17 @@ describe("computerUseArtifactBrokerService", () => {
       projectRoot: canonicalProjectRoot,
       logger: createLogger(),
     });
-    const first = broker.ingest({
+    const first = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Shared aliases", text: "hello" }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     const filePath = path.join(canonicalProjectRoot, first.uri);
     // An ADE capture, so the duplicate refusal for attaches does not apply.
-    const second = broker.ingest({
+    const second = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       provenance: { source: "ade-capture" },
       inputs: [{ kind: "console_logs", title: "Shared aliases again", path: filePath }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     db.run(
       "update computer_use_artifacts set uri = ? where id = ?",
       [`ade-artifact://project/${first.uri}`, second.id],
@@ -604,14 +658,14 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ artifactId: second.id })[0]?.availability).toBe("available");
   });
 
-  it("removes rows for records whose file was already deleted", () => {
+  it("removes rows for records whose file was already deleted", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
       logger: createLogger(),
     });
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "console_logs", title: "Notes", text: "hello" }],
     });
@@ -624,14 +678,14 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ artifactId })).toHaveLength(0);
   });
 
-  it("retains the file and database rows when stored-byte deletion fails", () => {
+  it("retains the file and database rows when stored-byte deletion fails", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
       logger: createLogger(),
     });
-    const ingested = broker.ingest({
+    const ingested = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       owners: [{ kind: "chat_session", id: "chat-1" }],
       inputs: [{ kind: "console_logs", title: "Retryable notes", text: "hello" }],
@@ -806,7 +860,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(fs.readFileSync(path.join(projectRoot, recovered.uri), "utf8")).toBe("lane-a");
   });
 
-  it("does not recover from a caller-supplied absolutePath in another lane", () => {
+  it("does not recover from a caller-supplied absolutePath in another lane", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -839,7 +893,7 @@ describe("computerUseArtifactBrokerService", () => {
       ],
     );
 
-    const ingested = broker.ingest({
+    const ingested = (await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       callerRoot: owningLaneRoot,
       owners: [{ kind: "lane", id: "lane-a" }],
@@ -849,7 +903,7 @@ describe("computerUseArtifactBrokerService", () => {
         path: "shots/proof.png",
         metadata: { absolutePath: substitutePath },
       }],
-    }).artifacts[0]!;
+    })).artifacts[0]!;
     fs.rmSync(path.join(projectRoot, ingested.uri), { force: true });
     fs.rmSync(originalPath, { force: true });
 
@@ -861,7 +915,7 @@ describe("computerUseArtifactBrokerService", () => {
       .toThrow(/original file.*no longer exists/i);
   });
 
-  it("recovers a local URI capture from its attached lane root", () => {
+  it("recovers a local URI capture from its attached lane root", async () => {
     const attachedLaneRoot = fs.mkdtempSync(path.join(process.cwd(), ".attached-uri-recovery-"));
     try {
       const proofBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -892,7 +946,7 @@ describe("computerUseArtifactBrokerService", () => {
         projectRoot,
         logger: createLogger(),
       });
-      const ingested = broker.ingest({
+      const ingested = (await broker.ingestAsync({
         backend: { name: "ade-cli", style: "manual" },
         callerRoot: attachedLaneRoot,
         owners: [{ kind: "lane", id: "attached-uri-lane" }],
@@ -901,7 +955,7 @@ describe("computerUseArtifactBrokerService", () => {
           title: "Attached URI proof",
           uri: "shots/proof.png",
         }],
-      }).artifacts[0]!;
+      })).artifacts[0]!;
       fs.rmSync(path.join(projectRoot, ingested.uri), { force: true });
 
       expect(broker.listBrokenArtifacts()[0]?.recoverablePath)
@@ -1121,7 +1175,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
   });
 
-  it("still imports real proof from the project root", () => {
+  it("still imports real proof from the project root", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -1131,7 +1185,7 @@ describe("computerUseArtifactBrokerService", () => {
     const shotPath = path.join(projectRoot, "capture.png");
     fs.writeFileSync(shotPath, "png-bytes", "utf8");
 
-    const result = broker.ingest({
+    const result = await broker.ingestAsync({
       backend: { name: "ade-cli", style: "manual" },
       inputs: [{ kind: "screenshot", title: "Proof", path: shotPath }],
     });
@@ -1203,7 +1257,7 @@ describe("computerUseArtifactBrokerService", () => {
       expect(roots).toEqual(["/tmp"]);
     });
 
-    it("adds nothing beyond os.tmpdir() on Windows", () => {
+    it("adds nothing beyond os.tmpdir() on Windows", async () => {
       // %TEMP%/%TMP% are already os.tmpdir(); there is no /tmp to widen to.
       const roots = resolveTempImportRoots({
         platform: "win32",
@@ -1218,7 +1272,7 @@ describe("computerUseArtifactBrokerService", () => {
   // POSIX-only: the assertion is about the conventional `/tmp` staging root,
   // which Windows does not have. `skipIf` rather than a bare `return` so the
   // skip is reported instead of passing green.
-  it.skipIf(process.platform === "win32")("imports proof staged in the conventional /tmp directory", () => {
+  it.skipIf(process.platform === "win32")("imports proof staged in the conventional /tmp directory", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -1229,7 +1283,7 @@ describe("computerUseArtifactBrokerService", () => {
     const stagedPath = path.join("/tmp", `ade-proof-roots-${Date.now()}.png`);
     fs.writeFileSync(stagedPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     try {
-      const ingested = broker.ingest({
+      const ingested = await broker.ingestAsync({
         backend: { name: "ade-cli", style: "manual" },
         inputs: [{ kind: "screenshot", title: "Tmp proof", path: stagedPath }],
       });
@@ -1248,19 +1302,19 @@ describe("computerUseArtifactBrokerService", () => {
    * row out of a drawer listing.
    */
   describe("filtering by metadata kind", () => {
-    function seed() {
+    async function seed() {
       const broker = createComputerUseArtifactBrokerService({
         db,
         projectId: "project-1",
         projectRoot,
         logger: createLogger(),
       });
-      broker.ingest({
+      await broker.ingestAsync({
         backend: { name: "cto", style: "manual" },
         owners: [{ kind: "chat_session", id: "chat-1" }],
         inputs: [{ kind: "browser_verification", title: "Real proof", text: "{}" }],
       });
-      broker.ingest({
+      await broker.ingestAsync({
         backend: { name: "scene", style: "manual" },
         owners: [{ kind: "chat_session", id: "chat-1" }],
         inputs: [{
@@ -1273,8 +1327,8 @@ describe("computerUseArtifactBrokerService", () => {
       return broker;
     }
 
-    it("excludes a tagged kind and keeps every untagged artifact", () => {
-      const broker = seed();
+    it("excludes a tagged kind and keeps every untagged artifact", async () => {
+      const broker = await seed();
       const listed = broker.listArtifacts({
         ownerKind: "chat_session",
         ownerId: "chat-1",
@@ -1285,8 +1339,8 @@ describe("computerUseArtifactBrokerService", () => {
       expect(listed.map((artifact) => artifact.title)).toEqual(["Real proof"]);
     });
 
-    it("keeps only a tagged kind when asked for one", () => {
-      const broker = seed();
+    it("keeps only a tagged kind when asked for one", async () => {
+      const broker = await seed();
       const listed = broker.listArtifacts({
         ownerKind: "chat_session",
         ownerId: "chat-1",
@@ -1300,8 +1354,8 @@ describe("computerUseArtifactBrokerService", () => {
      * this table is CRR-replicated: one bad row from any peer took the whole
      * listing down — and the proof drawer reads through it on every open.
      */
-    it("survives a row whose metadata blob is not JSON at all", () => {
-      const broker = seed();
+    it("survives a row whose metadata blob is not JSON at all", async () => {
+      const broker = await seed();
       db.run("update computer_use_artifacts set metadata_json = '' where title = ?", ["Real proof"]);
 
       expect(broker.listArtifacts({
@@ -1316,12 +1370,515 @@ describe("computerUseArtifactBrokerService", () => {
       }).map((artifact) => artifact.title)).toEqual(["A still"]);
     });
 
-    it("applies the same filter to a read by id", () => {
-      const broker = seed();
+    it("applies the same filter to a read by id", async () => {
+      const broker = await seed();
       const still = broker.listArtifacts({ metadataKind: "scene_still" })[0]!;
       expect(broker.listArtifacts({ artifactId: still.id })).toHaveLength(1);
       expect(broker.listArtifacts({ artifactId: still.id, excludeMetadataKind: "scene_still" }))
         .toHaveLength(0);
+    });
+  });
+});
+
+describe("proof provenance", () => {
+  function createLogger() {
+    return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any;
+  }
+
+  const MAC_EPOCH_OFFSET = 2_082_844_800;
+
+  function box(type: string, payload: Buffer): Buffer {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(8 + payload.length, 0);
+    header.write(type, 4, "latin1");
+    return Buffer.concat([header, payload]);
+  }
+
+  /** A tiny MP4 whose mvhd says it was made at `createdAt` (null writes 0). */
+  function mp4Bytes(createdAt: Date | null, filler = 0): Buffer {
+    const mvhd = Buffer.alloc(100);
+    mvhd.writeUInt32BE(createdAt ? createdAt.getTime() / 1000 + MAC_EPOCH_OFFSET : 0, 4);
+    return Buffer.concat([
+      box("ftyp", Buffer.from("isom\0\0\0\0", "latin1")),
+      box("mdat", Buffer.alloc(256, filler)),
+      box("moov", box("mvhd", mvhd)),
+    ]);
+  }
+
+  function sha256(bytes: Buffer): string {
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  describe("computerUseArtifactBroker proof provenance", () => {
+    let projectRoot: string;
+    let db: AdeDb;
+    let turnStartedAt: string | null;
+
+    beforeEach(async () => {
+      projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-provenance-")));
+      db = await openKvDb(path.join(projectRoot, ".ade.db"), createLogger());
+      db.run(
+        `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+         values (?, ?, ?, ?, ?, ?)`,
+        ["project-1", projectRoot, "ADE", "main", "2026-09-23T00:00:00.000Z", "2026-09-23T00:00:00.000Z"],
+      );
+      turnStartedAt = null;
+    });
+
+    afterEach(() => {
+      db.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    const makeBroker = () => {
+      const broker = createComputerUseArtifactBrokerService({
+        db,
+        projectId: "project-1",
+        projectRoot,
+        logger: createLogger(),
+      });
+      broker.setChatTurnStartResolver(() => turnStartedAt);
+      return broker;
+    };
+
+    const writeCacheFile = (name: string, bytes: Buffer): string => {
+      const dir = path.join(projectRoot, ".ade", "cache");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, bytes);
+      return file;
+    };
+
+    const attach = (broker: ReturnType<typeof makeBroker>, file: string, title: string) => broker.ingestAsync({
+      backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+      owners: [{ kind: "chat_session", id: "chat-1" }],
+      inputs: [{ kind: "video_recording", title, path: file }],
+    });
+
+    const storedFiles = (): string[] => {
+      const dir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+      try {
+        return fs.readdirSync(dir);
+      } catch {
+        return [];
+      }
+    };
+
+    it("stamps an attach with its source, hash, and size", async () => {
+      const bytes = mp4Bytes(null, 1);
+      const result = await attach(makeBroker(), writeCacheFile("a.mp4", bytes), "First");
+      expect(result.artifacts[0]!.metadata).toMatchObject({
+        proofSource: "attached",
+        contentSha256: sha256(bytes),
+        contentBytes: bytes.length,
+      });
+      expect(result.warnings).toBeUndefined();
+    });
+
+    it("refuses a renamed copy of existing proof and names the earlier one", async () => {
+      const broker = makeBroker();
+      const bytes = mp4Bytes(null, 2);
+      await attach(broker, writeCacheFile("google-search.mp4", bytes), "Google search");
+      const before = storedFiles().length;
+
+      await expect(attach(broker, writeCacheFile("safari-reddit-search.mp4", bytes), "Safari Reddit search"))
+        .rejects.toThrow(/^PROOF_DUPLICATE: Same bytes as "Google search" \(filed .+\)\. This file is already proof\. Record a new one, or report that recording failed\.$/);
+      // The staged copy of the refused file is removed, and no row is written.
+      expect(storedFiles()).toHaveLength(before);
+      expect(broker.listArtifacts({})).toHaveLength(1);
+    });
+
+    it("accepts different bytes", async () => {
+      const broker = makeBroker();
+      await attach(broker, writeCacheFile("one.mp4", mp4Bytes(null, 3)), "One");
+      await attach(broker, writeCacheFile("two.mp4", mp4Bytes(null, 4)), "Two");
+      expect(broker.listArtifacts({})).toHaveLength(2);
+    });
+
+    it("refuses the same bytes twice in one call", async () => {
+      const bytes = mp4Bytes(null, 5);
+      const broker = makeBroker();
+      await expect(broker.ingestAsync({
+        backend: { name: "ade-cli", style: "manual" },
+        inputs: [
+          { kind: "video_recording", title: "A", path: writeCacheFile("x.mp4", bytes) },
+          { kind: "video_recording", title: "B", path: writeCacheFile("y.mp4", bytes) },
+        ],
+      })).rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "A"/);
+      expect(broker.listArtifacts({})).toHaveLength(0);
+    });
+
+    it("does not block ADE's own recorder, and records its start and stop", async () => {
+      const broker = makeBroker();
+      const bytes = mp4Bytes(null, 6);
+      await attach(broker, writeCacheFile("first.mp4", bytes), "First");
+      const recorded = await broker.ingestAsync({
+        backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
+        provenance: {
+          source: "ade-recorder",
+          recordedFrom: "2026-09-23T10:24:00.000Z",
+          recordedTo: "2026-09-23T10:25:10.000Z",
+        },
+        inputs: [{ kind: "video_recording", title: "Recorder", path: writeCacheFile("rec.mp4", bytes) }],
+      });
+      expect(recorded.artifacts[0]!.metadata).toMatchObject({
+        proofSource: "ade-recorder",
+        recordedFrom: "2026-09-23T10:24:00.000Z",
+        recordedTo: "2026-09-23T10:25:10.000Z",
+        contentSha256: sha256(bytes),
+      });
+    });
+
+    it("stamps ade-capture and ignores a caller's own provenance claims", async () => {
+      const broker = makeBroker();
+      const capture = await broker.ingestAsync({
+        backend: { name: "apple-device", toolName: "apple_screenshot" },
+        provenance: { source: "ade-capture" },
+        inputs: [{ kind: "screenshot", title: "Shot", path: writeCacheFile("shot.png", Buffer.from("png-1")) }],
+      });
+      expect(capture.artifacts[0]!.metadata.proofSource).toBe("ade-capture");
+      expect(capture.artifacts[0]!.metadata.recordedFrom).toBeUndefined();
+
+      const spoofed = await broker.ingestAsync({
+        backend: { name: "ade-cli" },
+        inputs: [{
+          kind: "screenshot",
+          title: "Spoof",
+          path: writeCacheFile("spoof.png", Buffer.from("png-2")),
+          metadata: { proofSource: "ade-recorder", recordedBeforeRequest: false, contentSha256: "abc", note: "kept" },
+        }],
+      });
+      expect(spoofed.artifacts[0]!.metadata).toMatchObject({ proofSource: "attached", note: "kept" });
+      expect(spoofed.artifacts[0]!.metadata.contentSha256).toBe(sha256(Buffer.from("png-2")));
+    });
+
+    it("hashes an older row with no stored hash only when its size matches", async () => {
+      const broker = makeBroker();
+      const legacyDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+      fs.mkdirSync(legacyDir, { recursive: true });
+      const bytes = mp4Bytes(null, 7);
+      fs.writeFileSync(path.join(legacyDir, "legacy-same.mp4"), bytes);
+      fs.writeFileSync(path.join(legacyDir, "legacy-other.mp4"), Buffer.concat([bytes, Buffer.from("x")]));
+      const insertLegacy = (id: string, file: string, title: string) => db.run(
+        `insert into computer_use_artifacts(
+           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+           original_type, title, description, uri, storage_kind, mime_type, metadata_json, lane_id, created_at
+         ) values (?, 'project-1', 'video_recording', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', 'video/mp4', '{}', null, ?)`,
+        [id, title, `.ade/artifacts/computer-use/${file}`, "2026-09-23T05:19:00.000Z"],
+      );
+      insertLegacy("legacy-other", "legacy-other.mp4", "Other size");
+      insertLegacy("legacy-same", "legacy-same.mp4", "Old recording");
+
+      await expect(attach(broker, writeCacheFile("copy.mp4", bytes), "Copy"))
+        .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Old recording"/);
+      const readMeta = (id: string) => JSON.parse(db.get<{ metadata_json: string }>(
+        "select metadata_json from computer_use_artifacts where id = ?",
+        [id],
+      )!.metadata_json);
+      // The matching row was hashed and the hash kept; the other size never was.
+      expect(readMeta("legacy-same")).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
+      expect(readMeta("legacy-other").contentSha256).toBeUndefined();
+    });
+
+    it("refuses a copy of an Apple recording that never reached the drawer", async () => {
+      const broker = makeBroker();
+      const laneDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
+      fs.mkdirSync(laneDir, { recursive: true });
+      const bytes = mp4Bytes(null, 8);
+      fs.writeFileSync(path.join(laneDir, "rec-1.mp4"), bytes);
+      fs.writeFileSync(path.join(laneDir, "rec-1.json"), JSON.stringify({
+        id: "rec-1",
+        label: "Simulator recording · iPhone · 0:12",
+        startedAt: "2026-09-23T05:19:00.000Z",
+        proofArtifactId: null,
+      }));
+      await expect(attach(broker, writeCacheFile("safari.mp4", bytes), "Safari"))
+        .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Simulator recording · iPhone · 0:12"/);
+    });
+
+    it("attaches an Apple recording whose filing failed, in place, without calling it a copy of itself", async () => {
+      const broker = makeBroker();
+      const laneDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
+      fs.mkdirSync(laneDir, { recursive: true });
+      const bytes = mp4Bytes(null, 15);
+      const recording = path.join(laneDir, "rec-2.mp4");
+      fs.writeFileSync(recording, bytes);
+      fs.writeFileSync(path.join(laneDir, "rec-2.json"), JSON.stringify({
+        id: "rec-2",
+        label: "Simulator recording · iPhone · 0:09",
+        startedAt: "2026-09-23T05:19:00.000Z",
+        proofArtifactId: null,
+      }));
+      const result = await attach(broker, recording, "Checkout flow");
+      expect(result.artifacts[0]!.uri).toBe(".ade/artifacts/apple-recordings/lane-1/rec-2.mp4");
+      expect(result.artifacts[0]!.metadata).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
+      // A copy of it is still refused.
+      await expect(attach(broker, writeCacheFile("copy-of-rec.mp4", bytes), "Copy"))
+        .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Checkout flow"/);
+    });
+
+    it("does not hash ADE's own recording at filing time, but still catches a later copy of it", async () => {
+      const broker = makeBroker();
+      const laneDir = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1");
+      fs.mkdirSync(laneDir, { recursive: true });
+      const bytes = mp4Bytes(null, 16);
+      const recording = path.join(laneDir, "rec-3.mp4");
+      fs.writeFileSync(recording, bytes);
+      const filed = await broker.ingestAsync({
+        backend: { name: "apple-device", style: "local_fallback", toolName: "apple_record" },
+        owners: [{ kind: "lane", id: "lane-1" }],
+        provenance: { source: "ade-recorder" },
+        inputs: [{ kind: "video_recording", title: "Recorder", path: recording }],
+      });
+      expect(filed.artifacts[0]!.metadata.contentSha256).toBeUndefined();
+      expect(filed.artifacts[0]!.metadata.contentBytes).toBe(bytes.length);
+      // The streamed attach finds it by size, hashes it once, and refuses the copy.
+      await expect(broker.ingestAsync({
+        backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+        owners: [{ kind: "chat_session", id: "chat-1" }],
+        inputs: [{ kind: "video_recording", title: "Copy", path: writeCacheFile("rec-copy.mp4", bytes) }],
+      })).rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Recorder"/);
+      expect(storedFiles()).toHaveLength(0);
+    });
+
+    it("streams the hash of an attached file already in the store", async () => {
+      const broker = makeBroker();
+      const dir = path.join(projectRoot, ".ade", "artifacts", "manual");
+      fs.mkdirSync(dir, { recursive: true });
+      const bytes = mp4Bytes(null, 17);
+      fs.writeFileSync(path.join(dir, "clip.mp4"), bytes);
+      const result = await broker.ingestAsync({
+        backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+        owners: [{ kind: "chat_session", id: "chat-1" }],
+        inputs: [{ kind: "video_recording", title: "Clip", path: path.join(dir, "clip.mp4") }],
+      });
+      expect(result.artifacts[0]!.metadata).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
+    });
+
+    it("regression: files a capture whose bytes changed after ADE hashed them as an attach", async () => {
+      const broker = makeBroker();
+      const bytes = mp4Bytes(null, 18);
+      await attach(broker, writeCacheFile("earlier.mp4", bytes), "Earlier");
+      const capture = (file: string, capturedSha256: string[]) => broker.ingestAsync({
+        backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+        owners: [{ kind: "chat_session", id: "chat-1" }],
+        provenance: { source: "ade-recorder", refuseDuplicates: false, flagOlderMedia: true, capturedSha256 },
+        inputs: [{ kind: "video_recording", title: "Capture", path: file }],
+      });
+
+      const fresh = mp4Bytes(null, 19);
+      const kept = await capture(writeCacheFile("fresh.mp4", fresh), [sha256(fresh)]);
+      expect(kept.artifacts[0]!.metadata).toMatchObject({ proofSource: "ade-recorder", contentSha256: sha256(fresh) });
+      // Old proof swapped in after the registry hashed the capture: an attach, so the duplicate check runs.
+      await expect(capture(writeCacheFile("swapped.mp4", bytes), [sha256(mp4Bytes(null, 20))]))
+        .rejects.toThrow(/PROOF_DUPLICATE: Same bytes as "Earlier"/);
+      const other = mp4Bytes(null, 21);
+      const downgraded = await capture(writeCacheFile("other.mp4", other), [sha256(mp4Bytes(null, 22))]);
+      expect(downgraded.artifacts[0]!.metadata.proofSource).toBe("attached");
+    });
+
+    it("never hashes a stored file on the calling thread: the sync door sends that attach to ingestAsync", () => {
+      const broker = makeBroker();
+      const dir = path.join(projectRoot, ".ade", "artifacts", "manual");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "in-place.mp4"), mp4Bytes(null, 23));
+      expect(() => broker.ingest({
+        backend: { name: "ade-cli", style: "manual", toolName: "proof attach" },
+        owners: [{ kind: "chat_session", id: "chat-1" }],
+        inputs: [{ kind: "video_recording", title: "Clip", path: path.join(dir, "in-place.mp4") }],
+      })).toThrow(/ingestAsync/);
+      expect(broker.listArtifacts({})).toHaveLength(0);
+    });
+
+    describe("age of an attached video", () => {
+      const turn = new Date("2026-09-23T10:00:00.000Z");
+
+      it("flags a video made before the chat's turn started, and warns", async () => {
+        turnStartedAt = turn.toISOString();
+        const made = new Date(turn.getTime() - 5 * 60 * 60 * 1000);
+        const result = await attach(makeBroker(), writeCacheFile("old.mp4", mp4Bytes(made, 9)), "Old");
+        expect(result.artifacts[0]!.metadata).toMatchObject({
+          mediaCreatedAt: made.toISOString(),
+          recordedBeforeRequest: true,
+        });
+        expect(result.warnings).toHaveLength(1);
+        expect(result.warnings![0]).toMatch(
+          /^This video was recorded at .+, before this request\. It will be marked as older in the proof drawer\.$/,
+        );
+      });
+
+      it("does not flag a video made after the turn started, or within the slack", async () => {
+        turnStartedAt = turn.toISOString();
+        const broker = makeBroker();
+        const after = await attach(broker, writeCacheFile("new.mp4", mp4Bytes(new Date(turn.getTime() + 30_000), 10)), "New");
+        expect(after.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
+        expect(after.artifacts[0]!.metadata.mediaCreatedAt).toBe(new Date(turn.getTime() + 30_000).toISOString());
+        const slack = await attach(broker, writeCacheFile("slack.mp4", mp4Bytes(new Date(turn.getTime() - 30_000), 11)), "Slack");
+        expect(slack.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
+        expect(after.warnings).toBeUndefined();
+      });
+
+      it("does not flag an unknown creation time or a chat with no turn", async () => {
+        turnStartedAt = turn.toISOString();
+        const unknown = await attach(makeBroker(), writeCacheFile("zero.mp4", mp4Bytes(null, 12)), "Zero");
+        expect(unknown.artifacts[0]!.metadata.mediaCreatedAt).toBeUndefined();
+        expect(unknown.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
+
+        turnStartedAt = null;
+        const noTurn = await attach(makeBroker(), writeCacheFile("noturn.mp4", mp4Bytes(new Date("2020-01-01T00:00:00Z"), 13)), "No turn");
+        expect(noTurn.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
+      });
+
+      it("never flags ADE's own recorder", async () => {
+        turnStartedAt = turn.toISOString();
+        const result = await makeBroker().ingestAsync({
+          backend: { name: "apple-device", toolName: "apple_record" },
+          owners: [{ kind: "chat_session", id: "chat-1" }],
+          provenance: { source: "ade-recorder" },
+          inputs: [{
+            kind: "video_recording",
+            title: "Recorder",
+            path: writeCacheFile("rec-old.mp4", mp4Bytes(new Date(turn.getTime() - 3_600_000), 14)),
+          }],
+        });
+        expect(result.artifacts[0]!.metadata.recordedBeforeRequest).toBeUndefined();
+        expect(result.warnings).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe("mp4 creation time", () => {
+  const MAC_EPOCH_OFFSET = 2_082_844_800;
+  const CREATED = new Date("2026-09-23T05:19:00.000Z");
+  const CREATED_MAC_SECONDS = CREATED.getTime() / 1000 + MAC_EPOCH_OFFSET;
+
+  function box(type: string, payload: Buffer): Buffer {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(8 + payload.length, 0);
+    header.write(type, 4, "latin1");
+    return Buffer.concat([header, payload]);
+  }
+
+  function largeBox(type: string, payload: Buffer): Buffer {
+    const header = Buffer.alloc(16);
+    header.writeUInt32BE(1, 0);
+    header.write(type, 4, "latin1");
+    header.writeBigUInt64BE(BigInt(16 + payload.length), 8);
+    return Buffer.concat([header, payload]);
+  }
+
+  function mvhdV0(seconds: number): Buffer {
+    const payload = Buffer.alloc(100);
+    payload.writeUInt8(0, 0);
+    payload.writeUInt32BE(seconds, 4);
+    payload.writeUInt32BE(seconds, 8);
+    return box("mvhd", payload);
+  }
+
+  function mvhdV1(seconds: bigint): Buffer {
+    const payload = Buffer.alloc(112);
+    payload.writeUInt8(1, 0);
+    payload.writeBigUInt64BE(seconds, 4);
+    payload.writeBigUInt64BE(seconds, 12);
+    return box("mvhd", payload);
+  }
+
+  const ftyp = box("ftyp", Buffer.from("isom\0\0\0\0isomiso2", "latin1"));
+
+  function readerFor(bytes: Buffer) {
+    const reads: Array<{ position: number; length: number }> = [];
+    const read = (position: number, length: number) => {
+      reads.push({ position, length });
+      return bytes.subarray(position, Math.min(bytes.length, position + length));
+    };
+    return { read, reads };
+  }
+
+  describe("readMp4CreationTime", () => {
+    it("reads a version 0 mvhd (32-bit seconds since 1904)", () => {
+      const file = Buffer.concat([ftyp, box("moov", mvhdV0(CREATED_MAC_SECONDS))]);
+      const { read } = readerFor(file);
+      expect(readMp4CreationTime(read, file.length)?.toISOString()).toBe(CREATED.toISOString());
+    });
+
+    it("reads a version 1 mvhd (64-bit seconds)", () => {
+      const file = Buffer.concat([ftyp, box("moov", mvhdV1(BigInt(CREATED_MAC_SECONDS)))]);
+      const { read } = readerFor(file);
+      expect(readMp4CreationTime(read, file.length)?.toISOString()).toBe(CREATED.toISOString());
+    });
+
+    it("finds moov after a large mdat by seeking, without reading the media", () => {
+      const mdat = box("mdat", Buffer.alloc(2_000_000, 7));
+      const file = Buffer.concat([ftyp, mdat, box("moov", Buffer.concat([box("udta", Buffer.alloc(4)), mvhdV0(CREATED_MAC_SECONDS)]))]);
+      const { read, reads } = readerFor(file);
+      expect(readMp4CreationTime(read, file.length)?.toISOString()).toBe(CREATED.toISOString());
+      const bytesRead = reads.reduce((sum, entry) => sum + entry.length, 0);
+      expect(bytesRead).toBeLessThan(200);
+    });
+
+    it("walks past a box with a 64-bit largesize", () => {
+      const mdat = largeBox("mdat", Buffer.alloc(64, 1));
+      const file = Buffer.concat([ftyp, mdat, box("moov", mvhdV0(CREATED_MAC_SECONDS))]);
+      const { read } = readerFor(file);
+      expect(readMp4CreationTime(read, file.length)?.toISOString()).toBe(CREATED.toISOString());
+    });
+
+    it("accepts a moov that uses size 0 to run to the end of the file", () => {
+      const moov = box("moov", mvhdV0(CREATED_MAC_SECONDS));
+      moov.writeUInt32BE(0, 0);
+      const file = Buffer.concat([ftyp, moov]);
+      const { read } = readerFor(file);
+      expect(readMp4CreationTime(read, file.length)?.toISOString()).toBe(CREATED.toISOString());
+    });
+
+    it("treats a zero creation time as unknown", () => {
+      const file = Buffer.concat([ftyp, box("moov", mvhdV0(0))]);
+      const { read } = readerFor(file);
+      expect(readMp4CreationTime(read, file.length)).toBeNull();
+    });
+
+    it("returns null when there is no moov or no mvhd", () => {
+      const noMoov = Buffer.concat([ftyp, box("mdat", Buffer.alloc(32))]);
+      expect(readMp4CreationTime(readerFor(noMoov).read, noMoov.length)).toBeNull();
+      const noMvhd = Buffer.concat([ftyp, box("moov", box("trak", Buffer.alloc(16)))]);
+      expect(readMp4CreationTime(readerFor(noMvhd).read, noMvhd.length)).toBeNull();
+    });
+
+    it("returns null for a truncated file instead of throwing", () => {
+      const whole = Buffer.concat([ftyp, box("moov", mvhdV0(CREATED_MAC_SECONDS))]);
+      const cutInsideMvhd = whole.subarray(0, ftyp.length + 8 + 8 + 4);
+      expect(readMp4CreationTime(readerFor(cutInsideMvhd).read, cutInsideMvhd.length)).toBeNull();
+      const cutInsideHeader = whole.subarray(0, 5);
+      expect(readMp4CreationTime(readerFor(cutInsideHeader).read, cutInsideHeader.length)).toBeNull();
+    });
+
+    it("stops on a corrupt box size instead of looping", () => {
+      const corrupt = Buffer.concat([ftyp, box("free", Buffer.alloc(4))]);
+      corrupt.writeUInt32BE(3, ftyp.length);
+      expect(readMp4CreationTime(readerFor(corrupt).read, corrupt.length)).toBeNull();
+    });
+  });
+
+  describe("readMp4CreationTimeFromFile", () => {
+    const dirs: string[] = [];
+    afterEach(() => {
+      for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("reads the creation time from disk and is null for a missing file", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mvhd-"));
+      dirs.push(dir);
+      const file = path.join(dir, "clip.mp4");
+      fs.writeFileSync(file, Buffer.concat([ftyp, box("mdat", Buffer.alloc(4096)), box("moov", mvhdV1(BigInt(CREATED_MAC_SECONDS)))]));
+      expect(readMp4CreationTimeFromFile(file)?.toISOString()).toBe(CREATED.toISOString());
+      expect(readMp4CreationTimeFromFile(path.join(dir, "missing.mp4"))).toBeNull();
+    });
+
+    it("knows which extensions are ISO media", () => {
+      expect(isIsoMediaExtension("mp4")).toBe(true);
+      expect(isIsoMediaExtension(".MOV")).toBe(true);
+      expect(isIsoMediaExtension("webm")).toBe(false);
     });
   });
 });

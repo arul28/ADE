@@ -123,7 +123,7 @@ The entire signed-out → machine → project funnel is a custom `WebWorkspaceHu
   to a shell "top strip" wrapper that no longer exists — `WebClientRoot` mounts `AppRoot` directly under `#root`.
   Fix: give `#root` definite height (`height: 100%` in `webclient.html`, keep splash `min-height`); one line, fixes
   every web route at once.
-  **Confirming evidence (round 4):** /lanes and /graph cut at *different* heights than /work — exactly what
+  **Confirming evidence (round 4):** /lanes and /prs cut at *different* heights than /work — exactly what
   collapse-to-content-height predicts (each route's content computes a different intrinsic height). One root cause,
   route-dependent symptom; not separate bugs.
 
@@ -157,12 +157,9 @@ The entire signed-out → machine → project funnel is a custom `WebWorkspaceHu
   already makes). Prior art: push publisher keeps a transition-gated `statusSinceAt` for Activity
   (`pushPublisherService.ts:700`, `:855`) with a comment explicitly avoiding this reset bug — Work list just can't
   see it.
-- C7b `scoped` (product, future workstream line) — richer CLI states: today working/idle = OSC 133 prompt markers +
-  12 s silence timer (`ptyService.ts:5026-5035`, `terminalSessionSignals.ts:493`); nothing parses TUI content, and
-  provider JSONL transcripts are read only for chat history. The UI vocabulary already exists: `planning` glyph in
-  `SessionStatusLabel.tsx:25-26` fed by `chatActivityMode` — detecting Claude Code's footer/plan banner from the PTY
-  stream (or tailing provider transcripts) and mapping onto `chatActivityMode` lights up planning/asking for CLI
-  sessions with zero new UI.
+- C7b `superseded` — richer CLI detail now uses typed, agent-reported activity values for provider launch paths
+  that ADE has verified can call the session-scoped CLI. Raw TUI text and provider transcripts remain unparsed by
+  design; planning comes from structured provider modes, and Needs you comes from the explicit ADE attention path.
 
 ### C8 — Session preview corruption for full-screen TUI CLIs (spaces gone + escape residue)
 - C8a `diagnosed` — **Preview builder flattens PTY bytes with no cursor model; the spaces were never in the stream.**
@@ -233,11 +230,7 @@ Headline: **`WEB_CLIENT_TAB_PATHS` is dead code** (nothing imports it); the real
 `APP_ROUTE_ROOTS` (`WebClientRoot.tsx:61-78`) and reachable via CommandPalette (rendered unconditionally,
 `AppShell.tsx:1723`) — hence the owner's graph discovery. Every hidden page is `React.lazy`; the entry-graph guard
 (`check-webclient-entry.mjs:8-9`) is unaffected by adding nav entries → **no first-load perf risk**.
-- C12a `works-today` — **Graph `/graph`: enable now.** Reads/mutations all covered (reparent incl. multi-lane
-  rollback, env mappings via `projectConfig.get`, activity via real `pty.onData/onExit` subs). Punch list:
-  hide "Open folder" menu item (silent no-op, `adapter/lanes.ts:187`); `conflicts.simulateMerge` adapter-wired but
-  **no host descriptor** → null (`adapter/git.ts:89`); `conflicts.onEvent` hard no-op → progress bar inert
-  (`adapter/git.ts:105`, static matrix still fills); `graphState` browser-local only (positions don't roam).
+- C12a `removed` — The workspace Graph tab is gone. Do not add a `/graph` route back.
 - C12b `small-fix` — **History `/history`: enable after** 3 new host descriptors (`git.getCommit`,
   `git.getOriginRemote`, `git.getOpenPrForBranch` — adapter-wired at `adapter/git.ts:52,57,58`, host-missing) +
   wire `cto.getState` in adapter (host has it, `syncRemoteCommandService.ts:4777`). Degrades gracefully without.
@@ -416,10 +409,10 @@ Headline: **`WEB_CLIENT_TAB_PATHS` is dead code** (nothing imports it); the real
   fallback with explicit silent-list — kills the new-table silent-staleness class; verified only 10 low-frequency
   tables hit the fallback). Classifier map itself CLEARED as blank-Work cause (programmatic 89-table diff: only
   intentional losses).
-- C22d `pre-ship perf caution (WS-E follow-up)` — Today's preview cursor emulator + TUI marker scans run per PTY
-  chunk on the host main process with no chunk-size cap (ptyService.ts:5058-5065; char-loop + ~9 regexes over
-  ≤8.5KB). NOT the cause of tonight's web lag (owner's runtime runs the beta, not this branch) but needs
-  measurement/capping before this branch ships to the Mac — TUIs repaint multi-KB per keystroke.
+- C22d `pre-ship perf caution (WS-E follow-up)` — The preview cursor emulator runs per PTY chunk on the host main
+  process with no chunk-size cap (ptyService.ts:5058-5065). NOT the cause of tonight's web lag (owner's runtime
+  runs the beta, not this branch) but needs measurement/capping before this branch ships to the Mac — TUIs repaint
+  multi-KB per keystroke. TUI status-marker scanning was removed; agent-reported activity uses the typed ADE CLI.
 
 ### C23 — Terminal mirror: wrong-width scrollback + mouse snapback (both FIXED client-side)
 - C23a `fixed` — Full-snapshot `replace` wrote bytes at xterm's constructor-default 80 cols before first fit (xterm
@@ -579,15 +572,13 @@ Headline: **`WEB_CLIENT_TAB_PATHS` is dead code** (nothing imports it); the real
 - C31c `verified en route` — Normalization decline hypothesis measured DEAD (156 cols inferred at every tail size
   on the live, rolled-over transcript). Multi-instance probe artifact explained (first .xterm = healthy instance).
 
-### C33 — /quality gate item, disposed by owner's standing merge instruction
-- C33 `accepted-unfixed, designed follow-up required` — TUI-heuristic waiting-input emits
-  `attentionSource: "provider_structured"` (a lie: it's a regex read). The label is LOAD-BEARING: canonical
-  attention only grants needs_you + Settle through it (`sessionCanonicalState.ts:122`), and
-  `SessionStatusSlot.tsx:103` keys dismissibility on it — so a relabel without a cross-surface contract change
-  (new `tui_heuristic` member + tier decision + iOS decoder + dismiss-clause inversion, 5 surfaces) regresses
-  behavior. Owner's C7b decision wanted heuristic waiting feeding Attention, so BEHAVIOR matches intent; only
-  provenance is dishonest. Full analysis in `tuiRowOverlay()`'s docblock (ptyService.ts). Disposition: ship as-is
-  per owner's explicit merge instruction; schedule the tier design with the C7b follow-on.
+### C33 — historical /quality item, superseded by the session-status reliability work
+- C33 `superseded` — The original review documented PTY text heuristics stamping
+  `attentionSource: "provider_structured"` and feeding prompt-looking output into Needs you. That decision was
+  later superseded after the CLI capability audit: the PTY text scanner and `tuiRowOverlay()` are removed, so
+  terminal text no longer creates Planning or Needs you. Tracked CLI Needs you still comes from explicit ADE
+  attention such as `ade chat ask`; `provider_structured` remains for actual structured provider events. Current
+  behavior is described in `docs/features/terminals-and-sessions/README.md`.
 
 ### C32 — Polish backlog (from the final live round; queued for quality loop)
 - C32a — **"Orphaned sessions" flash on cross-machine project open**: connecting a second machine for the same
@@ -746,10 +737,11 @@ one broken-both-ways invalidation path.
 - **WS-D "Web event/invalidation hygiene"** (C4a + C4b + C6) — neutral lifecycle type + toast guard, refresh-policy
   fix for the invalidation→includeStatus→write→invalidation cycle, and the one-line `#root` height fix. Likely
   absorbs future "phantom event/refresh/layout" reports as they arrive.
-- **WS-E "CLI session telemetry fidelity"** (C7a + C8a + C8b; C7b as stretch/follow-on) — all three bugs live in the
+- **WS-E "CLI session telemetry fidelity"** (C7a + C8a + C8b) — all three bugs live in the
   same `ptyService` telemetry pipeline (runtime state + preview builder) and ship to every surface through
-  `enrichSessions`/`last_output_preview`. Turn-anchor fix (3 edits), cursor-aware preview parser + split-CSI carry,
-  then optionally TUI-marker → `chatActivityMode` mapping for planning/asking states. Cross-cutting (desktop, web,
+  `enrichSessions`/`last_output_preview`. Turn-anchor fix (3 edits) and cursor-aware preview parser + split-CSI carry.
+  Planning comes from structured provider modes; CLI activity detail uses the typed ADE reporting command.
+  Cross-cutting (desktop, web,
   iOS all benefit); not web-only despite being reported from the web client.
 - **WS-F "Web adapter parity & input fidelity"** (C9 + C10 + C11 + C10-sys/C12-pattern sweep) — surfaces that exist
   on desktop/iOS but are silently dead or degraded on web: missing adapter passthroughs (usage panel), ignored

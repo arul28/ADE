@@ -1,0 +1,152 @@
+/*
+ * The Overview's floating dock: a column of bubbles pinned bottom-right, and
+ * one card that floats to their left OVER the thread. Nothing here takes part
+ * in layout — the thread keeps its full width, and it reserves bottom padding
+ * so its last row can scroll clear of the dock.
+ */
+
+.ade-pr-dock {
+  position: absolute;
+  right: 26px;
+  bottom: 14px;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+  max-height: calc(100% - 28px);
+}
+
+.ade-pr-dock > * {
+  pointer-events: auto;
+}
+
+.ade-pr-dock-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ade-pr-dock-bubble {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-card, #16141c) 88%, transparent);
+  color: color-mix(in srgb, var(--color-fg) 78%, transparent);
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.7), inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 7%, transparent);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: transform 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.ade-pr-dock-bubble:hover {
+  transform: translateY(-1px);
+  color: var(--color-fg);
+}
+
+.ade-pr-dock-bubble[data-active] {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-accent) 22%, var(--color-card, #16141c));
+}
+
+.ade-pr-dock-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px var(--ade-dock-ring);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.ade-pr-dock-pulse {
+  position: absolute;
+  inset: -2px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px var(--ade-dock-ring, var(--color-accent));
+  pointer-events: none;
+  animation: ade-pr-dock-pulse 900ms ease-out 1;
+}
+
+@keyframes ade-pr-dock-pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-pr-dock-pulse {
+    animation: none;
+    display: none;
+  }
+  .ade-pr-dock-bubble {
+    transition: none;
+  }
+}
+
+.ade-pr-dock-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.ade-pr-dock-card {
+  width: min(var(--ade-dock-card-w, 340px), calc(100vw - 120px));
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-popup-bg, var(--color-card, #16141c)) 94%, transparent);
+  box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.85), inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
+  backdrop-filter: blur(14px);
+  animation: ade-pr-dock-card-in 140ms ease-out;
+}
+
+/* Fade only: a card that moves as it opens is a target moving under the
+   pointer. */
+@keyframes ade-pr-dock-card-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-pr-dock-card {
+    animation: none;
+  }
+}
+
+/* The tools panel is narrow: the card takes what the column leaves. */
+@container pr-overview (max-width: 520px) {
+  .ade-pr-dock {
+    right: 16px;
+    bottom: 10px;
+  }
+  .ade-pr-dock-card {
+    width: min(var(--ade-dock-card-w, 340px), calc(100cqw - 90px));
+  }
+}

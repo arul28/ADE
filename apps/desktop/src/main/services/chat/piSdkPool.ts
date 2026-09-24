@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { pathKey } from "../shared/pathCompare";
 import { terminateChildProcessTree } from "../shared/utils";
 import {
   PI_SDK_PROTOCOL_VERSION,
@@ -12,7 +13,9 @@ import {
   validatePiSdkWorkerRequest,
   validatePiSdkWorkerResult,
   type JsonValue,
+  type PiSdkAccount,
   type PiSdkCompactPayload,
+  type PiSdkContextUsage,
   type PiSdkModelRef,
   type PiSdkPackageLocation,
   type PiSdkPromptPayload,
@@ -25,7 +28,7 @@ import {
   type PiSdkWorkerInit,
   type PiSdkWorkerRequest,
 } from "./piSdkProtocol";
-import { buildPiWorkerEnvironment } from "./piSdkEnvironment";
+import { buildPiWorkerEnvironment, type PiWorkerActivityScope } from "./piSdkEnvironment";
 
 export type PiSdkBridge = {
   onEvent: ((event: JsonValue) => void) | null;
@@ -66,6 +69,8 @@ type PiSdkRequestResult<K extends PiSdkRequestType> = K extends "init" | "set_mo
     ? JsonValue[]
     : K extends "auth"
       ? JsonValue
+    : K extends "context_usage"
+      ? PiSdkContextUsage | null
     : JsonValue | undefined;
 
 export type PiSdkPooled = {
@@ -75,6 +80,7 @@ export type PiSdkPooled = {
   sessionFile: string | null;
   sessionId: string | null;
   currentModel: JsonValue | null;
+  account: PiSdkAccount | null;
   version: string | null;
   availableModels: JsonValue[];
   request: <K extends PiSdkRequestType>(type: K, ...args: PiSdkRequestArgs<K>) => Promise<PiSdkRequestResult<K>>;
@@ -83,8 +89,11 @@ export type PiSdkPooled = {
   followUp: (prompt: string, images?: PiSdkImage[]) => Promise<unknown>;
   abort: () => Promise<void>;
   setModel: (modelRef: PiSdkModelRef) => Promise<PiSdkReady>;
-  setThinking: (thinkingLevel: string) => Promise<PiSdkReady>;
+  /** Null resets this session to Pi's default level without writing Pi's settings. */
+  setThinking: (thinkingLevel: string | null) => Promise<PiSdkReady>;
   compact: (payload?: PiSdkCompactPayload) => Promise<unknown>;
+  /** Pi's live context reading, or null when Pi has none (after a compaction, or no known window). */
+  getContextUsage: () => Promise<PiSdkContextUsage | null>;
   requestModels: () => Promise<JsonValue[]>;
   requestAuth: () => Promise<JsonValue>;
   /**
@@ -120,6 +129,8 @@ export type AcquirePiSdkConnectionArgs = PiSdkPackageLocation & {
   approvalTools?: string[];
   /** Usually process.env; never put auth.json or API keys in this payload. */
   baseEnv?: NodeJS.ProcessEnv;
+  /** Passed only when this chat can run the session-scoped ADE activity command. */
+  activityScope?: PiWorkerActivityScope | null;
   logger?: Logger;
 };
 
@@ -130,20 +141,39 @@ type PendingRpc = {
   timer: NodeJS.Timeout | null;
 };
 
-type PoolEntry = { ref: number; generation: number; pooled: PiSdkPooled };
+type PoolEntry = {
+  ref: number;
+  generation: number;
+  pooled: PiSdkPooled;
+  activityScope: PiWorkerActivityScope | null;
+};
 
 let generationCounter = 0;
 const pools = new Map<string, PoolEntry>();
+/**
+ * Every worker that reached the pool, by generation, until it exits. A holder
+ * whose worker already left the pool (it failed, or a newer generation
+ * replaced it) still waits for that worker's exit on release.
+ */
+const workersByGeneration = new Map<number, PiSdkPooled>();
 const pendingInits = new Map<string, Promise<PiSdkPooled>>();
+const departingWorkers = new Map<string, Promise<void>>();
 const STALE_INIT_RETRY_LIMIT = 2;
 const DISPOSE_GRACE_MS = 1_500;
-const REQUEST_TIMEOUT_MS: Partial<Record<PiSdkRequestType, number>> = {
-  init: 30_000,
-  models: 30_000,
-  auth: 15_000,
-  set_model: 30_000,
-  set_thinking: 15_000,
-  abort: 10_000,
+/**
+ * How long each request may take, and whether missing that deadline means the
+ * worker is wedged (`fatal`: the connection is torn down) or only that this one
+ * answer is late (the caller just gets the rejection).
+ */
+const REQUEST_TIMEOUTS: Partial<Record<PiSdkRequestType, { ms: number; fatal: boolean }>> = {
+  init: { ms: 30_000, fatal: true },
+  models: { ms: 30_000, fatal: true },
+  auth: { ms: 15_000, fatal: true },
+  // A best-effort meter sample; a slow one must not cost the chat its worker.
+  context_usage: { ms: 2_000, fatal: false },
+  set_model: { ms: 30_000, fatal: true },
+  set_thinking: { ms: 15_000, fatal: true },
+  abort: { ms: 10_000, fatal: true },
 };
 const moduleDir = typeof __dirname === "string" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
 
@@ -174,8 +204,45 @@ function applyReady(pooled: PiSdkPooled, value: PiSdkReady): void {
   pooled.sessionFile = value.sessionFile;
   pooled.sessionId = value.sessionId;
   pooled.currentModel = value.currentModel;
+  pooled.account = value.account ?? null;
   pooled.version = value.version;
   pooled.availableModels = value.availableModels;
+}
+
+function normalizedActivityScope(scope: PiWorkerActivityScope | null | undefined): PiWorkerActivityScope | null {
+  if (!scope) return null;
+  return {
+    cliPath: pathKey(scope.cliPath),
+    chatSessionId: scope.chatSessionId,
+    ...(scope.runtimeSocketPath ? { runtimeSocketPath: pathKey(scope.runtimeSocketPath) } : {}),
+  };
+}
+
+function sameActivityScope(
+  left: PiWorkerActivityScope | null | undefined,
+  right: PiWorkerActivityScope | null | undefined,
+): boolean {
+  const normalizedLeft = normalizedActivityScope(left);
+  const normalizedRight = normalizedActivityScope(right);
+  return normalizedLeft?.cliPath === normalizedRight?.cliPath
+    && normalizedLeft?.chatSessionId === normalizedRight?.chatSessionId
+    && normalizedLeft?.runtimeSocketPath === normalizedRight?.runtimeSocketPath;
+}
+
+function disposePiSdkPoolEntry(poolKey: string, entry: PoolEntry): Promise<void> {
+  if (pools.get(poolKey) === entry) pools.delete(poolKey);
+  const departing = departingWorkers.get(poolKey);
+  if (departing) return departing;
+  entry.pooled.dispose();
+  const exit = entry.pooled.waitForExit().finally(() => {
+    if (departingWorkers.get(poolKey) === exit) departingWorkers.delete(poolKey);
+  });
+  departingWorkers.set(poolKey, exit);
+  return exit;
+}
+
+async function waitForDepartingPiSdkWorker(poolKey: string): Promise<void> {
+  await departingWorkers.get(poolKey);
 }
 
 export async function acquirePiSdkConnection(
@@ -185,13 +252,16 @@ export async function acquirePiSdkConnection(
   for (let retries = 0; ; retries += 1) {
     const existing = pools.get(args.poolKey);
     if (existing && isAlive(existing.pooled)) {
-      existing.ref += 1;
-      return { pooled: existing.pooled, generation: existing.generation };
+      if (sameActivityScope(existing.activityScope, args.activityScope)) {
+        existing.ref += 1;
+        return { pooled: existing.pooled, generation: existing.generation };
+      }
+      await disposePiSdkPoolEntry(args.poolKey, existing);
     }
-    if (existing) {
-      pools.delete(args.poolKey);
-      existing.pooled.dispose();
+    if (existing && !isAlive(existing.pooled)) {
+      await disposePiSdkPoolEntry(args.poolKey, existing);
     }
+    await waitForDepartingPiSdkWorker(args.poolKey);
 
     let owner = false;
     let init = pendingInits.get(args.poolKey);
@@ -202,7 +272,8 @@ export async function acquirePiSdkConnection(
     }
     const pooled = await init;
     const entry = pools.get(args.poolKey);
-    if (!entry || entry.pooled !== pooled || !isAlive(pooled)) {
+    if (!entry || entry.pooled !== pooled || !isAlive(pooled)
+      || !sameActivityScope(entry.activityScope, args.activityScope)) {
       if (owner) throw new Error("Pi SDK worker was disposed during initialization.");
       if (retries >= STALE_INIT_RETRY_LIMIT) throw new Error("Pi SDK worker initialization did not settle after retries.");
       continue;
@@ -249,7 +320,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     // Enforce the Pi environment boundary at the process boundary as well as
     // at production call sites. Tests and future inventory callers cannot
     // accidentally inherit ADE capability/session variables.
-    env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir),
+    env: buildPiWorkerEnvironment(args.baseEnv ?? process.env, args.agentDir, args.activityScope),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
     windowsHide: true,
@@ -311,6 +382,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
     sessionFile: null,
     sessionId: null,
     currentModel: null,
+    account: null,
     version: null,
     availableModels: [],
     request: <K extends PiSdkRequestType>(type: K, ...args: PiSdkRequestArgs<K>) => {
@@ -324,16 +396,16 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
           timer: null,
         };
         pending.set(requestId, waiter);
-        const timeoutMs = REQUEST_TIMEOUT_MS[type];
-        if (timeoutMs) {
+        const timeout = REQUEST_TIMEOUTS[type];
+        if (timeout) {
           waiter.timer = setTimeout(() => {
             if (pending.get(requestId) !== waiter) return;
             pending.delete(requestId);
-            const error = new Error(`Pi SDK ${type} request timed out after ${timeoutMs}ms.`);
+            const error = new Error(`Pi SDK ${type} request timed out after ${timeout.ms}ms.`);
             clearPendingTimer(waiter);
             waiter.reject(error);
-            terminalFailure?.(error);
-          }, timeoutMs);
+            if (timeout.fatal) terminalFailure?.(error);
+          }, timeout.ms);
           waiter.timer.unref();
         }
         const message = { protocolVersion: PI_SDK_PROTOCOL_VERSION, type, requestId, ...(payload === undefined ? {} : { payload }) } as PiSdkWorkerRequest;
@@ -365,6 +437,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
       return value;
     },
     compact: (payload) => worker.request("compact", payload),
+    getContextUsage: () => worker.request("context_usage"),
     requestModels: async () => {
       const value = await worker.request("models");
       worker.availableModels = value;
@@ -516,7 +589,14 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
       const result = await pooled.request("init", initPayload);
       applyReady(pooled, result);
       const generation = ++generationCounter;
-      pools.set(args.poolKey, { ref: 1, generation, pooled });
+      pools.set(args.poolKey, {
+        ref: 1,
+        generation,
+        pooled,
+        activityScope: normalizedActivityScope(args.activityScope),
+      });
+      workersByGeneration.set(generation, pooled);
+      void pooled.waitForExit().then(() => workersByGeneration.delete(generation));
       return pooled;
     } catch (error) {
       pooled.dispose();
@@ -526,19 +606,42 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
   })();
 }
 
+/** Calls `onDisposed` once `worker` has exited, or now when there is no worker to wait for. */
+function settleAfterExit(worker: PiSdkPooled | undefined, onDisposed: (() => void) | undefined): void {
+  if (!onDisposed) return;
+  if (!worker) {
+    onDisposed();
+    return;
+  }
+  void worker.waitForExit().finally(onDisposed);
+}
+
+/**
+ * Release one holder's claim on a pooled worker. `onDisposed` runs on every
+ * path, once this holder's worker is gone or kept only by another holder, so
+ * a caller that waits for it (the Pi restart wait) never waits for an exit
+ * that is not coming.
+ */
 export function releasePiSdkConnection(poolKey: string, generation?: number, onDisposed?: () => void): void {
   const entry = pools.get(poolKey);
-  if (!entry) {
+  if (!entry || (generation !== undefined && generation !== entry.generation)) {
+    // This holder's worker already left the pool: it failed, or a newer
+    // generation replaced it. Nothing else can reach it, so stop one that is
+    // still running, and settle when it exits.
+    const retired = generation !== undefined ? workersByGeneration.get(generation) : undefined;
+    if (retired && isAlive(retired)) retired.dispose();
+    settleAfterExit(retired, onDisposed);
+    return;
+  }
+  entry.ref = Math.max(0, entry.ref - 1);
+  if (entry.ref > 0) {
+    // Another holder keeps the worker running. This holder's claim ends now.
     onDisposed?.();
     return;
   }
-  if (generation !== undefined && generation !== entry.generation) return;
-  entry.ref = Math.max(0, entry.ref - 1);
-  if (entry.ref === 0) {
-    pools.delete(poolKey);
-    entry.pooled.dispose();
-    void entry.pooled.waitForExit().finally(() => onDisposed?.());
-  }
+  pools.delete(poolKey);
+  entry.pooled.dispose();
+  settleAfterExit(entry.pooled, onDisposed);
 }
 
 export const releasePiSdkWorker = releasePiSdkConnection;

@@ -1596,11 +1596,11 @@ describe("ProvidersSection", () => {
       }
     });
 
-    it("says Kimi hides the usage meter, in plain words, on its page", async () => {
+    it("says how Kimi usage and compaction are shown, in plain words, on its page", async () => {
       const view = renderProvidersSection("kimi");
       const current = within(view.container);
       expect(
-        (await current.findAllByText("Kimi does not report token usage; the usage meter stays hidden.")).length,
+        (await current.findAllByText("Token and context figures appear when Kimi reports them. Kimi sends no compaction events, so ADE detects compaction from a drop in context size.")).length,
       ).toBeGreaterThan(0);
       expect(current.getByText(/--region global/)).toBeTruthy();
       expect(current.getByText(/does not write that file/)).toBeTruthy();

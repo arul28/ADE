@@ -16,6 +16,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { getErrorMessage } from "../../shared/utils";
 import {
   ACP_PROTOCOL_VERSION,
   ACP_RPC_METHOD_NOT_FOUND,
@@ -223,7 +224,7 @@ export function createMockAcpAgent(options: MockAcpAgentOptions = {}): MockAcpAg
           write({
             jsonrpc: "2.0",
             id,
-            error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+            error: { code: -32000, message: getErrorMessage(error) },
           });
         }
       })();

@@ -88,7 +88,8 @@ vi.mock("./appleRecording", async (importOriginal) => ({
   }),
 }));
 
-const { AppleDevicePane, APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./AppleDevicePane");
+const { AppleDevicePane } = await import("./AppleDevicePane");
+const { APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./useAppleDeviceStartTracker");
 const { expectNoHorizontalOverflow } = await import("./testLayout");
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
@@ -158,6 +159,7 @@ function setup(options: Setup = {}) {
     })),
     deviceStart,
     deviceDelete: vi.fn(async () => undefined),
+    deviceDetach: vi.fn(async () => null),
     closeDevice: vi.fn(async () => ({})),
     deviceStop: vi.fn(async () => ({})),
     getStreamStatus: vi.fn(async () => ({ running: false })),
@@ -416,18 +418,22 @@ describe("AppleDevicePane states", () => {
       );
     });
 
-    it("Choose another device on an off device goes straight to the picker", async () => {
-      // The owner's 2026-09-23 report: after a shut down, a second "Give up
-      // this device?" bar was a double confirmation.
+    /*
+     * The owner's 2026-09-23 report: after a shut down, a second "Give up this
+     * device?" bar was a double confirmation. Regression (A2-2 / D2): the one
+     * click must not delete an ADE-made simulator, since the device can be
+     * off for reasons nobody chose here.
+     */
+    it("Choose another device on an off device releases it without deleting, in one click", async () => {
       const { iosSimulator } = off();
       renderPane();
       await waitFor(() => expect(paneState()).toBe("stopped"));
+      iosSimulator.deviceList = vi.fn(async () => ({ installed: [{ ...PRO, state: "Shutdown" }, MAX], lane: null }));
       fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
       expect(screen.queryByText("Give up this device and pick another?")).toBeNull();
-      expect(iosSimulator.deviceDelete).toHaveBeenCalledWith(
-        { laneId: "lane-1", chatSessionId: "chat-1", force: true },
-        null,
-      );
+      expect(iosSimulator.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true }, null);
+      expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
+      await waitFor(() => expect(paneState()).toBe("no-device"));
     });
 
     it("a live device has neither the Off label nor the second choice", async () => {
@@ -459,7 +465,7 @@ describe("AppleDevicePane states", () => {
     expect(document.querySelector("[role='dialog']")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Switch device" }));
     expect(iosSimulator.deviceDelete).toHaveBeenCalledWith(
-      { laneId: "lane-1", chatSessionId: "chat-1", force: true },
+      { laneId: "lane-1", chatSessionId: "chat-1", force: true, ignoreOwnership: true },
       null,
     );
   });
@@ -846,6 +852,31 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
       expect(screen.getByText("Connecting video")).toBeTruthy();
       await recheck.tick();
       expect(reconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      streamReconnect.fn = () => {};
+      recheck.restore();
+    }
+  });
+
+  /* Regression (A2-9): a hidden pane's paused stream reads as "starting",
+   * and the re-check used to poll `simctl list` and redial it every 8s. */
+  it("does not re-check or redial while the pane is off screen", async () => {
+    (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = class {
+      constructor(private readonly callback: (entries: { isIntersecting: boolean }[]) => void) {}
+      observe() { this.callback([{ isIntersecting: false }]); }
+      disconnect() {}
+    };
+    const recheck = captureRecheck();
+    const reconnect = vi.fn();
+    streamReconnect.fn = reconnect;
+    try {
+      const { iosSimulator } = setup({ lane: LANE_DEVICE, stream: "starting" });
+      renderPane();
+      await waitFor(() => expect(paneState()).toBe("starting"));
+      const lists = iosSimulator.deviceList.mock.calls.length;
+      await recheck.tick();
+      expect(reconnect).not.toHaveBeenCalled();
+      expect(iosSimulator.deviceList.mock.calls.length).toBe(lists);
     } finally {
       streamReconnect.fn = () => {};
       recheck.restore();

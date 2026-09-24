@@ -1125,6 +1125,25 @@ func prParsedDate(_ iso: String?) -> Date? {
   return parsed
 }
 
+/// Compact "12m" / "2h" / "3d" style relative string for mono-typed trailing
+/// timestamps. Empty when the time does not parse.
+func prCompactRelativeTime(_ iso: String?) -> String {
+  guard let date = prParsedDate(iso) else { return "" }
+  let seconds = Date().timeIntervalSince(date)
+  if seconds < 60 {
+    return "now"
+  }
+  let minutes = Int(seconds / 60)
+  if minutes < 60 { return "\(minutes)m" }
+  let hours = minutes / 60
+  if hours < 24 { return "\(hours)h" }
+  let days = hours / 24
+  if days < 30 { return "\(days)d" }
+  let months = days / 30
+  if months < 12 { return "\(months)mo" }
+  return "\(months / 12)y"
+}
+
 func prRelativeTime(_ iso: String?) -> String {
   guard let date = prParsedDate(iso) else { return "unknown" }
   return prRelativeFormatter.localizedString(for: date, relativeTo: Date())

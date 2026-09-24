@@ -27,7 +27,6 @@ export function ChatSurfaceShell({
   shellGeometry = "default",
   /** When true, shell grows with content (e.g. settings live preview) instead of filling a fixed-height parent. */
   autoHeight = false,
-  paneReserveLeft = "0px",
   paneReserveRight = "0px",
   canvasFill,
   dropOverlay,
@@ -52,7 +51,6 @@ export function ChatSurfaceShell({
   shellGeometry?: ChatShellGeometry;
   autoHeight?: boolean;
   /** Horizontal space the chat reserves for open floating side panes (CSS length). */
-  paneReserveLeft?: string;
   paneReserveRight?: string;
   /**
    * Fill behind the transcript. Transparent on the Work new-chat surface so
@@ -137,7 +135,6 @@ export function ChatSurfaceShell({
         style={{
           ...chatSurfaceVars(mode, accentColor, { chromeTint }),
           background: fill,
-          ["--chat-pane-reserve-left" as string]: paneReserveLeft,
           ["--chat-pane-reserve-right" as string]: paneReserveRight,
         } as CSSProperties}
         onDragOverCapture={onDragOverCapture}

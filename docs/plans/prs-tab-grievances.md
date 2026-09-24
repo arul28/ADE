@@ -335,8 +335,7 @@ not a transition, and the UI now says which one it is.
 
 **Symptom.** Columns of job rows with no real dependency edges, no pan, no zoom.
 
-**Fix.** Rebuild on **`@xyflow/react`** (React Flow v12), already a dependency and
-already used by the Workspace Graph tab. Real edges, pan/zoom, fit-to-view, status
+**Fix.** Rebuild on **`@xyflow/react`** (React Flow v12). Real edges, pan/zoom, fit-to-view, status
 carried by shape as well as colour.
 
 **Constraint.** The PR detail pane is not its own route, and the web client

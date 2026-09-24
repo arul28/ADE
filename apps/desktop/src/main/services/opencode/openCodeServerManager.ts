@@ -718,6 +718,11 @@ function resolveOpenCodeIsolationPaths(): OpenCodeIsolationPaths {
   };
 }
 
+/** `XDG_DATA_HOME` of an isolated (strict-config) server; its `opencode/` holds that server's `auth.json` and `opencode.db`. */
+export function resolveOpenCodeIsolatedDataHome(): string {
+  return resolveOpenCodeIsolationPaths().dataHome;
+}
+
 function ensureOpenCodeIsolationDirs(paths: OpenCodeIsolationPaths): void {
   for (const dir of [
     paths.root,

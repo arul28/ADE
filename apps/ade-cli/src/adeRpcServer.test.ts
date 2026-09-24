@@ -16,6 +16,7 @@ import {
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
+import { buildTrackedCliSessionActivityGuidance } from "../../desktop/src/shared/cliLaunch";
 import { CTO_VOICE_ACTIONS } from "../../desktop/src/shared/types/ctoVoice";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
@@ -95,6 +96,7 @@ function createRuntime() {
     projectRoot,
     workspaceRoot: projectRoot,
     projectId: "project-1",
+    sessionActivityReportingEnabled: true,
     project: { rootPath: projectRoot, displayName: "project", baseRef: "main" },
     paths: {
       adeDir: path.join(projectRoot, ".ade"),
@@ -220,6 +222,7 @@ function createRuntime() {
       updateMeta: vi.fn(),
       readTranscriptTail: vi.fn(() => ""),
       requestAttention: vi.fn(() => true),
+      setSessionActivity: vi.fn(() => true),
       setStatusNote: vi.fn(() => true),
       settleSession: vi.fn(() => true),
       unsettleSession: vi.fn(() => true),
@@ -742,7 +745,11 @@ function createRuntime() {
     computerUseArtifactBrokerService: {
       getBackendStatus: vi.fn(() => ({ backends: [] })),
       listArtifacts: vi.fn(() => []),
-      ingest: vi.fn(() => ({ artifacts: [] })),
+      // One spy for both doors: attaches use the async ingest.
+      ...(() => {
+        const ingest = vi.fn(() => ({ artifacts: [] }));
+        return { ingest, ingestAsync: ingest };
+      })(),
       readArtifactPreview: vi.fn(async () => "data:image/png;base64,AAAA"),
     } as any,
     eventBuffer: {
@@ -1663,6 +1670,20 @@ describe("adeRpcServer", () => {
         attentionRequestedAt: null,
         lastTurnFailedAt: null,
       } as any);
+      runtime.sessionService.get.mockImplementation((sessionId: string) => {
+        if (sessionId === "attached-terminal") {
+          return { id: "attached-terminal", chatSessionId: "chat-1" } as any;
+        }
+        if (sessionId === "chat-1") {
+          return {
+            id: "chat-1",
+            toolType: "codex-chat",
+            attentionRequestedAt: null,
+            lastTurnFailedAt: null,
+          } as any;
+        }
+        return null;
+      });
 
       const lifecycleCalls = [
         {
@@ -1671,6 +1692,14 @@ describe("adeRpcServer", () => {
           assert: () => expect(runtime.sessionService.requestAttention).toHaveBeenCalledWith(
             "chat-1",
             "Choose a release channel.",
+          ),
+        },
+        {
+          action: "setSessionActivity",
+          args: { value: "testing" },
+          assert: () => expect(runtime.sessionService.setSessionActivity).toHaveBeenCalledWith(
+            "chat-1",
+            "testing",
           ),
         },
         {
@@ -1692,6 +1721,14 @@ describe("adeRpcServer", () => {
         lifecycle.assert();
       }
 
+      const attachedTerminalActivity = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { sessionId: "attached-terminal", value: "testing" },
+      });
+      expect(attachedTerminalActivity?.isError).toBeUndefined();
+      expect(runtime.sessionService.setSessionActivity).toHaveBeenCalledWith("attached-terminal", "testing");
+
       const denied = await callTool(handler, "run_ade_action", {
         domain: "session",
         action: "setSessionStatusNote",
@@ -1702,6 +1739,13 @@ describe("adeRpcServer", () => {
         "chat-2",
         "Cross-session write",
       );
+      const activityDenied = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { sessionId: "chat-2", value: "testing" },
+      });
+      expect(activityDenied.isError).toBe(true);
+      expect(runtime.sessionService.setSessionActivity).not.toHaveBeenCalledWith("chat-2", "testing");
 
       // Settlement is user- and PR-merge-driven only (2026-07). A session-bound
       // caller gets no settle writer at all: the caller-scoped `*SelfSession`
@@ -1747,6 +1791,14 @@ describe("adeRpcServer", () => {
         "chat-from-env",
         "Running CLI checks",
       );
+
+      const activity = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionActivity",
+        args: { value: "monitoring" },
+      });
+      expect(activity?.isError).toBeUndefined();
+      expect(runtime.sessionService.setSessionActivity).toHaveBeenCalledWith("chat-from-env", "monitoring");
 
       const denied = await callTool(handler, "run_ade_action", {
         domain: "session",
@@ -2611,6 +2663,102 @@ describe("adeRpcServer", () => {
       sessionId: "session-1",
       initialInputWritten: true,
     });
+  });
+
+  it("omits activity guidance when the runtime cannot accept activity reports", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionActivityReportingEnabled = false;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "agent" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "edit",
+      initialInput: "run the checks",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall).toBeDefined();
+    expect(JSON.stringify(createCall)).not.toContain("Activity detail for this tracked ADE CLI session");
+  });
+
+  it.each([
+    {
+      name: "Claude",
+      args: { provider: "claude", permissionMode: "default" },
+      available: false,
+    },
+    {
+      name: "Codex",
+      args: { provider: "codex", permissionMode: "edit" },
+      available: true,
+    },
+    {
+      name: "Cursor with an initial prompt",
+      args: { provider: "cursor", permissionMode: "edit", hasInitialPrompt: true },
+      available: true,
+    },
+    {
+      name: "blank Cursor",
+      args: { provider: "cursor", permissionMode: "edit", hasInitialPrompt: false },
+      available: false,
+    },
+    {
+      name: "write-capable Droid",
+      args: { provider: "droid", permissionMode: "default", droidPermissionMode: "auto-medium" },
+      available: true,
+    },
+    {
+      name: "AGI Droid",
+      args: { provider: "droid", permissionMode: "default", droidPermissionMode: "agi" },
+      available: false,
+    },
+    {
+      name: "OpenCode",
+      args: { provider: "opencode", permissionMode: "edit" },
+      available: true,
+    },
+    {
+      name: "OpenCode with external config",
+      args: { provider: "opencode", permissionMode: "config-toml" },
+      available: false,
+    },
+    {
+      name: "full-auto Pi",
+      args: { provider: "pi", permissionMode: "full-auto" },
+      available: true,
+    },
+    {
+      name: "non-full-auto Pi",
+      args: { provider: "pi", permissionMode: "edit" },
+      available: false,
+    },
+    { name: "Qwen", args: { provider: "qwen", permissionMode: "edit" }, available: false },
+    { name: "Kimi", args: { provider: "kimi", permissionMode: "edit" }, available: false },
+    { name: "Grok", args: { provider: "grok", permissionMode: "edit" }, available: false },
+    { name: "Copilot", args: { provider: "copilot", permissionMode: "edit" }, available: false },
+    {
+      name: "Codex in Plan mode",
+      args: { provider: "codex", permissionMode: "plan" },
+      available: false,
+    },
+  ] satisfies Array<{
+    name: string;
+    args: Parameters<typeof buildTrackedCliSessionActivityGuidance>[0];
+    available: boolean;
+  }>)("gates tracked CLI activity guidance for $name", ({ args, available }) => {
+    const guidance = buildTrackedCliSessionActivityGuidance({
+      ...args,
+      sessionActivityReportingEnabled: true,
+    });
+
+    expect(guidance !== null).toBe(available);
+    if (available) {
+      expect(guidance).toContain("ADE_ACTIVITY_SESSION_ID");
+      expect(guidance).toContain("chat activity testing");
+    }
   });
 
   it("persists a requested preset id in resume metadata even when resolution is unavailable", async () => {
@@ -3784,7 +3932,7 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "update")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "layout")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "tiling_tree")).toBe(true);
-    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(false);
   });
 
   it("routes account settings and vault actions through the runtime stores", async () => {
@@ -5516,6 +5664,108 @@ describe("adeRpcServer", () => {
       args: { laneId: "lane-a", x: 1, y: 2 },
     });
     expect(noteAgentMacDesktopActivity).not.toHaveBeenCalled();
+  });
+
+  it("lets only user clients delete an installed simulator", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const refused = await callTool(agent, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(deviceDeleteInstalled).not.toHaveBeenCalled();
+
+    // The desktop's device picker is a user client and keeps its delete.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" }, { clientInfo: { name: "ade-desktop-local" } });
+    const deleted = await callTool(desktop, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(deleted?.isError).toBeUndefined();
+    expect(deviceDeleteInstalled).toHaveBeenCalledWith({ udid: "SIM-1" });
+  });
+
+  it("regression: refuses user-only verbs to a CLI process with no chat, and never lists them to it", async () => {
+    const fixture = createRuntime();
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    const deviceDelete = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled, deviceDelete };
+
+    // An agent's shell with no chat identity runs `ade` as `ade-cli:<pid>`.
+    const shell = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(shell, { callerId: "ade-cli:4242", role: "cto" });
+    const refused = await callTool(shell, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(deviceDeleteInstalled).not.toHaveBeenCalled();
+    const listed = await callTool(shell, "list_ade_actions", { domain: "ios_simulator" });
+    const names = (listed.structuredContent?.actions ?? listed.actions ?? []).map((entry: any) => entry.action);
+    expect(names).toContain("deviceDelete");
+    expect(names).not.toContain("deviceDeleteInstalled");
+
+    // The desktop's runtime connection is also a process id, and is the device picker.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(
+      desktop,
+      { callerId: "ade-desktop-local:77", role: "cto" },
+      { clientInfo: { name: "ade-desktop-local" } },
+    );
+    const deleted = await callTool(desktop, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(deleted?.isError).toBeUndefined();
+    expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
+  });
+
+  it("regression: user-only verbs go to the desktop's own client names and to no other caller", async () => {
+    const fixture = createRuntime();
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+    const tryDelete = async (identity: Record<string, unknown> | undefined, params: Record<string, unknown>) => {
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, identity, params);
+      deviceDeleteInstalled.mockClear();
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "ios_simulator",
+        action: "deviceDeleteInstalled",
+        args: { udid: "SIM-1" },
+      });
+      return result?.isError !== true && deviceDeleteInstalled.mock.calls.length === 1;
+    };
+
+    // The local picker and a paired or SSH remote runtime's picker.
+    for (const name of ["ade-desktop-local", "ade-desktop-remote"]) {
+      expect(await tryDelete({ callerId: `${name}:77`, role: "cto" }, { clientInfo: { name } })).toBe(true);
+    }
+    // A client that never names itself is "unknown".
+    expect(await tryDelete({ callerId: "raw-socket", role: "cto" }, {})).toBe(false);
+    expect(await tryDelete({ callerId: "raw-socket", role: "cto" }, { clientInfo: { name: "unknown" } })).toBe(false);
+    // The `ade` CLI, even one that borrows a desktop-shaped caller id.
+    expect(await tryDelete({ callerId: "ade-cli:4242", role: "cto" }, { clientInfo: { name: "ade-cli" } })).toBe(false);
+    expect(await tryDelete({ callerId: "ade-desktop-local:1", role: "cto" }, { clientInfo: { name: "ade-cli" } })).toBe(false);
+    // No identity at all.
+    expect(await tryDelete(undefined, {})).toBe(false);
+    // A desktop name is not enough for an agent.
+    expect(await tryDelete(
+      { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" },
+      { clientInfo: { name: "ade-desktop-local" } },
+    )).toBe(false);
   });
 
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {
@@ -7433,6 +7683,21 @@ describe("run_ade_action search scope", () => {
     expect(response?.isError).toBeUndefined();
     const args = search.query.mock.calls[0]![0] as { callerScope?: Record<string, unknown> };
     expect(args.callerScope).toBeUndefined();
+  });
+
+  it("denies unbound agent CLI activity writes to arbitrary sessions", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "session",
+      action: "setSessionActivity",
+      args: { sessionId: "another-session", value: "testing" },
+    });
+
+    expect(response?.isError).toBe(true);
+    expect(runtime.sessionService.setSessionActivity).not.toHaveBeenCalled();
   });
 
   it("leaves an unbound external caller unscoped", async () => {

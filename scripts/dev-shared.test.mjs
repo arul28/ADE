@@ -14,6 +14,7 @@ import {
   resolveNpmInvocation,
   resolveDevSocketPath,
   resolveDevSpawnInvocation,
+  resolveDetachedDevInvocation,
   printDevIsolationReport,
   shutdownRuntime,
 } from "./dev-shared.mjs";
@@ -289,4 +290,25 @@ test("only local runtimes may be auto-started or stopped", () => {
   assert.equal(canAutoStartRuntime("tcp://localhost:9999"), true);
   assert.equal(canAutoStartRuntime("tcp://10.0.0.4:9999"), false);
   assert.equal(canAutoStartRuntime("tcp://runtime.internal:9999"), false);
+});
+
+test("a detached dev launch finds npm on Windows and hides the console", () => {
+  const npmCliPath = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+  const windows = resolveDetachedDevInvocation("npm", ["run", "dev:desktop"], {
+    platform: "win32",
+    execPath: "C:\\Program Files\\nodejs\\node.exe",
+    env: {},
+    pathExists: (candidate) => candidate === npmCliPath,
+  });
+  // Not a bare `npm`, which `spawn` cannot find without a shell on Windows.
+  assert.equal(windows.command, "C:\\Program Files\\nodejs\\node.exe");
+  assert.deepEqual(windows.args.slice(-2), ["run", "dev:desktop"]);
+  assert.equal(windows.windowsHide, true);
+
+  const batch = resolveDetachedDevInvocation("tool.cmd", ["--flag"], { platform: "win32", env: { ComSpec: "cmd.exe" } });
+  assert.equal(batch.command, "cmd.exe");
+  assert.equal(batch.windowsVerbatimArguments, true);
+
+  const mac = resolveDetachedDevInvocation("npm", ["run", "dev:desktop"], { platform: "darwin" });
+  assert.deepEqual(mac, { command: "npm", args: ["run", "dev:desktop"], windowsVerbatimArguments: false, windowsHide: true });
 });

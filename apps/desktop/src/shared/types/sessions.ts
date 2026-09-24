@@ -20,6 +20,25 @@ import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
+/** Fixed agent-reported activity labels. These never change the parent phase. */
+export const SESSION_ACTIVITY_VALUES = [
+  "planning",
+  "implementing",
+  "testing",
+  "reviewing",
+  "debugging",
+  "monitoring",
+] as const;
+
+export type SessionActivityValue = (typeof SESSION_ACTIVITY_VALUES)[number];
+
+/** One atomically persisted agent report for the session-card substatus. */
+export type SessionActivityReport = {
+  value: SessionActivityValue;
+  source: "agent";
+  updatedAt: string;
+};
+
 /**
  * One agent SDK process a session currently owns.
  *
@@ -319,6 +338,10 @@ export type TerminalSessionSummary = {
    */
   settledAt?: string | null;
   statusNote?: string | null;
+  /** Optional for older peers and project databases that predate this report. */
+  activityStatus?: SessionActivityReport | null;
+  /** Host timestamp of the latest activity report set or explicit clear. */
+  activityStatusChangedAt?: string | null;
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;
   /** Auditable owner of the current explicit attention declaration. */

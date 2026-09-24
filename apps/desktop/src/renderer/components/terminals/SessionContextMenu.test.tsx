@@ -858,6 +858,17 @@ describe("SessionContextMenu auto handoff", () => {
     vi.clearAllMocks();
   });
 
+  function openHandoffMenu() {
+    fireEvent.click(screen.getByTestId("session-menu-handoff"));
+  }
+
+  it("offers remote and local handoff from any chat card", () => {
+    renderMenu(makeSession());
+    openHandoffMenu();
+    expect((screen.getByTestId("session-menu-handoff-remote") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTestId("session-menu-handoff-local") as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("offers the add form when this chat has no scoped rule", async () => {
     renderMenu(makeSession());
     fireEvent.click(screen.getByTestId("session-menu-handoff"));
@@ -883,6 +894,7 @@ describe("SessionContextMenu auto handoff", () => {
   it("shows Remove only for a rule scoped to this very chat, and deletes it", async () => {
     list.mockResolvedValue([handoffRule("auto-handoff-other-limit", "some-other-chat")]);
     renderMenu(makeSession());
+    openHandoffMenu();
     await waitFor(() => expect(list).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId("session-menu-handoff"));
     expect(screen.queryByTestId("session-menu-remove-auto-handoff")).toBeNull();

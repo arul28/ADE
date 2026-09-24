@@ -8,6 +8,7 @@ import "./lib/nodeWarnings";
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -65,6 +66,7 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
+import { isUuid } from "../../desktop/src/shared/uuid";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import {
@@ -113,6 +115,11 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
 import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
+import {
+  isSessionActivityValue,
+  SESSION_ACTIVITY_SESSION_ID_ENV,
+} from "../../desktop/src/shared/sessionActivity";
 import {
   formatWorkingDuration,
   sessionElapsedLabel,
@@ -172,6 +179,12 @@ import {
   isAdeUsageRangePreset,
   isAdeUsageScope,
 } from "../../desktop/src/shared/types/usage";
+import {
+  ADE_TURN_USAGE_GROUP_BY,
+  ADE_TURN_USAGE_MAX_DAYS,
+  ADE_TURN_USAGE_MAX_RECENT,
+  isAdeTurnUsageGroupBy,
+} from "../../desktop/src/shared/types/turnUsage";
 import { PERSONAL_CHAT_ACTIONS } from "../../desktop/src/shared/types/personalChats";
 import {
   isWorkToolId,
@@ -363,6 +376,12 @@ import {
 } from "./services/runtime/brainLoopWatchdog";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { servesMachineRuntimeEndpoint, startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
+import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
+import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
+import { ADE_BANNER } from "./help/banner";
+import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
+import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -443,11 +462,14 @@ type FormatterId =
   | "pr-checks"
   | "pr-comments"
   | "chat-list"
+  | "chat-summary"
   | "chat-read"
   | "chat-status"
   | "chat-models"
   | "chat-resume-now"
   | "chat-continue-on-account"
+  | "chat-launch"
+  | "chat-launches"
   | "session-lifecycle"
   | "lane-drift"
   | "scheduled-work-create"
@@ -624,6 +646,17 @@ type CliPlan =
       kind: "chat-wait";
       sessionId: string;
       waitFor: ChatWaitTarget;
+      timeoutMs: number;
+      pollIntervalMs: number;
+    }
+  | {
+      /**
+       * `ade chat launch`: start a brain-owned new-lane chat (`chat.startLaunch`)
+       * and, with `--wait`, poll `chat.getLaunch` until it completes or fails.
+       */
+      kind: "chat-launch";
+      launchArgs: JsonObject;
+      wait: boolean;
       timeoutMs: number;
       pollIntervalMs: number;
     }
@@ -881,14 +914,6 @@ function maybeRunBuiltCliFallback(
   };
 }
 
-const ADE_BANNER = String.raw`
-     _    ____  _____
-    / \  |  _ \| ____|
-   / _ \ | | | |  _|
-  / ___ \| |_| | |___
- /_/   \_\____/|_____|
-`;
-
 const TOP_LEVEL_HELP = `${ADE_BANNER}
   Agent-focused command-line interface for ADE.
 
@@ -1047,1117 +1072,6 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
   if (primaryKey === "new" && normalizedSubcommand === "cli") return "new chat";
   return `${primaryKey} ${normalizedSubcommand}`;
 }
-
-const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
-  status: `${ADE_BANNER}
-  iOS Simulator: status
-
-  Shows macOS support, Xcode and simulator-control readiness, the active booted device,
-  and the drawer's active simulator session. Start here when a simulator action
-  fails or when an agent needs to know whether ADE owns a running session.
-
-    $ ade --socket apple status --text
-
-  Flags:
-    --text                 Compact human-readable readiness summary.
-    --json                 Full JSON payload with tool install hints.
-`,
-  devices: `${ADE_BANNER}
-  iOS Simulator: devices
-
-  Lists available iOS simulator devices. Aliases: list, ls.
-
-    $ ade --socket apple devices --text
-
-  Flags:
-    --text                 Compact table.
-    --json                 Full device records.
-`,
-  apps: `${ADE_BANNER}
-  iOS Simulator: apps
-
-  Lists launchable app targets from root-level .xcodeproj bundles,
-  apps/*/*.xcodeproj projects, DerivedData, and apps already installed on the
-  selected simulator. Aliases: targets, launchable, launchables.
-
-    $ ade --socket apple apps --device <udid> --text
-
-  Flags:
-    --device, --udid <id>  Simulator device to inspect.
-    --project-root <path>  Root to scan; defaults to the lane worktree.
-    --lane, --lane-id <id> Lane whose worktree to scan.
-    --text                 Compact table with target ids.
-`,
-  launch: `${ADE_BANNER}
-  iOS Simulator: launch
-
-  Boots the simulator, resolves/builds/installs a target, launches the app, and
-  claims the ADE drawer session. Use --socket when the drawer and agents should
-  share one long-lived simulator service. Alias: open.
-
-    $ ade --socket apple launch --target <id> --text
-    $ ade --socket apple launch --bundle-id com.example.app --no-build --text
-
-  Flags:
-    --device, --udid <id>       Simulator device.
-    --target, --target-id <id>  Target id from "apple apps".
-    --bundle-id, --bundle <id>  Launch an installed app by bundle id.
-    --app-bundle, --app <path>  Install/launch a built .app bundle.
-    --project, --xcodeproj <p>  Xcode project path.
-    --scheme <name>             Xcode scheme.
-    --project-root <path>       Build root; defaults to the lane worktree.
-    --lane, --lane-id <id>      Lane to build in and bind the session to.
-    --chat-session <id>         Owner chat session for the single-owner lock.
-    --no-build                  Skip xcodebuild.
-    --force, -f                 Take over another chat's session; the new target
-                                is validated before the owner is evicted.
-    --mode snapshot|live        Inspector launch mode; default live.
-    --foreground                Bring Simulator.app to the front; default is background.
-    --background                Accepted, no-op: background is the default.
-    --open-drawer               Also open the iOS drawer for the user.
-    --follow                    Announce the wait up front; per-step progress is
-                                not streamed, the summary prints at the end.
-    --arg KEY=VALUE             Extra service args for advanced launch options.
-`,
-  proof: `${ADE_BANNER}
-  iOS Simulator: proof
-
-  Captures a simulator screenshot and files it in the chat's proof drawer.
-  Alias: promote.
-
-    $ ade --socket apple proof --caption "Settings screen after the fix" --text
-
-  Flags:
-    --caption <text>       Artifact description; also the default title.
-    --title <text>         Artifact title.
-    --out <path>           Screenshot path; relative to the build root.
-    --device, --udid <id>  Simulator device.
-    --project-root <path>  Build root; defaults to the lane worktree.
-`,
-  claim: `${ADE_BANNER}
-  iOS Simulator: claim
-
-  Attributes an already-running simulator session to a lane and chat. This is
-  not a step in a normal launch — "launch" claims the session itself.
-
-  Claim rewrites the owning chat, so it is an ownership call: taking a session
-  another chat owns is refused with IOS_SIMULATOR_OWNED_BY_OTHER_SESSION unless
-  you say you mean it. Re-attributing only the lane never trips the guard.
-
-    $ ade --socket apple claim --lane <lane-id> --text
-    $ ade --socket apple claim --lane <lane-id> --ignore-ownership --text
-
-  Flags:
-    --lane, --lane-id <id>   Required; defaults to $ADE_LANE_ID.
-    --chat-session <id>      Owner chat session; defaults to $ADE_CHAT_SESSION_ID.
-    --ignore-ownership       Take a session another chat owns, deliberately. No
-                             teardown: the session, its helper capture and the
-                             launch lock all stay up, only the owner changes.
-    --force, -f              Same bypass, spelled the way launch/shutdown spell
-                             it. Unlike "shutdown --force" it resets nothing.
-    --arg ignoreOwnership=true
-                             The generic escape hatch; equivalent to the flags.
-`,
-  shutdown: `${ADE_BANNER}
-  iOS Simulator: shutdown
-
-  Stops live view state, releases the drawer session, and clears related simulator work.
-  Aliases: stop, teardown, end, end-session.
-
-  Shutdown carries the caller's chat session ($ADE_CHAT_SESSION_ID or
-  --chat-session). Releasing a session owned by a different chat is refused.
-  The check is cooperative — it stops accidents, not determined callers:
-  --force gets through, so does --ignore-ownership (the bypass without the
-  hard reset), and so does naming the owner's own chat session id, which
-  "ios-sim status" reports to anyone who asks. Ask before evicting another chat.
-
-    $ ade --socket apple shutdown --text
-    $ ade --socket apple shutdown --force --text
-    $ ade --socket apple shutdown --ignore-ownership --text
-
-  Flags:
-    --force, -f            Release a session owned by another chat, and hard-reset
-                           the launch lock and the helper's capture with it.
-    --ignore-ownership     Release a session owned by another chat without the
-                           hard reset: no capture teardown, no launch-lock reset.
-    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
-`,
-  actions: `${ADE_BANNER}
-  iOS Simulator: actions
-
-  Lists every callable ios_simulator action exposed through ADE's generic action
-  bridge. Use this when a typed subcommand is missing a niche argument.
-
-    $ ade --socket apple actions --text
-    $ ade actions run ios_simulator.getStatus --text
-`,
-  screenshot: `${ADE_BANNER}
-  iOS Simulator: screenshot
-
-  Captures a one-shot PNG from the simulator via simctl. Alias: capture.
-  Prints the written file path; read that file instead of the data URL.
-
-    $ ade --socket apple screenshot --out shot.png --text
-
-  Flags:
-    --out <path>           Where to write the PNG; relative to the build root.
-    --device, --udid <id>  Simulator device; defaults to the active session or booted device.
-    --project-root <path>  Build root; defaults to the lane worktree.
-`,
-  snapshot: `${ADE_BANNER}
-  iOS Simulator: snapshot
-
-  Captures screenshot + ADEInspector/accessibility elements for the current
-  simulator screen. Use this before asking an agent to find the current screen
-  in SwiftUI code. Aliases: screen, elements.
-
-    $ ade --socket apple snapshot --text
-
-  Flags:
-    --device, --udid <id>  Simulator device.
-    --project-root <path>  Project root for source matching.
-    --arg x=<n> --arg y=<n> Optional hit-test point in screenshot pixels.
-`,
-  inspector: `${ADE_BANNER}
-  iOS Simulator: inspector
-
-  Reads the DEBUG ADEInspector snapshot published by the launched app. This is
-  lower-level than "snapshot" and does not include screenshot/accessibility fallback.
-
-    $ ade --socket apple inspector --text
-
-  Flags:
-    --device, --udid <id>  Simulator device.
-`,
-  inspect: `${ADE_BANNER}
-  iOS Simulator: inspect
-
-  Hit-tests a point and returns the best matching context item without committing
-  it to the drawer composer. Aliases: hit-test, hover.
-
-    $ ade --socket apple inspect --x 120 --y 420 --screenshot --text
-
-  Flags:
-    --x <n> --y <n>        Required screenshot-pixel coordinates.
-    --device, --udid <id>  Simulator device.
-    --project-root <path>  Project root for Swift source matching.
-    --screenshot           Include screenshot data in the context result.
-`,
-  "preview-status": `${ADE_BANNER}
-  iOS Simulator: preview-status
-
-  Checks Xcode Preview Lab readiness: Xcode version, mcpbridge availability,
-  Xcode running state, selected project window, setup warnings, and docs URL.
-  Alias: preview-doctor.
-
-    $ ade --socket apple preview-status --source apps/ios/ADE/Views/Home.swift --line 42 --text
-
-  Flags:
-    --project-root <path>  ADE project root.
-    --source, --file <p>   Swift file used to bias preview discovery.
-    --line <n>             Source line used to bias preview discovery.
-`,
-  previews: `${ADE_BANNER}
-  iOS Simulator: previews
-
-  Lists discoverable #Preview and PreviewProvider definitions, ranked around a
-  selected Swift file when supplied. Aliases: preview-list, list-previews.
-
-    $ ade --socket apple previews --source apps/ios/ADE/Views/Home.swift --text
-
-  Flags:
-    --project-root <path>  ADE project root.
-    --source, --file <p>   Swift file to rank nearby previews.
-    --line <n>             Optional source line.
-`,
-  "preview-match": `${ADE_BANNER}
-  iOS Simulator: preview-match
-
-  Resolves the best Preview Lab target for the current simulator/source context.
-  Aliases: match-preview, resolve-preview.
-
-    $ ade --socket apple preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
-
-  Flags:
-    --project-root <path>  ADE project root.
-    --source, --file <p>   Selected Swift file.
-    --line <n>             Optional source line.
-    --label <text>         Visible element label used for a suggested preview title.
-    --component-id <id>    ADEInspector component id used for a suggested preview.
-`,
-  "preview-ensure": `${ADE_BANNER}
-  iOS Simulator: preview-ensure
-
-  Opens this lane's iOS project in Xcode when needed and waits briefly for
-  Xcode MCP Preview Lab readiness. Aliases: ensure-preview, preview-workspace.
-
-    $ ade --socket apple preview-ensure --text
-
-  Flags:
-    --project-root <path>  ADE project root.
-    --source, --file <p>   Optional Swift file context.
-    --line <n>             Optional source line.
-    --no-open              Check readiness without opening Xcode.
-    --timeout-ms <n>       Wait time for Xcode readiness; default 12000.
-`,
-  "preview-render": `${ADE_BANNER}
-  iOS Simulator: preview-render
-
-  Renders a SwiftUI preview through Xcode MCP and returns the snapshot path/data.
-  This is the final command agents should run after finding or adding a preview.
-  Aliases: render-preview, preview.
-
-    $ ade --socket apple preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
-
-  Flags:
-    --source, --file <p>   Required Swift source file. Absolute, project-relative,
-                           or Xcode-project-relative paths are accepted.
-    --index <n>            Preview definition index in the file; default 0.
-    --tab, --tab-identifier <id> Xcode window tab from preview-status.
-    --timeout <sec>        Render timeout, 5-240 seconds; default 120.
-    --project-root <path>  ADE project root.
-`,
-  "preview-current": `${ADE_BANNER}
-  iOS Simulator: preview-current
-
-  Resolves and renders the Preview Lab target for the current simulator
-  selection. Run "select" first, or pass --source/--line explicitly.
-  Aliases: current-preview, preview-open-current, open-current-preview.
-
-    $ ade --socket apple select --x 120 --y 420 --text
-    $ ade --socket apple preview-current --text
-    $ ade --socket apple preview-current --source apps/ios/ADE/Views/Home.swift --line 42 --text
-
-  Flags:
-    --source, --file <p>   Optional Swift source file; defaults to last selected element.
-    --line <n>             Optional source line; defaults to last selected element.
-    --label <text>         Visible element label used for a suggested preview title.
-    --component-id <id>    ADEInspector component id used for a suggested preview.
-    --tab, --tab-identifier <id> Xcode window tab from preview-status.
-    --timeout <sec>        Render timeout, 5-240 seconds; default 120.
-    --project-root <path>  ADE project root.
-`,
-  "preview-open": `${ADE_BANNER}
-  iOS Simulator: preview-open
-
-  Opens apps/ios/ADE.xcodeproj in Xcode so Xcode MCP Preview Lab can connect.
-  Aliases: open-preview-workspace, open-xcode.
-
-    $ ade apple preview-open --project-root <path> --text
-
-  Flags:
-    --project-root <path>  ADE project root.
-`,
-  "stream-start": `${ADE_BANNER}
-  iOS Simulator: stream-start
-
-  Starts ADE's live H.264 view of the device framebuffer via the vendored
-  helper. No Screen Recording grant and no Simulator.app window. There is one
-  encoder now, so there is no backend to choose and no second start verb.
-  Boots the device first if it is off: this is an explicit start. Viewers
-  (the pane, a phone) never boot and get APPLE_DEVICE_OFF instead.
-  Aliases: start-stream, stream, window-start, start-window, mirror-start,
-  start-mirror, preview-start, start-preview.
-
-    $ ade --socket apple stream-start --fps 60 --text
-    $ ade --socket apple stream-start --scale-factor 0.5 --bitrate-kbps 2500 --text
-
-  Flags:
-    --device, --udid <id>       Simulator device.
-    --fps <n>                   Target fps.
-    --scale-factor, --scale <n> Downscale 0.1 to 1. Lower sends fewer pixels.
-    --bitrate-kbps <n>          Encoder bitrate cap in kilobits per second.
-    --compression-quality <n>   0.1 to 1. Lower spends fewer bits.
-`,
-  "stream-status": `${ADE_BANNER}
-  iOS Simulator: stream-status
-
-  Shows whether the live view is active, the refresh rate, simulator control
-  status, and last error.
-
-    $ ade --socket apple stream-status --text
-`,
-  "stream-stop": `${ADE_BANNER}
-  iOS Simulator: stream-stop
-
-  Stops the live view without necessarily releasing the simulator session.
-  Aliases: stop-stream, live-stop, stop-live.
-
-    $ ade --socket apple stream-stop --text
-`,
-  select: `${ADE_BANNER}
-  iOS Simulator: select
-
-  Hit-tests a point, emits a drawer selection event, and attaches the resulting
-  iOS context to the active chat composer. Use --socket so the drawer receives it.
-
-    $ ade --socket apple select --x 120 --y 420 --text
-
-  Flags:
-    --x <n> --y <n>        Required screenshot-pixel coordinates.
-    --device, --udid <id>  Simulator device.
-    --project-root <path>  Project root for Swift source matching.
-`,
-  tap: `${ADE_BANNER}
-  iOS Simulator: tap
-
-  Sends a tap when simulator controls are available.
-
-    $ ade --socket apple tap --x 120 --y 420 --text
-    $ ade --socket apple tap 120 420 --text
-
-  Flags:
-    --x <n> --y <n>        Required point coordinates.
-    --device, --udid <id>  Simulator device.
-`,
-  drag: `${ADE_BANNER}
-  iOS Simulator: drag / swipe
-
-  Sends a swipe to the active launched app. "swipe" is an alias of drag.
-
-    $ ade --socket apple drag --start-x 120 --start-y 700 --end-x 120 --end-y 250 --text
-    $ ade --socket apple swipe 120 700 120 250 --duration-ms 250 --text
-
-  Flags:
-    --start-x <n> --start-y <n> Required start coordinates.
-    --end-x <n> --end-y <n>     Required end coordinates.
-    --duration-ms <n>           Swipe duration in milliseconds.
-    --device, --udid <id>       Simulator device.
-`,
-  type: `${ADE_BANNER}
-  iOS Simulator: type
-
-  Types text into the active launched app. Alias: text.
-
-    $ "$ADE_CLI_PATH" apple type "hello" --text
-    $ "$ADE_CLI_PATH" apple type "reddit" --submit --text
-    $ "$ADE_CLI_PATH" apple type --value "hello" --text
-
-  Flags:
-    --value, --message <v> Text to type. --text <value> is also accepted for
-                           compatibility, but --text by itself controls ADE's
-                           human-readable output mode.
-    --submit               Press Return after the text (submits a search or form).
-    --device, --udid <id>  Simulator device.
-`,
-  key: `${ADE_BANNER}
-  iOS Simulator: key
-
-  Presses one named key on the simulator keyboard.
-
-    $ "$ADE_CLI_PATH" apple key return --text
-    $ "$ADE_CLI_PATH" apple key tab --text
-
-  Keys: return (alias enter), tab.
-  To type text and then press Return, use: apple type "<text>" --submit.
-
-  Flags:
-    --device, --udid <id>  Simulator device.
-`,
-  "open-device": `${ADE_BANNER}
-  iOS Simulator: open-device
-
-  Boots a simulator and opens a device session on it. Aliases: open-sim, boot.
-
-  A device session is not an app session. It builds nothing and installs
-  nothing. Use it to look at a simulator, or to drive an app that is already
-  installed. Use "launch" when you want ADE to build and install your code.
-
-  ADE shuts the device down again only when ADE booted it.
-
-    $ ade --socket apple open-device --text
-    $ ade --socket apple open-device --device <udid> --no-window --text
-
-  Flags:
-    --device, --udid <id>  Simulator device; defaults to a booted device.
-    --lane, --lane-id <id> Lane to bind the device session to.
-    --chat-session <id>    Owner chat session for the single-owner lock.
-    --no-window            Keep the device headless; skip Simulator.app.
-    --force, -f            Take a device session another chat owns.
-`,
-  "close-device": `${ADE_BANNER}
-  iOS Simulator: close-device
-
-  Releases this chat's device session. Alias: close-sim.
-
-  The simulator keeps running unless ADE booted it. Pass --shutdown to shut
-  down a device ADE did not boot.
-
-  A shutdown is skipped while another chat runs an app on that device, even
-  with --shutdown. Only --force goes through. --ignore-ownership does not:
-  it steps around the device-session guard in your own name and nothing else.
-
-    $ ade --socket apple close-device --text
-    $ ade --socket apple close-device --shutdown --text
-
-  Flags:
-    --device, --udid <id>  Simulator device.
-    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
-    --force, -f            Release a session another chat owns, and shut the
-                           device down even when another chat runs an app there.
-    --ignore-ownership     Skip the device-session owner check in your own name.
-                           Never shuts down a device another chat is using.
-    --shutdown             Shut the device down even when ADE did not boot it.
-`,
-  "device-session": `${ADE_BANNER}
-  iOS Simulator: device-session
-
-  Reports the device session ADE holds: which simulator, which chat owns it,
-  which lane it is bound to, when it opened, and whether ADE booted the device.
-  Alias: session.
-
-  Answers null when no device session is open. "status" reports the same record
-  alongside the app session and the live view; this reads it on its own.
-
-    $ ade --socket apple device-session --text
-
-  Flags:
-    --text                 Compact human-readable record.
-    --json                 Full device session record.
-`,
-  settings: `${ADE_BANNER}
-  iOS Simulator: settings
-
-  Reads the device's appearance, content size, accessibility options, last set
-  location, and status bar override state. Alias: device-settings.
-
-  simctl cannot read a location or a status bar back. Those two fields report
-  what ADE last set in this process, and reset when the runtime restarts.
-
-    $ ade --socket apple settings --text
-
-  Flags:
-    --device, --udid <id>  Simulator device.
-`,
-  appearance: `${ADE_BANNER}
-  iOS Simulator: appearance
-
-  Switches the device between light and dark mode. Runs "simctl ui appearance".
-
-    $ ade --socket apple appearance dark --text
-    $ ade --socket apple appearance --appearance light --text
-
-  Flags:
-    --appearance light|dark  Appearance to set; a positional value works too.
-    --device, --udid <id>    Simulator device.
-`,
-  "content-size": `${ADE_BANNER}
-  iOS Simulator: content-size
-
-  Sets the Dynamic Type size. Runs "simctl ui content_size". Alias: text-size.
-
-    $ ade --socket apple content-size accessibility-extra-large --text
-
-  Flags:
-    --content-size, --size <name>  Size to set; a positional value works too.
-                                   Values: extra-small, small, medium, large,
-                                   extra-large, extra-extra-large,
-                                   extra-extra-extra-large, accessibility-medium,
-                                   accessibility-large, accessibility-extra-large,
-                                   accessibility-extra-extra-large,
-                                   accessibility-extra-extra-extra-large.
-    --device, --udid <id>          Simulator device.
-`,
-  accessibility: `${ADE_BANNER}
-  iOS Simulator: accessibility
-
-  Turns one accessibility option on or off. Alias: a11y.
-
-  Only increase-contrast is a "simctl ui" option. ADE writes the rest to
-  com.apple.Accessibility and then posts a notifyutil notification, because a
-  preference written without the notification is read by nothing until the app
-  relaunches.
-
-    $ ade --socket apple accessibility reduce-motion on --text
-    $ ade --socket apple a11y --option bold-text --off --text
-
-  Flags:
-    --option <name>        Option to set; a positional value works too. Values:
-                           increase-contrast, reduce-motion, reduce-transparency,
-                           button-shapes (Show Borders), bold-text, invert-colors,
-                           grayscale, voice-over.
-    --on, --off            State to set; positional on/off works too.
-    --device, --udid <id>  Simulator device.
-`,
-  location: `${ADE_BANNER}
-  iOS Simulator: location
-
-  Sets or clears the simulated GPS location. Runs "simctl location".
-
-    $ ade --socket apple location 37.7749 -122.4194 --text
-    $ ade --socket apple location --latitude 37.7749 --longitude -122.4194 --text
-    $ ade --socket apple location --clear --text
-
-  Flags:
-    --latitude, --lat <n>  Latitude, -90 to 90; a positional value works too.
-    --longitude, --lon <n> Longitude, -180 to 180; a positional value works too.
-    --clear                Clear the override instead of setting one.
-    --device, --udid <id>  Simulator device.
-`,
-  permission: `${ADE_BANNER}
-  iOS Simulator: permission
-
-  Grants, revokes, or resets one privacy permission. Runs "simctl privacy".
-  Alias: privacy.
-
-  A reset takes the whole service back to its default and needs no bundle id.
-  A grant or a revoke acts on one app and needs one.
-
-    $ ade --socket apple permission grant photos --bundle-id com.example.app --text
-    $ ade --socket apple privacy reset location --text
-
-  Flags:
-    --action <name>        grant, revoke, or reset; a positional works too.
-    --service <name>       Privacy service; a positional works too. Values: all,
-                           calendar, contacts-limited, contacts, location,
-                           location-always, photos-add, photos, media-library,
-                           microphone, motion, reminders, siri.
-    --bundle-id <id>       App to act on; required for grant and revoke.
-    --device, --udid <id>  Simulator device.
-`,
-  push: `${ADE_BANNER}
-  iOS Simulator: push
-
-  Sends an APNs notification to an installed app. Runs "simctl push".
-
-  Pass --title and --body for a simple alert. Pass --payload for a full APNs
-  body. ADE fills aps.alert in from --title and --body when the payload omits
-  it. The payload file is deleted after the send.
-
-    $ ade --socket apple push --bundle-id com.example.app --title Hi --body "You have mail" --text
-    $ ade --socket apple push --bundle-id com.example.app --payload '{"aps":{"badge":3}}' --text
-
-  Flags:
-    --bundle-id <id>       Required target app.
-    --title <text>         Alert title.
-    --body <text>          Alert body.
-    --payload <json>       APNs payload as a JSON object string.
-    --device, --udid <id>  Simulator device.
-`,
-  "open-url": `${ADE_BANNER}
-  iOS Simulator: open-url
-
-  Opens a URL or a deeplink on the device. Runs "simctl openurl".
-
-    $ ade --socket apple open-url myapp://settings --text
-
-  Flags:
-    --url <url>            URL to open; a positional value works too.
-    --device, --udid <id>  Simulator device.
-`,
-  terminate: `${ADE_BANNER}
-  iOS Simulator: terminate
-
-  Stops a running app on the device. Runs "simctl terminate". Alias: kill-app.
-
-    $ ade --socket apple terminate --bundle-id com.example.app --text
-
-  Flags:
-    --bundle-id <id>       Required app to stop.
-    --device, --udid <id>  Simulator device.
-`,
-  relaunch: `${ADE_BANNER}
-  iOS Simulator: relaunch
-
-  Restarts the app that is already installed. Runs "simctl terminate" and then
-  "simctl launch". It does not build. Use "launch" to see a code change; use
-  this to see the app from its first screen again.
-
-    $ ade --socket apple relaunch --bundle-id com.example.app --text
-
-  Flags:
-    --bundle-id <id>       Required app to restart.
-    --device, --udid <id>  Simulator device.
-`,
-  uninstall: `${ADE_BANNER}
-  iOS Simulator: uninstall
-
-  Removes an app and its container from the device. Runs "simctl uninstall".
-  Use it to prove a first-run flow.
-
-  This is the one guarded device tool. It refuses a caller that is not the chat
-  holding the device session. Name your chat with --chat-session, or take it
-  anyway with --force.
-
-    $ ade --socket apple uninstall --bundle-id com.example.app --text
-
-  Flags:
-    --bundle-id <id>       Required app to remove.
-    --chat-session <id>    The chat asking. Defaults to $ADE_CHAT_SESSION_ID.
-    --force                Uninstall even when another chat holds the device.
-    --device, --udid <id>  Simulator device.
-`,
-  "status-bar": `${ADE_BANNER}
-  iOS Simulator: status-bar
-
-  Overrides or clears the status bar. Runs "simctl status_bar". Set 9:41 and
-  full bars before a screenshot so the shot stays stable.
-
-    $ ade --socket apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100 --text
-    $ ade --socket apple status-bar --clear --text
-
-  Flags:
-    --time <text>          Displayed time, such as 9:41.
-    --data-network <name>  Network label, such as wifi or 5g.
-    --wifi-bars <n>        Wi-Fi bars, 0 to 3.
-    --cellular-bars <n>    Cellular bars, 0 to 4.
-    --battery-level <n>    Battery percentage, 0 to 100.
-    --battery-state <name> charging, charged, or discharging.
-    --clear                Remove the override instead of setting one.
-    --device, --udid <id>  Simulator device.
-`,
-  "app-state": `${ADE_BANNER}
-  iOS Simulator: app-state
-
-  Reports whether an app runs right now, and its pid. Reads "launchctl list"
-  on the device. A shut down device answers "not running" rather than failing.
-
-    $ ade --socket apple app-state --bundle-id com.example.app --text
-
-  Flags:
-    --bundle-id <id>       Required app to check.
-    --device, --udid <id>  Simulator device.
-`,
-  "log-start": `${ADE_BANNER}
-  iOS Simulator: log-start
-
-  Starts the device event log. Alias: logs-start.
-
-  ADE streams "log stream" from the device and interleaves its own actions in
-  the same order, so the log shows what ADE did between two app log lines.
-
-    $ ade --socket apple log-start --bundle-id com.example.app --text
-
-  The log follows one app. "log stream" reads the whole device, so a run with
-  no bundle id returns every other app's rows and the system's besides.
-
-  There is one log process per host, so this is refused for a chat that owns
-  neither half of the simulator, and refused again for a chat that did not
-  start the log already running — a stake in the simulator is not a stake in
-  the log. A log nobody started is free to take.
-
-  Flags:
-    --device, --udid <id>  Simulator device.
-    --bundle-id <id>       Required. Keep only rows from this app.
-    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
-    --force, -f            Start it anyway: skips both checks and takes over a
-                           log another chat started.
-`,
-  "log-stop": `${ADE_BANNER}
-  iOS Simulator: log-stop
-
-  Stops the device event log and returns the final page. Alias: logs-stop.
-
-  There is one log process per host, so the chat that started the running log
-  is the only one that can stop it. Owning the device session or the app
-  session is not enough on its own.
-
-    $ ade --socket apple log-stop --text
-
-  Flags:
-    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
-    --force, -f            Stop a log another chat started.
-`,
-  log: `${ADE_BANNER}
-  iOS Simulator: log
-
-  Reads buffered event log rows. Alias: logs.
-
-  Each page returns a cursor. Pass it back as --since to read only new rows.
-  The page also reports how many rows the ring dropped since the last read.
-
-    $ ade --socket apple log --limit 100 --text
-    $ ade --socket apple log --since 412 --text
-
-  Flags:
-    --device, --udid <id>  Simulator device.
-    --since, --since-id <n> Return only rows after this id.
-    --limit <n>            Maximum rows to return.
-`,
-  "find-element": `${ADE_BANNER}
-  iOS Simulator: find-element
-
-  Finds one on-screen element by query and reports how many matched. Alias:
-  find. Run "snapshot" first to read the available refs, labels, and roles.
-
-  A query is a claim about the app, such as "the button labelled Continue".
-  A coordinate tap is a guess that the layout did not move.
-
-    $ ade --socket apple find-element --label Continue --text
-    $ ade --socket apple find --role Button --index 1 --text
-
-  Flags:
-    --ref <id>             Element ref from the last snapshot.
-    --identifier <id>      Accessibility identifier.
-    --label <text>         Exact accessibility label.
-    --text <text>          Case-insensitive substring of the label or value.
-                           --text-match spells the same thing unambiguously.
-    --role <name>          Element role, such as Button or TextField.
-    --index <n>            Which match to take when several match.
-    --device, --udid <id>  Simulator device.
-    --lane, --lane-id <id> Lane whose worktree backs source matching.
-    --project <path>       Project root for source matching.
-`,
-  "tap-element": `${ADE_BANNER}
-  iOS Simulator: tap-element
-
-  Taps the element the query names. Prefer this over a coordinate tap: it
-  fails loudly when the element is gone, where a coordinate tap hits whatever
-  moved into that spot.
-
-    $ ade --socket apple tap-element --label Continue --text
-    $ ade --socket apple tap-element --identifier signup-submit --text
-
-  Flags:
-    Same element query as "find-element": --ref, --identifier, --label, --text,
-    --role, --index, --device, --lane, --project.
-`,
-  "fill-element": `${ADE_BANNER}
-  iOS Simulator: fill-element
-
-  Taps a text field and types into it. Alias: fill.
-
-    $ ade --socket apple fill-element --identifier email-field --value ada@example.com --text
-    $ ade --socket apple fill --label Email "ada@example.com" --text
-
-  Flags:
-    --value <text>         Text to type; a positional value works too.
-    --no-focus             Type without tapping the field first.
-    Same element query as "find-element": --ref, --identifier, --label, --text,
-    --role, --index, --device, --lane, --project.
-`,
-  "wait-for-element": `${ADE_BANNER}
-  iOS Simulator: wait-for-element
-
-  Waits until an element appears, or disappears with --gone. Alias: wait-for.
-  Use it after a tap instead of a fixed sleep.
-
-    $ ade --socket apple wait-for-element --label Welcome --timeout-ms 8000 --text
-    $ ade --socket apple wait-for --label Spinner --gone --text
-
-  Flags:
-    --timeout-ms <n>       Wait budget; defaults to 5000 and caps at 60000.
-    --gone                 Wait for the element to disappear.
-    Same element query as "find-element": --ref, --identifier, --label, --text,
-    --role, --index, --device, --lane, --project.
-`,
-  "assert-visible": `${ADE_BANNER}
-  iOS Simulator: assert-visible
-
-  Checks that an element is on screen right now. Alias: assert. Use it as the
-  last step of a flow so the result states what was proven.
-
-    $ ade --socket apple assert-visible --label "Order confirmed" --text
-
-  Flags:
-    Same element query as "find-element": --ref, --identifier, --label, --text,
-    --role, --index, --device, --lane, --project.
-`,
-  "proof-bundle": `${ADE_BANNER}
-  iOS Simulator: proof-bundle
-
-  Captures a screenshot plus the metadata a reviewer asks for. The bundle names
-  the machine, the device, the build root, the elements on screen, and the
-  recent event log rows. A bare PNG answers none of that.
-
-  The bundle leaves "log.json" out when the event log follows a different
-  device from the one captured, and records the reason in the metadata rather
-  than pairing one device's shot with another device's rows.
-
-    $ ade --socket apple proof-bundle --caption "Signup succeeds" --text
-    $ ade --socket apple proof-bundle --out .ade/tmp/proof --log-rows 200 --text
-
-  Flags:
-    --out <path>           Directory to write into; relative to the build root.
-    --caption <text>       One line describing what the shot proves.
-    --no-elements          Skip the element dump.
-    --log-rows <n>         Event log rows to include.
-    --device, --udid <id>  Simulator device.
-    --lane, --lane-id <id> Lane whose worktree to resolve.
-    --project <path>       Project root for source matching.
-`,
-  "device-create": `${ADE_BANNER}
-  Apple device: device-create
-
-  Clones an installed simulator for this lane. With no --from, uses the
-  project's last-used installed simulator, else the newest installed iPhone.
-  Never downloads a runtime. Fails with APPLE_NO_INSTALLED_SIMULATORS when
-  none are installed (open Xcode ▸ Settings ▸ Components).
-
-    $ ade --socket apple device-create --text
-    $ ade --socket apple device-create --from "iPhone 17" --name "iPhone 17 — lane-ab3" --text
-
-  Flags:
-    --from, --simulator <id>  Installed simulator to clone (udid or name).
-    --name <name>             Clone name; defaults to "<source> — <lane>".
-    --lane, --lane-id <id>    Lane that will own the clone.
-`,
-  "device-attach": `${ADE_BANNER}
-  Apple device: device-attach
-
-  Binds an existing installed simulator to this lane without cloning. ADE
-  never deletes an attached simulator.
-
-    $ ade --socket apple device-attach --simulator <udid|name> --text
-
-  Flags:
-    --simulator, --device, --udid <id>  Required installed simulator.
-    --lane, --lane-id <id>              Lane to bind.
-`,
-  "start": `${ADE_BANNER}
-  Apple device: start
-
-  Brings the lane's device up in one step: attaches (or clones, with
-  --create) when the lane owns no device yet, boots it if it is shut down,
-  waits for simctl bootstatus, then starts the live view. Progress arrives
-  as apple.device.state events (starting → booted → streaming). Unlike
-  device-attach and device-create, this boots.
-
-    $ ade --socket apple start --text
-    $ ade --socket apple start --udid <udid> --text
-    $ ade --socket apple start --create <sourceUdid> --text
-
-  Flags:
-    --udid, --simulator, --device <id>  Installed simulator to attach when the lane has none.
-    --create <sourceUdid>               Clone this installed simulator for the lane instead.
-    --lane, --lane-id <id>              Lane that owns (or will own) the device.
-`,
-  "device-list": `${ADE_BANNER}
-  Apple device: device-list
-
-  Lists installed simulators and/or the one device this lane owns.
-
-    $ ade --socket apple device-list --installed --text
-    $ ade --socket apple device-list --lane --text
-
-  Flags:
-    --installed            Installed simulators for a picker. ADE never downloads one.
-    --lane, --lane-id <id> The lane whose device to report; defaults to $ADE_LANE_ID.
-`,
-  "device-delete": `${ADE_BANNER}
-  Apple device: device-delete
-
-  Deletes this lane's cloned simulator. Attached devices refuse unless --force,
-  and --force only detaches them — ADE never deletes a simulator it did not create.
-
-    $ ade --socket apple device-delete --text
-    $ ade --socket apple device-delete --force --text
-
-  Flags:
-    --force, -f            Detach an attached device instead of refusing.
-    --lane, --lane-id <id> Lane whose device to delete.
-`,
-  "record-start": `${ADE_BANNER}
-  Apple device: record-start
-
-  Starts a manual recording of the device framebuffer. Overlays (tap rings and
-  typed-text badges) follow Settings unless --overlays is passed. Starting
-  while an auto recording is running converts it to manual (no restart, no gap).
-
-  Still time is cut: a still screen longer than 2 s keeps 0.75 s in the video.
-  record-stop reports durationMs (video), wallDurationMs (real time) and
-  idleCutMs. A recording a chat owns stops itself after 10 minutes of real
-  time (stopReason "cap") and is filed as proof.
-
-    $ ade --socket apple record-start --text
-    $ ade --socket apple record-start --overlays off --label "signup" --text
-    $ ade --socket apple record-start --keep-idle --max-seconds 1200 --text
-
-  Flags:
-    --overlays on|off      Overlay compositor; default is Settings.
-    --label <text>         Human label for the recording.
-    --keep-idle            Keep still stretches at real length.
-    --max-seconds <n>      Stop after n seconds of real time (default 600).
-    --lane, --lane-id <id> Lane whose device to record.
-`,
-  "record-stop": `${ADE_BANNER}
-  Apple device: record-stop
-
-  Stops the running recording. --discard is only allowed for a recording this
-  chat owns that is not marked proof.
-
-    $ ade --socket apple record-stop --text
-    $ ade --socket apple record-stop --keep --text
-    $ ade --socket apple record-stop --discard --text
-
-  Flags:
-    --keep                 Keep the file (default).
-    --discard              Delete the file; refused for proof-pinned recordings.
-    --lane, --lane-id <id> Lane whose recording to stop.
-`,
-  "record-list": `${ADE_BANNER}
-  Apple device: record-list
-
-  Lists recordings for this lane. There is no auto-delete.
-
-    $ ade --socket apple record-list --text
-
-  Flags:
-    --lane, --lane-id <id> Lane whose recordings to list.
-`,
-  "record-delete": `${ADE_BANNER}
-  Apple device: record-delete
-
-  Deletes a recording this chat owns that is not marked proof. Anything else
-  is refused with APPLE_RECORDING_PINNED.
-
-    $ ade --socket apple record-delete --id <id> --text
-
-  Flags:
-    --id <id>              Recording id from record-list.
-    --force, -f            Take a recording another chat owns, if the service allows.
-    --lane, --lane-id <id> Lane that owns the recording.
-`,
-  frame: `${ADE_BANNER}
-  Apple device: frame
-
-  Grabs one decoded frame from the running stream. Cheaper than screenshot,
-  which round-trips simctl. Fails with APPLE_STREAM_NOT_RUNNING when no stream
-  is active; screenshot does not need one.
-
-    $ ade --socket apple frame --text
-    $ ade --socket apple frame --out shot.png --text
-
-  Flags:
-    --out, --out-path <p>  File path; relative to the build root.
-    --lane, --lane-id <id> Lane whose stream to read.
-`,
-  button: `${ADE_BANNER}
-  Apple device: button
-
-  Presses a hardware button through the vendored helper. Shake is named so
-  the column can call it, but this Xcode's simctl has no shake verb and the
-  helper does not implement it — the service refuses with
-  APPLE_BUTTON_UNSUPPORTED.
-
-    $ ade --socket apple button home --text
-    $ ade --socket apple button volume-up --text
-    $ ade --socket apple button app-switcher --text
-
-  Names: home, lock, volume-up, volume-down, siri, shake, app-switcher.
-
-  app-switcher is Simulator's own App Switcher command: two home presses
-  150 ms apart, sent by the helper as one command. To close an app the way a
-  person does, open the switcher, then swipe the app's card up (see the
-  ade-apple skill). "apple terminate --bundle-id <id>" stops an app without
-  showing anything.
-
-  Flags:
-    --name, --button <n>   Button name; also accepted as the next positional.
-    --device, --udid <id>  Simulator device.
-    --lane, --lane-id <id> Lane whose device to press.
-`,
-  show: `${ADE_BANNER}
-  Apple device: show
-
-  Puts this chat's Apple device on the user's screen: the Apple tool in the
-  tools pane, or the floating player with --floating. Same as "ade ui show
-  apple" / "ade ui show floating-apple".
-
-    $ ade apple show --text
-    $ ade apple show --floating --text
-
-  Prints shown, held (a window has the project open but not this chat; it opens
-  when the user goes to the chat) or no_desktop (nothing was shown; exits 1).
-
-  Flags:
-    --floating             Show the floating player instead of the pane.
-    --session <id>         Chat to show it in. Defaults to ADE_CHAT_SESSION_ID.
-`,
-  rotate: `${ADE_BANNER}
-  Apple device: rotate
-
-  Turns the device, then reads the screen to see whether it moved.
-
-    $ ade --socket apple rotate landscape-left --text
-    $ ade --socket apple rotate --orientation portrait --text
-
-  Orientations: portrait, portrait-upside-down, landscape-left, landscape-right.
-
-  applied means the framebuffer was SEEN on the requested axis, not that an
-  event was sent. iOS always takes the device orientation; the app on screen
-  decides whether to follow it. The Home Screen and Settings are portrait-only
-  on an iPhone, and no iPhone supports portrait upside down, so a rotate with
-  one of those in front answers applied false with reason
-  APPLE_ROTATE_NOT_ADOPTED. Turning within one axis (the two portraits, or the
-  two landscapes) leaves the pixel size unchanged and reports
-  verification already-on-axis, which does not confirm the exact side.
-
-  Flags:
-    --orientation <o>      Orientation; also accepted as the next positional.
-    --device, --udid <id>  Simulator device.
-    --lane, --lane-id <id> Lane whose device to rotate.
-`,
-};
-
-const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
-  list: "devices",
-  ls: "devices",
-  targets: "apps",
-  launchable: "apps",
-  launchables: "apps",
-  open: "launch",
-  teardown: "shutdown",
-  end: "shutdown",
-  "end-session": "shutdown",
-  capture: "screenshot",
-  promote: "proof",
-  screen: "snapshot",
-  elements: "snapshot",
-  "hit-test": "inspect",
-  hover: "inspect",
-  "preview-doctor": "preview-status",
-  "preview-list": "previews",
-  "list-previews": "previews",
-  press: "button",
-  "press-button": "button",
-  reveal: "show",
-  orientation: "rotate",
-  "match-preview": "preview-match",
-  "resolve-preview": "preview-match",
-  "ensure-preview": "preview-ensure",
-  "preview-workspace": "preview-ensure",
-  "render-preview": "preview-render",
-  preview: "preview-render",
-  "current-preview": "preview-current",
-  "preview-open-current": "preview-current",
-  "open-current-preview": "preview-current",
-  "render-current-preview": "preview-current",
-  "open-preview-workspace": "preview-open",
-  "open-xcode": "preview-open",
-  "start-stream": "stream-start",
-  stream: "stream-start",
-  "window-start": "stream-start",
-  "start-window": "stream-start",
-  "mirror-start": "stream-start",
-  "start-mirror": "stream-start",
-  "preview-start": "stream-start",
-  "start-preview": "stream-start",
-  "stop-stream": "stream-stop",
-  "live-stop": "stream-stop",
-  "stop-live": "stream-stop",
-  "preview-stop": "stream-stop",
-  "stop-preview": "stream-stop",
-  swipe: "drag",
-  text: "type",
-  "open-sim": "open-device",
-  boot: "open-device",
-  "close-sim": "close-device",
-  session: "device-session",
-  "device-settings": "settings",
-  "text-size": "content-size",
-  a11y: "accessibility",
-  privacy: "permission",
-  "kill-app": "terminate",
-  "restart-app": "relaunch",
-  "logs-start": "log-start",
-  "logs-stop": "log-stop",
-  logs: "log",
-  find: "find-element",
-  fill: "fill-element",
-  "wait-for": "wait-for-element",
-  assert: "assert-visible",
-};
 
 const HELP_BY_COMMAND: Record<string, string> = {
   triage: `${ADE_BANNER}
@@ -2809,6 +1723,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
     $ ade prs close <pr>                            Close on GitHub; the branch is kept and you can reopen it
     $ ade prs reopen <pr>                           Reopen a closed PR
+    $ ade prs draft <pr>                            Convert an open PR back to a draft
+    $ ade prs ready <pr>                            Mark a draft PR ready for review
+    $ ade prs auto-merge <pr> on --method squash    Arm GitHub auto-merge (method defaults to squash)
+    $ ade prs auto-merge <pr> off                   Disarm auto-merge
     $ ade prs cleanup-branch <pr> --delete-remote-branch
                                                     Delete a merged/closed PR's branch (local too, unless --keep-local)
     $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
@@ -2959,8 +1877,21 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
+    $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
+                                                    Start a chat in a brand-new lane (the desktop composer's new-lane
+                                                    send). The brain fetches the base, checks out the worktree, applies
+                                                    the default lane template, then creates the chat and sends the prompt.
+                                                    Returns at once with the reserved launch/lane/chat ids; --wait polls
+                                                    until it completes (exit 0) or fails/cancels/times out (exit 1),
+                                                    printing a stage line to stderr with --text. Also: --base <ref>,
+                                                    --lane-name, --title, --effort, --permissions, --fast, --launch-id,
+                                                    --lane-id (UUIDs; generated when omitted). The chat is top-level;
+                                                    use 'ade new chat --lane auto --type ...' for a parented child.
+    $ ade chat launches --text                      List new-lane launches running or recently finished on the brain
+    $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
+    $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
-    $ ade chat show <session>                       Session summary (title, provider, model)
+    $ ade chat show <session>                       Session summary (title, provider, model, activity report)
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / IDLE
                                                     Exit 0 running, 1 idle, 2 blocked. Use --text.
                                                     Adds a 'resume' line while a usage limit is live.
@@ -2969,6 +1900,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
+    $ ade chat activity testing                      Report a fixed activity label for this turn; use clear to remove it
+                                                    Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
@@ -3326,7 +2259,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket apple launch --follow         Same, announcing the wait before the summary
     $ ade --socket apple claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket apple launch --bundle-id com.example Launch installed app
-    $ ade --socket apple shutdown                Tear down the active simulator session (alias: stop)
+    $ ade --socket apple shutdown                End this chat's simulator session (the device stays on)
     $ ade --socket apple shutdown --force        Force-release a session owned by another chat
     $ ade --socket apple launch --force          Take the simulator over in one step
     $ ade apple actions --text                   List every callable ios_simulator action
@@ -3368,7 +2301,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
     $ ade apple device-list --installed --text   Installed simulators for a picker
-    $ ade apple device-list --lane --text        The one device this lane owns
+    $ ade apple device-list --text               The one device this lane owns
+    $ ade apple device-detach --text             Give up the lane's device; the simulator stays installed
     $ ade apple device-delete --text             Delete a clone (attached devices refuse)
 
   Recording:
@@ -3863,6 +2797,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade usage stats --scope project --preset 30d  This project only
     $ ade usage stats --scope account --force       Skip the account fan-out rate floor
     $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
+    $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
+    $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
     $ ade --role cto usage refresh --text           Refresh live provider quota only
     $ ade --role cto usage refresh --history --text Scan local provider history and costs
     $ ade usage budget get --text                   Read budget guardrail config
@@ -4310,6 +3246,11 @@ export function readFlag(args: string[], names: readonly string[]): boolean {
     return true;
   }
   return false;
+}
+
+/** `--ignore-ownership` (or `--ignore-owner`) as an args spread; absent, no key. */
+function readIgnoreOwnershipArg(args: string[]): { ignoreOwnership: true } | Record<string, never> {
+  return readFlag(args, ["--ignore-ownership", "--ignore-owner"]) ? { ignoreOwnership: true } : {};
 }
 
 function parseScheduledWorkDelaySeconds(value: string): number {
@@ -5478,44 +4419,10 @@ function parseCliArgs(argv: string[]): ParsedCli {
       command.push(token, ...argv.slice(index + 1));
       break;
     }
-    if (inGlobalPrefix && token === "--project-root") {
-      options.projectRoot = path.resolve(
-        requireValue(argv[index + 1] ?? null, "--project-root"),
-      );
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--project-root=")) {
-      options.projectRoot = path.resolve(
-        requireValue(token.slice("--project-root=".length), "--project-root"),
-      );
-      continue;
-    }
-    if (inGlobalPrefix && token === "--workspace-root") {
-      options.workspaceRoot = path.resolve(
-        requireValue(argv[index + 1] ?? null, "--workspace-root"),
-      );
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--workspace-root=")) {
-      options.workspaceRoot = path.resolve(
-        requireValue(
-          token.slice("--workspace-root=".length),
-          "--workspace-root",
-        ),
-      );
-      continue;
-    }
-    if (inGlobalPrefix && token === "--role") {
-      options.role = parseRole(requireValue(argv[index + 1] ?? null, "--role"));
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--role=")) {
-      options.role = parseRole(
-        requireValue(token.slice("--role=".length), "--role"),
-      );
+    const valueFlag = inGlobalPrefix ? readGlobalValueFlag(argv, index) : null;
+    if (valueFlag) {
+      GLOBAL_VALUE_FLAG_HANDLERS[valueFlag.flag](options, requireValue(valueFlag.value, valueFlag.flag));
+      index += valueFlag.consumed;
       continue;
     }
     if (inGlobalPrefix && (token === "--headless" || token === "--no-socket")) {
@@ -5558,50 +4465,50 @@ function parseCliArgs(argv: string[]): ParsedCli {
       options.text = false;
       continue;
     }
-    if (inGlobalPrefix && token === "--timeout-ms") {
-      const parsed = Number.parseInt(
-        requireValue(argv[index + 1] ?? null, "--timeout-ms"),
-        10,
-      );
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new CliUsageError("--timeout-ms must be a positive integer.");
-      }
-      options.timeoutMs = parsed;
-      index += 1;
-      continue;
-    }
-    if (inGlobalPrefix && token.startsWith("--timeout-ms=")) {
-      const parsed = Number.parseInt(
-        requireValue(token.slice("--timeout-ms=".length), "--timeout-ms"),
-        10,
-      );
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        throw new CliUsageError("--timeout-ms must be a positive integer.");
-      }
-      options.timeoutMs = parsed;
-      continue;
-    }
     command.push(token);
   }
 
   return { options, command };
 }
 
-function looksLikeSocketPathOverride(value: string): boolean {
-  if (!value || value.startsWith("-")) return false;
-  return (
-    value.startsWith("tcp://") ||
-    value.startsWith("/") ||
-    value.startsWith("./") ||
-    value.startsWith("../") ||
-    value.startsWith("~") ||
-    isAdeRuntimeNamedPipePath(value) ||
-    // Windows absolute paths (C:\... / C:/...) never start with "/", so without
-    // this they would be dropped and left behind as a stray positional.
-    /^[A-Za-z]:[\\/]/.test(value) ||
-    value.endsWith(".sock")
-  );
+/**
+ * A global value flag at `argv[index]`, spelled `--flag value` or `--flag=value`.
+ * The flags are the ones `isCliGlobalValueFlag` accepts, the same guard the
+ * delegation check skips them with. `consumed` is how many extra tokens the value took.
+ */
+function readGlobalValueFlag(
+  argv: string[],
+  index: number,
+): { flag: CliGlobalValueFlag; value: string | null; consumed: number } | null {
+  const token = argv[index]!;
+  if (isCliGlobalValueFlag(token)) {
+    return { flag: token, value: argv[index + 1] ?? null, consumed: 1 };
+  }
+  const equals = token.indexOf("=");
+  const flag = equals > 0 ? token.slice(0, equals) : null;
+  return isCliGlobalValueFlag(flag)
+    ? { flag, value: token.slice(equals + 1), consumed: 0 }
+    : null;
 }
+
+const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
+  "--project-root": (options, value) => {
+    options.projectRoot = path.resolve(value);
+  },
+  "--workspace-root": (options, value) => {
+    options.workspaceRoot = path.resolve(value);
+  },
+  "--role": (options, value) => {
+    options.role = parseRole(value);
+  },
+  "--timeout-ms": (options, value) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new CliUsageError("--timeout-ms must be a positive integer.");
+    }
+    options.timeoutMs = parsed;
+  },
+};
 
 function parseRole(value: string): GlobalOptions["role"] {
   const role = normalizeAdeRuntimeRole(value);
@@ -8100,6 +7007,49 @@ function buildPrPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "draft" || sub === "ready") {
+    // `draft` converts an open PR back to a draft; `ready` marks a draft ready
+    // for review. One service action (`pr.setDraft`) behind both spellings.
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    return {
+      kind: "execute",
+      label: `PR ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "setDraft",
+          collectGenericObjectArgs(args, { prId: id, draft: sub === "draft" }),
+        ),
+      ],
+    };
+  }
+  if (sub === "auto-merge" || sub === "automerge") {
+    // Flag values first, so `--method squash` never reads as the on/off positional.
+    const method = readValue(args, ["--method"]);
+    const off = readFlag(args, ["--off", "--disable"]);
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    const modeArg = (firstPositional(args) ?? "on").toLowerCase();
+    if (!off && modeArg !== "on" && modeArg !== "off") {
+      throw new CliUsageError("prs auto-merge takes on or off, e.g. 'ade prs auto-merge <pr> on --method squash'.");
+    }
+    const enabled = !off && modeArg === "on";
+    const input: JsonObject = { prId: id, enabled };
+    if (method != null) {
+      if (!enabled) throw new CliUsageError("--method only applies when turning auto-merge on.");
+      if (method !== "merge" && method !== "squash" && method !== "rebase") {
+        throw new CliUsageError("--method must be merge, squash, or rebase.");
+      }
+      input.method = method;
+    }
+    return {
+      kind: "execute",
+      label: `PR auto-merge ${enabled ? "on" : "off"}`,
+      steps: [
+        actionStep("result", "pr", "setAutoMerge", collectGenericObjectArgs(args, input)),
+      ],
+    };
+  }
   if (sub === "labels") {
     const mode = firstPositional(args) ?? "set";
     if (mode !== "set") throw new CliUsageError("prs labels supports set.");
@@ -9140,6 +8090,220 @@ function buildSessionPlan(args: string[]): CliPlan {
   );
 }
 
+const CHAT_LAUNCH_TERMINAL_PHASES = new Set(["completed", "failed", "cancelled"]);
+
+/**
+ * `ade chat launch`: the desktop composer's "new lane" send, owned by the brain.
+ * One `chat.startLaunch` reserves the chat and lane ids (generated here), then
+ * the brain fetches the base, checks out the worktree, applies the default lane
+ * template, creates the chat and sends the prompt. `--wait` polls
+ * `chat.getLaunch` until the launch completes, fails, or is cancelled.
+ *
+ * The chat is top-level (no spawn lineage): `chat.startLaunch` carries none. A
+ * parented child chat in a fresh lane stays `ade new chat --lane auto`.
+ */
+function buildChatLaunchPlan(args: string[]): CliPlan {
+  const modelArg = readValue(args, ["--model", "--model-id"]);
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const droidPermissionMode = readDroidPermissionMode(args);
+  const fastMode = readFastModeFlag(args);
+  const title = readValue(args, ["--title"]);
+  const laneName = readValue(args, ["--lane-name", "--name"]);
+  const baseBranch = readValue(args, ["--base", "--base-branch"]);
+  const launchIdFlag = readValue(args, ["--launch-id"]);
+  const laneIdFlag = readValue(args, ["--lane-id"]);
+  const foreground = readFlag(args, ["--foreground"]);
+  const wait = readFlag(args, ["--wait"]);
+  const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
+  const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+  const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
+  if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
+  if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
+  const provider = requireLaunchProfile(readValue(args, ["--provider"]), { allowShell: false }) ?? "codex";
+  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args);
+  const launchId = launchIdFlag == null ? randomUUID() : requireCliUuid(launchIdFlag, "--launch-id");
+  const laneId = laneIdFlag == null ? randomUUID() : requireCliUuid(laneIdFlag, "--lane-id");
+  const explicitPrompt = readValue(args, ["--prompt", "--text", "--message"]);
+  const input = collectGenericObjectArgs(args);
+  const prompt = requireValue(explicitPrompt ?? (args.join(" ").trim() || null), "prompt");
+
+  const create: JsonObject = { provider, model: modelArg ?? "" };
+  maybePut(create, "modelId", modelArg);
+  maybePut(create, "reasoningEffort", reasoningEffort);
+  maybePut(create, "permissionMode", permissionMode);
+  maybePut(create, "droidPermissionMode", droidPermissionMode);
+  maybePut(create, "instanceId", instanceId);
+  maybePut(create, "presetId", presetId);
+  maybePut(create, "credentialId", credentialId);
+  if (fastMode !== undefined) create.fastMode = fastMode;
+  const launchArgs: JsonObject = {
+    kind: "chat",
+    // Nothing on this side opens the chat; "foreground" is for a client that does.
+    mode: foreground ? "foreground" : "background",
+    launchId,
+    laneId,
+    prompt,
+    provider,
+    chat: { create, message: { text: prompt } },
+  };
+  maybePut(launchArgs, "laneName", laneName);
+  maybePut(launchArgs, "baseBranch", baseBranch);
+  maybePut(launchArgs, "modelId", modelArg);
+  maybePut(launchArgs, "title", title);
+  // `--arg` / `--input-json` escape hatch (dotted keys reach chat.create.*).
+  for (const [key, value] of Object.entries(input)) {
+    if (key === "chat" && isRecord(value)) {
+      const chat = launchArgs.chat as JsonObject;
+      if (isRecord(value.create)) Object.assign(chat.create as JsonObject, value.create);
+      if (isRecord(value.message)) Object.assign(chat.message as JsonObject, value.message);
+      continue;
+    }
+    launchArgs[key] = value;
+  }
+
+  if (printConfig) {
+    return {
+      kind: "static",
+      formatter: "action-result",
+      value: { ok: true, dryRun: true, action: "chat.startLaunch", input: launchArgs },
+    };
+  }
+  return { kind: "chat-launch", launchArgs, wait, timeoutMs, pollIntervalMs };
+}
+
+function requireCliUuid(value: string, flag: string): string {
+  const id = value.trim().toLowerCase();
+  if (!isUuid(id)) throw new CliUsageError(`${flag} must be a UUID.`);
+  return id;
+}
+
+async function runChatLaunchCommand(
+  plan: CliPlan & { kind: "chat-launch" },
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  let connection: CliConnection;
+  try {
+    connection = await createConnection(options, { autoRegisterProject: true });
+  } catch (error) {
+    throw new CliExecutionError(
+      "Failed to initialize ADE CLI connection for chat launch.",
+      {
+        cause: error instanceof Error ? error.message : String(error),
+        nextAction:
+          "Verify --project-root points at an ADE project and run ade doctor --json.",
+      },
+    );
+  }
+
+  const callChat = async (action: string, args: JsonObject): Promise<unknown> => {
+    const raw = await connection.request("ade/actions/call", {
+      name: "run_ade_action",
+      arguments: { domain: "chat", action, args },
+    });
+    return unwrapActionEnvelope(unwrapToolResult(raw));
+  };
+
+  try {
+    const started = await callChat("startLaunch", plan.launchArgs);
+    if (!isRecord(started) || typeof started.launchId !== "string") {
+      throw new CliExecutionError("chat.startLaunch returned an unexpected result.", { result: started });
+    }
+    if (!plan.wait) {
+      return { output: formatOutput(started, options, "chat-launch"), exitCode: 0 };
+    }
+    const launchId = started.launchId;
+    const startedAt = Date.now();
+    let launch: JsonObject = started;
+    let lastLine = "";
+    const report = (snapshot: JsonObject) => {
+      if (!options.text) return;
+      const line = formatChatLaunchProgressLine(snapshot);
+      if (line !== lastLine) process.stderr.write(`${line}\n`);
+      lastLine = line;
+    };
+    while (true) {
+      report(launch);
+      const phase = asString(launch.phase) ?? "running";
+      const elapsedMs = Date.now() - startedAt;
+      if (CHAT_LAUNCH_TERMINAL_PHASES.has(phase)) {
+        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch };
+        return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
+      }
+      if (elapsedMs >= plan.timeoutMs) {
+        const result = { ok: false, error: "timed_out", launchId, phase, timeoutMs: plan.timeoutMs, elapsedMs, launch };
+        return { output: formatOutput(result, options, "chat-launch"), exitCode: 1 };
+      }
+      await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+      const next = await callChat("getLaunch", { launchId });
+      if (!isRecord(next)) {
+        const result = { ok: false, error: "launch_not_found", launchId, elapsedMs: Date.now() - startedAt };
+        return { output: formatOutput(result, options, "chat-launch"), exitCode: 1 };
+      }
+      launch = next;
+    }
+  } finally {
+    await connection.close();
+  }
+}
+
+/** `fetch done · checkout running 42% · environment pending · agent pending` */
+function formatChatLaunchStages(snapshot: JsonObject): string {
+  const stages = Array.isArray(snapshot.stages) ? snapshot.stages.filter(isRecord) : [];
+  return stages
+    .map((stage) => {
+      const status = asString(stage.status) ?? "pending";
+      const percent = typeof stage.percent === "number" && status === "running" ? ` ${Math.round(stage.percent)}%` : "";
+      return `${asString(stage.id) ?? "?"} ${status}${percent}`;
+    })
+    .join(" · ");
+}
+
+function formatChatLaunchProgressLine(snapshot: JsonObject): string {
+  const phase = asString(snapshot.phase) ?? "running";
+  const stages = formatChatLaunchStages(snapshot);
+  const error = asString(snapshot.error);
+  return `[${phase}] ${stages}${error ? ` — ${error}` : ""}`;
+}
+
+export function formatChatLaunch(value: unknown): string {
+  const wrapper = isRecord(value) ? value : null;
+  const snapshot = firstRecord(value, ["launch", "result"])
+    ?? (wrapper && typeof wrapper.launchId === "string" && wrapper.phase !== undefined && Array.isArray(wrapper.stages) ? wrapper : null);
+  if (!snapshot) {
+    const error = asString(wrapper?.error);
+    return error === "launch_not_found" || !error ? "ADE chat launch\n(no launch)" : `ADE chat launch\n${error}`;
+  }
+  const queued = Array.isArray(snapshot.queuedMessages) ? snapshot.queuedMessages.length : 0;
+  return renderKeyValues(`ADE chat launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
+    ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
+    ["base", snapshot.baseRef],
+    ["branch", snapshot.branchRef],
+    ["chat", snapshot.sessionId],
+    ["model", snapshot.modelId],
+    ["template", snapshot.templateName],
+    ["stages", formatChatLaunchStages(snapshot)],
+    ["queued", queued > 0 ? `${queued} message${queued === 1 ? "" : "s"}` : null],
+    ["error", snapshot.error],
+    ["wait", wrapper?.error === "timed_out" ? `timed out after ${String(wrapper.elapsedMs)}ms` : null],
+  ]);
+}
+
+export function formatChatLaunches(value: unknown): string {
+  const launches = firstArray(value, ["launches", "result", "items"]);
+  return renderTable(
+    ["launch", "phase", "lane", "stages", "title"],
+    launches.map((launch) => [
+      launch.launchId,
+      launch.phase,
+      launch.laneName,
+      formatChatLaunchStages(launch),
+      launch.title,
+    ]),
+    "ADE chat launches\n(no launches)",
+  );
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -9179,12 +8343,17 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "note"
+  const selfLifecycleSub = sub === "ask" || sub === "note" || sub === "activity"
     || sub === "generate-names" || sub === "generate_names" || sub === "names";
+  // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
+  // `launch-cancel`), never a session positional; they read their own.
+  const launchSub = sub === "launch" || sub === "launches"
+    || sub === "launch-status" || sub === "launch-cancel";
   const explicitSessionId = readValue(args, ["--session", "--session-id"]);
   const sessionId =
     explicitSessionId ??
-    (sub !== "create" && sub !== "list" && !linearSessionSub && !selfLifecycleSub
+    (sub === "activity" ? process.env[SESSION_ACTIVITY_SESSION_ID_ENV]?.trim() || null : null) ??
+    (sub !== "create" && sub !== "list" && !linearSessionSub && !selfLifecycleSub && !launchSub
       ? firstStandalonePositional(args)
       : null);
   const withSession = (base: JsonObject = {}) =>
@@ -9222,6 +8391,32 @@ function buildChatPlan(args: string[]): CliPlan {
           "session",
           "setSessionStatusNote",
           withSession({ note }),
+        ),
+      ],
+    };
+  }
+  if (sub === "activity") {
+    const rawValue = firstStandalonePositional(args);
+    const normalizedValue = rawValue?.trim().toLowerCase();
+    if (!normalizedValue) {
+      throw new CliUsageError(
+        `chat activity requires one value: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+      );
+    }
+    if (normalizedValue !== "clear" && !isSessionActivityValue(normalizedValue)) {
+      throw new CliUsageError(
+        `Unsupported chat activity '${rawValue}'. Use: ${[...SESSION_ACTIVITY_VALUES, "clear"].join(" | ")}.`,
+      );
+    }
+    return {
+      kind: "execute",
+      label: "chat activity",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "setSessionActivity",
+          withSession({ value: normalizedValue === "clear" ? null : normalizedValue }),
         ),
       ],
     };
@@ -9285,6 +8480,7 @@ function buildChatPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "chat show",
+      formatter: "chat-summary",
       steps: [
         actionArgsListStep("result", "chat", "getSessionSummary", [
           requireValue(sessionId, "sessionId"),
@@ -9466,6 +8662,30 @@ function buildChatPlan(args: string[]): CliPlan {
           collectGenericObjectArgs(args, { chatSessionId: targetSession }),
         ),
       ],
+    };
+  }
+  if (sub === "launch") return buildChatLaunchPlan(args);
+  if (sub === "launches")
+    return {
+      kind: "execute",
+      label: "chat launches",
+      formatter: "chat-launches",
+      steps: [actionStep("result", "chat", "listLaunches")],
+    };
+  if (sub === "launch-status" || sub === "launch-cancel") {
+    const launchId = requireValue(
+      readValue(args, ["--launch-id", "--launch"]) ?? firstStandalonePositional(args),
+      "launchId",
+    );
+    const cancel = sub === "launch-cancel";
+    return {
+      kind: "execute",
+      label: `chat ${sub}`,
+      formatter: "chat-launch",
+      steps: [actionStep("result", "chat", cancel ? "cancelLaunch" : "getLaunch", { launchId })],
+      // getLaunch answers null once the record is gone (unknown id, or a
+      // finished launch past its retention window).
+      exitCodeFromResult: (result) => (isRecord(result) && typeof result.launchId === "string" ? 0 : 1),
     };
   }
   if (sub === "create" || sub === "spawn") {
@@ -11674,15 +10894,11 @@ function buildIosSimulatorPlan(
     // an unparsed `--force` is not an error: collectGenericObjectArgs ignores
     // bare flags, so `claim --lane X --force` was silently refused as if the
     // caller had never said it.
-    const ignoreOwnership = readFlag(args, [
-      "--ignore-ownership",
-      "--ignore-owner",
-    ]);
     const force = readFlag(args, ["--force", "-f"]);
     return iosAction("iOS simulator claim", "claim", {
       ...claimArgs,
       ...(force ? { force: true } : {}),
-      ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+      ...readIgnoreOwnershipArg(args),
     });
   }
   if (
@@ -12041,16 +11257,15 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "key") {
-    // One named key, sent as the character the helper maps to it.
-    const name = (firstPositional([...args]) ?? "").toLowerCase();
+    // One named key, sent as the character the helper maps to it. The device
+    // is read first so `--device <udid>` is not taken as the key name.
+    const deviceUdid = readIosSimulatorDevice(args);
+    const name = (firstPositional(args) ?? "").toLowerCase();
     const text = APPLE_NAMED_KEYS[name];
     if (!text) {
       throw new CliUsageError(`apple key: unknown key '${name || "(none)"}'. Valid keys: ${Object.keys(APPLE_NAMED_KEYS).join(", ")}.`);
     }
-    return iosAction(`iOS simulator key ${name}`, "typeText", {
-      deviceUdid: readIosSimulatorDevice(args),
-      text,
-    });
+    return iosAction(`iOS simulator key ${name}`, "typeText", { deviceUdid, text });
   }
   /*
    * `stop` is the opposite of `start`, and until round 5 it was not.
@@ -12075,9 +11290,7 @@ function buildIosSimulatorPlan(
       chatSessionId: claimArgs.chatSessionId,
       ...(stopUdid ? { udid: stopUdid } : {}),
       ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
-      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
-        ? { ignoreOwnership: true }
-        : {}),
+      ...readIgnoreOwnershipArg(args),
       ...rootArgs(),
     });
   }
@@ -12098,9 +11311,7 @@ function buildIosSimulatorPlan(
       // Parsed for the same reason `claim` parses it: the help and the
       // docs name this flag, and a spelling we accept but drop is how a
       // caller ends up reaching for `--force` instead.
-      ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
-        ? { ignoreOwnership: true }
-        : {}),
+      ...readIgnoreOwnershipArg(args),
     });
   }
   // ---------------------------------------------------------------------
@@ -12139,17 +11350,13 @@ function buildIosSimulatorPlan(
   if (sub === "close-device" || sub === "close-sim") {
     const device = readIosSimulatorDevice(args);
     const force = readFlag(args, ["--force", "-f"]);
-    const ignoreOwnership = readFlag(args, [
-      "--ignore-ownership",
-      "--ignore-owner",
-    ]);
     // ADE never shuts down a device it did not boot unless the caller says so.
     const shutdownDevice = readFlag(args, ["--shutdown", "--shutdown-device"]);
     return iosAction("iOS simulator close device", "closeDevice", {
       deviceUdid: device,
       chatSessionId: claimArgs.chatSessionId,
       ...(force ? { force: true } : {}),
-      ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+      ...readIgnoreOwnershipArg(args),
       ...(shutdownDevice ? { shutdownDevice: true } : {}),
     });
   }
@@ -12515,9 +11722,24 @@ function buildIosSimulatorPlan(
   }
   if (sub === "device-delete") {
     const force = readFlag(args, ["--force", "-f"]);
+    // Same single-owner rule as `stop`: the chat id is what lets a chat delete
+    // its own device and not another chat's.
     return iosAction("Apple device delete", "deviceDelete", {
       ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
       ...(force ? { force: true } : {}),
+      ...readIgnoreOwnershipArg(args),
+    });
+  }
+  if (sub === "device-detach" || sub === "detach") {
+    // The lane gives up its device and the simulator stays installed. Same
+    // single-owner rule as `stop` and `device-delete`.
+    const force = readFlag(args, ["--force", "-f"]);
+    return iosAction("Apple device detach", "deviceDetach", {
+      ...(laneId ? { laneId } : {}),
+      ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
+      ...(force ? { force: true } : {}),
+      ...readIgnoreOwnershipArg(args),
     });
   }
   if (sub === "record-start") {
@@ -12608,10 +11830,7 @@ function buildIosSimulatorPlan(
     // Same verb as `ade ui show apple`, spelled where an agent working on the
     // device looks for it. `--floating` asks for the floating player instead.
     const floating = readFlag(args, ["--floating", "--float"]);
-    return workToolShowPlan(
-      { chatSessionId: asString(claimArgs.chatSessionId), laneId },
-      floating ? "floating-apple" : "apple",
-    );
+    return workToolShowPlan(claimArgs, floating ? "floating-apple" : "apple");
   }
   if (sub === "button" || sub === "press-button" || sub === "press") {
     const name = readIosSimulatorEnum(args, {
@@ -12912,10 +12131,7 @@ function buildMacDesktopPlan(args: string[]): CliPlan {
     // Same verb as `ade ui show mac-desktop`, spelled where an agent driving
     // the display looks for it. `--floating` asks for the floating card instead.
     const floating = readFlag(args, ["--floating", "--float"]);
-    return workToolShowPlan(
-      { chatSessionId: asString(claimArgs.chatSessionId), laneId: asString(claimArgs.laneId) },
-      floating ? "floating-mac-desktop" : "mac-desktop",
-    );
+    return workToolShowPlan(claimArgs, floating ? "floating-mac-desktop" : "mac-desktop");
   }
   if (sub === "start" || sub === "create")
     return desktopAction("mac-desktop start", "start", {
@@ -14080,19 +13296,6 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
 };
 
 /**
- * The chat and lane a show targets. Read before any positional, because the
- * flags are spliced out and a positional read first would take their values.
- */
-function readWorkToolShowScope(args: string[]): { chatSessionId: string | null; laneId: string | null } {
-  const chatSessionId = asString(
-    readValue(args, ["--session", "--session-id", "--chat-session", "--chat-session-id"])
-      ?? process.env.ADE_CHAT_SESSION_ID,
-  );
-  const laneId = asString(readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID);
-  return { chatSessionId: chatSessionId ?? null, laneId: laneId ?? null };
-}
-
-/**
  * The one execute plan behind `ade ui show` and `ade apple show`.
  *
  * The chat defaults to ADE_CHAT_SESSION_ID, so an agent never passes it; the
@@ -14100,13 +13303,12 @@ function readWorkToolShowScope(args: string[]): { chatSessionId: string | null; 
  * human at a terminal. Exits 1 when no desktop answered, so a script cannot
  * mistake "nothing appeared" for success.
  */
-function workToolShowPlan(
-  scope: { chatSessionId: string | null; laneId: string | null },
-  surface: WorkToolShowSurface,
-): CliPlan {
+function workToolShowPlan(scope: ToolClaimArgs, surface: WorkToolShowSurface): CliPlan {
   if (!scope.chatSessionId) {
+    // Some agent shells (OpenCode) carry no ADE_CHAT_SESSION_ID, so the daemon
+    // cannot tell which chat to show. That case is a known gap, not a bug.
     throw new CliUsageError(
-      "ui show needs the chat to show it in. Run it from an ADE chat, or pass --session <chat-session-id>.",
+      "ui show needs the chat to show it in, and this shell has no ADE chat identity (ADE_CHAT_SESSION_ID is not set, as in OpenCode agent shells). Ask the user to open the tool. From a terminal, pass --session <chat-session-id>.",
     );
   }
   return {
@@ -14129,7 +13331,9 @@ function workToolShowPlan(
 
 /** `ade ui show <surface>` — put a surface of this chat on the user's screen. */
 function buildUiPlan(args: string[]): CliPlan {
-  const scope = readWorkToolShowScope(args);
+  // Before any positional: the flags are spliced out, and a positional read
+  // first would take their values.
+  const scope = readToolClaimArgs(args);
   const rawSurfaceFlag = readValue(args, ["--surface"]);
   const sub = firstPositional(args) ?? "help";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.ui };
@@ -15668,6 +14872,33 @@ function buildUsagePlan(args: string[]): CliPlan {
           ...(until != null ? { until } : {}),
           ...(force ? { force: true } : {}),
         })),
+      ],
+    };
+  }
+  // The router's input: what each provider, account, and model cost per turn
+  // on this machine, and what a percent of each subscription window is worth.
+  if (sub === "turns") {
+    const days = readValue(args, ["--days"]);
+    if (days != null && !(Number(days) >= 1 && Number(days) <= ADE_TURN_USAGE_MAX_DAYS)) {
+      throw new CliUsageError(`usage turns --days must be a number from 1 to ${ADE_TURN_USAGE_MAX_DAYS}.`);
+    }
+    const groupBy = readValue(args, ["--group-by"]);
+    if (groupBy != null && !isAdeTurnUsageGroupBy(groupBy)) {
+      throw new CliUsageError(`usage turns --group-by must be one of ${ADE_TURN_USAGE_GROUP_BY.join(", ")}.`);
+    }
+    const recent = readValue(args, ["--recent"]);
+    if (recent != null && !(Number(recent) >= 0 && Number(recent) <= ADE_TURN_USAGE_MAX_RECENT)) {
+      throw new CliUsageError(`usage turns --recent must be a number from 0 to ${ADE_TURN_USAGE_MAX_RECENT}.`);
+    }
+    return {
+      kind: "execute",
+      label: "usage turns",
+      steps: [
+        actionStep("result", "usage", "getTurnUsageSummary", {
+          ...(days != null ? { days: Number(days) } : {}),
+          ...(groupBy != null ? { groupBy } : {}),
+          ...(recent != null ? { recent: Number(recent) } : {}),
+        }),
       ],
     };
   }
@@ -20248,7 +19479,7 @@ function buildInitializeParams(
     clientInfo: { name: clientName, version: VERSION },
     identity: {
       callerId:
-        envChatSessionId ?? envAttemptId ?? `${clientName}:${process.pid}`,
+        envChatSessionId ?? envAttemptId ?? syntheticCallerId(clientName),
       role: options.role,
       ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
       ...(envRunId ? { runId: envRunId } : {}),
@@ -22171,34 +21402,9 @@ async function runServe(
     : path.resolve(rawSocketPath);
   // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
   // the socket it serves so the `ade` shim it hands its agents names it.
-  const { publishServedRuntimeSocket } = await import("./services/runtime/adeCliShim");
   publishServedRuntimeSocket(socketPath);
-  /*
-   * Only the MACHINE brain publishes the machine heartbeat.
-   *
-   * `layout` is the machine layout, so `layout.runtimeDir` is the one
-   * `~/.ade/runtime` every brain on the box shares. This call used to run
-   * unconditionally, and before `--socket` or `--no-sync` had even been read —
-   * so the last `ade serve` to start, dev brain included, overwrote
-   * `heartbeat.json` with its own pid. On the owner's machine that file named a
-   * lane's dev brain for five hours while the installed brain ran untouched
-   * beside it.
-   *
-   * It is not a cosmetic file. `com.ade.watchdog` reads it from outside the
-   * process to tell a wedged brain from a busy one, and a stale heartbeat plus
-   * a live pid is its definition of a wedge. Pointing it at the wrong process
-   * makes every judgement it reaches meaningless.
-   *
-   * The socket is the exact test, and a better one than `--no-sync`: a brain
-   * serving the machine endpoint IS the machine brain, whatever its flags.
-   */
-  const servesMachineEndpoint = servesMachineRuntimeEndpoint({
-    requestedSocketPath: rawSocketPath,
-    resolvedSocketPath: socketPath,
-    machineSocketPath: layout.socketPath,
-    isNamedPipe: isAdeRuntimeNamedPipePath(rawSocketPath),
-    resolve: (value) => path.resolve(value),
-  });
+  // Only the machine brain publishes the machine heartbeat; see the helper.
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(rawSocketPath, layout.socketPath);
   if (servesMachineEndpoint) {
     stopBrainHeartbeat = startBrainHeartbeat({
       runtimeDir: layout.runtimeDir,
@@ -25874,6 +25080,24 @@ function formatChatList(value: unknown): string {
   );
 }
 
+function formatChatSummary(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const activity = isRecord(record.activityStatus) ? record.activityStatus : null;
+  const rawActivity = asString(activity?.value);
+  const activityLabel = rawActivity
+    ? `${rawActivity.slice(0, 1).toUpperCase()}${rawActivity.slice(1)}`
+    : null;
+  return renderKeyValues("ADE chat session", [
+    ["session", record.sessionId],
+    ["title", record.title],
+    ["provider", record.provider],
+    ["model", record.model],
+    ["collaboration mode", record.codexEffectiveCollaborationMode],
+    ["activity", activityLabel],
+    ["reported at", activity?.updatedAt],
+  ]);
+}
+
 /**
  * The runtime provider a model family belongs to.
  *
@@ -26202,9 +25426,7 @@ function formatProofFiled(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const artifacts = firstArray(record, ["artifacts"]);
   const confirmation = asString(record.confirmation) ?? "";
-  const warnings = Array.isArray(record.warnings)
-    ? record.warnings.filter((warning): warning is string => typeof warning === "string")
-    : [];
+  const warnings = readProofWarnings(record);
   return [
     renderTable(
       ["artifact", "kind", "title", "path"],
@@ -26710,16 +25932,6 @@ function formatBrowserDevServers(value: unknown): string {
   );
 }
 
-/**
- * The Work tools pane as the phone and the hosted web client see it.
- *
- * A null `browser` is an ordinary state, not a failure, so the reason is
- * rendered as the browser's value using the same sentences every read-only
- * client shows. A null `appControl` has no reason code — the daemon reads that
- * one in-process, so the only way to have none is to have launched nothing.
- * Observation paths are printed but not fetched: bytes come from
- * `work_tools.readObservationPreview`, deliberately not from a state read.
- */
 function formatWorkToolShow(value: unknown): string {
   const result = isRecord(value) ? value : {};
   return renderKeyValues("ADE show", [
@@ -26731,6 +25943,16 @@ function formatWorkToolShow(value: unknown): string {
   ]);
 }
 
+/**
+ * The Work tools pane as the phone and the hosted web client see it.
+ *
+ * A null `browser` is an ordinary state, not a failure, so the reason is
+ * rendered as the browser's value using the same sentences every read-only
+ * client shows. A null `appControl` has no reason code — the daemon reads that
+ * one in-process, so the only way to have none is to have launched nothing.
+ * Observation paths are printed but not fetched: bytes come from
+ * `work_tools.readObservationPreview`, deliberately not from a state read.
+ */
 function formatWorkToolsState(value: unknown): string {
   const state = isRecord(value) ? value : {};
   const browser = firstRecord(state, ["browser"]);
@@ -28147,6 +27369,8 @@ function formatTextOutput(
       return formatPrComments(value);
     case "chat-list":
       return formatChatList(value);
+    case "chat-summary":
+      return formatChatSummary(value);
     case "chat-models":
       return formatChatModels(value);
     case "chat-status":
@@ -28155,6 +27379,10 @@ function formatTextOutput(
       return formatChatResumeNow(value);
     case "chat-continue-on-account":
       return formatChatContinueOnAccount(value);
+    case "chat-launch":
+      return formatChatLaunch(value);
+    case "chat-launches":
+      return formatChatLaunches(value);
     case "chat-read":
       return formatChatRead(value);
     case "session-lifecycle":
@@ -28334,6 +27562,7 @@ function inferFormatter(
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
   if (label === "chat list") return "chat-list";
+  if (label === "chat show") return "chat-summary";
   if (label === "chat models" || label === "personal chat models") return "chat-models";
   if (label === "chat status") return "chat-status";
   if (label === "chat resume-now") return "chat-resume-now";
@@ -28459,15 +27688,11 @@ function shortProofOwnerId(id: string): string {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id) ? id.slice(0, 8) : id;
 }
 
-/**
- * `ade-cli:56056` — a client name and a pid, which identifies a PROCESS.
- *
- * The runtime no longer writes one as an owner, but this CLI is used against
- * whatever brain is installed, including versions that still do. So the check
- * lives on both sides: an owner that names a process is not an owner.
- */
-function isSyntheticProofOwnerId(id: string | null): boolean {
-  return Boolean(id && /^[a-z][a-z0-9-]*:\d+$/.test(id));
+/** The non-empty warning strings on a filing result. */
+function readProofWarnings(record: Record<string, unknown>): string[] {
+  return Array.isArray(record.warnings)
+    ? record.warnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
+    : [];
 }
 
 /**
@@ -28511,7 +27736,8 @@ function summarizeProofFiling(
     ?? artifacts.map((artifact) => asString(artifact.laneId)).find(Boolean)
     ?? null;
   const rawChatSessionId = ownerId("chat_session");
-  const chatSessionId = isSyntheticProofOwnerId(rawChatSessionId) ? null : rawChatSessionId;
+  // An older brain may still write a process id as the chat owner.
+  const chatSessionId = isSyntheticCallerId(rawChatSessionId) ? null : rawChatSessionId;
   const artifactIds = artifacts
     .map((artifact) => asString(artifact.id))
     .filter((id): id is string => Boolean(id));
@@ -28552,11 +27778,19 @@ function summarizeProofFiling(
    * attached. It was not attachED to anything.
    *
    * Checked after the re-read so the message can distinguish "nothing landed"
-   * from "it landed with no owner", which are different faults to report.
+   * from "it landed with no owner", which are different faults to report. The
+   * rule is the server's (`hasDrawerOwner`), except that a process id never
+   * counts as a chat.
    */
-  if (!laneId && !chatSessionId) {
+  const owners = [
+    ...(laneId ? [{ kind: "lane" }] : []),
+    ...(chatSessionId ? [{ kind: "chat_session" }] : []),
+    ...links.map((link) => ({ kind: asString(link.ownerKind) }))
+      .filter((owner) => owner.kind !== "lane" && owner.kind !== "chat_session"),
+  ];
+  if (!hasDrawerOwner(owners)) {
     fail(
-      `filed ${artifactIds.join(", ")} with no lane and no chat session, so no proof drawer can show it`
+      `filed ${artifactIds.join(", ")} with no lane, chat session, automation run, PR or issue, so no proof drawer can show it`
       + " — run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>",
     );
   }
@@ -28564,9 +27798,7 @@ function summarizeProofFiling(
   const title = asString(artifacts[0]?.title) ?? "untitled";
   // The broker's own notes, e.g. a video recorded before this request. The
   // agent has to repeat these to the user, so they travel with the result.
-  const warnings = Array.isArray(record.warnings)
-    ? record.warnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
-    : [];
+  const warnings = readProofWarnings(record);
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -30027,6 +29259,9 @@ async function runCli(
     if (plan.kind === "chat-wait") {
       return await runChatWaitCommand(plan, parsed.options);
     }
+    if (plan.kind === "chat-launch") {
+      return await runChatLaunchCommand(plan, parsed.options);
+    }
     if (plan.kind === "chat-recover") {
       return await runChatRecoverCommand(plan, parsed.options);
     }
@@ -30181,17 +29416,21 @@ function runMainAndExit(): void {
   });
 }
 
-// Top-level and named: the argv call graph in cliBrowserGrammar.test.ts can
-// only index `function` declarations, and this one reaches argv through main().
-function runMainUnlessDelegated(delegated: boolean): void {
+/**
+ * Run this CLI unless a delegation took the call. A started delegation exits
+ * this process with the child's status; it resolves false only when
+ * $ADE_CLI_PATH could not be launched.
+ *
+ * A top-level `function`, not an inline arrow, so cliBrowserGrammar's call
+ * graph can index what it reads.
+ */
+function runUnlessDelegated(delegated: boolean): void {
   if (!delegated) runMainAndExit();
 }
 
 if (isCliMainArgv(process.argv[1])) {
-  // A started delegation exits this process with the child's status; it
-  // resolves false only when $ADE_CLI_PATH could not be launched.
   if (pendingCliDelegation) {
-    void pendingCliDelegation.then(runMainUnlessDelegated);
+    void pendingCliDelegation.then(runUnlessDelegated);
   } else {
     runMainAndExit();
   }

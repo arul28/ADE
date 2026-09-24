@@ -13,6 +13,7 @@ import React, {
 } from "react";
 import {
   Camera,
+  CaretDown,
   ChatCircle,
   Circle,
   FileText,
@@ -21,6 +22,7 @@ import {
   Terminal,
 } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
+import { clipCaption, PaletteIconTile } from "./commandPaletteMarks";
 import type {
   SearchDocKind,
   SearchMatchRange,
@@ -63,30 +65,47 @@ const ENTITY_KIND_LABEL: Record<SearchDocKind, string> = {
   artifact: "Artifacts",
 };
 
+const KIND_COLOR: Record<SearchDocKind, string> = {
+  chat: "#c4b5fd",
+  terminal: "#c4b5fd",
+  pr: "#3fb950",
+  lane: "#34d399",
+  commit: "#fb923c",
+  branch: "#34d399",
+  file: "#fbbf24",
+  linear: "#5e6ad2",
+  artifact: "#f472b6",
+};
+
 function KindIcon({ kind }: { kind: SearchDocKind }) {
-  const className = "shrink-0 text-[var(--color-muted-fg)]";
-  switch (kind) {
-    case "chat":
-      return <ChatCircle size={15} weight="regular" className={className} />;
-    case "terminal":
-      return <Terminal size={15} weight="regular" className={className} />;
-    case "pr":
-      return <GitPullRequest size={15} weight="regular" className={className} />;
-    case "lane":
-      return <LaneIcon size={14} weight="bold" className={className} />;
-    case "commit":
-      return <GitCommit size={15} weight="regular" className={className} />;
-    case "branch":
-      return <BranchIcon size={14} weight="bold" className={className} />;
-    case "file":
-      return <FileText size={15} weight="regular" className={className} />;
-    case "linear":
-      return <Circle size={13} weight="bold" className={className} />;
-    case "artifact":
-      return <Camera size={15} weight="regular" className={className} />;
-    default:
-      return <Circle size={13} weight="bold" className={className} />;
-  }
+  const color = KIND_COLOR[kind];
+  const icon = (() => {
+    switch (kind) {
+      case "chat":
+        return <ChatCircle size={15} weight="fill" />;
+      case "terminal":
+        return <Terminal size={15} weight="fill" />;
+      case "pr":
+        return <GitPullRequest size={15} weight="fill" />;
+      case "lane":
+        return <LaneIcon size={14} weight="fill" />;
+      case "commit":
+        return <GitCommit size={15} weight="fill" />;
+      case "branch":
+        return <BranchIcon size={14} weight="fill" />;
+      case "file":
+        return <FileText size={15} weight="fill" />;
+      case "linear":
+        return <Circle size={13} weight="fill" />;
+      case "artifact":
+        return <Camera size={15} weight="fill" />;
+      default: {
+        const unreachable: never = kind;
+        return unreachable;
+      }
+    }
+  })();
+  return <PaletteIconTile color={color}>{icon}</PaletteIconTile>;
 }
 
 // Bold every bare word/phrase hit in a title. A full multi-word query is not a
@@ -201,31 +220,37 @@ export const SearchResultRow = React.memo(function SearchResultRow({
   onActivate: (item: SearchResultItem) => void;
 }) {
   const time = relativeTimeCompact(item.updatedAt);
-  const snippet = item.snippet?.trim() ? item.snippet : "";
+  const rawSnippet = item.snippet?.trim() ? item.snippet : "";
+  const clipped = rawSnippet ? clipCaption(rawSnippet) : null;
+  const snippet = clipped?.text ?? "";
+  const snippetRanges = clipped
+    ? item.matchRanges
+        .filter((range) => range.start < clipped.end)
+        .map((range) => ({
+          start: range.start,
+          end: Math.min(range.end, clipped.end),
+        }))
+    : [];
   return (
     <li>
       <button
         type="button"
         data-cmd-item
         className={cn(
-          "mx-2 flex w-[calc(100%-1rem)] items-center gap-2.5 rounded-lg border px-3 py-1.5 text-left transition-colors",
-          isSelected
-            ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-            : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
+          "mx-2 flex w-[calc(100%-1rem)] items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-left transition-colors",
+          isSelected ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
         )}
         onMouseEnter={() => onHover(index)}
         onClick={() => onActivate(item)}
       >
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-          <KindIcon kind={item.kind} />
-        </span>
+        <KindIcon kind={item.kind} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm text-[var(--color-fg)]">
             {highlightTitle(item.title, query)}
           </div>
           {snippet ? (
             <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
-              {highlightRanges(snippet, item.matchRanges)}
+              {highlightRanges(snippet, snippetRanges)}
             </div>
           ) : null}
         </div>
@@ -267,14 +292,17 @@ export function ShowMoreRow({
         type="button"
         data-cmd-item
         className={cn(
-          "mx-2 flex w-[calc(100%-1rem)] items-center gap-2 rounded-lg border px-3 py-1.5 text-left text-xs transition-colors",
+          "mx-2 flex w-[calc(100%-1rem)] items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-left text-xs transition-colors",
           isSelected
-            ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)] text-[var(--color-fg)]"
-            : "border-transparent text-[var(--color-muted-fg)] hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
+            ? "bg-white/[0.06] text-[var(--color-fg)]"
+            : "text-[var(--color-muted-fg)] hover:bg-white/[0.04]",
         )}
         onMouseEnter={() => onHover(index)}
         onClick={() => onToggle(kind)}
       >
+        <PaletteIconTile color="#a78bfa">
+          <CaretDown size={14} weight="bold" />
+        </PaletteIconTile>
         Show {hiddenCount} more
       </button>
     </li>

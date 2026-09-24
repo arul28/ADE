@@ -81,7 +81,11 @@ until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 2; done
 cat /tmp/ade-dev-<lane>.log
 ```
 
-Two rules go with it:
+A plain `&` is not enough: it survives the shell exiting but not a SIGTERM to
+the process group, which is how a turn is torn down. The script puts the app in
+its own session, so `electron exited (code=143)` mid-run stops happening.
+
+The rules that go with it (`AGENTS.md` and the context skill link here):
 
 - **Pick your own socket.** The default is `/tmp/ade-runtime-dev.sock` and it is
   shared. Two dev brains on one socket restart each other. Use one path per
@@ -89,6 +93,12 @@ Two rules go with it:
 - **Read the isolation report before anything else.** If it says `sync : ON`,
   stop and fix that: a dev brain holding the machine-wide sync host lease drops
   the installed brain's tunnel and kills the agents running under it.
+- **Never hand-start `ade serve`**, never set a fresh `ADE_HOME`, never copy
+  `~/.ade` secrets, and never run a packaged build on a machine serving live
+  agents.
+- **`--no-sync` protects the sync lease only.** It does not isolate the
+  database: a dev brain still sees every chat and task in every lane, so do not
+  restart one casually while other lanes are working.
 
 When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's

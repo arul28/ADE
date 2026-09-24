@@ -7,10 +7,13 @@ import type { EffectiveProjectConfig, OpenCodeProviderSummary, ProjectConfigFile
 import {
   createDynamicOpenCodeModelDescriptor,
   isLocalProviderFamily,
+  modelSupportsFastMode,
   normalizeAnthropicRuntimeAlias,
   replaceDynamicOpenCodeModelDescriptors,
   type ModelCapabilities,
   type ModelDescriptor,
+  type OpenCodeFastRoute,
+  type OpenCodeFastRoutes,
 } from "../../../shared/modelRegistry";
 import { stableStringify } from "../shared/utils";
 import {
@@ -293,13 +296,32 @@ function normalizeVariantKey(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, "-");
 }
 
-function classifyOpenCodeVariants(model: Record<string, unknown>): {
+/** The effort in a key that combines it with Fast (`high-fast`, `fast_high`), else null. */
+function combinedFastVariantEffort(key: string): string | null {
+  const match = /^fast[-_](.+)$/.exec(key) ?? /^(.+)[-_]fast$/.exec(key);
+  const effort = match?.[1];
+  if (!effort) return null;
+  return OPENCODE_REASONING_VARIANT_ALIASES[effort] ?? OPENCODE_REASONING_VARIANT_ALIASES[effort.replace(/_/g, "-")] ?? effort;
+}
+
+export function classifyOpenCodeVariants(model: Record<string, unknown>): {
   reasoningTiers: string[];
   serviceTiers: string[];
+  /** ADE tier to OpenCode's own variant key, only where the two differ. */
+  variantKeys: Record<string, string>;
+  /** ADE effort to OpenCode's key that runs it with Fast (`high` -> `high-fast`). */
+  fastVariantKeys: Record<string, string>;
 } {
   const v = model.variants;
   const reasoningTiers: string[] = [];
   const serviceTiers: string[] = [];
+  const variantKeys: Record<string, string> = {};
+  const fastVariantKeys: Record<string, string> = {};
+  // The first key that normalizes to a tier names it, the same key the tier
+  // list keeps.
+  const rememberKey = (tier: string, rawKey: string): void => {
+    if (rawKey !== tier && !(tier in variantKeys)) variantKeys[tier] = rawKey;
+  };
   if (v && typeof v === "object" && !Array.isArray(v)) {
     for (const [rawKey, rawValue] of Object.entries(v as Record<string, unknown>)) {
       const key = normalizeVariantKey(rawKey);
@@ -309,13 +331,78 @@ function classifyOpenCodeVariants(model: Record<string, unknown>): {
       }
       const serviceTier = OPENCODE_SERVICE_VARIANT_ALIASES[key];
       if (serviceTier) {
+        if (!serviceTiers.includes(serviceTier)) rememberKey(serviceTier, rawKey);
         addUnique(serviceTiers, serviceTier);
         continue;
       }
-      addUnique(reasoningTiers, OPENCODE_REASONING_VARIANT_ALIASES[key] ?? key);
+      // A combined key is Fast plus an effort, not an effort of its own.
+      const fastEffort = combinedFastVariantEffort(key);
+      if (fastEffort) {
+        if (!(fastEffort in fastVariantKeys)) fastVariantKeys[fastEffort] = rawKey;
+        continue;
+      }
+      const tier = OPENCODE_REASONING_VARIANT_ALIASES[key] ?? key;
+      if (!reasoningTiers.includes(tier)) rememberKey(tier, rawKey);
+      addUnique(reasoningTiers, tier);
     }
   }
-  return { reasoningTiers, serviceTiers };
+  return { reasoningTiers, serviceTiers, variantKeys, fastVariantKeys };
+}
+
+/** Fast routes a model's own variants give: a plain `fast` key, combined keys, or both. */
+function openCodeFastRoutesFromVariants(
+  variants: ReturnType<typeof classifyOpenCodeVariants>,
+): OpenCodeFastRoutes | undefined {
+  const byEffort = Object.fromEntries(
+    Object.entries(variants.fastVariantKeys).map(([effort, variant]) => [effort, { variant }]),
+  );
+  const hasByEffort = Object.keys(byEffort).length > 0;
+  const withoutEffort = variants.serviceTiers.includes("fast")
+    ? { variant: variants.variantKeys.fast ?? "fast" }
+    : undefined;
+  if (!withoutEffort && !hasByEffort) return undefined;
+  return { ...(withoutEffort ? { withoutEffort } : {}), ...(hasByEffort ? { byEffort } : {}) };
+}
+
+const FAST_SIBLING_SUFFIX = "-fast";
+
+/**
+ * The base model id when `model` is the fast sibling OpenCode builds from a
+ * models.dev `experimental.modes.fast` entry: id `<base>-fast`, sent to the
+ * provider API as `<base>`. The API id tells a sibling apart from a distinct
+ * model that only shares the suffix, such as xAI's `grok-4-fast`.
+ */
+function openCodeFastSiblingBaseId(
+  model: Record<string, unknown>,
+  modelId: string,
+  listedModelIds: ReadonlySet<string>,
+): string | null {
+  if (!modelId.endsWith(FAST_SIBLING_SUFFIX)) return null;
+  const baseModelId = modelId.slice(0, -FAST_SIBLING_SUFFIX.length);
+  if (!baseModelId || !listedModelIds.has(baseModelId)) return null;
+  const api = model.api && typeof model.api === "object" ? model.api as { id?: unknown } : null;
+  return api?.id === baseModelId ? baseModelId : null;
+}
+
+/**
+ * Makes the base row offer Fast through its sibling. The sibling carries the
+ * same effort variants as the base, so each effort both list runs as the
+ * sibling model with that effort's variant. The sibling wins over the base's
+ * own `fast` or combined keys, because it keeps the effort.
+ */
+function foldOpenCodeFastSibling(base: ModelDescriptor, sibling: ModelDescriptor): void {
+  const siblingModelId = sibling.openCodeModelId;
+  if (!siblingModelId) return;
+  const byEffort: Record<string, OpenCodeFastRoute> = { ...base.openCodeFast?.byEffort };
+  for (const effort of base.reasoningTiers ?? []) {
+    if (!sibling.reasoningTiers?.includes(effort)) continue;
+    byEffort[effort] = { modelId: siblingModelId, variant: sibling.openCodeVariantKeys?.[effort] ?? effort };
+  }
+  base.openCodeFast = {
+    withoutEffort: { modelId: siblingModelId },
+    ...(Object.keys(byEffort).length ? { byEffort } : {}),
+  };
+  if (!modelSupportsFastMode(base)) base.serviceTiers = [...(base.serviceTiers ?? []), "fast"];
 }
 
 function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
@@ -350,9 +437,6 @@ function normalizeOpenCodeProviderModel(
   displayName?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
-  reasoningTiers?: string[];
-  defaultReasoningEffort?: string;
-  serviceTiers?: string[];
   capabilities?: ModelCapabilities;
   preferredDuplicateSource: boolean;
 } {
@@ -368,14 +452,9 @@ function normalizeOpenCodeProviderModel(
     displayName: canonical.wasAlias ? canonical.displayName : (displayName ?? canonical.displayName),
     contextWindow: canonical.contextWindow,
     maxOutputTokens: canonical.maxOutputTokens,
-    ...(canonical.wasAlias
-      ? {
-        reasoningTiers: canonical.reasoningTiers,
-        defaultReasoningEffort: canonical.defaultReasoningEffort,
-        serviceTiers: canonical.serviceTiers,
-        capabilities: canonical.capabilities,
-      }
-      : {}),
+    // Tiers are not copied: an alias row offers only the variants OpenCode
+    // reported for the alias itself.
+    ...(canonical.wasAlias ? { capabilities: canonical.capabilities } : {}),
     preferredDuplicateSource: !canonical.wasAlias,
   };
 }
@@ -490,6 +569,35 @@ export async function probeOpenCodeProviderInventory(args: {
           }
         }
 
+        const addListedDescriptor = (descriptor: ModelDescriptor, preferredDuplicateSource: boolean): void => {
+          const existingIndex = descriptorIds.get(descriptor.id);
+          if (existingIndex !== undefined) {
+            if (
+              preferredDuplicateSource
+              && descriptorPreferredDuplicateSources.get(descriptor.id) !== true
+            ) {
+              descriptors[existingIndex] = descriptor;
+              descriptorPreferredDuplicateSources.set(descriptor.id, true);
+            }
+            return;
+          }
+          descriptorIds.set(descriptor.id, descriptors.length);
+          descriptorPreferredDuplicateSources.set(descriptor.id, preferredDuplicateSource);
+          descriptors.push(descriptor);
+          const providerId = descriptor.openCodeProviderId;
+          if (providerId && connected.has(providerId)) {
+            availableProviderModelCounts.set(providerId, (availableProviderModelCounts.get(providerId) ?? 0) + 1);
+          }
+        };
+        // A fast sibling folds into its base row once every row exists, so the
+        // picker lists one row per model and Fast becomes that row's toggle.
+        const fastSiblings: Array<{
+          providerId: string;
+          baseModelId: string;
+          descriptor: ModelDescriptor;
+          preferredDuplicateSource: boolean;
+        }> = [];
+
         for (const provider of data.all) {
           const isLocal = isLocalProviderFamily(provider.id);
           const discoveryExists = isLocal && discoveredLocalProviderIds.has(provider.id);
@@ -498,6 +606,9 @@ export async function probeOpenCodeProviderInventory(args: {
           // local-provider catalog; only show models ADE just discovered as loaded.
           if (isLocal && !discoveryExists) continue;
           const models = provider.models ?? {};
+          const listedModelIds = new Set(
+            Object.values(models).flatMap((model) => (typeof model.id === "string" ? [model.id.trim()] : [])),
+          );
           for (const model of Object.values(models)) {
             const modelRecord = model as Record<string, unknown>;
             const mid = typeof modelRecord.id === "string" ? modelRecord.id.trim() : "";
@@ -505,6 +616,7 @@ export async function probeOpenCodeProviderInventory(args: {
             // For local providers, only include models that are actively loaded.
             if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
             const variants = classifyOpenCodeVariants(modelRecord);
+            const fastRoutes = openCodeFastRoutesFromVariants(variants);
             const rawDisplayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
             const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, rawDisplayName);
             const limit = typeof modelRecord.limit === "object" && modelRecord.limit
@@ -527,12 +639,8 @@ export async function probeOpenCodeProviderInventory(args: {
                 ? { maxOutputTokens: normalizedModel.maxOutputTokens }
                 : Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
               ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
-              ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
-              ...(normalizedModel.reasoningTiers?.length ? { reasoningTiers: normalizedModel.reasoningTiers } : {}),
-              ...(normalizedModel.defaultReasoningEffort
-                ? { defaultReasoningEffort: normalizedModel.defaultReasoningEffort }
-                : {}),
-              ...(normalizedModel.serviceTiers?.length ? { serviceTiers: normalizedModel.serviceTiers } : {}),
+              ...(fastRoutes ? { serviceTiers: ["fast"] } : {}),
+              reportedTiers: true,
               capabilities: normalizedModel.capabilities ?? readOpenCodeModelCapabilities(modelRecord),
             });
             // Keep ADE's normalized identity/display metadata, but always route
@@ -541,30 +649,42 @@ export async function probeOpenCodeProviderInventory(args: {
             // actually launch.
             descriptor.openCodeModelId = mid;
             descriptor.providerModelId = `${provider.id}/${mid}`;
-            const existingIndex = descriptorIds.get(descriptor.id);
-            if (existingIndex !== undefined) {
-              if (
-                normalizedModel.preferredDuplicateSource
-                && descriptorPreferredDuplicateSources.get(descriptor.id) !== true
-              ) {
-                descriptors[existingIndex] = descriptor;
-                descriptorPreferredDuplicateSources.set(descriptor.id, true);
-              }
+            if (Object.keys(variants.variantKeys).length) descriptor.openCodeVariantKeys = variants.variantKeys;
+            if (fastRoutes) descriptor.openCodeFast = fastRoutes;
+            const baseModelId = openCodeFastSiblingBaseId(modelRecord, mid, listedModelIds);
+            if (baseModelId) {
+              fastSiblings.push({
+                providerId: provider.id,
+                baseModelId,
+                descriptor,
+                preferredDuplicateSource: normalizedModel.preferredDuplicateSource,
+              });
               continue;
             }
-            descriptorIds.set(descriptor.id, descriptors.length);
-            descriptorPreferredDuplicateSources.set(descriptor.id, normalizedModel.preferredDuplicateSource);
-            descriptors.push(descriptor);
-            if (connected.has(provider.id)) {
-              availableProviderModelCounts.set(
-                provider.id,
-                (availableProviderModelCounts.get(provider.id) ?? 0) + 1,
-              );
-            }
+            addListedDescriptor(descriptor, normalizedModel.preferredDuplicateSource);
           }
         }
 
-        replaceDynamicOpenCodeModelDescriptors(descriptors);
+        const listedByRoute = new Map(descriptors.map((descriptor) => [
+          `${descriptor.openCodeProviderId}\u0000${descriptor.openCodeModelId}`,
+          descriptor,
+        ]));
+        // A folded sibling leaves the picker but stays in the registry, so a
+        // chat saved on its id still resolves and still runs the sibling.
+        const unlistedDescriptors: ModelDescriptor[] = [];
+        for (const sibling of fastSiblings) {
+          const base = listedByRoute.get(`${sibling.providerId}\u0000${sibling.baseModelId}`);
+          if (!base) {
+            // The base row lost a duplicate-id contest to a row that routes to
+            // another model, so the sibling keeps a row of its own.
+            addListedDescriptor(sibling.descriptor, sibling.preferredDuplicateSource);
+            continue;
+          }
+          foldOpenCodeFastSibling(base, sibling.descriptor);
+          if (!descriptorIds.has(sibling.descriptor.id)) unlistedDescriptors.push(sibling.descriptor);
+        }
+
+        replaceDynamicOpenCodeModelDescriptors([...descriptors, ...unlistedDescriptors]);
         const modelIds = descriptors
           .filter((d) => d.openCodeProviderId ? connected.has(d.openCodeProviderId) : true)
           .map((d) => d.id)

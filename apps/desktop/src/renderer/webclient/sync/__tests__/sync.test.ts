@@ -15,6 +15,7 @@ import {
 } from "../../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../../shared/types/account";
 import { AdeSyncClient } from "../client";
+import { decodeChatLaunchEventPayload } from "../chatLaunchEvents";
 import {
   BACKOFF_STABLE_CONNECTED_MS,
   INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
@@ -4582,5 +4583,23 @@ describe("browser sync connection and client", () => {
     // missing must leave the read-only wording and no control affordance.
     expect(client.supportsMacDesktopControl()).toBe(false);
     client.dispose();
+  });
+});
+
+describe("decodeChatLaunchEventPayload", () => {
+  it("accepts the event the sync host pushes, unwrapped", () => {
+    const updated = { type: "launch-updated", launch: { launchId: "launch-1" } };
+    expect(decodeChatLaunchEventPayload(updated)).toBe(updated);
+    const removed = { type: "launch-removed", launchId: "launch-1" };
+    expect(decodeChatLaunchEventPayload(removed)).toBe(removed);
+  });
+
+  it("drops malformed or unknown payloads", () => {
+    expect(decodeChatLaunchEventPayload(null)).toBeNull();
+    expect(decodeChatLaunchEventPayload({ type: "launch-updated" })).toBeNull();
+    expect(decodeChatLaunchEventPayload({ type: "launch-removed", launchId: 7 })).toBeNull();
+    expect(decodeChatLaunchEventPayload({ type: "launch-paused", launchId: "launch-1" })).toBeNull();
+    // The runtime-event `{ event }` wrapper never reaches the web client.
+    expect(decodeChatLaunchEventPayload({ event: { type: "launch-removed", launchId: "launch-1" } })).toBeNull();
   });
 });

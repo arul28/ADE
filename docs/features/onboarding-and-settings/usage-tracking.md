@@ -172,6 +172,12 @@ sidecar. Desktop packaging validation derives its required ADE CLI payload from
 This keeps Activity useful on large Codex histories without putting live Limits
 refreshes or the ADE runtime behind an unbounded disk/memory pass.
 
+`usageLedgerScanners.ts` is the one list of history scanners. The worker walks
+it one provider at a time. The in-process scan (a test harness that injects
+scanners by their `scan…Logs` names) walks the same list. The worker reads its
+whole stdin input as bytes and decodes it once, so a multi-byte character in a
+project path is not split at a chunk boundary.
+
 ### The worker streams, so a timeout is partial rather than total
 
 The worker used to buffer every provider and write one JSON object at the very
@@ -230,9 +236,23 @@ Mechanics:
 - a cached copy is dropped after 30 days, so a machine that went offline in
   March does not price this year's usage at March's rates.
 - a models.dev `cost` gives USD per million tokens for `input`, `output`,
-  `cache_read`, and `cache_write`; missing cache rates fall back to the
-  `input × 0.1` / `input × 1.25` ratios. An entry with no usable input or output
-  rate is skipped.
+  `cache_read`, and `cache_write`. A row with a read rate but no write rate
+  bills a first-time cached prefix at the plain input rate, unless the model's
+  vendor charges a write premium (Claude, and OpenAI from GPT-5.6 on), where a
+  missing write rate is `input × 1.25`. A row with neither cache rate falls back
+  to the `input × 0.1` / `input × 1.25` ratios. An entry with no usable input or
+  output rate is skipped.
+- long-context tiers come from `cost.tiers` (`{ tier: { type: "context",
+  size } }`), else `cost.context_over_200k`. OpenAI (GPT-5.4 and later, above
+  272k), xAI Grok (200k), Google Gemini Pro, Alibaba Qwen, and MiniMax bill a
+  whole request at the tier rate once its context passes the threshold. A tier
+  applies only to a ledger entry that records ONE request and carries
+  `requestContextTokens` (Claude, Codex per-response, Pi, Qwen, Copilot CLI);
+  turn and session aggregates are priced at the base rate.
+- DeepSeek rates double in DeepSeek's published peak window (UTC Monday–Friday
+  01:00–04:00 and 06:00–10:00); models.dev lists the off-peak price. Chinese
+  public holidays are not modelled. OpenCode entries carry OpenCode's own cost
+  figure, which uses the off-peak price, so the peak rule does not reach them.
 - lookup tries the provider-prefixed name, then the canonical name, then an
   alias, then the longest key the canonical name extends — so a dated model id
   resolves to its family without a per-release table edit.
@@ -433,7 +453,7 @@ personal subscription quota.
 
 The top-bar usage control and the Limits popover list every live-quota provider
 that is signed in on this machine. Claude and Codex stay on their existing
-connection signal. Cursor, Copilot, Grok, and OpenCode join in that order as
+connection signal. Cursor, Copilot, Grok, OpenCode, and Kimi join in that order as
 soon as a local credential exists, and a provider with no credential is absent
 — it is not an error row and it does not take a mark. Each top-bar mark is the
 provider logo inside a thin ring of that provider's colour, drawn tight
@@ -446,7 +466,7 @@ one. The popover rows keep their text meters. iOS and the TUI have no top-bar
 ring; they keep the text meters. Bars use the provider colour from
 `providerColors.ts` (Cursor slate, Copilot green, Grok gray, OpenCode purple).
 
-The poller checks for a credential before any network call. The four extra
+The poller checks for a credential before any network call. The five extra
 providers run in the same parallel batch as Claude and Codex, each HTTP call
 bounded to 4 seconds. A missing credential returns immediately and clears any
 previous windows for that provider. A failed refresh of a provider that was
@@ -457,17 +477,252 @@ is no second account and no "continue on another account".
 | Provider | Credential ADE reads | Quota request | What the bar shows |
 |---|---|---|---|
 | Cursor | `cursorAuth/accessToken` in the local Cursor `state.vscdb` (macOS `~/Library/Application Support/Cursor/User/globalStorage`, Linux `$XDG_CONFIG_HOME/Cursor/...` or `~/.config/Cursor/...`, Windows `%APPDATA%\Cursor\...`). A token whose JWT expiry is inside 60 seconds is skipped. ADE does not refresh it. | `GET https://cursor.com/api/usage-summary`. The `WorkosCursorSessionToken` cookie is `userId::accessToken`, with the user id taken from the JWT `sub` after the last `\|`. A bare access token is rejected as signed out. No browser-cookie import, and not the team Admin API. | Plan percent for the billing cycle, labeled monthly. |
-| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. | Monthly premium quota. Copilot does not publish a reset, so the row omits the countdown. |
+| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. ADE reads account email from `GET https://api.github.com/user` with the same token. If that call fails, ADE keeps the last email it read with the same token; a different token gets no remembered email. | Monthly premium quota, including the top-level `quota_reset_date`/`quota_reset_date_utc` when present. |
 | Grok | Non-expired bearer in `~/.grok/auth.json` (`GROK_HOME` overrides the directory), else `GROK_OAUTH_TOKEN`. Management keys (`xai-…`) and cookie-shaped values are ignored. | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`. No grok.com cookie import. | `creditUsagePercent` for the current period, labeled weekly or monthly from the period length. |
 | OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. | `GET https://opencode.ai/zen/go/v1/usage`. | Rolling 5-hour, weekly, and monthly percents as the API reports them. A value of 1 is 1%, not 100%. |
+| Kimi | Non-expired `access_token` in the token file Kimi Code itself reads (`$KIMI_CODE_HOME`, `~/.kimi-code` by default). `shared/kimiCodeLogin.ts` finds it the way Kimi does. First it reads `[providers."managed:kimi-code"]` in `config.toml`, which holds the API base (`base_url`) and the credential slot (`oauth.key`). The mainland-China default slot is `credentials/kimi-code.json`. Any other host and base, including `kimi login --region global`, has its own `credentials/kimi-code-env-<hash>.json`. `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST`/`KIMI_OAUTH_HOST` override that entry, as they do for Kimi. With no entry, ADE reads `kimi-code.json`, and the `region` marker picks the mainland-China or global base. A login kept in the OS keyring is not read. ADE never refreshes the token. | `GET {base}/usages`, plus `GET {base}/me` with the same bearer token for email and nickname. The top-level `usage` block (`used`, `limit`, `resetTime`) is the weekly quota. Each `limits[]` row reads `used`, `limit`, and `resetTime` from its `detail`, and its length from `window.duration` times `window.timeUnit` (`TIME_UNIT_MINUTE`, `_HOUR`, `_DAY`, or `_WEEK`). Counts may arrive as numeric strings, and an omitted `used` is 0. If `/me` fails, ADE keeps the last email it read with the same token, so the account id does not fall back to `kimi:local`. A different token gets no remembered email, because it may belong to a different account. Kimi rotates its token when it refreshes, so a refresh that lands on a failed `/me` shows `kimi:local` for that one poll. | The weekly quota plus each limit, typed by length: 8 hours or less is the 5-hour window, 10 days or less is weekly, longer is monthly. The first window of each type is kept. The response shape matches Kimi Code's own client (`packages/oauth/src/managed-usage.ts`). ADE's parsing is fixture-verified. Kimi has not been live-verified on the development machine. |
 
-Gemini, Droid, Pi, Qwen, and Kimi stay on local history. Their logs are not
-remaining-quota meters, and ADE does not add a limits card for them.
+Gemini, Droid, Pi, and Qwen have no remaining-quota source, so ADE adds no
+limits card for them; their spend comes from local history. The history scan
+reads Pi (the session root Pi itself uses: `PI_CODING_AGENT_SESSION_DIR`,
+else the `sessionDir` in Pi's `settings.json` with `~` expanded, else
+`sessions/` under `PI_CODING_AGENT_DIR` or `~/.pi/agent`),
+Qwen (`QWEN_HOME` or `~/.qwen`, `usage/token-usage-YYYY-MM.jsonl`), and Grok
+(`GROK_HOME` or `~/.grok`, `sessions/**/updates.jsonl`) alongside Gemini and
+Droid, and reads Copilot CLI's measured `session-store.db` as well as the
+`session-state` event log and VS Code transcripts — a measured SQLite turn wins
+over the same session's estimated event-log turn. Kimi writes no token counts to
+disk, so it is not scanned; its spend appears in live chats only.
+
+Droid writes session totals to a `.settings.json` file beside each session
+log. The history scan spreads those totals over the session's assistant calls.
+Droid's `thinkingTokens` are already inside `outputTokens`, so the scan bills
+the output count only and never adds thinking to it.
 
 Primary references: [CodexBar Cursor](https://github.com/steipete/CodexBar/blob/main/docs/cursor.md),
 [CodexBar Copilot](https://github.com/steipete/CodexBar/blob/main/docs/copilot.md),
 [CodexBar Grok](https://github.com/steipete/CodexBar/blob/main/docs/grok.md), and
 [CodexBar OpenCode Go](https://github.com/steipete/CodexBar/blob/main/docs/opencodego.md).
+
+Droid has no remaining-quota endpoint, and ADE shows no limits card for it.
+When the user supplies an optional Factory API key (`fk-…`) in Settings, ADE
+reads the credits that each Droid session used from the
+[Factory API](https://docs.factory.ai/api-reference). ADE reads per-session
+credits only. It does not read monthly consumption. Without the key, Droid
+reports no quota source, not an error.
+
+After each Cursor chat turn on a saved Cursor API key, ADE asks
+`Agent.getUsage` for the turn's usage. A cloud turn asks for its own run. The
+turn's `done` event waits for the answer, up to 12 s. ADE puts the run's tokens
+on `done` and records one billed row, `cursor:getUsage:<runId>`, in
+`usage.cursor.billedEntries.v1` (`cursorBilledUsageStore.ts`). The row keeps
+Cursor's `chargedCents` as its cost override. A stored Cursor login (no API
+key) never calls `getUsage`, and its `done` event is sent at once. Plans
+without the usage API answer
+`[feature_unavailable] This feature is not available for your account`. The
+worker returns a `CursorSdkUsageUnavailableResult` marker for that answer
+instead of an error. The marker has no usage, so the turn gets no billed row
+and its `done` event does not change. Every Cursor `done` event carries
+`account: { provider: "cursor", kind: "subscription", email? }`.
+
+The Usage tab's production scan runs in the ledger worker, and the worker does
+not read the billed rows. For an ADE Cursor chat, the tab shows the `cursor-agent`
+character estimate from the chat's Cursor Agent transcript. Only the in-process
+scan (a test harness that injects scanners) adds the billed rows to the `cursor`
+provider, one row per message id.
+
+The per-turn ledger (see below) gets the Cursor turn's tokens and, when a hook
+named it, the served model from `done`. `done.costUsd` stays unset for Cursor.
+The dashboard reconcile adds Cursor's charge and the served model later. It
+reads the per-request Cursor dashboard feed
+(`cursor.com/api/dashboard/get-filtered-usage-events`) for the ledger only and
+writes no Usage rows.
+
+## Per-turn usage ledger (router input)
+
+The usage page answers "what did this machine spend". A model router needs a
+finer answer: what one turn of each provider, account, and model costs here.
+`turnUsageLedger.ts` writes that answer as one JSON line for each finished
+chat turn.
+
+- **Where.** The ledger lives in `<adeHome>/usage/turns-YYYY-MM.jsonl`, and the
+  quota readings live in `quota-YYYY-MM.jsonl` next to it. The files stay on
+  the machine and never enter the synced project database, so a new field
+  never has to reach an older phone or desktop. Files older than three months
+  are deleted on the first write of a month.
+- **What.** Each row holds the session, lane, provider, account key, requested
+  model, served model, token split, context size, request count, the
+  provider's cost (with its source), plan units, the number of context
+  compactions the provider finished in the turn (`compactions`), and
+  `apiEquivalentUsd`: the turn at the served model's public list price. That last figure is the one
+  currency that compares a subscription turn with an API-key turn. The ledger
+  writes every field on every row. A field it could not learn is null.
+- **Account key.** `usageAccountId.ts` holds the one rule for an account id:
+  `<provider>:<instanceId>`, else `<provider>:<email>`, else
+  `<provider>:local`. The quota poller uses the same rule, so a ledger row
+  always joins its quota window.
+- **One token meaning.** `inputTokens` is the uncached input for every
+  provider. Codex counts cached input inside its input figure and sends no
+  cache split on `done`, so the ledger takes Codex turn totals from the change
+  in the thread totals that `codex_token_usage` carries during the turn.
+- **Reasoning.** Most providers count reasoning inside `outputTokens`, so the
+  price does not add it again. OpenCode reports reasoning apart from output,
+  so its `apiEquivalentUsd` prices output plus reasoning at the output rate.
+  `reasoningBilledSeparately` in `tokenSplit.ts` names that set and cites the
+  evidence for each provider.
+- **Subagents.** `subagentTokens` holds the tokens of the turn's subagents.
+  It also holds the helper-agent usage that a provider reports on `done`
+  (`done.subagentUsage`, for example a Copilot subagent or a Qwen memory
+  extractor). These tokens are not in the main token fields.
+- **Observe only.** The chat service calls `observe` for each event and
+  `settle` on each `done` (in `notifyTurnSettled`). Both catch every error. A
+  ledger failure logs one warning and never reaches a turn. Hosts without a
+  ledger (tests, the in-process desktop fallback) pass none.
+- **Late corrections.** Two providers write their own record after the turn.
+  `turnUsageReconcilers.ts` reads it on a timer and appends an amendment line;
+  readers apply amendments in time order.
+  - Cursor: `cursorDashboardUsage.ts` reads Cursor's dashboard usage events
+    with the Cursor desktop login, 20 s, 90 s, and 300 s after the turn. ADE
+    does not send an expired login token. An event's `conversationId` is the
+    Cursor SDK agent id (verified live), so the match is exact. A turn takes
+    the events from 10 s before its first event up to 60 s after its `done`.
+    When the same chat starts its next turn sooner, the window stops just
+    before that turn starts. Each event goes to one turn only. The amendment
+    adds the served model (for example the model behind "auto"), Cursor's
+    charge, and the request cost. It also prices the dashboard's tokens again
+    at the served model's list price (`apiEquivalentUsd`), because the turn
+    priced its row from the requested model. It writes no Usage rows. The endpoint is
+    private: a shape change fails closed (no amendment, a `bad_body`
+    warning). Set `ADE_CURSOR_DASHBOARD_USAGE` to `0`, `false`, `off`, or
+    `no` to turn the read off.
+  - Droid: with a Factory key, ADE reads the session's Factory credits 15 s
+    after the turn. The row gets the session total, and the turn's own
+    `factory_credit` plan usage when the brain saw the session's previous
+    total. The reads for one session run in order, so a slow read cannot
+    replace a newer total.
+- **Quota readings.** The ledger writes a quota reading when the percent moves
+  by half a point or more, or when a new window instance starts. Reset times
+  less than five minutes apart name the same window instance. Claude's reset
+  time moves by microseconds on every poll, and this rule keeps one row for
+  that window instead of one row per poll.
+- **Burn rate.** `quotaBurnRate.ts` pairs the quota readings of the last 14
+  days with ledger rows. For each window instance (one reset time, within the
+  five-minute jitter), it divides the API-equivalent dollars of the matching
+  ADE turns by the percent the window moved. These rules apply:
+  - A span without an ADE turn does not count.
+  - A span with a turn that used tokens but has no list price does not count,
+    because its dollars are unknown.
+  - A turn with no tokens costs $0. It does not make its span unpriced.
+  - A turn billed to an API key or served by a local model does not count. A
+    turn whose account has `routedAway` set (a keyed preset, a redirected
+    endpoint, or a cloud route such as Bedrock) does not count either. These
+    turns cannot move a subscription window. `upstream` names only the model
+    vendor, so a turn with an `upstream` and no `routedAway` still counts.
+  - A row with no account comes from an older host and still counts.
+  - A turn counts for a window of its own account. When the provider has one
+    account in the readings, every turn of that provider counts, also a turn
+    keyed `<provider>:local`. A `<provider>:local` reading is not a second
+    account when the provider also has a named account. The poller writes that
+    reading when an identity call fails (after a restart or a token refresh),
+    so it is the same login without its name.
+
+  Other clients on the same login (a terminal Claude Code, the Cursor IDE)
+  also move the percent, so the result is a lower bound on dollars per
+  percent, and `headroomUsd` is a safe minimum.
+- **Read it.** `ade usage turns --days 14 --text` (action
+  `usage.getTurnUsageSummary`) returns totals by provider, account, and model,
+  the cache hit ratio, the median context, served-model mismatches, and the
+  burn rates. `--group-by provider|provider_model|provider_account_model` is
+  optional; the default is `provider_account_model`. `--recent N` (up to 200
+  rows) adds the newest rows. The totals and burn rates cover the whole
+  machine. The recent rows come from the calling project only. The read is
+  asynchronous: it streams each month file line by line, so a 90-day read
+  does not block the brain. Only the per-turn append and the first quota
+  snapshot's small seed read are synchronous.
+
+## Daily usage research report
+
+Each machine sends one compact report for each finished local day to ADE's
+account directory Worker (`POST /usage-research/daily`). ADE uses the reports
+to learn how to route turns between models: prices, models, times, and costs
+for each provider, mainly Claude and Codex. The wire contract is in
+`apps/desktop/src/shared/usageResearch.ts`. The Worker keeps its own copy.
+
+- **What is sent.** One body for each day. It has the schema version, an
+  install id, the local day, the app version, the platform, the CPU
+  architecture, the UTC offset, and the report. The report has:
+  - day totals (turns and dollars);
+  - groups of turns with the same provider, requested model, served model,
+    account kind, account ref, plan tier, `routedAway`, `upstream`, reasoning effort,
+    surface, and subagent-chat flag. Each group has turn counts by status,
+    token sums, requests, API-equivalent dollars, provider cost, list-price
+    cost, plan units, context and duration percentiles, usage confidence
+    counts, served-model mismatches, compactions, and a histogram of the local
+    hour each turn started;
+  - the day's quota readings for each window (lowest and highest percent,
+    window instances, readings);
+  - the burn rate of each window at the end of the day;
+  - the list price of each group's model, with long-context tiers.
+- **What is never sent.** Emails, account ids, provider instance ids, project
+  roots and other paths, lane ids, session and turn ids, prompts, file names,
+  hostnames, API keys, and tokens. A model, vendor, or effort name that looks
+  like a path, an email, or a URL is sent as `_redacted`.
+- **Ids.** `installId` is the first 32 hex characters of
+  sha256("ade-usage-research-install:" + salt). `accountRef` is the first 12
+  hex characters of sha256(salt + ":" + account key). The salt is random for
+  each install and stays on the machine. Nothing else ADE sends derives from
+  it, so `installId` is not linkable to analytics or the account, and the
+  hash alone does not join `accountRef`s across installs. Quota readings are
+  account-wide, though: two installs signed in to one account report the same
+  window percentages, which can correlate their refs. An unnamed login
+  (`<provider>:local`) has no ref. The upload is anonymous: it sends no
+  account token.
+- **Consent.** The report goes only while product analytics is on
+  (`productAnalyticsService.getStatus().effective`). The analytics setting in
+  Settings says so in plain words. Turns and quota readings from before the
+  user last turned analytics on are not read. To stop the report on a
+  machine, set `ADE_USAGE_RESEARCH` to `0`, `false`, `off`, or `no`. Both are
+  checked again before every request, so turning analytics off mid-run stops
+  the run, and stopping the uploader aborts the request in flight.
+- **Schedule.** The brain starts one uploader for each ADE home
+  (`usageResearchUploader.ts`, wired in `apps/ade-cli/src/bootstrap.ts`). It
+  runs 2 minutes after start, then each hour. Each run looks at the 7 local
+  days before today. It never sends today. It sends at most 7 requests, oldest
+  day first.
+- **Dedupe.** `<adeHome>/usage/research-uploads.json` holds the salt and the
+  outcome of each day (`sent` or `rejected`). A recorded day does not go again.
+  A day with no turns is not recorded and is not sent. A ledger read that
+  fails is not a day with no turns: the run stops and the next hour reads
+  again. Nothing is sent until the salt is on disk, because a new salt on
+  every start would re-send every day under a new install id. The file keeps
+  30 days and is written atomically. The Worker keeps one row for each
+  install and day and replaces it on a repeat.
+- **Answers.** 200 and 201 record `sent`. 400, 413, and 415 record
+  `rejected`. A 429 stops the run; the uploader waits for the `retry-after`
+  time (to the next UTC midnight for the identity, daily, and storage caps).
+  A 503, another 5xx, or a network error stops the run until the next hour.
+  The request times out after 15 s, the response body included. The uploader
+  never throws and logs one warning for each kind of failure.
+- **Size.** The whole body is 32 KB or less. A report has 150 groups or
+  fewer; the smallest groups past that merge into one `_other` group. When a
+  body is too large, the uploader first removes the hour histograms. Then it
+  merges the smallest groups into `_other`, keeping as many groups whole as
+  fit (a binary search on the count). When the body still does not fit, the
+  day is recorded as `rejected` and is not sent. A group's served-model
+  mismatches use the same rule as the chat's mismatch warning
+  (`isServedModelMismatch`), so a harness prefix, a dated snapshot, or a build
+  variant of the requested model is not a mismatch. The same
+  day always gives the same bytes. A busy day of 200 turns in 9 groups is
+  about 10 KB.
+- **Worker.** `apps/account-directory` stores the reports in its D1 database
+  (`migrations/0012_usage_research.sql`) and keys its per-caller quota on the
+  caller's address only (an IPv6 address counts as its /64); it reads no
+  account token. A stopped or spent fleet budget answers `429` from a read,
+  before any quota is claimed. Each row counts its report plus 256 bytes
+  against the storage ceiling, and each write is a compare-and-swap on the
+  row's previous size, so a write that loses a race gives back its claims and
+  answers `503`. The Worker's `usageResearchContract.test.ts` imports
+  `shared/usageResearch.ts` and checks both copies of the contract agree.
 
 ## Desktop, CLI, remote, and mobile parity
 
@@ -495,15 +750,19 @@ Primary references: [CodexBar Cursor](https://github.com/steipete/CodexBar/blob/
   the page and the new-chat activity module read as one surface.
 - Every quota card names the account it describes, its plan, and links out to
   the provider's own limits page. The poller resolves the signed-in email locally
-  (`providerAccountIdentity.ts`: Codex `~/.codex/auth.json` `id_token` payload,
-  Claude `.claude.json` `oauthAccount.emailAddress`; both via `os.homedir()`,
-  no Keychain) and stamps it onto `UsageProviderStatus.accountEmail`, alongside
+  (`providerAccountIdentity.ts`: Codex `~/.codex/auth.json` `id_token` payload and
+  account id, Claude `.claude.json` `oauthAccount.emailAddress`; both via
+  `os.homedir()`, no Keychain) and stamps it onto `UsageProviderStatus.accountEmail`, alongside
   `accountPlan` (Codex `chatgpt_plan_type`, Claude `subscriptionType`/
   `rateLimitTier`) and `accountUrl` from the single shared source
   `usageProviderAccountUrl`. The same reader fills
   `AiProviderConnectionStatus.accountEmail`/`accountPlan`, so Settings >
   Providers says "Authenticated as <email> · <plan>" from the same source the
-  Limits cards use. No token is read into the snapshot, logged, or persisted. Both fields are
+  Limits cards use. Copilot reads `email`/`login` from GitHub `/user`, while Kimi
+  reads `email`/`name` from `/me`, using only the bearer already resolved for
+  quota. Pi reads only provider key names and `openai-codex.accountId`, then
+  matches that id to ADE's own Codex identity; Claude is unmatched because Pi
+  has no Claude account id. No token is read into the snapshot, logged, or persisted. Both fields are
   optional: an unknown account shows no line, and a host that predates them
   shows no external link.
 - Live limits reads as headroom, not consumption, and **the account is the

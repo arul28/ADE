@@ -49,3 +49,9 @@ baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:g
 # The "api-keys.v1.bin" file-name and `ai.api_key.provenance.v1` namespaced-key
 # false positives live in `.gitleaks.toml`'s allowlist regexes: a commit-scoped
 # fingerprint does not survive a rebase.
+
+# Model ids (not credentials) passed under a `modelToken` key in the ACP
+# coordinator test before the test helper's key was renamed to `model`.
+0bfc87451d3beaabfcff8f6d5d8e8c51fb175fa3:apps/desktop/src/main/services/chat/acpHost/acpRuntimeCoordinator.test.ts:generic-api-key:433
+0bfc87451d3beaabfcff8f6d5d8e8c51fb175fa3:apps/desktop/src/main/services/chat/acpHost/acpRuntimeCoordinator.test.ts:generic-api-key:454
+0bfc87451d3beaabfcff8f6d5d8e8c51fb175fa3:apps/desktop/src/main/services/chat/acpHost/acpRuntimeCoordinator.test.ts:generic-api-key:461

@@ -385,7 +385,7 @@ struct WorkChatSessionView: View {
   let onRetryLoad: @MainActor () async -> Void
   let onOpenFile: @MainActor (String) async -> Void
   let onOpenPr: @MainActor (Int) async -> Void
-  let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
+  let onLoadArtifact: WorkArtifactLoader
   let onRefreshArtifacts: @MainActor () async -> Void
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
@@ -484,9 +484,6 @@ struct WorkChatSessionView: View {
   /// Publishes only when the chips themselves change, so its 10 s poll does not
   /// re-render the chat on every tick.
   @StateObject private var laneTools = WorkLaneToolsModel()
-  @State private var laneToolsSheetPresented = false
-  @State private var appleViewerPresented = false
-  @State private var macDesktopViewerPresented = false
   #if DEBUG
   /// Fixture seam: installs these chips instead of polling the sync socket.
   var previewLaneTools: WorkLaneToolsPreview? = nil
@@ -981,7 +978,10 @@ struct WorkChatSessionView: View {
       }
       if showsComposerLaneToolChips {
         ForEach(laneTools.chips) { chip in
-          WorkLaneToolChipView(chip: chip) { openLaneToolChip(chip) }
+          WorkLaneToolChipView(chip: chip) {
+            ADEHaptics.light()
+            laneTools.open(chip, macDesktopStream: syncService.supportsMacDesktopStream)
+          }
         }
       }
     }
@@ -1855,62 +1855,20 @@ struct WorkChatSessionView: View {
 
   var body: some View {
     feedbackAndSheets(
-      laneToolPresenters(
-        sessionLifecycleHandlers(
-          timelineScrollHandlers(chatColumn)
-        )
+      sessionLifecycleHandlers(
+        timelineScrollHandlers(chatColumn)
       )
+      .modifier(laneToolsPresenter)
     )
   }
 
-  /// The lane tool chips' poll and the two surfaces they open. Split from
-  /// `body` for type-checker budget.
-  private func laneToolPresenters<V: View>(_ content: V) -> some View {
-    content
-      .task(id: session.laneId) {
-        #if DEBUG
-        if let previewLaneTools {
-          laneTools.installPreview(state: previewLaneTools.state, appleStatus: previewLaneTools.appleStatus)
-          return
-        }
-        #endif
-        guard !isPersonalChat else { return }
-        await laneTools.run(laneId: session.laneId, syncService: syncService)
-      }
-      .onChange(of: laneToolsSheetPresented || appleViewerPresented || macDesktopViewerPresented) { _, presented in
-        laneTools.paused = presented
-      }
-      .sheet(isPresented: $laneToolsSheetPresented) {
-        WorkToolsSheet(laneId: session.laneId)
-          .presentationDetents([.medium, .large])
-          .presentationDragIndicator(.visible)
-      }
-      // Presented exactly as `AppleDeviceCard` presents it: full screen, seeded
-      // with the last status so the first frame is not an empty viewer.
-      .fullScreenCover(isPresented: $appleViewerPresented) {
-        AppleDeviceViewer(laneId: session.laneId, initialStatus: laneTools.appleStatus)
-      }
-      .fullScreenCover(isPresented: $macDesktopViewerPresented) {
-        MacDesktopViewer(laneId: session.laneId, initialState: laneTools.macDesktopState)
-      }
-  }
-
-  private func openLaneToolChip(_ chip: WorkToolChip) {
-    ADEHaptics.light()
-    switch chip.kind {
-    case .simulator:
-      appleViewerPresented = true
-    case .macDesktop:
-      // A host without the live stream can still describe the screen; the
-      // sheet shows its last still instead of a viewer that could only fail.
-      if syncService.supportsMacDesktopStream {
-        macDesktopViewerPresented = true
-      } else {
-        laneToolsSheetPresented = true
-      }
-    case .browser, .appControl:
-      laneToolsSheetPresented = true
-    }
+  /// The lane tool chips' poll and the two surfaces they open.
+  private var laneToolsPresenter: WorkLaneToolsPresenter {
+    var presenter = WorkLaneToolsPresenter(model: laneTools, laneId: session.laneId, enabled: !isPersonalChat)
+    #if DEBUG
+    presenter.preview = previewLaneTools
+    #endif
+    return presenter
   }
 }
 
@@ -1962,6 +1920,9 @@ func workLoadedArtifactContentRenderSignature(_ content: [String: WorkLoadedArti
     case .video(let url):
       hasher.combine("video")
       hasher.combine(url.absoluteString)
+    case .videoOnDemand(let sizeBytes):
+      hasher.combine("videoOnDemand")
+      hasher.combine(sizeBytes)
     case .remoteURL(let url):
       hasher.combine("remoteURL")
       hasher.combine(url.absoluteString)

@@ -77,8 +77,9 @@ export function useMacDesktopCardGrant(laneId: string | null, chatSessionId: str
 }
 
 /**
- * The `workToolOnScreen` key the card notes while it shows the Mac Desktop, so
- * `ade ui show floating-mac-desktop` answers "shown" only for a card on screen.
+ * The `workSurfaceKey` surface name the card notes while it shows the Mac
+ * Desktop, so `ade ui show floating-mac-desktop` answers "shown" only for a
+ * card on screen.
  */
 export const MAC_DESKTOP_CARD_ON_SCREEN_KEY = "floating-mac-desktop";
 

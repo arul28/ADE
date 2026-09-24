@@ -30,6 +30,8 @@ type LoggerForCliLaunch = {
 export type AgentChatCliLaunchDeps = {
   laneService: LaneServiceForCliLaunch;
   ptyService: PtyServiceForCliLaunch;
+  /** False when this runtime has no RPC endpoint that accepts activity reports. */
+  sessionActivityReportingEnabled?: boolean;
   logger?: LoggerForCliLaunch | null;
 };
 
@@ -108,6 +110,7 @@ export async function launchAgentChatCli(
   const launch = buildTrackedCliLaunchCommand({
     provider,
     permissionMode,
+    sessionActivityReportingEnabled: deps.sessionActivityReportingEnabled,
     ...(provider === "claude" ? { sessionId } : {}),
     model: trackedPreset?.model || arg.model || null,
     reasoningEffort: arg.reasoningEffort ?? null,

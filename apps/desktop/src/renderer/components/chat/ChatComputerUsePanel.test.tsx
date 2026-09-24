@@ -296,6 +296,22 @@ describe("proof rendering", () => {
     expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
   });
 
+  it("reloads an offline proof tile when the machine comes back online", async () => {
+    scopeOverride.current = remoteScope(false);
+    const snapshot = snapshotOf([recording(28)]);
+    const view = render(<ChatComputerUsePanel snapshot={snapshot} onRefresh={vi.fn()} />);
+    expect(await screen.findByText("This video is on MacBook Pro, which is offline.")).toBeTruthy();
+
+    scopeOverride.current = remoteScope(true);
+    view.rerender(<ChatComputerUsePanel snapshot={snapshot} onRefresh={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe(`${MEDIA_BASE}/remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov`);
+    });
+    expect(screen.queryByText(/which is offline/)).toBeNull();
+  });
+
   it("plays a QuickTime proof from another machine as MP4", async () => {
     // The owner's 2026-09-23 report: a simctl `.mov` played on the phone and
     // failed on both desktops, because Chromium refuses `video/quicktime`.

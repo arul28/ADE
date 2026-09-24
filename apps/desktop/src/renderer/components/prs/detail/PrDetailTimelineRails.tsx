@@ -1,7 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
 import { useLocation, useNavigate } from "react-router-dom";
-import { ArrowSquareOut, Stack } from "@phosphor-icons/react";
+import { ChatCircleText, GitMerge, Tag, UserCircle, Users } from "@phosphor-icons/react";
 import { buildPrsRouteSearch, parsePrsRouteState, prRouteCoordinatesMatch, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
   MergeMethod,
@@ -18,119 +17,48 @@ import type {
   PrStatus,
   PrTimelineEvent,
   PrWithConflicts,
+  ReviewerRequest,
   UpdateBranchStrategy,
 } from "../../../../shared/types";
-import { PrTimeline, type PrTimelineFilters, type PrTimelineRef } from "../shared/PrTimeline";
-import { PrCommitTickPill } from "../shared/PrCommitTickPill";
-import { type PrCommitTick } from "../shared/prCommitTickPill.logic";
-import { PrDetailMergeRail } from "../shared/PrDetailMergeRail";
-import { PrDetailRightMetadataRail, type ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
-import { PrFilesChangedCard } from "../shared/PrFilesChangedCard";
-import { PrCommentComposer } from "../shared/PrCommentComposer";
+import { PrTimeline, type PrTimelineRef } from "../shared/PrTimeline";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import { COLORS, RADII, SANS_FONT, SPACING, primaryButton } from "../../lanes/laneDesignTokens";
+import type { PrMergeDialogResult } from "../shared/PrMergeDialog";
+import { COLORS } from "../../lanes/laneDesignTokens";
+import { buildDigestTimelineModel, type DigestPushTick } from "../shared/prDigestTimelineModel";
+import { PrPushTickRail } from "../shared/PrPushTickRail";
+import {
+  NEXT_STEP_TONE_COLOR,
+  PrAssigneesCard,
+  PrCommentCard,
+  PrFloatingDock,
+  PrLabelsCard,
+  PrMergeCard,
+  PrReviewersCard,
+  collectPrReviewers,
+  type PrDockId,
+  type PrDockItem,
+  type PrMergeCardActions,
+  type PrMergeCardButton,
+} from "../shared/PrFloatingDock";
+import { buildUnifiedChecks, summarizePipelineStates } from "../shared/prUnifiedChecks";
+import { buildPrChatPrompt, prFailingCheckNames, prOpenFindings } from "../shared/prChatActions";
+import { resolvePrNextStepFromStatus, type PrNextStepAction } from "../../../../shared/prNextStep";
+import { isPrBotAuthor } from "../../../../shared/prBotIdentity";
+import { PR_DESCRIPTION_BOT_EVENT_PREFIX, splitPrBodyBotSections } from "../../../../shared/prBodyBotSections";
+import type { PrNeedsAttentionItem } from "../../../../shared/prConversationDigest";
+import { PrMarkdownEnvContext, type PrMarkdownEnv } from "../shared/prMarkdownContext";
+import { usePrs } from "../state/PrsContext";
 
-/* ── The rail ─────────────────────────────────────────────────────────────
- * One resizable rail, on the right. It drag-resizes and persists per project,
- * using the same localStorage idiom `GitHubTab` uses for its list/detail split.
- * The width is per project because a repo's PR shape (long check lists vs. long
- * file lists) is what decides how you want the space split.
- *
- * There used to be a left rail as well, holding commits and files-changed. It
- * spent a whole column on a handful of short commit lines and squeezed the
- * thread — the actual content — into the middle. Commits are now a small
- * floating tick pill in the thread's top-left corner, files-changed moved right,
- * and its persisted width key (`ade.prs.overviewLeftRailWidth`) is retired.
- */
 /**
- * VERSIONED KEY. A stored width always beats a new default, so bumping the
- * default alone would change nothing for anyone who has ever dragged this
- * separator — the split would look untouched. `.v2` retires those saved values
- * once so the wider rail below actually lands; drags from here persist under v2.
+ * The Overview is one column: the thread, with the push tick rail and the
+ * floating dock laid over its right edge. There is no rail to protect any
+ * more, so the floor is what the thread and one open dock card need.
  */
-const OVERVIEW_RIGHT_RAIL_WIDTH_KEY = "ade.prs.overviewRightRailWidth.v2";
-/**
- * The right rail carries files-changed as well as reviewers/checks/merge, so it
- * gets a little more room and the thread gives a little back — a deliberate
- * nudge, not a rebalance. The thread is still the primary content by a wide
- * margin at any usable window size.
- */
-/**
- * The floor is the DEFAULT, not something smaller.
- *
- * At 280 the rail could be dragged — or squeezed by the PR-list separator — down
- * to a width where reviewers, checks, files and the merge box all truncate into
- * uselessness. A pane you can shrink until it hides its own content is a pane
- * that will get shrunk by accident. The rail can grow; it cannot go below the
- * width that shows everything intact.
- */
-export const PR_OVERVIEW_RIGHT_RAIL_MIN_PX = 390;
-const RIGHT_RAIL_MIN_PX = PR_OVERVIEW_RIGHT_RAIL_MIN_PX;
-const RIGHT_RAIL_MAX_PX = 560;
-const RIGHT_RAIL_DEFAULT_PX = 390;
-/** The thread can never be squeezed below this. */
-export const PR_OVERVIEW_CENTER_MIN_PX = 360;
-const CENTER_MIN_PX = PR_OVERVIEW_CENTER_MIN_PX;
+export const PR_OVERVIEW_MIN_PX = 520;
 
-/** Width of the drag gutter between the two panes (`SPACING.sm`). */
-export const PR_OVERVIEW_SEPARATOR_PX = 8;
-/**
- * Where the commit tick pill floats inside the thread panel. It is out of flow,
- * so the thread keeps its full width; the previous rail reserved a permanent
- * 22px left gutter and that gutter is gone.
- */
-const COMMIT_TICK_PILL_INSET_PX = 3;
-
-function railWidthKey(base: string, projectId: string | null | undefined): string {
-  return projectId ? `${base}:${projectId}` : base;
-}
-
-function readPersistedRailPx(key: string, min: number, max: number, fallback: number): number {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw) {
-      const value = Number(raw);
-      if (Number.isFinite(value) && value >= min && value <= max) return value;
-    }
-  } catch {
-    /* ignore */
-  }
-  return fallback;
-}
-
-function persistRailPx(key: string, px: number): void {
-  try {
-    localStorage.setItem(key, String(Math.round(px)));
-  } catch {
-    /* ignore */
-  }
-}
-
-/** 8px gutter between panes that doubles as the drag handle (mid-edge grip). */
-function RailSeparator({ id }: { id: string }) {
-  return (
-    <Separator
-      id={id}
-      data-testid={`pr-detail-rail-separator-${id}`}
-      className="group relative flex items-center justify-center"
-      style={{ width: SPACING.sm, cursor: "col-resize" }}
-    >
-      {/* Invisible at rest, by request: the grip appears only on hover, so the
-          boundary is discoverable without drawing a permanent line. */}
-      <span
-        aria-hidden
-        className="opacity-0 transition-opacity group-hover:opacity-100"
-        style={{
-          width: 3,
-          height: 26,
-          borderRadius: RADII.sm,
-          background: COLORS.accent,
-        }}
-      />
-    </Separator>
-  );
-}
+/** The PR state changes the Merge card can ask the host to make. */
+export type PrStateAction = Extract<PrNextStepAction, "ready_for_review" | "enable_auto_merge" | "disable_auto_merge">;
 
 export type PrDetailTimelineRailsRef = {
   scrollToEventId: (id: string) => void;
@@ -185,27 +113,15 @@ type Props = {
   deployments: PrDeployment[];
   viewerLogin: string | null;
   writeViewerLogin?: string | null;
-  filters: PrTimelineFilters;
-  onFiltersChange: (next: PrTimelineFilters) => void;
   commentDraft: string;
   setCommentDraft: (value: string) => void;
   actionBusy: boolean;
   onAddComment: () => void;
   deepLink: { eventId: string | null; threadId: string | null; commitSha: string | null };
   actionRuns: PrActionRun[];
-  onSelectCheck?: (check: PrCheck) => void;
   onOpenChecksTab?: () => void;
   onRerunChecks?: (target?: PrRerunChecksTarget) => void;
-  onOpenFilesTab?: () => void;
   mergeMethod: MergeMethod;
-  showReviewerEditor: boolean;
-  setShowReviewerEditor: (value: boolean) => void;
-  reviewerInput: string;
-  setReviewerInput: (value: string) => void;
-  showLabelEditor: boolean;
-  setShowLabelEditor: (value: boolean) => void;
-  labelInput: string;
-  setLabelInput: (value: string) => void;
   onMerge: (method: MergeMethod, options?: {
     bypassRules?: boolean;
     commitTitle?: string;
@@ -219,10 +135,14 @@ type Props = {
   onSetLabels: (labels: string[]) => void;
   onDeleteBranch?: () => void;
   deleteBranchBusy?: boolean;
-  onOpenManageLane?: () => void;
-  onClose?: () => void;
   onReopen?: () => void;
   onSubmitReview: (event: PrReviewEvent, body: string) => void;
+  /** Put a prompt in the PR's chat (linked, else a new lane chat). Omitted without a lane. */
+  onHandPrompt?: (prompt: string) => void;
+  /** Draft and auto-merge toggles from the Merge card. */
+  onPrStateAction?: (action: PrStateAction) => Promise<void>;
+  /** A file chip in the description: open that file's diff in the Files tab. */
+  onOpenPrFile?: (path: string) => void;
 };
 
 function shortenSha(sha: string): string {
@@ -289,11 +209,6 @@ function stableSortByTs<T extends { timestamp: string; id: string }>(events: T[]
   });
 }
 
-function isBotLogin(login: string | null | undefined): boolean {
-  if (!login) return false;
-  const l = login.toLowerCase();
-  return l.endsWith("[bot]") || l.endsWith("-bot") || l === "github-actions";
-}
 
 export function buildTimelineEvents(args: {
   pr: PrWithConflicts;
@@ -314,16 +229,33 @@ export function buildTimelineEvents(args: {
 
   // Description as first comment-like event.
   if (args.detail?.body) {
+    // Bots append to the description (CodeRabbit notes, Cursor summary, Devin
+    // badge). Keep the description the author's; each block becomes that
+    // bot's comment, dated at PR creation so it lands in the first section.
+    const split = splitPrBodyBotSections(args.detail.body);
+    const openedAt = args.pr.createdAt ?? new Date(0).toISOString();
     events.push({
       id: `desc:${args.pr.id}`,
       type: "description",
-      timestamp: args.pr.createdAt ?? new Date(0).toISOString(),
+      timestamp: openedAt,
       author: args.detail.author?.login ?? null,
       avatarUrl: args.detail.author?.avatarUrl ?? null,
-      body: args.detail.body,
+      body: split.body,
       subjectId: args.detail.nodeId ?? null,
       reactions: args.detail.reactions ?? [],
     });
+    for (const section of split.sections) {
+      events.push({
+        id: `${PR_DESCRIPTION_BOT_EVENT_PREFIX}${args.pr.id}:${section.id}`,
+        type: "issue_comment",
+        timestamp: openedAt,
+        author: section.login,
+        avatarUrl: null,
+        commentId: `${PR_DESCRIPTION_BOT_EVENT_PREFIX}${section.id}`,
+        body: section.body,
+        isBot: true,
+      });
+    }
   }
 
   // The `committed` timeline event only carries the git author (no avatar), so
@@ -540,7 +472,7 @@ export function buildTimelineEvents(args: {
       reviewId: `${review.reviewer}:${ts}`,
       state: review.state,
       body: review.body,
-      isBot: isBotLogin(review.reviewer),
+      isBot: isPrBotAuthor(review.reviewer, review.reviewerIsBot),
     });
   }
 
@@ -578,7 +510,7 @@ export function buildTimelineEvents(args: {
         avatarUrl: comment.authorAvatarUrl,
         commentId: comment.id,
         body: comment.body,
-        isBot: isBotLogin(comment.author),
+        isBot: isPrBotAuthor(comment.author, comment.authorIsBot),
         commentGithubId: comment.githubId ?? null,
         commentNodeId: comment.nodeId ?? null,
         reactions: comment.reactions ?? [],
@@ -608,7 +540,7 @@ export function buildTimelineEvents(args: {
         avatarUrl: act.avatarUrl,
         commentId: act.id,
         body: act.body,
-        isBot: isBotLogin(act.author),
+        isBot: isPrBotAuthor(act.author),
       });
       continue;
     }
@@ -629,7 +561,7 @@ export function buildTimelineEvents(args: {
         reviewId,
         state,
         body: act.body,
-        isBot: isBotLogin(act.author),
+        isBot: isPrBotAuthor(act.author),
       });
     }
   }
@@ -663,10 +595,20 @@ export function buildTimelineEvents(args: {
   return sorted;
 }
 
+/** A commit (or force-push marker) as the commit palette lists it. */
+export type PrCommitTick = {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  authoredAt: string;
+  /** True for the force-push entry (a branch action, not a real commit). */
+  forcePushed?: boolean;
+};
+
 export function buildCommitRailCommits(
   activity: PrActivityEvent[],
   commitSnapshots: PrCommit[],
-  reviewThreads: PrReviewThread[],
 ): PrCommitTick[] {
   const commits: PrCommitTick[] = [];
   for (const act of activity) {
@@ -684,8 +626,6 @@ export function buildCommitRailCommits(
       subject,
       author: act.author ?? "unknown",
       authoredAt: act.timestamp,
-      threadCount: 0,
-      resolvedCount: 0,
       forcePushed,
     });
   }
@@ -699,26 +639,7 @@ export function buildCommitRailCommits(
       subject: commit.message,
       author: commit.author.login ?? commit.author.name ?? "unknown",
       authoredAt: commit.committedDate,
-      threadCount: 0,
-      resolvedCount: 0,
     });
-  }
-  // Best-effort: attribute resolved/unresolved thread counts to the latest commit
-  // touching the relevant file. Without commit<->file diff history, bucket them
-  // into the most recent commit.
-  // Attribute to the newest *commit*, not the newest entry: force-push entries
-  // share this array but the tick pill filters them out, so counts bucketed
-  // onto one would never be shown.
-  const lastCommitIndex = (() => {
-    for (let i = commits.length - 1; i >= 0; i -= 1) if (!commits[i]!.forcePushed) return i;
-    return commits.length - 1;
-  })();
-  if (commits.length > 0) {
-    const last = commits[lastCommitIndex]!;
-    for (const thread of reviewThreads) {
-      last.threadCount = (last.threadCount ?? 0) + 1;
-      if (thread.isResolved) last.resolvedCount = (last.resolvedCount ?? 0) + 1;
-    }
   }
   return commits;
 }
@@ -739,27 +660,15 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       deployments,
       viewerLogin,
       writeViewerLogin,
-      filters,
-      onFiltersChange,
       commentDraft,
       setCommentDraft,
       actionBusy,
       onAddComment,
       deepLink,
       actionRuns,
-      onSelectCheck,
       onOpenChecksTab,
       onRerunChecks,
-      onOpenFilesTab,
       mergeMethod,
-      showReviewerEditor,
-      setShowReviewerEditor,
-      reviewerInput,
-      setReviewerInput,
-      showLabelEditor,
-      setShowLabelEditor,
-      labelInput,
-      setLabelInput,
       onMerge,
       onUpdateBranch,
       updateBranchBusy,
@@ -768,16 +677,17 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onSetLabels,
       onDeleteBranch,
       deleteBranchBusy,
-      onOpenManageLane,
-      onClose,
       onReopen,
       onSubmitReview,
+      onHandPrompt,
+      onPrStateAction,
+      onOpenPrFile,
     } = props;
+    const { prs: repoPrs } = usePrs();
 
     const timelineRef = useRef<PrTimelineRef | null>(null);
     const navigate = useNavigate();
     const location = useLocation();
-    const [activeCommitSha, setActiveCommitSha] = useState<string | null>(null);
     const [paletteKind, setPaletteKind] = useState<PaletteKind | null>(null);
 
     const events = useMemo(
@@ -797,30 +707,12 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
     );
 
     const commits = useMemo(
-      () => buildCommitRailCommits(activity, commitSnapshots, reviewThreads),
-      [activity, commitSnapshots, reviewThreads],
-    );
-
-    // Force-pushes are branch actions, not commits, and they are not rare: a
-    // dependabot PR rebased for a month produces one per rebase. Left in, they
-    // were 14 of 15 ticks on a 1-commit PR — a rail of amber warnings that says
-    // nothing about the code. The timeline still renders each one with its
-    // before/after SHAs, which is where that history belongs.
-    const tickCommits = useMemo(
-      // Newest first. `buildCommitRailCommits` emits oldest→newest to match the
-      // timeline's chronological order, but the pill is a corner index you
-      // glance at, and the commit you care about is almost always the newest —
-      // so it belongs at the top of the strip, nearest the pill's anchor.
-      // Reversing HERE rather than in the pill keeps index 0 = top for the
-      // pill's position, pointer, keyboard and preview logic alike; they all
-      // read the same array and cannot disagree about which tick is which.
-      () => commits.filter((commit) => !commit.forcePushed).reverse(),
-      [commits],
+      () => buildCommitRailCommits(activity, commitSnapshots),
+      [activity, commitSnapshots],
     );
 
     const handleSelectCommit = useCallback(
       (sha: string) => {
-        setActiveCommitSha(sha);
         const target = events.find((e) => e.type === "commit_push" && e.sha === sha);
         if (target) {
           timelineRef.current?.scrollToEventId(target.id);
@@ -883,7 +775,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       if (target) {
         timelineRef.current?.focusEvent(target.id);
       }
-      if (deepLink.commitSha) setActiveCommitSha(deepLink.commitSha);
     }, [deepLink, events]);
 
     // Scroll → URL round-trip. Write eventId to the URL (replace) as the user
@@ -928,178 +819,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       [navigate, pr.githubPrNumber, pr.id, pr.repoName, pr.repoOwner],
     );
 
-    // The tick pill sizes itself from the commit count alone, so the thread no
-    // longer needs a ResizeObserver to hand it a measured column height.
-
-    // Per-project persisted rail widths. Read once per project — the Group is
-    // keyed on projectId below so switching projects remounts with its own
-    // remembered layout rather than carrying the previous one over.
-    const rightWidthKey = railWidthKey(OVERVIEW_RIGHT_RAIL_WIDTH_KEY, pr.projectId);
-    const defaultRightPx = useMemo(
-      () => readPersistedRailPx(rightWidthKey, RIGHT_RAIL_MIN_PX, RIGHT_RAIL_MAX_PX, RIGHT_RAIL_DEFAULT_PX),
-      [rightWidthKey],
-    );
-
-    return (
-      <>
-      <Group
-        key={pr.projectId ?? "no-project"}
-        id="pr-overview-rails"
-        orientation="horizontal"
-        className="flex h-full min-h-0 w-full"
-        // No left padding: the thread's own viewport already pads (`px-3`), so an
-        // outer pad here was doubling it into a visible empty strip down the left
-        // edge. The right and vertical padding stay — only the left was doubled.
-        style={{ padding: SPACING.sm, paddingLeft: 0, background: COLORS.prSurface }}
-        data-testid="pr-detail-timeline-rails"
-      >
-        {/* The thread is the surface now. Commits used to own a whole column;
-            they are a small floating pill over its top-left corner instead, and
-            files-changed moved to the right rail beside the rest of "can this
-            land". */}
-        <Panel
-          id="pr-overview-thread"
-          minSize={CENTER_MIN_PX}
-          className="relative flex min-h-0 min-w-0 flex-col"
-          data-testid="pr-detail-thread-panel"
-        >
-          <div className="flex min-h-0 flex-1 flex-col">
-          <PrTimeline
-            ref={timelineRef}
-            events={events}
-            prId={pr.id}
-            laneId={pr.laneId}
-            repoOwner={pr.repoOwner}
-            repoName={pr.repoName}
-            viewerLogin={viewerLogin}
-            writeViewerLogin={writeViewerLogin}
-            filters={filters}
-            onFiltersChange={onFiltersChange}
-            onVisibleEventChange={handleVisibleEventChange}
-            footer={
-              <PrCommentComposer
-                value={commentDraft}
-                onChange={setCommentDraft}
-                repoOwner={pr.repoOwner}
-                repoName={pr.repoName}
-                busy={actionBusy}
-                onSubmit={onAddComment}
-              />
-            }
-          />
-          </div>
-          {/* Floats over the thread's top-left corner. `absolute` here is load
-              bearing: the pill's hover preview hangs off it with `top-full`. */}
-          <PrCommitTickPill
-            commits={tickCommits}
-            activeSha={activeCommitSha}
-            onSelectCommit={handleSelectCommit}
-            className="absolute z-20"
-            style={{ top: COMMIT_TICK_PILL_INSET_PX, left: COMMIT_TICK_PILL_INSET_PX }}
-          />
-        </Panel>
-
-        <RailSeparator id="pr-overview-right-separator" />
-
-        {/* RIGHT — "can this land", in the order you resolve it: who → what's
-            running (the growth target) → can I merge (pinned to the bottom). */}
-        <Panel
-          id="pr-overview-right-rail"
-          defaultSize={defaultRightPx}
-          minSize={RIGHT_RAIL_MIN_PX}
-          maxSize={RIGHT_RAIL_MAX_PX}
-          groupResizeBehavior="preserve-pixel-size"
-          onResize={(size) => persistRailPx(rightWidthKey, size.inPixels)}
-          className="flex min-h-0 min-w-0 flex-col gap-2 overflow-hidden"
-          data-testid="pr-detail-right-rail"
-        >
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <PrDetailRightMetadataRail
-              pr={pr}
-              detail={detail}
-              status={status}
-              reviews={reviews}
-              checks={checks}
-              actionRuns={actionRuns}
-              showReviewerEditor={showReviewerEditor}
-              setShowReviewerEditor={setShowReviewerEditor}
-              reviewerInput={reviewerInput}
-              setReviewerInput={setReviewerInput}
-              showLabelEditor={showLabelEditor}
-              setShowLabelEditor={setShowLabelEditor}
-              labelInput={labelInput}
-              setLabelInput={setLabelInput}
-              onRequestReviewers={onRequestReviewers}
-              onSetLabels={onSetLabels}
-              actionBusy={actionBusy}
-              onSubmitReview={onSubmitReview}
-              onSelectCheck={onSelectCheck}
-              onOpenChecksTab={onOpenChecksTab}
-              onRerunChecks={onRerunChecks}
-            />
-            <PrFilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} maxHeight="34%" />
-          </div>
-
-          <div
-            className="flex shrink-0 flex-col overflow-hidden"
-            // Content-height, so it never grows into empty space — but capped,
-            // so the inner scroller has a bounded parent. Without the cap a
-            // conflicted, behind-base PR with failing required checks pushes the
-            // Merge button past the pane edge with no scrollbar anywhere.
-            style={{ maxHeight: "52%" }}
-            data-testid="pr-detail-merge-pane"
-          >
-            {/* Flex column so the frame's width resolves against the full pane
-                rather than losing the scrollbar gutter. */}
-            <div className="flex min-h-0 flex-col overflow-y-auto">
-              {pr.stack ? (
-                <div style={{ display: "grid", gap: 10, padding: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#C4B5FD" }}>
-                    <Stack size={16} weight="fill" />
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 700 }}>
-                      GitHub Stack {pr.stack.position} of {pr.stack.size}
-                    </span>
-                  </div>
-                  <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5, color: COLORS.textMuted }}>
-                    GitHub manages this stack&apos;s rebases, review requirements, and merge order. Finish the merge on GitHub.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void window.ade.app.openExternal(pr.githubUrl);
-                    }}
-                    style={primaryButton({ height: 34, justifyContent: "center" })}
-                  >
-                    <ArrowSquareOut size={13} />
-                    Review and merge on GitHub
-                  </button>
-                </div>
-              ) : (
-                <PrDetailMergeRail
-                  pr={pr}
-                  status={status}
-                  checks={checks}
-                  reviews={reviews}
-                  commits={commitSnapshots}
-                  mergeMethod={mergeMethod}
-                  actionBusy={actionBusy}
-                  onMerge={onMerge}
-                  onUpdateBranch={onUpdateBranch}
-                  updateBranchBusy={updateBranchBusy}
-                  updateBranchNotice={updateBranchNotice}
-                  onDeleteBranch={onDeleteBranch}
-                  deleteBranchBusy={deleteBranchBusy}
-                  onOpenManageLane={onOpenManageLane}
-                  onClose={onClose}
-                  onReopen={onReopen}
-                />
-              )}
-            </div>
-          </div>
-        </Panel>
-      </Group>
-
-      {/* Outside the Group: only Panel/Separator may be Group children. */}
+    const commandPalettes = (
       <PrCommandPalettes
         open={paletteKind}
         onClose={() => setPaletteKind(null)}
@@ -1129,6 +849,321 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           });
         }}
       />
+    );
+
+    const digestModel = useMemo(() => buildDigestTimelineModel(events), [events]);
+
+    // Which push section the reader is in: the last push at or above the
+    // top-most visible row. Drives the rail's active tick.
+    const pushByEventId = useMemo(() => {
+      const map = new Map<string, string>();
+      let current: string | null = null;
+      for (const item of digestModel.items) {
+        if (item.kind === "push") current = item.push.id;
+        if (!current) continue;
+        if (item.kind === "event") map.set(item.event.id, current);
+        else if (item.kind === "bot-group") for (const event of item.events) map.set(event.id, current);
+        else if (item.kind === "push") for (const commit of item.commits) map.set(commit.id, current);
+      }
+      return map;
+    }, [digestModel]);
+    const [activeTickId, setActiveTickId] = useState<string | null>(null);
+    const handleVisible = useCallback((eventId: string | null) => {
+      setActiveTickId(eventId ? pushByEventId.get(eventId) ?? null : null);
+      handleVisibleEventChange(eventId);
+    }, [handleVisibleEventChange, pushByEventId]);
+    const handleSelectTick = useCallback((tick: DigestPushTick) => {
+      setActiveTickId(tick.id);
+      timelineRef.current?.scrollToEventId(tick.id);
+    }, []);
+
+    // ── The next step and the Merge card ────────────────────────────────
+    const unifiedChecks = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
+    const checkBuckets = useMemo(() => summarizePipelineStates(unifiedChecks), [unifiedChecks]);
+    const reviewers = useMemo(() => collectPrReviewers(detail, reviews), [detail, reviews]);
+    const openFindings = useMemo(() => prOpenFindings(reviewThreads), [reviewThreads]);
+    const nextStep = useMemo(() => resolvePrNextStepFromStatus({
+      state: pr.state,
+      baseBranch: pr.baseBranch,
+      status,
+      checks: {
+        failing: checkBuckets.failed,
+        pending: checkBuckets.running + checkBuckets.queued,
+        passing: checkBuckets.passed,
+      },
+      reviews,
+      unresolvedThreads: openFindings.length,
+      fallback: { mergeConflicts: pr.mergeConflicts, behindBaseBy: pr.behindBaseBy, checksStatus: pr.checksStatus },
+    }), [checkBuckets, openFindings.length, pr, reviews, status]);
+
+    const [dockOpen, setDockOpen] = useState<PrDockId | null>("merge");
+    const [busyAction, setBusyAction] = useState<PrNextStepAction | null>(null);
+    const [deleteArmed, setDeleteArmed] = useState(false);
+    useEffect(() => {
+      setDockOpen("merge");
+      setDeleteArmed(false);
+    }, [pr.id]);
+
+    const findingsPrompt = useCallback(
+      () => buildPrChatPrompt("fix_findings", pr, { findings: openFindings }),
+      [openFindings, pr],
+    );
+
+    const runStepAction = useCallback((action: PrNextStepAction) => {
+      const busy = async (work: () => Promise<void> | void) => {
+        setBusyAction(action);
+        try {
+          await work();
+        } finally {
+          setBusyAction(null);
+        }
+      };
+      switch (action) {
+        case "delete_branch":
+          if (!deleteArmed) {
+            setDeleteArmed(true);
+            window.setTimeout(() => setDeleteArmed(false), 4000);
+            return;
+          }
+          setDeleteArmed(false);
+          onDeleteBranch?.();
+          return;
+        case "reopen":
+          onReopen?.();
+          return;
+        case "ready_for_review":
+        case "enable_auto_merge":
+        case "disable_auto_merge":
+          void busy(() => onPrStateAction?.(action));
+          return;
+        case "update_branch":
+          onUpdateBranch?.("merge");
+          return;
+        case "rerun_checks":
+          onRerunChecks?.();
+          return;
+        case "fix_checks":
+          if (onHandPrompt) onHandPrompt(buildPrChatPrompt("fix_checks", pr, { failingChecks: prFailingCheckNames(unifiedChecks) }));
+          else onOpenChecksTab?.();
+          return;
+        case "resolve_conflicts":
+          if (onHandPrompt) onHandPrompt(buildPrChatPrompt("resolve_conflicts", pr));
+          else void window.ade.app.openExternal(`${pr.githubUrl}/conflicts`);
+          return;
+        case "address_feedback":
+        case "fix_threads":
+          if (onHandPrompt) onHandPrompt(findingsPrompt());
+          else if (digestModel.digest.needsAttention[0]) timelineRef.current?.focusEvent(digestModel.digest.needsAttention[0].entry.id);
+          return;
+        case "request_review":
+          setDockOpen("reviewers");
+          return;
+        case "merge":
+          return;
+      }
+    }, [deleteArmed, digestModel, findingsPrompt, onDeleteBranch, onHandPrompt, onOpenChecksTab, onPrStateAction, onReopen, onRerunChecks, onUpdateBranch, pr, unifiedChecks]);
+
+    const mergeActions = useMemo<PrMergeCardActions>(() => {
+      const labelFor = (action: PrNextStepAction): string => {
+        switch (action) {
+          case "delete_branch": return deleteArmed ? "Click again to delete" : "Delete branch";
+          case "reopen": return "Reopen";
+          case "ready_for_review": return "Ready for review";
+          case "resolve_conflicts": return onHandPrompt ? "Resolve in chat" : "Resolve on GitHub";
+          case "update_branch": return updateBranchBusy ? "Updating…" : "Update branch";
+          case "fix_checks": return onHandPrompt ? "Fix in chat" : "Open checks";
+          case "rerun_checks": return "Re-run checks";
+          case "address_feedback": return "Address in chat";
+          case "enable_auto_merge": return "Enable auto-merge";
+          case "disable_auto_merge": return "Turn off auto-merge";
+          case "request_review": return "Request review";
+          case "fix_threads": return onHandPrompt ? "Fix threads in chat" : "Show open threads";
+          case "merge": return "Merge…";
+        }
+      };
+      // The host cannot run some actions here (no lane → no chat hand-off).
+      const isAvailable = (action: PrNextStepAction): boolean => {
+        if (action === "address_feedback") return Boolean(onHandPrompt);
+        if (action === "delete_branch") return Boolean(onDeleteBranch);
+        if (action === "reopen") return Boolean(onReopen);
+        if (action === "update_branch") return Boolean(onUpdateBranch);
+        if (action === "rerun_checks") return Boolean(onRerunChecks);
+        if (action === "ready_for_review" || action === "enable_auto_merge" || action === "disable_auto_merge") return Boolean(onPrStateAction);
+        return true;
+      };
+      const button = (action: PrNextStepAction | null): PrMergeCardButton | null => {
+        if (!action || !isAvailable(action)) return null;
+        return {
+          action,
+          label: labelFor(action),
+          busy: busyAction === action
+            || (action === "update_branch" && Boolean(updateBranchBusy))
+            || (action === "delete_branch" && Boolean(deleteBranchBusy)),
+        };
+      };
+      return {
+        primary: button(nextStep.primary),
+        secondary: button(nextStep.secondary),
+        run: runStepAction,
+        onChip: (chip) => {
+          if (chip.id === "checks") onOpenChecksTab?.();
+          else if (chip.id === "review") setDockOpen("reviewers");
+          else if (chip.id === "threads" && digestModel.digest.needsAttention[0]) {
+            timelineRef.current?.focusEvent(digestModel.digest.needsAttention[0].entry.id);
+          }
+        },
+      };
+    }, [busyAction, deleteArmed, deleteBranchBusy, digestModel, nextStep.primary, nextStep.secondary, onDeleteBranch, onHandPrompt, onOpenChecksTab, onPrStateAction, onReopen, onRerunChecks, onUpdateBranch, runStepAction, updateBranchBusy]);
+
+    const handleDialogMerge = useCallback((result: PrMergeDialogResult) => {
+      onMerge(result.method, {
+        bypassRules: result.bypassRules,
+        commitTitle: result.commitTitle,
+        commitBody: result.commitBody,
+        expectedHeadSha: result.expectedHeadSha,
+      });
+    }, [onMerge]);
+
+    const handleFixInChat = useCallback((item: PrNeedsAttentionItem) => {
+      if (!onHandPrompt) return;
+      onHandPrompt(buildPrChatPrompt("fix_findings", pr, {
+        findings: [{
+          author: item.entry.author,
+          path: item.entry.path ?? null,
+          line: item.entry.line ?? null,
+          body: item.entry.body,
+          url: item.entry.url,
+        }],
+      }));
+    }, [onHandPrompt, pr]);
+
+    const markdownEnv = useMemo<PrMarkdownEnv>(() => {
+      const prStateByNumber = new Map<number, PrWithConflicts["state"]>();
+      for (const other of repoPrs) {
+        if (other.repoOwner === pr.repoOwner && other.repoName === pr.repoName) prStateByNumber.set(other.githubPrNumber, other.state);
+      }
+      return {
+        prFiles: files.map((file) => file.filename),
+        prStateByNumber,
+        onOpenFile: (path, inPr) => {
+          if (inPr && onOpenPrFile) {
+            onOpenPrFile(path);
+            return;
+          }
+          navigate("/files", { state: { openFilePath: path, laneId: pr.laneId } });
+        },
+        onOpenPr: (number) => {
+          void navigate({
+            pathname: "/prs",
+            search: buildPrsRouteSearch({
+              activeTab: "github",
+              selectedPrId: null,
+              selectedPrNumber: number,
+              repoOwner: pr.repoOwner,
+              repoName: pr.repoName,
+              selectedRebaseItemId: null,
+            }),
+          });
+        },
+      };
+    }, [files, navigate, onOpenPrFile, pr.laneId, pr.repoName, pr.repoOwner, repoPrs]);
+
+    const closeDock = useCallback(() => setDockOpen(null), []);
+    const dockItems = useMemo<PrDockItem[]>(() => {
+      const reviewerCount = reviewers.length;
+      return [
+        {
+          id: "merge",
+          label: "Merge status",
+          icon: GitMerge,
+          ringColor: NEXT_STEP_TONE_COLOR[nextStep.tone],
+          pulseKey: nextStep.kind,
+          cardWidth: 380,
+          content: (
+            <PrMergeCard
+              pr={pr}
+              status={status}
+              step={nextStep}
+              commits={commitSnapshots}
+              mergeMethod={mergeMethod}
+              actionBusy={actionBusy}
+              actions={mergeActions}
+              onMerge={handleDialogMerge}
+              notice={updateBranchNotice}
+              onClose={closeDock}
+            />
+          ),
+        },
+        {
+          id: "comment",
+          label: "Comment",
+          icon: ChatCircleText,
+          cardWidth: 520,
+          content: (
+            <PrCommentCard
+              pr={pr}
+              draft={commentDraft}
+              setDraft={setCommentDraft}
+              busy={actionBusy}
+              onComment={onAddComment}
+              onSubmitReview={onSubmitReview}
+              onClose={closeDock}
+            />
+          ),
+        },
+        {
+          id: "reviewers",
+          label: "Reviewers",
+          icon: Users,
+          badge: reviewerCount || null,
+          content: <PrReviewersCard detail={detail} reviews={reviews} onRequestReviewers={onRequestReviewers} onClose={closeDock} />,
+        },
+        {
+          id: "labels",
+          label: "Labels",
+          icon: Tag,
+          badge: detail?.labels?.length || null,
+          content: <PrLabelsCard detail={detail} onSetLabels={onSetLabels} onClose={closeDock} />,
+        },
+        {
+          id: "assignees",
+          label: "Assignees",
+          icon: UserCircle,
+          badge: detail?.assignees?.length || null,
+          content: <PrAssigneesCard detail={detail} onClose={closeDock} />,
+        },
+      ];
+    }, [actionBusy, closeDock, commentDraft, commitSnapshots, detail, handleDialogMerge, mergeActions, mergeMethod, nextStep, onAddComment, onRequestReviewers, onSetLabels, onSubmitReview, pr, reviewers, reviews, setCommentDraft, status, updateBranchNotice]);
+
+    return (
+      <>
+        <div
+          className="ade-pr-overview relative flex h-full min-h-0 w-full flex-col"
+          style={{ background: COLORS.prSurface, containerType: "inline-size", containerName: "pr-overview" }}
+          data-testid="pr-detail-timeline-rails"
+        >
+          <div className="relative flex min-h-0 flex-1 flex-col" data-testid="pr-detail-thread-panel" style={{ paddingRight: 18 }}>
+            <PrMarkdownEnvContext.Provider value={markdownEnv}>
+            <PrTimeline
+              ref={timelineRef}
+              events={events}
+              digest={digestModel}
+              prId={pr.id}
+              laneId={pr.laneId}
+              repoOwner={pr.repoOwner}
+              repoName={pr.repoName}
+              viewerLogin={viewerLogin}
+              writeViewerLogin={writeViewerLogin}
+              onVisibleEventChange={handleVisible}
+              onFixInChat={onHandPrompt ? handleFixInChat : undefined}
+              bottomInset={dockOpen ? 300 : 120}
+            />
+            </PrMarkdownEnvContext.Provider>
+          </div>
+          <PrPushTickRail ticks={digestModel.ticks} activeId={activeTickId} onSelect={handleSelectTick} />
+          <PrFloatingDock items={dockItems} openId={dockOpen} onOpenChange={setDockOpen} />
+        </div>
+        {commandPalettes}
       </>
     );
   },

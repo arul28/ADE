@@ -25,7 +25,10 @@ import type {
   CursorSdkWorkerResponse,
 } from "./cursorSdkProtocol";
 import {
+  CURSOR_SDK_TURN_TELEMETRY_KEY,
+  CURSOR_SDK_USAGE_UNAVAILABLE,
   isCursorSdkBackoffErrorText,
+  isCursorSdkFeatureUnavailableText,
   isCursorSdkTransportErrorText,
 } from "./cursorSdkProtocol";
 import { materializeWorkerImages } from "./workerAttachmentImages";
@@ -45,6 +48,12 @@ import {
   summarizeCursorHook,
 } from "./cursorSdkPolicy";
 import { ensureCursorSdkUserHook } from "./cursorSdkHooks";
+import {
+  createCursorSdkRunTelemetry,
+  cursorPreCompactHookEnabled,
+  isCursorPreCompactHookPayload,
+  parseCursorPreCompactHookPayload,
+} from "./cursorSdkTelemetry";
 import { loadCursorSdk } from "../ai/cursorSdkLoader";
 import { buildCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import {
@@ -100,6 +109,34 @@ let lastLocalPermissionFingerprint: string | null = null;
  * so the first one-shot on a fresh worker skips the close/create round trip.
  */
 let localAgentPrompted = false;
+/** Compaction and account facts for the local run in flight. */
+const runTelemetry = createCursorSdkRunTelemetry();
+/**
+ * `Cursor.me()` for this worker's login: started once, on the first local send,
+ * and never awaited by a turn. A turn that ends first carries no email.
+ */
+let accountEmailLookupStarted = false;
+let accountEmail: string | null = null;
+/** Each policy update rewrites the hooks, so a failed `preCompact` write is logged once per worker. */
+let preCompactInstallErrorLogged = false;
+
+/** Install the tool gate and, when enabled, the `preCompact` reporter; the reporter never blocks the gate. */
+function installCursorUserHook(init: CursorSdkWorkerInit): ReturnType<typeof ensureCursorSdkUserHook> {
+  const hook = ensureCursorSdkUserHook({
+    userHomeDir: init.userHomeDir,
+    preCompact: cursorPreCompactHookEnabled(init),
+  });
+  if (hook.preCompactError && !preCompactInstallErrorLogged) {
+    preCompactInstallErrorLogged = true;
+    post({
+      type: "log",
+      level: "warn",
+      message: "ADE could not write the Cursor preCompact hook scripts. The tool gate is installed; ADE records no Cursor compactions.",
+      detail: { hookPath: hook.hooksPath, error: hook.preCompactError },
+    });
+  }
+  return hook;
+}
 
 function asCursorSdkRunStoreLike(store: unknown): CursorSdkRunStoreLike | null {
   return store && typeof store === "object" ? store as CursorSdkRunStoreLike : null;
@@ -405,6 +442,13 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
   }
 
   const raw = parsed?.payload ?? {};
+  runTelemetry.noteHookPayload(raw);
+  if (parsed?.adeHook === "preCompact" || isCursorPreCompactHookPayload(raw)) {
+    // Answer first: the hook must never hold up or block a compaction.
+    socket.end("{}\n");
+    handlePreCompactHook(init, raw);
+    return;
+  }
   const request = summarizeCursorHook(raw, init.laneRoot);
   request.id = randomUUID();
   const localDecision = evaluateCursorSdkHook({
@@ -428,6 +472,39 @@ async function handleHookSocketLine(init: CursorSdkWorkerInit, socket: net.Socke
 
   const decision = await requestHookDecision(request);
   socket.end(`${JSON.stringify(decision)}\n`);
+}
+
+function handlePreCompactHook(init: CursorSdkWorkerInit, raw: unknown): void {
+  if (!cursorPreCompactHookEnabled(init)) return;
+  const payload = parseCursorPreCompactHookPayload({ ...(raw as Record<string, unknown>), hook_event_name: "preCompact" });
+  if (!payload) return;
+  const run = currentRun;
+  post({
+    type: "sdk_event",
+    event: runTelemetry.preCompactStarted(payload),
+    runtime: "local",
+    ...(run ? { runId: run.id, agentId: run.agentId } : {}),
+  });
+}
+
+function startAccountEmailLookup(): void {
+  if (accountEmailLookupStarted || !initState) return;
+  accountEmailLookupStarted = true;
+  const apiKey = initState.apiKey?.trim() || undefined;
+  void getSdk()
+    .then((sdk) => sdk.Cursor.me(apiKey ? { apiKey } : undefined))
+    .then((me) => {
+      const email = me?.userEmail?.trim();
+      if (email && email.includes("@")) accountEmail = email;
+    })
+    .catch((error: unknown) => {
+      post({
+        type: "log",
+        level: "debug",
+        message: "Cursor SDK account lookup failed; turns carry no account email.",
+        detail: { error: errorMessage(error) },
+      });
+    });
 }
 
 function requestHookDecision(request: CursorSdkHookRequest): Promise<CursorSdkHookDecision> {
@@ -540,7 +617,15 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   }
   fs.mkdirSync(init.userHomeDir, { recursive: true });
   fs.mkdirSync(init.stateRoot, { recursive: true });
-  const hook = ensureCursorSdkUserHook({ userHomeDir: init.userHomeDir });
+  const hook = installCursorUserHook(init);
+  if (hook.preCompactSkipped) {
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor hooks.json has a preCompact value that is not an array; ADE left it alone and records no Cursor compactions.",
+      detail: { hookPath: hook.hooksPath },
+    });
+  }
   await startHookServer(init);
   const sdk = await getSdk();
   const platformOptions: CursorSdkPlatformOptions = {
@@ -565,6 +650,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       stateRoot: init.stateRoot,
       hookPath: hook.hooksPath,
       hookChanged: hook.changed,
+      preCompactHook: hook.preCompactCommand !== null,
       localStore: "platform",
       useHttp1ForAgent,
       mode: agentOptions.mode ?? null,
@@ -626,6 +712,8 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
     // active run — that would discard a turn that is genuinely still working.
     local: { force: payload.forceExpireActiveRun === true },
   };
+  startAccountEmailLookup();
+  runTelemetry.beginRun(payload.modelSdkId ?? initState.modelSdkId);
   currentRun = await agent.send(message, sendOptions);
   localAgentPrompted = true;
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
@@ -650,9 +738,13 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
         heldErrorEvent = { ...(event as unknown as Record<string, unknown>) };
         continue;
       }
+      const tracked = runTelemetry.beforeStreamEvent(event);
+      if (tracked.completion) {
+        post({ type: "sdk_event", event: tracked.completion, runtime: "local", runId: run.id, agentId: run.agentId });
+      }
       post({
         type: "sdk_event",
-        event,
+        event: tracked.event,
         runtime: "local",
         runId: run.id,
         agentId: run.agentId,
@@ -674,9 +766,19 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
       },
     });
   }
-  const result: SdkRunResult = cursorSdkResultWithStreamFailure(await run.wait(), streamErrorDetail, "local");
-  const errored = heldErrorEvent != null
-    || (result && typeof result === "object" && (result as { status?: unknown }).status === "error");
+  const settled: SdkRunResult = cursorSdkResultWithStreamFailure(await run.wait(), streamErrorDetail, "local");
+  const settledStatus = settled && typeof settled === "object" ? (settled as { status?: unknown }).status : undefined;
+  const errored = heldErrorEvent != null || settledStatus === "error";
+  const compactionEnd = runTelemetry.endRun(
+    heldErrorEvent != null || streamErrorDetail ? "error" : typeof settledStatus === "string" ? settledStatus : null,
+  );
+  if (compactionEnd) {
+    post({ type: "sdk_event", event: compactionEnd, runtime: "local", runId: run.id, agentId: run.agentId });
+  }
+  const turnTelemetry = runTelemetry.turnTelemetry(accountEmail);
+  const result: SdkRunResult = settled && typeof settled === "object" && Object.keys(turnTelemetry).length
+    ? { ...settled, [CURSOR_SDK_TURN_TELEMETRY_KEY]: turnTelemetry } as SdkRunResult
+    : settled;
   const runFailure = errored
     ? await readCursorSdkRunFailureDetail({
         run,
@@ -772,7 +874,7 @@ async function steerRun(text: string): Promise<{ outcome: CursorSdkSteerOutcome 
 async function updatePolicy(policy: CursorSdkPermissionPolicy): Promise<void> {
   if (!initState) throw new Error("Cursor SDK worker is not initialized.");
   initState.policy = policy;
-  ensureCursorSdkUserHook({ userHomeDir: initState.userHomeDir });
+  installCursorUserHook(initState);
   if (currentRun) return;
   try {
     await applyLocalAgentOptions();
@@ -1220,10 +1322,18 @@ async function dispatch(req: CursorSdkWorkerRequest): Promise<unknown> {
       return handleCloudRequest(req);
     case "agent.getUsage": {
       const { Agent } = await getSdk();
-      return Agent.getUsage(req.payload.agentId, {
-        apiKey: req.payload.apiKey?.trim() || undefined,
-        ...(req.payload.runId?.trim() ? { runId: req.payload.runId.trim() } : {}),
-      });
+      try {
+        return await Agent.getUsage(req.payload.agentId, {
+          apiKey: req.payload.apiKey?.trim() || undefined,
+          ...(req.payload.runId?.trim() ? { runId: req.payload.runId.trim() } : {}),
+        });
+      } catch (error) {
+        // A plan without the usage API, not a failure: answer with the marker.
+        // It carries no usage, so the service emits no tokens event and
+        // records no billed row for the turn.
+        if (!isCursorSdkFeatureUnavailableText(errorMessage(error), errorCode(error))) throw error;
+        return CURSOR_SDK_USAGE_UNAVAILABLE;
+      }
     }
     case "hook_response": {
       const resolve = hookWaiters.get(req.requestId);

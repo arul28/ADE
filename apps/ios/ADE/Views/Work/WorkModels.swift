@@ -531,6 +531,9 @@ struct WorkUsageSummary: Hashable {
   var contextState: WorkContextUsageState? = nil
   /// Monotonic runtime sample used to reject late pre-compaction snapshots.
   var contextSampleId: Int? = nil
+  /// Context occupancy after a turn (`done.usage.contextTokens`): the input
+  /// side of the turn's last request. The token fields above are turn totals.
+  var contextTokens: Int? = nil
 }
 
 struct WorkContextUsageViewModel: Equatable {
@@ -912,6 +915,9 @@ struct WorkAdeCardRow: Hashable {
   let text: String
   let detail: String?
   let tone: WorkAdeCardTone
+  /// Wire `key`: the row's stable identity (a `lane_setup` stage id). Nil on
+  /// cards written before hosts sent it.
+  var key: String? = nil
 }
 
 struct WorkAdeCardProgress: Hashable {
@@ -969,6 +975,7 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "pr_merge_ready",
     "pr_conflict",
     "claude_session_quota",
+    "lane_setup",
   ]
 
   let id: String
@@ -1745,9 +1752,77 @@ struct WorkFullscreenImage: Identifiable {
 enum WorkLoadedArtifactContent {
   case image(UIImage)
   case video(URL)
+  /// A stored video too large to fetch just to draw a row. It downloads when
+  /// the user plays it.
+  case videoOnDemand(sizeBytes: Int)
   case remoteURL(URL)
   case text(String)
   case error(String)
+}
+
+/// Why an artifact is being loaded. A row or card appearing is `.preview`;
+/// only `.play` downloads a video larger than `workArtifactEagerVideoMaxBytes`.
+enum WorkArtifactLoadIntent {
+  case preview
+  case play
+}
+
+typealias WorkArtifactLoader = @MainActor (ComputerUseArtifactSummary, WorkArtifactLoadIntent) async -> Void
+
+/// The largest stored video fetched when its row appears: the host's
+/// whole-file cap (`MAX_SYNC_ARTIFACT_BYTES`), which bounded every preview
+/// load before videos were read in slices.
+let workArtifactEagerVideoMaxBytes = 8 * 1024 * 1024
+
+/// A fresh temp file for one load of a stored video. Each load gets its own,
+/// so a stale load that deletes its file never deletes the one on screen.
+func workArtifactVideoTempURL(artifactId: String, fileExtension: String) -> URL {
+  FileManager.default.temporaryDirectory
+    .appendingPathComponent("ade-work-artifact-\(artifactId)-\(UUID().uuidString)")
+    .appendingPathExtension(fileExtension)
+}
+
+/// True when a row that appears must not download this video: a preview of a
+/// video larger than `workArtifactEagerVideoMaxBytes` shows only its size, and
+/// the download waits for `.play`.
+func workArtifactVideoWaitsForPlay(intent: WorkArtifactLoadIntent, sizeBytes: Int) -> Bool {
+  intent == .preview && sizeBytes > workArtifactEagerVideoMaxBytes
+}
+
+/// What a failed video load does next.
+enum WorkArtifactVideoLoadFailure: Equatable {
+  /// Scrolled away or left: stay unloaded, so the next appear retries.
+  case retryLater
+  /// A host older than the slice read: use the whole-file read.
+  case useWholeFileRead
+  /// Anything else: show the error.
+  case show
+}
+
+func workArtifactVideoLoadFailure(_ error: Error) -> WorkArtifactVideoLoadFailure {
+  if error is CancellationError { return .retryLater }
+  if workArtifactHostLacksRangeRead(error) { return .useWholeFileRead }
+  return .show
+}
+
+/// True when the host is older than the slice read (`readArtifactRange`).
+/// Such a host answers "Unsupported file action: readArtifactRange", and the
+/// phone then uses the whole-file read (`readArtifact`) instead.
+func workArtifactHostLacksRangeRead(_ error: Error) -> Bool {
+  error.localizedDescription.contains("Unsupported file action")
+}
+
+/// "34 MB" for the play placeholder.
+func workArtifactSizeLabel(_ sizeBytes: Int) -> String {
+  ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
+}
+
+/// Loads started under one scope stop when the chat view that started them
+/// goes away, so a download does not finish into a view that is gone.
+@MainActor
+final class WorkArtifactLoadScope {
+  private(set) var isActive = true
+  func end() { isActive = false }
 }
 
 func workRemoveLoadedArtifactTempFile(_ content: WorkLoadedArtifactContent?) {

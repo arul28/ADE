@@ -8,6 +8,7 @@ import type {
   AgentChatPermissionMode,
 } from "./chat";
 import type { PersonalChatRemoteCommandAction } from "./personalChats";
+import type { ChatLaunchEvent } from "./chatLaunch";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -22,7 +23,7 @@ import type {
   ExternalSessionListArgs,
   ExternalSessionSummary,
 } from "./externalSessions";
-import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
+import type { PtySendToSessionResult, SessionActivityReport, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 import type {
   MacDesktopClickArgs,
@@ -1048,6 +1049,10 @@ export type SyncRosterChat = {
   archived?: boolean;
   lastActivityAt?: string | null;
   preview?: string | null; // last-output preview, hard-truncated (~120 chars)
+  /** Latest lifecycle event, excluding agent activity reports. */
+  lifecycleUpdatedAt?: string | null;
+  /** Host timestamp of the latest activity report set or explicit clear. */
+  activityStatusChangedAt?: string | null;
   /**
    * Additive settled-lifecycle projection. Optional so current phones remain
    * compatible with older hosts and current hosts remain compatible with older
@@ -1055,6 +1060,7 @@ export type SyncRosterChat = {
    */
   settledAt?: string | null;
   statusNote?: string | null;
+  activityStatus?: SessionActivityReport | null;
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;
   lastTurnFailedAt?: string | null;
@@ -1643,10 +1649,8 @@ export type SyncArtifactRange = {
 export type SyncFileResponsePayload = {
   ok: boolean;
   action: SyncFileRequest["action"];
-  result?:
-    | unknown
-    | SyncFileBlob
-    | SyncArtifactRange;
+  /** Per action: `SyncFileBlob` for the reads, `SyncArtifactRange` for `readArtifactRange`. */
+  result?: unknown;
   error?: {
     code: string;
     message: string;
@@ -2264,6 +2268,14 @@ export type SyncRemoteCommandAction =
   | "chat.deletePromptStash"
   | "chat.warmupModel"
   | "chat.launch"
+  | "chat.startLaunch"
+  | "chat.getLaunch"
+  | "chat.listLaunches"
+  | "chat.cancelLaunch"
+  | "chat.retryLaunch"
+  | "chat.startLaunchNow"
+  | "chat.queueLaunchMessage"
+  | "chat.completeLaunchClient"
   | "chat.launchCli"
   | "chat.generateAutoLaneIdentity"
   | "chat.getImageDataUrl"
@@ -2470,6 +2482,8 @@ export type SyncRemoteCommandAction =
   | "prs.updateBranch"
   | "prs.close"
   | "prs.reopen"
+  | "prs.setDraft"
+  | "prs.setAutoMerge"
   | "prs.requestReviewers"
   | "prs.rerunChecks"
   | "prs.addComment"
@@ -2695,6 +2709,16 @@ export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscr
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
 export type SyncRosterDeltaEnvelope = SyncEnvelopeWithPayload<"roster_delta", SyncRosterDeltaPayload>;
+/**
+ * Brain → every peer: a new-lane launch changed (shared/types/chatLaunch.ts),
+ * stamped with the host project it belongs to so multi-project clients can
+ * route it.
+ */
+export type SyncChatLaunchEventPayload = ChatLaunchEvent & {
+  projectId: string | null;
+  projectRootPath: string;
+};
+export type SyncChatLaunchEventEnvelope = SyncEnvelopeWithPayload<"chat_launch_event", SyncChatLaunchEventPayload>;
 export type SyncCommandEnvelope = SyncEnvelopeWithPayload<"command", SyncCommandPayload>;
 export type SyncCommandAckEnvelope = SyncEnvelopeWithPayload<"command_ack", SyncCommandAckPayload>;
 export type SyncCommandResultEnvelope = SyncEnvelopeWithPayload<"command_result", SyncCommandResultPayload>;
@@ -2772,6 +2796,7 @@ export type SyncEnvelope =
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope
   | SyncRosterDeltaEnvelope
+  | SyncChatLaunchEventEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
   | SyncCommandResultEnvelope

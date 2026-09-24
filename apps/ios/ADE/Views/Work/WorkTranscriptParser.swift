@@ -119,7 +119,8 @@ private func workAdeCardRows(from value: Any?) -> [WorkAdeCardRow] {
       icon: workAdeCardIcon(from: row["icon"]),
       text: text,
       detail: optionalString(row["detail"]),
-      tone: workAdeCardTone(from: row["tone"])
+      tone: workAdeCardTone(from: row["tone"]),
+      key: workAdeCardRowKey(row["key"] as? String)
     )
   }
 }
@@ -766,6 +767,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           reasoningTokens: optionalWorkInt(usageDict?["reasoningTokens"]),
           totalTokens: optionalWorkInt(usageDict?["totalTokens"]),
           contextWindow: optionalWorkInt(usageDict?["contextWindow"]),
+          contextTokens: optionalWorkInt(usageDict?["contextTokens"]),
           costUsd: cost?.doubleValue
         )
         event = .done(

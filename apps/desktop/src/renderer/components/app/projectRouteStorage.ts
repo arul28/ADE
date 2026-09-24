@@ -7,7 +7,6 @@ const STORED_PROJECT_ROUTE_ROOTS = [
   "/lanes",
   "/files",
   "/work",
-  "/graph",
   "/prs",
   "/history",
   "/automations",

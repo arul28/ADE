@@ -92,6 +92,7 @@ function sessionServiceFor(row: Record<string, any>) {
     updateMeta: vi.fn(),
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
+    clearSessionActivity: vi.fn(),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),

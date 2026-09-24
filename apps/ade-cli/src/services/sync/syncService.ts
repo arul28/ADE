@@ -1,3 +1,4 @@
+import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
@@ -135,6 +136,8 @@ type SyncServiceArgs = {
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
+  /** False when this runtime has no RPC endpoint that accepts activity reports. */
+  sessionActivityReportingEnabled?: boolean;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
@@ -148,6 +151,7 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
@@ -772,6 +776,7 @@ export function createSyncService(args: SyncServiceArgs) {
     prService: args.prService,
     prSummaryService: args.prSummaryService,
     ptyService: args.ptyService,
+    sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
     sessionService: args.sessionService,
     sessionDeltaService: args.sessionDeltaService,
     fileService: args.fileService,
@@ -782,6 +787,7 @@ export function createSyncService(args: SyncServiceArgs) {
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     pushPublisherService: args.pushPublisherService,
@@ -929,7 +935,9 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionService: args.sessionService,
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
+      sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
       agentChatService: args.agentChatService,
+      chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,
       accountSettingsStore: args.accountSettingsStore,

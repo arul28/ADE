@@ -15,6 +15,7 @@ import {
   computeLanePopoverPlacement,
   laneMatchesSearch,
 } from "./LaneCombobox";
+import { ChatHandoffDialogs } from "../chat/ChatHandoffDialogs";
 
 afterEach(cleanup);
 
@@ -218,5 +219,44 @@ describe("LaneCombobox machine chrome", () => {
     const rows = Array.from(popover.querySelectorAll(".ade-lane-popover-item"));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain("render-perf");
+  });
+});
+
+describe("LaneCombobox inside the modal handoff dialog", () => {
+  function renderInDialog(onChange = vi.fn(), onCloseLocal = vi.fn()) {
+    render(
+      <ChatHandoffDialogs
+        localOpen
+        localContent={<LaneCombobox lanes={lanes} value="lane-auth" onChange={onChange} />}
+        onCloseLocal={onCloseLocal}
+        remoteNoticeOpen={false}
+        machineName="studio"
+        onCloseRemoteNotice={vi.fn()}
+      />,
+    );
+    fireEvent.click(trigger());
+    const popover = screen.getByPlaceholderText("Search lanes...").closest(".ade-lane-popover") as HTMLElement;
+    return { popover, onChange, onCloseLocal };
+  }
+
+  it("opens the list inside the dialog, so picking a lane keeps the dialog open", () => {
+    const { popover, onChange, onCloseLocal } = renderInDialog();
+    // A modal dialog blocks pointer events and focus outside its content; a list
+    // portaled to <body> was an outside press that closed the whole dialog.
+    expect(screen.getByRole("dialog").contains(popover)).toBe(true);
+    const option = screen.getByRole("option", { name: /render-perf/ });
+    fireEvent.pointerDown(option);
+    fireEvent.click(option);
+    expect(onChange).toHaveBeenCalledWith("lane-perf");
+    expect(onCloseLocal).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("closes only the list on Escape, not the dialog", async () => {
+    const { popover, onCloseLocal } = renderInDialog();
+    fireEvent.keyDown(popover, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByPlaceholderText("Search lanes...")).toBeNull());
+    expect(onCloseLocal).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 });

@@ -4,8 +4,17 @@ import { randomUUID } from "node:crypto";
 
 import { formatProofDuration, proofIdleCutLabel } from "../../../../shared/proofProvenance";
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
-import { APPLE_DEVICE_ALREADY_RECORDING_CODE, type AppleInputSource } from "../../../../shared/types/iosSimulator";
+import type { ComputerUseProofProvenanceInput } from "../../../../shared/types/computerUseArtifacts";
+import { APPLE_DEVICE_ALREADY_RECORDING_CODE, type AppleInputSource, type AppleRecordingPhase } from "../../../../shared/types/iosSimulator";
 import type { SimHelperTransport } from "../simHelperClient";
+import {
+  appleRecordingMoviePath,
+  appleRecordingSidecarPath,
+  appleRecordingsDirectory,
+  appleRecordingsRoot,
+  listAppleRecordingLaneIds,
+  readAppleRecordingSidecar,
+} from "./appleRecordingsStore";
 
 /**
  * Recording for the Apple device environment.
@@ -72,7 +81,10 @@ export type SimRecording = {
   idleCutMs?: number | null;
   /** Wall-clock cap, or null for none. The recording stops itself at it. */
   maxDurationMs?: number | null;
-  /** Why it stopped. `cap` means the cap above ran out. */
+  /**
+   * Why it stopped. `cap` means the cap above ran out. `helper-exited` means
+   * the helper died while writing it, so the file is probably unplayable.
+   */
   stopReason?: SimRecordingStopReason | null;
   /**
    * The proof-drawer artifact this recording was filed as, once it stopped.
@@ -87,7 +99,7 @@ export type SimRecording = {
 
 export type { AppleInputSource };
 
-export type SimRecordingStopReason = "requested" | "turn-end" | "cap" | "device-off" | "released";
+export type SimRecordingStopReason = "requested" | "turn-end" | "cap" | "device-off" | "released" | "helper-exited";
 
 export interface SimRecordingService {
   /** Auto-record start + overlay events. Called from every injected-input path. */
@@ -182,7 +194,8 @@ export interface SimRecordingService {
   totalBytes(args?: { laneId?: string }): Promise<number>;
   /**
    * The helper process died. Every recording it was writing died with it, so
-   * the in-memory entries are dropped and their sidecars marked ended.
+   * the in-memory entries are dropped, their sidecars marked ended with
+   * `stopReason: "helper-exited"`, and each lane is told it stopped.
    *
    * Without this the lane kept an "active" recording no helper held: the pane
    * showed it running forever, the next agent input noted overlays against
@@ -282,8 +295,6 @@ export class AppleRecordingOwnedBySessionError extends Error {
   }
 }
 
-export { APPLE_DEVICE_ALREADY_RECORDING_CODE };
-
 /**
  * Another lane's recording holds this device.
  *
@@ -329,11 +340,6 @@ function describeAge(iso: string | null): string | null {
   return `${Math.round(seconds / 3600)}h ago`;
 }
 
-/** The directory a lane's recordings live in. Lane delete removes it whole. */
-export function appleRecordingsDirectory(projectRoot: string, laneId: string): string {
-  return path.join(projectRoot, ".ade", "artifacts", "apple-recordings", laneId);
-}
-
 /** Minimal shape of the proof-drawer filer, so tests need no database. */
 export type AppleRecordingArtifactFiler = {
   ingest(request: {
@@ -342,13 +348,7 @@ export type AppleRecordingArtifactFiler = {
     owners?: Array<{ kind: string; id: string }>;
     callerRoot?: string | null;
     /** ADE made these bytes, so the drawer can say so. */
-    provenance?: {
-      source: "ade-recorder" | "ade-capture" | "attached";
-      recordedFrom?: string | null;
-      recordedTo?: string | null;
-      refuseDuplicates?: boolean;
-      flagOlderMedia?: boolean;
-    } | null;
+    provenance?: ComputerUseProofProvenanceInput | null;
   }): unknown;
   /** Deleting the video deletes its drawer row too. Optional so tests can omit it. */
   deleteArtifacts?(args: { artifactIds: string[] }): unknown;
@@ -403,7 +403,7 @@ export type SimRecordingServiceDeps = {
   resolveDeviceName?: (udid: string) => string | null | undefined;
   fps?: number;
   /** Told when a lane's recording starts, changes mode, or stops. */
-  onRecordingChange?: (change: { laneId: string; phase: "started" | "updated" | "stopped"; recording: SimRecording }) => void;
+  onRecordingChange?: (change: { laneId: string; phase: AppleRecordingPhase; recording: SimRecording }) => void;
   logger?: {
     warn?: (event: string, data?: Record<string, unknown>) => void;
     info?: (event: string, data?: Record<string, unknown>) => void;
@@ -482,7 +482,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
   const active = new Map<string, ActiveRecording>();
   let disposed = false;
 
-  const notify = (laneId: string, phase: "started" | "updated" | "stopped", recording: SimRecording): void => {
+  const notify = (laneId: string, phase: AppleRecordingPhase, recording: SimRecording): void => {
     try {
       deps.onRecordingChange?.({ laneId, phase, recording });
     } catch {
@@ -514,8 +514,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
   };
 
   const laneDir = (laneId: string): string => appleRecordingsDirectory(requireRoot(), laneId);
-  const sidecarPath = (laneId: string, id: string): string => path.join(laneDir(laneId), `${id}.json`);
-  const moviePath = (laneId: string, id: string): string => path.join(laneDir(laneId), `${id}.mp4`);
+  const sidecarPath = (laneId: string, id: string): string => appleRecordingSidecarPath(requireRoot(), laneId, id);
+  const moviePath = (laneId: string, id: string): string => appleRecordingMoviePath(requireRoot(), laneId, id);
 
   const writeSidecar = (record: SimRecording): void => {
     const file = sidecarPath(record.laneId, record.id);
@@ -523,16 +523,10 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, "utf8");
   };
 
-  const readSidecar = (laneId: string, id: string): SimRecording | null => {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(sidecarPath(laneId, id), "utf8")) as SimRecording;
-      return parsed && typeof parsed.id === "string" ? parsed : null;
-    } catch {
-      // A half-written sidecar is a record we cannot describe, which is the
-      // same thing as a record that is not there.
-      return null;
-    }
-  };
+  // A half-written sidecar is a record we cannot describe, which is the same
+  // thing as a record that is not there.
+  const readSidecar = (laneId: string, id: string): SimRecording | null =>
+    readAppleRecordingSidecar(sidecarPath(laneId, id));
 
   const overlaysEnabled = (): boolean => {
     try {
@@ -783,7 +777,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     const description = [
       "Screen recording of the lane's Apple device, with input overlays.",
       idleCut && typeof record.wallDurationMs === "number"
-        ? `Still stretches were shortened: ${idleCut.replace(/^idle cut /, "")} cut from ${formatProofDuration(record.wallDurationMs)} of real time.`
+        ? `Still stretches were shortened: ${formatProofDuration(record.idleCutMs ?? 0)} cut from ${formatProofDuration(record.wallDurationMs)} of real time.`
         : null,
       record.stopReason === "cap" && typeof record.maxDurationMs === "number"
         ? `Stopped at its ${formatProofDuration(record.maxDurationMs)} cap.`
@@ -867,7 +861,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     lengths: RecordingLengths,
     bytes: number | null,
   ): SimRecording | null => {
-    const root = path.join(requireRoot(), ".ade", "artifacts", "apple-recordings");
+    const root = appleRecordingsRoot(requireRoot());
     const relative = path.relative(root, moviePathFromHelper);
     const parts = relative.split(/[\\/]/);
     if (relative.startsWith("..") || path.isAbsolute(relative) || parts.length !== 2 || !parts[1]!.endsWith(".mp4")) {
@@ -939,6 +933,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     if (!record) return null;
     const filed = fileAsProof(record);
     writeSidecar(filed);
+    // The lane's pane never saw this recording stop, so it re-reads now.
+    notify(filed.laneId, "stopped", filed);
     return filed;
   };
 
@@ -1137,7 +1133,10 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         ? await stopActive(args.laneId, { reason: "requested" })
         : null;
       if (!target) {
-        const candidates = listLane(args.laneId).filter((record) => record.endedAt);
+        // A recording the helper died writing is probably unplayable, and
+        // filing it would put a broken video in the drawer as proof.
+        const candidates = listLane(args.laneId)
+          .filter((record) => record.endedAt && record.stopReason !== "helper-exited");
         target = candidates.find((record) => !args.chatSessionId || record.chatSessionId === args.chatSessionId)
           ?? candidates[0]
           ?? null;
@@ -1181,15 +1180,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       } catch {
         return 0;
       }
-      const lanes = args?.laneId
-        ? [args.laneId]
-        : (() => {
-          try {
-            return fs.readdirSync(path.join(root, ".ade", "artifacts", "apple-recordings"));
-          } catch {
-            return [] as string[];
-          }
-        })();
+      const lanes = args?.laneId ? [args.laneId] : listAppleRecordingLaneIds(root);
 
       let total = 0;
       for (const laneId of lanes) {
@@ -1229,6 +1220,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           endedAt: new Date().toISOString(),
           durationMs: Math.max(0, Date.now() - Date.parse(entry.record.startedAt)) || null,
           bytes,
+          stopReason: "helper-exited",
         };
         try {
           writeSidecar(record);
@@ -1241,6 +1233,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         warn("apple.recording.helper_exited", { ended: ended.map((record) => record.id) });
       }
       active.clear();
+      // After the map is clear, so a listener that reads `active()` sees none.
+      for (const record of ended) notify(record.laneId, "stopped", record);
       return ended;
     },
 

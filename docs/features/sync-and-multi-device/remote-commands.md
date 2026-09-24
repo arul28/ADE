@@ -186,6 +186,13 @@ older phones never call it. A newer controller may feature-detect it from the
 advertised action list before offering a metadata refresh; omitting it must not
 break the connection or put the host in `limited` mode.
 
+The new-lane launch commands (`chat.startLaunch`, `chat.getLaunch`,
+`chat.listLaunches`, `chat.cancelLaunch`, `chat.retryLaunch`,
+`chat.startLaunchNow`, `chat.queueLaunchMessage`) are optional too: a phone
+that finds `chat.startLaunch` missing from the advertised actions falls back to
+its chained `lanes.create` → `chat.create` flow, and older phones never call
+them.
+
 `chat.resumeUsageLimitNow` is optional on the same logic. The phone hides its
 usage-limit **Resume now** button unless the host advertises the action, so an
 older brain simply offers the states that re-arm through `chat.updateSession`,
@@ -193,6 +200,10 @@ and an older phone that never calls it must not be flipped to `limited`
 against a newer host. `chat.continueUsageLimitOnAlternate` is optional for the
 same reason: the phone shows **Continue on** that account only when the host
 advertises it and the resume carries `alternateAccount`.
+
+`prs.setDraft` and `prs.setAutoMerge` are optional for the same reason. The
+phone shows the draft and auto-merge controls in the PR actions sheet only
+when the host advertises each action, so an older host stays `full`.
 
 ## Registry
 
@@ -365,6 +376,9 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `beginTempFileAttachment`, `appendTempFileAttachmentChunk`,
   `finishTempFileAttachment`, `abortTempFileAttachment`, `getAttachmentChunk`,
   `listPromptStashes`, `createPromptStash`, `deletePromptStash`, `getImageDataUrl`
+- New-lane launches: `startLaunch`, `getLaunch`, `listLaunches`,
+  `cancelLaunch`, `retryLaunch`, `startLaunchNow`, `queueLaunchMessage`,
+  `completeLaunchClient` — see [New-lane launch commands](#new-lane-launch-commands)
 
 The five file-attachment actions are the chunked base64 staging contract for
 documents and videos, which fit neither the image-only `saveTempAttachment` leg
@@ -550,7 +564,7 @@ without an active project.
   `stashClear`
 - `fetch`, `pull`, `sync`, `push`, `getSyncStatus`, `getSyncStatuses`
   — `getSyncStatuses` returns the existing sync-status shape keyed by
-  requested lane id for the Graph's batched refresh path
+  requested lane id, so a controller reads many lanes in one call
 - `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
   actions that re-read HEAD before acting and refuse when the lane
   has moved since the operation they target
@@ -608,7 +622,7 @@ a boolean.
 
 **PRs** (`prs.*`)
 - `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getDetailBundle`, `getStatus`
-  — `getDetailBundle` groups the Graph's status, checks, reviews, and
+  — `getDetailBundle` groups a PR's status, checks, reviews, and
   comments reads while preserving successful sidecars on partial failure
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
 - `postReviewComment`, `getAiSummary`, `regenerateAiSummary`, `delete`,
@@ -619,6 +633,11 @@ a boolean.
   `listWithConflicts`, `listSnapshots`
 - `createFromLane`, `land`,
   `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
+- `setDraft` (`{ prId, draft: boolean }`) and `setAutoMerge`
+  (`{ prId, enabled: boolean, method?: "merge" | "squash" | "rebase" }`) —
+  convert a PR to draft or mark it ready, and arm or disarm GitHub
+  auto-merge. Both are `viewerAllowed` and queueable. They are
+  **optional** mobile capabilities (see the compatibility note above)
 - `simulateIntegration`, `commitIntegration`,
   `listIntegrationWorkflows`, `updateIntegrationProposal`,
   `deleteIntegrationProposal`, `startIntegrationResolution`,
@@ -773,16 +792,18 @@ A handful have more logic:
 - **`lanes.create`** — when the caller omits `baseBranch`, `startPoint`,
   **and** `parentLaneId` (the mobile hub composer's auto-create and the
   iOS create sheet's default), the handler resolves a **remote-first
-  default base** before delegating to `laneService.create`. It reads the
+  default base** before delegating to `laneService.create`. It calls
+  `resolveLaneCreateRemoteBase`
+  (`apps/ade-cli/src/services/laneCreateRemoteBase.ts`), which reads the
   project's `git.newLaneBaseSource` config (effective default
-  `"remote"`; `"local"` short-circuits), then calls
-  `resolveDefaultRemoteLaneBase` from
-  `apps/desktop/src/shared/defaultRemoteLaneBase.ts` — a bounded remote
-  fetch (4 s timeout so a slow remote never stalls creation) followed by
-  mapping the primary lane's base branch to its remote-tracking ref
-  (upstream first, then `origin/<base>`). Any failure or missing remote
-  ref resolves to null and creation proceeds with the legacy local
-  default. This matches the desktop create-lane dialog, which resolves
+  `"remote"`; `"local"` short-circuits), runs a bounded remote fetch on
+  the primary lane (so a slow remote never stalls creation), maps the
+  primary lane's base branch to its remote-tracking ref with
+  `selectRemoteLaneBaseRef` (the local base branch's configured upstream
+  as-is, else `origin/<base>` when listed), and verifies the ref resolves
+  to a commit (`git rev-parse --verify`). A missing remote ref, an
+  upstream that is gone from the remote, or any failure resolves to null
+  and creation proceeds with the legacy local default. This matches the desktop create-lane dialog, which resolves
   the same remote-first default renderer-side, so a lane created from a
   phone no longer silently branches from a stale local primary tip.
 
@@ -846,9 +867,11 @@ A handful have more logic:
   same session id.
 - **`work.stopRuntime`** — looks up the session's PTY id and disposes
   the PTY without deleting the durable session row or transcript.
-- **`chat.create`** — resolves a missing `model` to the first
-  available provider model via `agentChatService.getAvailableModels`
-  before forwarding.
+- **`chat.create`** / **`chat.launch`** — resolve a missing `model` to the
+  first available provider model through `resolveChatCreateModel`
+  (`apps/desktop/src/main/services/chat/chatCreateModelResolution.ts`, which
+  calls `agentChatService.getAvailableModels`) before forwarding. The
+  chat-launch service applies the same resolver to every launch.
 - **`chat.regenerateSessionMetadata`** — requires the runtime's
   `agentChatService`, makes the single structured request for the selected
   visible chat title, lane name, and/or status line, and returns per-field
@@ -888,10 +911,12 @@ A handful have more logic:
   issuing a second rename; legacy hosts still return a title that mobile applies
   through `lanes.rename`. A manual lane or branch change made while naming is in
   flight wins, and any throw keeps the deterministic identity.
-- **`lanes.initEnv` / `lanes.applyTemplate`** — resolves the lane's
-  overlay context (`resolveLaneOverlayContext`), merges overrides with
-  the template's env init config, and invokes
-  `laneEnvironmentService.initLaneEnvironment`.
+- **`lanes.initEnv` / `lanes.applyTemplate`** — both call the shared
+  `runLaneEnvironmentSetup` (`lanes/laneEnvironmentSetup.ts`) with
+  `includeArchived: false`: it resolves the lane's overlay context, merges
+  the template (when given) over the project's env init config and
+  overrides, and invokes `laneEnvironmentService.initLaneEnvironment`. The
+  action domain, IPC, and the chat-launch service use the same helper.
 - **`lanes.list`** — delegates to `laneService.list` then runs
   `buildLaneListSnapshots` to produce the richer payload the iOS
   Lanes tab consumes (runtime bucket summaries, rebase suggestions,
@@ -1017,6 +1042,9 @@ can be sensitive.
   envelopes but sends `chatScope: "personal"`; that explicit discriminator
   resolves the hidden durable transcript and active-turn state without a
   `projectId`.
+- **New-lane launches** pair `chat.startLaunch` … with the pushed
+  `chat_launch_event` envelope (see
+  [New-lane launch commands](#new-lane-launch-commands)).
 - **Smart-link preview** is a normal viewer-allowed command rather than a chat
   stream message. Hosted web uses it so arbitrary pasted URLs are fetched at
   the trusted runtime boundary; older hosts simply leave the local fallback
@@ -1026,9 +1054,60 @@ can be sensitive.
   payloads and streaming reads outside the command surface to avoid
   bloating the command envelope.
 
+## New-lane launch commands
+
+The brain-owned "start a chat in a lane that does not exist yet" contract
+(`apps/desktop/src/shared/types/chatLaunch.ts`) is exposed to phones and the
+hosted web client as eight sync commands with the same names as the brain's
+`chat` action domain. All are viewer-allowed and **not queueable**: the client
+shows the launch optimistically and offers Retry, and a lane appearing minutes
+later from an offline outbox would surprise everyone. When the host has no
+`chatLaunchService`, every command except `chat.listLaunches` (which returns
+`[]`) throws "New-lane launches are not available on this host."
+
+| Command | Args | Result |
+|---|---|---|
+| `chat.startLaunch` | `ChatLaunchArgs`: `kind` (`chat` \| `cli`), `mode` (`foreground` \| `background`), `launchId` (the chat's session id, a UUID the client picks), optional `laneId` (reserved lane UUID), `laneName`, `prompt`, `displayPrompt`, `attachments`, `baseBranch`, `modelId`, `provider`, `title`, `originClientId`, and for `kind: "chat"` a required `chat: { create, message }` | `ChatLaunchSnapshot`, returned as soon as the launch is reserved |
+| `chat.getLaunch` | `{ launchId }` | snapshot or null |
+| `chat.listLaunches` | none | every launch the brain is running or recently finished |
+| `chat.cancelLaunch` | `{ launchId }` | snapshot; throws once the agent has started |
+| `chat.retryLaunch` | `{ launchId }` | snapshot; reruns from the first unfinished stage |
+| `chat.startLaunchNow` | `{ launchId }` | snapshot; starts the agent while (or after) the environment stage runs |
+| `chat.queueLaunchMessage` | `{ launchId, text, displayText?, attachments? }` | snapshot; throws `Launch not found: <id>` for an unknown launch |
+| `chat.completeLaunchClient` | `{ launchId, sessionId?, error? }` | snapshot; a CLI launch's client reports the PTY session it started (or its error) |
+
+Every entry point parses payloads with the one parser module
+`apps/desktop/src/main/services/chat/chatLaunchArgs.ts` (the desktop action
+domain in `adeActions/registry.ts` uses it too). `chat.create` is parsed with
+the `chat.create` field parser (its `laneId` / `sessionId` are dropped — the
+launch owns them) plus the harness selection `presetId` / `credentialId` /
+`instanceId`; `chat.message` with the `chat.send` field parser (its
+`sessionId` is dropped), keeping `contextAttachments` and a `local` / `cloud`
+`runtime`, and its `text` may be empty when the message carries only context.
+An empty `model` is auto-picked by the launch service
+(`resolveChatCreateModel`).
+
+The launch's stages and controls are described in
+[Chat › New-lane launches](../chat/README.md#new-lane-launches).
+
+**Pushed progress.** The sync host subscribes to the launch service and sends
+every `ChatLaunchEvent` (`launch-updated` with the full snapshot, or
+`launch-removed`) as a `chat_launch_event` envelope to every authenticated
+peer of the project — runtime-only paired hosts and backpressured peers are
+skipped. There is no subscription to key on, because a launch is visible
+before its chat exists. The payload (`SyncChatLaunchEventPayload`) is the
+event plus the host's `projectId` and `projectRootPath`, so multi-project
+clients can route it. Clients hydrate with `chat.listLaunches` on connect and
+merge snapshots by `sequence`.
+
 ## Chat command payload shape
 
-`parseAgentChatSendArgs` and `parseAgentChatSteerArgs` accept the full
+The `chat.create` / `chat.send` field parsers (`parseAgentChatCreateFields`,
+`parseAgentChatSendArgs`, `parseAgentChatFileRefs`,
+`parseCursorConfigValues`) live in
+`apps/desktop/src/main/services/chat/chatLaunchArgs.ts` next to the launch
+parsers that build on them; the sync host imports them for its direct chat
+commands. `parseAgentChatSendArgs` and `parseAgentChatSteerArgs` accept the full
 `AgentChatSendArgs` surface: `sessionId`, `text`, `attachments` (via
 `parseAgentChatFileRefs`, array of `{ path, type: "file" | "image" }`),
 `displayText`, `reasoningEffort`, `executionMode`, `interactionMode`.
@@ -1060,10 +1139,11 @@ without fetching them separately.
 
 `parseChatModelsArgs` accepts `{ provider, activateRuntime?, cursorSource? }`
 (`cursorSource` is `"sdk" | "cli" | "all"`, mirroring `chat.modelCatalog`).
-When `chat.create` is missing an explicit model, `resolveChatCreateArgs`
-forwards `activateRuntime: true` only for the `opencode` provider so
-the brain actually launches the OpenCode probe server before resolving
-a default model. All other providers use passive (cache-only) resolution;
+When `chat.create` is missing an explicit model, `resolveChatCreateModel`
+forwards `activateRuntime: true` only for `opencode`, `pi`, and the ACP
+providers (`qwen`, `kimi`, `grok`, `copilot`), whose model rows are gated on
+a CLI auth pass that activation refreshes (for OpenCode it launches the
+probe server). All other providers use passive (cache-only) resolution;
 see the chat README for the passive/active contract. The iOS companion's
 `chat.models` request sets `activateRuntime: true` for cursor/droid and
 `cursorSource: "sdk"` for cursor so a fresh key surfaces SDK models on the

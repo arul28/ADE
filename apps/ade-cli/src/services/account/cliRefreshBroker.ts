@@ -3,6 +3,7 @@ import path from "node:path";
 import { AccountRefreshUnavailableError, type AccountRefreshBroker } from "./accountAuthService";
 import { createAccountRefreshBroker } from "./accountRefreshBroker";
 import { setSharedAccountRefreshBroker } from "./sharedAccountAuthService";
+import { syntheticCallerId } from "../../../../desktop/src/shared/syntheticCallerId";
 
 /**
  * The slice of a JSON-RPC client this broker needs. Deliberately structural so
@@ -167,7 +168,7 @@ export async function connectMachineBrainForRefresh(args: {
       identity: {
         // No chatSessionId: this connection is the machine operator asking for
         // the machine's own token, not an agent session acting in a chat.
-        callerId: `${args.clientName}:${process.pid}`,
+        callerId: syntheticCallerId(args.clientName),
         role: "cto",
       },
     });

@@ -1121,6 +1121,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var codexApprovalPolicy: String?
   var codexSandbox: String?
   var codexConfigSource: String?
+  /// Collaboration mode accepted by the active Codex turn/start. Older hosts omit it.
+  var codexEffectiveCollaborationMode: String? = nil
+  /// True when the host explicitly confirms that no accepted turn mode remains.
+  /// Older hosts omit this marker, so an absent key is not a clear.
+  var codexEffectiveCollaborationModeWasCleared: Bool? = nil
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
@@ -1130,6 +1135,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// distinction for the current host.
   var cursorModeIdWasCleared: Bool? = nil
   var cursorConfigValues: [String: RemoteJSONValue]?
+  /// ACP's structured, provider-owned session modes. Older hosts omit it.
+  var acpConfigSnapshot: RemoteJSONValue? = nil
+  /// True when a live metadata event explicitly cleared the ACP snapshot.
+  var acpConfigSnapshotWasCleared: Bool? = nil
   /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
   var cursorCloudAgentId: String? = nil
   /// `"cloud"` or `"local"`. Older hosts omit it; when present it wins over a
@@ -1146,6 +1155,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// omit this additive snapshot field.
   var claudeGoal: AgentChatClaudeGoal? = nil
   var status: String
+  /// Start of the currently active provider turn; nil when no turn is running.
+  var currentTurnStartedAt: String? = nil
   var idleSinceAt: String?
   var startedAt: String
   var endedAt: String?
@@ -1220,12 +1231,16 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.codexApprovalPolicy == rhs.codexApprovalPolicy
       && lhs.codexSandbox == rhs.codexSandbox
       && lhs.codexConfigSource == rhs.codexConfigSource
+      && lhs.codexEffectiveCollaborationMode == rhs.codexEffectiveCollaborationMode
+      && lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
+      && lhs.acpConfigSnapshot == rhs.acpConfigSnapshot
+      && lhs.acpConfigSnapshotWasCleared == rhs.acpConfigSnapshotWasCleared
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.cursorRuntime == rhs.cursorRuntime
       && lhs.computerUse == rhs.computerUse
@@ -1237,6 +1252,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.automationRunId == rhs.automationRunId
       && lhs.capabilityMode == rhs.capabilityMode
       && lhs.status == rhs.status
+      && lhs.currentTurnStartedAt == rhs.currentTurnStartedAt
       && lhs.idleSinceAt == rhs.idleSinceAt
       && lhs.startedAt == rhs.startedAt
       && lhs.endedAt == rhs.endedAt
@@ -1277,6 +1293,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var codexApprovalPolicy: String?
   var codexSandbox: String?
   var codexConfigSource: String?
+  var codexEffectiveCollaborationMode: String?
+  /// Distinguishes an explicit null clear from an absent field in a partial event.
+  var codexEffectiveCollaborationModeWasCleared: Bool = false
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var cursorModeId: String?
@@ -1287,6 +1306,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var cursorModeIdWasCleared: Bool = false
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorConfigValues: [String: RemoteJSONValue]?
+  var acpConfigSnapshot: RemoteJSONValue?
+  /// Distinguishes an explicit null clear from an absent field in a partial event.
+  var acpConfigSnapshotWasCleared: Bool = false
   /// True when the event carried `cursorConfigValues: null` (an intentional
   /// clear the host emits to drop the cursor config) rather than omitting the
   /// key. Symmetric with `cursorModeIdWasCleared`: absent-key still means "no
@@ -1311,11 +1333,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case codexSandbox
     case codexSandboxMode
     case codexConfigSource
+    case codexEffectiveCollaborationMode
     case opencodePermissionMode
     case droidPermissionMode
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
+    case acpConfigSnapshot
     case spawnKind
     case subagentTakeoverPromptShownAt
     case usageLimitResume
@@ -1336,6 +1360,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       codexSandbox = try c.decodeIfPresent(String.self, forKey: .codexSandboxMode)
     }
     codexConfigSource = try c.decodeIfPresent(String.self, forKey: .codexConfigSource)
+    if c.contains(.codexEffectiveCollaborationMode) {
+      codexEffectiveCollaborationMode = try c.decodeIfPresent(String.self, forKey: .codexEffectiveCollaborationMode)
+      codexEffectiveCollaborationModeWasCleared = codexEffectiveCollaborationMode == nil
+    } else {
+      codexEffectiveCollaborationMode = nil
+      codexEffectiveCollaborationModeWasCleared = false
+    }
     opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
     // Distinguish `cursorModeId: null` (an intentional clear) from an absent
@@ -1349,6 +1380,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       cursorModeIdWasCleared = false
     }
     cursorModeSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
+    if c.contains(.acpConfigSnapshot) {
+      acpConfigSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .acpConfigSnapshot)
+      acpConfigSnapshotWasCleared = acpConfigSnapshot == nil
+    } else {
+      acpConfigSnapshot = nil
+      acpConfigSnapshotWasCleared = false
+    }
     // Same null-vs-absent distinction as cursorModeId: decodeIfPresent collapses
     // `cursorConfigValues: null` (an explicit clear) into absent, so gate on
     // `contains` to record the clear.
@@ -1385,6 +1423,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || codexApprovalPolicy != nil
       || codexSandbox != nil
       || codexConfigSource != nil
+      || codexEffectiveCollaborationMode != nil
+      || codexEffectiveCollaborationModeWasCleared
       || opencodePermissionMode != nil
       || droidPermissionMode != nil
       || cursorModeId != nil
@@ -1392,6 +1432,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || cursorModeSnapshot != nil
       || cursorConfigValues != nil
       || cursorConfigValuesWasCleared
+      || acpConfigSnapshot != nil
+      || acpConfigSnapshotWasCleared
       || spawnKind != nil
       || subagentTakeoverPromptShownAt != nil
       || subagentTakeoverPromptShownAtWasCleared
@@ -1411,6 +1453,13 @@ extension AgentChatSessionSummary {
     if let v = update.codexApprovalPolicy { codexApprovalPolicy = v }
     if let v = update.codexSandbox { codexSandbox = v }
     if let v = update.codexConfigSource { codexConfigSource = v }
+    if let v = update.codexEffectiveCollaborationMode {
+      codexEffectiveCollaborationMode = v
+      codexEffectiveCollaborationModeWasCleared = false
+    } else if update.codexEffectiveCollaborationModeWasCleared {
+      codexEffectiveCollaborationMode = nil
+      codexEffectiveCollaborationModeWasCleared = true
+    }
     if let v = update.opencodePermissionMode { opencodePermissionMode = v }
     if let v = update.droidPermissionMode { droidPermissionMode = v }
     if let v = update.cursorModeId {
@@ -1423,6 +1472,13 @@ extension AgentChatSessionSummary {
       cursorModeIdWasCleared = true
     }
     if let v = update.cursorModeSnapshot { cursorModeSnapshot = v }
+    if let v = update.acpConfigSnapshot {
+      acpConfigSnapshot = v
+      acpConfigSnapshotWasCleared = false
+    } else if update.acpConfigSnapshotWasCleared {
+      acpConfigSnapshot = nil
+      acpConfigSnapshotWasCleared = true
+    }
     if let v = update.cursorConfigValues {
       cursorConfigValues = v
     } else if update.cursorConfigValuesWasCleared {
@@ -1473,6 +1529,13 @@ extension AgentChatSessionSummary {
     if let v = other.codexApprovalPolicy { codexApprovalPolicy = v }
     if let v = other.codexSandbox { codexSandbox = v }
     if let v = other.codexConfigSource { codexConfigSource = v }
+    if other.codexEffectiveCollaborationModeWasCleared == true {
+      codexEffectiveCollaborationMode = nil
+      codexEffectiveCollaborationModeWasCleared = true
+    } else if let v = other.codexEffectiveCollaborationMode {
+      codexEffectiveCollaborationMode = v
+      codexEffectiveCollaborationModeWasCleared = false
+    }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
     if other.cursorModeIdWasCleared == true {
@@ -1484,6 +1547,13 @@ extension AgentChatSessionSummary {
     }
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
     cursorConfigValues = other.cursorConfigValues
+    if other.acpConfigSnapshotWasCleared == true {
+      acpConfigSnapshot = nil
+      acpConfigSnapshotWasCleared = true
+    } else if let v = other.acpConfigSnapshot {
+      acpConfigSnapshot = v
+      acpConfigSnapshotWasCleared = false
+    }
     if let v = other.spawnKind { spawnKind = v }
     if let v = other.subagentTakeoverPromptShownAt { subagentTakeoverPromptShownAt = v }
     // Mirrored unconditionally, nil included: the cache is authoritative for the
@@ -2401,6 +2471,8 @@ struct AgentChatTurnUsage: Codable, Equatable {
   var cacheCreationTokens: Int?
   var reasoningTokens: Int?
   var contextWindow: Int?
+  /// Occupancy after the turn: the input side of its last request. Older hosts omit it.
+  var contextTokens: Int?
 }
 
 struct AgentChatCodexTokenUsageBreakdown: Codable, Equatable {
@@ -2893,6 +2965,17 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
   var url: String? = nil
 }
 
+/// Wire form of chat attachments for `chat.send`, `chat.createPromptStash`,
+/// `chat.startLaunch` and `chat.queueLaunchMessage`: `path` + `type`, plus
+/// `url` only when it is non-empty.
+func chatAttachmentArgs(_ attachments: [AgentChatFileRef]) -> [[String: Any]] {
+  attachments.map { ref in
+    var entry: [String: Any] = ["path": ref.path, "type": ref.type]
+    if let url = ref.url, !url.isEmpty { entry["url"] = url }
+    return entry
+  }
+}
+
 struct PromptStashEntry: Codable, Equatable, Identifiable {
   var id: String
   var text: String
@@ -3145,10 +3228,37 @@ struct AgentChatAdeCardMetric: Decodable, Equatable {
 }
 
 struct AgentChatAdeCardRow: Decodable, Equatable {
-  var icon: String?
-  var text: String?
-  var detail: String?
-  var tone: String?
+  /// Stable identity within the card (a `lane_setup` row's stage id). Readers
+  /// match on this alone: every host that writes `lane_setup` cards sends it,
+  /// and `text` is display copy that may be reworded.
+  var key: String? = nil
+  var icon: String? = nil
+  var text: String? = nil
+  var detail: String? = nil
+  var tone: String? = nil
+
+  private enum CodingKeys: String, CodingKey {
+    case key, icon, text, detail, tone
+  }
+
+  init(key: String? = nil, icon: String? = nil, text: String? = nil, detail: String? = nil, tone: String? = nil) {
+    self.key = key
+    self.icon = icon
+    self.text = text
+    self.detail = detail
+    self.tone = tone
+  }
+
+  /// Field-by-field so one mistyped value (a numeric `key` from a newer host)
+  /// drops that field, not the row and with it the whole `rows` array.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    key = try? container.decodeIfPresent(String.self, forKey: .key)
+    icon = try? container.decodeIfPresent(String.self, forKey: .icon)
+    text = try? container.decodeIfPresent(String.self, forKey: .text)
+    detail = try? container.decodeIfPresent(String.self, forKey: .detail)
+    tone = try? container.decodeIfPresent(String.self, forKey: .tone)
+  }
 }
 
 struct AgentChatAdeCardProgress: Decodable, Equatable {
@@ -4523,17 +4633,6 @@ struct SyncFileBlob: Codable, Equatable {
   var totalSize: Int? = nil
 }
 
-/// One bounded slice of a stored proof, from the host's `readArtifactRange`.
-struct SyncArtifactRange: Codable, Equatable {
-  var path: String
-  var totalSize: Int
-  var rangeStart: Int
-  var rangeEnd: Int
-  var encoding: String
-  var content: String
-  var eof: Bool
-}
-
 struct ComputerUseArtifactSummary: Codable, Identifiable, Hashable {
   var id: String
   var artifactKind: String
@@ -4605,6 +4704,15 @@ struct FilesSearchTextMatch: Codable, Identifiable, Equatable {
   var preview: String
 }
 
+/// Agent-authored structured activity, kept separate from the parent session phase.
+/// String fields keep newer host values forward-compatible; presentation only
+/// displays the six ADE-supported values and the `agent` source.
+struct SessionActivityReport: Codable, Equatable {
+  var value: String
+  var source: String
+  var updatedAt: String
+}
+
 struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var id: String
   var laneId: String
@@ -4619,9 +4727,15 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var status: String
   var startedAt: String
   var endedAt: String?
+  /// Latest terminal output timestamp (`terminal_sessions.last_output_at`).
+  /// Separate from `activityStatusChangedAt`, which tracks agent-authored detail.
+  var lastActivityAt: String? = nil
   var archivedAt: String? = nil
   var settledAt: String? = nil
   var statusNote: String? = nil
+  var activityStatus: SessionActivityReport? = nil
+  /// Host timestamp of the latest activity report set or explicit clear.
+  var activityStatusChangedAt: String? = nil
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var attentionSource: String? = nil
@@ -4679,6 +4793,10 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// by-lane Work list. Older hosts omit both keys.
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// Client-only: the segmented setup rail of a chat launch that still owns
+  /// this row (`workOverlayChatLaunches`). Never on the wire — not in
+  /// `CodingKeys` — and nil for every ordinary session.
+  var launchRail: [ChatLaunchRailSegment]? = nil
 
   /// True when this row is a chat the CTO spawned. The host only stamps
   /// `parentIdentityKey` when there genuinely is a parent, so the key alone is
@@ -4700,9 +4818,12 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.status == rhs.status
       && lhs.startedAt == rhs.startedAt
       && lhs.endedAt == rhs.endedAt
+      && lhs.lastActivityAt == rhs.lastActivityAt
       && lhs.archivedAt == rhs.archivedAt
       && lhs.settledAt == rhs.settledAt
       && lhs.statusNote == rhs.statusNote
+      && lhs.activityStatus == rhs.activityStatus
+      && lhs.activityStatusChangedAt == rhs.activityStatusChangedAt
       && lhs.attentionRequestedAt == rhs.attentionRequestedAt
       && lhs.attentionMessage == rhs.attentionMessage
       && lhs.attentionSource == rhs.attentionSource
@@ -4736,6 +4857,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.parentIdentityKey == rhs.parentIdentityKey
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
+      && lhs.launchRail == rhs.launchRail
   }
 }
 
@@ -4754,9 +4876,12 @@ extension TerminalSessionSummary {
     case status
     case startedAt
     case endedAt
+    case lastActivityAt
     case archivedAt
     case settledAt
     case statusNote
+    case activityStatus
+    case activityStatusChangedAt
     case attentionRequestedAt
     case attentionMessage
     case attentionSource
@@ -4802,9 +4927,12 @@ extension TerminalSessionSummary {
     status = try container.decode(String.self, forKey: .status)
     startedAt = try container.decode(String.self, forKey: .startedAt)
     endedAt = try container.decodeIfPresent(String.self, forKey: .endedAt)
+    lastActivityAt = try container.decodeIfPresent(String.self, forKey: .lastActivityAt)
     archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
     settledAt = try container.decodeIfPresent(String.self, forKey: .settledAt)
     statusNote = try container.decodeIfPresent(String.self, forKey: .statusNote)
+    activityStatus = try container.decodeIfPresent(SessionActivityReport.self, forKey: .activityStatus)
+    activityStatusChangedAt = try container.decodeIfPresent(String.self, forKey: .activityStatusChangedAt)
     attentionRequestedAt = try container.decodeIfPresent(String.self, forKey: .attentionRequestedAt)
     attentionMessage = try container.decodeIfPresent(String.self, forKey: .attentionMessage)
     attentionSource = try container.decodeIfPresent(String.self, forKey: .attentionSource)
@@ -5024,6 +5152,12 @@ struct PrStatus: Codable, Equatable {
   var canBypass: Bool?
   /// Head SHA at the time status was computed; used for the stale-head guard.
   var headSha: String?
+  /// Repository setting "Allow auto-merge". Nil against older hosts.
+  var autoMergeAllowed: Bool? = nil
+  /// Auto-merge is armed on this PR.
+  var autoMergeEnabled: Bool? = nil
+  /// Method the armed auto-merge will use ("squash" / "merge" / "rebase").
+  var autoMergeMethod: String? = nil
 
   /// Decodes an unknown `reviewDecision` string to nil instead of throwing, so a
   /// new GitHub enum value never fails the whole snapshot decode. All other
@@ -5033,6 +5167,7 @@ struct PrStatus: Codable, Equatable {
     case reviewStatus, isMergeable, mergeConflicts, behindBaseBy
     case mergeStateStatus, reviewDecision, approvalsCount, requiredApprovals
     case mergeabilityComputing, canBypass, headSha
+    case autoMergeAllowed, autoMergeEnabled, autoMergeMethod
   }
 
   init(from decoder: Decoder) throws {
@@ -5059,6 +5194,9 @@ struct PrStatus: Codable, Equatable {
     mergeabilityComputing = try c.decodeIfPresent(Bool.self, forKey: .mergeabilityComputing)
     canBypass = try c.decodeIfPresent(Bool.self, forKey: .canBypass)
     headSha = try c.decodeIfPresent(String.self, forKey: .headSha)
+    autoMergeAllowed = try c.decodeIfPresent(Bool.self, forKey: .autoMergeAllowed)
+    autoMergeEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoMergeEnabled)
+    autoMergeMethod = try c.decodeIfPresent(String.self, forKey: .autoMergeMethod)
   }
 
   /// Memberwise init retained for previews / tests now that a custom decoder
@@ -5116,11 +5254,15 @@ struct PrReview: Codable, Identifiable, Equatable {
   var state: String
   var body: String?
   var submittedAt: String?
+  /// GitHub marks the reviewer as an app or bot. Nil against older hosts.
+  var reviewerIsBot: Bool? = nil
 }
 
 struct PrComment: Codable, Identifiable, Equatable {
   var id: String
   var author: String
+  /// GitHub marks the author as an app or bot. Nil against older hosts.
+  var authorIsBot: Bool? = nil
   var body: String?
   var source: String
   var url: String?
@@ -5173,6 +5315,8 @@ struct PrUser: Codable, Identifiable, Equatable {
   var id: String { login }
   var login: String
   var avatarUrl: String?
+  /// GitHub marks the account as an app or bot. Nil against older hosts.
+  var isBot: Bool? = nil
 }
 
 struct PrLinkedIssue: Codable, Identifiable, Equatable {
@@ -5374,6 +5518,8 @@ struct PrReviewThreadComment: Codable, Identifiable, Equatable {
   var id: String
   var author: String
   var authorAvatarUrl: String?
+  /// GitHub GraphQL `__typename == "Bot"`; GraphQL bot logins have no `[bot]`.
+  var authorIsBot: Bool? = nil
   var body: String?
   var url: String?
   var createdAt: String?

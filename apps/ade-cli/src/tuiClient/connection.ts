@@ -19,6 +19,7 @@ import type { BufferedEvent } from "../eventBuffer";
 import { resolveAdeDefaultRole } from "../runtimeRoles";
 import { RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS } from "../serviceManager/runtimeServiceBudgets";
 import { RuntimeServiceStillStartingError } from "../serviceManager/common";
+import { syntheticCallerId } from "../../../desktop/src/shared/syntheticCallerId";
 
 type RpcResponseEnvelope<T> =
   | T
@@ -120,7 +121,7 @@ type CreateEmbeddedRuntime = (args: {
   projectRoot: string;
   workspaceRoot: string;
   chatRuntime: "agent";
-  runtimeProfile: "chat";
+  runtimeProfile: "embedded";
 }) => Promise<EmbeddedRuntime>;
 
 type CreateEmbeddedRpcRequestHandler = (args: {
@@ -198,7 +199,7 @@ async function loadEmbeddedAdeCli(): Promise<{
     projectRoot: string;
     workspaceRoot: string;
     chatRuntime: "agent";
-    runtimeProfile: "chat";
+    runtimeProfile: "embedded";
   }) => Promise<EmbeddedRuntime>;
   createAdeRpcRequestHandler: CreateEmbeddedRpcRequestHandler;
 }> {
@@ -338,7 +339,7 @@ async function initialize(request: AdeRpcRequest): Promise<InitializeResult> {
     clientName: "ade-code",
     identity: {
       role: "cto",
-      callerId: `ade-code:${process.pid}`,
+      callerId: syntheticCallerId("ade-code"),
     },
   });
   await request("ade/initialized");
@@ -1046,7 +1047,7 @@ export async function connectToAde(args: {
     projectRoot: args.project.projectRoot,
     workspaceRoot: args.project.workspaceRoot,
     chatRuntime: "agent",
-    runtimeProfile: "chat",
+    runtimeProfile: "embedded",
   });
   const handler: DirectHandler = createAdeRpcRequestHandler({
     runtime,

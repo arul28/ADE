@@ -244,6 +244,41 @@ export const UNIFORMS = {
 } as const;
 
 /**
+ * The chat header is a few dozen pixels tall, so the pane's scale (which keys
+ * off the short side) zooms into a single lobe. These numbers sample the same
+ * mesh as a wide horizontal slice, drift it a little faster, and bloom the
+ * purple while the pointer is over the bar.
+ */
+export const HEADER_SLICE = {
+  /**
+   * Shade-space radius of the orbiting lobes (`0.50 + intensity * 0.38`).
+   * Landing this near the ends of the strip is what turns the 32px bar into
+   * a slice of the pane instead of one dot behind the title.
+   */
+  fieldReach: 0.78,
+  /** Fraction of the half-width that reach should cover. */
+  reachAcross: 0.92,
+  timeScale: -0.62,
+  drift: 0.3,
+  intensity: 0.72,
+  hoverIntensity: 1,
+  /** The pane sits at -0.14 so cards stay brightest. A slice that thin goes black. */
+  brightness: -0.02,
+  vignette: 0.06,
+  saturation: 1,
+  cursorStrength: 1.45,
+  /** Pre-scale units. One unit is the strip's height, so this is a wide swirl. */
+  cursorRadius: 9,
+} as const;
+
+/** Scale that lays `HEADER_SLICE.fieldReach` across a short, wide canvas. */
+export function headerBackdropScale(width: number, height: number): number {
+  const aspect = Math.max(1, width) / Math.max(1, height);
+  const half = aspect / 2;
+  return HEADER_SLICE.fieldReach / (half * HEADER_SLICE.reachAcross);
+}
+
+/**
  * DPR 1, always — and then `BACKDROP_RENDER_SCALE` under that. This is a soft
  * gradient; it has nothing to resolve.
  */

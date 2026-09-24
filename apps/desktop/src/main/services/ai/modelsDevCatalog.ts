@@ -10,11 +10,21 @@
 
 export const MODELS_DEV_API_URL = "https://models.dev/api.json";
 
-export type ModelsDevCost = {
+export type ModelsDevRateBlock = {
   input?: number;
   output?: number;
   cache_read?: number;
   cache_write?: number;
+};
+
+export type ModelsDevCost = ModelsDevRateBlock & {
+  /**
+   * Long-context pricing: each entry applies once a request's context passes
+   * `tier.size` tokens (OpenAI GPT-5.4+ at 272k, xAI Grok at 200k, ...).
+   */
+  tiers?: Array<ModelsDevRateBlock & { tier?: { type?: string; size?: number } }>;
+  /** Older single-tier form of the same pricing, fixed at 200k. */
+  context_over_200k?: ModelsDevRateBlock;
 };
 
 export type ModelsDevEntry = {

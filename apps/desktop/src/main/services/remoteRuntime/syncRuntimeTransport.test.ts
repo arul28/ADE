@@ -398,6 +398,52 @@ describe("openSyncRuntimeTransport", () => {
     client.close();
   });
 
+  it("gives every close callback the same close info, also one added after the close", async () => {
+    const createWebSocket = () => new FakeWebSocket((text, ws) => {
+      const envelope = parseSyncEnvelope(wsDataToText(text));
+      if (envelope.type !== "hello") return;
+      ws.receive(encodeSyncEnvelope({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          peer: (envelope.payload as { peer: unknown }).peer,
+          brain: {
+            deviceId: "host-1",
+            deviceName: "Mac Studio",
+            platform: "macOS",
+            deviceType: "desktop",
+            siteId: "host-site-1",
+            dbVersion: 0,
+          },
+          serverDbVersion: 0,
+          heartbeatIntervalMs: 5_000,
+          pollIntervalMs: 1_500,
+          features: { rpcChannel: true, portForward: true },
+        },
+      }));
+    }) as unknown as WebSocket;
+
+    const paired = credentials();
+    paired.endpoints = ["ws://sync.test"];
+    const transport = await openSyncRuntimeTransport({
+      credentials: paired,
+      channelId: "runtime-local-close",
+      connectTimeoutMs: 2_000,
+      authTimeoutMs: 2_000,
+      createWebSocket,
+    });
+    const onClose = transport.onClose;
+    if (!onClose) throw new Error("The sync transport reports its close.");
+    const early: unknown[] = [];
+    onClose((info) => early.push(info));
+    transport.close();
+    const late = await new Promise<unknown>((resolve) => onClose(resolve));
+
+    // The same words `describeSyncConnectionClose` gives any other close.
+    expect(early).toEqual([{ detail: "closed by this computer (1000: Desktop RPC client closed.)" }]);
+    expect(late).toBe(early[0]);
+  });
+
   it("rejects a saved endpoint when the host identity changed", async () => {
     const socket = new FakeWebSocket((text, ws) => {
       const envelope = parseSyncEnvelope(wsDataToText(text));

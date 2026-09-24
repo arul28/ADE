@@ -1781,6 +1781,19 @@ describe("gitOperationsService.listBranches annotations", () => {
     expect(remoteOnly!.profiledInCurrentLane).toBe(false);
   });
 
+  it("never lists a remote's symbolic HEAD, which git shortens to the bare remote name", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        "refs/heads/main\tmain\t*\torigin/main",
+        "refs/remotes/origin/HEAD\torigin\t \t",
+        "refs/remotes/origin/develop\torigin/develop\t \t",
+      ].join("\n"),
+    );
+    const { service } = makeServiceWithLanes({});
+    const names = (await service.listBranches({ laneId: "lane-1" })).map((branch) => branch.name);
+    expect(names).toEqual(["main", "origin/develop"]);
+  });
+
   it("still returns branches when listing lanes throws (best-effort owner lookup)", async () => {
     mockGit.runGitOrThrow.mockResolvedValue(
       "refs/heads/main\tmain\t*\t\nrefs/heads/feature/x\tfeature/x\t \t",

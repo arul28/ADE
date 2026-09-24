@@ -52,11 +52,14 @@ export function WorkToolPickerBackdrop({
   theme,
   className,
   playing = true,
+  variant = "pane",
 }: {
   theme: ThemeId;
   className?: string;
   /** False keeps the last frame and stops the 30 fps loop. */
   playing?: boolean;
+  /** `header` is the short bar: a wider slice of the same mesh, with a hover bloom. */
+  variant?: "pane" | "header";
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<BackdropRenderer | null>(null);
@@ -86,6 +89,7 @@ export function WorkToolPickerBackdrop({
       canvas,
       theme,
       playing: playingRef.current,
+      variant,
       onRefused: () => setWebglRefused(true),
     });
     rendererRef.current = renderer;
@@ -93,7 +97,7 @@ export function WorkToolPickerBackdrop({
       renderer?.dispose();
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
-  }, [theme, webglRefused, motionEpoch]);
+  }, [theme, variant, webglRefused, motionEpoch]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);

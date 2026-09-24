@@ -1,22 +1,36 @@
+import fs from "node:fs";
+import path from "node:path";
 import type * as DroidSdkTypes from "@factory/droid-sdk";
 import type * as DroidSdkNodeTypes from "@factory/droid-sdk/node";
 import type {
   DroidSdkAskUserResponse,
+  DroidSdkContextStats,
   DroidSdkPermissionDecision,
   DroidSdkPermissionRequest,
   DroidSdkReady,
   DroidSdkReasoningEffort,
+  DroidSdkRunResult,
   DroidSdkSessionSettings,
   DroidSdkWorkerInit,
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
 import {
+  abortedBefore,
   droidEditedSpecContentForRequest,
   droidInteractionModeValue,
   droidMcpToolsToDisable,
+  normalizeDroidSdkContextStats,
+  normalizeDroidSdkTokenUsage,
+  rejectAfterDeadline,
+  resolveDroidReasoningEffortUpdate,
+  type DroidSdkReasoningEffortUpdate,
 } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
+import { consumeDroidSdkTurnStream } from "./droidSdkTurnStream";
+import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
+import { factoryConfigHome } from "../shared/providerConfigHomes";
+import { settleWithin } from "../shared/utils";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
 import { materializeWorkerImages } from "./workerAttachmentImages";
@@ -52,6 +66,15 @@ let enteredSpecMode = false;
  */
 let latestSettings: DroidSdkSessionSettings | null = null;
 /**
+ * The efforts ADE has stated to the live session: `main` through
+ * `reasoningEffort`, `spec` through `specModeReasoningEffort`. Droid keeps a
+ * stated effort until another replaces it, so this is what tells an effort the
+ * chat cleared (reset to Droid's default) from one ADE never set (left alone).
+ */
+let statedEffort: { main: DroidSdkReasoningEffort | null; spec: DroidSdkReasoningEffort | null } = { main: null, spec: null };
+/** Droid's model catalog, read once per worker and only to reset a cleared effort. */
+let droidModelsPromise: Promise<ReadonlyArray<unknown>> | null = null;
+/**
  * Source session id to re-open lazily after a `fork()` retired the live handle
  * and the immediate re-open failed. Keeps the source self-healing instead of
  * leaving the pooled worker with no session.
@@ -85,6 +108,66 @@ function nextWaiterId(prefix: string): string {
 
 function post(message: DroidSdkWorkerResponse): void {
   if (process.send) process.send(message);
+}
+
+function postSdkEvent(event: unknown): void {
+  post({ type: "sdk_event", event });
+}
+
+const CONTEXT_STATS_TIMEOUT_MS = 1_000;
+/**
+ * Longest a cleared-effort reset waits for Droid's model list. The read runs
+ * inside the settings update that starts a send, so an unbounded read could
+ * hold the send forever.
+ */
+const DROID_MODELS_READ_TIMEOUT_MS = 8_000;
+const WORKER_SETTINGS_MAX_BYTES = 128 * 1024;
+const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/u;
+
+async function readBoundedJsonFile(filePath: string): Promise<unknown | null> {
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(filePath, "r");
+    const stat = await handle.stat();
+    if (!Number.isFinite(stat.size) || stat.size > WORKER_SETTINGS_MAX_BYTES) return null;
+    const buffer = Buffer.alloc(WORKER_SETTINGS_MAX_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      offset += bytesRead;
+      if (bytesRead === 0) break;
+    }
+    if (offset > WORKER_SETTINGS_MAX_BYTES) return null;
+    return JSON.parse(buffer.subarray(0, offset).toString("utf8")) as unknown;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function readDroidWorkerTokenUsage(workerSessionId: string): Promise<ReturnType<typeof normalizeDroidSdkTokenUsage>> {
+  if (!initState || !SAFE_SESSION_ID.test(workerSessionId)) return null;
+  const projectSlug = droidProjectSlugForCwd(initState.laneRoot || process.cwd());
+  const settingsPath = path.join(
+    factoryConfigHome({ env: process.env }),
+    "sessions",
+    projectSlug,
+    `${workerSessionId}.settings.json`,
+  );
+  return normalizeDroidSdkTokenUsage(await readBoundedJsonFile(settingsPath));
+}
+
+/** One bounded `droid.get_context_stats` read; null when absent, slow, or failed. */
+async function readContextStats(turnSession: DroidSession): Promise<DroidSdkContextStats | null> {
+  const candidate = turnSession as unknown as { getContextStats?: () => Promise<unknown> };
+  if (typeof candidate.getContextStats !== "function") return null;
+  const raw = await settleWithin(
+    Promise.resolve().then(() => candidate.getContextStats!()),
+    CONTEXT_STATS_TIMEOUT_MS,
+    null,
+  );
+  return normalizeDroidSdkContextStats(raw);
 }
 
 function errorMessage(error: unknown): string {
@@ -145,6 +228,58 @@ async function ensureSession(): Promise<void> {
 // protocol type is a contract with the sender rather than a runtime guarantee.
 function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): DroidSdkNodeTypes.ReasoningEffort | undefined {
   return value?.trim() ? value as DroidSdkNodeTypes.ReasoningEffort : undefined;
+}
+
+function loadDroidModels(): Promise<ReadonlyArray<unknown>> {
+  if (!droidModelsPromise) {
+    const read = (async () => {
+      if (!initState) throw new Error("Droid SDK worker is not initialized.");
+      const sdk = await getSdk();
+      return await sdk.listModels({ execPath: initState.droidPath, cwd: initState.laneRoot });
+    })();
+    droidModelsPromise = read;
+    // A failed read is retried by the next reset instead of being cached.
+    read.catch(() => {
+      if (droidModelsPromise === read) droidModelsPromise = null;
+    });
+  }
+  return droidModelsPromise;
+}
+
+/**
+ * Droid's model list, or a rejection after `DROID_MODELS_READ_TIMEOUT_MS`. A
+ * timeout is a reset error like any failed read: the effort stays stated, and
+ * the next settings update starts a fresh read.
+ */
+async function loadDroidModelsWithinDeadline(): Promise<ReadonlyArray<unknown>> {
+  const read = loadDroidModels();
+  return await rejectAfterDeadline(read, DROID_MODELS_READ_TIMEOUT_MS, () => {
+    if (droidModelsPromise === read) droidModelsPromise = null;
+    return new Error(`Droid's model list did not load within ${DROID_MODELS_READ_TIMEOUT_MS / 1_000}s.`);
+  });
+}
+
+/** The effort one update states for `field`; see resolveDroidReasoningEffortUpdate. */
+async function planEffortUpdate(
+  field: keyof typeof statedEffort,
+  requested: DroidSdkReasoningEffort | null | undefined,
+  modelId: string,
+): Promise<DroidSdkReasoningEffortUpdate> {
+  const update = await resolveDroidReasoningEffortUpdate({
+    requested,
+    stated: statedEffort[field],
+    modelId,
+    loadModels: loadDroidModelsWithinDeadline,
+  });
+  if (update.resetError) {
+    post({
+      type: "log",
+      level: "warn",
+      message: "Droid kept the reasoning effort the chat cleared: its default could not be read.",
+      detail: { modelId, error: update.resetError },
+    });
+  }
+  return update;
 }
 
 function sessionOptions(
@@ -324,6 +459,14 @@ async function requestAskUser(params: DroidSdkTypes.AskUserRequestParams): Promi
 }
 
 /**
+ * An effort ADE stated to the session and has not reset yet, for the pool to
+ * hand to the chat's next worker. A reset that failed keeps it here.
+ */
+function statedReasoningEffort(): DroidSdkReasoningEffort | null {
+  return statedEffort.main ?? statedEffort.spec;
+}
+
+/**
  * The model Droid resolved for this session.
  *
  * `DroidSession` in @factory/droid-sdk 0.9.x exposes the live settings through
@@ -340,6 +483,7 @@ function buildReady(): DroidSdkReady {
     sessionId: session.id,
     currentModelId: modelId.length ? modelId : null,
     availableModels: [],
+    statedReasoningEffort: statedReasoningEffort(),
   };
 }
 
@@ -394,10 +538,17 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
   const sdk = await getSdk();
   await disableUnmanagedMcpTools();
   if (settings.interactionMode === "spec") {
+    const specModeModelId = settings.specModeModelId?.trim() || settings.modelId;
+    const specEffort = await planEffortUpdate(
+      "spec",
+      settings.specModeReasoningEffort ?? settings.reasoningEffort,
+      specModeModelId,
+    );
     await session.enterSpecMode({
-      specModeModelId: settings.specModeModelId?.trim() || settings.modelId,
-      specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort ?? settings.reasoningEffort),
+      specModeModelId,
+      specModeReasoningEffort: coerceReasoning(specEffort.effort),
     });
+    statedEffort.spec = specEffort.stated;
     enteredSpecMode = true;
     return;
   }
@@ -422,12 +573,22 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
   } else if (statedInteractionMode) {
     enteredSpecMode = false;
   }
+  const effort = await planEffortUpdate("main", settings.reasoningEffort, settings.modelId);
   await session.updateSettings({
     modelId: settings.modelId,
     ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkNodeTypes.AutonomyLevel } : {}),
     ...(statedInteractionMode ? { interactionMode: statedInteractionMode } : {}),
-    reasoningEffort: coerceReasoning(settings.reasoningEffort),
+    reasoningEffort: coerceReasoning(effort.effort),
   });
+  statedEffort.main = effort.stated;
+}
+
+/** What a new session was created with: exactly the efforts its options stated. */
+function recordCreatedSessionEfforts(settings: DroidSdkSessionSettings): void {
+  statedEffort = {
+    main: coerceReasoning(settings.reasoningEffort) ?? null,
+    spec: coerceReasoning(settings.specModeReasoningEffort) ?? null,
+  };
 }
 
 async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
@@ -438,6 +599,9 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   pendingResumeSessionId = null;
   const sdk = await getSdk();
   const resumeId = init.resumeSessionId?.trim();
+  // A resumed session still carries whatever an earlier worker stated.
+  const inherited = resumeId ? coerceReasoning(init.statedReasoningEffort) ?? null : null;
+  statedEffort = { main: inherited, spec: inherited };
   if (resumeId) {
     try {
       // 0.9.x `resumeSession` no longer accepts `cwd`: the session's persisted
@@ -459,10 +623,12 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
       });
       session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
       enteredSpecMode = init.settings.interactionMode === "spec";
+      recordCreatedSessionEfforts(init.settings);
     }
   } else {
     session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
     enteredSpecMode = init.settings.interactionMode === "spec";
+    recordCreatedSessionEfforts(init.settings);
   }
   await disableUnmanagedMcpTools();
   const ready = buildReady();
@@ -470,18 +636,27 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   return ready;
 }
 
-async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Promise<unknown> {
+async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Promise<DroidSdkRunResult> {
   if (!initState) throw new Error("Droid SDK worker is not initialized.");
-  // Acquire/refresh the session under the lifecycle gate; the long stream itself
-  // runs outside it so `cancel` can still interrupt the turn.
-  await withSessionOp(() => applySettings(payload.payload.settings));
-  if (!session) throw new Error("Droid SDK worker is not initialized.");
+  // Registered before the settings step, so a Stop during that step (an
+  // effort reset can wait on Droid's model list) ends the send at once.
   const controller = new AbortController();
   activeAborts.add(controller);
-  let tokenUsage: unknown = null;
-  let firstError: unknown = null;
-  let resultSuccess = true;
   try {
+    // Acquire/refresh the session under the lifecycle gate; the long stream
+    // itself runs outside it so `cancel` can still interrupt the turn.
+    const settings = withSessionOp(() => applySettings(payload.payload.settings));
+    // A Stop can leave the step running under the gate; its failure then
+    // belongs to no send.
+    settings.catch(() => undefined);
+    if (await abortedBefore(settings, controller.signal)) {
+      return {
+        sessionId: session?.id ?? "",
+        success: false,
+        statedReasoningEffort: statedReasoningEffort(),
+      };
+    }
+    if (!session) throw new Error("Droid SDK worker is not initialized.");
     const materialized = await materializeWorkerImages(payload.payload.images, { label: "Droid SDK" });
     const images = materialized.map((image) => {
       if (!("data" in image)) {
@@ -508,29 +683,26 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
       includePartialMessages: true,
       ...(images.length ? { images } : {}),
     };
-    for await (const event of session.stream(payload.payload.promptText, streamOptions)) {
-      if (event.type === "token_usage_update") tokenUsage = event;
-      if (event.type === "result") {
-        tokenUsage = event.tokenUsage ?? tokenUsage;
-        if (event.success === false) {
-          resultSuccess = false;
-          // The stream's terminal `result` carries the failure cause but the
-          // event mapper drops `result`, so surface the cause as an `error`
-          // event (the turn still ends failed) or users lose the provider text.
-          if (event.error && firstError == null) {
-            firstError = event.error;
-            post({ type: "sdk_event", event: event.error });
-          }
-        }
-      }
-      if (event.type === "error" && firstError == null) firstError = event;
-      post({ type: "sdk_event", event });
-    }
+    const turnSession = session;
+    const outcome = await consumeDroidSdkTurnStream({
+      stream: turnSession.stream(payload.payload.promptText, streamOptions),
+      postSdkEvent,
+      readContextStats: () => readContextStats(turnSession),
+      readWorkerTokenUsage: readDroidWorkerTokenUsage,
+      turnId: payload.payload.turnId ?? null,
+    });
+    const { tokenUsage, firstError } = outcome;
+    const liveSettings = (session as unknown as { settings?: { modelId?: unknown } }).settings;
+    const modelId = typeof liveSettings?.modelId === "string" && liveSettings.modelId.trim().length
+      ? liveSettings.modelId
+      : undefined;
     return {
       sessionId: session.id,
       tokenUsage,
-      success: firstError == null && resultSuccess,
+      success: firstError == null && outcome.resultSuccess,
+      ...(modelId ? { modelId } : {}),
       ...(firstError ? { error: firstError } : {}),
+      statedReasoningEffort: statedReasoningEffort(),
     };
   } finally {
     activeAborts.delete(controller);
@@ -622,6 +794,8 @@ async function dispose(): Promise<void> {
   session = null;
   enteredSpecMode = false;
   latestSettings = null;
+  statedEffort = { main: null, spec: null };
+  droidModelsPromise = null;
   pendingResumeSessionId = null;
   initState = null;
 }

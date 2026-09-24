@@ -1,7 +1,14 @@
 import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
 import { detectCompactionSignalText } from "../../../shared/contextCompaction";
-import { classifyCursorSdkErrorText, type CursorSdkErrorKind } from "./cursorSdkProtocol";
+import {
+  CURSOR_SDK_COMPACTION_EVENT,
+  CURSOR_SDK_PRECOMPACT_HOOK_MARK,
+  CURSOR_SDK_TURN_TELEMETRY_KEY,
+  classifyCursorSdkErrorText,
+  type CursorSdkErrorKind,
+} from "./cursorSdkProtocol";
 import { presentChatFailure } from "../../../shared/chatErrorPresentation";
+import { liveContextUsageEvent } from "./liveContextUsageEvent";
 
 const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
 
@@ -206,12 +213,27 @@ function extractTextContent(message: unknown): string[] {
   return out;
 }
 
+/**
+ * Mapping state the service owns across events, as it owns Pi's: the meta is
+ * rebuilt per event, so this is what pairs a "compacting" status on one event
+ * with the status that ends it on a later one.
+ */
+export type CursorSdkEventMapperState = {
+  /** The turn whose text-signalled compaction is open, or null. */
+  textCompactionTurnId: string | null;
+};
+
+export function createCursorSdkEventMapperState(): CursorSdkEventMapperState {
+  return { textCompactionTurnId: null };
+}
+
 export type CursorSdkEventMapperMeta = {
   turnId: string;
   cwd: string;
   runtime?: AgentChatRuntime;
   runId?: string;
-  compactionActive?: boolean;
+  /** The service's per-runtime state, so a text-signalled compaction can close. */
+  state: CursorSdkEventMapperState;
 };
 
 function compactionEventsFromSignal(
@@ -221,30 +243,60 @@ function compactionEventsFromSignal(
 ): AgentChatEvent[] {
   if (!signal) return [];
   const compacting = detectCompactionSignalText(signal);
-  if (!compacting && !meta.compactionActive) return [];
-  if (compacting && !meta.compactionActive) {
-    meta.compactionActive = true;
-    return [{
-      type: "context_compact",
-      trigger: "auto",
-      state: "started",
+  const active = Boolean(turnId) && meta.state.textCompactionTurnId === turnId;
+  if (compacting === active) return [];
+  meta.state.textCompactionTurnId = compacting ? turnId : null;
+  return [{
+    type: "context_compact",
+    trigger: "auto",
+    state: compacting ? "started" : "completed",
+    turnId,
+    compactionId: turnId,
+    provider: "cursor",
+  }];
+}
+
+/**
+ * A compaction the worker saw through Cursor's `preCompact` hook. The first
+ * compaction in a turn shares the text fallback's id (the turn id), so the two
+ * paths merge into one divider if both fire.
+ */
+function compactionEventsFromHook(record: SdkMessageRecord, turnId: string): AgentChatEvent[] {
+  const phase = readString(record.phase);
+  if (phase !== "started" && phase !== "completed" && phase !== "failed") return [];
+  const seq = readNumber(record.seq) ?? 1;
+  const compactionId = seq > 1 ? `${turnId}:compact-${seq}` : turnId;
+  const trigger = record.trigger === "manual" ? "manual" : "auto";
+  const contextTokens = readNumber(record.contextTokens);
+  const preTokens = contextTokens != null && contextTokens > 0 ? contextTokens : null;
+  const durationMs = phase === "started" ? null : readNumber(record.durationMs);
+  const compact: Extract<AgentChatEvent, { type: "context_compact" }> = {
+    type: "context_compact",
+    trigger,
+    state: phase,
+    turnId,
+    compactionId,
+    provider: "cursor",
+    detection: "provider",
+    ...(preTokens != null ? { preTokens } : {}),
+    ...(durationMs != null ? { durationMs } : {}),
+    ...(phase === "failed" ? { failReason: "interrupted" as const } : {}),
+  };
+  if (phase !== "started") return [compact];
+  const windowSize = readNumber(record.contextWindowSize);
+  if (preTokens == null || windowSize == null || windowSize <= 0) return [compact];
+  // The occupancy Cursor measured when it decided to compact: a real context
+  // figure, which the per-turn `usage` totals are not.
+  return [
+    liveContextUsageEvent({
+      used: preTokens,
+      max: windowSize,
       turnId,
-      compactionId: turnId,
-      provider: "cursor",
-    }];
-  }
-  if (!compacting && meta.compactionActive) {
-    meta.compactionActive = false;
-    return [{
-      type: "context_compact",
-      trigger: "auto",
-      state: "completed",
-      turnId,
-      compactionId: turnId,
-      provider: "cursor",
-    }];
-  }
-  return [];
+      model: readString(record.model),
+      state: "measured",
+    }),
+    compact,
+  ];
 }
 
 function tagRuntime<T>(event: T, runtime?: AgentChatRuntime): T {
@@ -496,7 +548,11 @@ export function mapCursorSdkMessageToChatEvents(
     case "status": {
       const statusText = readString(record.status);
       const detail = readStatusDetail(record);
-      const compactionSignal = [statusText, detail].filter(Boolean).join(" · ");
+      // Text matching is only the fallback for runs the `preCompact` hook did
+      // not report on; the worker marks status events once it has.
+      const compactionSignal = record[CURSOR_SDK_PRECOMPACT_HOOK_MARK] === true
+        ? null
+        : [statusText, detail].filter(Boolean).join(" · ");
       const compactionEvents = compactionEventsFromSignal(meta, compactionSignal, turnId);
       if (runtime === "cloud") {
         const cloudStatus = normalizeCloudStatus(statusText);
@@ -619,6 +675,8 @@ export function mapCursorSdkMessageToChatEvents(
     // "fix" the silence by adding a mapping.
     case "user":
       return [];
+    case CURSOR_SDK_COMPACTION_EVENT:
+      return compactionEventsFromHook(record, turnId);
     default:
       return [];
   }
@@ -631,6 +689,32 @@ export type CursorSdkRunResultMeta = {
   runtime?: AgentChatRuntime;
 };
 
+/**
+ * The one reader for a Cursor usage record, used by both the run result and a
+ * turn-ended report: every spelling the SDK and the wire use for each count.
+ */
+function readCursorUsageCounts(usage: SdkMessageRecord | null): {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+} {
+  return {
+    inputTokens: readNumber(
+      usage?.inputTokens ?? usage?.input_tokens ?? usage?.totalInputTokens ?? usage?.total_input_tokens,
+    ),
+    outputTokens: readNumber(
+      usage?.outputTokens ?? usage?.output_tokens ?? usage?.totalOutputTokens ?? usage?.total_output_tokens,
+    ),
+    cacheReadTokens: readNumber(usage?.cacheReadTokens ?? usage?.cache_read_tokens),
+    cacheWriteTokens: readNumber(
+      usage?.cacheWriteTokens ?? usage?.cache_write_tokens ?? usage?.cacheCreationTokens ?? usage?.cache_creation_tokens,
+    ),
+    reasoningTokens: readNumber(usage?.reasoningTokens ?? usage?.reasoning_tokens),
+  };
+}
+
 export function mapCursorSdkRunResultToDoneEvent(
   result: unknown,
   meta: CursorSdkRunResultMeta,
@@ -641,23 +725,18 @@ export function mapCursorSdkRunResultToDoneEvent(
     status === "cancelled" ? "interrupted"
       : status === "error" ? "failed"
       : "completed";
-  const usageRecord = asRecord(record?.usage);
-  const usage = usageRecord
-    ? {
-        ...(readNumber(usageRecord.inputTokens ?? usageRecord.input_tokens) != null
-          ? { inputTokens: readNumber(usageRecord.inputTokens ?? usageRecord.input_tokens) ?? undefined }
-          : {}),
-        ...(readNumber(usageRecord.outputTokens ?? usageRecord.output_tokens) != null
-          ? { outputTokens: readNumber(usageRecord.outputTokens ?? usageRecord.output_tokens) ?? undefined }
-          : {}),
-        ...(readNumber(usageRecord.cacheReadTokens ?? usageRecord.cache_read_tokens) != null
-          ? { cacheReadTokens: readNumber(usageRecord.cacheReadTokens ?? usageRecord.cache_read_tokens) ?? undefined }
-          : {}),
-        ...(readNumber(usageRecord.cacheCreationTokens ?? usageRecord.cache_creation_tokens) != null
-          ? { cacheCreationTokens: readNumber(usageRecord.cacheCreationTokens ?? usageRecord.cache_creation_tokens) ?? undefined }
-          : {}),
-      }
-    : undefined;
+  // `RunResult.usage` is the SDK's sum over every turn-ended report in the run.
+  const counts = readCursorUsageCounts(asRecord(record?.usage));
+  const usage = {
+    ...(counts.inputTokens != null ? { inputTokens: counts.inputTokens } : {}),
+    ...(counts.outputTokens != null ? { outputTokens: counts.outputTokens } : {}),
+    ...(counts.cacheReadTokens != null ? { cacheReadTokens: counts.cacheReadTokens } : {}),
+    ...(counts.cacheWriteTokens != null ? { cacheCreationTokens: counts.cacheWriteTokens } : {}),
+    ...(counts.reasoningTokens != null ? { reasoningTokens: counts.reasoningTokens } : {}),
+  };
+  const telemetry = asRecord(record?.[CURSOR_SDK_TURN_TELEMETRY_KEY]);
+  const email = readString(telemetry?.accountEmail);
+  const servedModel = readString(telemetry?.servedModel);
   return {
     type: "done",
     turnId: meta.turnId,
@@ -665,7 +744,10 @@ export function mapCursorSdkRunResultToDoneEvent(
     model: meta.model,
     ...(meta.modelId ? { modelId: meta.modelId } : {}),
     ...(meta.runtime && meta.runtime !== "local" ? { runtime: meta.runtime } : {}),
-    ...(usage && Object.keys(usage).length ? { usage } : {}),
+    ...(Object.keys(usage).length ? { usage } : {}),
+    ...(servedModel ? { servedModel } : {}),
+    // Every Cursor run, local or cloud, bills the signed-in Cursor plan.
+    account: { provider: "cursor", kind: "subscription", ...(email ? { email } : {}) },
   };
 }
 
@@ -683,25 +765,7 @@ export function mapTurnEndedTokensToEvent(
   const record = asRecord(update);
   const usage = asRecord(record?.usage) ?? record;
   if (!usage) return null;
-  const inputTokens = readNumber(
-    usage.inputTokens
-      ?? usage.input_tokens
-      ?? usage.totalInputTokens
-      ?? usage.total_input_tokens,
-  );
-  const outputTokens = readNumber(
-    usage.outputTokens
-      ?? usage.output_tokens
-      ?? usage.totalOutputTokens
-      ?? usage.total_output_tokens,
-  );
-  const cacheReadTokens = readNumber(usage.cacheReadTokens ?? usage.cache_read_tokens);
-  const cacheWriteTokens = readNumber(
-    usage.cacheWriteTokens
-      ?? usage.cache_write_tokens
-      ?? usage.cacheCreationTokens
-      ?? usage.cache_creation_tokens,
-  );
+  const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens } = readCursorUsageCounts(usage);
   if (inputTokens == null && outputTokens == null && cacheReadTokens == null && cacheWriteTokens == null) {
     return null;
   }
@@ -714,6 +778,7 @@ export function mapTurnEndedTokensToEvent(
     ...(outputTokens != null ? { outputTokens } : {}),
     ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
     ...(cacheWriteTokens != null ? { cacheWriteTokens } : {}),
+    ...(reasoningTokens != null ? { reasoningTokens } : {}),
     ...(meta.contextWindow != null ? { contextWindow: meta.contextWindow } : {}),
   };
 }

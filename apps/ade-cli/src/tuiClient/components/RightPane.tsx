@@ -56,6 +56,7 @@ import type { AiSettingsStatus } from "../../../../desktop/src/shared/types/conf
 import { useHoveredHitId } from "../hitTestRegistry";
 import { diffLineKind, type DiffLineKind } from "../format";
 import type { SubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
+import type { PrLaneNextStep, PrNextStepTone } from "../../../../desktop/src/shared/prNextStep";
 import { missionFeatureCounts, orderMissionFeatures } from "../../../../desktop/src/renderer/components/chat/chatMission";
 import type { MissionSnapshot } from "../types";
 import type { HelpRow } from "../helpIndex";
@@ -195,7 +196,13 @@ export function laneDetailsInteractionLayout(content: LaneDetailsContent): LaneD
   let prRow: LaneDetailsInteractionLayout["prRow"] = null;
   if (content.pr) {
     row += 2; // PR section heading with marginTop.
-    prRow = { start: row, height: 3 };
+    // Plus the next-step and agents lines when the row is not selected. The
+    // selected row shows the link instead, so it has no insight lines.
+    const selected = content.selectedActionIndex === LANE_DETAIL_PR_ACTION_INDEX;
+    const insightRows = selected
+      ? 0
+      : (content.pr.nextStep ? 1 : 0) + ((content.pr.agents?.length ?? 0) > 0 ? 1 : 0);
+    prRow = { start: row, height: 3 + insightRows };
   }
 
   return { actionRows, prRow };
@@ -635,6 +642,7 @@ function LaneDetailsPane({
               <Text color={laneDetailsPrChecksLineColor(content.pr)}>
                 {formatPrActivity(content.pr)}
               </Text>
+              <PrNextStepLines nextStep={content.pr.nextStep} agents={content.pr.agents} width={contentWidth} />
               {content.pr.checksTotal > 0 ? (
                 <Text color={theme.color.t4} dimColor>
                   {/* ADE-135: "0/3 passing" would still invite the reader to
@@ -1312,6 +1320,40 @@ function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapsho
   );
 }
 
+/** Same tones as the desktop Merge card, in the TUI palette. */
+function prNextStepColor(tone: PrNextStepTone): string {
+  switch (tone) {
+    case "success": return theme.color.running;
+    case "danger": return theme.color.error;
+    case "warning": return theme.color.attention;
+    case "info": return theme.color.info;
+    case "merged": return theme.color.violet;
+    default: return theme.color.t3;
+  }
+}
+
+function PrNextStepLines({
+  nextStep,
+  agents,
+  width,
+}: {
+  nextStep?: Pick<PrLaneNextStep, "headline" | "tone"> | null;
+  agents?: string[];
+  width: number;
+}) {
+  const inner = Math.max(10, width - 4);
+  return (
+    <>
+      {nextStep ? (
+        <Text color={prNextStepColor(nextStep.tone)} wrap="truncate-end">{`▸ ${endTruncate(nextStep.headline, inner - 2)}`}</Text>
+      ) : null}
+      {agents && agents.length > 0 ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(`agents · ${agents.join(", ")}`, inner)}</Text>
+      ) : null}
+    </>
+  );
+}
+
 // Desktop ChatPrPane parity: the lane's PR rollup with a /pr handoff hint.
 // Rendered BELOW the roster so the click line-math stays intact.
 function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
@@ -1326,6 +1368,7 @@ function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; 
     <Box flexDirection="column">
       <ChatInfoSectionHead title="PR" hint={`#${pr.number}`} color={brandColor} width={width} />
       <Text color={stateColor} bold>{pr.state}</Text>
+      <PrNextStepLines nextStep={pr.nextStep} agents={pr.agents} width={width} />
       <Text color={theme.color.t4} dimColor>{"/pr for details"}</Text>
     </Box>
   );

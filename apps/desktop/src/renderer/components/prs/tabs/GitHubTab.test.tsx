@@ -20,7 +20,7 @@ vi.mock("react-resizable-panels", async () => {
 
 vi.mock("../state/PrsContext", async () => {
   const { mockUsePrs } = await import("./GitHubTab.testHarness");
-  return { usePrs: () => mockUsePrs() };
+  return { usePrs: () => mockUsePrs(), useOptionalPrs: () => mockUsePrs() };
 });
 
 vi.mock("../detail/PrDetailPane", async () => {

@@ -10,7 +10,6 @@ import {
   Network,
   Server,
   SquareTerminal,
-  Workflow,
   X,
 } from "lucide-react";
 import { EDITORIAL_ISSUE } from "./issue";
@@ -70,14 +69,6 @@ const DEMOS: Demo[] = [
     poster: "/videos/creatingPRfromChat.webp",
     icon: GitPullRequest,
     analyticsFeature: MARKETING_FEATURES.DEMO_PR_FROM_CHAT,
-  },
-  {
-    label: "Worktree graph",
-    blurb: "Every worktree as a stack — dependencies, conflict risk, and rebase order at a glance.",
-    video: "/videos/graphsTab.mp4",
-    poster: "/videos/graphsTab.webp",
-    icon: Workflow,
-    analyticsFeature: MARKETING_FEATURES.DEMO_WORKTREE_GRAPH,
   },
   {
     label: "ADE Code",

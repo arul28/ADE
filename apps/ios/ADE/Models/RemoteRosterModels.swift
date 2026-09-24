@@ -38,11 +38,16 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var pinned: Bool?
   var archived: Bool?
   var lastActivityAt: String?
+  /// Latest lifecycle event, excluding agent-authored activity reports.
+  var lifecycleUpdatedAt: String? = nil
   var preview: String?
   // Additive settled-lifecycle projection. Defaults preserve decoding and
   // memberwise-call compatibility with hosts/builds that predate the fields.
   var settledAt: String? = nil
   var statusNote: String? = nil
+  var activityStatus: SessionActivityReport? = nil
+  /// Host timestamp of the latest activity report set or explicit clear.
+  var activityStatusChangedAt: String? = nil
   var attentionRequestedAt: String? = nil
   var attentionMessage: String? = nil
   var lastTurnFailedAt: String? = nil
@@ -58,6 +63,122 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   /// ordinary project roster. The field is optional so older hosts remain
   /// decodable; clients use it to reject stale or legacy leaked rows.
   var identityKey: String? = nil
+  /// Client-only: the setup rail of a chat launch that still owns this row
+  /// (`hubRosterOverlayingChatLaunches`). Hosts never send it.
+  var launchRail: [ChatLaunchRailSegment]? = nil
+}
+
+extension RemoteRosterChat {
+  /// Lifecycle data and agent detail have independent clocks. Older hosts only
+  /// sent `lastActivityAt`, which could include a non-null activity report; drop
+  /// that report timestamp from the fallback when it is the value that won.
+  private var lifecycleFreshness: RemoteRosterTimestamp? {
+    if let lifecycleUpdatedAt = RemoteRosterTimestamp.parse(lifecycleUpdatedAt) {
+      return lifecycleUpdatedAt
+    }
+    guard let lastActivity = RemoteRosterTimestamp.parse(lastActivityAt) else { return nil }
+    if let activity = activityStatusFreshness, lastActivity.date <= activity.date {
+      return nil
+    }
+    return lastActivity
+  }
+
+  private var activityStatusFreshness: RemoteRosterTimestamp? {
+    RemoteRosterTimestamp.parse(activityStatusChangedAt ?? activityStatus?.updatedAt)
+  }
+
+  /// Merge a local roster snapshot without allowing activity detail freshness
+  /// to overwrite lifecycle fields. A clear carries `activityStatusChangedAt`
+  /// even though `activityStatus` is nil, so it wins over an older report.
+  func merging(local: RemoteRosterChat) -> RemoteRosterChat {
+    var merged = self
+    let localLifecycle = local.lifecycleFreshness
+    let remoteLifecycle = lifecycleFreshness
+    if let localLifecycle,
+       remoteLifecycle.map({ localLifecycle.date >= $0.date }) ?? true {
+      merged.status = local.status
+      merged.awaitingInput = local.awaitingInput ?? awaitingInput
+      merged.pinned = local.pinned ?? pinned
+      merged.archived = local.archived ?? archived
+      merged.title = nonEmptyRosterValue(local.title) ?? title
+      merged.preview = nonEmptyRosterValue(local.preview) ?? preview
+      merged.settledAt = local.settledAt
+      merged.statusNote = local.statusNote
+      merged.attentionRequestedAt = local.attentionRequestedAt
+      merged.attentionMessage = local.attentionMessage
+      merged.lastTurnFailedAt = local.lastTurnFailedAt
+      merged.exitCode = local.exitCode
+      merged.lifecycleUpdatedAt = local.lifecycleUpdatedAt ?? localLifecycle.timestamp
+    }
+
+    let localActivity = local.activityStatusFreshness
+    let remoteActivity = activityStatusFreshness
+    if let localActivity,
+       remoteActivity.map({ localActivity.date >= $0.date }) ?? true {
+      merged.activityStatus = local.activityStatus
+      merged.activityStatusChangedAt = local.activityStatusChangedAt ?? local.activityStatus?.updatedAt
+    }
+
+    merged.lastActivityAt = newestRosterTimestamp(
+      lastActivityAt,
+      local.lastActivityAt,
+      activityStatusChangedAt,
+      activityStatus?.updatedAt,
+      local.activityStatusChangedAt,
+      local.activityStatus?.updatedAt
+    ) ?? lastActivityAt ?? local.lastActivityAt
+    merged.provider = nonEmptyRosterValue(provider) ?? local.provider
+    merged.model = nonEmptyRosterValue(model) ?? local.model
+    merged.toolType = nonEmptyRosterValue(toolType) ?? local.toolType
+    merged.chatSessionId = nonEmptyRosterValue(chatSessionId) ?? local.chatSessionId
+    merged.identityKey = nonEmptyRosterValue(identityKey) ?? local.identityKey
+    merged.applyLocalSnoozeOverlay(local)
+    return merged
+  }
+}
+
+private struct RemoteRosterTimestamp {
+  let timestamp: String
+  let date: Date
+
+  static func parse(_ raw: String?) -> RemoteRosterTimestamp? {
+    guard let timestamp = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !timestamp.isEmpty else {
+      return nil
+    }
+    if let date = RemoteRosterTimestampFormatters.fractional.date(from: timestamp) {
+      return RemoteRosterTimestamp(timestamp: timestamp, date: date)
+    }
+    guard let date = RemoteRosterTimestampFormatters.wholeSeconds.date(from: timestamp) else { return nil }
+    return RemoteRosterTimestamp(timestamp: timestamp, date: date)
+  }
+}
+
+private func nonEmptyRosterValue(_ value: String?) -> String? {
+  guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+  return value
+}
+
+private func newestRosterTimestamp(_ values: String?...) -> String? {
+  var newest: RemoteRosterTimestamp?
+  for value in values {
+    guard let candidate = RemoteRosterTimestamp.parse(value) else { continue }
+    if newest == nil || candidate.date > newest!.date { newest = candidate }
+  }
+  return newest?.timestamp
+}
+
+private enum RemoteRosterTimestampFormatters {
+  static let fractional: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+
+  static let wholeSeconds: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+  }()
 }
 
 struct RemoteRosterLane: Codable, Equatable, Identifiable {
@@ -517,6 +638,7 @@ extension RemoteRosterChat {
 
   func asTerminalSessionSummary(laneName: String) -> TerminalSessionSummary {
     let strings = sessionStatusStrings
+    let lifecycleTimestamp = lifecycleFreshness?.timestamp ?? ""
     return TerminalSessionSummary(
       id: id,
       laneId: laneId,
@@ -529,11 +651,14 @@ extension RemoteRosterChat {
       toolType: toolType,
       title: (title?.isEmpty == false ? title! : "Untitled chat"),
       status: strings.status,
-      startedAt: lastActivityAt ?? "",
-      endedAt: status == .ended ? lastActivityAt : nil,
-      archivedAt: archived == true ? (lastActivityAt ?? "") : nil,
+      startedAt: lifecycleTimestamp,
+      endedAt: status == .ended ? lifecycleTimestamp : nil,
+      lastActivityAt: lifecycleTimestamp.isEmpty ? nil : lifecycleTimestamp,
+      archivedAt: archived == true ? lifecycleTimestamp : nil,
       settledAt: settledAt,
       statusNote: statusNote,
+      activityStatus: activityStatus,
+      activityStatusChangedAt: activityStatusChangedAt,
       attentionRequestedAt: attentionRequestedAt,
       attentionMessage: attentionMessage,
       lastTurnFailedAt: lastTurnFailedAt,

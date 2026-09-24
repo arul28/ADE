@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { signalChildProcessTree } from "../shared/utils";
 import {
   isRuntimeProtocolCompatible,
@@ -2475,7 +2476,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const transport = await openSocketTransport(socketPath);
       client = new RuntimeRpcClient(transport);
-      const initializeResult = await client.initialize("ade-desktop-service-install-probe", this.appVersion);
+      const initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.serviceInstallProbe, this.appVersion);
       const runtimeInfo = readLocalRuntimeInfo(initializeResult);
       return {
         error: this.runtimeCompatibilityError(socketPath, runtimeInfo),
@@ -2912,7 +2913,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const transport = await openSocketTransport(socketPath);
       client = new RuntimeRpcClient(transport);
-      const initializeResult = await client.initialize("ade-desktop-local-probe", this.appVersion);
+      const initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.localProbe, this.appVersion);
       const runtimeInfo = readLocalRuntimeInfo(initializeResult);
       return this.runtimeCompatibilityError(socketPath, runtimeInfo) == null;
     } catch {
@@ -2969,7 +2970,7 @@ export class LocalRuntimeConnectionPool {
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
     try {
-      initializeResult = await client.initialize("ade-desktop-local", this.appVersion, {
+      initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.local, this.appVersion, {
         desktopBridgeAuthToken: this.options.desktopBridgeAuthToken,
         timeoutMs: options.initializeTimeoutMs,
       });

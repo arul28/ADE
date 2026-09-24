@@ -351,48 +351,21 @@ describe("startBrainHeartbeat", () => {
 });
 
 describe("servesMachineRuntimeEndpoint", () => {
-  const resolve = (value: string) => value.replace(/\/+$/, "");
   const machineSocketPath = "/Users/ada/.ade/sock/ade.sock";
 
   it("lets the machine brain publish, including when it named its own socket", () => {
-    expect(servesMachineRuntimeEndpoint({
-      requestedSocketPath: machineSocketPath,
-      resolvedSocketPath: machineSocketPath,
-      machineSocketPath,
-      isNamedPipe: false,
-      resolve,
-    })).toBe(true);
+    expect(servesMachineRuntimeEndpoint(machineSocketPath, machineSocketPath)).toBe(true);
+    expect(servesMachineRuntimeEndpoint(`${machineSocketPath}/`, machineSocketPath)).toBe(true);
   });
 
   it("regression: a dev brain on its own socket must NOT publish it", () => {
-    // `~/.ade/runtime` is shared by every brain on the box. The publish used to
-    // be unconditional and ran before `--socket` was even read, so the last
-    // `ade serve` to start replaced the machine brain's pid with its own — and
-    // `com.ade.watchdog` reads that file to tell a wedged brain from a busy
-    // one. On the owner's machine it named a lane's dev brain for five hours.
-    expect(servesMachineRuntimeEndpoint({
-      requestedSocketPath: "/tmp/ade-runtime-dev.sock",
-      resolvedSocketPath: "/tmp/ade-runtime-dev.sock",
-      machineSocketPath,
-      isNamedPipe: false,
-      resolve,
-    })).toBe(false);
+    // `~/.ade/runtime` is shared by every brain on the box, and
+    // `com.ade.watchdog` reads the heartbeat to tell a wedged brain from a busy one.
+    expect(servesMachineRuntimeEndpoint("/tmp/ade-runtime-dev.sock", machineSocketPath)).toBe(false);
   });
 
   it("compares a named pipe verbatim, having no filesystem to resolve it against", () => {
-    expect(servesMachineRuntimeEndpoint({
-      requestedSocketPath: "\\\\.\\pipe\\ade-machine",
-      resolvedSocketPath: "\\\\.\\pipe\\ade-machine",
-      machineSocketPath: "\\\\.\\pipe\\ade-machine",
-      isNamedPipe: true,
-      resolve,
-    })).toBe(true);
-    expect(servesMachineRuntimeEndpoint({
-      requestedSocketPath: "\\\\.\\pipe\\ade-dev",
-      resolvedSocketPath: "\\\\.\\pipe\\ade-dev",
-      machineSocketPath: "\\\\.\\pipe\\ade-machine",
-      isNamedPipe: true,
-      resolve,
-    })).toBe(false);
+    expect(servesMachineRuntimeEndpoint("\\\\.\\pipe\\ade-machine", "\\\\.\\pipe\\ade-machine")).toBe(true);
+    expect(servesMachineRuntimeEndpoint("\\\\.\\pipe\\ade-dev", "\\\\.\\pipe\\ade-machine")).toBe(false);
   });
 });

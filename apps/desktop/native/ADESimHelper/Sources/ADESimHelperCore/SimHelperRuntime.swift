@@ -90,14 +90,7 @@ public actor SimHelperRuntime {
         // file because ADE has already told the user a recording exists.
         if await session.isRecording {
             if let finished = try? await session.stopRecording() {
-                emit(.recordStopped(
-                    udid: session.udid,
-                    path: finished.path,
-                    durationMs: finished.durationMs,
-                    wallDurationMs: finished.wallDurationMs,
-                    idleCutMs: finished.idleCutMs,
-                    bytes: finished.bytes
-                ))
+                emit(.recordStopped(udid: session.udid, finished: finished))
             }
         }
         let wasCapturing = await session.isCapturing
@@ -235,21 +228,8 @@ public actor SimHelperRuntime {
                     throw DeviceSession.SessionError.notRecording
                 }
                 let finished = try await session.stopRecording()
-                emit(.ok(id: id, payload: [
-                    "path": finished.path,
-                    "durationMs": finished.durationMs,
-                    "wallDurationMs": finished.wallDurationMs,
-                    "idleCutMs": finished.idleCutMs,
-                    "bytes": finished.bytes,
-                ]))
-                emit(.recordStopped(
-                    udid: udid,
-                    path: finished.path,
-                    durationMs: finished.durationMs,
-                    wallDurationMs: finished.wallDurationMs,
-                    idleCutMs: finished.idleCutMs,
-                    bytes: finished.bytes
-                ))
+                emit(.ok(id: id, payload: finished.payload))
+                emit(.recordStopped(udid: udid, finished: finished))
 
             case let .overlayTap(_, udid, point):
                 // No `session(for:)`: an overlay note for a device that is not

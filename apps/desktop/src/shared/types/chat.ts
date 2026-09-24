@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ModelManifest } from "../modelManifest";
+import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ModelId } from "./core";
@@ -11,7 +12,7 @@ import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
-import type { RuntimeProcessSummary } from "./sessions";
+import type { RuntimeProcessSummary, SessionActivityReport } from "./sessions";
 import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
@@ -68,6 +69,102 @@ export type AgentChatProvider =
  */
 export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
+
+/**
+ * What kind of credential paid for a turn. A router prices a subscription turn
+ * against plan headroom, an API-key turn in dollars, and a local turn at zero.
+ */
+export type AgentChatUsageAccountKind = "subscription" | "api_key" | "local" | "unknown";
+
+/**
+ * The login, key, or endpoint that ran a turn. Every field except `provider`
+ * and `kind` is optional: a runtime fills what it can read and leaves the rest
+ * out rather than guessing. Never carries a secret.
+ */
+export type AgentChatUsageAccount = {
+  /** ADE provider that ran the turn (`claude`, `codex`, `opencode`, `pi`, `grok`, ...). */
+  provider: string;
+  kind: AgentChatUsageAccountKind;
+  /**
+   * Upstream model vendor behind a multi-vendor harness, for example
+   * `anthropic`, `deepseek`, `openai-codex`, or `lmstudio` under OpenCode or Pi.
+   */
+  upstream?: string | null;
+  /** ADE provider-instance id (the multi-account Claude/Codex logins). */
+  instanceId?: string | null;
+  email?: string | null;
+  /** Provider-side account or org id (ChatGPT account id, Factory org id). */
+  accountId?: string | null;
+  /** Base URL for a local model server (LM Studio, Ollama). */
+  endpoint?: string | null;
+  plan?: string | null;
+  /**
+   * Set when the turn ran on this provider's harness but was paid somewhere
+   * else, so it must not count against the provider's plan window: a keyed
+   * preset, a redirected endpoint (`ANTHROPIC_BASE_URL`), or a cloud route
+   * (Bedrock, Vertex). `upstream` still names the model vendor.
+   */
+  routedAway?: "preset" | "endpoint" | "cloud" | null;
+};
+
+/**
+ * How a usage figure was obtained. `measured` comes straight from the
+ * provider's own counters for this turn; `derived` is computed from measured
+ * parts (a context size from the last request's input side, a turn total summed
+ * from per-step counts, a figure read back from the provider's local history
+ * after the turn); `estimated` is a heuristic (list-price cost, an inferred
+ * compaction, a request count against a published limit).
+ */
+export type AgentChatUsageConfidence = "measured" | "derived" | "estimated";
+
+/** Token split carried by subagent progress and result events. */
+export type AgentChatSubagentTokenUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  usageConfidence?: AgentChatUsageConfidence;
+};
+
+/** Usage carried by subagent progress and result events and by the subagent list. */
+export type AgentChatSubagentUsage = {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+  /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+  costUsd?: number;
+} & AgentChatSubagentTokenUsage;
+
+/**
+ * A helper agent's usage that the provider's own ledger reported after the
+ * turn (a Copilot subagent row, a Qwen memory extractor). It rides on `done`
+ * instead of a subagent event, because a subagent event draws a card and this
+ * is usage, not work the user watched.
+ */
+export type AgentChatDoneSubagentUsage = AgentChatSubagentTokenUsage & {
+  agentId: string;
+  label?: string | null;
+  model?: string | null;
+  parentToolUseId?: string | null;
+};
+
+/**
+ * A charge in the plan's own unit: Copilot premium requests (`amount` = the
+ * request multiplier) and AI units, Cursor request cost, Factory credits.
+ */
+export type AgentChatPlanUsageUnit = "premium_request" | "nano_aiu" | "cursor_request" | "factory_credit";
+export type AgentChatPlanUsage = { unit: AgentChatPlanUsageUnit; amount: number };
+
+/** Providers whose compactions ADE records. */
+export type AgentChatCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | AcpChatProvider;
+
+/**
+ * `provider` means the runtime reported the compaction itself. `inferred`
+ * means ADE saw the context occupancy drop sharply inside one session with no
+ * provider signal (ACP agents that compact silently).
+ */
+export type AgentChatCompactDetection = "provider" | "inferred";
 
 export function isAcpChatProvider(
   provider: AgentChatProvider | string | null | undefined,
@@ -252,6 +349,7 @@ export type AgentChatReloadClaudePluginsResult = {
 export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
+export type AgentChatCodexCollaborationMode = "default" | "plan";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 /** Public Droid-native permission values accepted by chat creation surfaces. */
@@ -1153,8 +1251,42 @@ export type AgentChatEvent =
         thinkingTokens?: number | null;
         /** Effective context window for the model that produced this turn, when the runtime reports one. */
         contextWindow?: number | null;
+        /**
+         * Context occupancy after the turn: the input side (uncached input +
+         * cache read + cache write) of the turn's LAST model request. Unlike the
+         * token totals above, which sum every request in the turn, this is what
+         * the next request starts from.
+         */
+        contextTokens?: number | null;
+        /** Subset of `cacheCreationTokens` written with a one-hour TTL (Anthropic only). */
+        cacheWrite1hTokens?: number | null;
+        /** Model requests made during the turn, when the runtime counts them. */
+        requestCount?: number | null;
       };
       costUsd?: number | null;
+      /**
+       * Where `costUsd` came from: the provider's own billing figure, or ADE's
+       * list-price math over the token counts.
+       */
+      costSource?: "provider" | "list_price";
+      /**
+       * The model that actually answered, when the runtime reports one that
+       * differs from or refines the requested `model` (an "auto" pick, a
+       * reroute, a build variant such as `grok-4.5-build`).
+       */
+      servedModel?: string | null;
+      /** The login, key, or local endpoint that paid for the turn. */
+      account?: AgentChatUsageAccount;
+      /**
+       * What the turn cost in the plan's own unit, when the provider reports
+       * one. A router prices a subscription turn against plan headroom with
+       * this, not dollars.
+       */
+      planUsage?: AgentChatPlanUsage[];
+      /** Helper agents' usage from the provider's ledger, kept apart from `usage`. */
+      subagentUsage?: AgentChatDoneSubagentUsage[];
+      /** How the usage above was obtained; absent means `measured`. */
+      usageConfidence?: AgentChatUsageConfidence;
       /**
        * Which price table priced this Claude turn: list, managed-settings, or
        * unknown (costUsd is then a guess). Recorded only; not used for billing.
@@ -1198,6 +1330,8 @@ export type AgentChatEvent =
       outputTokens?: number;
       cacheReadTokens?: number;
       cacheWriteTokens?: number;
+      /** Reasoning/thinking tokens, a subset of `outputTokens` where the runtime reports them. */
+      reasoningTokens?: number;
       contextWindow?: number;
     }
   /**
@@ -1279,13 +1413,7 @@ export type AgentChatEvent =
       parentToolUseId?: string | null;
       description?: string;
       summary: string;
-      usage?: {
-        totalTokens?: number;
-        toolUses?: number;
-        durationMs?: number;
-        /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
-        costUsd?: number;
-      };
+      usage?: AgentChatSubagentUsage;
       lastToolName?: string;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
@@ -1315,13 +1443,7 @@ export type AgentChatEvent =
       stopSource?: AgentChatStopSource;
       /** One plain clause naming the cause, for a non-user stop. Distinct from the provider runtime's turn.completed `stopReason`. */
       stopReason?: string;
-      usage?: {
-        totalTokens?: number;
-        toolUses?: number;
-        durationMs?: number;
-        /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
-        costUsd?: number;
-      };
+      usage?: AgentChatSubagentUsage;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
       worktreePath?: string;
@@ -1455,7 +1577,8 @@ export type AgentChatEvent =
       postTokens?: number;
       tokensRemoved?: number;
       durationMs?: number;
-      provider?: "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi";
+      provider?: AgentChatCompactProvider;
+      detection?: AgentChatCompactDetection;
       /** Stable merge key for started→completed pairs that may land on different turns. */
       compactionId?: string;
       /** After the second compaction in a session, surfaces as "(N× this session)" in the pill. */
@@ -1746,6 +1869,8 @@ export type AgentChatEvent =
       // and backward-compatible; a title-only emit carries none of them.
       permissionMode?: AgentChatPermissionMode;
       interactionMode?: AgentChatInteractionMode | null;
+      /** Accepted mode for the active Codex turn; null clears the prior turn's mode. */
+      codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode | null;
       claudePermissionMode?: AgentChatClaudePermissionMode;
       codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
       codexSandbox?: AgentChatCodexSandbox;
@@ -2420,6 +2545,10 @@ export type AgentChatSessionSummary = {
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   /** Effective service tier reported by the Codex app-server, when known. */
   codexServiceTier?: string | null;
+  /** Collaboration mode accepted with the active Codex app-server turn/start. */
+  codexEffectiveCollaborationMode?: AgentChatCodexCollaborationMode;
+  /** True when a live Codex runtime confirms there is no accepted turn mode. */
+  codexEffectiveCollaborationModeWasCleared?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -2589,7 +2718,10 @@ export type AgentChatSessionSummary = {
  * Declared here rather than inferred at each call site so the action registry
  * and the CLI that formats the result cannot drift on the field's name or type.
  */
-export type AdeChatSessionSummaryActionResult = AgentChatSessionSummary & { timeZone: string };
+export type AdeChatSessionSummaryActionResult = AgentChatSessionSummary & {
+  timeZone: string;
+  activityStatus?: SessionActivityReport | null;
+};
 
 export type AgentChatTranscriptEntry = {
   role: "user" | "assistant";
@@ -2617,13 +2749,7 @@ export type AgentChatSubagentSnapshot = {
   finalSummary?: string;
   lastToolName?: string;
   background?: boolean;
-  usage?: {
-    totalTokens?: number;
-    toolUses?: number;
-    durationMs?: number;
-    /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
-    costUsd?: number;
-  };
+  usage?: AgentChatSubagentUsage;
   workflowProgress?: AgentChatWorkflowProgress;
   spawnDepth?: number;
   resourceLinks?: AgentChatResourceLink[];
@@ -2862,6 +2988,8 @@ export type AgentChatModelInfo = {
     reasoningEffort?: string;
     fastMode?: boolean;
   }>;
+  /** OpenCode rows: how Fast runs and which efforts it keeps (see `ModelDescriptor.openCodeFast`). */
+  openCodeFast?: OpenCodeFastRoutes;
 };
 
 export type AgentChatModelCatalogModel = AgentChatModelInfo & {

@@ -46,7 +46,6 @@ export type MiscNamespaces = {
   zoom: AdeNamespace<"zoom">;
   layout: AdeNamespace<"layout">;
   tilingTree: AdeNamespace<"tilingTree">;
-  graphState: AdeNamespace<"graphState">;
   workTools: AdeNamespace<"workTools">;
   rebase: AdeNamespace<"rebase">;
   history: AdeNamespace<"history">;
@@ -756,7 +755,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     zoom: zoom as AdeNamespace<"zoom">,
     layout: localNamespaces.layout as AdeNamespace<"layout">,
     tilingTree: localNamespaces.tilingTree as AdeNamespace<"tilingTree">,
-    graphState: localNamespaces.graphState as AdeNamespace<"graphState">,
     workTools: createWorkToolsNamespace(call),
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
@@ -837,7 +835,7 @@ function createZoomNamespace(infra: AdapterInfra): Record<string, unknown> {
   };
 }
 
-function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]): Pick<MiscNamespaces, "layout" | "tilingTree" | "graphState"> {
+function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]): Pick<MiscNamespaces, "layout" | "tilingTree"> {
   return {
     layout: {
       get: async (layoutId: string) => localState.get(`layout:${layoutId}`, null),
@@ -851,12 +849,6 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
         localState.set(`tilingTree:${layoutId}`, tree);
       },
     } as AdeNamespace<"tilingTree">,
-    graphState: {
-      get: async (projectId: string) => localState.get(`graphState:${projectId}`, null),
-      set: async (projectId: string, graphState: unknown) => {
-        localState.set(`graphState:${projectId}`, graphState);
-      },
-    } as AdeNamespace<"graphState">,
   };
 }
 

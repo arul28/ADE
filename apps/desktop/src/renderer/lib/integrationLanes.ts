@@ -52,10 +52,3 @@ export function buildIntegrationSourcesByLaneId(
 
   return map;
 }
-
-export function isIntegrationLaneFromMetadata(
-  lane: Pick<LaneSummary, "id" | "name" | "description">,
-  integrationSourcesByLaneId: Map<string, IntegrationLaneSource[]>,
-): boolean {
-  return integrationSourcesByLaneId.has(lane.id) || isHeuristicIntegrationLane(lane);
-}

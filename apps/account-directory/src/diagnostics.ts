@@ -1,6 +1,15 @@
 import { isAuthenticationUnavailableError, verifyCallerToken } from "./callerToken";
 import type { Env } from "./directory";
 import { logDiagnosticsUpload } from "./logging";
+import {
+  clientIdentity,
+  DAY_MS,
+  dailyLimitVar,
+  readBoundedBody,
+  secondsUntilNextUtcDay,
+  sha256Hex,
+  utcDayKey,
+} from "./sinkUtils";
 import { isLoopbackHostname } from "./trustedOrigin";
 
 /**
@@ -65,8 +74,6 @@ export const DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT = 400;
  * A week covers that and keeps the table permanently tiny.
  */
 export const DIAGNOSTICS_BUDGET_RETENTION_DAYS = 7;
-
-const DAY_MS = 86_400_000;
 
 const MAX_METADATA_CHARS = 200;
 
@@ -148,16 +155,6 @@ export function isDiagnosticsRequest(url: URL): boolean {
 }
 
 /**
- * Cloudflare sets `cf-connecting-ip` and a client cannot influence it. Off
- * Cloudflare — a local dev run, a proxy in front — there is no trustworthy
- * address at all, so everyone shares one bucket rather than falling back to
- * `x-forwarded-for`: a quota keyed on a header the caller writes is not a quota.
- */
-function clientIdentity(request: Request): string {
-  return request.headers.get("cf-connecting-ip")?.trim() || "unknown-client";
-}
-
-/**
  * A drive-by POST from some other site's page, which no real ADE client is.
  *
  * `sec-fetch-site` is attached by the browser and cannot be set by the page, so
@@ -178,13 +175,6 @@ function isCrossSiteBrowserUpload(request: Request): boolean {
   }
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 /**
  * The key segment that both names the uploader and *is* the rate-limit bucket.
  *
@@ -202,37 +192,12 @@ async function uploadIdentity(request: Request, userId: string | null): Promise<
   return `anon-${(await sha256Hex(clientIdentity(request))).slice(0, 16)}`;
 }
 
-function utcDayKey(nowMs: number): string {
-  return new Date(nowMs).toISOString().slice(0, 10);
-}
-
 /**
- * Seconds until the fleet budget resets.
- *
- * Unix time has no leap seconds, so `nowMs % DAY_MS` is exactly the time since
- * UTC midnight and this is the honest number rather than the flat 86400 the
- * per-identity limit answers. A client refused at 23:59 should retry in a
- * minute, not tomorrow night.
- */
-function secondsUntilNextUtcDay(nowMs: number): number {
-  return Math.max(1, Math.ceil((DAY_MS - (nowMs % DAY_MS)) / 1000));
-}
-
-/**
- * The configured fleet ceiling.
- *
- * An unset, empty, or unparseable value falls back to the default — a typo in a
- * var must not silently uncap the bill or silently close the route. `0` is
- * honored, on purpose: it is the kill switch that stops every upload without a
- * redeploy of code.
+ * The configured fleet ceiling (`dailyLimitVar`): unset or unreadable is the
+ * default, and `0` is the kill switch.
  */
 function dailyGlobalLimit(env: DiagnosticsEnv): number {
-  const raw = env.DIAGNOSTICS_DAILY_GLOBAL_LIMIT?.trim();
-  if (!raw) return DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT;
-  const configured = Number(raw);
-  return Number.isFinite(configured) && configured >= 0
-    ? Math.trunc(configured)
-    : DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT;
+  return dailyLimitVar(env.DIAGNOSTICS_DAILY_GLOBAL_LIMIT, DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT);
 }
 
 type BudgetClaim = { ok: true } | { ok: false; reason: "exhausted" | "unavailable" };
@@ -344,51 +309,6 @@ function boundedFailureCode(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return FAILURE_CODE_PATTERN.test(trimmed) ? trimmed : undefined;
-}
-
-/**
- * Reads at most `MAX_DIAGNOSTIC_REPORT_BYTES + 1` bytes.
- *
- * `content-length` is checked first because it makes the common rejection free,
- * but it is never trusted on its own: a chunked upload carries no length at
- * all, so the stream is counted as it arrives and abandoned the moment it
- * crosses the cap. Buffering whatever the client claimed to send would be the
- * bug the cap exists to prevent.
- */
-async function readBoundedBody(
-  request: Request,
-): Promise<{ ok: true; text: string } | { ok: false; reason: "too_large" }> {
-  const declared = Number(request.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > MAX_DIAGNOSTIC_REPORT_BYTES) {
-    return { ok: false, reason: "too_large" };
-  }
-  const body = request.body;
-  if (!body) return { ok: true, text: "" };
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > MAX_DIAGNOSTIC_REPORT_BYTES) {
-        await reader.cancel().catch(() => {});
-        return { ok: false, reason: "too_large" };
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { ok: true, text: new TextDecoder().decode(joined) };
 }
 
 type ParsedUpload = {
@@ -545,7 +465,7 @@ export async function handleDiagnosticsRequest(
     }
   }
 
-  const body = await readBoundedBody(request);
+  const body = await readBoundedBody(request, MAX_DIAGNOSTIC_REPORT_BYTES);
   const identity = await uploadIdentity(request, userId);
   if (!body.ok) {
     logDiagnosticsUpload({

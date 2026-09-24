@@ -1902,24 +1902,14 @@ describe("product analytics producers", () => {
       })).toEqual({ feature: "work", action: "tool_opened", outcome, source: "renderer_route" });
     }
 
-    // A seventh tool has to be registered here deliberately, and nothing that
-    // identifies the work — a lane, a project, a tab — can ride along.
+    // A tool outside the catalogue has to be registered deliberately, and
+    // nothing that identifies the work — a lane, a project, a tab — can ride along.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",
       action: "tool_opened",
       outcome: "tool_notebook",
     })).not.toHaveProperty("outcome");
-    // The retired PR tool. It was an allowed outcome until `pr` left
-    // `WORK_TOOL_IDS`; a stale writer (an older mirrored client, a
-    // hand-written call site) must now go anonymous rather than keep a
-    // dimension the product no longer has.
-    expect([...WORK_TOOL_IDS] as string[]).not.toContain("pr");
-    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
-      feature: "work",
-      action: "tool_opened",
-      outcome: "tool_pr",
-      source: "renderer_route",
-    })).not.toHaveProperty("outcome");
+    expect([...WORK_TOOL_IDS] as string[]).toContain("pr");
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",
       action: "tool_opened",

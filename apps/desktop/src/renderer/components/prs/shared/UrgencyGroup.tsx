@@ -39,7 +39,7 @@ export function UrgencyGroup({
         <span className="font-medium text-foreground/90">{title}</span>
         <span
           className="ml-auto inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none"
-          style={{ backgroundColor: `${color}20`, color }}
+          style={{ backgroundColor: `color-mix(in srgb, ${color} 13%, transparent)`, color }}
         >
           {count}
         </span>

@@ -643,6 +643,7 @@ const WORK_TOOL_LABELS: Record<WorkToolId, string> = {
   "app-control": "App Control",
   browser: "Browser",
   "mac-desktop": "Mac Desktop",
+  pr: "PR",
 };
 
 export function workToolLabel(toolId: string | null | undefined): string | null {

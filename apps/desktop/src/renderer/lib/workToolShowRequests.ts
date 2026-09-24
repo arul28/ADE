@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import { THIS_MACHINE_NAME } from "../../shared/machineIdentity";
+import { waitForWorkSurfaceOnScreen } from "./workToolOnScreen";
 import type {
-  WorkToolShowAckStatus,
+  WorkToolShowAck,
   WorkToolShowRequest,
   WorkToolShowSurface,
 } from "../../shared/types/workToolShow";
@@ -21,14 +22,23 @@ import type {
  * what the agent is doing now, and the next one will come if it still is.
  */
 
+/**
+ * What a handler did with a request.
+ *
+ * - `shown`: the surface is on screen now.
+ * - `opened`: the handler opened it, but could not confirm the user can see it
+ *   (a hidden window, a pane that never finished opening). The request is
+ *   spent: replaying it later would reopen a tool the user may since have
+ *   closed. The agent is told `held`.
+ * - `declined`: this handler could not act on it. Only this is held.
+ */
+export type WorkToolShowOutcome = "shown" | "opened" | "declined";
+
 export type WorkToolShowHandler = {
   chatSessionId: string;
   surfaces: readonly WorkToolShowSurface[];
-  /**
-   * Returns true when the surface is on screen now. Async for the floating
-   * device, which may have to ask the runtime which device the lane holds.
-   */
-  show: (request: WorkToolShowRequest) => boolean | Promise<boolean>;
+  /** Async for the floating device, which may ask the runtime which device the lane holds. */
+  show: (request: WorkToolShowRequest) => WorkToolShowOutcome | Promise<WorkToolShowOutcome>;
 };
 
 type HeldShow = { request: WorkToolShowRequest; heldAtMs: number };
@@ -56,20 +66,23 @@ function pruneExpired(): void {
   holds = holds.filter((held) => now - held.heldAtMs <= WORK_TOOL_SHOW_HOLD_TTL_MS);
 }
 
-async function tryShow(handler: WorkToolShowHandler, request: WorkToolShowRequest): Promise<boolean> {
+async function tryShow(handler: WorkToolShowHandler, request: WorkToolShowRequest): Promise<WorkToolShowOutcome> {
   try {
-    return (await handler.show(request)) === true;
+    return await handler.show(request);
   } catch {
-    return false;
+    return "declined";
   }
 }
 
-async function offer(request: WorkToolShowRequest): Promise<boolean> {
+async function offer(request: WorkToolShowRequest): Promise<WorkToolShowOutcome> {
+  let outcome: WorkToolShowOutcome = "declined";
   for (const handler of [...handlers]) {
     if (!handles(handler, request)) continue;
-    if (await tryShow(handler, request)) return true;
+    const next = await tryShow(handler, request);
+    if (next === "shown") return next;
+    if (next === "opened") outcome = next;
   }
-  return false;
+  return outcome;
 }
 
 function hold(request: WorkToolShowRequest, heldAtMs: number = nowMs()): void {
@@ -82,24 +95,35 @@ function hold(request: WorkToolShowRequest, heldAtMs: number = nowMs()): void {
   while (holds.length > HOLD_CAP) holds.shift();
 }
 
+type ShowAnswer = Pick<WorkToolShowAck, "status" | "opened">;
+
 /**
  * Take a request off the wire. Returns what to tell the brain, or null for a
  * request already seen (the same request can arrive on two subscriptions) and
  * for an automatic offer nobody took.
  */
-export async function receiveWorkToolShowRequest(
-  request: WorkToolShowRequest,
-): Promise<WorkToolShowAckStatus | null> {
+export async function answerWorkToolShowRequest(request: WorkToolShowRequest): Promise<ShowAnswer | null> {
   if (seen.has(request.requestId)) return null;
   seen.add(request.requestId);
   if (seen.size > SEEN_CAP) {
     const oldest = seen.values().next().value;
     if (oldest) seen.delete(oldest);
   }
-  if (await offer(request)) return "shown";
+  const outcome = await offer(request);
+  if (outcome === "shown") return { status: "shown" };
   if (request.auto) return null;
+  // Opened but not confirmed on screen: spent, never replayed.
+  if (outcome === "opened") return { status: "held", opened: true };
   hold(request);
-  return "held";
+  return { status: "held" };
+}
+
+/**
+ * Wait for the surface under `key` to be on screen: "shown" when it is, else
+ * "opened" (the handler opened it but the user may not see it).
+ */
+export async function showOutcomeWhenOnScreen(key: string): Promise<WorkToolShowOutcome> {
+  return (await waitForWorkSurfaceOnScreen(key)) ? "shown" : "opened";
 }
 
 /**
@@ -115,8 +139,8 @@ export function registerWorkToolShowHandler(handler: WorkToolShowHandler): () =>
   const waiting = holds.filter((held) => handles(handler, held.request));
   holds = holds.filter((held) => !waiting.includes(held));
   for (const held of waiting) {
-    void tryShow(handler, held.request).then((shown) => {
-      if (!shown) hold(held.request, held.heldAtMs);
+    void tryShow(handler, held.request).then((outcome) => {
+      if (outcome === "declined") hold(held.request, held.heldAtMs);
     });
   }
   return () => {
@@ -131,20 +155,20 @@ export function registerWorkToolShowHandler(handler: WorkToolShowHandler): () =>
  */
 export function useWorkToolShowHandler(
   chatSessionId: string | null,
+  /** A module constant, so its identity is stable. */
   surfaces: readonly WorkToolShowSurface[],
-  show: (request: WorkToolShowRequest) => boolean | Promise<boolean>,
+  show: WorkToolShowHandler["show"],
 ): void {
   const showRef = useRef(show);
   showRef.current = show;
-  const surfacesKey = surfaces.join(",");
   useEffect(() => {
     if (!chatSessionId) return undefined;
     return registerWorkToolShowHandler({
       chatSessionId,
-      surfaces: surfacesKey.split(",") as WorkToolShowSurface[],
+      surfaces,
       show: (request) => showRef.current(request),
     });
-  }, [chatSessionId, surfacesKey]);
+  }, [chatSessionId, surfaces]);
 }
 
 /**
@@ -156,13 +180,13 @@ export function useWorkToolShowRequestListener(
   pin: OpenProjectBinding | null = null,
 ): void {
   useEffect(() => {
-    const api = window.ade?.workTools;
-    if (!enabled || !api?.onShowRequest) return undefined;
+    if (!enabled) return undefined;
+    const api = window.ade.workTools;
     return api.onShowRequest((request) => {
-      void receiveWorkToolShowRequest(request).then((status) => {
-        if (!status || request.auto) return;
-        return api.acknowledgeShow?.(
-          { requestId: request.requestId, status, desktopLabel: THIS_MACHINE_NAME },
+      void answerWorkToolShowRequest(request).then((answer) => {
+        if (!answer || request.auto) return;
+        return api.acknowledgeShow(
+          { requestId: request.requestId, ...answer, desktopLabel: THIS_MACHINE_NAME },
           pin,
         );
       }).catch(() => {});

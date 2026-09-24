@@ -233,6 +233,9 @@ private struct HubChatCover: View {
         case .deciding:
           HubChatOpeningPlaceholder(projectName: target.project.displayName, onClose: onClose)
         case .activated(let sessionStub):
+          // A chat still being launched into a new lane shows its setup
+          // first, then hands over to the chat for the same session id.
+          WorkChatLaunchGate(sessionId: target.chat.id) {
           WorkSessionDestinationView(
             sessionId: target.chat.id,
             initialOpeningPrompt: nil,
@@ -252,6 +255,7 @@ private struct HubChatCover: View {
               isActiveProject: syncService.isActiveProject(target.project)
             )
           )
+          }
           .id(target.id)
         case .failed(let message):
           HubChatActivationFailedView(

@@ -4,9 +4,11 @@ import {
   BACKDROP_IDLE_FRAME_MS,
   BACKDROP_IDLE_FREEZE_MS,
   FRAG,
+  HEADER_SLICE,
   UNIFORMS,
   VERT,
   backdropThemeFor,
+  headerBackdropScale,
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./workToolPickerBackdropShader";
@@ -78,8 +80,14 @@ export function createBackdropRenderer(options: {
   onRefused: () => void;
   /** When false, the last frame stays on the canvas and the loop does not run. */
   playing?: boolean;
+  /**
+   * `header` fits the same mesh into a short bar: wider field, a little more
+   * drift, and a stronger pointer bloom. The new-chat pane stays on `pane`.
+   */
+  variant?: "pane" | "header";
 }): BackdropRenderer | null {
   const { canvas, theme, onRefused } = options;
+  const header = options.variant === "header";
   let playing = options.playing !== false;
 
   const pendingRelease = pendingContextReleases.get(canvas);
@@ -178,20 +186,26 @@ export function createBackdropRenderer(options: {
     flat[i * 3 + 2] = b;
   }
   context.uniform3fv(uniform.colors, flat);
-  context.uniform4f(uniform.shape, UNIFORMS.scale, palette.intensity, UNIFORMS.warp, UNIFORMS.detail);
+  context.uniform4f(
+    uniform.shape,
+    header ? headerBackdropScale(canvas.width, canvas.height) : UNIFORMS.scale,
+    header ? HEADER_SLICE.intensity : palette.intensity,
+    UNIFORMS.warp,
+    UNIFORMS.detail,
+  );
   context.uniform4f(
     uniform.surface,
     UNIFORMS.contrast,
-    palette.brightness,
-    palette.saturation,
+    header ? HEADER_SLICE.brightness : palette.brightness,
+    header ? HEADER_SLICE.saturation : palette.saturation,
     UNIFORMS.grain,
   );
   context.uniform4f(
     uniform.transform,
     UNIFORMS.seed,
     UNIFORMS.rotate,
-    UNIFORMS.drift,
-    palette.vignette,
+    header ? HEADER_SLICE.drift : UNIFORMS.drift,
+    header ? HEADER_SLICE.vignette : palette.vignette,
   );
   context.uniform4f(uniform.space, UNIFORMS.offsetX, UNIFORMS.offsetY, 0, 0);
   context.uniform4f(uniform.cursor, 0, UNIFORMS.cursorStrength, UNIFORMS.cursorRadius, 0);
@@ -244,13 +258,24 @@ export function createBackdropRenderer(options: {
 
   const draw = (seconds: number) => {
     resizeCanvas();
+    if (header) {
+      const intensity = HEADER_SLICE.intensity
+        + (HEADER_SLICE.hoverIntensity - HEADER_SLICE.intensity) * cursorPresence;
+      context.uniform4f(
+        uniform.shape,
+        headerBackdropScale(canvas.width, canvas.height),
+        intensity,
+        UNIFORMS.warp,
+        UNIFORMS.detail,
+      );
+    }
     context.uniform4f(uniform.scene, canvas.width, canvas.height, seconds, colorCount);
     context.uniform4f(uniform.space, UNIFORMS.offsetX, UNIFORMS.offsetY, mouseX, mouseY);
     context.uniform4f(
       uniform.cursor,
       cursorEnabled ? cursorPresence : 0,
-      UNIFORMS.cursorStrength,
-      UNIFORMS.cursorRadius,
+      header ? HEADER_SLICE.cursorStrength : UNIFORMS.cursorStrength,
+      header ? HEADER_SLICE.cursorRadius : UNIFORMS.cursorRadius,
       0,
     );
     context.drawArrays(context.TRIANGLES, 0, 3);
@@ -356,7 +381,7 @@ export function createBackdropRenderer(options: {
     mouseX += (targetX - mouseX) * follow;
     mouseY += (targetY - mouseY) * follow;
     cursorPresence += (targetPresence - cursorPresence) * follow;
-    draw(((now - start) / 1000) * UNIFORMS.timeScale);
+    draw(((now - start) / 1000) * (header ? HEADER_SLICE.timeScale : UNIFORMS.timeScale));
     requestRender();
   }
 
