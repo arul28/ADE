@@ -5247,7 +5247,7 @@ export function AgentChatComposer({
       const block = cursorCloudSendBlock({
         hasEligibleModels: cursorCloudHasEligibleModels,
         modelReady: cursorCloudModelReady,
-        hasContent: trimmed.length > 0 || contextAttachmentCount > 0
+        hasContent: hasComposerContextContent
           || (cloudFileAttachmentsDelivered && attachments.length > 0),
       });
       if (block) {
@@ -5264,12 +5264,15 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !singleModelReady || !activeTurnHasContent) {
-      if (!busy && !singleModelReady) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
+    // A linked cloud reply rides this same submit path but never touches the
+    // local model — don't let local-model readiness veto it.
+    const linkedCloudReply = cloudSessionLinked && cursorCloudModeActive;
+    if (busy || (!singleModelReady && !linkedCloudReply) || !activeTurnHasContent) {
+      if (!busy && !singleModelReady && !linkedCloudReply) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5349,8 +5352,8 @@ export function AgentChatComposer({
     ? cursorCloudSendBlock({
       hasEligibleModels: cursorCloudHasEligibleModels,
       modelReady: cursorCloudModelReady,
-      hasContent: draft.trim().length > 0 || contextAttachmentCount > 0
-        || (cloudFileAttachmentsDelivered && attachments.length > 0),
+      hasContent: hasComposerContextContent
+        || (cursorCloudCanLaunch && cloudFileAttachmentsDelivered && attachments.length > 0),
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
