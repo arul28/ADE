@@ -17,11 +17,11 @@
  *   left running behind a closed dialog is a leak nobody can see.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { TerminalView } from "../../terminals/TerminalView";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Dialog } from "../../ui/dialog";
+import { Banner } from "../../ui/notice/Banner";
 
 /**
  * Poll cadence for "are we signed in yet".
@@ -201,33 +201,20 @@ export function ProviderSignInModal({
       bodyStyle={{ display: "flex", flexDirection: "column", marginTop: 14, borderTop: `1px solid ${COLORS.border}` }}
     >
       {signedIn ? (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 16px",
-            flexShrink: 0,
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.success,
-            borderBottom: `1px solid ${COLORS.border}`,
-          }}
-        >
-          <CheckCircle size={13} weight="fill" />
-          Signed in to {providerLabel}.
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 16px 0" }}
+          model={{ id: "provider-sign-in-success", tone: "success", title: `Signed in to ${providerLabel}.` }}
+        />
       ) : null}
 
       <div style={{ flex: 1, minHeight: 320, display: "flex", flexDirection: "column" }}>
         {error ? (
-          <div
-            role="alert"
-            style={{ padding: 16, fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.danger, overflowWrap: "anywhere" }}
-          >
-            {error}
-          </div>
+          <Banner
+            layout="inline"
+            style={{ margin: 16 }}
+            model={{ id: "provider-sign-in-error", tone: "error", title: error }}
+          />
         ) : terminal ? (
           <TerminalView
             key={`${providerId}:${terminal.sessionId}`}

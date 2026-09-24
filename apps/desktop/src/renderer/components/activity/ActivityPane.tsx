@@ -39,6 +39,7 @@ import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 import { activityFooterLine, summarizeActivity } from "./activityPriority";
 import { refreshActivitySnapshot } from "./useActivitySync";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import "./Activity.css";
 
 function navigationErrorMessage(error: unknown): string {
@@ -375,10 +376,11 @@ export function ActivityPane({
         {/* While the sheet is up it covers this strip, so the failure is
             reported there instead — one alert, wherever the click was. */}
         {navigationError && !selectedItem ? (
-          <div className="activity-pane-alert" role="alert">
-            <WarningCircle size={14} weight="fill" />
-            <span>{navigationError}</span>
-          </div>
+          <Banner
+            model={{ id: "activity-navigation-error", tone: "error", title: navigationError }}
+            layout="inline"
+            style={{ margin: "8px 12px" }}
+          />
         ) : null}
 
         <div className="activity-pane-body">

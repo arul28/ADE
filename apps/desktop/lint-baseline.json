@@ -76,18 +76,11 @@
     "apps/desktop/src/renderer/components/history/HistoryGitContextMenu.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/history/TimelineToolbar.tsx": {
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/lanes/CommitTimeline.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1
-    },
-    "apps/desktop/src/renderer/components/lanes/LaneDialogShell.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
     },
     "apps/desktop/src/renderer/components/lanes/LanePrBadgePopover.tsx": {
       "ade-ui/no-raw-z-index": 1

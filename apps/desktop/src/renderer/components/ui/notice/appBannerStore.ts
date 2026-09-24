@@ -29,6 +29,8 @@ export const APP_BANNER_PRIORITY = {
   outage: 30,
   /** An integration the user can fix (GitHub, AI provider, relay). */
   integration: 50,
+  /** A ready update should stay visible ahead of transient clipboard/PR prompts. */
+  updatePrompt: 55,
   /** Short floating prompts. */
   prompt: 60,
   default: 100,

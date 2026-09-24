@@ -123,7 +123,7 @@ describe("AutoUpdateBanner", () => {
     expect(title.closest('[data-banner-layout="floating"]')).toBeTruthy();
     expect(getAppBannerEntries().find((entry) => entry.id === "auto-update-ready")).toMatchObject({
       placement: "floating",
-      priority: APP_BANNER_PRIORITY.prompt,
+      priority: APP_BANNER_PRIORITY.updatePrompt,
     });
     expect(screen.getByRole("button", { name: "Restart and install" })).toBeTruthy();
     expect(screen.queryByTestId("app-banner-dock")).toBeNull();

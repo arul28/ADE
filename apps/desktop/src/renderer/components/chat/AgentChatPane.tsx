@@ -13430,9 +13430,15 @@ export function AgentChatPane({
         </div>
       </div>
       {handoffTurnGate ? (
-        <div className="border-b border-amber-300/20 bg-amber-400/10 px-4 py-2 text-[11px] leading-4 text-amber-100/90">
-          A turn is running — wait for it to finish before handing off.
-        </div>
+        <Banner
+          model={{
+            id: "handoff-turn-running",
+            tone: "warning",
+            title: "A turn is running — wait for it to finish before handing off.",
+          }}
+          layout="inline"
+          style={{ margin: "0 16px" }}
+        />
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-4">
         <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
@@ -13623,9 +13629,10 @@ export function AgentChatPane({
       </div>
       <div ref={appleDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
-          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
-            {auxiliaryToolDisabledReason}
-          </div>
+          <Banner
+            model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
+            layout="inline"
+          />
         ) : (
           <ChatIosSimulatorPanel
             key={activeComposerRuntimeBinding?.key ?? "bound"}
@@ -13657,9 +13664,10 @@ export function AgentChatPane({
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
-          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
-            {auxiliaryToolDisabledReason}
-          </div>
+          <Banner
+            model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
+            layout="inline"
+          />
         ) : (
           <ChatAppControlPanel
             key={activeComposerRuntimeBinding?.key ?? "bound"}

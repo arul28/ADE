@@ -11,7 +11,7 @@ import { ReportIssueButton } from "./ReportIssueButton";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 const APP_BANNER = { placement: "docked", priority: APP_BANNER_PRIORITY.app } as const;
-const UPDATE_PROMPT_BANNER = { placement: "floating", priority: APP_BANNER_PRIORITY.prompt } as const;
+const UPDATE_PROMPT_BANNER = { placement: "floating", priority: APP_BANNER_PRIORITY.updatePrompt } as const;
 
 type StalenessBanner = {
   /** Exceptional install states that need a prominent recovery action. */

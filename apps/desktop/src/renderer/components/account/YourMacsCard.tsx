@@ -4,11 +4,9 @@ import {
   ArrowRight,
   CaretDown,
   CaretRight,
-  CircleNotch,
   DesktopTower,
   DotsThreeVertical,
   Laptop,
-  WarningCircle,
 } from "@phosphor-icons/react";
 import type {
   AdeAccountLocalMachineIdentity,
@@ -65,6 +63,7 @@ import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { CustomToolMark } from "../shared/CustomToolMark";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
+import { Banner } from "../ui/notice/Banner";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
 function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
@@ -778,50 +777,28 @@ export function YourMacsCard() {
         stale row must not hide the only Reconnect button.
       */}
       {showReconnectRow ? (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 12,
-            padding: "12px 18px",
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
-          }}
-        >
-          <WarningCircle size={16} weight="fill" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 2 }} />
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-              {missingCopy.title}
-            </div>
-            <div
-              role={reconnectAction.cancels ? "status" : undefined}
-              style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}
-            >
-              {reconnectAction.detail}
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 10 }}>
-              <button
-                type="button"
-                disabled={reconnectAction.disabled || repair.pending}
-                onClick={reconnectAction.onClick}
-                style={(reconnectAction.cancels ? outlineButton : primaryButton)({
-                  height: 30,
-                  fontSize: 12,
-                  padding: "0 12px",
-                  flexShrink: 0,
-                  opacity: reconnectAction.disabled || repair.pending ? 0.6 : 1,
-                  cursor: reconnectAction.disabled || repair.pending ? "not-allowed" : "pointer",
-                })}
-              >
-                {reconnectAction.busy ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : null}
-                {reconnectAction.label}
-              </button>
-              {repair.available ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "12px 18px" }}
+          model={{
+            id: "this-computer-reconnect",
+            tone: "warning",
+            title: missingCopy.title,
+            detail: reconnectAction.detail,
+            busy: reconnectAction.busy,
+            actions: [{
+              label: reconnectAction.label,
+              onClick: reconnectAction.onClick,
+              disabled: reconnectAction.disabled || repair.pending,
+              variant: reconnectAction.cancels ? "secondary" : "solid",
+            }],
+            extra: repair.available ? (
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
                 <BrainRepairButton repair={repair} height={30} disabled={reconnecting} />
-              ) : null}
-            </div>
-          </div>
-        </div>
+              </div>
+            ) : undefined,
+          }}
+        />
       ) : null}
 
       {rows.length > 0 ? (
@@ -1134,19 +1111,11 @@ export function YourMacsCard() {
       ) : null}
 
       {renameError ? (
-        <div
-          role="alert"
-          style={{
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            color: COLORS.danger,
-            lineHeight: 1.5,
-          }}
-        >
-          {renameError}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{ id: "this-computer-rename-error", tone: "error", title: renameError }}
+        />
       ) : null}
 
       {/*
@@ -1157,29 +1126,17 @@ export function YourMacsCard() {
         this row carries them when the attempt came from the ⋮ menu instead.
       */}
       {reconnectAction.cancels && !showReconnectRow ? (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            background: COLORS.recessedBg,
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{
+            id: "this-computer-reconnect-running",
+            tone: "info",
+            title: reconnectAction.detail,
+            busy: true,
+            actions: [{ label: reconnectAction.label, onClick: reconnectAction.onClick, variant: "secondary" }],
           }}
-        >
-          <CircleNotch size={14} weight="bold" className="animate-spin" color={COLORS.textSecondary} />
-          <div style={{ minWidth: 0, flex: 1, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-            {reconnectAction.detail}
-          </div>
-          <button
-            type="button"
-            onClick={reconnectAction.onClick}
-            style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px", flexShrink: 0 })}
-          >
-            {reconnectAction.label}
-          </button>
-        </div>
+        />
       ) : null}
 
       {/*
@@ -1189,38 +1146,23 @@ export function YourMacsCard() {
         shown it already carries a failure's reason in place of its body.
       */}
       {reconnectOutcome && (!showReconnectRow || reconnectOutcome.tone === "success") ? (
-        <div
-          role="status"
-          style={{
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            lineHeight: 1.5,
-            color: reconnectOutcome.tone === "success"
-              ? COLORS.success
-              : reconnectOutcome.tone === "warning"
-                ? COLORS.warning
-                : COLORS.danger,
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{
+            id: "this-computer-reconnect-outcome",
+            tone: reconnectOutcome.tone === "danger" ? "error" : reconnectOutcome.tone,
+            title: reconnectOutcome.message,
           }}
-        >
-          {reconnectOutcome.message}
-        </div>
+        />
       ) : null}
 
       {removeError ? (
-        <div
-          style={{
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            color: COLORS.danger,
-            lineHeight: 1.5,
-          }}
-        >
-          {removeError}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{ id: "this-computer-remove-error", tone: "error", title: removeError }}
+        />
       ) : null}
 
       {(!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))

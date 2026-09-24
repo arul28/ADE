@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   WebConnectionsChip,
@@ -232,7 +232,11 @@ describe("WebConnectionsChip", () => {
 
   it("tells two installs on one Mac apart and warns before removing a live one", async () => {
     const removeAccountMachine = vi.fn(async () => undefined);
-    const confirm = vi.mocked(confirmDialog).mockClear().mockResolvedValue(false);
+    let resolveConfirm: (accepted: boolean) => void = () => {};
+    const confirmation = new Promise<boolean>((resolve) => {
+      resolveConfirm = resolve;
+    });
+    const confirm = vi.mocked(confirmDialog).mockClear().mockReturnValueOnce(confirmation);
     try {
       renderChip(
         [
@@ -254,7 +258,10 @@ describe("WebConnectionsChip", () => {
       expect(options?.title).toBe("Remove MacBook Pro · ADE Alpha from your ADE account?");
       expect(String(options?.message)).toContain("It was active 1 minute ago.");
       // Declined: nothing is removed.
-      await Promise.resolve();
+      await act(async () => {
+        resolveConfirm(false);
+        await expect(confirmation).resolves.toBe(false);
+      });
       expect(removeAccountMachine).not.toHaveBeenCalled();
     } finally {
       confirm.mockClear();

@@ -10,6 +10,7 @@ import { COLORS, MONO_FONT, SANS_FONT } from "../../components/lanes/laneDesignT
 import { accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
 import { confirmDialog } from "../../components/ui/dialog/confirm";
 import { ViewportOverlayHost } from "../../components/ui/ViewportOverlayHost";
+import { Banner } from "../../components/ui/notice/Banner";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -297,18 +298,11 @@ export function WebConnectionsChip() {
           </div>
 
           {error ? (
-            <div
-              role="alert"
-              className="px-3 py-2 text-[10.5px] leading-4"
-              style={{
-                borderTop: `1px solid ${COLORS.borderMuted}`,
-                background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-                color: COLORS.danger,
-                fontFamily: SANS_FONT,
-              }}
-            >
-              {error}
-            </div>
+            <Banner
+              layout="inline"
+              style={{ margin: "8px 12px" }}
+              model={{ id: "web-connections-error", tone: "error", title: error }}
+            />
           ) : null}
           <div
             className="px-3 py-2.5 text-[10px] leading-4"

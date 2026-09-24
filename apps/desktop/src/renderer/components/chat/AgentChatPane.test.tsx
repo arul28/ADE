@@ -1480,7 +1480,6 @@ describe("AgentChatPane remote startup", () => {
     renderPane(session);
 
     await screen.findByRole("button", { name: /^Select model/ });
-    await Promise.resolve();
 
     expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
   });
@@ -1849,7 +1848,6 @@ describe("AgentChatPane remote startup", () => {
     renderPane(session);
 
     await screen.findByRole("button", { name: /^Select model/ });
-    await Promise.resolve();
 
     expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
   });

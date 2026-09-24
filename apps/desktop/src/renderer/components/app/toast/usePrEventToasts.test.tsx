@@ -13,6 +13,7 @@ import {
   buildAutoLinkedPrToast,
   buildPrNotificationToast,
 } from "./usePrEventToasts";
+import { STALE_CLI_TOAST_ID, buildStaleCliToast } from "./useStaleCliToast";
 
 type PrNotification = Extract<PrEventPayload, { type: "pr-notification" }>;
 type PrAutoLinked = Extract<PrEventPayload, { type: "pr-auto-linked" }>;
@@ -97,10 +98,17 @@ describe("PR notification toast", () => {
       showToast(buildPrNotificationToast(notification(), null, navigate));
     });
 
-    openInGitHub.mockRejectedValueOnce(new Error("offline"));
+    let rejectOpen: (error: Error) => void = () => {};
+    const failedOpen = new Promise<never>((_resolve, reject) => {
+      rejectOpen = reject;
+    });
+    openInGitHub.mockReturnValueOnce(failedOpen);
     fireEvent.click(screen.getByRole("button", { name: "Open on GitHub" }));
     await waitFor(() => expect(openInGitHub).toHaveBeenCalledWith("pr-1"));
-    await Promise.resolve();
+    await act(async () => {
+      rejectOpen(new Error("offline"));
+      await expect(failedOpen).rejects.toThrow("offline");
+    });
     expect(getToasts()).toHaveLength(1);
 
     openInGitHub.mockResolvedValueOnce(undefined);
@@ -142,5 +150,36 @@ describe("auto-linked PR toast", () => {
     deletePr.mockResolvedValueOnce(undefined);
     fireEvent.click(screen.getByRole("button", { name: "Retry undo" }));
     await waitFor(() => expect(getToasts()).toHaveLength(0));
+  });
+});
+
+describe("idle CLI sessions toast", () => {
+  it("is sticky, snoozes through ×, and folds lanes past four into +N more", () => {
+    const onDismiss = vi.fn();
+    const onView = vi.fn();
+    const lanes = ["a", "b", "c", "d", "e", "f"].map((id, index) => ({
+      laneId: id,
+      laneName: `Lane ${id}`,
+      count: index === 0 ? 3 : 1,
+      color: null,
+    }));
+    const toast = buildStaleCliToast({ count: 8, ageHours: 26, lanes, onViewProcesses: onView, onDismiss });
+    expect(toast.id).toBe(STALE_CLI_TOAST_ID);
+    expect(toast.durationMs).toBe(0);
+    expect(toast.chips?.map((chip) => chip.label)).toEqual(["Lane a ×3", "Lane b", "Lane c", "Lane d", "+2 more"]);
+
+    render(<ToastStack />);
+    act(() => {
+      showToast(toast);
+    });
+    expect(screen.getByText("Idle sessions")).toBeTruthy();
+    expect(screen.getByText("8 CLI or shell sessions sitting idle")).toBeTruthy();
+    expect(
+      screen.getByText("No activity for about 26 hours. Close anything you're done with to free up memory."),
+    ).toBeTruthy();
+    const close = screen.getByTitle("Dismiss for an hour");
+    fireEvent.click(close);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onView).not.toHaveBeenCalled();
   });
 });

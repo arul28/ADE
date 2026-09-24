@@ -17,8 +17,9 @@ import { LaneSetupCard, LaunchStageGlyph } from "../chat/launch/LaneSetupCard";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { useLaunchDurationText } from "../chat/launch/launchClock";
 import { LaneIcon } from "../ui/vcsIcons";
-import { NoticeCloseButton, NoticeIcon } from "../ui/notice/NoticeParts";
-import { NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
+import { NoticeIcon } from "../ui/notice/NoticeParts";
+import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
+import { ToastCard } from "../ui/notice/ToastCard";
 
 /** A launch's tone on the shared notice palette: failed is red, like every other failure. */
 function launchTone(failed: boolean, succeeded: boolean): NoticeTone {
@@ -207,45 +208,26 @@ export function ChatLaunchesSlideOut() {
 
   if (launches.length === 0) return null;
   const hasFailure = launches.some((launch) => launch.phase === "failed");
-  const tone: NoticeTone = anyRunning ? "accent" : hasFailure ? "error" : "success";
+  const tone: NoticeTone = hasFailure ? "error" : anyRunning ? "accent" : "success";
   return (
-    <section
-      data-testid="chat-launches-slide-out"
-      aria-label="Launches"
-      className="pointer-events-auto overflow-hidden"
-      style={{
-        ...NOTICE_FLOAT_SURFACE,
-        borderRadius: 14,
-        border: `1px solid ${noticeTone(hasFailure ? "error" : "neutral").edge}`,
-        fontFamily: "var(--font-sans)",
-        color: "var(--color-fg)",
+    <ToastCard
+      testId="chat-launches-slide-out"
+      model={{
+        tone,
+        title: <span data-testid="chat-launches-headline">{slideOutHeadline(launches)}</span>,
+        icon: anyRunning ? <LaneIcon size={12} weight="bold" /> : hasFailure ? <Warning size={12} weight="bold" /> : <Check size={12} weight="bold" />,
+        content: (
+          <ul data-testid="chat-launches-list" className="max-h-[min(60vh,420px)] divide-y divide-fg/[0.07] overflow-y-auto">
+            {launches.map((launch) => (
+              <LaunchRow key={launch.launchId} launch={launch} />
+            ))}
+          </ul>
+        ),
+        closeLabel: "Dismiss launches",
+        closeTitle: "Dismiss",
       }}
-    >
-      <header className="flex items-center gap-2.5 border-b border-fg/[0.07] py-2 pl-3 pr-2">
-        <NoticeIcon
-          tone={tone}
-          size="sm"
-          icon={anyRunning ? <LaneIcon size={12} weight="bold" /> : hasFailure ? <Warning size={12} weight="bold" /> : <Check size={12} weight="bold" />}
-        />
-        <span
-          className="min-w-0 flex-1 truncate"
-          style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}
-          data-testid="chat-launches-headline"
-        >
-          {slideOutHeadline(launches)}
-        </span>
-        <NoticeCloseButton
-          label="Dismiss launches"
-          title="Dismiss"
-          onClick={() => dismissChatLaunches(launches.map((launch) => launch.launchId))}
-        />
-      </header>
-      <ul className="max-h-[min(60vh,420px)] divide-y divide-fg/[0.07] overflow-y-auto">
-        {launches.map((launch) => (
-          <LaunchRow key={launch.launchId} launch={launch} />
-        ))}
-      </ul>
-    </section>
+      onClose={() => dismissChatLaunches(launches.map((launch) => launch.launchId))}
+    />
   );
 }
 

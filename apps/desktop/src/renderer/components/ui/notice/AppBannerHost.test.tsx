@@ -175,6 +175,28 @@ describe("AppBannerHost", () => {
     expect(dockedIds()).toEqual(["docked"]);
   });
 
+  it("keeps the ready-update reminder visible ahead of generic floating prompts", () => {
+    render(
+      <>
+        <Owner
+          items={[
+            { model: banner("clipboard"), options: { placement: "floating", priority: APP_BANNER_PRIORITY.prompt } },
+            { model: banner("cross-repo"), options: { placement: "floating", priority: APP_BANNER_PRIORITY.prompt } },
+            { model: banner("ready-update"), options: { placement: "floating", priority: APP_BANNER_PRIORITY.updatePrompt } },
+          ]}
+        />
+        <AppBannerHost />
+      </>,
+    );
+
+    const floating = screen.getByTestId("app-banner-floating");
+    const floatingIds = Array.from(floating.querySelectorAll("[data-banner-id]")).map((el) =>
+      el.getAttribute("data-banner-id"),
+    );
+    expect(floatingIds).toEqual(["ready-update", "clipboard"]);
+    expect(floating.querySelector("[data-banner-id='ready-update']")).toBeTruthy();
+  });
+
   it("unregisters everything an owner raised when it unmounts", () => {
     const { rerender } = render(
       <>

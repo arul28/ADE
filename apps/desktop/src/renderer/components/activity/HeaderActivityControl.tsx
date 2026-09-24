@@ -31,6 +31,7 @@ import {
 } from "../../state/activityStore";
 import { cn } from "../ui/cn";
 import { HeaderSheet } from "../app/HeaderSheet";
+import { Banner } from "../ui/notice/Banner";
 import { ActivityAllClear } from "./ActivityAllClear";
 import { ActivityCard } from "./ActivityCard";
 import { ActivitySectionHeader } from "./ActivitySectionHeader";
@@ -499,41 +500,46 @@ export function HeaderActivityControl({
         </header>
 
         {navigationError ? (
-          <div className="activity-hdr-alert" role="alert">
-            <WarningCircle size={14} weight="fill" />
-            <span>{navigationError}</span>
-          </div>
+          <Banner
+            model={{ id: "activity-header-navigation-error", tone: "error", title: navigationError }}
+            layout="inline"
+            style={{ margin: "8px 12px" }}
+          />
         ) : null}
 
         {degraded ? (
-          <div className="activity-hdr-note" role="status">
-            <WifiSlash size={12} />
-            <span>{availability.message}</span>
-          </div>
+          <Banner
+            model={{ id: "activity-header-degraded", tone: "warning", title: availability.message }}
+            layout="inline"
+            style={{ margin: "0 12px 8px" }}
+          />
         ) : null}
 
         {signedOut && !signedOutEmpty ? (
-          <div className="activity-hdr-note" role="status">
-            <BellSimpleSlash size={12} />
-            <span>
-              {availability?.message
-                ?? "Showing work from this machine. Sign in to combine every ADE machine."}
-            </span>
-          </div>
+          <Banner
+            model={{
+              id: "activity-header-signed-out",
+              tone: "neutral",
+              title: availability?.message
+                ?? "Showing work from this machine. Sign in to combine every ADE machine.",
+            }}
+            layout="inline"
+            style={{ margin: "0 12px 8px" }}
+          />
         ) : null}
 
         {notchNeedsAttention ? (
-          <div className="activity-hdr-note activity-hdr-notch-health" role="status">
-            <WarningCircle size={12} weight="fill" />
-            <span>
-              <strong>{notchHealth.title}</strong>
-              {" "}
-              {notchHealth.message}
-            </span>
-            <button type="button" onClick={() => void retryNotch()}>
-              Check again
-            </button>
-          </div>
+          <Banner
+            model={{
+              id: "activity-header-notch-health",
+              tone: "warning",
+              title: notchHealth.title,
+              detail: notchHealth.message,
+              actions: [{ label: "Check again", onClick: () => void retryNotch() }],
+            }}
+            layout="inline"
+            style={{ margin: "0 12px 8px" }}
+          />
         ) : null}
 
         {summary.staleMachineCount > 0 && summary.offlineMachines.length > 0 ? (

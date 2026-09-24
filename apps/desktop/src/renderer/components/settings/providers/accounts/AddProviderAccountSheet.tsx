@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle, CircleNotch } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../../ui/dialog";
+import { Banner } from "../../../ui/notice/Banner";
 import { TerminalView } from "../../../terminals/TerminalView";
 import type {
   ProviderInstance,
@@ -302,21 +303,11 @@ export function AddProviderAccountSheet({
       actions={actions}
     >
       {error ? (
-        <div
-          role="alert"
-          style={{
-            padding: "8px 20px",
-            fontSize: 11,
-            fontFamily: SANS_FONT,
-            lineHeight: 1.5,
-            color: COLORS.danger,
-            background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-            borderBottom: `1px solid ${COLORS.border}`,
-            overflowWrap: "anywhere",
-          }}
-        >
-          {error}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 20px 0" }}
+          model={{ id: "provider-account-error", tone: "error", title: error }}
+        />
       ) : null}
 
       {phase === "form" ? (

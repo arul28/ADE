@@ -4,7 +4,6 @@ import {
   CaretDown,
   GitMerge,
   Terminal,
-  Warning,
 } from "@phosphor-icons/react";
 
 import type {
@@ -14,6 +13,7 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types/prs";
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
+import { Banner } from "../../ui/notice/Banner";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import {
   buildDefaultCommitMessage,
@@ -206,23 +206,19 @@ export const PrMergeDialog = memo(function PrMergeDialog({
       title={`Merge pull request #${pr.githubPrNumber}`}
       icon={GitMerge}
       busy={actionBusy}
-      widthClassName="w-[min(660px,calc(100vw-2rem))]"
+      width="min(660px, calc(100vw - 2rem))"
     >
       <div className="flex flex-col gap-4">
         {staleHead ? (
-          <div
-            data-testid="pr-merge-stale-head"
-            className="flex items-start gap-2 rounded-lg px-3 py-2 text-[11px] leading-snug"
-            style={{
-              color: COLORS.warning,
-              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-              border: "1px solid color-mix(in srgb, var(--color-warning) 28%, transparent)",
-              fontFamily: SANS_FONT,
+          <Banner
+            model={{
+              id: "pr-merge-stale-head",
+              tone: "warning",
+              title: "PR updated since you opened — defaults refreshed.",
             }}
-          >
-            <Warning size={14} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
-            PR updated since you opened — defaults refreshed.
-          </div>
+            layout="inline"
+            testId="pr-merge-stale-head"
+          />
         ) : null}
 
         {/* Method dropdown */}
@@ -344,13 +340,15 @@ export const PrMergeDialog = memo(function PrMergeDialog({
         )}
 
         {skips.length > 0 ? (
-          <div
-            data-testid="pr-merge-skips"
-            className="rounded-md px-2.5 py-2 text-[11px]"
-            style={{ color: COLORS.warning, background: `color-mix(in srgb, ${COLORS.warning} 10%, transparent)`, fontFamily: SANS_FONT, lineHeight: 1.5 }}
-          >
-            Merging now skips: {skips.join(", ")}.
-          </div>
+          <Banner
+            model={{
+              id: "pr-merge-skips",
+              tone: "warning",
+              title: `Merging now skips: ${skips.join(", ")}.`,
+            }}
+            layout="inline"
+            testId="pr-merge-skips"
+          />
         ) : null}
 
         {/* Bypass (admins only, only when blocked) */}

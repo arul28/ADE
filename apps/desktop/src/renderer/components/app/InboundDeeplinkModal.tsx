@@ -1,5 +1,5 @@
 import React from "react";
-import { GitBranch, Warning } from "@phosphor-icons/react";
+import { GitBranch } from "@phosphor-icons/react";
 
 import {
   COLORS,
@@ -17,6 +17,7 @@ import type {
 import type { DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { openExternalUrl } from "../../lib/openExternal";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { Banner } from "../ui/notice";
 
 export type InboundBranchDeeplink = {
   repoOwner: string;
@@ -447,10 +448,10 @@ export function InboundDeeplinkModal({
         </div>
       )}
       {blocking ? (
-        <div style={{ display: "flex", gap: 10, padding: "10px 12px", borderRadius: 9, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>
-          <Warning size={15} weight="fill" style={{ marginTop: 2, flexShrink: 0 }} />
-          <span>{blocking}</span>
-        </div>
+        <Banner
+          layout="inline"
+          model={{ id: "inbound-branch-import-blocked", tone: "error", title: blocking }}
+        />
       ) : null}
     </>,
     [

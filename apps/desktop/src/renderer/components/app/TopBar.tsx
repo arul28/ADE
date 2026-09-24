@@ -43,6 +43,7 @@ import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice/Banner";
 import {
   readStoredProjectRoute,
   removeStoredProjectRoute,
@@ -897,12 +898,11 @@ function ProjectTabIcon({
         </div>
 
         {iconError ? (
-          <div
-            role="alert"
-            className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200"
-          >
-            {iconError}
-          </div>
+          <Banner
+            model={{ id: "project-icon-error", tone: "error", title: iconError }}
+            layout="inline"
+            style={{ marginTop: 12 }}
+          />
         ) : null}
       </AppDialog>
     </>
@@ -2920,26 +2920,21 @@ export function TopBar({
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
-      {typeof document !== "undefined" && !webMode && connectionsOpen
-        ? createPortal(
-            <HeaderSheet
-              open
-              bare
-              panelRef={connectionsPanelRef}
-              title="Connections"
-              width="w-[min(560px,calc(100vw-24px))]"
-              onClose={closeConnections}
-            >
-              <ConnectionsPanel
-                initialTab={connectionsTab}
-                onClose={closeConnections}
-                onDisconnectRequested={handleRemoteTargetDisconnectRequested}
-                onRemoveRequested={handleRemoteTargetRemoveRequested}
-              />
-            </HeaderSheet>,
-            document.body,
-          )
-        : null}
+      <HeaderSheet
+        open={connectionsOpen && !webMode}
+        bare
+        panelRef={connectionsPanelRef}
+        title="Connections"
+        width="w-[min(560px,calc(100vw-24px))]"
+        onClose={closeConnections}
+      >
+        <ConnectionsPanel
+          initialTab={connectionsTab}
+          onClose={closeConnections}
+          onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+          onRemoveRequested={handleRemoteTargetRemoveRequested}
+        />
+      </HeaderSheet>
 
       <FeedbackReporterModal
         open={feedbackOpen}

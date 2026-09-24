@@ -15,6 +15,7 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../../lanes/laneDesignTokens";
 import { Dialog } from "../../../ui/dialog";
+import { Banner } from "../../../ui/notice/Banner";
 import type { ApiCredentialSummary } from "../../../../../shared/types/apiCredentials";
 import {
   PROTOCOL_OPTIONS,
@@ -205,21 +206,11 @@ export function AddApiKeySheet({
       ]}
     >
       {error ? (
-        <div
-          role="alert"
-          style={{
-            padding: "8px 20px",
-            fontSize: 11,
-            fontFamily: SANS_FONT,
-            lineHeight: 1.5,
-            color: COLORS.danger,
-            background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-            borderBottom: `1px solid ${COLORS.border}`,
-            overflowWrap: "anywhere",
-          }}
-        >
-          {error}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 20px 0" }}
+          model={{ id: "provider-api-key-error", tone: "error", title: error }}
+        />
       ) : null}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "16px 20px 4px" }}>

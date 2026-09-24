@@ -15,6 +15,7 @@ import type {
 import { Button } from "../ui/Button";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import { cn } from "../ui/cn";
 import { extractError } from "./shared";
 import { inputCls } from "./designTokens";
@@ -588,9 +589,15 @@ function ManualRunModal({
         </select>
       </label>
       {!lanes.length ? (
-        <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-          No active lanes are available. Switch the rule to create a lane per run, or create a lane from the Work tab.
-        </div>
+        <Banner
+          model={{
+            id: "automation-no-active-lanes",
+            tone: "warning",
+            title: "No active lanes are available. Switch the rule to create a lane per run, or create a lane from the Work tab.",
+          }}
+          layout="inline"
+          style={{ marginTop: 12 }}
+        />
       ) : null}
     </Dialog>
   );

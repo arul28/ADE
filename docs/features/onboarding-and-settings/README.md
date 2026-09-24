@@ -363,14 +363,14 @@ Renderer — onboarding:
   account-directory targets and their paired credentials are owner-tagged and
   removed with that account.
 - `apps/desktop/src/renderer/components/account/AccountSignedOutBanner.tsx` —
-  the permanent bar ADE shows while the account is not usable. It renders the
-  shared `Banner` primitive with `dismiss: false`, because `bannerDismiss.ts`
-  is for banners a user may reasonably live with and this is not one of them:
-  the only way to clear it is to sign in, or to repair a store ADE could not
-  read. It mounts in `AppShell` above `AutoUpdateBanner` and outside every
-  project condition, because `AppBannerHost` is mounted outside project gating
-  and this bar has to reach welcome and projectless windows too. `IntegrationBanners`
-  registers project-dependent integration states with that global host.
+  the permanent bar ADE shows while the account is not usable. It registers a
+  model with `AppBannerHost`, which renders it through the shared `Banner`
+  primitive with `dismiss: false`, because `bannerDismiss.ts` is for banners a
+  user may reasonably live with and this is not one of them: the only way to
+  clear it is to sign in, or to repair a store ADE could not read. The global
+  host is mounted in `AppShell` outside every project condition, so this bar
+  reaches welcome and projectless windows too. `IntegrationBanners` registers
+  project-dependent integration states with that same host.
   It hides itself on `/account`, where its own action would lead. All four
   states' copy lives in one record in `renderer/lib/account.ts`, so a new
   state is a type error rather than a missing case. The same bar carries the

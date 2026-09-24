@@ -635,25 +635,19 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           ) : null}
 
           {shouldShowGhAuthInstructions ? (
-            <div style={{
-              padding: 14,
-              border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
-              background: COLORS.recessedBg,
-              borderRadius: 0,
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <TerminalWindow size={16} weight="duotone" style={{ color: COLORS.warning }} />
-                <span style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  GitHub CLI auth
-                </span>
-              </div>
-              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
-                {githubStatus?.ghAuthError
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-cli-auth-instructions",
+                tone: "warning",
+                icon: <TerminalWindow size={15} weight="duotone" />,
+                title: "GitHub CLI auth",
+                detail: githubStatus?.ghAuthError
                   ? githubStatus.ghAuthError
-                  : "Run this command in Terminal, then refresh this panel."}
-                <code style={commandStyle}>{ghCommand}</code>
-              </div>
-            </div>
+                  : "Run this command in Terminal, then refresh this panel.",
+                extra: <code style={commandStyle}>{ghCommand}</code>,
+              }}
+            />
           ) : null}
         </div>
       </SettingsManagerPage>

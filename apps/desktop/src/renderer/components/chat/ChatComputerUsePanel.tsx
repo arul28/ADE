@@ -30,6 +30,7 @@ import {
 } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
   externalArtifactUrl,
@@ -88,6 +89,15 @@ function ProofProvenanceLines({ artifact, className, warningClassName }: {
         </div>
       ) : null}
     </>
+  );
+}
+
+function ProofPreviewFailureNotice({ failureText }: { failureText: string }) {
+  return (
+    <Banner
+      model={{ id: "proof-preview-failed", tone: "warning", title: failureText }}
+      layout="inline"
+    />
   );
 }
 
@@ -205,12 +215,7 @@ function ArtifactLightbox({
       </div>
       <div className="min-h-0 flex-1 overflow-auto bg-black/30 p-3">
         {failed ? (
-          <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
-            <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
-            <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
-              {failureText}
-            </div>
-          </div>
+          <ProofPreviewFailureNotice failureText={failureText} />
         ) : media === "video" ? (
           <video
             src={preview}
@@ -310,12 +315,7 @@ export function ChatProofArtifactCard({
         ) : failed ? (
           // Broken proof shrinks. A full-height empty box wastes the most
           // valuable space in a 322px rail to say nothing.
-          <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
-            <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
-            <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
-              {failureText}
-            </div>
-          </div>
+          <ProofPreviewFailureNotice failureText={failureText} />
         ) : preview && image ? (
           <button
             type="button"
@@ -672,24 +672,19 @@ export function ChatComputerUsePanel({
       </div>
 
       {brokenCount > 0 ? (
-        <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200/[0.1] bg-amber-300/[0.035] px-2.5 py-1.5">
-          <span className="min-w-0 font-sans text-[9.5px] leading-[13px] text-muted-fg/48">
-            {brokenCount} item{brokenCount === 1 ? " has" : "s have"} no stored file.
-          </span>
-          <button
-            type="button"
-            onClick={handlePruneBroken}
-            className="shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[9.5px] font-medium text-amber-100/60 transition-colors hover:bg-amber-300/[0.1] hover:text-amber-50/90"
-          >
-            Remove {brokenCount === 1 ? "it" : "them"}
-          </button>
-        </div>
+        <Banner
+          model={{
+            id: "proof-artifacts-missing-files",
+            tone: "warning",
+            title: `${brokenCount} item${brokenCount === 1 ? " has" : "s have"} no stored file.`,
+            actions: [{ label: `Remove ${brokenCount === 1 ? "it" : "them"}`, onClick: handlePruneBroken }],
+          }}
+          layout="inline"
+        />
       ) : null}
 
       {error ? (
-        <div className="rounded-lg border border-red-400/20 bg-red-500/[0.06] px-2.5 py-1.5 font-sans text-[9.5px] leading-[13px] text-red-200/70">
-          {error}
-        </div>
+        <Banner model={{ id: "proof-artifact-error", tone: "error", title: error }} layout="inline" />
       ) : null}
 
       <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">

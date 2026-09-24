@@ -35,9 +35,12 @@
 .ade-notice-close {
   transition: background-color 120ms ease, color 120ms ease;
 }
-.ade-notice-close:hover {
+.ade-notice-close:not(:disabled):hover {
   background: color-mix(in srgb, var(--color-fg) 7%, transparent) !important;
   color: var(--color-fg) !important;
+}
+.ade-notice-close:disabled {
+  opacity: 0.45;
 }
 
 .ade-notice-more:hover {

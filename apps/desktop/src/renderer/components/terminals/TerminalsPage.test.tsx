@@ -2493,7 +2493,11 @@ describe("TerminalsPage chat session activation", () => {
   it("does not delete when the stop-and-delete confirmation is dismissed", async () => {
     const runningCli = workMocks.makeTerminalSession("cli-cancel", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
-    const confirmSpy = vi.mocked(confirmDialog).mockClear();
+    let resolveConfirm: (accepted: boolean) => void = () => {};
+    const confirmation = new Promise<boolean>((resolve) => {
+      resolveConfirm = resolve;
+    });
+    const confirmSpy = vi.mocked(confirmDialog).mockClear().mockReturnValueOnce(confirmation);
 
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2523,7 +2527,10 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => expect(confirmSpy).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Stop and delete session" }),
     ));
-    await Promise.resolve();
+    await act(async () => {
+      resolveConfirm(false);
+      await expect(confirmation).resolves.toBe(false);
+    });
     expect(sessionDelete).not.toHaveBeenCalled();
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalled();
   });
@@ -2763,7 +2770,7 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-live");
     });
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("chat-stale");
-    const banner = await screen.findByRole("status");
+    const banner = await screen.findByRole("alert");
     expect(banner.textContent).toContain("1 of 2 deleted");
     expect(banner.textContent).not.toContain("Error invoking remote method");
     expect(banner.textContent).toContain("Refresh the list");

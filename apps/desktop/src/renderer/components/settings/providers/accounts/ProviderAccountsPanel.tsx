@@ -28,6 +28,7 @@ import {
 } from "../../../lanes/laneDesignTokens";
 import { ProviderPanel } from "../../providerSectionPrimitives";
 import { confirmDialog } from "../../../ui/dialog";
+import { Banner } from "../../../ui/notice/Banner";
 import { providerColor } from "../../../usage/providerColors";
 import { useAppStore } from "../../../../state/appStore";
 import { useClickOutside } from "../../../../hooks/useClickOutside";
@@ -539,21 +540,11 @@ export function ProviderAccountsPanel({
       }
     >
       {shownError ? (
-        <div
-          role="alert"
-          ref={errorRef}
-          style={{
-            padding: "6px 8px",
-            fontSize: 11,
-            fontFamily: SANS_FONT,
-            lineHeight: 1.5,
-            color: COLORS.danger,
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-            overflowWrap: "anywhere",
-          }}
-        >
-          {shownError}
+        <div ref={errorRef} tabIndex={-1}>
+          <Banner
+            layout="inline"
+            model={{ id: "provider-accounts-error", tone: "error", title: shownError }}
+          />
         </div>
       ) : null}
 

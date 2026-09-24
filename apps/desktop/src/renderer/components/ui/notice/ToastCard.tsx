@@ -53,6 +53,8 @@ export type ToastCardModel = {
   actions?: ToastCardAction[];
   /** Default true. */
   dismissible?: boolean;
+  /** Accessible name for the close button, defaults to `Dismiss: <title>`. */
+  closeLabel?: string;
   closeTitle?: string;
 };
 
@@ -63,6 +65,7 @@ export function ToastCard({
   onMouseEnter,
   onMouseLeave,
   className,
+  testId,
 }: {
   model: ToastCardModel;
   onClose?: () => void;
@@ -71,6 +74,7 @@ export function ToastCard({
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
   className?: string;
+  testId?: string;
 }): JSX.Element {
   const tokens = noticeTone(model.tone);
   const titleText = typeof model.title === "string" ? model.title : "notification";
@@ -80,6 +84,7 @@ export function ToastCard({
     <div
       role={model.tone === "error" ? "alert" : "status"}
       data-notice-tone={model.tone}
+      data-testid={testId}
       className={className}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -147,7 +152,7 @@ export function ToastCard({
             {model.dismissible === false || !onClose ? null : (
               <NoticeCloseButton
                 onClick={onClose}
-                label={`Dismiss: ${titleText}`}
+                label={model.closeLabel ?? `Dismiss: ${titleText}`}
                 title={model.closeTitle ?? "Dismiss"}
               />
             )}

@@ -16,6 +16,7 @@ import {
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { QRCodeSVG } from "qrcode.react";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import {
   isBrainAccountSessionFailure,
   type AdeAccountSessionState,
@@ -376,19 +377,11 @@ export function ThisMacCard({
       </div>
 
       {crdtUnavailable ? (
-        <div
-          role="alert"
-          style={{
-            ...helperTextStyle,
-            color: COLORS.warning,
-            border: `1px solid ${COLORS.warning}55`,
-            borderRadius: 8,
-            padding: "9px 10px",
-            background: `${COLORS.warning}12`,
-          }}
-        >
-          {status.blockingStateText}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 0" }}
+          model={{ id: "sync-devices-crdt-unavailable", tone: "warning", title: status.blockingStateText }}
+        />
       ) : null}
 
       {host && !crdtUnavailable ? (

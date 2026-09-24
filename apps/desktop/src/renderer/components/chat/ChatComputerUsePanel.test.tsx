@@ -364,7 +364,7 @@ describe("proof rendering", () => {
     expect(player?.className).toContain("object-contain");
     expect(player?.className).not.toContain("object-cover");
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "Play Sim recording" }));

@@ -17,6 +17,7 @@ import type {
   BuiltInBrowserRecordingStatus,
 } from "../../../shared/types/builtInBrowser";
 import { BrowserLoginImportDialog } from "./BrowserLoginImportDialog";
+import { Banner } from "../ui/notice/Banner";
 import { browserToolbarLayout } from "./browser/builtInBrowserToolbar";
 import {
   activeEmulationPresetId,
@@ -2706,35 +2707,19 @@ export function ChatBuiltInBrowserPanel({
         />
 
         {pendingApproval ? (
-          <div
-            role="alert"
-            className="flex h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-amber-300/15 bg-amber-500/10 px-2.5 text-[11.5px] text-amber-100/90"
-          >
-            <span className="min-w-0 flex-1 truncate">
-              {`Agent wants to reach port ${pendingApproval.remotePort} on ${pendingApproval.machineLabel}`}
-            </span>
-            <button
-              type="button"
-              onClick={() => pendingApproval.decide("once")}
-              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-50/90 transition-colors duration-[120ms] ease-out hover:bg-amber-400/15"
-            >
-              Allow once
-            </button>
-            <button
-              type="button"
-              onClick={() => pendingApproval.decide("always")}
-              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-50/90 transition-colors duration-[120ms] ease-out hover:bg-amber-400/15"
-            >
-              Always for this lane
-            </button>
-            <button
-              type="button"
-              onClick={() => pendingApproval.decide("deny")}
-              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-100/65 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]"
-            >
-              Deny
-            </button>
-          </div>
+          <Banner
+            model={{
+              id: "browser-port-approval",
+              tone: "warning",
+              title: `Agent wants to reach port ${pendingApproval.remotePort} on ${pendingApproval.machineLabel}`,
+              actions: [
+                { label: "Allow once", onClick: () => pendingApproval.decide("once") },
+                { label: "Always for this lane", onClick: () => pendingApproval.decide("always"), variant: "secondary" },
+                { label: "Deny", onClick: () => pendingApproval.decide("deny"), variant: "link" },
+              ],
+            }}
+            layout="inline"
+          />
         ) : null}
 
         <BrowserToolbarRow

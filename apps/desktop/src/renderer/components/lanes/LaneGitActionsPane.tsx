@@ -2203,147 +2203,85 @@ export function LaneGitActionsPane({
       )}
 
       {stuckRebase ? (
-        <div
-          className="shrink-0"
-          style={{
-            padding: "10px 16px",
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px", flexShrink: 0 }}
+          model={{
+            id: `lane-stuck-rebase:${laneId ?? ""}`,
+            tone: "error",
+            title: "Rebase in progress",
+            detail: stuckRebase.conflictedFiles.length > 0
+              ? `${stuckRebase.conflictedFiles.length} conflicted file${stuckRebase.conflictedFiles.length === 1 ? "" : "s"}. Commits and pushes are blocked until you resolve them.`
+              : "An interrupted rebase is blocking commits and pushes. Abort or continue to unlock the lane.",
+            actions: [
+              ...(stuckRebase.canAbort ? [{
+                label: "Abort rebase",
+                title: "Cancel the rebase and return to the state before it started. Command: git rebase --abort. Undo the rebase and restore the previous branch state. Warning: Any resolved conflicts will be lost.",
+                variant: "secondary" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("abort rebase", async () => {
+                    await window.ade.git.rebaseAbort(laneId, pin);
+                  });
+                },
+              }] : []),
+              ...(stuckRebase.canContinue ? [{
+                label: "Continue rebase",
+                title: "Continue the rebase after resolving conflicts. The next commit in the rebase sequence will be applied. Command: git rebase --continue. Apply resolved conflicts and continue rebasing.",
+                variant: "solid" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("continue rebase", async () => {
+                    await window.ade.git.rebaseContinue(laneId, pin);
+                  });
+                },
+              }] : []),
+            ],
           }}
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <Warning size={16} weight="bold" color={COLORS.danger} style={{ flexShrink: 0 }} />
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "0.8px", textTransform: "uppercase", color: COLORS.danger }}>
-                Rebase in progress
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2, letterSpacing: "0.3px" }}>
-                {stuckRebase.conflictedFiles.length > 0
-                  ? `${stuckRebase.conflictedFiles.length} conflicted file${stuckRebase.conflictedFiles.length === 1 ? "" : "s"}. Commits and pushes are blocked until you resolve them.`
-                  : "An interrupted rebase is blocking commits and pushes. Abort or continue to unlock the lane."}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {stuckRebase.canAbort ? (
-                <SmartTooltip content={{
-                  label: "Abort Rebase",
-                  description: "Cancel the rebase and return to the state before it started. All rebase progress is discarded.",
-                  gitCommand: "git rebase --abort",
-                  effect: "Undo the rebase and restore the previous branch state",
-                  warning: "Any resolved conflicts will be lost",
-                }}>
-                  <button
-                    type="button"
-                    style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("abort rebase", async () => {
-                        await window.ade.git.rebaseAbort(laneId, pin);
-                      });
-                    }}
-                  >
-                    ABORT REBASE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-              {stuckRebase.canContinue ? (
-                <SmartTooltip content={{
-                  label: "Continue Rebase",
-                  description: "Continue the rebase after resolving conflicts. The next commit in the rebase sequence will be applied.",
-                  gitCommand: "git rebase --continue",
-                  effect: "Apply resolved conflicts and continue rebasing",
-                }}>
-                  <button
-                    type="button"
-                    style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("continue rebase", async () => {
-                        await window.ade.git.rebaseContinue(laneId, pin);
-                      });
-                    }}
-                  >
-                    CONTINUE REBASE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        />
       ) : null}
 
       {mergeConflictState ? (
-        <div
-          className="shrink-0"
-          style={{
-            padding: "10px 16px",
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px", flexShrink: 0 }}
+          model={{
+            id: `lane-merge-conflict:${laneId ?? ""}`,
+            tone: "error",
+            title: "Merge in progress",
+            detail: mergeConflictState.conflictedFiles.length > 0
+              ? `${mergeConflictState.conflictedFiles.length} conflicted file${mergeConflictState.conflictedFiles.length === 1 ? "" : "s"}. Resolve them before continuing or aborting the merge.`
+              : "An interrupted merge is blocking pull and push actions. Continue or abort to unlock the lane.",
+            actions: [
+              ...(mergeConflictState.canAbort ? [{
+                label: "Abort merge",
+                title: "Cancel the merge and return to the state before it started. Command: git merge --abort. Undo the merge and restore the previous branch state. Warning: Any resolved conflicts will be lost.",
+                variant: "secondary" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("abort merge", async () => {
+                    await window.ade.git.mergeAbort(laneId, pin);
+                  });
+                },
+              }] : []),
+              ...(mergeConflictState.canContinue ? [{
+                label: "Continue merge",
+                title: "Finish the merge after resolving all conflicts. A merge commit will be created. Command: git merge --continue. Create the merge commit with resolved conflicts.",
+                variant: "solid" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("continue merge", async () => {
+                    await window.ade.git.mergeContinue(laneId, pin);
+                  });
+                },
+              }] : []),
+            ],
           }}
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <Warning size={16} weight="bold" color={COLORS.danger} style={{ flexShrink: 0 }} />
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "0.8px", textTransform: "uppercase", color: COLORS.danger }}>
-                Merge in progress
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2, letterSpacing: "0.3px" }}>
-                {mergeConflictState.conflictedFiles.length > 0
-                  ? `${mergeConflictState.conflictedFiles.length} conflicted file${mergeConflictState.conflictedFiles.length === 1 ? "" : "s"}. Resolve them before continuing or aborting the merge.`
-                  : "An interrupted merge is blocking pull and push actions. Continue or abort to unlock the lane."}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {mergeConflictState.canAbort ? (
-                <SmartTooltip content={{
-                  label: "Abort Merge",
-                  description: "Cancel the merge and return to the state before it started.",
-                  gitCommand: "git merge --abort",
-                  effect: "Undo the merge and restore the previous branch state",
-                  warning: "Any resolved conflicts will be lost",
-                }}>
-                  <button
-                    type="button"
-                    style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("abort merge", async () => {
-                        await window.ade.git.mergeAbort(laneId, pin);
-                      });
-                    }}
-                  >
-                    ABORT MERGE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-              {mergeConflictState.canContinue ? (
-                <SmartTooltip content={{
-                  label: "Continue Merge",
-                  description: "Finish the merge after resolving all conflicts. A merge commit will be created.",
-                  gitCommand: "git merge --continue",
-                  effect: "Create the merge commit with resolved conflicts",
-                }}>
-                  <button
-                    type="button"
-                    style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("continue merge", async () => {
-                        await window.ade.git.mergeContinue(laneId, pin);
-                      });
-                    }}
-                  >
-                    CONTINUE MERGE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        />
       ) : null}
 
       {autoRebaseStatus ? (() => {
@@ -3388,22 +3326,20 @@ export function LaneGitActionsPane({
       </div>
 
       {(notice || error || busyAction) ? (
-        <div
-          className="shrink-0 flex items-center justify-between"
-          style={{
-            padding: "4px 16px",
-            fontSize: 10,
-            fontFamily: MONO_FONT,
-            letterSpacing: "0.5px",
-            borderTop: `1px solid ${COLORS.border}`,
-            background: error ? "color-mix(in srgb, var(--color-error) 15%, transparent)" : "color-mix(in srgb, var(--color-accent) 12%, transparent)",
-            color: error ? COLORS.danger : COLORS.accent,
+        <Banner
+          layout="inline"
+          style={{ margin: "4px 8px", flexShrink: 0 }}
+          model={{
+            id: `lane-git-action-status:${laneId ?? ""}`,
+            tone: error ? "error" : notice ? "success" : "accent",
+            title: error
+              ? `ERROR: ${error}`
+              : notice
+                ? notice.toUpperCase()
+                : `RUNNING ${busyAction?.toUpperCase() ?? ""}...`,
+            busy: Boolean(busyAction),
           }}
-        >
-          <span>
-            {error ? `ERROR: ${error}` : notice ? notice.toUpperCase() : busyAction ? `RUNNING ${busyAction.toUpperCase()}...` : ""}
-          </span>
-        </div>
+        />
       ) : null}
 
       <PushDivergenceDialog

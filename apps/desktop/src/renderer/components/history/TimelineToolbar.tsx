@@ -26,6 +26,7 @@ import { CATEGORY_META } from "./eventTaxonomy";
 import { useTimelineStore } from "./useTimelineStore";
 import type { ScopeLevel } from "./useTimelineStore";
 import { promptDialog } from "../ui/dialog/confirm";
+import { Z_LAYERS } from "../ui/zLayers";
 import {
   buildHistoryLaneActions,
   groupHistoryLaneActions,
@@ -607,7 +608,8 @@ function LaneGitActionsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className="z-50 outline-none"
+          className="outline-none"
+          style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => event.preventDefault()}
         >
           <div className="flex max-h-[min(70vh,620px)] min-w-[260px] flex-col overflow-y-auto rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
@@ -692,7 +694,8 @@ function ColumnSettingsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className="z-50 outline-none"
+          className="outline-none"
+          style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => event.preventDefault()}
         >
           <div className="flex min-w-[190px] flex-col gap-1 rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">

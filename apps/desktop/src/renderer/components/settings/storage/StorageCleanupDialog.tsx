@@ -8,6 +8,7 @@ import type {
 } from "../../../../shared/types/storage";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../ui/dialog";
+import { Banner } from "../../ui/notice";
 import { baseName, formatBytes, type SafeCleanupGroup } from "./storageView";
 
 /**
@@ -317,42 +318,29 @@ export function StorageCleanupDialog({
       ) : null}
 
       {stage === "error" ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            lineHeight: 1.5,
-            color: COLORS.textSecondary,
-            background: "color-mix(in srgb, var(--color-error) 8%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-error) 26%, transparent)",
-            borderRadius: 9,
-            padding: "10px 12px",
-          }}
-        >
-          <span style={{ fontWeight: 600, color: COLORS.danger }}>
-            {errorPhase === "checking"
+        <Banner
+          layout="inline"
+          model={{
+            id: "storage-cleanup-error",
+            tone: "error",
+            title: errorPhase === "checking"
               ? "ADE couldn't check what's safe to remove."
-              : "The cleanup didn't finish."}
-          </span>
-          <span>
-            {errorPhase === "checking"
+              : "The cleanup didn't finish.",
+            detail: errorPhase === "checking"
               ? "Nothing was removed. Try again — if it keeps failing, close and reopen ADE, then come back here."
-              : "Some items may still be on disk. Nothing outside this list was touched, and you can run it again."}
-          </span>
-          {error ? (
-            <details>
-              <summary style={{ cursor: "pointer", userSelect: "none", color: COLORS.textMuted }}>
-                Show technical details
-              </summary>
-              <div style={{ marginTop: 6, whiteSpace: "pre-wrap", wordBreak: "break-word", color: COLORS.textMuted }}>
-                {error}
-              </div>
-            </details>
-          ) : null}
-        </div>
+              : "Some items may still be on disk. Nothing outside this list was touched, and you can run it again.",
+            extra: error ? (
+              <details>
+                <summary style={{ cursor: "pointer", userSelect: "none", color: COLORS.textMuted }}>
+                  Show technical details
+                </summary>
+                <div style={{ marginTop: 6, whiteSpace: "pre-wrap", wordBreak: "break-word", color: COLORS.textMuted }}>
+                  {error}
+                </div>
+              </details>
+            ) : undefined,
+          }}
+        />
       ) : null}
 
       {maintenanceMode && plan && (stage === "review" || stage === "removing") ? (

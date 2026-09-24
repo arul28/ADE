@@ -8,6 +8,7 @@ import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
+import { Banner } from "../ui/notice/Banner";
 import { WorkSidebar } from "./WorkSidebar";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
@@ -1771,13 +1772,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)" }}>
       {sessionActionError ? (
-        <div
-          className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"
-          style={{ background: "rgba(239, 68, 68, 0.08)" }}
-          role="status"
-        >
-          {sessionActionError}
-        </div>
+        <Banner
+          model={{ id: "session-action-error", tone: "error", title: sessionActionError }}
+          layout="inline"
+          style={{ margin: "0 16px" }}
+        />
       ) : null}
       {work.workViewMode === "board" ? (
         /* BOARD MODE OWNS THE WHOLE TAB.

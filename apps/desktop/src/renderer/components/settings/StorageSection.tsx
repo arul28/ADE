@@ -9,7 +9,6 @@ import {
   FolderDashed,
   HardDrives,
   ShieldCheck,
-  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import {
@@ -54,6 +53,7 @@ import { PANEL_STYLE, STORAGE_BRAND } from "./storage/storageUiConstants";
 import { DiagnosticsStrip, TrendArrow } from "./storage/StorageDiagnostics";
 import { MaintenanceJournal } from "./storage/StorageMaintenanceJournal";
 import { AppleRecordingsWarning } from "./AppleRecordingsWarning";
+import { Banner } from "../ui/notice";
 import {
   CATEGORY_META,
   CATEGORY_ORDER,
@@ -866,10 +866,11 @@ function ReclaimConfirmDialog({
         {warnings.length > 0 ? (
           <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
             {warnings.map((warning) => (
-              <div key={warning.code} style={{ display: "flex", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${COLORS.warning}35`, color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
-                <WarningCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                {warning.message}
-              </div>
+              <Banner
+                key={warning.code}
+                layout="inline"
+                model={{ id: `lane-reclaim-warning:${warning.code}`, tone: "warning", title: warning.message }}
+              />
             ))}
           </div>
         ) : null}

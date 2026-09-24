@@ -55,6 +55,10 @@ export type DialogProps = {
   /** Sentence case. Always required: it names the dialog for assistive tech. */
   title: ReactNode;
   description?: ReactNode;
+  /** Optional visible title content while `title` continues to name the dialog. */
+  titleContent?: ReactNode;
+  /** Optional content below the title block and before the body. */
+  headerExtra?: ReactNode;
   /** Tone of the icon tile and of the footer's primary action. */
   tone?: NoticeTone;
   /** Icon tile: `true` for the tone default, a node for a custom glyph. Omitted: no tile. */
@@ -99,6 +103,8 @@ export type DialogProps = {
   preventAutoFocus?: boolean;
   /** Return focus to what was focused before opening. Default true. */
   returnFocus?: boolean;
+  /** Override the default return-focus behavior on close. */
+  onCloseAutoFocus?: (event: Event) => void;
   /** `nestedDialog` for a dialog raised from inside another dialog. */
   layer?: DialogLayer;
   /** Aria role. `alertdialog` for confirmations. */
@@ -132,6 +138,8 @@ export function Dialog({
   onOpenChange,
   title,
   description,
+  titleContent,
+  headerExtra,
   tone = "neutral",
   icon,
   size = "md",
@@ -155,6 +163,7 @@ export function Dialog({
   initialFocusRef,
   preventAutoFocus = false,
   returnFocus = true,
+  onCloseAutoFocus,
   layer = "dialog",
   role = "dialog",
   testId,
@@ -206,13 +215,18 @@ export function Dialog({
     (event: Event) => {
       const opener = openerRef.current;
       openerRef.current = null;
-      if (!returnFocus) return;
+      onCloseAutoFocus?.(event);
+      if (event.defaultPrevented) return;
+      if (!returnFocus) {
+        event.preventDefault();
+        return;
+      }
       // Radix returns focus to a Trigger; these dialogs are opened
       // programmatically, so return it to whatever held it before.
       event.preventDefault();
       if (opener?.isConnected) opener.focus({ preventScroll: true });
     },
-    [returnFocus],
+    [onCloseAutoFocus, returnFocus],
   );
 
   const resolvedWidth = cssLength(width) ?? `${SIZE_WIDTH[size]}px`;
@@ -285,18 +299,26 @@ export function Dialog({
               >
                 {icon ? <NoticeIcon tone={tone} icon={icon === true ? undefined : icon} size="lg" /> : null}
                 <div style={{ minWidth: 0, flex: 1, paddingTop: icon ? 1 : 2 }}>
-                  <RadixDialog.Title
-                    style={{
-                      margin: 0,
-                      fontSize: 14,
-                      fontWeight: 600,
-                      lineHeight: "20px",
-                      color: "var(--color-fg)",
-                      overflowWrap: "anywhere",
-                    }}
-                  >
-                    {title}
-                  </RadixDialog.Title>
+                  {titleContent != null ? (
+                    <>
+                      <RadixDialog.Title className="ade-dialog-sr-only">{title}</RadixDialog.Title>
+                      <div style={{ minWidth: 0, flex: 1 }}>{titleContent}</div>
+                    </>
+                  ) : (
+                    <RadixDialog.Title
+                      style={{
+                        margin: 0,
+                        fontSize: 14,
+                        fontWeight: 600,
+                        lineHeight: "20px",
+                        color: "var(--color-fg)",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {title}
+                    </RadixDialog.Title>
+                  )}
+                  {headerExtra ? <div style={{ minWidth: 0, marginTop: 12 }}>{headerExtra}</div> : null}
                   {description ? (
                     <RadixDialog.Description
                       style={{
@@ -319,6 +341,7 @@ export function Dialog({
                     }}
                     label={titleIsText ? `${closeLabel} ${title}` : closeLabel}
                     title={closeLabel}
+                    disabled={!dismissible}
                     size={26}
                   />
                 ) : null}

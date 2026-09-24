@@ -22,7 +22,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | What you are telling the user | Use |
 |---|---|
 | An app-wide state that lasts: signed out, update stuck, relay down, integration broken | `useAppBanner(model)` (docked, the default) |
-| A short one-line prompt the user acts on or dismisses: a link in the clipboard | `useAppBanner(model, { placement: "floating", priority: APP_BANNER_PRIORITY.prompt })` |
+| A short one-line prompt the user acts on or dismisses: a link in the clipboard | `useAppBanner(model, { placement: "floating", priority: APP_BANNER_PRIORITY.prompt })` (`updatePrompt` keeps a ready-to-install update ahead of generic prompts) |
 | A state of one tab, pane, or panel: a lane needs a rebase, a PR is blocked | `<Banner model={...} layout="inline" />` inside that surface |
 | Something that just happened: lane created, PR checks failed, undo available | `showToast({...})` |
 | Yes/no before an action | `await confirmDialog({...})` |
@@ -109,6 +109,7 @@ Within a band, the more urgent tone wins, then the banner registered first.
 | 20 | `app` | ADE itself needs attention (update stuck, service recovered). |
 | 30 | `outage` | An integration has an outage ADE cannot fix. |
 | 50 | `integration` | An integration the user can fix (GitHub, AI provider, relay). |
+| 55 | `updatePrompt` | A downloaded update is ready to install and should stay ahead of generic prompts. |
 | 60 | `prompt` | Short floating prompts. |
 | 100 | `default` | Everything else. |
 

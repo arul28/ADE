@@ -93,6 +93,7 @@ import {
   type SourceCheck,
 } from "./crossMachineHandoffPresentation";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice/Banner";
 import { Dialog } from "../ui/dialog";
 
 export function CrossMachineHandoffModal({
@@ -1015,23 +1016,27 @@ export function CrossMachineHandoffModal({
                 <CheckRow label="Destination chat" detail={result.reusedSession ? "Existing handoff chat resumed safely" : "New chat started with bounded context"} state="ok" />
               </div>
               {sourceMarkerWarning ? (
-                <div className="mt-4 w-full rounded-lg border border-amber-300/20 bg-amber-400/[0.07] p-3 text-left text-[10px] leading-4 text-amber-100/75">
-                  The destination succeeded, but ADE could not mark the source chat: {sourceMarkerWarning}
-                  <button
-                    type="button"
-                    className="ml-2 font-semibold text-amber-100 underline decoration-amber-200/35 underline-offset-2"
-                    onClick={() => {
+                <Banner
+                  model={{
+                    id: "handoff-source-marker-warning",
+                    tone: "warning",
+                    title: `The destination succeeded, but ADE could not mark the source chat: ${sourceMarkerWarning}`,
+                    actions: [{
+                      label: "Retry marker",
+                      variant: "secondary",
+                      onClick: () => {
                       void markSource(result, selectedConnection, runtimePinRef.current)
                         .then(() => {
                           setSourceMarkerWarning(null);
                           onFinished();
                         })
                         .catch((markerError) => setSourceMarkerWarning(markerError instanceof Error ? markerError.message : String(markerError)));
-                    }}
-                  >
-                    Retry marker
-                  </button>
-                </div>
+                      },
+                    }],
+                  }}
+                  layout="inline"
+                  style={{ marginTop: 16, width: "100%" }}
+                />
               ) : null}
             </div>
           ) : null}
@@ -1223,17 +1228,15 @@ export function CrossMachineHandoffModal({
               </div>
               </div>
               {forkFallbackReason ? (
-                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] px-3 py-2.5">
-                  <div className="text-[10.5px] leading-4 text-amber-100/80">{forkFallbackReason}</div>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyLabel)}
-                    onClick={sendAsBrief}
-                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-45"
-                  >
-                    Send as brief instead
-                  </button>
-                </div>
+                <Banner
+                  model={{
+                    id: "handoff-fork-fallback",
+                    tone: "warning",
+                    title: forkFallbackReason,
+                    actions: [{ label: "Send as brief instead", disabled: Boolean(busyLabel), onClick: sendAsBrief }],
+                  }}
+                  layout="inline"
+                />
               ) : null}
             </div>
           ) : null}
@@ -1255,13 +1258,25 @@ export function CrossMachineHandoffModal({
                   state={storagePreflight.blockingErrors.some((item) => /space/i.test(item)) ? "error" : storagePreflight.warnings.length ? "warn" : "ok"}
                 />
               </div>
-              {[...storagePreflight.blockingErrors, ...storagePreflight.warnings].map((message) => (
-                <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
+              {storagePreflight.blockingErrors.map((message, index) => (
+                <Banner
+                  key={`error:${index}:${message}`}
+                  model={{ id: `handoff-storage-error-${index}`, tone: "error", title: message }}
+                  layout="inline"
+                />
+              ))}
+              {storagePreflight.warnings.map((message, index) => (
+                <Banner
+                  key={`warning:${index}:${message}`}
+                  model={{ id: `handoff-storage-warning-${index}`, tone: "warning", title: message }}
+                  layout="inline"
+                />
               ))}
               {isInsecureRoute(selectedConnection) ? (
-                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5 text-[10px] leading-4 text-amber-100/72">
-                  {insecureRouteNotice}
-                </div>
+                <Banner
+                  model={{ id: "handoff-insecure-route", tone: "warning", title: insecureRouteNotice }}
+                  layout="inline"
+                />
               ) : null}
               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
                 <input
@@ -1294,19 +1309,15 @@ export function CrossMachineHandoffModal({
                 </div>
               </div>
               {forkUnsupportedAtReview ? (
-                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] px-3 py-2.5">
-                  <div className="text-[10.5px] leading-4 text-amber-100/80">
-                    {forkFallbackReason ?? forkHandoffSupport?.reason ?? "That machine needs an ADE update for fork handoff."}
-                  </div>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyLabel)}
-                    onClick={sendAsBrief}
-                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-45"
-                  >
-                    Send as brief instead
-                  </button>
-                </div>
+                <Banner
+                  model={{
+                    id: "handoff-fork-fallback-review",
+                    tone: "warning",
+                    title: forkFallbackReason ?? forkHandoffSupport?.reason ?? "That machine needs an ADE update for fork handoff.",
+                    actions: [{ label: "Send as brief instead", disabled: Boolean(busyLabel), onClick: sendAsBrief }],
+                  }}
+                  layout="inline"
+                />
               ) : null}
               {/* The four checks ARE the "is this ready" answer, so they stay —
                   now with the subject's own mark instead of four identical rows. */}
@@ -1321,11 +1332,19 @@ export function CrossMachineHandoffModal({
                 />
                 <CheckRow icon={<GitFork size={13} weight="duotone" />} label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
               </div>
-              {destinationPreflight.warnings.map((message) => (
-                <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
+              {destinationPreflight.warnings.map((message, index) => (
+                <Banner
+                  key={`warning:${index}:${message}`}
+                  model={{ id: `handoff-destination-warning-${index}`, tone: "warning", title: message }}
+                  layout="inline"
+                />
               ))}
-              {destinationPreflight.blockingErrors.map((message) => (
-                <div key={message} className="rounded-lg border border-red-300/18 bg-red-400/[0.06] px-3 py-2 text-[10px] leading-4 text-red-100/72">{message}</div>
+              {destinationPreflight.blockingErrors.map((message, index) => (
+                <Banner
+                  key={`error:${index}:${message}`}
+                  model={{ id: `handoff-destination-error-${index}`, tone: "error", title: message }}
+                  layout="inline"
+                />
               ))}
               {destinationPreflight.laneFastForward ? (
                 /*
@@ -1334,23 +1353,21 @@ export function CrossMachineHandoffModal({
                   rather than done automatically: this rewrites git state on a
                   machine the user isn't sitting at.
                 */
-                <div className="rounded-lg border border-amber-300/22 bg-amber-400/[0.07] px-3 py-2.5">
-                  <div className="text-[11px] font-semibold text-amber-100/90">
-                    Lane &lsquo;{destinationPreflight.laneFastForward.laneName}&rsquo; is {destinationPreflight.laneFastForward.behindBy}{" "}
-                    {destinationPreflight.laneFastForward.behindBy === 1 ? "commit" : "commits"} behind
-                  </div>
-                  <div className="mt-1 text-[10px] leading-4 text-amber-100/60">
-                    It&rsquo;s clean, so ADE can fast-forward it to your commit on {selectedConnection?.target.name ?? "that machine"}. Nothing is discarded.
-                  </div>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyLabel)}
-                    onClick={() => void fastForwardDestinationLane()}
-                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/16 disabled:opacity-45"
-                  >
-                    <GitBranch size={12} /> Fetch &amp; fast-forward there
-                  </button>
-                </div>
+                <Banner
+                  model={{
+                    id: "handoff-lane-fast-forward",
+                    tone: "warning",
+                    title: `Lane ‘${destinationPreflight.laneFastForward.laneName}’ is ${destinationPreflight.laneFastForward.behindBy} ${destinationPreflight.laneFastForward.behindBy === 1 ? "commit" : "commits"} behind`,
+                    detail: `It’s clean, so ADE can fast-forward it to your commit on ${selectedConnection?.target.name ?? "that machine"}. Nothing is discarded.`,
+                    actions: [{
+                      label: "Fetch & fast-forward there",
+                      icon: <GitBranch size={12} />,
+                      disabled: Boolean(busyLabel),
+                      onClick: () => void fastForwardDestinationLane(),
+                    }],
+                  }}
+                  layout="inline"
+                />
               ) : null}
               {/* What travels, as marks rather than a paragraph. */}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-white/[0.065] bg-white/[0.025] px-3.5 py-2.5 text-[10.5px] text-fg/55">
@@ -1391,28 +1408,25 @@ export function CrossMachineHandoffModal({
                   has to be visible but must not stand between the user and a
                   button they just read.
                 */
-                <div
-                  className="flex items-start gap-2 rounded-lg border border-amber-300/16 bg-amber-400/[0.055] px-3 py-2 text-[10px] leading-4 text-amber-100/70"
-                  data-testid="insecure-route-notice"
-                >
-                  <ShieldWarning size={13} className="mt-0.5 shrink-0" />
-                  <span>{insecureRouteNotice}</span>
-                </div>
+                <Banner
+                  model={{ id: "handoff-insecure-route-review", tone: "warning", title: insecureRouteNotice }}
+                  layout="inline"
+                  testId="insecure-route-notice"
+                />
               ) : null}
             </div>
           ) : null}
 
           {error && stage !== "complete" ? (
-            <div
-              className={cn(
-                "mx-auto mt-4 max-w-[620px] rounded-lg border px-3 py-2.5 text-[10px] leading-4",
-                handoffMayStillComplete
-                  ? "border-amber-300/20 bg-amber-400/[0.07] text-amber-100/75"
-                  : "border-red-300/20 bg-red-400/[0.07] text-red-100/75",
-              )}
-            >
-              {error}
-            </div>
+            <Banner
+              model={{
+                id: "handoff-error",
+                tone: handoffMayStillComplete ? "warning" : "error",
+                title: error,
+              }}
+              layout="inline"
+              style={{ margin: "16px auto 0", maxWidth: 620 }}
+            />
           ) : null}
         </div>
 

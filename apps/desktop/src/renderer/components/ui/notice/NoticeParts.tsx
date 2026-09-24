@@ -115,11 +115,9 @@ export type NoticeAction = {
   disabled?: boolean;
   /** The action it started is still running: spinner, and not pressable. */
   busy?: boolean;
-  /** Announce whether this action's associated disclosure is open. */
-  expanded?: boolean;
   /** Tooltip. */
   title?: string;
-  /** For disclosure actions ("Details"): rendered as `aria-expanded`. */
+  /** For disclosure actions (for example, "Details"), announces open state via `aria-expanded`. */
   expanded?: boolean;
 };
 
@@ -247,11 +245,13 @@ export function NoticeCloseButton({
   onClick,
   label,
   title = "Dismiss",
+  disabled = false,
   size = 22,
 }: {
   onClick: () => void;
   label: string;
   title?: string;
+  disabled?: boolean;
   size?: number;
 }): JSX.Element {
   return (
@@ -259,6 +259,7 @@ export function NoticeCloseButton({
       type="button"
       className="ade-notice-close"
       onClick={onClick}
+      disabled={disabled}
       title={title}
       aria-label={label}
       style={{
@@ -273,7 +274,7 @@ export function NoticeCloseButton({
         border: "none",
         background: "transparent",
         color: "var(--color-muted-fg)",
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
       }}
     >
       <X size={12} weight="bold" aria-hidden="true" />
