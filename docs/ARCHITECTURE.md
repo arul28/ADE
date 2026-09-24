@@ -1210,7 +1210,7 @@ cannot fight over one keystroke.
 Feature-grouped under `apps/desktop/src/renderer/components/`:
 
 ```
-app/            # shell, App.tsx, TopBar, TabNav, LinearIssueBrowser (multi-select + batch actions), LinearIssueResolveModals (single + batch), LinearQuickViewButton, startup, splash
+app/            # shell, App.tsx, TopBar, projectSidebar/ (one project sidebar: tab strip, portal slots, CTO/History/settings footer), LinearIssueBrowser (multi-select + batch actions), LinearIssueResolveModals (single + batch), LinearQuickViewButton, startup, splash
 project/        # Play tab, run/test/process controls
 lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs
@@ -1547,8 +1547,8 @@ stale, ended, and settled rows never contribute to the Dock badge.
 The CTO thread is the one exception to "canonical projected session rows are the
 whole picture": it is filtered out of every roster, so it never appears in those
 rows. `useCtoAttention` reads it separately through the read-only
-`window.ade.cto.getAttention()` probe into `appStore.ctoAttention`, `TabNav`
-draws the dot on `/cto`, and `useAppWideSessionAttention` folds that one flag
+`window.ade.cto.getAttention()` probe into `appStore.ctoAttention`, the project
+sidebar footer (`ProjectSidebar.tsx`) draws the dot on the CTO entry, and `useAppWideSessionAttention` folds that one flag
 into its badge count so it remains the single writer of `setDockBadgeCount`. iOS
 reaches the same `agentChatService.getCtoAttention()` implementation through the
 optional `cto.getAttention` sync command and badges its CTO tab; the hosted web

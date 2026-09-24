@@ -110,12 +110,12 @@ describe("LaneDiffPane", () => {
     renderPane({ selectedCommit: commit });
 
     expect(await screen.findByText("Showing first 500 of 503 files.")).toBeTruthy();
-    expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
-    expect(screen.queryByText("src/generated/file-500.ts")).toBeNull();
+    expect(screen.getByTitle("src/generated/file-0.ts")).toBeTruthy();
+    expect(screen.queryByTitle("src/generated/file-500.ts")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Show all" }));
 
-    expect(screen.getByText("src/generated/file-500.ts")).toBeTruthy();
+    expect(screen.getByTitle("src/generated/file-500.ts")).toBeTruthy();
     expect(api.git.listCommitFiles).toHaveBeenCalledWith({ laneId: "lane-1", commitSha: commit.sha }, null);
   });
 

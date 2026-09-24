@@ -2,11 +2,9 @@ import type { ThemeId } from "../../state/appStore";
 import {
   BACKDROP_FRAME_MS,
   FRAG,
-  HEADER_SLICE,
   UNIFORMS,
   VERT,
   backdropThemeFor,
-  headerBackdropScale,
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./workToolPickerBackdropShader";
@@ -26,6 +24,9 @@ import {
  * cancelled if the same canvas comes straight back.
  */
 const pendingContextReleases = new WeakMap<HTMLCanvasElement, number>();
+
+/** The shared clock of every `field: "window"` canvas. */
+const WINDOW_FIELD_CLOCK_ORIGIN = typeof performance !== "undefined" ? performance.now() : 0;
 
 /**
  * Hand the GPU context back, from anywhere that decides not to use it.
@@ -79,13 +80,21 @@ export function createBackdropRenderer(options: {
   /** When false, the last frame stays on the canvas and the loop does not run. */
   playing?: boolean;
   /**
-   * `header` fits the same mesh into a short bar: wider field, a little more
-   * drift, and a stronger pointer bloom. The new-chat pane stays on `pane`.
+   * The `performance.now()` value the animation clock counts from. Canvases
+   * that share an origin and a size draw the same frame, so several
+   * clipped slices of one wide field read as one continuous gradient.
    */
-  variant?: "pane" | "header";
+  clockOrigin?: number;
+  /**
+   * `window` draws this canvas as its own part of one field the size of the
+   * window, on the shared window clock. Every canvas with this option shows
+   * the same frame, so separate surfaces (the top bar, the new chat pane, the
+   * welcome screen) meet as one gradient with no seam.
+   */
+  field?: "window";
 }): BackdropRenderer | null {
   const { canvas, theme, onRefused } = options;
-  const header = options.variant === "header";
+  const windowField = options.field === "window";
   let playing = options.playing !== false;
 
   const pendingRelease = pendingContextReleases.get(canvas);
@@ -172,6 +181,7 @@ export function createBackdropRenderer(options: {
     transform: context.getUniformLocation(program, "u_transform"),
     space: context.getUniformLocation(program, "u_space"),
     cursor: context.getUniformLocation(program, "u_cursor"),
+    view: context.getUniformLocation(program, "u_view"),
   };
 
   const palette = backdropThemeFor(theme);
@@ -186,27 +196,28 @@ export function createBackdropRenderer(options: {
   context.uniform3fv(uniform.colors, flat);
   context.uniform4f(
     uniform.shape,
-    header ? headerBackdropScale(canvas.width, canvas.height) : UNIFORMS.scale,
-    header ? HEADER_SLICE.intensity : palette.intensity,
+    UNIFORMS.scale,
+    palette.intensity,
     UNIFORMS.warp,
     UNIFORMS.detail,
   );
   context.uniform4f(
     uniform.surface,
     UNIFORMS.contrast,
-    header ? HEADER_SLICE.brightness : palette.brightness,
-    header ? HEADER_SLICE.saturation : palette.saturation,
+    palette.brightness,
+    palette.saturation,
     UNIFORMS.grain,
   );
   context.uniform4f(
     uniform.transform,
     UNIFORMS.seed,
     UNIFORMS.rotate,
-    header ? HEADER_SLICE.drift : UNIFORMS.drift,
-    header ? HEADER_SLICE.vignette : palette.vignette,
+    UNIFORMS.drift,
+    palette.vignette,
   );
   context.uniform4f(uniform.space, UNIFORMS.offsetX, UNIFORMS.offsetY, 0, 0);
   context.uniform4f(uniform.cursor, 0, UNIFORMS.cursorStrength, UNIFORMS.cursorRadius, 0);
+  context.uniform4f(uniform.view, 0, 0, 1, 1);
 
   const reduceMotion = matches("(prefers-reduced-motion: reduce)");
   // A trackpad or a mouse can swirl the mesh. A touchscreen cannot hover, so
@@ -231,7 +242,9 @@ export function createBackdropRenderer(options: {
   let focused = document.hasFocus();
   let inView = true;
   let disposed = false;
-  const start = performance.now();
+  const start = windowField ? WINDOW_FIELD_CLOCK_ORIGIN : options.clockOrigin ?? performance.now();
+  // The time of the last frame drawn, so a resize can repaint the same moment.
+  let lastSeconds = 0;
 
   const resizeCanvas = () => {
     const { width, height } = resolveBackdropSize(
@@ -249,25 +262,31 @@ export function createBackdropRenderer(options: {
   };
 
   const draw = (seconds: number) => {
+    lastSeconds = seconds;
     resizeCanvas();
-    if (header) {
-      const intensity = HEADER_SLICE.intensity
-        + (HEADER_SLICE.hoverIntensity - HEADER_SLICE.intensity) * cursorPresence;
+    if (windowField && canvas.width > 0 && canvas.height > 0) {
+      // Field pixels are client pixels of the window. gl_FragCoord counts
+      // from the bottom-left, so the offset is measured from the window's
+      // bottom edge.
+      const fieldWidth = Math.max(1, window.innerWidth);
+      const fieldHeight = Math.max(1, window.innerHeight);
       context.uniform4f(
-        uniform.shape,
-        headerBackdropScale(canvas.width, canvas.height),
-        intensity,
-        UNIFORMS.warp,
-        UNIFORMS.detail,
+        uniform.view,
+        bounds.left,
+        fieldHeight - bounds.bottom,
+        bounds.width / canvas.width,
+        bounds.height / canvas.height,
       );
+      context.uniform4f(uniform.scene, fieldWidth, fieldHeight, seconds, colorCount);
+    } else {
+      context.uniform4f(uniform.scene, canvas.width, canvas.height, seconds, colorCount);
     }
-    context.uniform4f(uniform.scene, canvas.width, canvas.height, seconds, colorCount);
     context.uniform4f(uniform.space, UNIFORMS.offsetX, UNIFORMS.offsetY, mouseX, mouseY);
     context.uniform4f(
       uniform.cursor,
       cursorEnabled ? cursorPresence : 0,
-      header ? HEADER_SLICE.cursorStrength : UNIFORMS.cursorStrength,
-      header ? HEADER_SLICE.cursorRadius : UNIFORMS.cursorRadius,
+      UNIFORMS.cursorStrength,
+      UNIFORMS.cursorRadius,
       0,
     );
     context.drawArrays(context.TRIANGLES, 0, 3);
@@ -295,7 +314,7 @@ export function createBackdropRenderer(options: {
     mouseX += (targetX - mouseX) * follow;
     mouseY += (targetY - mouseY) * follow;
     cursorPresence += (targetPresence - cursorPresence) * follow;
-    draw(((now - start) / 1000) * (header ? HEADER_SLICE.timeScale : UNIFORMS.timeScale));
+    draw(((now - start) / 1000) * UNIFORMS.timeScale);
     requestRender();
   }
 
@@ -308,18 +327,23 @@ export function createBackdropRenderer(options: {
   };
 
   const updatePointerTarget = () => {
-    if (!pointerKnown || bounds.width === 0 || bounds.height === 0) return;
-    const inside = pointerClientX >= bounds.left
-      && pointerClientX <= bounds.right
-      && pointerClientY >= bounds.top
-      && pointerClientY <= bounds.bottom;
+    // In a window field every canvas reads the pointer against the whole
+    // window, so all the parts swirl together.
+    const area = windowField
+      ? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight, width: window.innerWidth, height: window.innerHeight }
+      : bounds;
+    if (!pointerKnown || area.width === 0 || area.height === 0) return;
+    const inside = pointerClientX >= area.left
+      && pointerClientX <= area.right
+      && pointerClientY >= area.top
+      && pointerClientY <= area.bottom;
     if (!inside) {
       targetPresence = 0;
       requestRender();
       return;
     }
-    const nextX = ((pointerClientX - bounds.left) / bounds.width) * 2 - 1;
-    const nextY = -(((pointerClientY - bounds.top) / bounds.height) * 2 - 1);
+    const nextX = ((pointerClientX - area.left) / area.width) * 2 - 1;
+    const nextY = -(((pointerClientY - area.top) / area.height) * 2 - 1);
     // Entering from cold: jump rather than sweep the swirl in from wherever
     // the pointer happened to leave last time.
     if (targetPresence === 0 && cursorPresence < 0.01) {
@@ -346,7 +370,10 @@ export function createBackdropRenderer(options: {
   };
   const measureLayout = () => {
     bounds = canvas.getBoundingClientRect();
-    if (resizeCanvas() && reduceMotion) draw(0);
+    // Resizing a WebGL canvas clears it. A running loop repaints on its next
+    // frame, but a paused one (window blurred, tab hidden) would stay blank,
+    // so repaint the last moment now.
+    if (resizeCanvas()) draw(reduceMotion ? 0 : lastSeconds);
     updatePointerTarget();
     requestRender();
   };

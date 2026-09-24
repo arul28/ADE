@@ -74,24 +74,23 @@ export function EditorGroups(props: EditorGroupsProps) {
       ? "Keep files from all lanes open. Click to show only this lane's files."
       : "Show only this lane's files. Click to keep files from all lanes open.";
 
+  // The lane scope toggle sits at the right end of the rightmost tab row.
+  const scopeToggle = (
+    <button
+      type="button"
+      onClick={() => props.onTabScopeChange(props.tabScope === "all" ? "lane" : "all")}
+      title={scopeTitle}
+      aria-label={scopeTitle}
+      className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-white/5"
+      style={{ color: "var(--color-fg-muted, rgba(255,255,255,0.55))" }}
+    >
+      {props.tabScope === "all" ? <Stack size={12} weight="fill" /> : <Funnel size={12} weight="fill" />}
+      <span>{scopeLabel}</span>
+    </button>
+  );
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
-      <div
-        className="flex shrink-0 items-center justify-end gap-1 border-b px-2 py-0.5"
-        style={{ borderColor: "var(--color-border, rgba(255,255,255,0.08))" }}
-      >
-        <button
-          type="button"
-          onClick={() => props.onTabScopeChange(props.tabScope === "all" ? "lane" : "all")}
-          title={scopeTitle}
-          aria-label={scopeTitle}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-white/5"
-          style={{ color: "var(--color-fg-muted, rgba(255,255,255,0.55))" }}
-        >
-          {props.tabScope === "all" ? <Stack size={12} weight="fill" /> : <Funnel size={12} weight="fill" />}
-          <span>{scopeLabel}</span>
-        </button>
-      </div>
       <Group
         key={layoutKey}
         orientation="horizontal"
@@ -131,6 +130,7 @@ export function EditorGroups(props: EditorGroupsProps) {
                 onTabDrop={props.onTabDrop}
                 isTabDragging={props.isTabDragging}
                 onBodyDrop={props.onBodyDrop}
+                tabRowTrailing={i === groupEntries.length - 1 ? scopeToggle : undefined}
               />
             </Panel>
             {i < groupEntries.length - 1 ? <ResizeGutter orientation="vertical" thin /> : null}

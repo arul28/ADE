@@ -113,7 +113,7 @@ function indicatorFromCounts(runningCount: number, needsAttentionCount: number):
   return "running-active";
 }
 
-type SessionCanonicalUiInput = {
+export type SessionCanonicalUiInput = {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;

@@ -6,6 +6,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import { Banner } from "../../ui/notice";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
+import { PRS_LIST_ROOT_CLASS, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { branchNameFromRef } from "../shared/laneBranchTargets";
 import {
@@ -54,7 +55,7 @@ function rebaseRunKey(args: { laneId: string; baseBranch?: string | null }): str
 
 /* ── inline style constants ── */
 const S = {
-  mainBg: "#0F0D14",
+  mainBg: "var(--chat-canvas-bg)",
   cardBg: "#13101A",
   headerBg: "#0C0A10",
   borderDefault: "#1E1B26",
@@ -110,6 +111,10 @@ export function RebaseTab({
   onResolverPermissionChange,
   onRefresh,
 }: RebaseTabProps) {
+  // Inside the PRs page the list goes to the list column; on its own it keeps
+  // the tiled list and detail panes.
+  const listHost = usePrsListHost();
+  const inListColumn = listHost !== undefined;
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
   const [rebaseBusy, setRebaseBusy] = React.useState(false);
@@ -668,26 +673,30 @@ export function RebaseTab({
         icon: ArrowsDownUp,
         bodyClassName: "overflow-auto",
         children: (
-          <div style={{ backgroundColor: S.mainBg }}>
-            <div
-              style={{
-                padding: "12px 16px",
-                borderBottom: `1px solid ${S.borderDefault}`,
-              }}
-            >
-              <span
-                className="font-mono font-bold uppercase"
+          <div style={{ backgroundColor: inListColumn ? "transparent" : S.mainBg }}>
+            {inListColumn ? null : (
+              <div
                 style={{
-                  fontSize: 10,
-                  letterSpacing: "1px",
-                  color: S.textSecondary,
+                  padding: "12px 16px",
+                  borderBottom: `1px solid ${S.borderDefault}`,
                 }}
               >
-                REBASE / DRIFT STATE
-              </span>
-            </div>
+                <span
+                  className="font-mono font-bold uppercase"
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: "1px",
+                    color: S.textSecondary,
+                  }}
+                >
+                  REBASE / DRIFT STATE
+                </span>
+              </div>
+            )}
 
-            {rebaseNeeds.length === 0 && attentionItems.length === 0 ? (
+            {rebaseNeeds.length === 0 && attentionItems.length === 0 && inListColumn ? (
+              <PrsQuietLine>All lanes up to date</PrsQuietLine>
+            ) : rebaseNeeds.length === 0 && attentionItems.length === 0 ? (
               <div style={{ padding: 16 }}>
                 <EmptyState
                   title="All lanes up to date"
@@ -1762,6 +1771,8 @@ export function RebaseTab({
 
             {rebaseError ? <ErrorBanner message={rebaseError} /> : null}
           </div>
+        ) : inListColumn ? (
+          <div className="flex h-full"><PrsQuietLine fill>Select a lane</PrsQuietLine></div>
         ) : (
           <div
             className="flex h-full items-center justify-center"
@@ -1773,6 +1784,7 @@ export function RebaseTab({
       },
     }),
     [
+      inListColumn,
       attentionItems,
       rebaseNeeds,
       selectedNeedUpstreamChain,
@@ -1810,6 +1822,19 @@ export function RebaseTab({
       onResolverPermissionChange,
     ],
   );
+
+  if (inListColumn) {
+    return (
+      <>
+        <PrsListPortal>
+          <div className={PRS_LIST_ROOT_CLASS}>
+            <div className="min-h-0 flex-1 overflow-auto">{paneConfigs.list!.children}</div>
+          </div>
+        </PrsListPortal>
+        <div className="min-h-0 flex-1 overflow-auto">{paneConfigs.detail!.children}</div>
+      </>
+    );
+  }
 
   return <PaneTilingLayout layoutId="prs:rebase:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

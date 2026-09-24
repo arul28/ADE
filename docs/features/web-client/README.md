@@ -589,7 +589,7 @@ Reused desktop renderer (web-mode adaptation):
   `isCssZoomedBrowserSurface()` is true for the hosted client and the Vite
   `browserMock` preview so `AppShell` fills the inverse-sized body with
   `h-full` instead of `100vh`. Desktop-only chrome
-  (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
+  (`AppShell.tsx`, `TopBar.tsx`, `projectSidebar/`, `OnboardingBootstrap.tsx`,
   `WelcomeVideoGate.tsx`) reads the web-client flag to hide native window
   controls, the updater, the onboarding tour, and tabs with no sync-protocol
   backing instead of rendering broken affordances.

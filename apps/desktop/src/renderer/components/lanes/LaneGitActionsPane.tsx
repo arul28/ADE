@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -29,7 +29,6 @@ import {
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
 import { LaneDiffPane } from "./LaneDiffPane";
-import { LinearIssueBadge } from "./LinearIssueBadge";
 import { PushDivergenceDialog } from "./PushDivergenceDialog";
 import {
   detectPushDivergence,
@@ -111,52 +110,24 @@ type LaneGitActionsCachedState = {
 };
 
 /**
- * The two skins, side by side, instead of twenty inline `isPane ? … : …`.
- *
- * This component renders the same git surface twice: as the full-width Lanes
- * PAGE, and as a column inside the Work tools pane. The difference is entirely
- * chrome — every handler below is shared — but spelling it as a conditional at
- * each of twenty `style={}` objects meant a reader had to grep the file to
- * learn what "the pane skin" even IS, and each new visual decision added a
- * twenty-first branch. One table, read once into `skin`.
- *
- * Structural differences (which ELEMENT renders, not which value it is given)
- * stay as `isPane` branches in the JSX below: a table of JSX would not be more
- * readable than the JSX.
+ * The pane chrome, read once. Every value here is the Work tools pane look
+ * (also used by the Lanes tab Git column); handlers stay in the component.
  */
 const SKIN = {
-  page: {
-    /** The commit toolbar strip. */
-    toolbarPadding: "6px 10px" as string,
-    toolbarBackground: COLORS.cardBg as string,
-    toolbarBorderBottom: `1px solid ${COLORS.border}`,
-    /** The Files/History grid below it. */
-    bodyPadding: 10 as string | number,
-    bodyGap: 10,
-    /** A section that draws its own faint fill rather than sitting on the pane. */
-    cardFill: { background: "rgba(255,255,255,0.03)" } as CSSProperties,
-    /** `SectionCard` chrome: the page keeps the card, the pane is flat. */
-    plain: false,
-    /** `CommitTimeline` draws its own header only on the page. */
-    hideTimelineHeader: false,
-    sectionLabelClass: undefined as string | undefined,
-    sectionLabelStyle: { padding: "0 8px 4px", ...LABEL_STYLE } as CSSProperties,
-    /** The page's label rank is uppercase mono; the pane's is sentence case. */
-    sectionLabel: (label: string, count: number) => `${label.toUpperCase()} (${count})`,
-  },
-  pane: {
-    toolbarPadding: "8px" as string,
-    toolbarBackground: "transparent" as string,
-    toolbarBorderBottom: "none",
-    bodyPadding: "0 8px 8px" as string | number,
-    bodyGap: 12,
-    cardFill: {} as CSSProperties,
-    plain: true,
-    hideTimelineHeader: true,
-    sectionLabelClass: WORK_TOOL_SECTION_LABEL_TEXT as string | undefined,
-    sectionLabelStyle: { padding: "0 8px 4px" } as CSSProperties,
-    sectionLabel: (label: string, count: number) => `${label} (${count})`,
-  },
+  toolbarPadding: "8px" as string,
+  toolbarBackground: "transparent" as string,
+  toolbarBorderBottom: "none",
+  bodyPadding: "0 8px 8px" as string | number,
+  bodyGap: 12,
+  cardFill: {} as CSSProperties,
+  plain: true,
+  hideTimelineHeader: true,
+  sectionLabelClass: WORK_TOOL_SECTION_LABEL_TEXT as string | undefined,
+  sectionLabelStyle: { padding: "0 8px 4px" } as CSSProperties,
+  sectionLabel: (label: string, count: number) => `${label} (${count})`,
+  actionLabel: (label: string) => label,
+  actionButton: { height: 26, padding: "0 9px", fontSize: 12, gap: 5 } as CSSProperties,
+  stashLabelStyle: { fontSize: 12, fontWeight: 500, color: COLORS.textMuted } as CSSProperties,
 };
 
 const EMPTY_CHANGES: DiffChanges = { unstaged: [], staged: [] };
@@ -351,18 +322,6 @@ function getResponsiveMode(width: number): ResponsiveMode {
   return "wide";
 }
 
-function getLaneHeaderDotColor(lane: LaneSummary | null): string {
-  if (!lane) return "#10B981";
-  if (lane.laneType === "primary") return COLORS.accent;
-  return lane.status.dirty ? COLORS.warning : "#10B981";
-}
-
-function getLaneHeaderDotTitle(lane: LaneSummary | null): string {
-  if (lane?.laneType === "primary") return "Primary lane";
-  if (lane?.status.dirty) return "Lane has uncommitted changes";
-  return "Lane is clean";
-}
-
 function getFileKindColor(kind: FileChange["kind"]): string {
   if (kind === "modified") return COLORS.info;
   if (kind === "added") return COLORS.success;
@@ -427,27 +386,6 @@ function buildChangeTreeStatsByPath(files: FileChange[]): Map<string, ChangeTree
   return statsByPath;
 }
 
-function getCommitButtonLabel(args: {
-  busyAction: string | null;
-  amendCommit: boolean;
-}): string {
-  if (args.busyAction === AUTO_GENERATE_COMMIT_ACTION) {
-    return "GENERATING...";
-  }
-  const commitActionLabel = args.amendCommit ? "amend commit" : "commit";
-  if (args.busyAction === commitActionLabel) {
-    return "COMMITTING...";
-  }
-  return args.amendCommit ? "AMEND COMMIT" : "COMMIT";
-}
-
-function getCommitHelperText(commitMessage: string): string {
-  if (commitMessage.trim().length > 0) {
-    return `Press ${modifierKeyLabel}+Enter to commit with the typed message.`;
-  }
-  return "Type a commit message, or leave blank to generate one from the last turned chat on this lane.";
-}
-
 function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
   tone: NoticeTone;
   label: string;
@@ -474,18 +412,6 @@ function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
     label: "Auto-rebase pending",
     fallbackMessage: "ADE will auto-rebase and auto-push this lane when its parent advances."
   };
-}
-
-function getPullModeSummary(mode: GitSyncMode): string {
-  return mode === "merge"
-    ? "Merge keeps both histories and may create a merge commit."
-    : "Rebase replays your local commits on top of the remote branch for a cleaner history.";
-}
-
-function getAmendSummary(amendCommit: boolean): string {
-  return amendCommit
-    ? "Amend is on. Your next commit will replace the latest commit instead of creating a new one."
-    : "Amend rewrites the latest commit with your staged changes and optional new message.";
 }
 
 function SectionCard({
@@ -710,7 +636,6 @@ export function LaneGitActionsPane({
   currentMachineId,
   currentMachineHeadSha = null,
   runtimePin = null,
-  variant = "page"
 }: {
   laneId: string | null;
   active?: boolean;
@@ -755,20 +680,8 @@ export function LaneGitActionsPane({
    * changes.
    */
   runtimePin?: OpenProjectBinding | null;
-  /**
-   * Where this pane is mounted.
-   *
-   * "page" is the Lanes tab: a wide surface where the uppercase status header,
-   * the labelled button row and the advanced tray all fit and all belong.
-   * "pane" is the Work tools pane — one 40px chrome row in the same language
-   * the browser and terminal use there, with the same actions as ghost glyphs.
-   * Only the chrome differs; every handler below is shared.
-   */
-  variant?: "page" | "pane";
 }) {
   const navigate = useNavigate();
-  const isPane = variant === "pane";
-  const skin = SKIN[variant];
   const lanes = useAppStore((s) => s.lanes);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
@@ -802,12 +715,6 @@ export function LaneGitActionsPane({
     return pinnedLanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
   }, [pinnedLanes, lane]);
 
-  const originLabel = useMemo(() => {
-    if (!lane || lane.laneType === "primary") return null;
-    if (parentLane) return `from ${parentLane.name}/${parentLane.branchRef}`;
-    return `from primary/${lane.baseRef}`;
-  }, [lane, parentLane]);
-
   const rootRef = useRef<HTMLDivElement>(null);
   const currentLaneIdRef = useRef<string | null>(laneId);
   const [paneWidth, setPaneWidth] = useState(1024);
@@ -816,7 +723,7 @@ export function LaneGitActionsPane({
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>(initialCachedGitState?.changes ?? EMPTY_CHANGES);
   const [commitMessage, setCommitMessage] = useState("");
-  const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
+  const syncMode: GitSyncMode = "merge";
   const [stashes, setStashes] = useState<GitStashSummary[]>(initialCachedGitState?.stashes ?? []);
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
   const [forcePushSuggested, setForcePushSuggested] = useState(initialCachedGitState?.forcePushSuggested ?? false);
@@ -1726,26 +1633,10 @@ export function LaneGitActionsPane({
   }, [conflictState, forcePushSuggested, lane, laneId, syncStatus]);
 
   const divergedSync = Boolean(syncStatus?.diverged);
-  const behindCount = syncStatus?.behind ?? 0;
   const mergeConflictState = conflictState?.inProgress && conflictState.kind === "merge" ? conflictState : null;
   const pullBlockedByConflict = Boolean(conflictState?.inProgress);
-  const headerDotColor = getLaneHeaderDotColor(lane);
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
-  const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
-  const commitHelperText = getCommitHelperText(commitMessage);
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
-  const syncButtonTitle = useMemo(() => {
-    if (!laneId) return "Sync is unavailable until you select a child lane.";
-    if (busyAction) return `Sync is unavailable while '${busyAction}' is running.`;
-    if (!lane?.parentLaneId) return "Sync is only available for child lanes that track a parent lane.";
-    if (lane.status.dirty) {
-      return "Sync is unavailable because this lane has uncommitted changes. Commit, stash, or discard them before rebasing and pushing.";
-    }
-    if (lane.status.behind === 0) {
-      return `Sync is unavailable because ${lane.name} is already up to date with ${parentLane?.name ?? "its parent lane"}.`;
-    }
-    return `Rebase ${lane.name} onto ${parentLane?.name ?? "its parent lane"} and push the rewritten branch.`;
-  }, [busyAction, lane, laneId, parentLane]);
 
   const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
@@ -1985,16 +1876,11 @@ export function LaneGitActionsPane({
   const filesSectionIsEmpty = !diffViewActive
     && changes.staged.length === 0
     && changes.unstaged.length === 0
-    && (isPane ? !showAdvanced : stashes.length === 0);
+    && !showAdvanced;
 
   /*
-    The Work tools pane's one chrome row.
-
-    Same four facts the page header carries — which branch, how far from the
-    remote, and the four things you do about it — spent as a ghost chip, a
-    muted count and four 28px glyphs instead of an uppercase status bar plus a
-    row of labelled buttons. Nothing here is new behaviour: every handler is
-    the one the page's own control calls.
+    The pane's one chrome row: which branch, how far from the remote, and
+    the things you do about it, as a ghost chip, a muted count and 28px glyphs.
   */
   const paneAhead = syncStatus?.hasUpstream ? syncStatus.ahead : lane?.status.ahead ?? 0;
   const paneBehind = syncStatus?.hasUpstream ? syncStatus.behind : lane?.status.behind ?? 0;
@@ -2089,118 +1975,7 @@ export function LaneGitActionsPane({
 
   return (
     <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
-      {isPane ? paneChromeRow : (
-        <div
-          className="shrink-0"
-          style={{ padding: "12px 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
-        >
-          <div className="flex flex-wrap items-center gap-2" style={{ rowGap: 8 }}>
-            <span
-              className="shrink-0"
-              title={getLaneHeaderDotTitle(lane)}
-              style={{ width: 10, height: 10, borderRadius: "50%", background: headerDotColor }}
-            />
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                fontFamily: MONO_FONT,
-                letterSpacing: "1px",
-                textTransform: "uppercase",
-                color: COLORS.textPrimary,
-              }}
-              className="truncate"
-              title={lane?.name}
-            >
-              {lane?.name ?? "NO LANE"}
-            </span>
-            {lane?.linearIssue ? (
-              <LinearIssueBadge issue={lane.linearIssue} />
-            ) : null}
-            {lane ? (
-              <>
-                <span
-                  title={`Git branch: ${lane.branchRef}`}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 5,
-                    padding: "3px 8px",
-                    fontSize: 10,
-                    fontWeight: 600,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.accent,
-                    background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
-                    letterSpacing: "0.5px",
-                  }}
-                >
-                  <BranchIcon size={11} weight="bold" style={{ flexShrink: 0, color: COLORS.accent }} />
-                  {lane.branchRef}
-                </span>
-                <span
-                  title={lane.status.dirty ? "Worktree has uncommitted changes." : "Worktree is clean."}
-                  style={{
-                    padding: "3px 8px",
-                    fontSize: 10,
-                    fontWeight: 600,
-                    fontFamily: MONO_FONT,
-                    color: lane.status.dirty ? COLORS.warning : "#10B981",
-                    background: lane.status.dirty ? "color-mix(in srgb, var(--color-warning) 15%, transparent)" : "#10B98115",
-                    letterSpacing: "0.5px",
-                  }}
-                >
-                  {lane.status.dirty ? "DIRTY" : "CLEAN"}
-                </span>
-              </>
-            ) : null}
-            <div
-              className="flex flex-wrap items-center gap-2"
-              style={{ marginLeft: responsiveMode === "wide" ? "auto" : 0, color: COLORS.textDim }}
-            >
-              {lane ? (
-                <span
-                  style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
-                  title={`${lane.status.ahead} commit${lane.status.ahead === 1 ? "" : "s"} ahead of base, ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind base`}
-                >
-                  base ↑{lane.status.ahead} ↓{lane.status.behind}
-                </span>
-              ) : null}
-              {syncStatus ? (
-                syncStatus.upstreamState === "missing" ? (
-                  <span
-                    style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
-                    title="The configured upstream branch no longer exists on remote. It may have been deleted after merge."
-                  >
-                    remote missing
-                  </span>
-                ) : syncStatus.hasUpstream ? (
-                  <span
-                    style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
-                    title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}
-                  >
-                    remote ↑{syncStatus.ahead} ↓{syncStatus.behind}
-                  </span>
-                ) : (
-                  <span
-                    style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
-                    title="This lane has not been published to remote yet."
-                  >
-                    remote unpublished
-                  </span>
-                )
-              ) : null}
-            </div>
-          </div>
-          {lane && originLabel ? (
-            <div
-              title="The parent lane this branch was created from."
-              style={{ marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}
-            >
-              {originLabel}
-            </div>
-          ) : null}
-        </div>
-      )}
+      {paneChromeRow}
 
       {stuckRebase ? (
         <Banner
@@ -2338,334 +2113,46 @@ export function LaneGitActionsPane({
           className="shrink-0"
           data-testid="action-toolbar"
           style={{
-            padding: skin.toolbarPadding,
+            padding: SKIN.toolbarPadding,
             display: "flex",
             flexDirection: "column",
             gap: 4,
-            background: skin.toolbarBackground,
-            borderBottom: skin.toolbarBorderBottom,
+            background: SKIN.toolbarBackground,
+            borderBottom: SKIN.toolbarBorderBottom,
           }}
         >
-          {isPane ? (
-            <div className="flex items-center gap-1.5">
-              <input
-                disabled={busyAction != null}
-                data-testid="git-pane-commit-message"
-                className={cn(
-                  "h-7 min-w-0 flex-1 rounded-[7px] bg-white/[0.03] px-2 font-sans text-[12px] text-fg/85",
-                  "placeholder:text-muted-fg outline-none transition-colors duration-[120ms] ease-out",
-                  "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
-                  "focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                  "disabled:opacity-50",
-                )}
-                placeholder="Commit message"
-                value={commitMessage}
-                onChange={(event) => setCommitMessage(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                    event.preventDefault();
-                    void submitCommit();
-                  }
-                }}
-              />
-              <WorkToolChromeButton
-                label={amendCommit ? "Amend is on" : "Amend last commit"}
-                onClick={() => setAmendCommit((prev) => !prev)}
-                active={amendCommit}
-                disabled={busyAction != null}
-                testId="git-pane-amend"
-              >
-                <ArrowUUpLeft size={16} />
-              </WorkToolChromeButton>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-              {/* Commit controls */}
-              <input
-                disabled={busyAction != null}
-                style={{
-                  height: 30,
-                  flex: "1 1 180px",
-                  minWidth: 0,
-                  padding: "0 8px",
-                  fontSize: 11,
-                  fontFamily: MONO_FONT,
-                  letterSpacing: "0.4px",
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  color: COLORS.textSecondary,
-                  outline: "none",
-                  borderRadius: 6,
-                  opacity: busyAction != null ? 0.7 : 1,
-                }}
-                placeholder="Commit message"
-                value={commitMessage}
-                onChange={(event) => setCommitMessage(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                    event.preventDefault();
-                    void submitCommit();
-                  }
-                }}
-              />
-              <SmartTooltip content={{
-                label: amendCommit ? "Amend ON" : "Amend",
-                description: getAmendSummary(amendCommit),
-                gitCommand: amendCommit ? "git commit --amend" : undefined,
-                effect: amendCommit ? "Your next commit will rewrite the latest commit" : "Click to enable amend mode",
-              }}>
-                <button
-                  type="button"
-                  style={{
-                    ...outlineButton({ height: 30, padding: "0 8px", fontSize: 10, borderRadius: 6 }),
-                    color: amendCommit ? COLORS.warning : COLORS.textDim,
-                    border: `1px solid ${amendCommit ? "color-mix(in srgb, var(--color-warning) 40%, transparent)" : COLORS.outlineBorder}`,
-                    background: amendCommit ? "color-mix(in srgb, var(--color-warning) 10%, transparent)" : "transparent",
-                  }}
-                  disabled={busyAction != null}
-                  onClick={() => setAmendCommit((prev) => !prev)}
-                >
-                  {amendCommit ? "AMEND ON" : "AMEND"}
-                </button>
-              </SmartTooltip>
-              <SmartTooltip content={{
-                label: amendCommit ? "Amend Commit" : "Commit",
-                description: amendCommit ? "Rewrite the latest commit with current staged changes and message." : "Create a new commit from staged changes.",
-                gitCommand: amendCommit ? "git commit --amend" : "git commit",
-                effect: hasStaged
-                  ? `${amendCommit ? "Amend" : "Commit"} ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}`
-                  : "No staged files to commit",
-                shortcut: `${modifierKeyLabel}+Enter`,
-              }}>
-                <button
-                  type="button"
-                  style={{
-                    ...primaryButton({ height: 30, padding: "0 12px", fontSize: 10, borderRadius: 6 }),
-                    opacity: ((!hasStaged && !amendCommit) || busyAction != null) ? 0.45 : 1,
-                    pointerEvents: ((!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
-                  }}
-                  disabled={(!hasStaged && !amendCommit) || busyAction != null}
-                  onClick={() => void submitCommit()}
-                >
-                  {commitButtonLabel}
-                </button>
-              </SmartTooltip>
+          <div className="flex items-center gap-1.5">
+            <input
+              disabled={busyAction != null}
+              data-testid="git-pane-commit-message"
+              className={cn(
+                "h-7 min-w-0 flex-1 rounded-[7px] bg-white/[0.03] px-2 font-sans text-[12px] text-fg/85",
+                "placeholder:text-muted-fg outline-none transition-colors duration-[120ms] ease-out",
+                "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
+                "focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+                "disabled:opacity-50",
+              )}
+              placeholder="Commit message"
+              value={commitMessage}
+              onChange={(event) => setCommitMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  void submitCommit();
+                }
+              }}
+            />
+            <WorkToolChromeButton
+              label={amendCommit ? "Amend is on" : "Amend last commit"}
+              onClick={() => setAmendCommit((prev) => !prev)}
+              active={amendCommit}
+              disabled={busyAction != null}
+              testId="git-pane-amend"
+            >
+              <ArrowUUpLeft size={16} />
+            </WorkToolChromeButton>
+          </div>
 
-              {/* Separator */}
-              <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
-
-              {/* Sync controls */}
-              <div className="flex items-center" style={{ gap: 2 }}>
-                {(["merge", "rebase"] as const).map((mode) => (
-                  <SmartTooltip key={mode} content={{
-                    label: mode === "merge" ? "Merge Mode" : "Rebase Mode",
-                    description: getPullModeSummary(mode),
-                    effect: syncMode === mode ? "Currently active" : `Switch pull strategy to ${mode}`,
-                  }}>
-                    <button
-                      type="button"
-                      disabled={!laneId || busyAction != null}
-                      onClick={() => setSyncMode(mode)}
-                      style={{
-                        ...outlineButton({ height: 26, padding: "0 6px", fontSize: 9, borderRadius: 4 }),
-                        color: syncMode === mode ? COLORS.accent : COLORS.textDim,
-                        border: `1px solid ${syncMode === mode ? "color-mix(in srgb, var(--color-accent) 40%, transparent)" : "transparent"}`,
-                        background: syncMode === mode ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
-                        opacity: !laneId || busyAction != null ? 0.5 : 1,
-                      }}
-                    >
-                      {mode === "merge" ? "MERGE" : "REBASE"}
-                    </button>
-                  </SmartTooltip>
-                ))}
-              </div>
-              <SmartTooltip content={{
-                label: `Pull (${syncMode})`,
-                description: getPullModeSummary(syncMode),
-                gitCommand: syncMode === "merge" ? "git pull --no-rebase" : "git pull --rebase",
-                effect: pullBlockedByConflict
-                  ? `Blocked: ${conflictState?.kind ?? "conflict"} in progress`
-                  : behindCount > 0
-                    ? `Pull ${behindCount} commit${behindCount === 1 ? "" : "s"} from remote`
-                    : "Already up to date with remote",
-                warning: pullBlockedByConflict ? `Resolve the current ${conflictState?.kind ?? "conflict"} first` : undefined,
-              }}>
-                <button
-                  type="button"
-                  className={behindCount > 0 ? "pull-btn-flash" : undefined}
-                  style={{
-                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                    ...((nextActionHint?.action === "pull" || nextActionHint?.action === "resolve_conflicts")
-                      ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" }
-                      : {}),
-                  }}
-                  disabled={!laneId || busyAction != null || pullBlockedByConflict}
-                  onClick={() => runPull(syncMode)}
-                >
-                  <ArrowDown size={12} weight="bold" style={{ marginRight: 4 }} />
-                  PULL
-                  {behindCount > 0 && (
-                    <span
-                      style={{
-                        marginLeft: 5,
-                        background: COLORS.accent,
-                        color: "#fff",
-                        borderRadius: 8,
-                        padding: "1px 5px",
-                        fontSize: 9,
-                        fontWeight: 700,
-                        lineHeight: "14px",
-                        minWidth: 16,
-                        textAlign: "center" as const,
-                        display: "inline-block",
-                      }}
-                    >
-                      {behindCount}
-                    </span>
-                  )}
-                </button>
-              </SmartTooltip>
-              <SmartTooltip content={{
-                label: upstreamMissing ? "Recreate" : syncStatus?.hasUpstream === false ? "Publish" : nextActionHint?.action === "force_push_lease" ? "Force Push" : "Push",
-                description: upstreamMissing
-                  ? "Recreate the missing remote branch for this lane."
-                  : syncStatus?.hasUpstream === false
-                    ? "Create the remote branch and connect this lane to it."
-                    : nextActionHint?.action === "force_push_lease"
-                      ? "Overwrite the remote branch with your local history after a rebase or amend."
-                      : "Send your local commits to the tracked remote branch.",
-                gitCommand: upstreamMissing || syncStatus?.hasUpstream === false
-                  ? `git push -u origin ${lane?.branchRef ?? "HEAD"}`
-                  : nextActionHint?.action === "force_push_lease"
-                    ? "git push --force-with-lease"
-                    : "git push",
-                effect: upstreamMissing
-                  ? `Recreate the remote branch for "${lane?.name ?? ""}"`
-                  : syncStatus?.hasUpstream === false
-                    ? `Publish lane "${lane?.name ?? ""}" to remote`
-                    : (syncStatus?.ahead ?? 0) > 0
-                      ? `Push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"} to remote`
-                      : "No local commits to push",
-                warning: nextActionHint?.action === "force_push_lease" ? "This overwrites remote history" : undefined,
-              }}>
-                <button
-                  type="button"
-                  style={{
-                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                    ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
-                  }}
-                  disabled={!laneId || busyAction != null}
-                  onClick={async () => {
-                    if (nextActionHint?.action === "force_push_lease") {
-                      const ok = await confirmForcePushWithLease();
-                      if (!ok) return;
-                      runPush(true);
-                    } else {
-                      runPush(false);
-                    }
-                  }}
-                >
-                  <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
-                  {upstreamMissing ? "RECREATE" : syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
-                </button>
-              </SmartTooltip>
-              {lane?.parentLaneId ? (
-                <HoverTitleButton
-                  type="button"
-                  style={{
-                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                    ...(nextActionHint?.action === "rebase_push" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
-                    opacity: syncButtonDisabled ? 0.45 : 1,
-                  }}
-                  disabled={syncButtonDisabled}
-                  onClick={() => runRebaseAndPushFlow(true)}
-                  tooltip={syncButtonTitle}
-                  smartTooltip={{
-                    label: "Sync",
-                    description: syncButtonTitle,
-                    gitCommand: "git rebase <parent> && git push",
-                    effect: lane?.status.behind > 0
-                      ? `Rebase ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} from parent and push`
-                      : "Already in sync with parent",
-                  }}
-                >
-                  <Stack size={12} weight="bold" style={{ marginRight: 4 }} />
-                  SYNC
-                </HoverTitleButton>
-              ) : null}
-
-              {/* Separator */}
-              <div style={{ width: 1, height: 20, background: COLORS.border, margin: "0 2px", flexShrink: 0 }} />
-
-              {/* Advanced toggle */}
-              <SmartTooltip content={{
-                label: "More",
-                description: "Show advanced git operations like fetch, force push, rebase, revert, and cherry-pick.",
-                effect: showAdvanced ? "Click to collapse" : "Click to expand",
-              }}>
-                <button
-                  type="button"
-                  style={{
-                    ...outlineButton({ height: 30, padding: "0 10px", fontSize: 10, borderRadius: 6 }),
-                    color: showAdvanced ? COLORS.accent : COLORS.textMuted,
-                    border: `1px solid ${showAdvanced ? "color-mix(in srgb, var(--color-accent) 30%, transparent)" : COLORS.outlineBorder}`,
-                  }}
-                  onClick={() => setShowAdvanced((prev) => !prev)}
-                >
-                  MORE {showAdvanced ? "\u25B4" : "\u25BE"}
-                </button>
-              </SmartTooltip>
-
-              {/* Refresh */}
-              <SmartTooltip content={{
-                label: "Refresh",
-                description: "Fetch from remote and refresh all git state including file changes, sync status, and stashes.",
-                gitCommand: "git fetch",
-                effect: "Fetch latest remote state",
-              }}>
-                <button
-                  type="button"
-                  aria-label="Refresh git state"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 30,
-                    height: 30,
-                    border: `1px solid ${COLORS.outlineBorder}`,
-                    background: "transparent",
-                    color: COLORS.textMuted,
-                    cursor: "pointer",
-                    borderRadius: 6,
-                    flexShrink: 0,
-                  }}
-                  onClick={() => {
-                    setShowAdvanced(false);
-                    refreshAll({ fetchRemote: true }).catch(() => {});
-                  }}
-                >
-                  <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
-                </button>
-              </SmartTooltip>
-            </div>
-          )}
-
-          {/* Helper / status row — the pane says the same things in its chrome. */}
-          {isPane ? null : (
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.4 }}>
-              <span style={{ minWidth: 0, flex: "1 1 auto" }}>{commitHelperText}</span>
-              <div className="flex items-center gap-2" style={{ flexShrink: 0, fontSize: 10 }}>
-                {nextActionHint ? (
-                  <span style={{ color: COLORS.accent, fontWeight: 500 }} title={nextActionHint.detail}>
-                    NEXT: {nextActionHint.label}
-                  </span>
-                ) : (
-                  <span style={{ color: COLORS.textDim }}>UP TO DATE</span>
-                )}
-                {divergedSync ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>DIVERGED</span> : null}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* ─── Advanced Git (collapsible) ─── */}
@@ -2856,13 +2343,17 @@ export function LaneGitActionsPane({
             // nothing to list it takes its own height and History gets the
             // rest, so the gap between them is the 12px below and not 320px of
             // stretched empty section.
+            // A diff is what you came to read, so it gets two thirds and
+            // History keeps a third to pick the next commit from.
             gridTemplateRows: responsiveMode !== "narrow"
               ? "minmax(0, 1fr)"
               : filesSectionIsEmpty
                 ? "auto minmax(0, 1fr)"
-                : "minmax(0, 1fr) minmax(0, 1fr)",
-            padding: skin.bodyPadding,
-            gap: skin.bodyGap,
+                : diffViewActive
+                  ? "minmax(0, 2fr) minmax(0, 1fr)"
+                  : "minmax(0, 1fr) minmax(0, 1fr)",
+            padding: SKIN.bodyPadding,
+            gap: SKIN.bodyGap,
             flex: "1 1 0",
             minWidth: 0,
             minHeight: 0,
@@ -2879,14 +2370,14 @@ export function LaneGitActionsPane({
                 : "Changed files. Stashes are saved snapshots below."
             }
             dataTestId="files-section"
-            plain={skin.plain}
+            plain={SKIN.plain}
             sectionStyle={{
               minHeight: 0,
               // `height: 100%` is what makes the section fill its row; in the
               // collapsed case the row IS the content, so filling it would put
               // the void back.
               ...(filesSectionIsEmpty && responsiveMode === "narrow" ? {} : { height: "100%" }),
-              ...skin.cardFill,
+              ...SKIN.cardFill,
             }}
             headerStyle={{ background: "rgba(255,255,255,0.03)" }}
             bodyStyle={
@@ -2899,16 +2390,16 @@ export function LaneGitActionsPane({
                     display: "flex",
                     flexDirection: "column",
                     overflow: "hidden",
-                    ...skin.cardFill,
+                    ...SKIN.cardFill,
                   }
-                : { flex: 1, minHeight: 0, gap: 8, ...skin.cardFill }
+                : { flex: 1, minHeight: 0, gap: 8, ...SKIN.cardFill }
             }
             aside={
               diffViewActive ? (
                 <SmartTooltip content={{ label: "Back to files", description: "Leave the diff viewer and return to the file list and stashes." }}>
                   <button
                     type="button"
-                    style={outlineButton({ height: 24, padding: "0 10px", fontSize: 10, gap: 6 })}
+                    style={outlineButton({ gap: 6, ...SKIN.actionButton, padding: "0 10px" })}
                     disabled={!onClearDiffSelection}
                     onClick={() => onClearDiffSelection?.()}
                   >
@@ -2921,15 +2412,9 @@ export function LaneGitActionsPane({
                 {/* A count is a fact you read, not a control you press. The
                     accent-filled pill was the loudest thing in the pane and it
                     said "0" most of the time. */}
-                {isPane ? (
-                  changedFileCount > 0 ? (
+                {changedFileCount > 0 ? (
                     <span className={WORK_TOOL_CHROME_META}>{changedFileCount}</span>
-                  ) : null
-                ) : (
-                  <span title={`${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`} style={inlineBadge(COLORS.accent, { fontSize: 9 })}>
-                    {changedFileCount}
-                  </span>
-                )}
+                ) : null}
                 {changes.unstaged.length > 0 ? (
                   <>
                     <SmartTooltip content={{
@@ -2940,11 +2425,11 @@ export function LaneGitActionsPane({
                     }}>
                       <button
                         type="button"
-                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        style={outlineButton(SKIN.actionButton)}
                         onClick={stageAll}
                         disabled={busyAction != null}
                       >
-                        STAGE ALL
+                        {SKIN.actionLabel("Stage all")}
                       </button>
                     </SmartTooltip>
                     <SmartTooltip content={{
@@ -2956,11 +2441,11 @@ export function LaneGitActionsPane({
                     }}>
                       <button
                         type="button"
-                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        style={dangerButton(SKIN.actionButton)}
                         onClick={discardAll}
                         disabled={busyAction != null}
                       >
-                        DISCARD UNSTAGED
+                        {SKIN.actionLabel("Discard unstaged")}
                       </button>
                     </SmartTooltip>
                   </>
@@ -2975,10 +2460,10 @@ export function LaneGitActionsPane({
                     }}>
                       <button
                         type="button"
-                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        style={outlineButton(SKIN.actionButton)}
                         onClick={unstageAll}
                       >
-                        UNSTAGE STAGED
+                        {SKIN.actionLabel("Unstage staged")}
                       </button>
                     </SmartTooltip>
                     <SmartTooltip content={{
@@ -2990,11 +2475,11 @@ export function LaneGitActionsPane({
                     }}>
                       <button
                         type="button"
-                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        style={dangerButton(SKIN.actionButton)}
                         onClick={discardAllStaged}
                         disabled={busyAction != null}
                       >
-                        DISCARD STAGED
+                        {SKIN.actionLabel("Discard staged")}
                       </button>
                     </SmartTooltip>
                   </>
@@ -3009,14 +2494,14 @@ export function LaneGitActionsPane({
                   }}>
                     <button
                       type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      style={outlineButton(SKIN.actionButton)}
                       disabled={rescueButtonDisabled}
                       title={rescueButtonTitle}
                       onClick={() => {
                         void moveUnstagedToNewLane();
                       }}
                     >
-                      CREATE NEW LANE WITH CURRENT CHANGES
+                      {SKIN.actionLabel("Create new lane with current changes")}
                     </button>
                   </SmartTooltip>
                 ) : null}
@@ -3025,7 +2510,12 @@ export function LaneGitActionsPane({
             }
           >
             {diffViewActive ? (
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              // In the pane the diff is its own surface: framed with a 10px
+              // radius and a hairline, per the Work tool chrome rules.
+              <div
+                className={cn("flex min-h-0 min-w-0 flex-1 flex-col", "overflow-hidden rounded-[10px]")}
+                style={{ border: `1px solid ${COLORS.borderMuted}` }}
+              >
                 <LaneDiffPane
                   laneId={laneId}
                   runtimePin={pin}
@@ -3044,7 +2534,7 @@ export function LaneGitActionsPane({
                 actions already are. */}
             <div
               style={{
-                display: isPane && !showAdvanced ? "none" : "flex",
+                display: !showAdvanced ? "none" : "flex",
                 flexDirection: "column",
                 gap: 8,
                 paddingBottom: 8,
@@ -3053,7 +2543,7 @@ export function LaneGitActionsPane({
             >
               <div className="flex flex-wrap items-center gap-2" style={{ justifyContent: "space-between", rowGap: 6 }}>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span style={LABEL_STYLE}>BRANCH STASHES</span>
+                  <span style={SKIN.stashLabelStyle}>{SKIN.actionLabel("Branch stashes")}</span>
                   <span style={{ fontSize: 10, color: COLORS.textDim }}>
                     {stashes.length === 0 ? "None saved" : `${stashes.length} saved`}
                   </span>
@@ -3069,7 +2559,7 @@ export function LaneGitActionsPane({
                     }}>
                       <button
                         type="button"
-                        style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        style={dangerButton(SKIN.actionButton)}
                         disabled={!laneId || busyAction != null}
                         onClick={() => {
                           if (!laneId) return;
@@ -3087,7 +2577,7 @@ export function LaneGitActionsPane({
                           });
                         }}
                       >
-                        CLEAR STASHES
+                        {SKIN.actionLabel("Clear stashes")}
                       </button>
                     </SmartTooltip>
                   )}
@@ -3101,7 +2591,7 @@ export function LaneGitActionsPane({
                   }}>
                     <button
                       type="button"
-                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      style={outlineButton(SKIN.actionButton)}
                       disabled={!laneId || busyAction != null || (!hasStaged && !hasUnstaged)}
                       onClick={() => {
                         if (!laneId) return;
@@ -3116,7 +2606,7 @@ export function LaneGitActionsPane({
                         });
                       }}
                     >
-                      SAVE CHANGES
+                      {SKIN.actionLabel("Save changes")}
                     </button>
                   </SmartTooltip>
                 </div>
@@ -3239,10 +2729,10 @@ export function LaneGitActionsPane({
               {changes.staged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div
-                    className={skin.sectionLabelClass}
-                    style={skin.sectionLabelStyle}
+                    className={SKIN.sectionLabelClass}
+                    style={SKIN.sectionLabelStyle}
                   >
-                    {skin.sectionLabel("Staged", changes.staged.length)}
+                    {SKIN.sectionLabel("Staged", changes.staged.length)}
                   </div>
                   {renderChangeTree(visibleStagedChanges, "staged", stagedChangeTreeStatsByPath)}
                   {hiddenStagedChangeCount > 0 ? (
@@ -3262,10 +2752,10 @@ export function LaneGitActionsPane({
               {changes.unstaged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div
-                    className={skin.sectionLabelClass}
-                    style={skin.sectionLabelStyle}
+                    className={SKIN.sectionLabelClass}
+                    style={SKIN.sectionLabelStyle}
                   >
-                    {skin.sectionLabel("Unstaged", changes.unstaged.length)}
+                    {SKIN.sectionLabel("Unstaged", changes.unstaged.length)}
                   </div>
                   {renderChangeTree(visibleUnstagedChanges, "unstaged", unstagedChangeTreeStatsByPath)}
                   {hiddenUnstagedChangeCount > 0 ? (
@@ -3283,15 +2773,9 @@ export function LaneGitActionsPane({
                 </div>
               ) : null}
               {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
-                isPane ? (
                   <div className="px-1 py-3 text-[12px] text-muted-fg" data-testid="git-pane-clean">
                     Clean · nothing to commit
                   </div>
-                ) : (
-                  <div style={{ padding: 12, textAlign: "center", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic" }}>
-                    No changes
-                  </div>
-                )
               ) : null}
             </div>
             </>
@@ -3302,13 +2786,13 @@ export function LaneGitActionsPane({
             title="History"
             description="Recent commits on this branch."
             dataTestId="history-section"
-            plain={skin.plain}
+            plain={SKIN.plain}
             sectionStyle={{ minHeight: 0, height: "100%" }}
             bodyStyle={{ flex: 1, minHeight: 0 }}
           >
             <div style={{ flex: 1, minHeight: 0 }}>
               <CommitTimeline
-                hideHeader={skin.hideTimelineHeader}
+                hideHeader={SKIN.hideTimelineHeader}
                 laneId={laneId ?? null}
                 runtimePin={pin}
                 active={active}

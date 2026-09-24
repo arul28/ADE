@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { applyShellHeaderInset } from "../../lib/zoom";
+import { resetAppZoomCacheForTests } from "../../lib/appZoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -58,14 +59,6 @@ vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
 
 vi.mock("./AutoUpdateControl", () => ({
   AutoUpdateControl: () => null,
-}));
-
-vi.mock("./FeedbackReporterModal", () => ({
-  FeedbackReporterModal: () => null,
-}));
-
-vi.mock("../onboarding/HelpMenu", () => ({
-  HelpMenu: () => null,
 }));
 
 vi.mock("../usage/HeaderUsageControl", () => ({
@@ -426,6 +419,7 @@ describe("TopBar", () => {
       globalThis.window.__adeWebClient = originalWebClientMode;
     }
     resetActivityStoreForTests();
+    resetAppZoomCacheForTests();
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
   });
 
@@ -486,6 +480,52 @@ describe("TopBar", () => {
     expect(onOpenActivityPane).toHaveBeenCalledTimes(1);
     expect(onNavigate).not.toHaveBeenCalledWith("/attention");
     expect(onNavigate).not.toHaveBeenCalledWith("/activity");
+  });
+
+  it("shows the sidebar toggle only while a project surface is on screen", () => {
+    const root = "/Users/arul/ADE";
+    useAppStore.setState({
+      project: { rootPath: root, name: "ADE" },
+      projectHydrated: true,
+      showWelcome: false,
+      isNewTabOpen: false,
+    } as any);
+    window.localStorage.removeItem("ade.shell.projectSidebar.hidden");
+
+    const { rerender } = render(<TopBar />);
+    const toggle = screen.getByRole("button", { name: "Toggle sidebar" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+
+    rerender(<TopBar personalChatsRouteActive />);
+    expect(screen.queryByRole("button", { name: "Toggle sidebar" })).toBeNull();
+
+    act(() => {
+      useAppStore.setState({ showWelcome: true } as any);
+    });
+    rerender(<TopBar />);
+    expect(screen.queryByRole("button", { name: "Toggle sidebar" })).toBeNull();
+  });
+
+  // Account, Settings, feedback, help, and zoom moved to the project sidebar
+  // (the footer cog and the settings sidebar header).
+  it("keeps account, settings, feedback, help, and zoom out of the top bar", () => {
+    useAppStore.setState({
+      project: { rootPath: "/Users/arul/ADE", name: "ADE" },
+      projectBinding: null,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(<TopBar />);
+
+    expect(screen.queryByRole("button", { name: /^Account/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Report bug or suggest feature" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Zoom in" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Zoom out" })).toBeNull();
   });
 
   it("shows connections before a project is open without immediate polling", async () => {

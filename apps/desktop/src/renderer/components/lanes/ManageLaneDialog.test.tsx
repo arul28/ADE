@@ -167,6 +167,26 @@ describe("ManageLaneDialog tabs", () => {
     expect(selectedTabLabel()).toBe("Delete");
   });
 
+  it("opens on the tab the caller asks for, e.g. Archive all from the sidebar", () => {
+    const firstLane = makeLane({ id: "lane-1", name: "First lane" });
+    const secondLane = makeLane({ id: "lane-2", name: "Second lane" });
+
+    render(
+      <ManageLaneDialog
+        {...makeProps({
+          managedLane: null,
+          managedLanes: [firstLane, secondLane],
+          allLanes: [firstLane, secondLane],
+          initialTab: "archive",
+        })}
+      />,
+    );
+
+    expect(selectedTabLabel()).toBe("Archive");
+    expect(screen.getByText("First lane")).toBeTruthy();
+    expect(screen.getByText("Second lane")).toBeTruthy();
+  });
+
   it("does not reset the selected tab when the lane object refreshes", () => {
     const lane = makeLane();
     const { rerender } = render(

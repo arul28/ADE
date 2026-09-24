@@ -172,6 +172,12 @@ vi.mock("./AppShell", async () => {
   };
 });
 
+// The project sidebar reads attention state that this store mock leaves out;
+// these tests cover which surfaces stay mounted, not the sidebar.
+vi.mock("./projectSidebar/ProjectSidebar", () => ({
+  ProjectSidebar: () => null,
+}));
+
 vi.mock("./ProjectRecoveryScreen", () => ({
   ProjectRecoveryScreen: () => <div data-testid="project-recovery-screen" />,
 }));

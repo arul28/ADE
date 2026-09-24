@@ -8,13 +8,11 @@ import {
 import { ACTIVITY_EVENT_CATALOG } from "../../../shared/activityCatalog";
 import { normalizeActivityPreferences } from "../activity/activityNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
-import { DEFAULT_LANE_BANNER_BUDGET } from "../../../shared/types/config";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import {
   SavedFlash,
   SettingsCard,
   SettingsGroup,
-  SettingsNumber,
   SettingsSegmented,
   SettingsSelect,
   SettingsToggle,
@@ -320,10 +318,6 @@ export function NotificationsSection() {
         <AgentCompletionSoundSection />
       </SettingsGroup>
 
-      <SettingsGroup title="On-screen banners">
-        <LaneBannerBudgetCard />
-      </SettingsGroup>
-
     </div>
   );
 }
@@ -359,75 +353,5 @@ function QuietHourField({
         }}
       />
     </label>
-  );
-}
-
-/**
- * The Lanes header banner budget. Project-scoped rather than account-scoped,
- * so it lives in project config alongside the rebase display mode it caps.
- */
-function LaneBannerBudgetCard() {
-  const [budget, setBudget] = useState(DEFAULT_LANE_BANNER_BUDGET);
-  const { state, flash, fail } = useSavedFlash();
-  const mounted = useRef(true);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
-
-  useEffect(() => {
-    void window.ade.projectConfig.get()
-      .then((snapshot) => {
-        if (!mounted.current) return;
-        const value = snapshot.effective.git?.laneBannerBudget;
-        setBudget(typeof value === "number" && Number.isFinite(value)
-          ? Math.max(0, Math.floor(value))
-          : DEFAULT_LANE_BANNER_BUDGET);
-      })
-      .catch(() => {});
-  }, []);
-
-  const persist = useCallback(async (next: number) => {
-    try {
-      const snapshot = await window.ade.projectConfig.get();
-      const currentGit = snapshot.local.git && typeof snapshot.local.git === "object"
-        ? snapshot.local.git
-        : {};
-      await window.ade.projectConfig.save({
-        shared: snapshot.shared,
-        local: { ...snapshot.local, git: { ...currentGit, laneBannerBudget: next } },
-      });
-      if (mounted.current) flash();
-    } catch (error) {
-      if (mounted.current) fail(error instanceof Error ? error.message : String(error));
-    }
-  }, [flash, fail]);
-
-  return (
-    <SettingsCard
-      anchor="lane-banner-budget"
-      title="Lane banner budget"
-      description="Most banners allowed above the lane list at once. Past this, they collapse to a single line instead of stacking."
-      control={
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <SavedFlash state={state} />
-          <SettingsNumber
-            ariaLabel="Lane banner budget"
-            value={budget}
-            min={0}
-            max={4}
-            suffix={budget === 1 ? "banner" : "banners"}
-            sentinelLabel="Always collapse"
-            sentinelValue={0}
-            onChange={(next) => {
-              const clamped = Math.max(0, Math.min(4, Math.floor(next)));
-              setBudget(clamped);
-              void persist(clamped);
-            }}
-          />
-        </div>
-      }
-    />
   );
 }

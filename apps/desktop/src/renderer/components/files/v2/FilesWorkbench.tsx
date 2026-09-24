@@ -76,6 +76,7 @@ import { joinDisplayPath } from "./pathDisplay";
 import { ArrowLeft, CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { confirmDialog } from "../../ui/dialog/confirm";
+import { ProjectSidebarSlot, useHasProjectSidebar } from "../../app/projectSidebar/ProjectSidebarSlot";
 
 /**
  * Below this pane width the embedded workbench shows ONE surface at a time.
@@ -236,6 +237,11 @@ export function FilesWorkbench({
   const [tabScope, setTabScope] = useState<FilesTabScope>(() => getFilesTabScope(projectRootPath));
 
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
+  // The Files tab draws its tree in the project sidebar. The Work tools pane
+  // copy (`embedded`) sits inside that sidebar's provider too, but it must keep
+  // its own tree column: two trees can never share the one sidebar body.
+  const hasProjectSidebar = useHasProjectSidebar();
+  const treeInSidebar = !embedded && hasProjectSidebar;
   /**
    * Which of the two surfaces the embedded pane is showing.
    *
@@ -1510,6 +1516,101 @@ export function FilesWorkbench({
   const treeSurfaceHidden = singleSurface && showEditorSurface;
   const editorSurfaceHidden = singleSurface && !showEditorSurface;
 
+  /*
+    Explorer column. On the Files tab it renders in the project sidebar.
+    Embedded it is `--color-surface`, the same token the editor and its gutter
+    now paint with, so the pane is one surface rather than a card-tinted tree
+    beside Monaco's own grey.
+
+    Below `EMBEDDED_SINGLE_SURFACE_PX` only one column shows, but both stay
+    MOUNTED and the other is hidden: rendering `null` disposed the Monaco
+    editor on every "Back to files", losing cursor, scroll, selection, folding
+    and the open find widget (the text model is registry-owned, so edits
+    survived — nothing held on the editor did), and paying a full `create()` +
+    re-tokenise on the way back. `hidden` keeps it out of the grid, and `inert`
+    keeps it out of the tab order and out of the ⌘F claim.
+  */
+  const treeColumn = (
+    <div
+      data-testid="files-tree-column"
+      className={cn(
+        "flex min-h-0 flex-col",
+        treeInSidebar ? "min-w-0 flex-1" : singleSurface ? null : "border-r",
+        treeSurfaceHidden ? "hidden" : null,
+      )}
+      {...(treeSurfaceHidden ? INERT_ATTR : null)}
+      style={{
+        borderColor: COLORS.border,
+        // In the project sidebar the column takes the sidebar's own surface.
+        background: treeInSidebar
+          ? undefined
+          : embedded
+            ? "var(--color-surface)"
+            : "color-mix(in srgb, var(--color-card) 80%, var(--color-bg) 20%)",
+      }}
+    >
+      {!embedded ? (
+        <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={selectWorkspace} />
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <FilesExplorer
+          flat={treeInSidebar}
+          tree={tree}
+          expanded={expanded}
+          loadingDirectories={loadingDirs}
+          selectedNodePath={selectedNodePath}
+          activeTabPath={
+            activeTab && activeTab.workspaceId === workspaceId ? activeTab.path : null
+          }
+          activeContextDir=""
+          workspaceComparisonRoot={null}
+          searchQuery={searchQuery}
+          inlineRenameRequest={inlineRename}
+          onSearchQueryChange={setSearchQuery}
+          /* Same search as the centre overlay, in the sidebar column: names
+             from the index plus content hits, rather than the old filter
+             over whatever slice of the tree happened to be loaded. */
+          searchResults={searchOverlayOpen ? (
+            /* The modal owns the search while it is open. Mounting the
+               sidebar copy too would fire every name+content request twice
+               against the same workspace, and it is behind a backdrop. */
+            <div className="min-h-0 flex-1" />
+          ) : (
+            <FilesSearchPanel
+              workspaceId={workspaceId}
+              pin={machinePin}
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              onOpen={(path, line) => void openFile(path, { preview: false, line })}
+              onDismiss={() => setSearchQuery("")}
+              variant="sidebar"
+            />
+          )}
+          onCreateFile={(basePath) => setOverlay({ kind: "create", create: "file", baseDir: basePath })}
+          onCreateDirectory={(basePath) => setOverlay({ kind: "create", create: "directory", baseDir: basePath })}
+          onToggleDirectory={toggleDirectory}
+          onLoadMoreChildren={(path, offset) => { loadMoreChildren(path, offset).catch(() => {}); }}
+          onOpenFile={(path) => void openFile(path, { preview: true })}
+          onActivateFile={(path) => void openFile(path, { preview: false })}
+          onSelectNode={setSelectedNodePath}
+          onContextMenu={setTreeMenu}
+          onRenamePath={renamePath}
+          onInlineRenameSettled={() => setInlineRename(null)}
+          compact={embedded}
+        />
+      </div>
+      {decorationsTruncated ? (
+        <div
+          className="shrink-0 border-t px-3 py-1.5 text-[10px] leading-4"
+          style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
+          title="This workspace has more changed files than the git-status response can carry, so the deepest ones are shown without a status colour."
+        >
+          Some git decorations hidden (large change set)
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <MonochromeFileIconsContext.Provider value={embedded === true}>
     <div
@@ -1610,95 +1711,10 @@ export function FilesWorkbench({
       <div
         className="grid min-h-0 flex-1"
         style={{
-          gridTemplateColumns: singleSurface ? "1fr" : embedded ? "220px 1fr" : "260px 1fr",
+          gridTemplateColumns: singleSurface || treeInSidebar ? "1fr" : embedded ? "220px 1fr" : "260px 1fr",
         }}
       >
-        {/* Explorer column. Embedded it is `--color-surface`, the same token the
-            editor and its gutter now paint with, so the pane is one surface
-            rather than a card-tinted tree beside Monaco's own grey.
-
-            Below `EMBEDDED_SINGLE_SURFACE_PX` only one column shows, but both
-            stay MOUNTED and the other is hidden: rendering `null` disposed the
-            Monaco editor on every "Back to files", losing cursor, scroll,
-            selection, folding and the open find widget (the text model is
-            registry-owned, so edits survived — nothing held on the editor did),
-            and paying a full `create()` + re-tokenise on the way back. `hidden`
-            keeps it out of the grid, and `inert` keeps it out of the tab order
-            and out of the ⌘F claim. */}
-        <div
-          data-testid="files-tree-column"
-          className={cn(
-            "flex min-h-0 flex-col",
-            singleSurface ? null : "border-r",
-            treeSurfaceHidden ? "hidden" : null,
-          )}
-          {...(treeSurfaceHidden ? INERT_ATTR : null)}
-          style={{
-            borderColor: COLORS.border,
-            background: embedded
-              ? "var(--color-surface)"
-              : "color-mix(in srgb, var(--color-card) 80%, var(--color-bg) 20%)",
-          }}
-        >
-          {!embedded ? (
-            <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={selectWorkspace} />
-          ) : null}
-          <div className="min-h-0 flex-1">
-            <FilesExplorer
-              tree={tree}
-              expanded={expanded}
-              loadingDirectories={loadingDirs}
-              selectedNodePath={selectedNodePath}
-              activeTabPath={
-                activeTab && activeTab.workspaceId === workspaceId ? activeTab.path : null
-              }
-              activeContextDir=""
-              workspaceComparisonRoot={null}
-              searchQuery={searchQuery}
-              inlineRenameRequest={inlineRename}
-              onSearchQueryChange={setSearchQuery}
-              /* Same search as the centre overlay, in the sidebar column: names
-                 from the index plus content hits, rather than the old filter
-                 over whatever slice of the tree happened to be loaded. */
-              searchResults={searchOverlayOpen ? (
-                /* The modal owns the search while it is open. Mounting the
-                   sidebar copy too would fire every name+content request twice
-                   against the same workspace, and it is behind a backdrop. */
-                <div className="min-h-0 flex-1" />
-              ) : (
-                <FilesSearchPanel
-                  workspaceId={workspaceId}
-                  pin={machinePin}
-                  query={searchQuery}
-                  onQueryChange={setSearchQuery}
-                  onOpen={(path, line) => void openFile(path, { preview: false, line })}
-                  onDismiss={() => setSearchQuery("")}
-                  variant="sidebar"
-                />
-              )}
-              onCreateFile={(basePath) => setOverlay({ kind: "create", create: "file", baseDir: basePath })}
-              onCreateDirectory={(basePath) => setOverlay({ kind: "create", create: "directory", baseDir: basePath })}
-              onToggleDirectory={toggleDirectory}
-              onLoadMoreChildren={(path, offset) => { loadMoreChildren(path, offset).catch(() => {}); }}
-              onOpenFile={(path) => void openFile(path, { preview: true })}
-              onActivateFile={(path) => void openFile(path, { preview: false })}
-              onSelectNode={setSelectedNodePath}
-              onContextMenu={setTreeMenu}
-              onRenamePath={renamePath}
-              onInlineRenameSettled={() => setInlineRename(null)}
-              compact={embedded}
-            />
-          </div>
-          {decorationsTruncated ? (
-            <div
-              className="shrink-0 border-t px-3 py-1.5 text-[10px] leading-4"
-              style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
-              title="This workspace has more changed files than the git-status response can carry, so the deepest ones are shown without a status colour."
-            >
-              Some git decorations hidden (large change set)
-            </div>
-          ) : null}
-        </div>
+        {treeInSidebar ? null : treeColumn}
         <div
           data-testid="files-editor-column"
           className={cn("min-h-0 min-w-0", editorSurfaceHidden ? "hidden" : null)}
@@ -1758,6 +1774,8 @@ export function FilesWorkbench({
         openCount={openCount}
         dirtyCount={dirtyTabIds.size}
       />
+
+      {treeInSidebar ? <ProjectSidebarSlot active={active}>{treeColumn}</ProjectSidebarSlot> : null}
 
       {treeMenu ? (
         <ContextMenu x={treeMenu.x} y={treeMenu.y} items={treeMenuItems} onClose={() => setTreeMenu(null)} />

@@ -585,7 +585,7 @@ export function YourMacsCard() {
   const reconnectAction = reconnectFlow.view({ label: "Reconnect this computer", detail: missingCopy.body });
 
   // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
-  // stack behind, the cards that follow this one (mirrors the TabNav pattern).
+  // stack behind, the cards that follow this one (same approach as `ui/AnchoredMenu`).
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(menuAnchor, openMenuKey);
   const menuItemRef = useRef<HTMLButtonElement | null>(null);
   const menuTriggerRef = useRef<HTMLElement | null>(null);

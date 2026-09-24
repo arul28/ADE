@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowCounterClockwise, ChatCircleDots, Plus, Trash } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
+import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import {
   COLORS,
   LABEL_STYLE,
@@ -48,6 +49,7 @@ export function ProjectWelcomePage() {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const project = useAppStore((s) => s.project);
+  const theme = useAppStore((s) => s.theme);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
@@ -455,7 +457,9 @@ export function ProjectWelcomePage() {
         flexDirection: "column",
         alignItems: "center",
         height: "100%",
-        background: `radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--color-accent) 15%, transparent) 0%, ${COLORS.pageBg} 40%)`,
+        // The window gradient paints over this base; see the backdrop below.
+        background: COLORS.pageBg,
+        isolation: "isolate",
         overflow: "hidden",
         outline: isDragOver
           ? "2px dashed color-mix(in srgb, var(--color-accent) 70%, transparent)"
@@ -464,6 +468,10 @@ export function ProjectWelcomePage() {
         transition: "outline-color 0.15s ease",
       }}
     >
+      {/* The welcome screen is one field with the top bar's gradient. */}
+      <div aria-hidden style={{ position: "absolute", inset: 0, zIndex: -1, pointerEvents: "none" }}>
+        <WorkToolPickerBackdrop theme={theme} field="window" />
+      </div>
       <style>
         {`@keyframes ade-recent-dot-pulse {
             0%, 100% { opacity: 1; transform: scale(1); }

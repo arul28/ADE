@@ -8,7 +8,6 @@ import type {
   AutomationRuleDraft,
   AutomationRuleSummary,
 } from "../../../../shared/types";
-import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { Banner } from "../../ui/notice";
 import { inputCls } from "../designTokens";
@@ -73,6 +72,9 @@ export function ruleOriginFilterCounts(
 const FILTER_CHIP_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_CHIP_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
+const TOOLBAR_ICON_BUTTON_CLASS =
+  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/[0.06] hover:text-fg disabled:opacity-50";
+
 export function RuleList({
   rules,
   selectedRuleId,
@@ -121,32 +123,47 @@ export function RuleList({
   const activeFilterLabel = RULE_ORIGIN_FILTERS.find((f) => f.key === originFilter)?.label ?? "All";
 
   return (
-    <div className="flex min-h-0 w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-white/[0.01]">
-      <div className="shrink-0 border-b border-white/[0.06] px-4 py-3.5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-[15px] font-semibold text-fg">Automations</div>
-          <Button size="sm" variant="ghost" disabled={loading} onClick={onRefresh} title="Refresh">
-            <ArrowClockwise size={12} weight="regular" className={cn(loading && "animate-spin")} />
-          </Button>
-        </div>
-        <div className="mt-3 flex items-center gap-2">
-          <Button size="sm" variant="primary" data-tour="automations.createTrigger" onClick={onNew}>
-            <Plus size={12} weight="bold" />
-            New
-          </Button>
-          <Button size="sm" variant="outline" onClick={onOpenTemplates}>
-            <BookOpen size={12} weight="regular" />
-            Templates
-          </Button>
-        </div>
-        <div className="relative mt-3">
-          <MagnifyingGlass size={12} weight="bold" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50" />
-          <input
-            className={cn(inputCls, "pl-7")}
-            value={search}
-            onChange={(e) => onSearch(e.target.value)}
-            placeholder="Search automations"
-          />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 border-b border-white/[0.06] px-2.5 pb-2 pt-1">
+        <div className="flex items-center gap-1">
+          <div className="relative min-w-0 flex-1">
+            <MagnifyingGlass size={12} weight="bold" className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50" />
+            <input
+              className={cn(inputCls, "h-7 pl-7")}
+              value={search}
+              onChange={(e) => onSearch(e.target.value)}
+              placeholder="Search"
+            />
+          </div>
+          <button
+            type="button"
+            className={TOOLBAR_ICON_BUTTON_CLASS}
+            disabled={loading}
+            onClick={onRefresh}
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            <ArrowClockwise size={13} weight="regular" className={cn(loading && "animate-spin")} />
+          </button>
+          <button
+            type="button"
+            className={TOOLBAR_ICON_BUTTON_CLASS}
+            onClick={onOpenTemplates}
+            title="Templates"
+            aria-label="Templates"
+          >
+            <BookOpen size={13} weight="regular" />
+          </button>
+          <button
+            type="button"
+            className={cn(TOOLBAR_ICON_BUTTON_CLASS, "bg-accent/15 text-accent hover:bg-accent/25 hover:text-accent")}
+            data-tour="automations.createTrigger"
+            onClick={onNew}
+            title="New automation"
+            aria-label="New automation"
+          >
+            <Plus size={13} weight="bold" />
+          </button>
         </div>
         {/* Provenance chips. A chip with nothing behind it goes inert instead
             of handing back a blank list with no explanation. Hidden entirely

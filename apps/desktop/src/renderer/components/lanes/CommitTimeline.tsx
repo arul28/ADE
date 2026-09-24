@@ -34,6 +34,22 @@ function formatTimelineError(err: unknown): string {
   return message || "Unable to load commit history.";
 }
 
+/**
+ * A small sentence-case tag on a history row: "Head", "Remote", "Needs push".
+ * Tinted from its own colour so it reads as a state, not a button.
+ */
+function RowTag({ color, title, children }: { color: string; title?: string; children: React.ReactNode }) {
+  return (
+    <span
+      title={title}
+      className="inline-flex h-[17px] shrink-0 items-center rounded-full px-1.5 text-[10.5px] font-medium leading-none"
+      style={{ color, background: `color-mix(in srgb, ${color} 13%, transparent)` }}
+    >
+      {children}
+    </span>
+  );
+}
+
 type CommitMeta = {
   fileCount: number | null;
   message: string | null;
@@ -202,11 +218,11 @@ export function CommitTimeline({
       ) : null}
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto" onScroll={onScroll}>
-        <div className="relative" style={{ paddingLeft: 20, paddingRight: 4, paddingTop: 4, paddingBottom: 4 }}>
+        <div className="relative" style={{ paddingLeft: 22, paddingRight: 4, paddingTop: 4, paddingBottom: 4 }}>
           {/* Continuous vertical line */}
           <div
             className="absolute"
-            style={{ left: 11, top: 0, bottom: 0, width: 1, background: COLORS.border }}
+            style={{ left: 12, top: 0, bottom: 0, width: 1, background: COLORS.borderMuted }}
           />
 
           {commits.map((commit, idx) => {
@@ -222,12 +238,12 @@ export function CommitTimeline({
                 <button
                   type="button"
                   title={isMerge ? "Merge commit (multiple parents)." : "Commit"}
-                  className="relative flex w-full items-start gap-2 text-left transition-all duration-150"
+                  className="relative flex w-full items-start gap-2 rounded-lg text-left transition-colors duration-100"
                   style={{
                     padding: "6px 10px",
                     fontSize: 12,
-                    borderLeft: isSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
                     background: isSelected ? COLORS.accentSubtle : "transparent",
+                    boxShadow: isSelected ? `inset 0 0 0 1px ${COLORS.accentBorder}` : "none",
                     color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
                   }}
                   onClick={() => onSelectCommit(commit)}
@@ -251,7 +267,7 @@ export function CommitTimeline({
                   }}
                 >
                   {/* Node on the line */}
-                  <div className="absolute" style={{ left: -8, top: 10 }}>
+                  <div className="absolute" style={{ left: -14, top: 10 }}>
                     <div
                       style={{
                         width: 10, height: 10, borderRadius: "50%",
@@ -268,38 +284,33 @@ export function CommitTimeline({
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: isNewest ? COLORS.success : COLORS.textMuted }}>
+                    <div className="truncate" style={{ color: COLORS.textPrimary, fontSize: 12.5, lineHeight: 1.4 }}>
+                      {commit.subject}
+                    </div>
+                    <div className="flex min-w-0 items-center gap-1.5" style={{ marginTop: 3 }}>
+                      <span className="shrink-0" style={{ fontFamily: MONO_FONT, fontSize: 11, color: isNewest ? COLORS.success : COLORS.textMuted }}>
                         {commit.shortSha}
                       </span>
-                      {isNewest ? <span style={inlineBadge(COLORS.success, { fontSize: 9 })}>HEAD</span> : null}
-                      {isMerge ? <span style={inlineBadge(COLORS.info, { fontSize: 9 })}>MERGE</span> : null}
+                      {isNewest ? <RowTag color={COLORS.success}>Head</RowTag> : null}
+                      {isMerge ? <RowTag color={COLORS.info}>Merge</RowTag> : null}
                       {remoteMissing ? (
-                        <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title="The configured remote branch no longer exists.">REMOTE GONE</span>
+                        <RowTag color={COLORS.warning} title="The configured remote branch no longer exists.">Remote gone</RowTag>
                       ) : hasUpstream === false ? (
-                        <span style={inlineBadge(COLORS.textMuted, { fontSize: 9 })} title="No upstream branch yet.">UNPUBLISHED</span>
+                        <RowTag color={COLORS.textMuted} title="No upstream branch yet.">Unpublished</RowTag>
                       ) : commit.pushed ? (
-                        <span style={inlineBadge(COLORS.info, { fontSize: 9 })} title="This commit exists on the remote branch.">REMOTE</span>
+                        <RowTag color={COLORS.textMuted} title="This commit exists on the remote branch.">Remote</RowTag>
                       ) : (
-                        <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title="This commit is local only.">NEEDS PUSH</span>
+                        <RowTag color={COLORS.warning} title="This commit is local only.">Needs push</RowTag>
                       )}
-                      <span className="ml-auto shrink-0" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>
+                      <span className="ml-auto shrink-0 tabular-nums" style={{ fontSize: 11, color: COLORS.textDim }}>
                         {formatRelative(commit.authoredAt)}
                       </span>
-                    </div>
-                    <div className="truncate" style={{ color: COLORS.textPrimary, lineHeight: 1.4, marginTop: 2 }}>
-                      {commit.subject}
                     </div>
                   </div>
                 </button>
                 {/* Arrow connector */}
                 {!isNewest ? (
-                  <div className="relative" style={{ height: 12, paddingLeft: 3 }}>
-                    <div className="absolute" style={{ left: 10, top: 0, bottom: 0, width: 1, background: COLORS.border }} />
-                    <svg className="absolute" style={{ left: 6, top: 1 }} width="10" height="10" viewBox="0 0 10 10">
-                      <path d="M5 9 L5 2 M2 5 L5 1 L8 5" fill="none" stroke={COLORS.warning} strokeOpacity={0.5} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </div>
+                  <div style={{ height: 2 }} />
                 ) : null}
               </React.Fragment>
             );

@@ -1703,10 +1703,10 @@ and leave the terminal blank. The `WorkPtyLaunchArgs` type (defined in
 `apps/desktop/src/renderer/components/terminals/cliLaunch.ts`) carries
 `laneId`, `profile`, and optional `command`, `args`, `startupCommand`,
 `startupDelayMs`, `env`, `title`, `tracked`, and `disposition`. The
-helper (and its lane-scoped twin in `useLaneWorkSessions`) builds a
+helper builds a
 default launch payload with `buildTrackedCliLaunchCommand` when the
 caller didn't override `command`/`args`/`env`, so every entry point —
-chat composer launch button, TopBar work controls, lane Work pane —
+chat composer launch button, TopBar work controls —
 produces the same argv-based spawn with ADE CLI guidance baked in.
 `profile` is a `LaunchProfile` (`"claude" | "codex" | "cursor" |
 "droid" | "opencode" | "shell"`); the matching tab title and recorded
@@ -1724,20 +1724,6 @@ intentionally omits `command` / `args` so every Work CLI launch
 goes through the shell + `startupCommand` path (see
 [pty-and-sessions.md](./pty-and-sessions.md#create-flow-createargs)
 for how the PTY service consumes the delay).
-
-`useLaneWorkSessions` (in
-`apps/desktop/src/renderer/components/lanes/useLaneWorkSessions.ts`)
-wraps the same state but scopes to a single lane for the Lanes tab.
-It consumes the same renderer-local chat-session creation announcement as
-Work, filters it to the active project/lane, inserts the optimistic chat row,
-and schedules a short background refresh.
-Its `launchPtySession` also accepts `WorkPtyLaunchArgs` and returns
-`WorkPtyLaunchResult`, forwarding `startupDelayMs` and respecting
-`disposition` the same way. The lane-scoped launcher builds an
-optimistic `TerminalSessionSummary` from the `ptyCreate` result and
-upserts it into the session list immediately, then fires the forced
-session-list refresh as fire-and-forget so the tab opens without
-blocking on the IPC round-trip.
 
 ## Session delta hook: `useSessionDelta.ts`
 

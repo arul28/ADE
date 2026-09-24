@@ -101,8 +101,8 @@ describe("PRsPage error gating", () => {
 
     render(<PRsPage />);
 
-    // Normal render: header + GitHub tab present, no dead-end EmptyState.
-    expect(screen.getByText("Pull Requests")).toBeTruthy();
+    // Normal render: list column + GitHub tab present, no dead-end EmptyState.
+    expect(screen.getByRole("button", { name: "Create PR" })).toBeTruthy();
     expect(screen.getByTestId("github-tab")).toBeTruthy();
     expect(screen.queryByText(/Failed to load PRs/i)).toBeNull();
   });
