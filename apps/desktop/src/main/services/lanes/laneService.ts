@@ -9,7 +9,7 @@ import { getHeadSha, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type G
 import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
-import { pathsEqual } from "../shared/pathCompare";
+import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -7937,6 +7937,41 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       return row.worktree_path;
+    },
+
+    /**
+     * Which lane's worktree contains this path — the reverse of
+     * `getLaneWorktreePath`, and synchronous because its callers are.
+     *
+     * A caller that names no lane is not necessarily anonymous: an agent
+     * standing inside a lane worktree has said which lane it means, and the
+     * longest containing worktree is the answer. Longest wins because a lane
+     * can be nested inside another lane's tree.
+     *
+     * This exists because guessing was worse. An `ade apple` call from a shell
+     * with no `ADE_LANE_ID` — every OpenCode agent has one, since a shared
+     * `opencode serve` cannot carry a per-chat environment — used to fall back
+     * to "whichever single lane is running something", and filed one agent's
+     * screenshot into an unrelated lane's proof drawer.
+     */
+    getLaneIdForPath(absolutePath: string): string | null {
+      if (!absolutePath) return null;
+      // Both sides go through realpath: a shell's cwd is the physical path,
+      // while a lane row may hold a symlinked spelling of the same folder.
+      const candidate = stablePathThroughExistingAncestor(absolutePath);
+      const rows = db.all<Pick<LaneRow, "id" | "worktree_path">>(
+        "select id, worktree_path from lanes where project_id = ? and archived_at is null",
+        [projectId],
+      );
+      let best: { id: string; length: number } | null = null;
+      for (const row of rows) {
+        if (!row.worktree_path) continue;
+        const root = stablePathThroughExistingAncestor(row.worktree_path);
+        if (!isPathInside(candidate, root)) continue;
+        const length = pathKey(root).length;
+        if (!best || length > best.length) best = { id: row.id, length };
+      }
+      return best?.id ?? null;
     },
 
     /**

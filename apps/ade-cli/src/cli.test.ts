@@ -9139,6 +9139,23 @@ describe("ADE CLI", () => {
       );
     });
 
+    it("prints the broker's warning about an older video before the confirmation line", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/clip.mp4"]));
+      const warning = "This video was recorded at 5:19 AM, before this request. It will be marked as older in the proof drawer.";
+      const summarized = summarizeExecution({
+        plan,
+        connection,
+        values: {
+          result: { ...ingestResult, warnings: [warning] },
+          verify: { artifacts: [{ id: "artifact-1" }] },
+        },
+      }) as Record<string, unknown>;
+      expect(summarized.warnings).toEqual([warning]);
+      const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
+      expect(output).toContain(`warning: ${warning}`);
+      expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Attached 1 artifact/);
+    });
+
     it("fails when the filed artifact cannot be read back", () => {
       const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
       // The word "failed" is load-bearing: a caller grepping stderr for it is
@@ -9150,6 +9167,44 @@ describe("ADE CLI", () => {
           values: { result: ingestResult, verify: { artifacts: [] } },
         }),
       ).toThrow(/proof attach failed — the runtime reported artifact-1/);
+    });
+
+    it("regression: fails when the record lands with no lane and no chat session", () => {
+      // The incident this guard exists for. The runtime filed the row, the
+      // re-read found it — because the unscoped caller lists project-wide —
+      // and the only owner was a process id, so no drawer could show it. The
+      // agent read "verified" and told its owner the proof was attached.
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      const orphaned = {
+        artifacts: [{ id: "artifact-1", kind: "screenshot", title: "orphan", laneId: null }],
+        links: [
+          { artifactId: "artifact-1", ownerKind: "chat_session", ownerId: "ade-cli:56056" },
+        ],
+      };
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: { result: orphaned, verify: { artifacts: [{ id: "artifact-1" }] } },
+        }),
+      ).toThrow(/proof attach failed — filed artifact-1 with no lane, chat session, automation run, PR or issue/);
+    });
+
+    it("regression: accepts the owners the server accepts: an automation run, a PR or an issue", () => {
+      // The server stores these, so failing here would turn the retry into a PROOF_DUPLICATE.
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      for (const ownerKind of ["automation_run", "github_pr", "linear_issue"]) {
+        const filed = {
+          artifacts: [{ id: "artifact-1", kind: "screenshot", title: "run proof", laneId: null }],
+          links: [{ artifactId: "artifact-1", ownerKind, ownerId: "owner-1" }],
+        };
+        const summarized = summarizeExecution({
+          plan,
+          connection,
+          values: { result: filed, verify: { artifacts: [{ id: "artifact-1" }] } },
+        }) as Record<string, unknown>;
+        expect(summarized.ok, ownerKind).toBe(true);
+      }
     });
 
     it("fails when the runtime files nothing at all", () => {
@@ -11287,6 +11342,22 @@ describe("ADE CLI", () => {
     expect(claimHelp.text).toContain("iOS Simulator: claim");
     expect(claimHelp.text).not.toContain("Unknown Apple device subcommand");
     expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
+
+    // `stop` powers the device off and is no longer a `shutdown` alias, so it
+    // has its own page; `device-detach` is listed in the top-level help too.
+    for (const [sub, heading] of [
+      ["stop", "Apple device: stop"],
+      ["power-off", "Apple device: stop"],
+      ["device-detach", "Apple device: device-detach"],
+    ] as const) {
+      const help = buildCliPlan(["apple", sub, "--help"]);
+      if (help.kind !== "help") throw new Error(`expected help for apple ${sub}`);
+      expect(help.text).toContain(heading);
+      expect(help.text).not.toContain("Unknown Apple device subcommand");
+    }
+    const shutdownHelp = buildCliPlan(["apple", "shutdown", "--help"]);
+    if (shutdownHelp.kind !== "help") throw new Error("expected help");
+    expect(shutdownHelp.text).not.toMatch(/Aliases: stop/);
   });
 
   it("rejects live-start and --backend; stream-start has no backend flag", () => {
@@ -11301,6 +11372,9 @@ describe("ADE CLI", () => {
     ).toThrow(/--backend is gone/);
     const plan = buildCliPlan(["apple", "stream-start", "--fps", "30"]);
     expect(plan.kind).toBe("execute");
+    // stream-start is an explicit start, so it may boot an off device. A
+    // viewer (the pane, a phone) never sends this and gets APPLE_DEVICE_OFF.
+    expect(JSON.stringify(plan)).toContain('"boot":true');
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
@@ -13447,6 +13521,37 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("apple type --submit presses Return after the text, and apple key presses one key", () => {
+    // The owner's 2026-09-23 run: an agent typed a search and had no way to
+    // press Return, so it tapped the screen and then used a search URL.
+    const submit = buildCliPlan(["apple", "type", "google", "--submit", "--text"]);
+    expect(submit.kind).toBe("execute");
+    if (submit.kind !== "execute") return;
+    expect(submit.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "typeText", args: { text: "google\n" } },
+    });
+
+    const enter = buildCliPlan(["apple", "key", "Return", "--text"]);
+    expect(enter.kind).toBe("execute");
+    if (enter.kind !== "execute") return;
+    expect(enter.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "typeText", args: { text: "\n" } },
+    });
+
+    const tab = buildCliPlan(["apple", "key", "tab"]);
+    if (tab.kind !== "execute") throw new Error("expected an execute plan");
+    expect(tab.steps[0]?.params).toMatchObject({ arguments: { args: { text: "\t" } } });
+
+    // Regression: `--device <udid>` before the key name was read as the key.
+    const onDevice = buildCliPlan(["apple", "key", "--device", "ABC-123", "return"]);
+    if (onDevice.kind !== "execute") throw new Error("expected an execute plan");
+    expect(onDevice.steps[0]?.params).toMatchObject({
+      arguments: { action: "typeText", args: { deviceUdid: "ABC-123", text: "\n" } },
+    });
+
+    expect(() => buildCliPlan(["apple", "key", "escape"])).toThrow(/Valid keys: return, enter, tab/);
+  });
+
   it("attaches shell starts to the active ADE chat session from the environment", () => {
     const previous = process.env.ADE_CHAT_SESSION_ID;
     try {
@@ -13619,6 +13724,23 @@ describe("ADE CLI", () => {
       action: "deviceDelete",
       args: { force: true },
     });
+    expect(
+      iosSimActionArgs(["apple", "device-delete", "--chat-session", "chat-a", "--ignore-ownership"]),
+    ).toMatchObject({
+      action: "deviceDelete",
+      args: { chatSessionId: "chat-a", ignoreOwnership: true },
+    });
+    // `device-detach` is an agent verb: the lane gives up its device and the
+    // simulator stays installed. It carries the caller's chat for the owner check.
+    expect(
+      iosSimActionArgs(["apple", "device-detach", "--lane", "lane-a", "--chat-session", "chat-a", "--force"]),
+    ).toMatchObject({
+      action: "deviceDetach",
+      args: { laneId: "lane-a", chatSessionId: "chat-a", force: true },
+    });
+    const detached = iosSimActionArgs(["apple", "detach", "--ignore-ownership"]);
+    expect(detached).toMatchObject({ action: "deviceDetach", args: { ignoreOwnership: true } });
+    expect((detached as { args: Record<string, unknown> }).args).not.toHaveProperty("force");
 
     const recordStart = iosSimActionArgs([
       "apple",
@@ -13632,12 +13754,52 @@ describe("ADE CLI", () => {
       action: "recordStart",
       args: { overlays: false, label: "signup" },
     });
+    expect((recordStart as { args: Record<string, unknown> }).args).not.toHaveProperty("keepIdle");
+    expect((recordStart as { args: Record<string, unknown> }).args).not.toHaveProperty("maxSeconds");
+
+    const recordStartKeepIdle = iosSimActionArgs([
+      "apple",
+      "record-start",
+      "--keep-idle",
+      "--max-seconds",
+      "1200",
+    ]);
+    expect(recordStartKeepIdle).toMatchObject({
+      action: "recordStart",
+      args: { keepIdle: true, maxSeconds: 1200 },
+    });
+    expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "0"])).toThrow(/greater than 0/);
+    expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "soon"])).toThrow(/must be a number/);
 
     const recordStop = iosSimActionArgs(["apple", "record-stop", "--discard"]);
     expect(recordStop).toMatchObject({
       action: "recordStop",
       args: { discard: true },
     });
+
+    /*
+     * regression: every record verb must give the runtime SOMETHING to place
+     * the caller by — a lane id, or the caller's root when there is no lane id.
+     *
+     * Recordings were the one capture path that sent neither, so a caller with
+     * no `ADE_LANE_ID` (every OpenCode agent, whose shared `opencode serve`
+     * cannot carry a per-chat environment) left `resolveRuntime` with nothing
+     * but its last-resort guess. Reproduced live before the fix: `record-start`
+     * run from lane 67f0a55d's worktree filed its recording under lane
+     * ab829725, the lane that owned the DEVICE.
+     *
+     * Asserted as "one or the other" rather than "always projectRoot", because
+     * a caller that named its lane does not need a path and
+     * `iosSimulatorRootArgs` deliberately omits it.
+     */
+    const placeable = (argv: string[]) => {
+      const keys = Object.keys(iosSimActionArgs(argv).args as Record<string, unknown>);
+      return keys.includes("laneId") || keys.includes("projectRoot");
+    };
+    for (const verb of ["record-start", "record-stop", "record-list"]) {
+      expect(placeable(["apple", verb]), verb).toBe(true);
+    }
+    expect(placeable(["apple", "record-delete", "--id", "r1"])).toBe(true);
 
     const recordList = iosSimActionArgs(["apple", "record-list"]);
     expect(recordList.action).toBe("recordList");
@@ -14461,6 +14623,77 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["work-tools", "browser"])).toThrow(/read-only/i);
     expect(() => buildCliPlan(["work-tools", "set-active", "--lane", "lane-1"])).toThrow(/read-only/i);
     expect(() => buildCliPlan(["work-tools", "wat"])).toThrow(/Unknown work-tools command/);
+  }));
+
+  it("parses ade ui show and ade apple show into one work_tools.show call", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: "chat-env",
+  }, () => {
+    const showArgs = (argv: string[]) => {
+      const plan = expectExecutePlan(buildCliPlan(argv));
+      expect(plan.label).toBe("ui show");
+      expect(plan.formatter).toBe("work-tool-show");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      expect(params?.arguments).toMatchObject({ domain: "work_tools", action: "show" });
+      return { plan, args: params?.arguments?.args ?? {} };
+    };
+
+    // The chat defaults to the agent's own; --session is for a human.
+    expect(showArgs(["ui", "show", "apple"]).args).toEqual({ surface: "apple", chatSessionId: "chat-env" });
+    expect(showArgs(["ui", "show", "proof", "--session", "chat-2"]).args)
+      .toEqual({ surface: "proof", chatSessionId: "chat-2" });
+    // Flags before the surface are not read as it.
+    expect(showArgs(["ui", "show", "--session", "chat-3", "floating-apple"]).args)
+      .toEqual({ surface: "floating-apple", chatSessionId: "chat-3" });
+    expect(showArgs(["ui", "show", "--surface", "browser", "--lane", "lane-1"]).args)
+      .toEqual({ surface: "browser", chatSessionId: "chat-env", laneId: "lane-1" });
+    expect(showArgs(["ui", "show", "floating"]).args.surface).toBe("floating-apple");
+
+    // `apple show` is the same call.
+    expect(showArgs(["apple", "show"]).args).toEqual({ surface: "apple", chatSessionId: "chat-env" });
+    expect(showArgs(["apple", "show", "--floating"]).args)
+      .toEqual({ surface: "floating-apple", chatSessionId: "chat-env" });
+
+    // Exit 1 when nothing was shown, so a script cannot read it as success.
+    const { plan } = showArgs(["ui", "show", "apple"]);
+    expect(plan.exitCodeFromResult?.({ status: "shown" })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ result: { status: "held" } })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ status: "no_desktop" })).toBe(1);
+
+    expect(() => buildCliPlan(["ui", "show", "terminal"])).toThrow(/needs a surface: apple, floating-apple, browser, proof/);
+    expect(() => buildCliPlan(["ui", "show", "constructor"])).toThrow(/needs a surface/);
+    expect(() => buildCliPlan(["ui", "wat"])).toThrow(/Unknown ui command/);
+    expect(buildCliPlan(["ui"])).toMatchObject({ kind: "help" });
+    const help = buildCliPlan(["ui", "--help"]);
+    expect(help.kind).toBe("help");
+    if (help.kind === "help") {
+      expect(help.text).toContain("ade ui show floating-apple");
+      expect(help.text).toContain("no_desktop");
+    }
+    const appleHelp = buildCliPlan(["apple", "show", "--help"]);
+    expect(appleHelp.kind).toBe("help");
+    if (appleHelp.kind === "help") expect(appleHelp.text).toContain("Apple device: show");
+
+    withEnv({ ADE_CHAT_SESSION_ID: undefined }, () => {
+      expect(() => buildCliPlan(["ui", "show", "apple"])).toThrow(/pass --session/);
+      // An OpenCode shell has no chat identity: say so and send it to the user.
+      expect(() => buildCliPlan(["apple", "show"])).toThrow(/no ADE chat identity.*Ask the user to open the tool/);
+    });
+  }));
+
+  it("presses the app switcher as one helper button", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const plan = expectExecutePlan(buildCliPlan(["apple", "button", "app-switcher"]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "pressButton", args: { name: "app-switcher" } },
+    });
+    const help = buildCliPlan(["apple", "button", "--help"]);
+    expect(help.kind).toBe("help");
+    if (help.kind === "help") expect(help.text).toContain("app-switcher");
   }));
 
   it("reads browser positionals fenced behind a `--` terminator", () => withEnv({

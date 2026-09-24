@@ -13,6 +13,7 @@ import {
   type IosSimulatorScreenshot,
 } from "../../../shared/types/iosSimulator";
 import { createIosDeviceHub, type IosDeviceHubDeps } from "./iosDeviceHub";
+import { createSimulatorPower } from "./simulatorPower";
 import type { IosEventLogProcess } from "./iosEventLog";
 import {
   IOS_ACCESSIBILITY_PREFERENCES,
@@ -135,6 +136,8 @@ function createHarness(options: {
   appSessionOwner?: string | null;
   /** The device the app session runs on, when a test sets an app owner. */
   appSessionDeviceUdid?: string | null;
+  /** Sees every helper reset the power module sends. */
+  resetHelperDevice?: (udid: string) => Promise<void>;
 } = {}): Harness {
   const runs: RecordedRun[] = [];
   /** One entry per spawned log stream, so a test can see what it filters on. */
@@ -162,20 +165,37 @@ function createHarness(options: {
 
   const catalog: IosSimulatorDevice[] = [device, ...(options.otherDevices ?? [])];
 
+  const run: IosDeviceHubDeps["run"] = async (file, args, runOptions) => {
+    runs.push({ file, args, timeoutMs: runOptions?.timeoutMs });
+    // A booted device reports itself booted on the next read. Without that
+    // the fixture would let a second open see a shut-down device, which is
+    // the one state the ownership rules never have to deal with.
+    if (file === "xcrun" && args[0] === "simctl" && (args[1] === "boot" || args[1] === "shutdown")) {
+      const target = catalog.find((entry) => entry.udid === args[2]);
+      if (target) target.state = args[1] === "boot" ? "Booted" : "Shutdown";
+    }
+    return { stdout: "", stderr: "" };
+  };
+  // The real power module over the fake `run`, so boot and shutdown land in
+  // `runs` the way the service's would.
+  const power = createSimulatorPower({
+    run,
+    waitForBootStatus: async (target) => {
+      await run("xcrun", ["simctl", "bootstatus", target.udid, "-b"], { timeoutMs: 120_000 });
+    },
+    invalidateDeviceList: () => {},
+    resetHelperDevice: async (udid) => {
+      await options.resetHelperDevice?.(udid);
+    },
+    stopDeviceRecording: async () => {},
+  });
+
   const deps: IosDeviceHubDeps = {
+    bootDevice: (target) => power.bootDevice(target),
+    powerOffDevice: (udid) => power.powerOffDevice(udid, "hub-power"),
     getAppSessionOwner: () => appSessionOwner,
     getAppSessionDeviceUdid: () => options.appSessionDeviceUdid ?? null,
-    run: async (file, args, runOptions) => {
-      runs.push({ file, args, timeoutMs: runOptions?.timeoutMs });
-      // A booted device reports itself booted on the next read. Without that
-      // the fixture would let a second open see a shut-down device, which is
-      // the one state the ownership rules never have to deal with.
-      if (file === "xcrun" && args[0] === "simctl" && (args[1] === "boot" || args[1] === "shutdown")) {
-        const target = catalog.find((entry) => entry.udid === args[2]);
-        if (target) target.state = args[1] === "boot" ? "Booted" : "Shutdown";
-      }
-      return { stdout: "", stderr: "" };
-    },
+    run,
     // A log stream the test drives by hand, so a case can put a line on the
     // wire without forking `simctl`.
     spawnLogStream: (_deviceUdid, predicate): IosEventLogProcess => {
@@ -278,11 +298,38 @@ describe("iosDeviceHub device sessions", () => {
     expect(harness.events[0]).toEqual({ type: "device-session-started", deviceSession: session });
   });
 
+  it("resets the helper's session for a device it boots and before it shuts one down, never for one it adopts", async () => {
+    // A helper session is bound to the boot it was built against (live bug,
+    // 2026-09-23: taps answered ok and never landed after a power cycle).
+    // Each reset records how many simctl calls had run when it was sent, so
+    // the assertion below pins it between boot/bootstatus and shutdown.
+    const resetsAfterRun: string[] = [];
+    const harness: Harness = createHarness({
+      resetHelperDevice: async (udid) => { resetsAfterRun.push(`${harness.runs.length}:${udid}`); },
+    });
+    await harness.hub.openDevice({ chatSessionId: "chat-a" });
+    await harness.hub.closeDevice({ chatSessionId: "chat-a" });
+
+    expect(harness.runs.map((run) => run.args[1])).toEqual(["boot", "bootstatus", "shutdown"]);
+    // After boot + bootstatus (2 runs), and before shutdown (still 2 runs).
+    expect(resetsAfterRun).toEqual([`2:${UDID}`, `2:${UDID}`]);
+
+    const adoptedResets: string[] = [];
+    const adopted = createHarness({
+      device: { state: "Booted" },
+      resetHelperDevice: async (udid) => { adoptedResets.push(udid); },
+    });
+    await adopted.hub.openDevice({ chatSessionId: "chat-a" });
+    await adopted.hub.closeDevice({ chatSessionId: "chat-a" });
+    expect(adoptedResets).toEqual([]);
+  });
+
   it("adopts a device that is already booted", async () => {
     const harness = createHarness({ device: { state: "Booted" } });
     const session = await harness.hub.openDevice({ chatSessionId: "chat-a" });
 
-    expect(harness.runs).toEqual([]);
+    // No boot. `bootstatus` still runs, and returns at once for a booted device.
+    expect(harness.runArgs()).toEqual([["simctl", "bootstatus", UDID, "-b"]]);
     expect(session.bootedByAde).toBe(false);
   });
 
@@ -998,6 +1045,17 @@ describe("iosDeviceHub proof bundle", () => {
     expect(harness.mkdirs).toEqual([bundle.dir]);
     expect(bundle.screenshotPath).toBe(SCREENSHOT.filePath);
     expect(bundle.metadataPath).toBe(path.join(bundle.dir, "metadata.json"));
+    /*
+     * The device and the size travel WITH the bundle.
+     *
+     * Not decoration: the service files `screen.png` as the proof-drawer row
+     * for this capture, and without these it would have to take a second
+     * screenshot to learn what it just captured. `proof-bundle` filed nothing
+     * at all before that — a proof verb that wrote a directory and returned.
+     */
+    expect(bundle.deviceUdid).toBe(SCREENSHOT.deviceUdid);
+    expect(bundle.width).toBe(SCREENSHOT.width);
+    expect(bundle.height).toBe(SCREENSHOT.height);
     expect(bundle.elementsPath).toBe(path.join(bundle.dir, "elements.json"));
     expect(bundle.logPath).toBe(path.join(bundle.dir, "log.json"));
     const { elementsPath, logPath } = bundle;
@@ -1067,6 +1125,8 @@ describe("captureProofBundle containment", () => {
    */
   const hubFor = (buildRoot: string) => createIosDeviceHub({
     run: async () => ({ stdout: "", stderr: "" }),
+    bootDevice: async () => false,
+    powerOffDevice: async () => false,
     spawnLogStream: (): IosEventLogProcess => {
       throw new Error("No containment test starts the log stream.");
     },

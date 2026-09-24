@@ -196,6 +196,15 @@ export function workRuntimeScopeKey(
   return effectiveRuntimeBinding(pin, bound)?.key ?? "bound";
 }
 
+/** One lane on one machine: two machines can each have a lane with the same id. */
+export function laneOnMachineKey(
+  pin: OpenProjectBinding | null | undefined,
+  bound: OpenProjectBinding | null | undefined,
+  laneId: string,
+): string {
+  return `${workRuntimeScopeKey(pin, bound)}::${laneId}`;
+}
+
 export type ChatMachineRouter = {
   /** Resolved pin for a chat on `laneId`, or null for the active binding. */
   pinForLane: (laneId: string | null | undefined) => OpenProjectBinding | null;

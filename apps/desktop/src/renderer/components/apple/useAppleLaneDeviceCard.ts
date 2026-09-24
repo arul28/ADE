@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { applePowerFromPhase, laneDeviceBooted } from "./appleDeviceState";
 
 /**
  * The tools grid card's one fact about the Apple tool: which device this lane
@@ -9,9 +10,13 @@ import type { OpenProjectBinding } from "../../../shared/types";
  * lanes DB row and one `simctl list`, not a helper round-trip — which is why
  * this polls it rather than `getStatus`. It polls rather than listens because
  * a device can be created on the CLI, on another chat's turn, or on a remote
- * Mac, none of which reach this renderer's event feed; the boot event is
- * listened for anyway, because "Starting" is the one state a 6-second poll
- * would miss entirely.
+ * Mac, none of which reach this renderer's event feed.
+ *
+ * Every `apple.device.state` event for the lane moves the card at once and
+ * re-reads it, the same event the pane listens to. Shutting a device down
+ * used to leave the card reading "Running" for up to a poll after the grid
+ * came back, because the shutdown lands after the tab closes and only
+ * "Starting" was taken from the event.
  */
 
 const POLL_MS = 6_000;
@@ -29,6 +34,7 @@ export function useAppleLaneDeviceCard(args: {
   const { laneId, runtimePin, enabled } = args;
   const [card, setCard] = useState<AppleLaneDeviceCard | null>(null);
   const [starting, setStarting] = useState(false);
+  const [readNonce, setReadNonce] = useState(0);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
 
@@ -59,8 +65,7 @@ export function useAppleLaneDeviceCard(args: {
         setCard(null);
         return;
       }
-      const booted = listed?.installed.find((entry) => entry.udid === lane.udid)?.state === "Booted";
-      setCard({ name: lane.name, state: booted ? "running" : "off" });
+      setCard({ name: lane.name, state: laneDeviceBooted(listed) ? "running" : "off" });
     };
     void read();
     const timer = window.setInterval(() => void read(), POLL_MS);
@@ -68,7 +73,7 @@ export function useAppleLaneDeviceCard(args: {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [enabled, laneId]);
+  }, [enabled, laneId, readNonce]);
 
   useEffect(() => {
     if (!enabled || !laneId) return undefined;
@@ -76,6 +81,15 @@ export function useAppleLaneDeviceCard(args: {
       if (event.type !== "apple.device.state") return;
       if (event.laneId && event.laneId !== laneId) return;
       setStarting(event.phase === "starting" || event.phase === "booted");
+      // Power the card knows from the event itself, ahead of the re-read.
+      const power = applePowerFromPhase(event.phase);
+      if (power) {
+        const state = power === "on" ? "running" : "off";
+        setCard((current) => (current && current.state !== state ? { ...current, state } : current));
+      }
+      // Any phase can change what the lane holds or whether it is up
+      // (`released` means the lane gave the device up); read it again now.
+      setReadNonce((nonce) => nonce + 1);
     }, pinRef.current);
     return unsubscribe;
   }, [enabled, laneId]);

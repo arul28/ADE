@@ -2,11 +2,11 @@
 
 The broker is the normalization layer after external computer-use execution has happened. External tools perform the actual clicks, keystrokes, and captures. The broker ingests their output, stores it canonically, links it to owners (runs, chats, PRs, Linear issues), reports whether the stored bytes still exist, and owns deletion/recovery.
 
-The broker runs inside the ADE runtime (`ade serve`) that owns the project. Artifacts are written to that runtime machine's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.proof.*` → preload → runtime JSON-RPC → broker; the desktop main process is no longer the owner of this state.
+The broker runs inside the ADE runtime (`ade serve`) that owns the project. Artifacts are written to that runtime machine's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.computerUse.*` → preload → runtime JSON-RPC → broker. The desktop main process does not own this state. The one exception is `computerUse.mediaBaseUrl`, which main answers itself for the loopback video server.
 
 ## Source file map
 
-- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services. `readArtifactPreview` serves only files inside the artifact root, caps data-URL responses at 10 MiB, and recognizes common image plus M4V/MOV/MP4/OGV/WebM video extensions.
+- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services. `readArtifactPreview` serves only files inside the artifact root, caps data-URL responses at 10 MiB, and recognizes common image plus M4V/MOV/MP4/OGV/WebM video extensions. `readArtifactRange` serves the same files under the same jail in slices of at most 2 MiB, for a paired desktop streaming a video; the phone's sync `readArtifactRange` file action does the same past `readArtifact`'s 8 MiB cap.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — storage helpers (`createComputerUseArtifactPath`, `toProjectArtifactUri`).
 - `apps/desktop/src/shared/types/computerUseArtifacts.ts` (via `shared/types`) — artifact/link/input/owner records plus availability, delete, broken-record, recovery, and event contracts.
 - `apps/desktop/src/shared/proofArtifacts.ts` — `normalizeComputerUseArtifactKind`, `resolveReportArtifactKind`.

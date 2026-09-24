@@ -1,4 +1,6 @@
 import { useSyncExternalStore } from "react";
+import { effectiveRuntimeBinding, laneOnMachineKey, workRuntimeScopeKey } from "../../lib/chatMachineRouting";
+import { useAppStore } from "../../state/appStore";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
   isWorkLivePreviewEnabled,
@@ -7,11 +9,14 @@ import {
 } from "../chat/chatCompanionUiState";
 import {
   acquireAppleStreamLease,
+  appleStreamLaneLeaseCount,
   appleStreamLeaseCount,
   appleStreamLeaseKey,
   appleStreamViewerForLane,
   releaseAppleStreamLease,
+  type AppleStreamLeaseKey,
 } from "./appleStreamLease";
+import { laneDeviceBooted } from "./appleDeviceState";
 
 /**
  * Which device is floating over the chat, if any.
@@ -32,6 +37,53 @@ export type AppleMiniPlayerTarget = {
   family: "iphone" | "ipad";
   runtimePin: OpenProjectBinding | null;
 };
+
+/**
+ * The Work surface in front of the player: the session the page is showing,
+ * reduced to what decides whether the floating device belongs over it.
+ *
+ * Null is the new-chat / empty composer screen. That screen may have a lane
+ * picked in its composer, but it is not a surface OF that lane yet — nothing
+ * has been started there — and it is exactly where the owner saw a lane's
+ * simulator float uninvited (2026-09-23, "it shouldn't have done that").
+ */
+export type AppleMiniPlayerSurface = {
+  /** The session's lane; null for a lane-less (projectless) session. */
+  laneId: string | null;
+  /** The session's own pin, as `resolveSessionRuntimePin` answers it. */
+  runtimePin: OpenProjectBinding | null;
+  /** The machine this window is bound to, which a null pin means. */
+  boundBinding: OpenProjectBinding | null;
+};
+
+/**
+ * Does the floating device belong over this surface?
+ *
+ * Only over a session of the SAME lane on the SAME machine. The device is a
+ * lane's simulator; over another lane's chat it is someone else's picture, and
+ * a lane id alone is not an identity — two machines can each have a lane
+ * called the same thing, so the machine is compared too, through the same
+ * `workRuntimeScopeKey` the Work tools key themselves on. Both sides resolve a
+ * null pin against the window's CURRENT binding, which is what a null pin
+ * means to the stream as well.
+ *
+ * A lane-less target (a projectless chat's device) belongs only on lane-less
+ * surfaces, by the same rule: null lane equals null lane.
+ */
+export function appleMiniPlayerBelongsToSurface(
+  target: AppleMiniPlayerTarget,
+  surface: AppleMiniPlayerSurface | null,
+): boolean {
+  if (!surface) return false;
+  if ((target.laneId || null) !== (surface.laneId || null)) return false;
+  return workRuntimeScopeKey(target.runtimePin, surface.boundBinding)
+    === workRuntimeScopeKey(surface.runtimePin, surface.boundBinding);
+}
+
+/** The machine this window is bound to, which a null pin means. */
+function boundBinding(): OpenProjectBinding | null {
+  return useAppStore.getState().projectBinding;
+}
 
 let current: AppleMiniPlayerTarget | null = null;
 let listeners = new Set<() => void>();
@@ -88,7 +140,15 @@ export function openAppleMiniPlayer(target: AppleMiniPlayerTarget): void {
   // over chat" is the user changing their mind, not a request to be ignored.
   dismissed.delete(target.deviceUdid);
   setWorkLivePreviewEnabledForChat(target.chatSessionId, "ios", true);
-  current = target;
+  // Freeze the machine that owns the device. A null pin means "the machine
+  // this window is bound to", which is only right until the window switches
+  // machines: after that the player asked the NEW machine for a device it
+  // does not have, and floated a black box (2026-09-23, Studio device shown
+  // while the window was on a MacBook project).
+  current = {
+    ...target,
+    runtimePin: effectiveRuntimeBinding(target.runtimePin, boundBinding()),
+  };
   emit();
 }
 
@@ -133,7 +193,8 @@ export function retakeAppleMiniPlayer(udid?: string): void {
    */
   if (!closingForReal) {
     const key = appleStreamLeaseKey({
-      pinKey: current.runtimePin?.key,
+      pin: current.runtimePin,
+      bound: boundBinding(),
       laneId: current.laneId,
       deviceUdid: current.deviceUdid,
     });
@@ -175,18 +236,31 @@ export type AppleMiniPlayerLaneDevice = {
 
 const laneDevices = new Map<string, AppleMiniPlayerLaneDevice>();
 
-/** The panel's cache write. A null device forgets the lane. */
-export function noteAppleMiniPlayerLaneDevice(
-  laneId: string | null,
-  device: AppleMiniPlayerLaneDevice | null,
-): void {
-  if (!laneId) return;
-  if (device) laneDevices.set(laneId, device);
-  else laneDevices.delete(laneId);
+/** A lane on one machine: two machines can each have a lane with the same id. */
+export type AppleMiniPlayerLaneRef = {
+  laneId: string | null;
+  runtimePin: OpenProjectBinding | null;
+};
+
+function laneDeviceKey(where: AppleMiniPlayerLaneRef): string | null {
+  if (!where.laneId) return null;
+  return laneOnMachineKey(where.runtimePin, boundBinding(), where.laneId);
 }
 
-export function getAppleMiniPlayerLaneDevice(laneId: string | null): AppleMiniPlayerLaneDevice | null {
-  return (laneId ? laneDevices.get(laneId) : null) ?? null;
+/** The panel's cache write. A null device forgets the lane. */
+export function noteAppleMiniPlayerLaneDevice(
+  where: AppleMiniPlayerLaneRef,
+  device: AppleMiniPlayerLaneDevice | null,
+): void {
+  const key = laneDeviceKey(where);
+  if (!key) return;
+  if (device) laneDevices.set(key, device);
+  else laneDevices.delete(key);
+}
+
+export function getAppleMiniPlayerLaneDevice(where: AppleMiniPlayerLaneRef): AppleMiniPlayerLaneDevice | null {
+  const key = laneDeviceKey(where);
+  return (key ? laneDevices.get(key) : null) ?? null;
 }
 
 /**
@@ -257,7 +331,7 @@ export const APPLE_STREAM_HANDOVER_HOLD_MS = 6_000;
  * short-circuits an identical device+fps request) instead of making a new one.
  */
 let handoverHold: {
-  key: string;
+  key: AppleStreamLeaseKey;
   epoch: number;
   timer: number;
   scope: { laneId: string | null; chatSessionId: string | null };
@@ -270,7 +344,9 @@ function dropHandoverHold(stopIfLast: boolean): void {
   handoverHold = null;
   window.clearTimeout(hold.timer);
   const { last } = releaseAppleStreamLease(hold.key, hold.epoch);
-  if (!last || !stopIfLast) return;
+  // The stop is lane-scoped: a viewer on another device of the lane (the
+  // player moved on while the hold was live) must keep its capture.
+  if (!last || !stopIfLast || appleStreamLaneLeaseCount(hold.key) > 0) return;
   // Nobody took the picture up: the hold was the only thing keeping the helper
   // encoding, so it owes the stop the pane's own release would have made.
   void window.ade?.iosSimulator?.stopStream?.(hold.pin, hold.scope).catch(() => {});
@@ -282,7 +358,7 @@ export function releaseAppleMiniPlayerHandoverHold(): void {
 }
 
 function takeHandoverHold(args: {
-  key: string;
+  key: AppleStreamLeaseKey;
   laneId: string | null;
   chatSessionId: string | null;
   runtimePin: OpenProjectBinding | null;
@@ -329,10 +405,13 @@ export function handoffAppleMiniPlayer(args: {
   }
   const { laneId } = args;
   if (!laneId || current) return false;
-  const viewer = appleStreamViewerForLane(laneId);
+  const viewer = appleStreamViewerForLane(
+    laneId,
+    workRuntimeScopeKey(args.runtimePin, boundBinding()),
+  );
   if (!viewer) return false;
   if (previewSuppressed(args.chatSessionId, viewer.deviceUdid)) return false;
-  const known = getAppleMiniPlayerLaneDevice(laneId);
+  const known = getAppleMiniPlayerLaneDevice(args);
   // The hold is taken BEFORE the player opens, because the pane's own release
   // is still to come: it runs in the passive-effect pass after this cleanup.
   takeHandoverHold({
@@ -383,13 +462,12 @@ export async function handoffAppleMiniPlayerAsync(args: {
   if (!api?.deviceList) return;
   const listed = await api.deviceList({ laneId, installed: true }, args.runtimePin).catch(() => null);
   const lane = listed?.lane ?? null;
-  if (!lane) return;
-  if (listed?.installed.find((entry) => entry.udid === lane.udid)?.state !== "Booted") return;
+  if (!lane || !laneDeviceBooted(listed)) return;
   if (previewSuppressed(args.chatSessionId, lane.udid)) return;
   // A second close-and-reopen race (two panes unmounting at once) must not
   // replace a player that is already on screen.
   if (current) return;
-  noteAppleMiniPlayerLaneDevice(laneId, {
+  noteAppleMiniPlayerLaneDevice(args, {
     udid: lane.udid,
     name: lane.name,
     runtime: lane.runtime,
@@ -404,6 +482,73 @@ export async function handoffAppleMiniPlayerAsync(args: {
     family: lane.family === "ipad" ? "ipad" : "iphone",
     runtimePin: args.runtimePin,
   });
+}
+
+/**
+ * Float the lane's device over a chat because of the chat's agent.
+ *
+ * `auto` is the agent merely driving the device (tap, record, `apple start`):
+ * it floats only while this chat's "Show preview when minimized" is on, which
+ * is the default and which × on the player turns off, and it never replaces a
+ * player that is already up. Not `auto` is the agent asking with `ade ui show
+ * floating-apple`, which is an explicit request and so opens it regardless.
+ *
+ * The caller has already checked that the chat is the one in front and that
+ * the Apple tool is not on screen. Returns true when the device is floating.
+ */
+export async function floatAppleMiniPlayerForChat(args: {
+  laneId: string | null;
+  chatSessionId: string | null;
+  runtimePin: OpenProjectBinding | null;
+  auto: boolean;
+}): Promise<boolean> {
+  const { laneId, chatSessionId } = args;
+  if (!laneId) return false;
+  const suppressed = () => Boolean(
+    args.auto && chatSessionId && !isWorkLivePreviewEnabled(readChatCompanionUiState(chatSessionId), "ios"),
+  );
+  if (suppressed()) return false;
+  // "Already floating here" is the same lane on the same machine, by the rule
+  // that decides whether the player is visible at all.
+  const floatingHere = () => Boolean(current && appleMiniPlayerBelongsToSurface(current, {
+    laneId,
+    runtimePin: args.runtimePin,
+    boundBinding: boundBinding(),
+  }));
+  if (current) {
+    if (floatingHere()) return true;
+    if (args.auto) return false;
+  }
+  // An automatic float always asks whether the device is up: the pane's cache
+  // outlives a power-off, and a player floated uninvited over an off device
+  // would only show that it is off. An explicit ask may show it off, with the
+  // player's own Start.
+  let device = args.auto ? null : getAppleMiniPlayerLaneDevice(args);
+  if (!device) {
+    const api = window.ade?.iosSimulator;
+    if (!api?.deviceList) return false;
+    const listed = await api.deviceList({ laneId, installed: true }, args.runtimePin).catch(() => null);
+    const lane = listed?.lane ?? null;
+    if (!lane) return false;
+    if (args.auto && !laneDeviceBooted(listed)) return false;
+    device = { udid: lane.udid, name: lane.name, runtime: lane.runtime, family: lane.family };
+    noteAppleMiniPlayerLaneDevice(args, device);
+  }
+  // The lookup awaited: the user may have closed a player or turned the
+  // preview off in the meantime, and another float may have won.
+  if (suppressed()) return false;
+  if (floatingHere()) return true;
+  if (current && args.auto) return false;
+  openAppleMiniPlayer({
+    laneId,
+    chatSessionId,
+    deviceUdid: device.udid,
+    deviceName: device.name,
+    deviceRuntime: device.runtime,
+    family: device.family === "ipad" ? "ipad" : "iphone",
+    runtimePin: args.runtimePin,
+  });
+  return true;
 }
 
 export function getAppleMiniPlayerTarget(): AppleMiniPlayerTarget | null {

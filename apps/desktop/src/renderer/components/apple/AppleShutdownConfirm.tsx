@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { getFocusableElements } from "../ui/dialogFocus";
+import { laneDeviceBooted } from "./appleDeviceState";
 
 /**
  * "Shut down {device}?" — the one question closing the Apple Development TAB
@@ -88,9 +89,7 @@ export async function confirmAppleToolClose(args: {
     .deviceList({ laneId, installed: true }, args.runtimePin ?? undefined)
     .catch(() => null);
   const lane = listed?.lane ?? null;
-  if (!lane) return true;
-  const booted = listed?.installed.find((entry) => entry.udid === lane.udid)?.state === "Booted";
-  if (!booted) return true;
+  if (!lane || !laneDeviceBooted(listed)) return true;
   return askAppleShutdownConfirm(lane.name);
 }
 

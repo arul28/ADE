@@ -188,6 +188,32 @@ describe("createAdeCliService", () => {
       .toBe(fs.realpathSync(path.join(resourcesPath, "agent-skills")));
   });
 
+  it("regression: names the CLI entry next to ADE_CLI_PATH, replacing an inherited one from another build", () => {
+    const root = makeTempRoot();
+    const resourcesPath = path.join(root, "Resources");
+    const packagedCommandPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
+    writeExecutable(packagedCommandPath);
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      logger: logger() as any,
+    });
+
+    // CLI delegation trusts ADE_CLI_ENTRY_PATH first; a stale one would name
+    // another build as the identity of this ADE_CLI_PATH.
+    const env = service.agentEnv({
+      PATH: "/usr/bin:/bin",
+      ADE_CLI_ENTRY_PATH: path.join(root, "old-build", "cli.cjs"),
+    });
+    expect(env.ADE_CLI_PATH).toBe(packagedCommandPath);
+    expect(env.ADE_CLI_ENTRY_PATH).toBe(path.join(resourcesPath, "ade-cli", "cli.cjs"));
+
+  });
+
   it("marks only the canonical ADE source bundle as trusted in development", () => {
     const root = makeTempRoot();
     const sourceCli = path.join(root, "apps", "ade-cli", "src", "cli.ts");

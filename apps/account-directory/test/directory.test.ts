@@ -559,10 +559,14 @@ describe("machine directory", () => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });
     await register(env, token, "machine-a");
-    const relay = activityRelayStub(() => new Response(null, {
-      status: 302,
-      headers: { location: "https://elsewhere.example/steal" },
-    }));
+    const redirectModes: Array<RequestRedirect | undefined> = [];
+    const relay = activityRelayStub((_url, init) => {
+      redirectModes.push(init?.redirect);
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://elsewhere.example/steal" },
+      });
+    });
 
     const deleted = await handleRequest(
       request("DELETE", "/account/machines/machine-a", token),
@@ -572,6 +576,9 @@ describe("machine directory", () => {
 
     // One call to the relay, no second hop, and the removal reports the relay
     // as failed rather than as done.
+    // The stub never follows a redirect itself, so the mode is what proves
+    // the real runtime will not follow one either.
+    expect(redirectModes).toEqual(["manual"]);
     expect(relay.calls.map((call) => call.url)).toEqual([`${RELAY_URL}/attention/account/machines/machine-a`]);
     expect(deleted.status).not.toBe(200);
   });
@@ -599,6 +606,26 @@ describe("machine directory", () => {
     expect(relay.calls).toHaveLength(2);
     expect(env.DB.rows).toHaveLength(0);
     expect(env.DB.revocations).toHaveLength(1);
+  });
+
+  it("calls the relay through the ACTIVITY_RELAY binding, and fails without one", async () => {
+    const token = await mintToken({ sub: "user_1" });
+    const publicFetch = vi.spyOn(globalThis, "fetch");
+
+    const bound = activityRelayStub();
+    const withBinding = makeEnv({ ACTIVITY_RELAY: { fetch: bound.options.activityRelay.fetchImpl } });
+    await register(withBinding, token, "machine-a");
+    const removed = await handleRequest(request("DELETE", "/account/machines/machine-a", token), withBinding);
+    expect(removed.status).toBe(200);
+    expect(bound.calls.map((call) => call.url)).toEqual([`${RELAY_URL}/attention/account/machines/machine-a`]);
+
+    // No binding: no public-URL fallback (workers.dev refuses it with 1042).
+    const unbound = makeEnv();
+    await register(unbound, token, "machine-b");
+    const refused = await handleRequest(request("DELETE", "/account/machines/machine-b", token), unbound);
+    expect(refused.status).toBe(502);
+    expect(await refused.json()).toMatchObject({ ok: false, code: "activity_purge_failed" });
+    expect(publicFetch).not.toHaveBeenCalled();
   });
 
   it("refuses a removed machine's heartbeat registration until it pairs again", async () => {

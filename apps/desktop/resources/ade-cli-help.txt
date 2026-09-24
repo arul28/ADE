@@ -70,6 +70,8 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade ui show apple | floating-apple | browser | proof
+                                                    Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
@@ -222,6 +224,8 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade ui show apple | floating-apple | browser | proof
+                                                    Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
@@ -721,6 +725,8 @@ _    ____  _____
                                                     Adds a 'resume' line while a usage limit is live.
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
+    $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
+                                                    Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for 6 words or fewer; truncated past 72 characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -946,6 +952,8 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade ui show apple | floating-apple | browser | proof
+                                                    Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
@@ -1160,6 +1168,8 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade ui show apple | floating-apple | browser | proof
+                                                    Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
@@ -1307,6 +1317,14 @@ _    ____  _____
   failure: they exit non-zero and print `ade: proof attach failed — <reason>`.
   Pass --no-verify to skip the re-read.
 
+  Attaching a file that is already proof
+
+  ADE hashes every proof file. An attach whose bytes match earlier proof in
+  this project (a renamed copy included) fails with PROOF_DUPLICATE and names
+  the earlier proof. Record a new one, or report that recording failed.
+  An attached video whose own creation time is before the chat's request is
+  kept, marked older in the proof drawer, and the command prints a warning.
+
 ## ade ios-sim --help
 _    ____  _____
     / \  |  _ \| ____|
@@ -1322,8 +1340,9 @@ _    ____  _____
   For shared session state, prefer attached runtime mode (--socket) so
   launch/select/tap operate on the same long-lived ADE service. Launch keeps
   the device in the background; pass --open-drawer when the user should see the
-  Apple column. Tap, drag, type, and inspect go through the helper — no idb,
-  no Screen Recording grant, and no Simulator.app window.
+  Apple column, or run "apple show" at any time to put the device on screen.
+  Tap, drag, type, and inspect go through the helper — no idb, no Screen
+  Recording grant, and no Simulator.app window.
 
   Every rooted subcommand builds and captures in the lane worktree: an explicit
   --project-root wins, else --lane/ADE_LANE_ID, else the worktree the shell is
@@ -1338,6 +1357,8 @@ _    ____  _____
 
   Discovery and lifecycle:
     $ ade apple status --text                    Show simulator readiness
+    $ ade apple show                             Show the device to the user (tools pane)
+    $ ade apple show --floating                  Show it as the floating player instead
     $ ade apple devices --text                   List available simulators
     $ ade apple apps --device <udid> --text      List launchable apps
     $ ade --socket apple launch --target <id>    Build, install, and launch an app
@@ -1386,7 +1407,7 @@ _    ____  _____
     $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
     $ ade apple device-list --installed --text   Installed simulators for a picker
-    $ ade apple device-list --lane --text        The one device this lane owns
+    $ ade apple device-list --text               The one device this lane owns
     $ ade apple device-delete --text             Delete a clone (attached devices refuse)
 
   Recording:
@@ -1398,6 +1419,7 @@ _    ____  _____
 
   Device tools:
     $ ade apple button home --text               Press Home (also lock, volume-up, volume-down, siri)
+    $ ade apple button app-switcher --text       Open the App Switcher (two home presses)
     $ ade apple rotate landscape-left --text     Set orientation
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
@@ -1799,6 +1821,8 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade ui show apple | floating-apple | browser | proof
+                                                    Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default

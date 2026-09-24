@@ -69,6 +69,7 @@ import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
+import { artifactImageSrc } from "../../../shared/artifactStreamUrl";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
@@ -171,7 +172,8 @@ import {
   computeScrollTopForRow,
   resolveRowAnchorAtScrollTop,
 } from "./chatUserMinimap.logic";
-import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
+import { buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
+import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
 import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { ChatPlanChecklist, CodexPlanCard } from "./codex/CodexPlanCard";
@@ -192,11 +194,6 @@ import {
   formatScheduledRunAt,
   type ChatCardTone,
 } from "./chatCardPrimitives";
-
-/** True for an absolute POSIX or Windows path, which the project handler cannot serve. */
-function path_isAbsoluteLike(value: string): boolean {
-  return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value);
-}
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
@@ -6307,11 +6304,7 @@ function AgentChatMessageListMain({
    */
   const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
     if (!allowLocalProofArtifactProtocol) return null;
-    const uri = artifact.uri?.trim();
-    if (!uri) return null;
-    if (/^ade-artifact:\/\//i.test(uri)) return uri;
-    if (/^https?:\/\//i.test(uri) || path_isAbsoluteLike(uri)) return null;
-    return `ade-artifact://project/${uri.split("/").map(encodeURIComponent).join("/")}`;
+    return artifactImageSrc(artifact.uri);
   }, [allowLocalProofArtifactProtocol]);
 
   const turnProofTimeline = useMemo(() => {

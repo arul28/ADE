@@ -59,6 +59,7 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | Path pattern | Feature docs | Perf skill |
 |---|---|---|
 | `apps/ios/**` | `docs/features/sync-and-multi-device/ios-companion.md` + `features/apple-device/` | — |
+| `apps/desktop/src/main/services/ios/**`, `apps/desktop/src/renderer/components/apple/**`, `apps/desktop/native/ADESimHelper/**` | `docs/features/apple-device/` + skill `ade-apple` | `ade-perf-work` |
 | `apps/web/**` | `docs/ARCHITECTURE.md` (Apps & Processes) | — |
 | `.github/workflows/**` | `docs/ARCHITECTURE.md` (Build/Test/Deploy) | — |
 

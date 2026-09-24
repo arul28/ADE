@@ -636,6 +636,10 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       if (nextPath) setPathEnvValue(next, nextPath);
       next.ADE_CLI_PATH = resolved.commandPath;
       if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
+      // Delegation trusts this as the identity of `ADE_CLI_PATH`, so an inherited
+      // value naming another build must not ride along with our command.
+      if (resolved.cliJsPath) next.ADE_CLI_ENTRY_PATH = resolved.cliJsPath;
+      else delete next.ADE_CLI_ENTRY_PATH;
     } else {
       // A missing bundled CLI must not inherit an older CLI location through
       // explicit resolver variables or PATH. Otherwise a downstream shell can

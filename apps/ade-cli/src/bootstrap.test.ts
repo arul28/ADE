@@ -4,12 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
+import { spawnSync } from "node:child_process";
 import {
   bindIosSimulatorReleaseOnChatEnd,
   createHeadlessAdeCliAgentEnv,
   emitRuntimePrCardsForChanges,
   inferAgentSkillsRootForCliEntry,
 } from "./bootstrap";
+import { adeCliShimDirName } from "./services/runtime/adeCliShim";
 import { createPrEventFanout } from "./prEventFanout";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import type { PrCardChange } from "../../desktop/src/main/services/prs/prChatCards";
@@ -311,6 +313,28 @@ describe("headless ADE CLI agent skill roots", () => {
       cwd: path.join(sourceRoot, "elsewhere"),
       resourcesPath: null,
     }).bundledRoot).toBeNull();
+  });
+});
+
+describe("ade CLI shim names the brain that wrote it", () => {
+  it.skipIf(process.platform === "win32")("reaches the brain's socket from a stripped env, and yields to a caller's", () => {
+    const root = makeTempRoot();
+    const fakeCli = path.join(root, "fake cli");
+    writeFile(fakeCli, '#!/bin/sh\nprintf "%s|%s|%s" "${ADE_HOME:-}" "${ADE_RUNTIME_SOCKET_PATH:-}" "$*"\n');
+    fs.chmodSync(fakeCli, 0o755);
+    const brain = { socketPath: path.join(root, "brain dir", "ade.sock"), adeHome: path.join(root, ".ade-alpha") };
+    const env = createHeadlessAdeCliAgentEnv({ PATH: "/usr/bin:/bin" }, { cliEntry: fakeCli, cwd: root, resourcesPath: null, brain });
+    const shim = env.ADE_CLI_PATH!;
+    try {
+      expect(path.basename(path.dirname(shim))).toBe(adeCliShimDirName(fakeCli, process.execPath, brain));
+      const run = (callerEnv: NodeJS.ProcessEnv) =>
+        spawnSync(shim, ["apple", "status"], { env: { PATH: "/usr/bin:/bin", ...callerEnv }, encoding: "utf8" }).stdout;
+      expect(run({})).toBe(`${brain.adeHome}|${brain.socketPath}|apple status`);
+      expect(run({ ADE_RUNTIME_SOCKET_PATH: "/tmp/mine.sock" })).toBe("|/tmp/mine.sock|apple status");
+      expect(run({ ADE_HOME: "/Users/a/.ade" })).toBe("/Users/a/.ade||apple status");
+    } finally {
+      fs.rmSync(path.dirname(shim), { recursive: true, force: true });
+    }
   });
 });
 

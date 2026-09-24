@@ -109,18 +109,9 @@ export function parseJsonc(source) {
   return JSON.parse(stripped.replace(/,(\s*[}\]])/g, "$1"));
 }
 
-function servicesForEnvironment(config, environment) {
-  const services = environment === "production"
-    ? config?.env?.production?.services
-    : config?.services;
-  return Array.isArray(services) ? services : [];
-}
-
-function varsForEnvironment(config, environment) {
-  const vars = environment === "production"
-    ? config?.env?.production?.vars
-    : config?.vars;
-  return vars && typeof vars === "object" ? vars : {};
+/** The wrangler section an environment deploys from: `env.production`, or the top level. */
+function environmentSection(config, environment) {
+  return (environment === "production" ? config?.env?.production : config) ?? {};
 }
 
 /**
@@ -151,14 +142,15 @@ export function verifyDirectoryDeploymentConfig(args) {
   const config = args.readConfig();
   const warnings = [];
   for (const environment of environments) {
-    const vars = varsForEnvironment(config, environment);
+    const section = environmentSection(config, environment);
+    const vars = section.vars && typeof section.vars === "object" ? section.vars : {};
     const missingVars = REQUIRED_VARS.filter((name) => !isConfiguredVar(vars[name]));
     if (missingVars.length > 0) {
       throw new DeploymentConfigError(
         `missing Worker vars for the ${environment} environment: ${missingVars.join(", ")}`,
       );
     }
-    const services = servicesForEnvironment(config, environment);
+    const services = Array.isArray(section.services) ? section.services : [];
     const missingServices = REQUIRED_SERVICE_BINDINGS.filter(
       ({ binding, service }) => !services.some((entry) => entry?.binding === binding && entry?.service === service),
     );

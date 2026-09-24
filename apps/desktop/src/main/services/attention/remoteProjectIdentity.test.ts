@@ -17,6 +17,11 @@ describe("remoteProjectRootPathsMatch", () => {
       .toBe(true);
   });
 
+  it("reads a forward-slash UNC root and a bare drive as Windows paths", () => {
+    expect(remoteProjectRootPathsMatch("//server/share/repo", "\\\\server\\share\\repo")).toBe(true);
+    expect(remoteProjectRootPathsMatch("C:", "c:")).toBe(true);
+  });
+
   it("rejects different projects and empty input", () => {
     expect(remoteProjectRootPathsMatch("/Users/arul/ADE", "/Users/arul/ADE-old")).toBe(false);
     expect(remoteProjectRootPathsMatch("", "/Users/arul/ADE")).toBe(false);

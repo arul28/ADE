@@ -60,6 +60,23 @@ function handlersFor(target = service()) {
 }
 
 describe("buildAppleStatusPayload", () => {
+  it("names the lane's own device, and nothing for the host's any-booted fallback", () => {
+    // The phone's simulator chip needs `laneDevice` to match `device`, so it
+    // never offers a device another lane holds (review finding A3-F4).
+    const owned = buildAppleStatusPayload("lane-a", {
+      activeDevice: { udid: "U1", name: "iPhone 16 Pro", state: "Booted" },
+      laneDevice: { udid: "U1", name: "iPhone 16 Pro", family: "iphone", origin: "clone" },
+    });
+    expect(owned.laneDevice).toEqual({ udid: "U1" });
+    expect(owned.device?.udid).toBe("U1");
+
+    const fallback = buildAppleStatusPayload("lane-b", {
+      activeDevice: { udid: "U2", name: "iPhone 17", state: "Booted" },
+    });
+    expect(fallback.device?.udid).toBe("U2");
+    expect(fallback.laneDevice).toBeNull();
+  });
+
   it("projects the service status into the wire shape without a secret", () => {
     const payload = buildAppleStatusPayload("lane-a", RAW_STATUS);
     expect(payload.device).toEqual({
@@ -173,6 +190,18 @@ describe("apple.* remote command handlers", () => {
     });
     expect(issue).toHaveBeenCalledWith({ laneId: "lane-a", codec: "avc1", width: 393, height: 852 });
     expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok" });
+  });
+
+  it("regression: a viewer's ticket on a device that is off is refused with APPLE_DEVICE_OFF, and no ticket is issued", async () => {
+    const off = Object.assign(new Error("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it."), {
+      code: "APPLE_DEVICE_OFF",
+    });
+    const { byAction, issue, target } = handlersFor(service({ startStream: vi.fn(async () => { throw off; }) }));
+    await expect(byAction.get("apple.streamTicket")!.handler({ laneId: "lane-a" }))
+      .rejects.toThrow(/^APPLE_DEVICE_OFF: iPhone 17 Pro is off\./);
+    // Watching never asks for a boot.
+    expect(target.startStream).toHaveBeenCalledWith(expect.not.objectContaining({ boot: true }));
+    expect(issue).not.toHaveBeenCalled();
   });
 
   it("drives the device for the owning chat", async () => {

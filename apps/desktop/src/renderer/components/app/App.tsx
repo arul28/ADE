@@ -115,6 +115,7 @@ import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/fil
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 import { requestWorkTool } from "../terminals/workToolRequests";
+import { useWorkToolShowRequestListener } from "../../lib/workToolShowRequests";
 import {
   ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
@@ -347,6 +348,10 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const shouldRenderLanes = active && isLanesRoute;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
+  // `ade ui show` for this project's runtime. Answered here, whatever tab is
+  // showing, so the agent hears "held" instead of "no desktop" while the user
+  // is somewhere else; the pane showing the chat takes it when it mounts.
+  useWorkToolShowRequestListener(Boolean(active && projectRoot));
 
   React.useEffect(() => {
     if (!isWorkRoute) return;

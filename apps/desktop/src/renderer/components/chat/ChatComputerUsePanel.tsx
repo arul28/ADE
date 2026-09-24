@@ -4,35 +4,35 @@ import {
   FileText,
   ImageSquare,
   MagnifyingGlass,
+  Play,
   SpinnerGap,
   Trash,
   VideoCamera,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type {
   ComputerUseArtifactDeleteResult,
   ComputerUseArtifactView,
   ComputerUseOwnerSnapshot,
 } from "../../../shared/types";
+import {
+  proofRecordedBeforeRequestLine,
+  proofSourceLine,
+  readProofProvenance,
+} from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-
-function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
-  return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
-}
-
-function isVideoArtifact(artifact: ComputerUseArtifactView): boolean {
-  return artifact.kind === "video_recording" || (artifact.mimeType?.startsWith("video/") ?? false);
-}
+import {
+  externalArtifactUrl,
+  isBrokenArtifact,
+  isImageArtifact,
+  isVideoArtifact,
+  recoverableArtifactSource,
+  useArtifactPreview,
+} from "./useArtifactPreview";
 
 function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
@@ -51,66 +51,38 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function externalArtifactUrl(uri: string): string | null {
-  return /^https?:\/\//i.test(uri) ? uri : null;
-}
-
-/**
- * Hosts that predate availability reporting omit the field. Treat that as
- * "available" and let the preview read decide, rather than showing a broken
- * state we have no evidence for.
- */
-function artifactAvailability(artifact: ComputerUseArtifactView): "available" | "missing_file" | "unimported" {
-  return artifact.availability ?? "available";
-}
-
-function isBrokenArtifact(artifact: ComputerUseArtifactView): boolean {
-  return artifactAvailability(artifact) !== "available";
-}
-
-function localSourceValue(value: unknown): string | null {
-  const source = typeof value === "string" ? value.trim() : "";
-  return source && !externalArtifactUrl(source) ? source : null;
-}
-
-function recoverableArtifactSource(artifact: ComputerUseArtifactView): string | null {
-  return localSourceValue(artifact.metadata?.sourcePath)
-    ?? localSourceValue(artifact.metadata?.sourceUri);
-}
-
-function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
-  const value = recoverableArtifactSource(artifact)
-    ?? localSourceValue(artifact.metadata?.absolutePath);
-  if (!value) return null;
-  const segments = value.split(/[\\/]/).filter(Boolean);
-  return segments.length > 2 ? `…/${segments.slice(-2).join("/")}` : value;
-}
-
-/**
- * Keep canonical storage availability separate from preview generation.
- * A missing preview can mean unsupported media or a size cap even when the
- * stored proof is intact.
- */
-function artifactPreviewExplanation(artifact: ComputerUseArtifactView): string {
-  const where = shortSourcePath(artifact);
-  if (artifactAvailability(artifact) === "unimported") {
-    return where
-      ? `Never copied into ADE's storage — it was left at ${where} in the lane it was captured in.`
-      : "Never copied into ADE's storage, so there are no bytes to show.";
-  }
-  if (artifactAvailability(artifact) === "missing_file") {
-    return "The stored file has since been deleted.";
-  }
-  return "A preview is unavailable, but the stored proof is still attached.";
-}
-
 function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult): void {
   if (result.failed.length === 0) return;
   throw new Error(result.failed.map((failure) => failure.reason).join("; "));
 }
 
-function localArtifactUrl(uri: string): string | null {
-  return /^ade-artifact:\/\/project(?:\/|$)/i.test(uri) ? uri : null;
+/**
+ * Who made the bytes, and whether an attached video predates the request.
+ * One quiet line each; rows filed before ADE recorded this print nothing.
+ */
+function ProofProvenanceLines({ artifact, className, warningClassName }: {
+  artifact: ComputerUseArtifactView;
+  className: string;
+  warningClassName: string;
+}) {
+  const provenance = readProofProvenance(artifact.metadata);
+  const source = proofSourceLine(provenance);
+  const older = proofRecordedBeforeRequestLine(provenance);
+  if (!source && !older) return null;
+  return (
+    <>
+      {source ? (
+        <div data-proof-source="" className={cn("truncate", className)} title={source}>
+          {source}
+        </div>
+      ) : null}
+      {older ? (
+        <div data-proof-recorded-before-request="" className={cn("truncate", warningClassName)} title={older}>
+          {older}
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function ArtifactKindIcon({ artifact, size = 14 }: {
@@ -122,92 +94,71 @@ function ArtifactKindIcon({ artifact, size = 14 }: {
   return <FileText size={size} weight="duotone" />;
 }
 
-function useVisibleArtifactPreview(
-  artifact: ComputerUseArtifactView,
-  allowLocalArtifactProtocol: boolean,
-): {
-  containerRef: React.RefObject<HTMLDivElement>;
-  preview: string | null;
-  loading: boolean;
-  loaded: boolean;
-} {
-  const scope = useChatRuntimeScope();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node || visible) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setVisible(true);
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      setVisible(true);
-      observer.disconnect();
-    }, { rootMargin: "220px" });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [visible]);
-
-  useEffect(() => {
-    setPreview(null);
-    setLoaded(false);
-    setLoading(false);
-  }, [artifact.id, artifact.uri]);
-
-  useEffect(() => {
-    if (
-      !visible
-      || loaded
-      || !artifact.uri
-      // The host already told us there are no bytes; asking for them anyway
-      // just burns an IPC round trip per tile to get null back.
-      || isBrokenArtifact(artifact)
-      || (!isImageArtifact(artifact) && !isVideoArtifact(artifact))
-    ) return;
-    const directPreview = allowLocalArtifactProtocol
-      ? localArtifactUrl(artifact.uri)
-      : null;
-    if (directPreview) {
-      setPreview(directPreview);
-      setLoaded(true);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin)
-      .then((dataUrl) => {
-        if (cancelled) return;
-        setPreview(dataUrl);
-        setLoading(false);
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setPreview(null);
-        setLoading(false);
-        setLoaded(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [allowLocalArtifactProtocol, artifact, loaded, scope.pin, visible]);
-
-  return { containerRef, preview, loading, loaded };
+/**
+ * A still of the recording's first frame with a play badge. The small tile
+ * never shows native controls or crops the frame. A tall simulator recording
+ * and a wide Mac recording both letterbox on black. Clicking opens the
+ * lightbox, which plays it at its own size.
+ */
+function VideoProofPoster({
+  artifact,
+  preview,
+  className,
+  badgeSize,
+  onOpen,
+  onError,
+}: {
+  artifact: ComputerUseArtifactView;
+  preview: string;
+  className: string;
+  badgeSize: "sm" | "md";
+  onOpen: () => void;
+  onError: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="relative block w-full overflow-hidden bg-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-violet-300/45"
+      aria-label={`Play ${artifact.title}`}
+      onClick={onOpen}
+    >
+      <video
+        src={preview}
+        preload="metadata"
+        muted
+        playsInline
+        tabIndex={-1}
+        aria-hidden
+        onError={onError}
+        className={cn("pointer-events-none block w-full bg-black object-contain", className)}
+      />
+      <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <span
+          className={cn(
+            "inline-flex items-center justify-center rounded-full border border-white/[0.16] bg-black/58 text-white/88 shadow-[0_6px_20px_rgba(0,0,0,0.55)] backdrop-blur-sm transition-transform duration-200 group-hover:scale-105 group-hover/tile:scale-105",
+            badgeSize === "sm" ? "h-6 w-6" : "h-10 w-10",
+          )}
+        >
+          <Play size={badgeSize === "sm" ? 10 : 15} weight="fill" className="translate-x-px" />
+        </span>
+      </span>
+    </button>
+  );
 }
 
 function ArtifactLightbox({
   artifact,
   preview,
+  failed,
+  failureText,
+  onMediaError,
   onClose,
 }: {
   artifact: ComputerUseArtifactView;
   preview: string;
+  failed: boolean;
+  failureText: string;
+  onMediaError: () => void;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -219,6 +170,7 @@ function ArtifactLightbox({
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [onClose]);
+  const media = isImageArtifact(artifact) ? "image" : "video";
 
   return createPortal(
     <div
@@ -230,7 +182,14 @@ function ArtifactLightbox({
         if (event.currentTarget === event.target) onClose();
       }}
     >
-      <div className="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-[#0d0d11] shadow-[0_32px_120px_rgba(0,0,0,0.75)]">
+      <div
+        className={cn(
+          "flex max-h-full flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-[#0d0d11] shadow-[0_32px_120px_rgba(0,0,0,0.75)]",
+          // A video panel hugs the video, so a tall phone recording is not
+          // lost in a wide empty frame.
+          media === "video" ? "max-w-[90vw]" : "w-full max-w-6xl",
+        )}
+      >
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
           <div className="min-w-0">
             <div className="truncate font-sans text-[12px] font-semibold text-fg/88">{artifact.title}</div>
@@ -249,11 +208,32 @@ function ArtifactLightbox({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-auto bg-black/30 p-3">
-          <img
-            src={preview}
-            alt={artifact.title}
-            className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
-          />
+          {failed ? (
+            <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
+              <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
+              <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
+                {failureText}
+              </div>
+            </div>
+          ) : media === "video" ? (
+            // Width and height stay auto so the browser keeps the recording's
+            // own shape. The caps only shrink it to fit the window.
+            <video
+              src={preview}
+              controls
+              autoPlay
+              playsInline
+              onError={onMediaError}
+              className="mx-auto block h-auto max-h-[calc(85vh-4.5rem)] w-auto max-w-[calc(90vw-1.5rem)] rounded-xl bg-black object-contain"
+            />
+          ) : (
+            <img
+              src={preview}
+              alt={artifact.title}
+              onError={onMediaError}
+              className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
+            />
+          )}
         </div>
       </div>
     </div>,
@@ -270,19 +250,19 @@ export function ChatProofArtifactCard({
   variant?: "timeline" | "drawer";
   allowLocalArtifactProtocol?: boolean;
 }) {
-  const { containerRef, preview, loading, loaded } = useVisibleArtifactPreview(
-    artifact,
-    allowLocalArtifactProtocol,
-  );
+  const {
+    containerRef,
+    preview,
+    loading,
+    failed,
+    explanation,
+    onMediaError,
+  } = useArtifactPreview(artifact, allowLocalArtifactProtocol);
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [mediaFailed, setMediaFailed] = useState(false);
   const externalUrl = externalArtifactUrl(artifact.uri);
   const image = isImageArtifact(artifact);
   const video = isVideoArtifact(artifact);
-
-  useEffect(() => {
-    setMediaFailed(false);
-  }, [artifact.id, artifact.uri, preview]);
+  const failureText = externalUrl ? "This proof lives at its source. Open it to view." : explanation;
 
   const openExternal = useCallback(() => {
     if (!externalUrl) return;
@@ -312,6 +292,11 @@ export function ChatProofArtifactCard({
             <span aria-hidden>·</span>
             <span className="shrink-0">{relativeTime(artifact.createdAt)}</span>
           </div>
+          <ProofProvenanceLines
+            artifact={artifact}
+            className="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-muted-fg/40"
+            warningClassName="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-200/60"
+          />
         </div>
         {externalUrl ? (
           <button
@@ -330,15 +315,13 @@ export function ChatProofArtifactCard({
           <div className="flex min-h-36 items-center justify-center rounded-xl border border-white/[0.055] bg-black/18 text-muted-fg/35">
             <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof preview" />
           </div>
-        ) : mediaFailed || (loaded && !preview && (image || video)) ? (
+        ) : failed ? (
           // Broken proof shrinks. A full-height empty box wastes the most
           // valuable space in a 322px rail to say nothing.
           <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
             <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
             <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
-              {externalUrl
-                ? "This proof lives at its source. Open it to view."
-                : artifactPreviewExplanation(artifact)}
+              {failureText}
             </div>
           </div>
         ) : preview && image ? (
@@ -351,7 +334,7 @@ export function ChatProofArtifactCard({
             <img
               src={preview}
               alt={artifact.title}
-              onError={() => setMediaFailed(true)}
+              onError={onMediaError}
               className={cn(
                 "block w-full object-contain transition-transform duration-300 group-hover:scale-[1.006]",
                 variant === "timeline" ? "max-h-[320px]" : "max-h-[240px]",
@@ -359,16 +342,16 @@ export function ChatProofArtifactCard({
             />
           </button>
         ) : preview && video ? (
-          <video
-            src={preview}
-            controls
-            preload="metadata"
-            onError={() => setMediaFailed(true)}
-            className={cn(
-              "block w-full rounded-xl border border-white/[0.06] bg-black",
-              variant === "timeline" ? "max-h-[320px]" : "max-h-[240px]",
-            )}
-          />
+          <div className="overflow-hidden rounded-xl border border-white/[0.06] bg-black">
+            <VideoProofPoster
+              artifact={artifact}
+              preview={preview}
+              badgeSize="md"
+              className={variant === "timeline" ? "h-[320px]" : "h-[240px]"}
+              onOpen={() => setLightboxOpen(true)}
+              onError={onMediaError}
+            />
+          </div>
         ) : !image && !video ? (
           <div className="flex min-h-20 items-center gap-3 rounded-xl border border-white/[0.05] bg-black/14 px-3.5 py-3">
             <FileText size={18} weight="duotone" className="shrink-0 text-muted-fg/30" />
@@ -385,10 +368,13 @@ export function ChatProofArtifactCard({
         ) : null}
       </div>
 
-      {lightboxOpen && preview && image ? (
+      {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
+          failed={failed}
+          failureText={failureText}
+          onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
       ) : null}
@@ -469,24 +455,22 @@ function DrawerProofTile({
   onDelete: (artifact: ComputerUseArtifactView) => void;
   onRecover: (artifact: ComputerUseArtifactView) => void;
 }) {
-  const { containerRef, preview, loading, loaded } = useVisibleArtifactPreview(
-    artifact,
-    allowLocalArtifactProtocol,
-  );
+  const {
+    containerRef,
+    preview,
+    loading,
+    failed,
+    explanation,
+    onMediaError,
+  } = useArtifactPreview(artifact, allowLocalArtifactProtocol);
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [mediaFailed, setMediaFailed] = useState(false);
   const image = isImageArtifact(artifact);
   const video = isVideoArtifact(artifact);
   const externalUrl = externalArtifactUrl(artifact.uri);
   const storedFileMissing = isBrokenArtifact(artifact);
-  const previewUnavailable = !storedFileMissing
-    && (mediaFailed || (loaded && !preview && (image || video)));
-  const hasPreviewProblem = storedFileMissing || previewUnavailable;
+  const hasPreviewProblem = storedFileMissing || failed;
+  const failureText = externalUrl ? "Stored at its source." : explanation;
   const recoverable = recoverableArtifactSource(artifact) !== null;
-
-  useEffect(() => {
-    setMediaFailed(false);
-  }, [artifact.id, artifact.uri, preview]);
 
   return (
     <div
@@ -525,17 +509,18 @@ function DrawerProofTile({
             <img
               src={preview}
               alt={artifact.title}
-              onError={() => setMediaFailed(true)}
+              onError={onMediaError}
               className="block h-[74px] w-full object-cover"
             />
           </button>
         ) : preview && video ? (
-          <video
-            src={preview}
-            controls
-            preload="metadata"
-            onError={() => setMediaFailed(true)}
-            className="block h-[74px] w-full bg-black object-cover"
+          <VideoProofPoster
+            artifact={artifact}
+            preview={preview}
+            badgeSize="sm"
+            className="h-[74px]"
+            onOpen={() => setLightboxOpen(true)}
+            onError={onMediaError}
           />
         ) : (
           <div className="flex h-[74px] items-center justify-center text-muted-fg/28">
@@ -582,17 +567,25 @@ function DrawerProofTile({
         <div className="truncate font-mono text-[8.5px] leading-[13px] text-muted-fg/34">
           {relativeTime(artifact.createdAt)}
         </div>
+        <ProofProvenanceLines
+          artifact={artifact}
+          className="font-sans text-[9px] leading-[13px] text-muted-fg/38"
+          warningClassName="font-sans text-[9px] leading-[13px] text-amber-200/55"
+        />
         {hasPreviewProblem ? (
           <div className="mt-1 font-sans text-[9px] leading-[13px] text-amber-200/40">
-            {externalUrl ? "Stored at its source." : artifactPreviewExplanation(artifact)}
+            {failureText}
           </div>
         ) : null}
       </div>
 
-      {lightboxOpen && preview && image ? (
+      {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
+          failed={failed}
+          failureText={failureText}
+          onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
       ) : null}

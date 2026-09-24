@@ -8940,6 +8940,8 @@ export function registerIpc({
             outcome = "unknown";
             broker.ingest({
               backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+              // The desktop drew these pixels; ADE captured them.
+              provenance: { source: "ade-capture" as const },
               ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
               inputs: [{
                 kind: "screenshot",
@@ -9227,6 +9229,8 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorDeviceStop, async (_event, arg = {}) => ensureIosSimulator().deviceStop(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceList, async (_event, arg = {}) => ensureIosSimulator().deviceList(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDelete, async (_event, arg = {}) => ensureIosSimulator().deviceDelete(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
   ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
@@ -12468,6 +12472,7 @@ export function registerIpc({
     getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
     resolveTargetNameForMachineKey: runtimeBridge.resolveTargetNameForMachineKey,
+    readRemoteArtifactRange: runtimeBridge.readRemoteArtifactRange,
     async openAttentionProject(args: {
       machineKey: string;
       projectId: string;

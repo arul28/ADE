@@ -73,6 +73,7 @@ import {
   repairClaudeResumeTranscript,
 } from "./claudeThinkingTranscriptRepair";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
+import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
@@ -874,6 +875,11 @@ import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
+import {
+  createLaneAppleDeviceLookup,
+  resolveLaneAppleDeviceDirective,
+  type LaneAppleDeviceLookup,
+} from "./laneAppleDeviceDirective";
 import {
   buildOpenCodePromptParts,
   buildOpenCodeV2PromptAttachments,
@@ -3956,6 +3962,18 @@ type ReconstructionSectionSpan = {
   start: number;
 };
 
+/**
+ * The epoch directives that live only in memory. Each is re-sent when its key
+ * changes, and forgotten with the provider thread. A new one adds its name
+ * here and its key in `prepareSendMessage`.
+ */
+type EpochDirective =
+  /** The computer-use block, keyed by lane and available backends. */
+  | "computerUse"
+  /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
+  | "appleDevice";
+type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
+
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
@@ -4083,7 +4101,12 @@ type ManagedChatSession = {
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
-  lastComputerUseDirectiveKey: string | null;
+  /**
+   * The key of each epoch directive this session's provider thread was last
+   * told. In memory only: a brain restart re-announces once, which is cheaper
+   * than persisting it.
+   */
+  deliveredDirectiveKeys: EpochDirectiveKeys;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -4276,7 +4299,8 @@ type PreparedSendMessage = {
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
-  computerUseDirectiveKey?: string | null;
+  /** The epoch directives this turn's prompt carries, marked delivered after the run. */
+  epochDirectiveKeys?: EpochDirectiveKeys;
   providerSlashCommand?: boolean;
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
@@ -4289,6 +4313,14 @@ type PreparedSendMessage = {
   runtime?: AgentChatRuntime;
   cloudOverrides?: AgentChatCloudOverrides;
 };
+
+/** Where a Cursor turn runs: the turn's own choice, then the chat's default. */
+function effectiveCursorRuntime(
+  managed: ManagedChatSession,
+  runtime: AgentChatRuntime | null | undefined,
+): AgentChatRuntime {
+  return runtime ?? managed.session.cursorRuntime ?? "local";
+}
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath: string;
@@ -9243,6 +9275,11 @@ export function createAgentChatService(args: {
     Pick<AdeDb, "getJson" | "setJson">
     & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
   ) | null;
+  /**
+   * Which Apple device a lane holds, for the `<ade-lane-tools>` hint. Defaults
+   * to a `lane_apple_devices` row read on `db` (macOS only); tests inject it.
+   */
+  lookupLaneAppleDevice?: LaneAppleDeviceLookup | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   /**
@@ -9377,6 +9414,7 @@ export function createAgentChatService(args: {
     processRegistry,
     projectConfigService,
     db,
+    lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
     aiIntegrationService,
     logger,
     appVersion,
@@ -9409,6 +9447,13 @@ export function createAgentChatService(args: {
   const browserActorCapabilityIssuer =
     args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
+  // `undefined` means "use the lanes DB"; an explicit `null` turns the hint off.
+  const laneAppleDeviceLookup: LaneAppleDeviceLookup | null = injectedLaneAppleDeviceLookup !== undefined
+    ? injectedLaneAppleDeviceLookup
+    : createLaneAppleDeviceLookup({
+        platform: process.platform,
+        store: db?.get ? { get: db.get } : null,
+      });
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
@@ -10227,6 +10272,13 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  /**
+   * When each chat's latest turn started. `currentTurnStartedAt` clears when
+   * the turn settles, and the proof broker still needs the time afterwards to
+   * tell a fresh video from an older one. An entry goes when its session ends
+   * or is deleted.
+   */
+  const lastTurnStartedAtBySession = new Map<string, string>();
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -17160,6 +17212,7 @@ export function createAgentChatService(args: {
   const setSessionActive = (managed: ManagedChatSession): void => {
     if (managed.session.status !== "active") {
       managed.session.currentTurnStartedAt = nowIso();
+      lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -22028,6 +22081,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    lastTurnStartedAtBySession.delete(managed.session.id);
     revokeBrowserActorToken(managed.session.id);
   };
 
@@ -22222,7 +22276,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       // Deliberately in-memory only: after a restart the directive is re-sent
       // once, which is the safe direction to fail.
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -22368,13 +22422,13 @@ export function createAgentChatService(args: {
   /**
    * Forget what this session's provider threads have been told, so a
    * replacement runtime (model switch, thread recycle, resume) is re-announced
-   * to. Both the lane directive and the computer-use directive are epoch-scoped
+   * to. The lane, computer-use and Apple-device directives are epoch-scoped
    * and would otherwise be suppressed for the new thread by a key the old one
    * set.
    */
   const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
-    managed.lastComputerUseDirectiveKey = null;
+    managed.deliveredDirectiveKeys = {};
     persistChatState(managed);
   };
 
@@ -37696,7 +37750,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -38894,7 +38948,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -41954,7 +42008,28 @@ export function createAgentChatService(args: {
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
       : null;
     const shouldInjectComputerUseDirective = computerUseDirectiveKey != null
-      && managed.lastComputerUseDirectiveKey !== computerUseDirectiveKey;
+      && managed.deliveredDirectiveKeys.computerUse !== computerUseDirectiveKey;
+    // The lane's Apple device, named at turn time so the agent drives it with
+    // `ade apple` instead of `simctl` / `open -a Simulator` without first
+    // having to find the `ade-apple` skill. Sent on the first turn after a
+    // device is bound and again only when the bound udid changes; a lookup
+    // failure means no hint, never a failed send. A Cursor cloud turn runs on
+    // Cursor's VM, which cannot reach this Mac's simulator, so it gets none.
+    const cursorCloudTurn = managed.session.provider === "cursor"
+      && effectiveCursorRuntime(managed, runtime) === "cloud";
+    const appleDevice = personalSession || cursorCloudTurn
+      ? null
+      : resolveLaneAppleDeviceDirective({
+          laneId: executionContext.laneId,
+          lookup: laneAppleDeviceLookup,
+          onLookupError: (error) => logger.warn("agent_chat.lane_apple_device_lookup_failed", {
+            sessionId,
+            laneId: executionContext.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        });
+    const shouldInjectAppleDeviceDirective = appleDevice != null
+      && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
@@ -42010,6 +42085,7 @@ export function createAgentChatService(args: {
               ))
             : null,
           shouldInjectComputerUseDirective ? computerUseDirective : null,
+          shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -42048,13 +42124,16 @@ export function createAgentChatService(args: {
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
       laneDirectiveKey: providerSlashCommand && !personalSession ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
       // A provider slash-command turn replaces the user text with the command's
-      // own markdown and never runs `composeLaunchDirectives`, so the directive
-      // above is not in `promptText`. Null the key for the same reason the lane
-      // key is nulled, or a slash-command turn would mark it delivered without
-      // delivering it and suppress it for the rest of the session.
-      computerUseDirectiveKey: providerSlashCommand && !personalSession
-        ? null
-        : shouldInjectComputerUseDirective ? computerUseDirectiveKey : null,
+      // own markdown and never runs `composeLaunchDirectives`, so no epoch
+      // directive is in `promptText`. It carries no keys for the same reason
+      // the lane key is nulled, or it would mark them delivered without
+      // delivering them and suppress them for the rest of the session.
+      epochDirectiveKeys: providerSlashCommand && !personalSession
+        ? {}
+        : {
+            ...(shouldInjectComputerUseDirective ? { computerUse: computerUseDirectiveKey } : {}),
+            ...(shouldInjectAppleDeviceDirective ? { appleDevice: appleDevice.key } : {}),
+          },
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
@@ -46864,7 +46943,7 @@ export function createAgentChatService(args: {
       metadata,
       reasoningEffort,
       laneDirectiveKey,
-      computerUseDirectiveKey,
+      epochDirectiveKeys,
       providerSlashCommand,
       forceClaudeUserMessage,
       steerId,
@@ -46906,10 +46985,10 @@ export function createAgentChatService(args: {
     //
     // Marking after the run returns is the safe direction: a duplicate delivery
     // is wasted tokens, a missed one leaves the agent unaware of a capability.
-    const markComputerUseDirectiveDelivered = (): void => {
-      if (computerUseDirectiveKey) {
-        managed.lastComputerUseDirectiveKey = computerUseDirectiveKey;
-      }
+    //
+    // The Apple-device hint (`<ade-lane-tools>`) follows the same rule.
+    const markEpochDirectivesDelivered = (): void => {
+      Object.assign(managed.deliveredDirectiveKeys, epochDirectiveKeys);
     };
 
     // OpenCode runtime dispatch
@@ -46948,7 +47027,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -46965,12 +47044,7 @@ export function createAgentChatService(args: {
         chatConfig.opencodePermissionMode,
       );
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-      const requestedRuntime = prepared.runtime;
-      const sessionDefaultRuntime = managed.session.cursorRuntime;
-      const effectiveRuntime: AgentChatRuntime = requestedRuntime
-        ?? sessionDefaultRuntime
-        ?? "local";
-      if (effectiveRuntime === "cloud") {
+      if (effectiveCursorRuntime(managed, prepared.runtime) === "cloud") {
         await runCursorCloudTurn(managed, {
           promptText,
           userText: submittedText,
@@ -46986,7 +47060,7 @@ export function createAgentChatService(args: {
           onBackendDispatched,
           ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
         });
-        markComputerUseDirectiveDelivered();
+        markEpochDirectivesDelivered();
         return;
       }
       await runCursorSdkTurn(managed, {
@@ -47003,7 +47077,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47028,7 +47102,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47051,7 +47125,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47095,7 +47169,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47217,7 +47291,7 @@ export function createAgentChatService(args: {
         optimisticCodexTurnStart,
         onDispatched: onBackendDispatched ?? onDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47266,7 +47340,7 @@ export function createAgentChatService(args: {
       onDispatched,
       onBackendDispatched,
     });
-    markComputerUseDirectiveDelivered();
+    markEpochDirectivesDelivered();
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
@@ -52005,6 +52079,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    lastTurnStartedAtBySession.delete(sessionId);
     revokeBrowserActorToken(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
@@ -52626,7 +52701,7 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Settle a card the user answered but whose asker is already gone.
+   * Close a card nothing can consume, with a receipt and a notice.
    *
    * Returning silently is not enough, and "the UI will clear the stale entry"
    * is no longer true: the renderer defers to the summary for a card swept
@@ -52638,9 +52713,11 @@ export function createAgentChatService(args: {
    *
    * An accept is recorded as `cancel` because nothing consumed the acceptance;
    * saying "accepted" of an approval no runtime received would be a lie in the
-   * durable, synced transcript.
+   * durable, synced transcript. Reaching here with an ANSWER in hand is the
+   * one case this must not decide on its own — see
+   * `settleUnclaimedPendingInput`, which re-routes that answer first.
    */
-  const settleUnclaimedPendingInput = (
+  const settleDeadPendingInput = (
     managed: ManagedChatSession,
     itemId: string,
     decision: AgentChatApprovalDecision,
@@ -52657,6 +52734,97 @@ export function createAgentChatService(args: {
       message: "That request is no longer active.",
     });
     persistChatState(managed);
+  };
+
+  const PENDING_INPUT_ANSWER_REROUTED_MESSAGE =
+    "That request had already closed, so ADE sent your answer as a message instead.";
+
+  /**
+   * Deliver an answer whose waiter is gone, or refuse to lose it.
+   *
+   * The reported bug: an OpenCode question card sat open for 19 minutes while
+   * its runtime went away (a pooled server eviction, an idle teardown, or a
+   * brain restart — the card survives all three because it is a transcript
+   * event). The answer then arrived at a session with no waiter and no
+   * runtime, and the old settle recorded it as `cancelled` / "unanswered",
+   * painted "That request is no longer active.", and returned SUCCESS — so the
+   * composer cleared the draft too. The answer was lost twice: never delivered,
+   * and not even left on screen to retype. `answers` and `responseText` were
+   * not so much as read.
+   *
+   * So: a question answered with actual content is re-routed as an ordinary
+   * user message — the exact move that unblocked the reporter by hand, and the
+   * same mechanism `responseMode: "message"` already uses for Codex async
+   * questions. The receipt then says `accepted`, because the answer really did
+   * reach the agent.
+   *
+   * If even that fails, this THROWS rather than settling: a throw leaves the
+   * card open and makes the composer put the typed answer back, which is a
+   * re-offered question instead of a dead end. Approvals, plans and
+   * elicitations are not re-routed — "Approve and implement" is not prose, and
+   * the tool call behind it is long gone — so they keep the old settle.
+   */
+  const settleUnclaimedPendingInput = async (
+    managed: ManagedChatSession,
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    answer?: {
+      answers?: Record<string, string | string[]> | undefined;
+      responseText?: string | null | undefined;
+    },
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    const { request, resolvedAs } = await getChatEventHistory(sessionId, { maxEvents: 512 })
+      .then((history) => readPendingInputRecord(history.events, itemId))
+      .catch(() => ({ request: null, resolvedAs: null }));
+    if (resolvedAs === "accepted") {
+      // One gesture can still send two responses for one card (a click racing
+      // a keypress). The first one delivered; this one must not overwrite its
+      // receipt with a cancellation that reads as "unanswered", and must not
+      // re-send the same answer as a message either.
+      logger.info("agent_chat.pending_input_already_answered", { sessionId, itemId, decision });
+      return;
+    }
+    const accepted = decision === "accept" || decision === "accept_for_session";
+    if (accepted && isQuestionShapedPendingInput(request) && request) {
+      const normalizedAnswers = normalizePendingInputAnswers(request, answer?.answers, answer?.responseText);
+      const messageText = formatPendingInputAnswersAsMessage(request, normalizedAnswers);
+      if (messageText.trim().length) {
+        try {
+          // `kind: "auto"` steers into a live turn and starts one when there is
+          // none, so this works whether the runtime died or merely moved on.
+          await messageSession({ sessionId, text: messageText, kind: "auto" });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          logger.warn("agent_chat.pending_input_answer_reroute_failed", { sessionId, itemId, error: reason });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: "That request closed before your answer reached it, and ADE could not send the answer as a message either. It is back in the composer — send it again.",
+          });
+          persistChatState(managed);
+          throw new Error(`That request is no longer active, and your answer could not be sent as a message: ${reason}`);
+        }
+        logger.info("agent_chat.pending_input_answer_rerouted", { sessionId, itemId, provider: managed.session.provider });
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision,
+          turnId: request.turnId ?? null,
+          ...(answer?.answers ? { answers: answer.answers } : {}),
+          ...(answer?.responseText !== undefined ? { responseText: answer.responseText } : {}),
+          questions: request.questions ?? [],
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: PENDING_INPUT_ANSWER_REROUTED_MESSAGE,
+        });
+        persistChatState(managed);
+        return;
+      }
+    }
+    settleDeadPendingInput(managed, itemId, decision);
   };
 
   /**
@@ -52773,7 +52941,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       const ensureWritable = (): void => {
@@ -52888,7 +53056,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.approvals.delete(itemId);
@@ -52933,7 +53101,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.pendingApprovals.delete(itemId);
@@ -52968,7 +53136,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       cursorRuntime.permissionWaiters.delete(itemId);
@@ -52993,7 +53161,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.permissionWaiters.delete(itemId);
@@ -53016,7 +53184,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: resolvedDecision,
     });
-    settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+    await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
   };
 
   /**
@@ -53081,7 +53249,7 @@ export function createAgentChatService(args: {
       // No card by that id: settle it anyway rather than throwing. A click that
       // lands after the card is gone must still write a receipt, or the
       // transcript fallback keeps naming it.
-      settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
+      await settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
       onPendingInputDismissed?.({ provider: managed.session.provider });
       return;
     }
@@ -54242,6 +54410,7 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
+    lastTurnStartedAtBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -57987,6 +58156,13 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    /** The current turn's start, or the latest one's. Null when none ran in this process. */
+    getTurnStartedAt: (sessionId: string): string | null => {
+      const live = managedSessions.get(sessionId)?.session;
+      return (live?.status === "active" ? live.currentTurnStartedAt ?? null : null)
+        ?? lastTurnStartedAtBySession.get(sessionId)
+        ?? null;
+    },
     getTurnStatus,
     ensureSessionSurface,
     hasActiveWorkloads,

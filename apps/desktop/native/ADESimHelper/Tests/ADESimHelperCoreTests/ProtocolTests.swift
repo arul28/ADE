@@ -37,6 +37,7 @@ final class ProtocolTests: XCTestCase {
             #"{"type":"ax-describe","id":"11","udid":"U"}"#,
             #"{"type":"ax-frontmost","id":"12","udid":"U"}"#,
             #"{"type":"screenshot","id":"13","udid":"U","path":"/tmp/a.png"}"#,
+            #"{"type":"device-reset","id":"15","udid":"U"}"#,
             #"{"type":"quit","id":"14"}"#,
         ]
         for line in lines {
@@ -47,6 +48,21 @@ final class ProtocolTests: XCTestCase {
                 XCTFail("\(line) failed to parse: \(failure)")
             }
         }
+    }
+
+    /// ADE sends this around every power change so a session bound to the old
+    /// boot is rebuilt. It names a device like any other device command.
+    func testParsesDeviceReset() throws {
+        let parsed = try command(#"{"type":"device-reset","id":"r","udid":"U"}"#)
+        XCTAssertEqual(parsed, .deviceReset(id: "r", udid: "U"))
+        XCTAssertEqual(parsed.udid, "U")
+        XCTAssertEqual(parsed.id, "r")
+
+        guard case let .failure(.invalid(id, message)) = parse(#"{"type":"device-reset","id":"q"}"#) else {
+            return XCTFail("Expected a device-reset with no udid to be invalid")
+        }
+        XCTAssertEqual(id, "q")
+        XCTAssertTrue(message.contains("udid"), message)
     }
 
     /// Version skew must not wedge an older helper.
@@ -103,8 +119,16 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(absent)
     }
 
+    /// 0 lifts a running cap once the last remote viewer has left.
+    func testCaptureStartAcceptsZeroToRemoveTheCap() {
+        guard case let .success(.captureStart(_, _, _, _, bitrateKbps)) = parse(
+            #"{"type":"capture-start","id":"1","udid":"U","bitrateKbps":0}"#
+        ) else { return XCTFail("Expected success") }
+        XCTAssertEqual(bitrateKbps, 0)
+    }
+
     func testRejectsAnOutOfRangeBitrateCap() {
-        for kbps in [50, 25_000] {
+        for kbps in [1, 50, 99, 25_000] {
             guard case .failure(.invalid) = parse(
                 #"{"type":"capture-start","id":"1","udid":"U","bitrateKbps":\#(kbps)}"#
             ) else {

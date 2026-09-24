@@ -9,7 +9,7 @@ The active broker still runs inside the ADE runtime that owns the project (`comp
 - `apps/desktop/src/main/services/computerUse/controlPlane.ts` — pre-rebuild `buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, `buildCapabilityMatrix`, `selectPreferredBackend`, `summarizePolicy`. Only `buildComputerUseOwnerSnapshot` is still wired into the live UI.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `createComputerUseArtifactPath`.
 - `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus`.
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — IPC surface; channels live under `ade.proof.*` today (the `computerUse:*` namespace was renamed during the rebuild).
+- `apps/desktop/src/main/services/ipc/registerIpc.ts` — IPC surface; channels live under `ade.computerUse.*`.
 - Renderer Settings surface — `apps/desktop/src/renderer/components/settings/IntegrationsSettingsSection.tsx` (the dedicated `ComputerUsePanel.tsx` was deleted).
 
 ## Settings snapshot

@@ -23934,6 +23934,53 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
   }
 
+  /// A stale load deletes only its own file, never the one another load of
+  /// the same artifact published.
+  func testWorkArtifactVideoTempURLIsUniquePerLoad() throws {
+    let stale = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    let current = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    XCTAssertNotEqual(stale, current)
+    XCTAssertTrue(current.lastPathComponent.hasPrefix("ade-work-artifact-art-1-"))
+    XCTAssertEqual(current.pathExtension, "mp4")
+    try Data([0x00]).write(to: stale)
+    try Data([0x00]).write(to: current)
+    defer { try? FileManager.default.removeItem(at: current) }
+
+    workRemoveLoadedArtifactTempFile(.video(stale))
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
+  }
+
+  /// A row that appears must not download a large proof video: it shows the
+  /// size, and only a tap on play downloads it.
+  func testALargeVideoIsOnlySizedOnPreviewAndDownloadsOnPlay() {
+    XCTAssertEqual(workArtifactEagerVideoMaxBytes, 8 * 1024 * 1024)
+    XCTAssertTrue(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes + 1))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .play, sizeBytes: 50_000_000))
+  }
+
+  /// A cancelled load (the row scrolled away) stays unloaded, so the next
+  /// appear retries. It is not shown as an error.
+  func testACancelledVideoLoadStaysUnloadedSoTheNextAppearRetries() {
+    XCTAssertEqual(workArtifactVideoLoadFailure(CancellationError()), .retryLater)
+    let legacy = NSError(
+      domain: "ADE",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported file action: readArtifactRange"]
+    )
+    XCTAssertEqual(workArtifactVideoLoadFailure(legacy), .useWholeFileRead)
+    let offline = NSError(
+      domain: "ADE",
+      code: 16,
+      userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
+    )
+    XCTAssertEqual(workArtifactVideoLoadFailure(offline), .show)
+    let other = NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"])
+    XCTAssertEqual(workArtifactVideoLoadFailure(other), .show)
+  }
+
   func testParseANSISegmentsTracksForegroundColors() {
     let segments = parseANSISegments("\u{001B}[31mError\u{001B}[0m plain \u{001B}[32mOK\u{001B}[0m")
 

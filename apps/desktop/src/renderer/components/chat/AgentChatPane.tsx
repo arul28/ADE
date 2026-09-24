@@ -220,6 +220,8 @@ import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
+import { useChatPaneShowRequests } from "./useChatPaneShowRequests";
+import { appleEventAddresses } from "../apple/appleDeviceState";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
@@ -6854,7 +6856,7 @@ export function AgentChatPane({
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
-    options?: { force?: boolean },
+    options?: { force?: boolean; keepOnError?: boolean },
   ) => {
     if (!sessionId) {
       computerUseSnapshotInFlightRef.current = null;
@@ -6883,12 +6885,16 @@ export function AgentChatPane({
           sessionId,
           fetchedAt: Date.now(),
         };
-        if (selectedSessionIdRef.current === sessionId) {
+        // A read that a newer one replaced writes nothing: its data is older.
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
           setComputerUseSnapshot(snapshot);
         }
       } catch {
-        if (selectedSessionIdRef.current === sessionId) {
-          setComputerUseSnapshot(null);
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
+          // `keepOnError` keeps this chat's proof on screen, never another chat's.
+          setComputerUseSnapshot((current) => (
+            options?.keepOnError && current?.owner.kind === "chat_session" && current.owner.id === sessionId ? current : null
+          ));
         }
       } finally {
         if (request && computerUseSnapshotInFlightRef.current?.promise === request) {
@@ -7611,18 +7617,24 @@ export function AgentChatPane({
   const iosSimulatorAddressesThisPane = useCallback((
     chatSessionId?: string | null,
     eventLaneId?: string | null,
-  ) => {
-    const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
-      ? chatSessionId.trim()
-      : null;
-    const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
-      ? eventLaneId.trim()
-      : null;
-    if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
-    if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
-    if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
-    return true;
-  }, [isTileActive, laneId]);
+  ) => appleEventAddresses(
+    { chatSessionId, laneId: eventLaneId },
+    { chatSessionId: selectedSessionIdRef.current, laneId: laneId ?? null, acceptUnscoped: isTileActive },
+  ), [isTileActive, laneId]);
+
+  /**
+   * Open the chat's Apple drawer. It yields the right pane only on the closed
+   * to open transition, and only to App Control and Cursor Cloud, which cannot
+   * share the split; the chat actions drawer stays as the user left it.
+   */
+  const openIosSimulatorDrawer = useCallback(() => {
+    setIosSimulatorAvailable(true);
+    if (!iosSimulatorOpenRef.current) {
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+    }
+    setIosSimulatorOpen(true);
+  }, []);
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -7650,26 +7662,82 @@ export function AgentChatPane({
       }
       if (event.type !== "drawer-open-requested") return;
       if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
-      setIosSimulatorAvailable(true);
-      // This event now only arrives for surfaces the user drove (point selection
-      // and inspection, or a launch started from this drawer). Yield the right
-      // pane only on the closed → open transition, and only to App Control,
-      // which is the one panel that cannot share the split. Chat actions (proof)
-      // stays exactly as the user left it.
-      if (!iosSimulatorOpenRef.current) {
-        setAppControlOpen(false);
-        setCursorCloudPaneOpen(false);
-      }
-      setIosSimulatorOpen(true);
+      // Only for surfaces the user drove (point selection and inspection, or a
+      // launch started from this drawer).
+      openIosSimulatorDrawer();
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     }, chatRuntimePin);
-  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
+  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane, openIosSimulatorDrawer]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
       setIosSimulatorDrawerModeRequest(null);
     }
   }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
+
+  // `ade ui show proof` re-reads the chat's proof, then shows the proof
+  // section even when the chat has none (the drawer otherwise leaves it out).
+  // A visible grid tile that is not focused keeps no snapshot, and a proof
+  // filed just before the show may not be in this one yet. The section waits
+  // for that read, so "shown" and "no proof yet" both follow real data.
+  const [proofShowRequested, setProofShowRequested] = useState(false);
+  const [proofScrollNonce, setProofScrollNonce] = useState(0);
+  // One per show. Closing the drawer or changing chat bumps it too, so a read
+  // that comes back after either does not reopen a proof section nobody asked for.
+  const proofShowTokenRef = useRef(0);
+  const openProofDrawerForShow = useCallback(() => {
+    setChatActionsOpen(true);
+    const token = ++proofShowTokenRef.current;
+    // A failed read keeps the proof already on screen rather than blanking it.
+    void refreshComputerUseSnapshot(selectedSessionIdRef.current, { force: true, keepOnError: true }).finally(() => {
+      if (proofShowTokenRef.current !== token) return;
+      setProofShowRequested(true);
+      setProofScrollNonce((nonce) => nonce + 1);
+    });
+  }, [refreshComputerUseSnapshot]);
+  useEffect(() => {
+    if (chatActionsOpen) return;
+    proofShowTokenRef.current += 1;
+    setProofShowRequested(false);
+  }, [chatActionsOpen]);
+  // Before the show handler registers: a show held while this chat was out of
+  // view is delivered as the handler registers, and it must not be closed
+  // again by this reset in the same commit.
+  useEffect(() => {
+    setChatActionsOpen(false);
+    proofShowTokenRef.current += 1;
+    setProofShowRequested(false);
+    setHandoffBusy(false);
+    setModelPickerOpenRequest(undefined);
+    // Drop the pending bubble of the chat we left, but keep one that belongs to
+    // the chat just selected: a first send sets it in the same batch that
+    // selects the new chat, and a launched chat seeds it on mount.
+    if (optimisticOutgoingMessageRef.current?.sessionId !== selectedSessionId) {
+      optimisticOutgoingMessageRef.current = null;
+    }
+    setOptimisticOutgoingMessage((current) => (current?.sessionId === selectedSessionId ? current : null));
+    // The full composer bucket effect above owns draft/context hydration for
+    // session and lane switches; this effect resets transient chat UI only.
+  }, [selectedSessionId, laneId]);
+  const { proofDrawerRef: registerProofDrawer, appleDrawerRef } = useChatPaneShowRequests({
+    chatSessionId: selectedSessionId,
+    visible: isTileVisible,
+    laneToolDrawersHidden: hideLaneToolDrawers,
+    laneId: laneId ?? null,
+    openProofDrawer: openProofDrawerForShow,
+    openAppleDrawer: openIosSimulatorDrawer,
+  });
+  const proofSectionRef = useRef<HTMLDivElement | null>(null);
+  const proofDrawerRef = useCallback((element: HTMLDivElement | null) => {
+    proofSectionRef.current = element;
+    registerProofDrawer(element);
+  }, [registerProofDrawer]);
+  // The drawer is one scroll: a long agents list can put the proof below it,
+  // and "shown" has to mean the user can see it. Once per show, so a later
+  // capture does not pull the user back from wherever they scrolled.
+  useEffect(() => {
+    if (proofScrollNonce > 0) proofSectionRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [proofScrollNonce]);
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
@@ -7981,21 +8049,6 @@ export function AgentChatPane({
     readableSessionId,
     refreshComputerUseSnapshot,
   ]);
-
-  useEffect(() => {
-    setChatActionsOpen(false);
-    setHandoffBusy(false);
-    setModelPickerOpenRequest(undefined);
-    // Drop the pending bubble of the chat we left, but keep one that belongs to
-    // the chat just selected: a first send sets it in the same batch that
-    // selects the new chat, and a launched chat seeds it on mount.
-    if (optimisticOutgoingMessageRef.current?.sessionId !== selectedSessionId) {
-      optimisticOutgoingMessageRef.current = null;
-    }
-    setOptimisticOutgoingMessage((current) => (current?.sessionId === selectedSessionId ? current : null));
-    // The full composer bucket effect above owns draft/context hydration for
-    // session and lane switches; this effect resets transient chat UI only.
-  }, [selectedSessionId, laneId]);
 
   useEffect(() => {
     optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;
@@ -13181,7 +13234,10 @@ export function AgentChatPane({
     </div>
   );
   const proofTabContent = (
-    <div className="border-t border-white/[0.06] px-4 py-3">
+    <div ref={proofDrawerRef} className="border-t border-white/[0.06] px-4 py-3">
+      {computerUseSnapshot && proofArtifactCount === 0 ? (
+        <p className="font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
+      ) : null}
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
@@ -13463,7 +13519,7 @@ export function AgentChatPane({
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       agentsContent={agentsTabContent}
-      proofContent={proofArtifactCount > 0 ? proofTabContent : null}
+      proofContent={proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot) ? proofTabContent : null}
       extras={(
         <>
           {selectedMission ? (
@@ -13526,7 +13582,7 @@ export function AgentChatPane({
           Close
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <div ref={appleDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
           <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
             {auxiliaryToolDisabledReason}
@@ -13613,11 +13669,7 @@ export function AgentChatPane({
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
         <IosSimulatorRunningPill
           deviceName={iosSimulatorSessionChip.deviceName}
-          onOpen={() => {
-            setAppControlOpen(false);
-            setCursorCloudPaneOpen(false);
-            setIosSimulatorOpen(true);
-          }}
+          onOpen={openIosSimulatorDrawer}
           onFloat={() => {
             // §7: Float opens the mini player, which owns native PiP in its
             // own hover bar. The auto-appearing corner card it used to ask is

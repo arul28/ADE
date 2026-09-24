@@ -28,13 +28,15 @@ const {
 const {
   getAppleMiniPlayerLaneDevice,
   getAppleMiniPlayerTarget,
+  openAppleMiniPlayer,
   resetAppleMiniPlayerForTests,
   takeAppleMiniPlayerPoster,
 } = await import("../apple/appleMiniPlayerStore");
+const { isWorkSurfaceMounted, resetWorkToolOnScreenForTests, workSurfaceKey } = await import("../../lib/workToolOnScreen");
 
 const LANE = "lane-1";
 const UDID = "UDID-1";
-const KEY = appleStreamLeaseKey({ pinKey: null, laneId: LANE, deviceUdid: UDID });
+const KEY = appleStreamLeaseKey({ pin: null, bound: null, laneId: LANE, deviceUdid: UDID });
 
 const LANE_DEVICE = {
   laneId: LANE,
@@ -108,9 +110,33 @@ afterEach(() => {
 const WorkIosTool = WORK_TOOL_COMPONENTS.ios;
 
 describe("the Apple tool panel's handover", () => {
+  /*
+   * `apple show` while the device floats: the pane takes the device back
+   * through its own retake handover, and only the mounted tool counts as
+   * "on screen" for the show's answer.
+   */
+  it("takes the device back from the floating player on mount, and says it is mounted", () => {
+    resetWorkToolOnScreenForTests();
+    openAppleMiniPlayer({
+      laneId: LANE,
+      chatSessionId: "chat-1",
+      deviceUdid: UDID,
+      deviceName: "ADE Repro",
+      deviceRuntime: "iOS 26.2",
+      family: "iphone",
+      runtimePin: null,
+    });
+    expect(isWorkSurfaceMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
+    const view = render(<WorkIosTool {...props()} />);
+    expect(getAppleMiniPlayerTarget()).toBeNull();
+    expect(isWorkSurfaceMounted(workSurfaceKey("ios", "bound", LANE))).toBe(true);
+    view.unmount();
+    expect(isWorkSurfaceMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
+  });
+
   it("caches the lane's device while it is open, so the unmount needs no question", async () => {
     render(<WorkIosTool {...props()} />);
-    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice(LANE)).toEqual({
+    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null })).toEqual({
       udid: UDID, name: "ADE Repro", runtime: "iOS 26.2", family: "iphone",
     }));
     expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, null);
@@ -120,9 +146,9 @@ describe("the Apple tool panel's handover", () => {
 
   it("photographs the last frame and floats the device in one pass on unmount", async () => {
     // The pane, streaming.
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: null });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
     const view = render(<WorkIosTool {...props()} />);
-    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice(LANE)).not.toBeNull());
+    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null })).not.toBeNull());
 
     view.unmount();
 
@@ -135,7 +161,7 @@ describe("the Apple tool panel's handover", () => {
 
   it("holds no lease for a lane that was not streaming: there is no capture to keep alive", async () => {
     const view = render(<WorkIosTool {...props()} />);
-    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice(LANE)).not.toBeNull());
+    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null })).not.toBeNull());
     view.unmount();
     // The photograph is free either way — it comes off a canvas that is already
     // drawn — but with nothing streaming there is nothing to hold open, and the
@@ -154,9 +180,9 @@ describe("the Apple tool panel's handover", () => {
      */
     decoder.width = 300;
     decoder.height = 150;
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: null });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
     const view = render(<WorkIosTool {...props()} />);
-    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice(LANE)).not.toBeNull());
+    await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null })).not.toBeNull());
     view.unmount();
 
     expect(takeAppleMiniPlayerPoster(UDID)).toBeNull();

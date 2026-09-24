@@ -8,6 +8,48 @@ import {
   ChatProofTimeline,
 } from "./ChatComputerUsePanel";
 
+// The chat's machine, overridable per test. Null keeps the real fallback scope.
+const scopeOverride = vi.hoisted(() => ({ current: null as null | Record<string, unknown> }));
+vi.mock("./ChatRuntimeScope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ChatRuntimeScope")>();
+  return {
+    ...actual,
+    useChatRuntimeScope: () => ({ ...actual.useChatRuntimeScope(), ...scopeOverride.current }),
+  };
+});
+
+const REMOTE_BINDING = {
+  kind: "remote" as const,
+  key: "remote:target-1:project-1",
+  targetId: "target-1",
+  runtimeName: "MacBook Pro",
+  projectId: "project-1",
+  rootPath: "/Users/other/repo",
+  displayName: "repo",
+};
+
+function remoteScope(online: boolean) {
+  return {
+    pin: REMOTE_BINDING,
+    binding: REMOTE_BINDING,
+    rootPath: REMOTE_BINDING.rootPath,
+    isRemote: true,
+    machineName: "MacBook Pro",
+    online,
+  };
+}
+
+function recording(index: number, overrides: Partial<ComputerUseArtifactView> = {}): ComputerUseArtifactView {
+  return artifact(index, {
+    title: `Recording ${index}`,
+    kind: "video_recording",
+    originalType: "video",
+    mimeType: "video/quicktime",
+    uri: ".ade/artifacts/apple-recordings/lane-1/rec.mov",
+    ...overrides,
+  });
+}
+
 function artifact(index: number, overrides: Partial<ComputerUseArtifactView> = {}): ComputerUseArtifactView {
   return {
     id: `artifact-${index}`,
@@ -46,11 +88,14 @@ function snapshotOf(artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnaps
   };
 }
 
+const MEDIA_BASE = "http://127.0.0.1:43210/tok";
+
 beforeEach(() => {
   delete (window as unknown as { IntersectionObserver?: unknown }).IntersectionObserver;
   (window as unknown as { ade: unknown }).ade = {
     computerUse: {
       readArtifactPreview: vi.fn().mockResolvedValue("data:image/png;base64,AAAA"),
+      mediaBaseUrl: vi.fn().mockResolvedValue(MEDIA_BASE),
     },
     app: {
       openExternal: vi.fn().mockResolvedValue(undefined),
@@ -60,6 +105,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  scopeOverride.current = null;
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -102,12 +148,16 @@ describe("proof rendering", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Enlarge Proof 2" }));
 
-    expect(screen.getByRole("dialog", { name: "Preview Proof 2" })).toBeTruthy();
+    const dialog = screen.getByRole("dialog", { name: "Preview Proof 2" });
+    expect(dialog.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(dialog.querySelector("video")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("keeps large local recordings on the range-capable artifact protocol", async () => {
+  it("plays large local recordings from the media server, not the artifact protocol", async () => {
+    // 2026-09-23: `protocol.handle` failed the tail Range read a long MP4
+    // needs, so the drawer said "ADE could not play this video".
     vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce(null);
     const uri = "ade-artifact://project/.ade/artifacts/proof.mov";
     const view = render(
@@ -123,8 +173,247 @@ describe("proof rendering", () => {
     );
 
     await waitFor(() => {
-      expect(view.container.querySelector("video")?.getAttribute("src")).toBe(uri);
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/proof.mov`);
     });
+  });
+
+  it("keeps local images on the artifact protocol", async () => {
+    const view = render(<ChatProofTimeline allowLocalArtifactProtocol artifacts={[artifact(5)]} />);
+
+    await waitFor(() => {
+      expect(view.container.querySelector("img")?.getAttribute("src"))
+        .toBe("ade-artifact://project/.ade/artifacts/proof-5.png");
+    });
+    expect(window.ade.computerUse.mediaBaseUrl).not.toHaveBeenCalled();
+    expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
+  });
+
+  it("reads a local video the capped way when main has no media server", async () => {
+    vi.mocked(window.ade.computerUse.mediaBaseUrl).mockResolvedValueOnce(null);
+    vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce("data:video/mp4;base64,EEEE");
+    const view = render(<ChatProofTimeline allowLocalArtifactProtocol artifacts={[recording(6)]} />);
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src")).toBe("data:video/mp4;base64,EEEE");
+    });
+  });
+
+  it("streams a large local recording filed with a project-relative uri", async () => {
+    // The owner's 2026-09-23 report: a 41 MB recording showed "A preview is
+    // unavailable" because only `ade-artifact://project/` uris streamed.
+    const view = render(
+      <ChatComputerUsePanel
+        allowLocalArtifactProtocol
+        snapshot={snapshotOf([recording(20)])}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/apple-recordings/lane-1/rec.mov`);
+    });
+    expect(view.container.querySelector("video")?.getAttribute("preload")).toBe("metadata");
+    expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
+  });
+
+  it("streams an absolute path inside the project and reads one outside it the old way", async () => {
+    scopeOverride.current = { rootPath: "/Users/me/repo" };
+    const view = render(
+      <ChatComputerUsePanel
+        allowLocalArtifactProtocol
+        snapshot={snapshotOf([
+          recording(21, { uri: "/Users/me/repo/.ade/artifacts/inside.mp4" }),
+          recording(22, { uri: "/Users/me/elsewhere/outside.mp4" }),
+        ])}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector('[data-chat-proof-artifact="artifact-21"] video')?.getAttribute("src"))
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/inside.mp4`);
+    });
+    expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledTimes(1);
+    expect(window.ade.computerUse.readArtifactPreview)
+      .toHaveBeenCalledWith({ uri: "/Users/me/elsewhere/outside.mp4" }, null);
+  });
+
+  it("streams a video on a paired computer through main instead of a capped data URL", async () => {
+    scopeOverride.current = remoteScope(true);
+    const view = render(
+      <ChatComputerUsePanel snapshot={snapshotOf([recording(23), artifact(24)])} onRefresh={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe(`${MEDIA_BASE}/remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov`);
+    });
+    expect(view.container.querySelector("video")?.getAttribute("preload")).toBe("metadata");
+    // Only the image took the data URL read.
+    expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledTimes(1);
+    expect(window.ade.computerUse.readArtifactPreview)
+      .toHaveBeenCalledWith({ uri: ".ade/artifacts/proof-24.png" }, REMOTE_BINDING);
+  });
+
+  it("falls back to the data URL when a paired computer cannot stream, and says so if that fails too", async () => {
+    scopeOverride.current = remoteScope(true);
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/quicktime;base64,DDDD");
+    const view = render(<ChatProofTimeline artifacts={[recording(25)]} />);
+
+    const streamed = await waitFor(() => {
+      const video = view.container.querySelector("video");
+      expect(video?.getAttribute("src")).toBe(
+        `${MEDIA_BASE}/remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov`,
+      );
+      return video!;
+    });
+    fireEvent.error(streamed);
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src")).toBe("data:video/mp4;base64,DDDD");
+    });
+
+    cleanup();
+    vi.mocked(window.ade.computerUse.readArtifactPreview).mockResolvedValueOnce(null);
+    const second = render(<ChatProofTimeline artifacts={[recording(26)]} />);
+    const again = await waitFor(() => {
+      const video = second.container.querySelector("video");
+      expect(video).toBeTruthy();
+      return video!;
+    });
+    fireEvent.error(again);
+    expect(await screen.findByText("MacBook Pro could not send this video.")).toBeTruthy();
+  });
+
+  it("says which computer is offline instead of the generic line", async () => {
+    scopeOverride.current = remoteScope(false);
+    render(<ChatComputerUsePanel snapshot={snapshotOf([recording(27)])} onRefresh={vi.fn()} />);
+
+    expect(await screen.findByText("This video is on MacBook Pro, which is offline.")).toBeTruthy();
+    expect(screen.queryByText(/preview is unavailable/i)).toBeNull();
+    expect(window.ade.computerUse.readArtifactPreview).not.toHaveBeenCalled();
+  });
+
+  it("reloads an offline proof tile when the machine comes back online", async () => {
+    scopeOverride.current = remoteScope(false);
+    const snapshot = snapshotOf([recording(28)]);
+    const view = render(<ChatComputerUsePanel snapshot={snapshot} onRefresh={vi.fn()} />);
+    expect(await screen.findByText("This video is on MacBook Pro, which is offline.")).toBeTruthy();
+
+    scopeOverride.current = remoteScope(true);
+    view.rerender(<ChatComputerUsePanel snapshot={snapshot} onRefresh={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src"))
+        .toBe(`${MEDIA_BASE}/remote/target-1/project-1/.ade/artifacts/apple-recordings/lane-1/rec.mov`);
+    });
+    expect(screen.queryByText(/which is offline/)).toBeNull();
+  });
+
+  it("plays a QuickTime proof from another machine as MP4", async () => {
+    // The owner's 2026-09-23 report: a simctl `.mov` played on the phone and
+    // failed on both desktops, because Chromium refuses `video/quicktime`.
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/quicktime;base64,AAAA");
+    const view = render(
+      <ChatProofTimeline
+        artifacts={[artifact(4, {
+          kind: "video_recording",
+          originalType: "video",
+          mimeType: "video/quicktime",
+          uri: ".ade/artifacts/proof.mov",
+        })]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(view.container.querySelector("video")?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
+    });
+  });
+
+  it("shows a video proof as an uncropped still and plays it in the lightbox", async () => {
+    // The owner's 2026-09-23 report: the tile cropped a phone recording into a
+    // zoomed strip and crammed native controls into it.
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValue("data:video/mp4;base64,AAAA");
+    const recording = artifact(10, {
+      title: "Sim recording",
+      kind: "video_recording",
+      originalType: "video",
+      mimeType: "video/mp4",
+      uri: ".ade/artifacts/recording.mp4",
+    });
+    const view = render(<ChatComputerUsePanel snapshot={snapshotOf([recording])} onRefresh={vi.fn()} />);
+
+    const poster = await screen.findByRole("button", { name: "Play Sim recording" });
+    const still = poster.querySelector("video");
+    expect(still?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
+    expect(still?.hasAttribute("controls")).toBe(false);
+    expect(still?.getAttribute("preload")).toBe("metadata");
+    expect(still?.className).toContain("object-contain");
+    expect(still?.className).not.toContain("object-cover");
+    expect(view.container.querySelector("video[controls]")).toBeNull();
+
+    fireEvent.click(poster);
+    const dialog = screen.getByRole("dialog", { name: "Preview Sim recording" });
+    const player = dialog.querySelector("video");
+    expect(player?.hasAttribute("controls")).toBe(true);
+    expect(player?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
+    expect(player?.className).toContain("object-contain");
+    expect(player?.className).not.toContain("object-cover");
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Play Sim recording" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("opens the timeline video card in the lightbox from a real button", async () => {
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/mp4;base64,BBBB");
+    render(
+      <ChatProofTimeline
+        artifacts={[artifact(11, {
+          kind: "video_recording",
+          originalType: "video",
+          mimeType: "video/mp4",
+          uri: ".ade/artifacts/wide.mp4",
+        })]}
+      />,
+    );
+
+    const poster = await screen.findByRole("button", { name: "Play Proof 11" });
+    expect(poster.tagName).toBe("BUTTON");
+    expect(poster.querySelector("video")?.hasAttribute("controls")).toBe(false);
+    fireEvent.click(poster);
+    expect(screen.getByRole("dialog", { name: "Preview Proof 11" }).querySelector("video[controls]")
+      ?.getAttribute("src")).toBe("data:video/mp4;base64,BBBB");
+  });
+
+  it("explains a video that fails to play inside the lightbox", async () => {
+    vi.mocked(window.ade.computerUse.readArtifactPreview)
+      .mockResolvedValueOnce("data:video/mp4;base64,CCCC");
+    render(
+      <ChatProofTimeline
+        artifacts={[artifact(12, {
+          kind: "video_recording",
+          originalType: "video",
+          mimeType: "video/mp4",
+          uri: ".ade/artifacts/broken.mp4",
+        })]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Play Proof 12" }));
+    const dialog = screen.getByRole("dialog", { name: "Preview Proof 12" });
+    fireEvent.error(dialog.querySelector("video")!);
+
+    await waitFor(() => expect(dialog.querySelector("video")).toBeNull());
+    expect(dialog.textContent).toMatch(/ADE could not play this video\./);
   });
 
   it("distinguishes an unavailable preview from a deleted stored file", async () => {
@@ -282,5 +571,60 @@ describe("proof rendering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     expect(window.ade.app.openExternal).toHaveBeenCalledWith(remote.uri);
+  });
+});
+
+describe("proof provenance lines", () => {
+  // Local wall-clock times, so the clock text is the same in every time zone.
+  const at = (hour: number, minute: number) => new Date(2026, 8, 23, hour, minute).toISOString();
+  const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+  it("says an ADE recording was recorded by ADE, with its times, in the drawer and the timeline", () => {
+    const recorded = artifact(1, {
+      kind: "video_recording",
+      mimeType: "video/mp4",
+      metadata: { proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedTo: at(10, 25) },
+    });
+    render(<ChatComputerUsePanel snapshot={snapshotOf([recorded])} onRefresh={vi.fn()} />);
+    const drawerLine = document.querySelector("[data-proof-source]")!;
+    expect(drawerLine.textContent).toMatch(/^Recorded by ADE · 10:24/);
+    expect(drawerLine.textContent).toContain(clock(at(10, 25)));
+    cleanup();
+
+    render(<ChatProofTimeline artifacts={[recorded]} />);
+    expect(document.querySelector("[data-proof-source]")!.textContent).toMatch(/^Recorded by ADE · 10:24/);
+  });
+
+  it("says captured by ADE, or attached by the agent", () => {
+    render(
+      <ChatComputerUsePanel
+        snapshot={snapshotOf([
+          artifact(1, { metadata: { proofSource: "ade-capture" } }),
+          artifact(2, { metadata: { proofSource: "attached" } }),
+        ])}
+        onRefresh={vi.fn()}
+      />,
+    );
+    const lines = [...document.querySelectorAll("[data-proof-source]")].map((node) => node.textContent);
+    expect(lines).toEqual(["Captured by ADE", "Attached by the agent"]);
+  });
+
+  it("shows nothing for a row filed before provenance existed", () => {
+    render(<ChatComputerUsePanel snapshot={snapshotOf([artifact(1)])} onRefresh={vi.fn()} />);
+    expect(document.querySelector("[data-proof-source]")).toBeNull();
+    expect(document.querySelector("[data-proof-recorded-before-request]")).toBeNull();
+  });
+
+  it("adds an amber line for a video recorded before the request", () => {
+    const older = artifact(1, {
+      kind: "video_recording",
+      mimeType: "video/mp4",
+      metadata: { proofSource: "attached", mediaCreatedAt: at(5, 19), recordedBeforeRequest: true },
+    });
+    render(<ChatProofTimeline artifacts={[older]} />);
+    const line = document.querySelector("[data-proof-recorded-before-request]")!;
+    expect(line.textContent).toBe(`Recorded at ${clock(at(5, 19))}, before this request.`);
+    expect(line.className).toContain("text-amber-200");
+    expect(document.querySelector("[data-proof-source]")!.textContent).toBe("Attached by the agent");
   });
 });

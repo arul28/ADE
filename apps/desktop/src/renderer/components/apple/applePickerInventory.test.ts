@@ -7,12 +7,10 @@ import type {
 } from "../../../shared/types/iosSimulator";
 import {
   appleDefaultTemplateUdid,
+  isAppleCloneSource,
   appleDeviceDiskLabel,
-  appleDiskLabel,
-  appleInventorySummary,
   appleLaneOwnedUdid,
   appleOwnerLaneLabel,
-  appleRuntimeLabel,
   partitionApplePickerDevices,
 } from "./applePickerInventory";
 
@@ -118,65 +116,25 @@ describe("the picker's three groups", () => {
   });
 });
 
-describe("the inventory line", () => {
-  it("names the runtime, then counts installed and running", () => {
-    const summary = appleInventorySummary([
-      simulator({ udid: "a", state: "Booted" }),
-      simulator({ udid: "b", state: "Booted" }),
-      simulator({ udid: "c" }),
-      simulator({ udid: "d" }),
-      simulator({ udid: "e" }),
-    ]);
-
-    expect(summary.installedCount).toBe(5);
-    expect(summary.runningCount).toBe(2);
-    expect(summary.text).toBe("iOS 26.3 · 5 simulators installed · 2 running");
-  });
-
-  it("counts one simulator in the singular", () => {
-    expect(appleInventorySummary([simulator({ udid: "a" })]).text)
-      .toBe("iOS 26.3 · 1 simulator installed · 0 running");
-  });
-
-  it("names two runtimes and summarises three or more", () => {
-    expect(appleRuntimeLabel([simulator({ udid: "a" })])).toBe("iOS 26.3");
-    expect(appleRuntimeLabel([
-      simulator({ udid: "a" }),
-      simulator({ udid: "b", runtime: "watchOS 26.3" }),
-    ])).toBe("iOS 26.3 and watchOS 26.3");
-    expect(appleRuntimeLabel([
-      // Two on iOS, so iOS leads: the runtime most of the devices share is the
-      // one that makes "one install, many devices" legible.
-      simulator({ udid: "a" }),
-      simulator({ udid: "b" }),
-      simulator({ udid: "c", runtime: "watchOS 26.3" }),
-      simulator({ udid: "d", runtime: "tvOS 26.3" }),
-    ])).toBe("iOS 26.3 and 2 more runtimes");
-    expect(appleRuntimeLabel([])).toBeNull();
-  });
-
-  it("drops the runtime, not the counts, when no device reports one", () => {
-    const summary = appleInventorySummary([simulator({ udid: "a", runtime: "" })]);
-    expect(summary.runtimeLabel).toBeNull();
-    expect(summary.text).toBe("1 simulator installed · 0 running");
-  });
-});
-
 describe("disk labels", () => {
+  // One measured device of `bytes`, labelled through the public helper.
+  const label = (bytes: number) => appleDeviceDiskLabel(
+    { totalBytes: bytes, devices: [{ udid: "d", bytes }], root: "/devices", measuredAt: "2026-09-21T00:00:00.000Z" },
+    "d",
+  );
+
   it("reads gigabytes to one decimal and smaller units whole", () => {
-    expect(appleDiskLabel(18 * 1024 ** 3)).toBe("18.0 GB");
-    expect(appleDiskLabel(3.25 * 1024 ** 3)).toBe("3.3 GB");
-    expect(appleDiskLabel(612 * 1024 ** 2)).toBe("612 MB");
-    expect(appleDiskLabel(40 * 1024)).toBe("40 KB");
-    expect(appleDiskLabel(2 * 1024 ** 4)).toBe("2.0 TB");
-    expect(appleDiskLabel(12)).toBe("0 KB");
+    expect(label(18 * 1024 ** 3)).toBe("18.0 GB");
+    expect(label(3.25 * 1024 ** 3)).toBe("3.3 GB");
+    expect(label(612 * 1024 ** 2)).toBe("612 MB");
+    expect(label(40 * 1024)).toBe("40 KB");
+    expect(label(2 * 1024 ** 4)).toBe("2.0 TB");
+    expect(label(12)).toBe("0 KB");
   });
 
   it("has no label for a number nobody measured", () => {
-    expect(appleDiskLabel(null)).toBeNull();
-    expect(appleDiskLabel(undefined)).toBeNull();
-    expect(appleDiskLabel(Number.NaN)).toBeNull();
-    expect(appleDiskLabel(-1)).toBeNull();
+    expect(label(Number.NaN)).toBeNull();
+    expect(label(-1)).toBeNull();
   });
 
   it("finds one device's row, and says nothing for a device with none", () => {
@@ -227,5 +185,14 @@ describe("the create control's default template", () => {
     // With nothing cloneable left, a default the service can explain beats no
     // default at all.
     expect(appleDefaultTemplateUdid({ installed: [installed[0]!], owners })).toBe("booted");
+  });
+});
+
+describe("isAppleCloneSource", () => {
+  it("rules out a booted device and one another lane holds", () => {
+    const held = new Set(["theirs"]);
+    expect(isAppleCloneSource(simulator({ udid: "free" }), held)).toBe(true);
+    expect(isAppleCloneSource(simulator({ udid: "booted", state: "Booted" }), held)).toBe(false);
+    expect(isAppleCloneSource(simulator({ udid: "theirs" }), held)).toBe(false);
   });
 });

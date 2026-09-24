@@ -36,6 +36,35 @@ describe("agent skill roots", () => {
     expect(roots).toContain("/Applications/ADE.app/Contents/Resources/agent-skills");
   });
 
+  it("regression: never emits a skill root at the filesystem root", () => {
+    // A brain started by launchd or systemd inherits cwd "/". `joinPath`
+    // strips the trailing separator, so this used to yield
+    // "/apps/desktop/resources/agent-skills" and "/resources/agent-skills" —
+    // two paths at the root of the disk, in every agent's
+    // ADE_AGENT_SKILLS_DIRS, standing in for the lane-worktree lookup they
+    // were added to do.
+    const roots = getAgentSkillRootCandidates({
+      cwd: "/",
+      env: { HOME: "/home/agent" },
+      resourcesPath: "/Applications/ADE.app/Contents/Resources",
+    });
+
+    expect(roots).not.toContain("/apps/desktop/resources/agent-skills");
+    expect(roots).not.toContain("/resources/agent-skills");
+    // The real roots still arrive.
+    expect(roots).toContain("/home/agent/.agents/skills");
+    expect(roots).toContain("/Applications/ADE.app/Contents/Resources/agent-skills");
+  });
+
+  it("rejects a Windows drive root for the same reason", () => {
+    const roots = getAgentSkillRootCandidates({
+      cwd: "C:\\",
+      env: { USERPROFILE: "C:\\Users\\agent" },
+      resourcesPath: null,
+    });
+    expect(roots.some((root) => /^C:[\\/]?(apps|resources)\b/i.test(root))).toBe(false);
+  });
+
   it("caps prompt-facing ADE skill roots while preserving runtime candidates", () => {
     const cwd = "/repo";
     const fromCwd = (...parts: string[]) => [cwd, ...parts].join("/");

@@ -20,6 +20,18 @@ describe("buildRendererCspPolicy", () => {
     expect(policy).not.toContain("connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https:");
   });
 
+  it("plays proof videos from the loopback media server in both modes, over http only", () => {
+    for (const isDevMode of [false, true]) {
+      const mediaSrc = buildRendererCspPolicy(isDevMode)
+        .split("; ")
+        .find((directive) => directive.startsWith("media-src "))!;
+      const sources = mediaSrc.split(" ");
+      expect(sources).toContain("http://127.0.0.1:*");
+      expect(sources).not.toContain("https:");
+      expect(sources).not.toContain("http:");
+    }
+  });
+
   it("drops inline script permission from packaged renderer policy", () => {
     const policy = buildRendererCspPolicy(false);
 

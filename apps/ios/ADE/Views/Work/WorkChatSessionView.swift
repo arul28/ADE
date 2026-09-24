@@ -385,7 +385,7 @@ struct WorkChatSessionView: View {
   let onRetryLoad: @MainActor () async -> Void
   let onOpenFile: @MainActor (String) async -> Void
   let onOpenPr: @MainActor (Int) async -> Void
-  let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
+  let onLoadArtifact: WorkArtifactLoader
   let onRefreshArtifacts: @MainActor () async -> Void
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
@@ -480,6 +480,14 @@ struct WorkChatSessionView: View {
   /// impossible to get wrong; a Bool reset from an observer would be one more
   /// thing that can fall out of step and leave a fresh question hidden.
   @State var collapsedPendingInputId: String?
+  /// The lane's tool chips (simulator, browser, App Control) for the badge row.
+  /// Publishes only when the chips themselves change, so its 10 s poll does not
+  /// re-render the chat on every tick.
+  @StateObject private var laneTools = WorkLaneToolsModel()
+  #if DEBUG
+  /// Fixture seam: installs these chips instead of polling the sync socket.
+  var previewLaneTools: WorkLaneToolsPreview? = nil
+  #endif
 
   var sessionStatus: String {
     resolvedSessionStatus ?? session.normalizedStatus
@@ -942,13 +950,19 @@ struct WorkChatSessionView: View {
     inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
   }
 
+  /// Lane tool chips: the lane's running simulator, browser tabs and App
+  /// Control on the Mac. Lane chrome, so a personal chat (no lane) has none.
+  var showsComposerLaneToolChips: Bool {
+    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
+  }
+
   /// Whether the floating badge row is on screen. Also reserves transcript
   /// tail space so the last message can still scroll clear of the chips.
   var showsComposerBadgeChips: Bool {
-    showsComposerChatInfoBadge || showsComposerPrBadge
+    showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
   }
 
-  /// Chat-info / PR badges. These used to be a fixed 44pt row inside
+  /// Chat-info / PR / lane tool badges. These used to be a fixed 44pt row inside
   /// `composerInset`, which cost the thread that much height on every chat
   /// that had a badge. They now float over the transcript like the
   /// "jump to latest" pill, so the thread scrolls behind them.
@@ -962,12 +976,21 @@ struct WorkChatSessionView: View {
       if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
         WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
       }
+      if showsComposerLaneToolChips {
+        ForEach(laneTools.chips) { chip in
+          WorkLaneToolChipView(chip: chip) {
+            ADEHaptics.light()
+            laneTools.open(chip)
+          }
+        }
+      }
     }
-    // Today's two chips always fit, and a plain HStack leaves the rest of the
+    // The common case fits, and a plain HStack leaves the rest of the
     // row non-interactive — important now that the row floats over the
     // transcript, since a full-width horizontal ScrollView would swallow
-    // vertical drags in that band. A future chip that overflows still gets the
-    // scroller (and then the band is genuinely its own).
+    // vertical drags in that band. A row that overflows (chat info, PR and
+    // several lane tools on a narrow phone) gets the scroller, and then the
+    // band is genuinely its own.
     ViewThatFits(in: .horizontal) {
       chips
       ScrollView(.horizontal, showsIndicators: false) {
@@ -1519,16 +1542,6 @@ struct WorkChatSessionView: View {
   @ViewBuilder
   private var chatColumn: some View {
       VStack(spacing: 0) {
-        // Read-only summary of the Work tools pane running on the user's Mac.
-        // It hides itself when the brain cannot describe one, so a lane with no
-        // desktop attached costs nothing but a probe.
-        // No vertical padding: the row carries its own 44pt tap target, which
-        // already supplies the breathing room above the transcript.
-        WorkToolsRow(laneId: session.laneId)
-          // 16 matches the transcript's own inset and the floating badge row,
-          // so the capsule's leading edge lines up with the content column.
-          .padding(.horizontal, 16)
-
         transcriptView
           .overlay(alignment: .bottomLeading) {
             // Floats over the thread instead of consuming composer height, so
@@ -1576,10 +1589,8 @@ struct WorkChatSessionView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // Anchored on the column, not on the transcript. The gradient fades the
         // canvas out from under the translucent navigation bar, so it has to
-        // touch the top safe-area edge — and `WorkToolsRow` now sits between
-        // that edge and the transcript, so an overlay on the transcript would
-        // either no-op its `ignoresSafeArea` and scrim the first message, or
-        // expand upward and paint over the tools capsule.
+        // touch the top safe-area edge; anchoring it here keeps it independent
+        // of whatever the column stacks above the transcript.
         .overlay(alignment: .top) {
           WorkChatNavigationBackdrop()
         }
@@ -1847,7 +1858,17 @@ struct WorkChatSessionView: View {
       sessionLifecycleHandlers(
         timelineScrollHandlers(chatColumn)
       )
+      .modifier(laneToolsPresenter)
     )
+  }
+
+  /// The lane tool chips' poll and the two surfaces they open.
+  private var laneToolsPresenter: WorkLaneToolsPresenter {
+    var presenter = WorkLaneToolsPresenter(model: laneTools, laneId: session.laneId, enabled: !isPersonalChat)
+    #if DEBUG
+    presenter.preview = previewLaneTools
+    #endif
+    return presenter
   }
 }
 
@@ -1899,6 +1920,9 @@ func workLoadedArtifactContentRenderSignature(_ content: [String: WorkLoadedArti
     case .video(let url):
       hasher.combine("video")
       hasher.combine(url.absoluteString)
+    case .videoOnDemand(let sizeBytes):
+      hasher.combine("videoOnDemand")
+      hasher.combine(sizeBytes)
     case .remoteURL(let url):
       hasher.combine("remoteURL")
       hasher.combine(url.absoluteString)

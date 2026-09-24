@@ -3070,19 +3070,30 @@ Known limits, all deliberate:
 - Against a host that predates `dismissPendingInput` on the bulk action, the
   flag is ignored: the settle reports success and the row stays "Needs you".
 
-### Work tools row and sheet
+### Lane tool chips and the Work tools sheet
 
 The desktop's Work tools pane cannot run on a phone — the browser is a
 `WebContentsView`, App Control is a CDP socket to a local process, and the
 iOS panel is a capture stream — so the phone gets a **read-only mirror**;
 the one button it offers opens a view-only stream, never remote control.
 
-`WorkToolsRow.swift` sits above a chat transcript as a one-line
-disclosure: "Tools · Browser active · 3 tabs ›". It hides itself entirely
-when the brain does not advertise `workTools.getLaneState`
-(`SyncService.supportsWorkToolsState`) or when there is nothing to say —
-an empty "Tools ›" that opens onto "nothing here" is worse than no row.
-Tapping it opens `WorkToolsSheet.swift`: four cards in the order people
+`WorkLaneToolChips.swift` puts the lane's tools in the chat's floating
+badge row, after the PR chip, one chip per thing the phone can open:
+the lane's simulator while it is up (the model without the family word,
+e.g. "16 Pro" beside the device glyph, with a green live dot; VoiceOver reads
+"iPhone 16 Pro" — tap opens `AppleDeviceViewer` full screen),
+the desktop browser ("1 tab" / "3 tabs", accent-tinted while an agent is
+driving it), and App Control (the attached app's name). The Mac's active
+tool on its own ("Apple active") is not a chip — it names someone else's
+window, not something to open. A powered-off device is not a chip, and
+neither is a booted device the lane does not own: for a lane with no device
+the host reports any booted iPhone on the Mac, so the chip needs
+`apple.status`'s `laneDevice.udid` to match the device shown (a host that
+sends no `laneDevice` shows no simulator chip). Each
+read is gated on its own action (`supportsWorkToolsState`,
+`supportsAppleDeviceStatus`), and the chips are hidden in personal chats
+and while the composer is input-locked, like the PR chip. The browser and
+App Control chips open `WorkToolsSheet.swift`: four cards in the order people
 ask about them — what the desktop has open now, with the last frame it
 captured; the lane's Apple device, a view-only live stream when the host
 advertises `apple.status`; the browser's tabs; App Control's session —
@@ -3094,13 +3105,14 @@ no `pr` tool name because the Work tools pane no longer has one.
 Refresh is a poll, not a subscription: the brain has no generic
 named-event channel to the phone (its push surface is cr-sqlite
 changesets, and this state is deliberately not table-backed), so the
-sheet polls `workTools.getLaneState` every 3 s while it is open and the
-row polls every 10 s while it is on screen. The row **skips its tick
-while the sheet is up**, because the sheet is presented from the row and
-polls the same command — a second read would be a duplicate RPC for a
-summary line nobody can see — and catches up on the next tick after
-dismissal. Both the row and the sheet live under one `Group` root so the
-poll and the sheet keep a single view identity.
+sheet polls `workTools.getLaneState` every 3 s while it is open, and the
+chat's `WorkLaneToolsModel` reads `workTools.getLaneState` and
+`apple.status` together every 10 s while the chat is on screen (one
+loop, cancelled with the chat's `.task`). The model **skips its tick
+while the sheet or the device viewer is up**, since both poll the same
+reads faster, and catches up on the next tick after dismissal. It
+publishes only the derived chips, so a stream's changing fps and bitrate
+do not re-render the chat.
 
 Frames never ride along with the state. The state carries the newest
 observation's path and the sheet fetches the bytes separately through
@@ -3140,6 +3152,16 @@ page on screen. The nav bar floats over the capture (`ignoresSafeArea(.top)`)
 rather than shortening the screen the image is centred in, which used to push a
 tall screenshot's top edge under the title; images pinch/double-tap zoom on
 black, and video pages get their own player.
+
+A stored video is read in 2 MiB slices (`readArtifactRange`) into a private
+partial file that is renamed into place only when complete. A row, a card or a
+viewer page appearing only sizes a video with a one-byte slice read: up to
+8 MiB (the host's whole-file cap) it downloads then, and a larger one shows a
+"Play · 34 MB" placeholder and downloads only when the user taps it. Base64
+decoding and the file write run off the main actor. A load cancelled by
+scrolling away leaves nothing behind, so the next appear retries, and leaving
+the chat stops its downloads. A host without `readArtifactRange` gets the
+whole-file read, which it caps at 8 MiB.
 
 ### Fixture screens for simulator screenshots
 
