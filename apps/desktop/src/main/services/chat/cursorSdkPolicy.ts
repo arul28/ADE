@@ -382,8 +382,59 @@ function isWindowsAbsolutePath(candidate: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(candidate.trim());
 }
 
+/** A single ADE skill token such as `/ship`, not a filesystem path like `/etc/passwd`. */
+function isAdeSlashCommand(token: string): boolean {
+  return /^\/[A-Za-z][A-Za-z0-9_-]*$/.test(token);
+}
+
+/**
+ * Note text and scheduled-work `--prompt` values are messages. A slash command
+ * there is not a file the shell will read or write.
+ */
+function adeSlashCommandPromptIndexes(words: string[]): Set<number> {
+  const ignored = new Set<number>();
+  for (let index = 0; index < words.length - 2; index += 1) {
+    const command = words[index]?.toLowerCase() ?? "";
+    if (command !== "ade" && !command.endsWith("/ade") && command !== "ade.exe") continue;
+    if (words[index + 1] !== "chat") continue;
+    const sub = words[index + 2];
+    if (sub === "note") {
+      for (let cursor = index + 3; cursor < words.length; cursor += 1) {
+        const word = words[cursor] ?? "";
+        if (word === "--") {
+          const message = words[cursor + 1];
+          if (message && isAdeSlashCommand(trimShellToken(message))) ignored.add(cursor + 1);
+          break;
+        }
+        if (word.startsWith("-")) {
+          if (!word.includes("=") && (word === "--session" || word === "--text")) cursor += 1;
+          continue;
+        }
+        if (isAdeSlashCommand(trimShellToken(word))) ignored.add(cursor);
+        break;
+      }
+    }
+    if (sub === "scheduled-work") {
+      for (let cursor = index + 3; cursor < words.length; cursor += 1) {
+        const word = words[cursor] ?? "";
+        const inline = /^--prompt=(.+)$/.exec(word)?.[1];
+        if (inline && isAdeSlashCommand(trimShellToken(inline))) ignored.add(cursor);
+        if (word === "--prompt") {
+          const message = words[cursor + 1];
+          if (message && isAdeSlashCommand(trimShellToken(message))) ignored.add(cursor + 1);
+        }
+      }
+    }
+  }
+  return ignored;
+}
+
 function collectShellCommandPaths(command: string, out: string[]): void {
-  for (const word of shellWords(command)) {
+  const words = shellWords(command);
+  const ignored = adeSlashCommandPromptIndexes(words);
+  for (let index = 0; index < words.length; index += 1) {
+    if (ignored.has(index)) continue;
+    const word = words[index] ?? "";
     const token = trimShellToken(word);
     const flagValue = /^--?[A-Za-z0-9][A-Za-z0-9_-]*=(.+)$/.exec(token)?.[1];
     if (flagValue && looksLikePathToken(flagValue)) {
