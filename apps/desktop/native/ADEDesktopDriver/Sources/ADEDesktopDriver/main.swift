@@ -541,6 +541,10 @@ final class DriverRuntime: NSObject {
 
     private func createDisplay(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
+        // A create that runs inside a stop's run-loop pump would hand back a
+        // display the stop has already moved past, and nothing would ever
+        // destroy it.
+        if let refusal = windows.stopGate.refusal(laneId: laneId, action: "create a display") { throw refusal }
         let name = request.string("name") ?? "\(VirtualDisplayIdentity.namePrefix)\(laneId)"
         let width = request.int("width") ?? 2560
         let height = request.int("height") ?? 1440

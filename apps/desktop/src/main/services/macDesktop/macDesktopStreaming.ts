@@ -92,7 +92,26 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    * encoders on two ports: the viewer holding the first address read a stream
    * nothing fed any more (the owner's 2026-09-24 "Connecting video" report).
    */
-  const startingStreams = new Map<string, Promise<LaneTransport>>();
+  const startingStreams = new Map<string, { promise: Promise<LaneTransport>; generation: number }>();
+  /**
+   * laneId → how many times a stop that outranks a start has run.
+   *
+   * An explicit stop, a lane teardown and the last reader leaving each bump
+   * it. A start remembers the value it began under and, when it resumes,
+   * compares: a stop in between means the lane stays stopped, so the start
+   * tears down what it built instead of installing it, announcing it, or
+   * retrying. Before, a stop during a start was undone by the start resuming.
+   * Never reset: a lane's count going back to an old value would make a
+   * cancelled start look current again.
+   */
+  const streamGenerations = new Map<string, number>();
+  const generationOf = (laneId: string): number => streamGenerations.get(laneId) ?? 0;
+  const cancelStarts = (laneId: string): void => {
+    streamGenerations.set(laneId, generationOf(laneId) + 1);
+  };
+  /** What a start a stop or a lane teardown overtook rejects with. */
+  const stoppedWhileStarting = (laneId: string): Error =>
+    new Error(`Lane ${laneId}'s stream was stopped while it was starting.`);
 
   /**
    * Waits out any start in flight — one lane's, or every lane's — so a release
@@ -102,9 +121,10 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    * start added nobody, so its rejection is not the release's to report.
    */
   const settleStarts = async (laneId?: string): Promise<void> => {
-    const pending = laneId === undefined
+    const pending = (laneId === undefined
       ? [...startingStreams.values()]
-      : [startingStreams.get(laneId)].filter((start): start is Promise<LaneTransport> => start !== undefined);
+      : [startingStreams.get(laneId)].filter((start) => start !== undefined)
+    ).map((start) => start.promise);
     if (pending.length === 0) return;
     await Promise.all(pending.map((start) => start.catch(() => undefined)));
   };
@@ -225,11 +245,32 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     return false;
   };
 
-  /** The driver half of a start: one encoder, one port, one token. */
+  /** Asks the helper to stop the lane's encoder; a failure is only logged. */
+  async function stopDriverStream(laneId: string, reason: string): Promise<void> {
+    const provider = deps.isDarwin ? deps.activeProvider() : null;
+    if (!provider) return;
+    await provider.stopStream({ laneId }).catch((error: unknown) => {
+      deps.logger.debug("mac_desktop.stop_stream_failed", {
+        laneId,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  /**
+   * The driver half of a start: one encoder, one port, one token.
+   *
+   * `generation` is the lane's stop count when the start began. A stop that
+   * lands during either wait wins: what this start built is torn down and it
+   * rejects, rather than installing a run for a lane that was stopped.
+   */
   async function openStream(
     laneId: string,
     args: Pick<MacDesktopStartStreamArgs, "fps" | "idleFps">,
+    generation: number,
   ): Promise<LaneTransport> {
+    const cancelled = () => generationOf(laneId) !== generation;
     const provider = await deps.ensureProvider();
     deps.assertPermission("screenRecording");
     const fps = clampFps(args.fps, MAC_DESKTOP_ACTIVE_FPS);
@@ -237,11 +278,15 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     // stream runs is not a rate.
     const idleFps = Math.min(fps, clampFps(args.idleFps, MAC_DESKTOP_IDLE_FPS));
     const reply = await provider.startStream({ laneId, fps });
+    if (cancelled()) {
+      await stopDriverStream(laneId, "stopped-while-starting");
+      throw stoppedWhileStarting(laneId);
+    }
     const sourcePort = typeof reply.port === "number" && Number.isFinite(reply.port) ? reply.port : 0;
     if (!sourcePort) {
       throw deps.driverUnavailable("The desktop driver did not hand back a stream port.");
     }
-    return await streamServer.start({
+    const transport = await streamServer.start({
       laneId,
       sourcePort,
       codec: typeof reply.codec === "string" ? reply.codec : null,
@@ -250,6 +295,12 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       fps,
       idleFps,
     });
+    if (cancelled()) {
+      if (streamServer.getTransport(laneId)?.token === transport.token) streamServer.stop(laneId);
+      await stopDriverStream(laneId, "stopped-while-starting");
+      throw stoppedWhileStarting(laneId);
+    }
+    return transport;
   }
 
   async function startStreamFor(
@@ -258,6 +309,9 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
   ): Promise<MacDesktopStreamStatus> {
     const laneId = args.laneId.trim();
     deps.requireDisplay(laneId);
+    // The stop count this ask began under. A stop that outranks starts
+    // (`stopStream`, `forgetLane`) moves it, and this ask then ends stopped.
+    const generation = generationOf(laneId);
     let running = streamServer.getTransport(laneId);
     const metrics = running ? streamServer.metrics(laneId) : null;
     if (running && args.fresh === true && metrics && macDesktopStreamIsStale(metrics, deps.now())) {
@@ -270,7 +324,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
         quietMs: deps.now() - Math.max(metrics.startedAtMs, metrics.lastBytesAtMs ?? 0),
         clients: metrics.clients,
       });
-      await stopStream(laneId, "stale-restart");
+      await endRun(laneId, "stale-restart");
       running = null;
     }
     if (running) {
@@ -287,13 +341,33 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     let pending = startingStreams.get(laneId);
     const joined = pending !== undefined;
     if (!pending) {
-      const opening = openStream(laneId, args).finally(() => {
-        if (startingStreams.get(laneId) === opening) startingStreams.delete(laneId);
+      const opening = openStream(laneId, args, generation).finally(() => {
+        if (startingStreams.get(laneId)?.promise === opening) startingStreams.delete(laneId);
       });
-      startingStreams.set(laneId, opening);
-      pending = opening;
+      pending = { promise: opening, generation };
+      startingStreams.set(laneId, pending);
     }
-    const transport = await pending;
+    let transport: LaneTransport;
+    try {
+      transport = await pending.promise;
+    } catch (error) {
+      // Whatever the helper said about a start a stop cancelled, the answer
+      // to this ask is that the lane was stopped.
+      if (generationOf(laneId) !== generation) throw stoppedWhileStarting(laneId);
+      // This ask came after a stop and joined the start that stop cancelled.
+      // The stop was not aimed at it, so it starts its own run.
+      if (pending.generation !== generation) return await startStreamFor(args, owner);
+      throw error;
+    }
+    if (generationOf(laneId) !== generation) {
+      // A stop or a teardown landed after the run was built. The lane stays
+      // stopped: nothing is recorded, announced or retried.
+      if (streamServer.getTransport(laneId)?.token === transport.token) {
+        streamServer.stop(laneId);
+        await stopDriverStream(laneId, "stopped-while-starting");
+      }
+      throw stoppedWhileStarting(laneId);
+    }
     if (streamServer.getTransport(laneId)?.token !== transport.token) {
       // The run this call waited on ended before it resumed — a release that
       // settled first, a lane teardown. Its token is dead, and recording this
@@ -348,7 +422,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     const owners = streamOwners.get(laneId);
     const dropped = owners?.delete(chatSessionId?.trim() || null) ?? false;
     if (owners && owners.size === 0) streamOwners.delete(laneId);
-    if (!hasStreamOwners(laneId)) return await stopStream(laneId, "viewer-left");
+    if (!hasStreamOwners(laneId)) return await endRun(laneId, "viewer-left");
     const status = buildStreamStatus(laneId, { redacted: true });
     if (dropped) deps.emit({ type: "stream-status", status });
     deps.logger.info("mac_desktop.stream_kept_for_other_viewers", {
@@ -359,7 +433,12 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     return status;
   }
 
-  async function stopStream(laneId: string, reason: string): Promise<MacDesktopStreamStatus> {
+  /**
+   * Ends the running stream and forgets its askers. A start still in flight is
+   * left alone: the releases that call this settled it first, and a later ask
+   * that joined it still wants a run.
+   */
+  async function endRun(laneId: string, reason: string): Promise<MacDesktopStreamStatus> {
     const wasStreaming = streamServer.isStreaming(laneId);
     if (wasStreaming) {
       // `stream_stopped` carries no reason. Without this line a stop by the
@@ -379,18 +458,23 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     streamServer.stop(laneId);
     streamOwners.delete(laneId);
     streamSubscriptions.delete(laneId);
-    const provider = deps.isDarwin ? deps.activeProvider() : null;
-    if (provider) {
-      await provider.stopStream({ laneId }).catch((error: unknown) => {
-        deps.logger.debug("mac_desktop.stop_stream_failed", {
-          laneId,
-          reason,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
+    await stopDriverStream(laneId, reason);
     const status = buildStreamStatus(laneId, { redacted: true });
     if (wasStreaming) deps.emit({ type: "stream-stopped", status });
+    return status;
+  }
+
+  /**
+   * Stops the lane's stream outright: an explicit stop, or the last reader
+   * gone. Unlike a viewer's release it also cancels a start in flight, so the
+   * lane stays stopped, and it answers only once that start has wound down.
+   */
+  async function stopStream(laneId: string, reason: string): Promise<MacDesktopStreamStatus> {
+    cancelStarts(laneId);
+    const status = await endRun(laneId, reason);
+    // Safe to wait: a start never waits on a stop, and the cancelled one
+    // only tears down what it built.
+    await settleStarts(laneId);
     return status;
   }
 
@@ -408,8 +492,12 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       deps.emit({ type: "stream-error", status: buildStreamStatus(laneId, { redacted: true }) });
     },
 
-    /** Local teardown for a lane whose display is going away. */
+    /**
+     * Local teardown for a lane whose display is going away. A start in
+     * flight is cancelled: it tears down what it built when it resumes.
+     */
     forgetLane(laneId: string): void {
+      cancelStarts(laneId);
       streamServer.stop(laneId);
       streamOwners.delete(laneId);
       streamSubscriptions.delete(laneId);
@@ -427,7 +515,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       for (const [laneId, owners] of [...streamOwners]) {
         if (!owners.delete(chatSessionId)) continue;
         if (hasStreamOwners(laneId)) continue;
-        await stopStream(laneId, "owner-chat-ended").catch(() => {
+        await endRun(laneId, "owner-chat-ended").catch(() => {
           // A stream we cannot stop is one the server's own teardown will.
         });
       }
@@ -443,7 +531,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       for (const [laneId, subscriptions] of [...streamSubscriptions]) {
         if (!subscriptions.delete(subscriptionId)) continue;
         if (hasStreamOwners(laneId)) continue;
-        await stopStream(laneId, "subscription-ended").catch(() => {
+        await endRun(laneId, "subscription-ended").catch(() => {
           // A stream we cannot stop is one the server's own teardown will.
         });
       }

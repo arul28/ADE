@@ -52,16 +52,51 @@ final class LaneLifecycleTests: XCTestCase {
     // ParkRecheck
     // -----------------------------------------------------------------------
 
+    private let display = LanePlacement(
+        placement: DisplayPlacement(origin: CGPoint(x: 8000, y: 0), width: 1280, height: 800, scale: 2),
+        displayId: 7,
+        generation: 1
+    )
+
     func testAParkWhoseLaneStillHoldsEverythingProceeds() {
         XCTAssertEqual(
-            ParkRecheck.decide(laneId: "a", windowId: 7, ownerNow: "a", hasPlacement: true, isStopping: false),
-            .proceed
+            ParkRecheck.decide(
+                laneId: "a", windowId: 7, ownerNow: "a",
+                placementAtStart: display, placementNow: display, isStopping: false
+            ),
+            .proceed(display)
         )
+    }
+
+    func testAParkWhoseDisplayWasReplacedInsideTheWaitIsRefused() {
+        // The lane stopped and started again while the park waited: a new
+        // display, somewhere else and another size. Sizing the window from the
+        // old one put it on a display the lane no longer has.
+        let moved = LanePlacement(
+            placement: DisplayPlacement(origin: CGPoint(x: 12000, y: 0), width: 1920, height: 1080, scale: 2),
+            displayId: 9,
+            generation: 2
+        )
+        guard case .refuse(let error, let dropHold) = ParkRecheck.decide(
+            laneId: "a", windowId: 7, ownerNow: "a",
+            placementAtStart: display, placementNow: moved, isStopping: false
+        ) else { return XCTFail("expected a refusal") }
+        XCTAssertEqual(error.code, DriverErrorCode.noDisplay)
+        XCTAssertTrue(error.message.contains("changed"))
+        XCTAssertFalse(dropHold, "the hold the lane has now is a later take's")
+
+        // Made again at the same place and size, with the same id: still a
+        // different display.
+        let remade = LanePlacement(placement: display.placement, displayId: display.displayId, generation: 2)
+        guard case .refuse = ParkRecheck.decide(
+            laneId: "a", windowId: 7, ownerNow: "a",
+            placementAtStart: display, placementNow: remade, isStopping: false
+        ) else { return XCTFail("a remade display must not pass as the old one") }
     }
 
     func testAParkWhoseLaneStartedStoppingLeavesTheHoldToTheStop() {
         guard case .refuse(let error, let dropHold) = ParkRecheck.decide(
-            laneId: "a", windowId: 7, ownerNow: "a", hasPlacement: true, isStopping: true
+            laneId: "a", windowId: 7, ownerNow: "a", placementAtStart: display, placementNow: display, isStopping: true
         ) else { return XCTFail("expected a refusal") }
         XCTAssertEqual(error.code, DriverErrorCode.laneStopping)
         XCTAssertFalse(dropHold)
@@ -69,7 +104,7 @@ final class LaneLifecycleTests: XCTestCase {
 
     func testAParkWhoseLaneLostItsDisplayDropsItsHold() {
         guard case .refuse(let error, let dropHold) = ParkRecheck.decide(
-            laneId: "a", windowId: 7, ownerNow: "a", hasPlacement: false, isStopping: false
+            laneId: "a", windowId: 7, ownerNow: "a", placementAtStart: display, placementNow: nil, isStopping: false
         ) else { return XCTFail("expected a refusal") }
         XCTAssertEqual(error.code, DriverErrorCode.noDisplay)
         XCTAssertTrue(dropHold)
@@ -77,13 +112,13 @@ final class LaneLifecycleTests: XCTestCase {
 
     func testAParkWhoseWindowWasReleasedOrTakenDoesNotTouchIt() {
         guard case .refuse(let released, let dropReleased) = ParkRecheck.decide(
-            laneId: "a", windowId: 7, ownerNow: nil, hasPlacement: false, isStopping: false
+            laneId: "a", windowId: 7, ownerNow: nil, placementAtStart: display, placementNow: nil, isStopping: false
         ) else { return XCTFail("expected a refusal") }
         XCTAssertEqual(released.code, DriverErrorCode.windowNotFound)
         XCTAssertFalse(dropReleased)
 
         guard case .refuse(let taken, let dropTaken) = ParkRecheck.decide(
-            laneId: "a", windowId: 7, ownerNow: "b", hasPlacement: true, isStopping: false
+            laneId: "a", windowId: 7, ownerNow: "b", placementAtStart: display, placementNow: display, isStopping: false
         ) else { return XCTFail("expected a refusal") }
         XCTAssertEqual(taken.code, DriverErrorCode.appOwnedByOtherLane)
         XCTAssertTrue(taken.message.contains("lane b"))

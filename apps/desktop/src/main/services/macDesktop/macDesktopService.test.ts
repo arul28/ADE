@@ -203,6 +203,45 @@ describe("macDesktopService start", () => {
     service.dispose();
   });
 
+  it("a stop during a start waits for it, so the lane ends stopped", async () => {
+    let finishCreate: () => void = () => {};
+    const created = new Promise<void>((resolve) => {
+      finishCreate = resolve;
+    });
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.createDisplay] = async (payload) => {
+      await created;
+      return { displayId: 7, name: payload.name, mode: "virtual", width: payload.width, height: payload.height, scale: 2 };
+    };
+    const starting = service.start({ laneId: "lane-1" });
+    await vi.waitFor(() => {
+      expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toBe(true);
+    });
+    const stopping = service.stop({ laneId: "lane-1" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The stop has not reached the driver while the create is still open.
+    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.destroyDisplay)).toBe(false);
+    finishCreate();
+    await starting;
+    await expect(stopping).resolves.toMatchObject({ stopped: true });
+    expect(service.hasDisplaySync("lane-1")).toBe(false);
+    expect(events.map((event) => event.type).filter((type) => type.startsWith("display-")))
+      .toEqual(["display-created", "display-destroyed"]);
+
+    // A start queued behind a stop does not join the start before it: it
+    // makes a new display once the stop is done.
+    const again = service.start({ laneId: "lane-1" });
+    const stopAgain = service.stop({ laneId: "lane-1" });
+    const third = service.start({ laneId: "lane-1" });
+    await again;
+    await stopAgain;
+    await third;
+    expect(service.hasDisplaySync("lane-1")).toBe(true);
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.createDisplay)).toHaveLength(3);
+    service.dispose();
+  });
+
   it("names the display after the lane", async () => {
     const driver = createFakeDriver();
     const { service } = makeService({ driver });

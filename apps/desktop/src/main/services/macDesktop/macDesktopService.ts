@@ -301,7 +301,16 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   let disposed = false;
   let driverLifecycle: MacDesktopDriverLifecycle;
-  const startLocks = new Map<string, Promise<MacDesktopStatus>>();
+  /**
+   * laneId → the last display start or stop queued for the lane.
+   *
+   * Every start and stop of a lane's display runs through this, one after
+   * another. A stop that ran beside a start destroyed nothing (the display
+   * did not exist yet) and the start then stored a display nobody had asked
+   * for any more. A start whose tail is a start joins it: two chats asking
+   * at once get one display.
+   */
+  const lifecycleTails = new Map<string, { kind: "start" | "stop"; done: Promise<unknown> }>();
   /**
    * Lanes this process is tearing down right now.
    *
@@ -856,6 +865,19 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     return await buildStatus({ laneId });
   };
 
+  /** Runs `run` after every start and stop already queued for the lane. */
+  const runLifecycle = <T>(laneId: string, kind: "start" | "stop", run: () => Promise<T>): Promise<T> => {
+    const previous = lifecycleTails.get(laneId)?.done;
+    const done = (previous ? previous.then(run, run) : run());
+    const entry = { kind, done };
+    lifecycleTails.set(laneId, entry);
+    const clear = () => {
+      if (lifecycleTails.get(laneId) === entry) lifecycleTails.delete(laneId);
+    };
+    done.then(clear, clear);
+    return done;
+  };
+
   const destroyDisplay = async (
     laneId: string,
     reason: "stopped" | "idle" | "lane_removed" | "driver_lost",
@@ -922,6 +944,16 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   // Idle release and the sleep stand-in
   // -------------------------------------------------------------------------
 
+  /** True when the lane's display has sat unwatched and unused past the idle window. */
+  const isIdle = (laneId: string, atMs: number): boolean => {
+    const display = ownership.getDisplay(laneId);
+    if (!display || display.windowCount > 0) return false;
+    if (streamServer.clientCount(laneId) > 0) return false;
+    if (recordings.get(laneId)?.running) return false;
+    const lastActivityMs = Date.parse(display.lastActivityAt);
+    return !(Number.isFinite(lastActivityMs) && atMs - lastActivityMs < MAC_DESKTOP_IDLE_RELEASE_MS);
+  };
+
   const sweep = (): void => {
     const atMs = now();
     const elapsed = atMs - lastSweepAtMs;
@@ -944,12 +976,13 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       void pushLease(expired.laneId, null);
     }
     for (const display of ownership.listDisplays()) {
-      if (display.windowCount > 0) continue;
-      if (streamServer.clientCount(display.laneId) > 0) continue;
-      if (recordings.get(display.laneId)?.running) continue;
-      const lastActivityMs = Date.parse(display.lastActivityAt);
-      if (Number.isFinite(lastActivityMs) && atMs - lastActivityMs < MAC_DESKTOP_IDLE_RELEASE_MS) continue;
-      void destroyDisplay(display.laneId, "idle").catch((error) => {
+      if (!isIdle(display.laneId, atMs)) continue;
+      // Queued like a stop, and re-checked once its turn comes: a start that
+      // ran first touched the display, and it stays.
+      void runLifecycle(display.laneId, "stop", async () => {
+        if (!isIdle(display.laneId, now())) return;
+        await destroyDisplay(display.laneId, "idle");
+      }).catch((error) => {
         deps.logger.warn("mac_desktop.idle_release_failed", {
           laneId: display.laneId,
           error: error instanceof Error ? error.message : String(error),
@@ -1004,18 +1037,17 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // Two chats in one lane can ask at the same moment. Serialised per lane
       // so the second caller receives the first caller's display instead of
       // creating a second one on top of it.
-      const inflight = startLocks.get(laneId);
-      if (inflight) return await inflight;
-      const pending = startInternal(args).finally(() => {
-        if (startLocks.get(laneId) === pending) startLocks.delete(laneId);
-      });
-      startLocks.set(laneId, pending);
-      return await pending;
+      // A stop queued in between is not joined over: the start after it
+      // makes a new display once the stop is done.
+      const tail = lifecycleTails.get(laneId);
+      if (tail?.kind === "start") return await (tail.done as Promise<MacDesktopStatus>);
+      return await runLifecycle(laneId, "start", () => startInternal(args));
     },
 
     async stop(args: MacDesktopStopArgs): Promise<MacDesktopStopResult> {
       assertSupported();
-      const result = await destroyDisplay(args.laneId.trim(), "stopped");
+      const laneId = args.laneId.trim();
+      const result = await runLifecycle(laneId, "stop", () => destroyDisplay(laneId, "stopped"));
       return {
         stopped: result.destroyed,
         releasedWindows: result.releasedWindows,
@@ -1239,7 +1271,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       const trimmed = laneId?.trim();
       if (!trimmed) return { destroyed: false };
       if (!isDarwin) return { destroyed: false };
-      const result = await destroyDisplay(trimmed, "lane_removed").catch((error: unknown) => {
+      const result = await runLifecycle(trimmed, "stop", () => destroyDisplay(trimmed, "lane_removed")).catch((error: unknown) => {
         deps.logger.debug("mac_desktop.destroy_for_lane_failed", {
           laneId: trimmed,
           error: error instanceof Error ? error.message : String(error),
@@ -1282,7 +1314,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       streaming.dispose();
       driverLifecycle.dispose();
       ownership.clear();
-      startLocks.clear();
+      lifecycleTails.clear();
       recording.clear();
     },
   };

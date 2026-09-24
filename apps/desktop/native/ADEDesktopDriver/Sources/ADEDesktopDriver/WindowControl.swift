@@ -145,6 +145,10 @@ final class WindowControl {
     var pollTimer: Timer?
     private var placements: [String: DisplayPlacement] = [:]
     private var displayIds: [String: CGDirectDisplayID] = [:]
+    /// laneId → which of the lane's displays `placements` describes. See
+    /// `LanePlacement`: a park compares it across its wait.
+    private var placementGenerations: [String: UInt64] = [:]
+    private var nextPlacementGeneration: UInt64 = 1
     let lock = NSRecursiveLock()
 
     /// Apps that stopped answering the Accessibility API recently. Shared with
@@ -171,8 +175,17 @@ final class WindowControl {
     func setPlacement(laneId: String, placement: DisplayPlacement, displayId: CGDirectDisplayID) {
         lock.lock()
         defer { lock.unlock() }
+        // A repeat `display.create` hands back the lane's existing display;
+        // that is the same display, not a new generation of it.
+        let unchanged = placements[laneId] == placement
+            && displayIds[laneId] == displayId
+            && placementGenerations[laneId] != nil
         placements[laneId] = placement
         displayIds[laneId] = displayId
+        if !unchanged {
+            placementGenerations[laneId] = nextPlacementGeneration
+            nextPlacementGeneration += 1
+        }
     }
 
     func clearPlacement(laneId: String) {
@@ -180,6 +193,7 @@ final class WindowControl {
         defer { lock.unlock() }
         placements.removeValue(forKey: laneId)
         displayIds.removeValue(forKey: laneId)
+        placementGenerations.removeValue(forKey: laneId)
         for (pid, lane) in newWindows.watchedPids where lane == laneId {
             stopWatching(pid: pid)
         }
@@ -189,6 +203,17 @@ final class WindowControl {
         lock.lock()
         defer { lock.unlock() }
         return placements[laneId]
+    }
+
+    /// The lane's display with its id and generation, read in one go.
+    func lanePlacement(forLane laneId: String) -> LanePlacement? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let placement = placements[laneId],
+              let displayId = displayIds[laneId],
+              let generation = placementGenerations[laneId]
+        else { return nil }
+        return LanePlacement(placement: placement, displayId: displayId, generation: generation)
     }
 
     // -----------------------------------------------------------------------
@@ -588,7 +613,7 @@ final class WindowControl {
 
     func park(laneId: String, windowId: CGWindowID, origin: String = "claimed") throws -> DesktopWindow {
         if let refusal = stopGate.refusal(laneId: laneId, action: "take a window") { throw refusal }
-        guard let placement = placement(forLane: laneId) else {
+        guard let placementAtStart = lanePlacement(forLane: laneId) else {
             throw DriverError(
                 code: DriverErrorCode.noDisplay,
                 message: "Lane \(laneId) has no display. Start one before parking a window."
@@ -636,21 +661,25 @@ final class WindowControl {
             }
             throw failure.driverError(windowId: Int(windowId))
         }
-        // The wait pumped the run loop, and a stop, a release or another
-        // lane's claim can have run to completion inside it.
+        // The wait pumped the run loop, and a stop, a release, another lane's
+        // claim or a stop-and-start of this lane can have run inside it. The
+        // frame and the display id both come from the placement read here.
+        let current: LanePlacement
         switch ParkRecheck.decide(
             laneId: laneId,
             windowId: Int(windowId),
             ownerNow: ownership.owner(ofWindow: Int(windowId)),
-            hasPlacement: self.placement(forLane: laneId) != nil,
+            placementAtStart: placementAtStart,
+            placementNow: lanePlacement(forLane: laneId),
             isStopping: stopGate.isStopping(laneId)
         ) {
-        case .proceed:
-            break
+        case .proceed(let placementNow):
+            current = placementNow
         case .refuse(let error, let dropHold):
             if dropHold { forgetParked(windowId: windowId) }
             throw error
         }
+        let placement = current.placement
         let index = ownership.windows(forLane: laneId).count - 1
         let size = CGSize(
             width: min(window.frame.width > 0 ? window.frame.width : placement.width, placement.width),
@@ -663,9 +692,7 @@ final class WindowControl {
         parked.laneId = laneId
         parked.frame = Self.frame(of: element) ?? target
         parked.origin = origin
-        lock.lock()
-        parked.onDisplayId = displayIds[laneId]
-        lock.unlock()
+        parked.onDisplayId = current.displayId
         startWatching(pid: window.pid, laneId: laneId, launched: launchedApps.isLaunched(pid: window.pid, byLane: laneId))
         newWindows.noteParked(pid: window.pid, windowId: windowId)
         emitWindowsChanged(laneId: laneId)

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DesktopSeatProvider } from "../../../shared/types/macDesktop";
+import type { DesktopSeatProvider, MacDesktopEventPayload } from "../../../shared/types/macDesktop";
 import { createMacDesktopStreaming } from "./macDesktopStreaming";
 
 function makeStreaming(startStream: () => Promise<{ port: number }> = async () => ({ port: 1 })) {
   const info = vi.fn();
+  const events: MacDesktopEventPayload[] = [];
   const logger = { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() };
   const provider = {
     startStream: vi.fn(startStream),
@@ -15,7 +16,7 @@ function makeStreaming(startStream: () => Promise<{ port: number }> = async () =
     logger: logger as never,
     now: () => Date.now(),
     isDarwin: true,
-    emit: () => {},
+    emit: (payload) => events.push(payload),
     ensureProvider: async () => provider,
     activeProvider: () => provider,
     requireDisplay: () => {},
@@ -23,7 +24,7 @@ function makeStreaming(startStream: () => Promise<{ port: number }> = async () =
     touchDisplay: () => {},
     driverUnavailable: (message) => new Error(message),
   });
-  return { streaming, info };
+  return { streaming, info, events, provider: provider as unknown as { startStream: ReturnType<typeof vi.fn>; stopStream: ReturnType<typeof vi.fn> } };
 }
 
 describe("macDesktopStreaming stop logging", () => {
@@ -140,5 +141,58 @@ describe("macDesktopStreaming release during a start", () => {
     expect(joined.running).toBe(true);
     expect(joined.transport?.token).toBe(streaming.streamServer.getTransport("lane-1")?.token);
     expect(streaming.buildStreamStatus("lane-1").viewerChatSessionIds).toEqual(["chat-2"]);
+  });
+  it("an explicit stop during a start leaves the lane stopped", async () => {
+    const driver = deferredDriverStart();
+    const { streaming, events } = makeStreaming(driver.start);
+    disposers.push(() => streaming.dispose());
+
+    const starting = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1" });
+    const outcome = starting.then(() => "started", () => "cancelled");
+    const stopping = streaming.stopStream("lane-1", "stopped");
+    driver.finish();
+    await stopping;
+
+    expect(await outcome).toBe("cancelled");
+    expect(streaming.streamServer.isStreaming("lane-1")).toBe(false);
+    expect(streaming.buildStreamStatus("lane-1").viewerChatSessionIds).toEqual([]);
+    expect(events.some((event) => event.type === "stream-started")).toBe(false);
+  });
+
+  it("a lane teardown after the run was installed does not open a second run", async () => {
+    const { streaming, provider } = makeStreaming();
+    disposers.push(() => streaming.dispose());
+    const install = streaming.streamServer.start.bind(streaming.streamServer);
+    // The display goes away between the run being installed and the start
+    // resuming: the token check used to read that as a dead run and retry.
+    streaming.streamServer.start = async (args) => {
+      const transport = await install(args);
+      streaming.forgetLane("lane-1");
+      return transport;
+    };
+
+    await expect(streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1" })).rejects.toThrow(/stopped/);
+    expect(provider.startStream).toHaveBeenCalledTimes(1);
+    expect(streaming.streamServer.isStreaming("lane-1")).toBe(false);
+  });
+
+  it("an ask that arrives after the stop still gets a live run", async () => {
+    const driver = deferredDriverStart();
+    const { streaming, provider } = makeStreaming(driver.start);
+    disposers.push(() => streaming.dispose());
+
+    const first = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1" });
+    const firstOutcome = first.then(() => "started", () => "cancelled");
+    const stopping = streaming.stopStream("lane-1", "stopped");
+    const second = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-2" });
+    driver.finish();
+    await stopping;
+
+    expect(await firstOutcome).toBe("cancelled");
+    const joined = await second;
+    expect(joined.running).toBe(true);
+    expect(joined.transport?.token).toBe(streaming.streamServer.getTransport("lane-1")?.token);
+    expect(streaming.buildStreamStatus("lane-1").viewerChatSessionIds).toEqual(["chat-2"]);
+    expect(provider.startStream).toHaveBeenCalledTimes(2);
   });
 });

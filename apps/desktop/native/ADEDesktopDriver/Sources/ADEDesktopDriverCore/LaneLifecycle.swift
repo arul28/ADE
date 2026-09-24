@@ -90,17 +90,36 @@ public enum RequestAdmission {
 // A park that waited
 // ---------------------------------------------------------------------------
 
+/// One lane's display as a park sees it.
+///
+/// `generation` is new every time the lane's display is set after being
+/// cleared, so a display destroyed and made again (at the same place and size,
+/// even with the same id) is not mistaken for the one a park started against.
+public struct LanePlacement: Equatable, Sendable {
+    public let placement: DisplayPlacement
+    public let displayId: UInt32
+    public let generation: UInt64
+
+    public init(placement: DisplayPlacement, displayId: UInt32, generation: UInt64) {
+        self.placement = placement
+        self.displayId = displayId
+        self.generation = generation
+    }
+}
+
 /// What a park re-checks after waiting for its window to become ready.
 ///
 /// The lane took the window before the wait. Inside the wait the lane can
 /// stop (its display and its hold on the window both go), the window can be
-/// released, or the lane can start stopping. Moving the window and watching
-/// its app after any of those put a window on a display that is gone, or
-/// re-watched an app for a lane that no longer exists.
+/// released, the lane can start stopping, or its display can be replaced by
+/// a new one. Moving the window and watching its app after any of those put a
+/// window on a display that is gone, sized it for a display that is not the
+/// lane's any more, or re-watched an app for a lane that no longer exists.
 public enum ParkRecheck {
     public enum Outcome: Equatable, Sendable {
-        /// Everything still holds: move the window and watch its app.
-        case proceed
+        /// Everything still holds: move the window onto this display (the
+        /// lane's current one, which is the one the park started against).
+        case proceed(LanePlacement)
         /// Refuse. `dropHold` is true when the lane still holds the window
         /// and nothing else will drop that hold (its display is gone);
         /// a stopping lane's own stop releases what it holds.
@@ -111,7 +130,8 @@ public enum ParkRecheck {
         laneId: String,
         windowId: Int,
         ownerNow: String?,
-        hasPlacement: Bool,
+        placementAtStart: LanePlacement,
+        placementNow: LanePlacement?,
         isStopping: Bool
     ) -> Outcome {
         if isStopping {
@@ -135,7 +155,7 @@ public enum ParkRecheck {
                 dropHold: false
             )
         }
-        guard hasPlacement else {
+        guard let placementNow else {
             return .refuse(
                 DriverError(
                     code: DriverErrorCode.noDisplay,
@@ -144,7 +164,19 @@ public enum ParkRecheck {
                 dropHold: true
             )
         }
-        return .proceed
+        guard placementNow == placementAtStart else {
+            // The display went and a new one came inside the wait. Going away
+            // released the lane's windows, so a hold the lane has now is a
+            // later take's, and that take is not this park's to undo.
+            return .refuse(
+                DriverError(
+                    code: DriverErrorCode.noDisplay,
+                    message: "Lane \(laneId)'s display changed while window \(windowId) was being parked; it was left where it was."
+                ),
+                dropHold: false
+            )
+        }
+        return .proceed(placementNow)
     }
 
     /// Whether a sweep that got this refusal should stop working on the lane
