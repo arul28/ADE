@@ -175,17 +175,17 @@ export function DevinCloudQuickViewButton({
     };
   }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility]);
 
+  // Keep polling while connected too — at the cache's connected TTL, so a
+  // credential removed in this same window hides the button within a minute
+  // instead of surviving until the next focus event or remount.
   useEffect(() => {
-    if (!shouldAutoCheckVisibility || visible || !activeProjectRoot) return undefined;
+    if (!shouldAutoCheckVisibility || !activeProjectRoot) return undefined;
     let cancelled = false;
     const interval = window.setInterval(() => {
       void loadVisibility().then((next) => {
-        if (!cancelled && next) {
-          setVisible(true);
-          window.clearInterval(interval);
-        }
+        if (!cancelled) setVisible(next);
       });
-    }, visibilityRetryIntervalMs);
+    }, visible ? VISIBILITY_CONNECTED_CACHE_TTL_MS : visibilityRetryIntervalMs);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
