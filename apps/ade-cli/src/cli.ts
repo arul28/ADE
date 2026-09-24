@@ -18061,6 +18061,19 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
   );
 }
 
+/** Whether this invocation asks the machine brain for account tokens (see `runCli`). */
+export function shouldInstallBrainRefreshBroker(
+  plan: CliPlan,
+  options: Pick<GlobalOptions, "headless">,
+): boolean {
+  return (
+    plan.kind !== "serve" &&
+    plan.kind !== "runtime" &&
+    plan.kind !== "brain" &&
+    !options.headless
+  );
+}
+
 export function shouldAutoRegisterProjectForPlan(
   plan: CliPlan & { kind: "execute" },
 ): boolean {
@@ -27791,12 +27804,7 @@ async function runCli(
   // refreshes would deadlock rather than refresh. `--headless` is skipped for
   // the same reason — it runs an in-process runtime that owns its credentials.
   // Installed here, before any command touches getSharedAccountAuthService.
-  if (
-    plan.kind !== "serve" &&
-    plan.kind !== "runtime" &&
-    plan.kind !== "brain" &&
-    !parsed.options.headless
-  ) {
+  if (shouldInstallBrainRefreshBroker(plan, parsed.options)) {
     const { installMachineBrainRefreshBroker } = await import(
       "./services/account/cliRefreshBroker"
     );

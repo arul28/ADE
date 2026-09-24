@@ -33,7 +33,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginIdentityConfirmHold } from "./identitySessionPolicy";
 import { injectFsFault } from "../../../test/faultInjection";
-import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import {
+  resolveBuiltInBrowserActorCapability,
+  type BrowserActorCapabilityIssuer,
+} from "../builtInBrowser/builtInBrowserActorCapabilities";
 import { loadQwenUserSettings } from "../ai/qwenUserSettings";
 import {
   buildLaneAppleDeviceDirective,
@@ -60214,6 +60217,400 @@ describe("Pi follows the chat's effort and names another provider's route", () =
       servedModel: "openrouter/claude-sonnet-5",
     }));
     service.forceDisposeAll();
+  });
+});
+
+describe("browser actor capability on a daemon-hosted chat", () => {
+  /**
+   * The runtime daemon cannot mint browser tokens itself: its issuer only has
+   * the async `issue`, which asks the desktop over the bridge. Every provider
+   * launch must still hand the agent a token, or `ade browser` reports "no
+   * capability" from inside it. Each launch mints afresh, so the env must carry
+   * the token issued for THIS launch, not one left over from an earlier one.
+   */
+  /** Launches one provider and returns the env it handed the agent. */
+  type LaunchDriver = (issuer: BrowserActorCapabilityIssuer) => Promise<NodeJS.ProcessEnv | undefined>;
+
+  const teardown: Array<() => void | Promise<void>> = [];
+  afterEach(async () => {
+    for (const dispose of teardown.splice(0)) await dispose();
+  });
+
+  const openAcpService = (issuer: BrowserActorCapabilityIssuer) => {
+    const agent = createMockAcpAgent();
+    agent.on("session/new", respondWithSession("acp-session-1", {}));
+    agent.on("session/set_config_option", () => ({ result: {} }));
+    agent.on("session/prompt", async () => ({ result: { stopReason: "end_turn" } }));
+    const pool = createAcpSessionPool();
+    teardown.push(() => pool.disposeAll("test teardown"));
+    return createService({
+      browserActorCapabilityIssuer: issuer,
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+  };
+
+  const installPiWorker = (): Array<Record<string, unknown>> => {
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pi-browser-actor-"));
+    const originalSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+    process.env.PI_CODING_AGENT_SESSION_DIR = sessionDir;
+    teardown.push(() => {
+      if (originalSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionDir;
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    });
+    mockState.piInstallation = {
+      cliPath: null,
+      packageRoot: sessionDir,
+      packageEntry: path.join(sessionDir, "index.js"),
+      version: "0.0.0-test",
+      nodeVersion: process.versions.node,
+      sdkAvailable: true,
+      cliAvailable: false,
+      agentDir: sessionDir,
+      settingsPath: path.join(sessionDir, "settings.json"),
+      authPath: path.join(sessionDir, "auth.json"),
+      modelsPath: path.join(sessionDir, "models.json"),
+      modelsStorePath: path.join(sessionDir, "models-store.json"),
+      blocker: null,
+    };
+    const pooled: any = {
+      process: { exitCode: null, killed: false, connected: true },
+      bridge: { onEvent: null, onLifecycle: null, onUiRequest: null },
+      ready: null,
+      sessionFile: path.join(sessionDir, "pi-session.jsonl"),
+      sessionId: "pi-session-1",
+      currentModel: null,
+      account: null,
+      version: null,
+      availableModels: [],
+      request: vi.fn(async () => ({})),
+      steer: vi.fn(async () => ({})),
+      followUp: vi.fn(async () => ({})),
+      abort: vi.fn(async () => {}),
+      setModel: vi.fn(async () => ({})),
+      setThinking: vi.fn(async () => ({})),
+      compact: vi.fn(async () => ({})),
+      getContextUsage: vi.fn(async () => null),
+      requestModels: vi.fn(async () => []),
+      requestAuth: vi.fn(async () => ({})),
+      login: vi.fn(async () => undefined),
+      cancelLogin: vi.fn(),
+      respondToUi: vi.fn(),
+      dispose: vi.fn(),
+      sendPrompt: vi.fn(async () => ({})),
+    };
+    const acquireCalls: Array<Record<string, unknown>> = [];
+    mockState.piAcquire = async (args) => {
+      acquireCalls.push(args);
+      return { generation: 1, pooled };
+    };
+    return acquireCalls;
+  };
+
+  const sendAndDispose = async (
+    service: ReturnType<typeof createService>["service"],
+    sessionId: string,
+  ) => {
+    await service.sendMessage({ sessionId, text: "Open the app in the browser." }, { awaitDispatch: true });
+    teardown.push(() => service.forceDisposeAll());
+  };
+
+  const launchPaths: Array<[string, LaunchDriver]> = [
+    ["Claude pre-warm", async (issuer) => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-browser-warm") as any);
+      const { service } = createService({ browserActorCapabilityIssuer: issuer });
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      teardown.push(() => service.forceDisposeAll());
+      await vi.waitFor(() => expect(startup).toHaveBeenCalled());
+      await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalled());
+      return (vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as { env?: NodeJS.ProcessEnv }).env;
+    }],
+    ["Claude cold query start", async (issuer) => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(claudeSdkSession("sdk-browser-cold") as any);
+      // No warm query to reuse, so the turn launches the SDK itself.
+      vi.mocked(startup).mockImplementationOnce(async () => {
+        throw new Error("warm-up unavailable");
+      });
+      const { service } = createService({ browserActorCapabilityIssuer: issuer });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await sendAndDispose(service, session.id);
+      await vi.waitFor(() => expect(query).toHaveBeenCalled());
+      return (vi.mocked(query).mock.calls.at(-1)?.[0] as { options?: { env?: NodeJS.ProcessEnv } }).options?.env;
+    }],
+    ["Codex app-server", async (issuer) => {
+      const { service } = createService({ browserActorCapabilityIssuer: issuer });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await sendAndDispose(service, session.id);
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+      const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
+        call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server"));
+      return (spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+    }],
+    ["Cursor SDK", async (issuer) => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService({ browserActorCapabilityIssuer: issuer });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await sendAndDispose(service, session.id);
+      return mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
+    }],
+    ["Droid SDK", async (issuer) => {
+      const { service } = createService({ browserActorCapabilityIssuer: issuer });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+      await sendAndDispose(service, session.id);
+      await vi.waitFor(() => expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0));
+      return mockState.droidAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
+    }],
+    ["ACP agent (Qwen)", async (issuer) => {
+      const { service } = openAcpService(issuer);
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "qwen",
+        model: "qwen3-coder-plus",
+        modelId: "qwen/qwen3-coder-plus",
+      });
+      await sendAndDispose(service, session.id);
+      await vi.waitFor(() => expect(createAcpRuntime).toHaveBeenCalled());
+      return vi.mocked(createAcpRuntime).mock.calls.at(-1)?.[0].spawnPlan.env;
+    }],
+    ["Pi SDK", async (issuer) => {
+      const acquireCalls = installPiWorker();
+      const descriptor = createDynamicPiModelDescriptor("anthropic", "claude-sonnet-5");
+      replaceDynamicPiModelDescriptors([descriptor]);
+      const { service } = createService({ browserActorCapabilityIssuer: issuer });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "pi",
+        model: descriptor.id,
+        modelId: descriptor.id as never,
+      } as any);
+      await sendAndDispose(service, session.id);
+      await vi.waitFor(() => expect(acquireCalls.length).toBeGreaterThan(0));
+      return acquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
+    }],
+  ];
+
+  it.each(launchPaths)("hands the %s launch the token issued for it", async (_label, launch) => {
+    const issued: string[] = [];
+    const issuer: BrowserActorCapabilityIssuer = {
+      issue: async (capability) => {
+        const token = `tok-${capability.chatSessionId}-${issued.length + 1}`;
+        issued.push(token);
+        return token;
+      },
+      revoke: async () => {},
+    };
+
+    const env = await launch(issuer);
+
+    expect(issued.length).toBeGreaterThan(0);
+    expect(env?.ADE_BROWSER_ACTOR_TOKEN).toBe(issued.at(-1));
+    expect(env?.ADE_BROWSER_ACTOR_TOKEN).toMatch(new RegExp(`^tok-${env?.ADE_CHAT_SESSION_ID}-`));
+  });
+});
+
+describe("Claude plan intent at query launch", () => {
+  /**
+   * A Claude query launched while the session still carries the plan sentinel
+   * Claude set itself (EnterPlanMode) gets no activity-report instruction, even
+   * when the send that launches it asks for default mode. The plan intent has
+   * to be read before option building normalizes the sentinel away.
+   */
+  it.each([
+    ["a chat that never entered plan mode", false, true],
+    ["a default-mode send after Claude entered plan mode itself", true, false],
+  ])("activity guidance for %s", async (_label, enterPlanFirst, expectGuidance) => {
+    const cliPath = path.join(tmpRoot, "activity-cli", "ade");
+    fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+    fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(cliPath, 0o755);
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-plan-intent", slash_commands: [] };
+        return;
+      }
+      if (enterPlanFirst && streamCall === 2) {
+        const sessionOpts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        await sessionOpts.canUseTool("EnterPlanMode", {}, {
+          signal: new AbortController().signal,
+          toolUseID: "tool-enter-plan-intent",
+        });
+      }
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send: vi.fn().mockResolvedValue(undefined),
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-plan-intent",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    const { service } = createService({
+      runtimeSocketPath: "/Users/admin/.ade-beta/sock/ade.sock",
+      getAdeCliAgentEnv: () => ({ PATH: path.dirname(cliPath), ADE_CLI_PATH: cliPath }),
+    });
+    const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+    await service.runSessionTurn({ sessionId: session.id, text: "Look around first." });
+    // Stop drops the live query, so the next send launches a fresh one.
+    await service.interrupt({ sessionId: session.id });
+    vi.mocked(buildCodingAgentSystemPrompt).mockClear();
+    await service.sendMessage({ sessionId: session.id, text: "Now go.", interactionMode: "default" }, { awaitDispatch: true });
+    const claudePrompts = () => vi.mocked(buildCodingAgentSystemPrompt).mock.calls
+      .map(([args]) => args)
+      .filter((args) => args.runtime === "claude-agent-sdk-query");
+    await vi.waitFor(() => expect(claudePrompts().length).toBeGreaterThan(0));
+    const guidance = claudePrompts().at(-1)?.sessionActivityGuidance;
+    if (expectGuidance) {
+      expect(guidance).toContain(`chat activity testing --session '${session.id}'`);
+    } else {
+      expect(guidance).toBeNull();
+    }
+    await service.dispose({ sessionId: session.id });
+  });
+});
+
+describe("leaving plan mode keeps a held CTO confirm-first", () => {
+  /**
+   * A voice call holds the CTO in confirm-first ("default") mode. Leaving plan
+   * mode restores whatever access the session had before it — for the CTO,
+   * bypass — so every exit has to re-assert the identity policy, or one exit
+   * hands the call write access without a spoken confirmation.
+   */
+  type ExitContext = {
+    service: ReturnType<typeof createService>["service"];
+    sessionId: string;
+    sessionOpts: any;
+    events: AgentChatEventEnvelope[];
+  };
+  type ExitPath = {
+    /** How the session got into plan mode. */
+    enterVia: "EnterPlanMode" | "plan-mode send";
+    /** Leaves plan mode; returns SDK messages the stream should yield. */
+    exit: (ctx: ExitContext) => Promise<unknown[]>;
+  };
+
+  const approveExitPlanMode = async ({ service, sessionId, sessionOpts, events }: ExitContext) => {
+    const exitPromise = sessionOpts.canUseTool("ExitPlanMode", { planDescription: "Ship it." }, {
+      signal: new AbortController().signal,
+      toolUseID: "tool-exit-plan-held",
+    });
+    const card = await Promise.race([
+      waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request"
+          && (event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval",
+      ),
+      // The stale-session branch answers without a card.
+      exitPromise.then(() => null),
+    ]);
+    if (card) await service.approveToolUse({ sessionId, itemId: card.event.itemId, decision: "accept" });
+    await exitPromise;
+    return [];
+  };
+
+  it.each<[string, ExitPath]>([
+    ["approving ExitPlanMode", { enterVia: "EnterPlanMode", exit: approveExitPlanMode }],
+    ["the SDK reporting it left plan mode", {
+      enterVia: "EnterPlanMode",
+      exit: async () => [{ type: "system", subtype: "status", status: null, permissionMode: "default" }],
+    }],
+    ["ExitPlanMode auto-approved for a session with bypass underneath", {
+      enterVia: "plan-mode send",
+      exit: approveExitPlanMode,
+    }],
+    ["the user switching the mode back", {
+      enterVia: "EnterPlanMode",
+      exit: async ({ service, sessionId }) => {
+        await service.updateSession({ sessionId, permissionMode: "full-auto" });
+        return [];
+      },
+    }],
+  ])("stays confirm-first after %s", async (_label, path) => {
+    vi.mocked(mapPermissionToClaude).mockImplementation((mode) => {
+      if (mode === "full-auto") return "bypassPermissions";
+      if (mode === "edit") return "acceptEdits";
+      if (mode === "default") return "default";
+      return "plan";
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    let service!: ReturnType<typeof createService>["service"];
+    let sessionId = "";
+    let release: (() => void) | null = null;
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-held-cto", slash_commands: [] };
+        return;
+      }
+      const sessionOpts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+      if (path.enterVia === "EnterPlanMode") {
+        await sessionOpts.canUseTool("EnterPlanMode", {}, {
+          signal: new AbortController().signal,
+          toolUseID: "tool-enter-plan-held",
+        });
+      }
+      expect((await service.getSessionSummary(sessionId))?.permissionMode).toBe("plan");
+      // The call starts while the CTO is planning.
+      release = beginIdentityConfirmHold(sessionId);
+      for (const message of await path.exit({ service, sessionId, sessionOpts, events })) yield message;
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send: vi.fn().mockResolvedValue(undefined),
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-held-cto",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    try {
+      ({ service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) }));
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+        identityKey: "cto",
+      });
+      sessionId = session.id;
+      expect(session.permissionMode).toBe("full-auto");
+
+      await service.sendMessage({
+        sessionId,
+        text: "Plan the change.",
+        ...(path.enterVia === "plan-mode send" ? { interactionMode: "plan" as const } : {}),
+      }, { awaitDispatch: true });
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done" && event.sessionId === sessionId);
+
+      const after = await service.getSessionSummary(sessionId);
+      expect(release).not.toBeNull();
+      expect(after?.interactionMode).toBe("default");
+      expect(after?.permissionMode).toBe("default");
+      expect(after?.claudePermissionMode).toBe("default");
+    } finally {
+      (release as (() => void) | null)?.();
+      vi.mocked(mapPermissionToClaude).mockImplementation(() => "plan" as const);
+      await service?.dispose({ sessionId });
+    }
   });
 });
 

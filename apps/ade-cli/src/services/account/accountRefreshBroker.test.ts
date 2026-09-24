@@ -5,6 +5,7 @@ import {
   type CliRefreshBrokerClient,
 } from "./cliRefreshBroker";
 import { createAccountRefreshBroker } from "./accountRefreshBroker";
+import { buildCliPlan, parseCliArgs, shouldInstallBrainRefreshBroker } from "../../cli";
 
 function fakeClient(
   handle: (method: string, params?: unknown) => Promise<unknown>,
@@ -134,18 +135,20 @@ describe("createCliRefreshBroker", () => {
   });
 });
 
-describe("cli refresh broker installation sites", () => {
-  it("is not installed by the plans that host the brain", async () => {
-    const source = await import("node:fs/promises").then((fs) =>
-      fs.readFile(new URL("../../cli.ts", import.meta.url), "utf8"),
-    );
-    const install = source.indexOf("installMachineBrainRefreshBroker");
-    expect(install).toBeGreaterThan(-1);
-    const guard = source.slice(Math.max(0, install - 1200), install);
-    expect(guard).toContain('plan.kind !== "serve"');
-    expect(guard).toContain('plan.kind !== "runtime"');
-    expect(guard).toContain('plan.kind !== "brain"');
-    expect(guard).toContain("!parsed.options.headless");
+describe("cli refresh broker installation", () => {
+  // A brain pointed at its own socket for refreshes would deadlock, so the
+  // plans that host the brain, and headless runs, keep their own credentials.
+  it.each([
+    [["serve"], false],
+    [["runtime", "status"], false],
+    [["brain", "status"], false],
+    [["--headless", "lanes", "list"], false],
+    [["lanes", "list"], true],
+    [["chat", "list"], true],
+  ])("argv %j installs the broker: %s", (argv, expected) => {
+    const parsed = parseCliArgs(argv);
+    const plan = buildCliPlan(parsed.command, parsed.options);
+    expect(shouldInstallBrainRefreshBroker(plan, parsed.options)).toBe(expected);
   });
 });
 
