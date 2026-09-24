@@ -698,7 +698,7 @@ Service entry points live under `apps/desktop/src/main/services/ai/`. The subsys
 - **Router** — `aiIntegrationService.ts` resolves a task → model → provider class and dispatches.
 - **Model registry** — `apps/desktop/src/shared/modelRegistry.ts` is the single source of truth. Each `ModelDescriptor` carries identity (`id`, `shortId`, `providerRoute`, `providerModelId`), capabilities, pricing, context sizing, auth type (`cli-subscription`, `api-key`, `openrouter`, `local`), optional reasoning tiers plus `defaultReasoningEffort`, and optional `harnessProfile`/`discoverySource` for safety metadata.
 - **Classes**:
-  - **CLI-wrapped** (Claude via `@anthropic-ai/claude-agent-sdk`, Codex via the pinned `@openai/codex` package) — spawned as subprocesses; Claude uses the SDK `query()` stream with ADE's async input pump and bundled Claude Code binary, while Codex uses its app-server JSON-RPC bridge. Desktop and runtime packages pin Codex `0.156.0`, including the matching native app-server binary. Authentication inherits from the user's own CLI login. ADE context is exposed through environment variables, and agents can call back into ADE with the `ade` CLI.
+  - **CLI-wrapped** (Claude via `@anthropic-ai/claude-agent-sdk`, Codex via the pinned `@openai/codex` package) — spawned as subprocesses; Claude uses the SDK `query()` stream with ADE's async input pump and bundled Claude Code binary, while Codex uses its app-server JSON-RPC bridge. Desktop and runtime packages pin Codex `0.156.1`, including the matching native app-server binary. Authentication inherits from the user's own CLI login. ADE context is exposed through environment variables, and agents can call back into ADE with the `ade` CLI.
   - **API-key / OpenRouter** (Anthropic, OpenAI, Google, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter) — routed through the **OpenCode server** (`opencode` binary, user-installed or bundled). Discovery via `openCodeInventory.ts`; replaces dynamic portion of the registry.
   - **Local** (Ollama, LM Studio, vLLM) — OpenAI-compatible local endpoints through OpenCode. Discovery via `localModelDiscovery.ts`.
   - **Library-in-worker** (Pi) — the user's own Pi installation is resolved at runtime and loaded inside a forked Node worker (`piSdkPool.ts` / `piSdkWorker.ts`), never statically imported. The worker owns the Pi agent session, model runtime, tool registry, extension binding, and sign-in; the desktop process owns the cards that session blocks on, over a validated protocol-v2 channel (`piSdkProtocol.ts`). Installation resolution and blockers live in `services/ai/piInstallation.ts`; in-app provider sign-in lives in `services/ai/piAuthService.ts` and drives Pi's own `ModelRuntime.login` — Pi's `AuthStorage` writes `auth.json`, and ADE never receives, stores, or logs a credential. Pi is also the one runtime whose chat sessions share a native store with a tracked CLI: `piSessionStore.ts` resolves that one store (and refuses to honour a checkout's `.pi/settings.json`), `piSessionLease.ts` holds the live-writer lock, and `piSessionOwnership.ts` records the durable claim that keeps a terminal from adopting a chat's session. See [Agent Routing › Session store](features/chat/agent-routing.md#session-store).
@@ -1264,9 +1264,9 @@ CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under
 `apps/desktop/src/shared/` so the desktop renderer, chat launch helpers, ADE CLI
 action surface, and sync remote-command service share one provider launch
 contract. Resume builders preserve provider-native model/permission state when
-an import supplies no explicit override. `externalSessionAffordances.ts`
-similarly centralizes provider capability-to-action policy for desktop and ADE
-Code. Renderer imports go through thin re-export shims under
+an import supplies no explicit override. `externalSessionPolicy.ts`
+similarly centralizes the external-session import policy for desktop, ADE
+Code, and the host import guard (iOS has a Swift port). Renderer imports go through thin re-export shims under
 `apps/desktop/src/renderer/`. The mobile launcher path
 (`work.startCliSession`) uses the shared launch helpers on the host side, while
 iOS mirrors the external-import action policy natively in

@@ -15,6 +15,10 @@ const PROVIDERS = new Set<ExternalSessionProvider>([
   "droid",
   "opencode",
   "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
 ]);
 
 function asProvider(value: unknown): ExternalSessionProvider | null {
@@ -58,7 +62,10 @@ function pointersFromRecord(raw: unknown): ProviderPointer[] {
   const importedFrom = record.importedFrom && typeof record.importedFrom === "object"
     ? record.importedFrom as Record<string, unknown>
     : null;
-  pushPointer(pointers, asProvider(importedFrom?.provider) ?? provider, asId(importedFrom?.sessionId));
+  // A copy leaves its original untouched, so only a continue claims it.
+  if (importedFrom?.mode !== "fork") {
+    pushPointer(pointers, asProvider(importedFrom?.provider) ?? provider, asId(importedFrom?.sessionId));
+  }
   pushPointer(pointers, "claude", asId(record.sdkSessionId));
   pushPointer(pointers, "codex", asId(record.threadId));
   pushPointer(pointers, provider === "opencode" || !provider ? "opencode" : provider, asId(record.providerSessionId));
@@ -66,6 +73,9 @@ function pointersFromRecord(raw: unknown): ProviderPointer[] {
   pushPointer(pointers, "pi", asId(record.piSessionId) ?? asId(record.piSessionFile));
   pushPointer(pointers, "cursor", asId(record.cursorSdkAgentId));
   pushPointer(pointers, "cursor", asId(record.cursorCloudAgentId));
+  if (provider === "qwen" || provider === "kimi" || provider === "grok" || provider === "copilot") {
+    pushPointer(pointers, provider, asId(record.acpSessionId));
+  }
   return pointers;
 }
 

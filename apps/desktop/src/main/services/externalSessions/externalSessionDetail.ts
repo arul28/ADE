@@ -5,12 +5,7 @@ import type {
   ExternalSessionDetailArgs,
   ExternalSessionDetailMessage,
 } from "../../../shared/types/externalSessionDetail";
-import { discoverClaudeSessions } from "./discoverClaude";
-import { discoverCodexSessions } from "./discoverCodex";
-import { discoverCursorSessions } from "./discoverCursor";
-import { discoverDroidSessions } from "./discoverDroid";
-import { discoverOpenCodeSessions } from "./discoverOpenCode";
-import { discoverPiSessions } from "./discoverPi";
+import { discoverExternalSessionRecord, loadExternalSessionEvents } from "./events";
 import {
   asRecord,
   asString,
@@ -57,36 +52,15 @@ function assertProvider(value: string): ExternalSessionProvider {
     case "droid":
     case "opencode":
     case "pi":
+    case "qwen":
+    case "kimi":
+    case "grok":
+    case "copilot":
       return value;
     default: {
       const _never: never = value as never;
       void _never;
       throw new Error("external session detail provider is invalid.");
-    }
-  }
-}
-
-async function discoverRecord(
-  provider: ExternalSessionProvider,
-  sessionId: string,
-): Promise<ExternalSessionDiscoveryRecord | null> {
-  const args = { sessionId, limit: 1 };
-  switch (provider) {
-    case "claude":
-      return (await discoverClaudeSessions(args))[0] ?? null;
-    case "codex":
-      return (await discoverCodexSessions(args))[0] ?? null;
-    case "cursor":
-      return (await discoverCursorSessions(args))[0] ?? null;
-    case "droid":
-      return (await discoverDroidSessions(args))[0] ?? null;
-    case "opencode":
-      return (await discoverOpenCodeSessions(args))[0] ?? null;
-    case "pi":
-      return (await discoverPiSessions(args))[0] ?? null;
-    default: {
-      const _never: never = provider;
-      return _never;
     }
   }
 }
@@ -167,22 +141,46 @@ export function normalizeExternalSessionDetailArgs(arg: unknown): ExternalSessio
   if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
     throw new Error("external session detail sessionId must be a string.");
   }
+  const before = typeof record.before === "string" && record.before.trim() ? record.before.trim() : null;
   return {
     provider: assertProvider(record.provider),
     sessionId: record.sessionId.trim(),
+    ...(before ? { before } : {}),
   };
 }
 
+/** The chat-session id preview events carry; also the renderer's list key. */
+export function externalSessionPreviewChatId(provider: ExternalSessionProvider, sessionId: string): string {
+  return `external-preview:${provider}:${sessionId}`;
+}
+
+/**
+ * One session's detail. `messages` stays the text tail old clients (iOS, TUI)
+ * read; `events` is the newest page of the full conversation as ADE chat
+ * events (or the page before `args.before`), with no "Session imported from"
+ * notice. `options.maxEvents` shrinks the page (the phone asks for fewer);
+ * paging stays exact because the cursor never encodes a page size.
+ */
 export async function loadExternalSessionDetail(
   args: ExternalSessionDetailArgs,
+  options: { maxEvents?: number } = {},
 ): Promise<ExternalSessionDetail> {
-  const record = await discoverRecord(args.provider, args.sessionId);
+  const record = await discoverExternalSessionRecord(args.provider, args.sessionId);
   if (!record) return emptyDetail(args);
   const sourcePath = record.sourcePath?.trim() || null;
   const suffix = sourcePath ? readJsonlRecordsFromSuffix(sourcePath, DETAIL_TAIL_BYTES) : [];
   const messages = suffix.length
     ? messagesFromRecords(args.provider, suffix)
     : (record.messages ?? []);
+  const page = await loadExternalSessionEvents({
+    provider: args.provider,
+    sessionId: args.sessionId,
+    record,
+    chatSessionId: externalSessionPreviewChatId(args.provider, args.sessionId),
+    purpose: "preview",
+    before: args.before ?? null,
+    ...(options.maxEvents != null ? { maxEvents: options.maxEvents } : {}),
+  }).catch(() => null);
   return {
     provider: record.provider,
     id: record.id,
@@ -195,6 +193,9 @@ export async function loadExternalSessionDetail(
     messages,
     sourcePath,
     watchable: Boolean(sourcePath),
+    events: page?.events ?? null,
+    hasOlder: page?.hasOlder ?? false,
+    olderCursor: page?.olderCursor ?? null,
   };
 }
 
@@ -257,6 +258,8 @@ export async function startExternalSessionDetailWatch(args: {
     if (entry.closed) return;
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
+      // Always the newest page (no `before`): a live update shows the tail,
+      // and a client that paged back keeps its older pages.
       void loadExternalSessionDetail({
         provider: args.provider,
         sessionId: args.sessionId,

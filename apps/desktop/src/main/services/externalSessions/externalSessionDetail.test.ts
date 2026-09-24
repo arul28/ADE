@@ -21,6 +21,11 @@ vi.mock("./discoverOpenCode", () => ({
 vi.mock("./discoverPi", () => ({
   discoverPiSessions: vi.fn(),
 }));
+// Never spawn a real `opencode export` from a unit test.
+vi.mock("./events/opencode", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./events/opencode")>()),
+  runOpenCodeExport: vi.fn(async () => null),
+}));
 
 import { discoverClaudeSessions } from "./discoverClaude";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
@@ -54,6 +59,11 @@ describe("externalSessionDetail", () => {
       provider: "claude",
       sessionId: "  abc  ",
     })).toEqual({ provider: "claude", sessionId: "abc" });
+    expect(normalizeExternalSessionDetailArgs({
+      provider: "grok",
+      sessionId: "g-1",
+      before: " cursor ",
+    })).toEqual({ provider: "grok", sessionId: "g-1", before: "cursor" });
     expect(() => normalizeExternalSessionDetailArgs({})).toThrow(/provider/i);
     expect(() => normalizeExternalSessionDetailArgs({ provider: "claude", sessionId: "" })).toThrow(/sessionId/i);
   });
@@ -93,6 +103,79 @@ describe("externalSessionDetail", () => {
     expect(detail.sourcePath).toBe(filePath);
   });
 
+  it("returns the conversation as preview events and pages back with `before`", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ext-detail-events-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "session.jsonl");
+    const rows: unknown[] = [];
+    for (let turn = 0; turn < 150; turn += 1) {
+      rows.push({
+        type: "user",
+        uuid: `u${turn}`,
+        timestamp: new Date(Date.parse("2026-08-01T00:00:00.000Z") + turn * 3000).toISOString(),
+        message: { role: "user", content: [{ type: "text", text: `question ${turn}` }] },
+      });
+      rows.push({
+        type: "assistant",
+        uuid: `a${turn}`,
+        timestamp: new Date(Date.parse("2026-08-01T00:00:01.000Z") + turn * 3000).toISOString(),
+        message: { role: "assistant", content: [{ type: "tool_use", id: `toolu_${turn}`, name: "Read", input: { path: `f${turn}.ts` } }] },
+      });
+      rows.push({
+        type: "user",
+        uuid: `r${turn}`,
+        timestamp: new Date(Date.parse("2026-08-01T00:00:02.000Z") + turn * 3000).toISOString(),
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_${turn}`, content: "body" }] },
+      });
+    }
+    writeJsonl(filePath, rows);
+    vi.mocked(discoverClaudeSessions).mockResolvedValue([
+      {
+        provider: "claude",
+        id: "sess-events",
+        cwd: "/Users/dev/project",
+        title: null,
+        preview: null,
+        createdAt: null,
+        updatedAt: null,
+        messageCount: 150,
+        sourcePath: filePath,
+      },
+    ]);
+
+    const detail = await loadExternalSessionDetail({ provider: "claude", sessionId: "sess-events" });
+    // `messages` keeps its old shape for iOS and the TUI.
+    expect(detail.messages.at(-1)).toMatchObject({ role: "user", text: "question 149" });
+    const events = detail.events ?? [];
+    expect(events).toHaveLength(200);
+    expect(events.every((envelope) => envelope.sessionId === "external-preview:claude:sess-events")).toBe(true);
+    expect(events.some(({ event }) => event.type === "system_notice")).toBe(false);
+    expect(events.at(-2)?.event).toMatchObject({ type: "tool_call", tool: "Read", itemId: "toolu_149" });
+    expect(events.at(-1)?.event).toMatchObject({ type: "tool_result", itemId: "toolu_149" });
+    expect(detail.hasOlder).toBe(true);
+    expect(detail.olderCursor).toEqual(expect.any(String));
+
+    const older = await loadExternalSessionDetail({
+      provider: "claude",
+      sessionId: "sess-events",
+      before: detail.olderCursor,
+    });
+    expect(older.events).toHaveLength(200);
+    // The newest page began at turn 83's tool call; this one ends just before it.
+    expect(older.events?.at(-1)?.event).toMatchObject({ type: "user_message", text: "question 83" });
+    expect(older.hasOlder).toBe(true);
+
+    const oldest = await loadExternalSessionDetail({
+      provider: "claude",
+      sessionId: "sess-events",
+      before: older.olderCursor,
+    });
+    expect(oldest.events).toHaveLength(50);
+    expect(oldest.events?.[0]?.event).toMatchObject({ type: "user_message", text: "question 0" });
+    expect(oldest.hasOlder).toBe(false);
+    expect(oldest.olderCursor).toBeNull();
+  });
+
   it("marks OpenCode details unwatchable when there is no session file", async () => {
     vi.mocked(discoverOpenCodeSessions).mockResolvedValue([
       {
@@ -111,6 +194,8 @@ describe("externalSessionDetail", () => {
     const detail = await loadExternalSessionDetail({ provider: "opencode", sessionId: "oc-1" });
     expect(detail.watchable).toBe(false);
     expect(detail.messages).toEqual([{ role: "user", text: "hello", at: null }]);
+    // No export available: the preview falls back to the sampled messages.
+    expect(detail.events?.map(({ event }) => event.type)).toEqual(["user_message"]);
   });
 
   it("starts a watchable tail and tears it down", async () => {

@@ -3,9 +3,10 @@ import { Box, Text } from "ink";
 import { theme } from "../theme";
 import { formatRelativePastTime } from "../relativeTime";
 import {
+  externalSessionLaneLabel,
   externalSessionProviderLabel,
   externalSessionRowTitle,
-  shortenCwd,
+  formatExternalSessionSize,
 } from "../externalSessionBrowser";
 import type { ExternalSessionSummary } from "../../../../desktop/src/shared/types/externalSessions";
 
@@ -63,9 +64,10 @@ export function ExternalSessionPreview({
       <Text color={theme.color.t4} dimColor wrap="truncate-end">
         {[
           externalSessionProviderLabel(session.provider),
-          session.cwd ? shortenCwd(session.cwd, { maxSegments: 4 }) : null,
+          externalSessionLaneLabel(session),
           updatedAt ? formatRelativePastTime(new Date(updatedAt).toISOString()) : null,
-          session.messageCount != null ? `${session.messageCount} messages` : null,
+          session.messageCount != null ? `${session.messageCount} prompts` : null,
+          formatExternalSessionSize(session.sizeBytes),
           session.alreadyImported ? "already imported" : null,
         ].filter(Boolean).join(" · ")}
       </Text>

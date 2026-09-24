@@ -30,6 +30,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { createMockExternalSessionsApi } from "./browserMockExternalSessions";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
@@ -5969,10 +5970,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
     },
-    externalSessions: {
-      list: async () => [],
-      import: async () => ({ kind: "cli" as const, sessionId: "mock-session", ptyId: "mock", laneId: "mock-lane" }),
-    },
+    externalSessions: createMockExternalSessionsApi(() => MOCK_LANES),
     // Stateful on purpose: the accounts UI adds, renames and removes rows, and
     // a stub that always returned the same two entries would make every one of
     // those interactions look broken in the Vite-only preview.

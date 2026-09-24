@@ -1,10 +1,36 @@
-import { relativeWhen } from "../../../lib/format";
+import { providerDisplayName } from "./contract";
+import { relativeTimeCompact, relativeWhen } from "../../../lib/format";
 import type { ExternalSessionMessage, ExternalSessionSummary } from "./contract";
-import { shortenCwd } from "./affordances";
 
 export function formatUpdatedAt(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return "";
   return relativeWhen(new Date(ms).toISOString());
+}
+
+/** Short relative time for list rows: "13m", "2d". */
+export function formatUpdatedAtCompact(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "";
+  return relativeTimeCompact(new Date(ms).toISOString());
+}
+
+/** "1 prompt", "1,100 prompts"; empty when the count is unknown. */
+export function formatPromptCount(count: number | null | undefined): string {
+  if (count == null || !Number.isFinite(count)) return "";
+  return `${count.toLocaleString()} prompt${count === 1 ? "" : "s"}`;
+}
+
+/** Whole units above 10 ("40 MB"), one decimal below ("2.4 MB"). */
+export function formatSessionSize(bytes: number | null | undefined): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const text = unit === 0 || value >= 10 ? String(Math.round(value)) : value.toFixed(1);
+  return `${text} ${units[unit]}`;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -28,12 +54,6 @@ export function sessionDateGroup(ms: number | null | undefined, now = Date.now()
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-function lastPathSegment(cwd: string | null | undefined): string | null {
-  if (!cwd) return null;
-  const segments = cwd.split(/[\\/]/u).filter(Boolean);
-  return segments.at(-1) ?? null;
-}
-
 /** Collapses a prompt to one line so it can stand in as a heading. */
 function asHeadingText(value: string | null | undefined): string | null {
   const collapsed = value?.replace(/\s+/gu, " ").trim();
@@ -53,9 +73,13 @@ export function sessionHeading(summary: ExternalSessionSummary): string {
   if (title) return title;
   const opening = asHeadingText(summary.preview);
   if (opening) return opening;
-  const where = lastPathSegment(summary.cwd) ?? shortenCwd(summary.cwd);
-  const when = formatUpdatedAt(summary.updatedAt);
-  return when ? `${where} · ${when}` : where;
+  // No title and no opening prompt: the first user message the host sampled,
+  // then a plain label. The row already shows the lane and the time, so the
+  // old "<folder> · 41d ago" fallback repeated both and named nothing.
+  const firstUser = summary.messages?.find((message) => message.role === "user")?.text;
+  const sampled = asHeadingText(firstUser ?? null);
+  if (sampled) return sampled;
+  return `Untitled ${providerDisplayName(summary.provider)} chat`;
 }
 
 /**

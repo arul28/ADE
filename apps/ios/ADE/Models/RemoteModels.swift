@@ -5861,6 +5861,58 @@ struct ExternalSessionMessage: Codable, Equatable {
   }
 }
 
+/// Where an external session lives, resolved by the host against the project's
+/// lanes. `kind` is "lane", "removed-lane" or "outside". Every field decodes
+/// leniently: a malformed `home` must never drop the whole row.
+struct ExternalSessionHome: Codable, Equatable {
+  var kind: String
+  var laneId: String?
+  var laneName: String?
+  var branchRef: String?
+  var color: String?
+  var laneType: String?
+  var atLaneRoot: Bool
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case laneId
+    case laneName
+    case branchRef
+    case color
+    case laneType
+    case atLaneRoot
+  }
+
+  init(
+    kind: String,
+    laneId: String? = nil,
+    laneName: String? = nil,
+    branchRef: String? = nil,
+    color: String? = nil,
+    laneType: String? = nil,
+    atLaneRoot: Bool = false
+  ) {
+    self.kind = kind
+    self.laneId = laneId
+    self.laneName = laneName
+    self.branchRef = branchRef
+    self.color = color
+    self.laneType = laneType
+    self.atLaneRoot = atLaneRoot
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    kind = (try? container.decodeIfPresent(String.self, forKey: .kind)) ?? "outside"
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    laneName = try? container.decodeIfPresent(String.self, forKey: .laneName)
+    branchRef = try? container.decodeIfPresent(String.self, forKey: .branchRef)
+    color = try? container.decodeIfPresent(String.self, forKey: .color)
+    laneType = try? container.decodeIfPresent(String.self, forKey: .laneType)
+    atLaneRoot = (try? container.decodeIfPresent(Bool.self, forKey: .atLaneRoot)) ?? false
+  }
+}
+
 struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var provider: String
   var id: String
@@ -5876,6 +5928,10 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var possiblyActive: Bool
   var cwdMatchesRequestedLane: Bool?
   var capabilities: ExternalSessionCapabilities
+  /// The lane this session belongs to. Older hosts do not send it.
+  var home: ExternalSessionHome?
+  /// Size of the provider's session store entry on disk, when the host has it.
+  var sizeBytes: Double?
 
   private enum CodingKeys: String, CodingKey {
     case provider
@@ -5892,6 +5948,8 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     case possiblyActive
     case cwdMatchesRequestedLane
     case capabilities
+    case home
+    case sizeBytes
   }
 
   init(
@@ -5908,7 +5966,9 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     importedSessionRef: ExternalSessionImportedRef? = nil,
     possiblyActive: Bool = false,
     cwdMatchesRequestedLane: Bool? = nil,
-    capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities()
+    capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities(),
+    home: ExternalSessionHome? = nil,
+    sizeBytes: Double? = nil
   ) {
     self.provider = provider
     self.id = id
@@ -5924,6 +5984,8 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     self.possiblyActive = possiblyActive
     self.cwdMatchesRequestedLane = cwdMatchesRequestedLane
     self.capabilities = capabilities
+    self.home = home
+    self.sizeBytes = sizeBytes
   }
 
   init(from decoder: Decoder) throws {
@@ -5953,6 +6015,10 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     cwdMatchesRequestedLane = try container.decodeIfPresent(Bool.self, forKey: .cwdMatchesRequestedLane)
     capabilities = try container.decodeIfPresent(ExternalSessionCapabilities.self, forKey: .capabilities)
       ?? ExternalSessionCapabilities()
+    // Newer optional fields decode with `try?`: a malformed value drops the
+    // field, never the row.
+    home = try? container.decodeIfPresent(ExternalSessionHome.self, forKey: .home)
+    sizeBytes = try? container.decodeIfPresent(Double.self, forKey: .sizeBytes)
   }
 }
 
@@ -5987,6 +6053,63 @@ struct ExternalSessionListResult: Decodable, Equatable {
     } else {
       sessions = []
     }
+  }
+}
+
+/// One external session's conversation from `work.getExternalSessionDetail`:
+/// a page of ADE chat events (oldest to newest), plus the cursor for the page
+/// before it. Every field decodes leniently — a bad field is dropped, never the
+/// whole detail — and a row this build cannot decode drops out of `events`
+/// alone. `messages` is the text tail a host sends when it produced no events.
+struct ExternalSessionDetail: Decodable, Equatable {
+  var provider: String?
+  var id: String?
+  var events: [AgentChatEventEnvelope]
+  var messages: [ExternalSessionMessage]
+  var hasOlder: Bool
+  var olderCursor: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case provider
+    case id
+    case events
+    case messages
+    case hasOlder
+    case olderCursor
+  }
+
+  init(
+    provider: String? = nil,
+    id: String? = nil,
+    events: [AgentChatEventEnvelope] = [],
+    messages: [ExternalSessionMessage] = [],
+    hasOlder: Bool = false,
+    olderCursor: String? = nil
+  ) {
+    self.provider = provider
+    self.id = id
+    self.events = events
+    self.messages = messages
+    self.hasOlder = hasOlder
+    self.olderCursor = olderCursor
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    provider = try? container.decodeIfPresent(String.self, forKey: .provider)
+    id = try? container.decodeIfPresent(String.self, forKey: .id)
+    events = (try? container.decodeIfPresent(
+      ADELossyArray<AgentChatEventEnvelope>.self,
+      forKey: .events
+    ))?.wrappedValue ?? []
+    messages = (try? container.decodeIfPresent(
+      ADELossyArray<ExternalSessionMessage>.self,
+      forKey: .messages
+    ))?.wrappedValue ?? []
+    hasOlder = (try? container.decodeIfPresent(Bool.self, forKey: .hasOlder)) ?? false
+    let cursor = (try? container.decodeIfPresent(String.self, forKey: .olderCursor))?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    olderCursor = cursor.isEmpty ? nil : cursor
   }
 }
 

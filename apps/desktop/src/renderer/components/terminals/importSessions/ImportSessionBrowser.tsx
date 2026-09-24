@@ -1,109 +1,65 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ArrowClockwise,
-  ArrowLeft,
-  CircleNotch,
-  DownloadSimple,
-  MagnifyingGlass,
-  Warning,
-} from "@phosphor-icons/react";
+import { ArrowClockwise, DownloadSimple, FolderSimple, Warning } from "@phosphor-icons/react";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
-import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
-import type { OpenProjectBinding } from "../../../../shared/types";
-import { cn } from "../../ui/cn";
+import {
+  planImport,
+  type ImportPlan,
+  type ImportPlanAction,
+  type ImportSurface,
+} from "../../../../shared/externalSessionPolicy";
+import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
-import { SmartTooltip } from "../../ui/SmartTooltip";
-import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
-import { DraftMachinePicker } from "../../chat/DraftMachinePicker";
-import { ToolLogo } from "../ToolLogos";
-import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
+import type { LaneComboboxLane } from "../LaneCombobox";
 import {
   ALL_IMPORT_PROVIDERS,
   getExternalSessionsApi,
   normalizeListResult,
   providerDisplayName,
-  PROVIDER_FAMILY,
-  PROVIDER_TOOL_TYPE,
-  type ExternalSessionDetail,
   type ExternalSessionImportResult,
   type ExternalSessionProvider,
   type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "./contract";
 import {
-  importAffordancesFor,
-  shortenCwd,
-  type ImportAffordance,
-} from "./affordances";
-import { formatUpdatedAt, sessionDateGroup, sessionHeading } from "./sessionPresentation";
+  ALL_LANES_ID,
+  countBy,
+  defaultForkModel,
+  defaultLaneOf,
+  hasPrompts,
+  homeLaneIdIn,
+  laneFilterKey,
+  matchesLaneFilter,
+  matchesProviderFilter,
+  matchesSearch,
+  OTHER_FOLDERS_ID,
+  readImportedSessionRef,
+  readSurfacePreference,
+  replaceProviderRows,
+  sessionKey,
+  sessionPlace,
+  sortByRecent,
+  writeSurfacePreference,
+  type ImportedSessionRef,
+  type ProviderFilter,
+  type SessionPlace,
+} from "./importBrowserModel";
+import { ImportActionBar } from "./ImportActionBar";
+import { ImportSessionList, type SessionGroup } from "./ImportSessionList";
+import { ImportSessionPreview } from "./ImportSessionPreview";
+import { ImportTopBar } from "./ImportTopBar";
+import { sessionDateGroup } from "./sessionPresentation";
 
-const PROVIDER_FILTERS: Array<{ id: ExternalSessionProvider | "all"; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "claude", label: "Claude" },
-  { id: "codex", label: "Codex" },
-  { id: "cursor", label: "Cursor" },
-  { id: "droid", label: "Droid" },
-  { id: "opencode", label: "OpenCode" },
-  { id: "pi", label: "Pi" },
-];
-
-type ProviderFilter = ExternalSessionProvider | "all";
-
-type ImportedSessionRef = { kind: "chat" | "cli"; sessionId: string };
-
-function readImportedSessionRef(summary: ExternalSessionSummary): ImportedSessionRef | null {
-  const raw = (summary as { importedSessionRef?: unknown }).importedSessionRef;
-  if (!raw || typeof raw !== "object") return null;
-  const kind = (raw as { kind?: unknown }).kind;
-  const sessionId = (raw as { sessionId?: unknown }).sessionId;
-  if ((kind !== "chat" && kind !== "cli") || typeof sessionId !== "string" || !sessionId) {
-    return null;
-  }
-  return { kind, sessionId };
-}
+export { DEFAULT_FORK_MODEL } from "./importBrowserModel";
 
 const BROWSE_LIMIT = 200;
-/** Must stay resolvable through the shared model registry; see the guard test. */
-export const DEFAULT_FORK_MODEL = "anthropic/claude-sonnet-5";
-
-function mergeSessions(
-  prev: ExternalSessionSummary[],
-  rows: ExternalSessionSummary[],
-): ExternalSessionSummary[] {
-  const byKey = new Map(prev.map((s) => [`${s.provider}:${s.id}`, s]));
-  for (const row of rows) byKey.set(`${row.provider}:${row.id}`, row);
-  return Array.from(byKey.values());
-}
-
-function hasPrompts(summary: ExternalSessionSummary): boolean {
-  return summary.messageCount == null || summary.messageCount > 0;
-}
-
-function externalSessionScanFailureMessage(
-  providers: readonly ExternalSessionProvider[],
-  machineName: string,
-): string {
-  const source = providers.length === 1
-    ? providerDisplayName(providers[0]) + " chats"
-    : "external chats";
-  return `ADE couldn't scan ${source} on ${machineName}. Check that this computer has the project open, then try again.`;
-}
-
-function ScrollPort({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
-      data-scroll-lock-scrollable=""
-      onWheel={(event) => event.stopPropagation()}
-    >
-      {children}
-    </div>
-  );
-}
+/** How long "Continue anyway" stays armed after the first click on a live session. */
+const LIVE_CONFIRM_MS = 4000;
+const SCAN_RETRY_DELAY_MS = 2500;
 
 export type ImportSessionBrowserProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The lane the dialog was opened from. Read once per open; later changes never move the target. */
   laneId: string;
   laneName: string;
   lanes?: LaneComboboxLane[];
@@ -116,6 +72,31 @@ export type ImportSessionBrowserProps = {
   onOpenExisting?: (ref: ImportedSessionRef, source?: ExternalSessionSource) => void;
 };
 
+function scanFailureMessage(machineName: string): string {
+  return `ADE couldn't scan sessions on ${machineName}. Check that this computer has the project open, then try again.`;
+}
+
+function CenterState({
+  icon,
+  title,
+  detail,
+  action,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  detail?: string | null;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex h-full min-h-[160px] flex-1 flex-col items-center justify-center px-6 py-8 text-center">
+      {icon ? <div className="mb-2.5 text-muted-fg/60">{icon}</div> : null}
+      <div className="text-[12.5px] font-medium text-fg/90">{title}</div>
+      {detail ? <div className="mt-1 max-w-sm text-[11px] leading-relaxed text-muted-fg/60">{detail}</div> : null}
+      {action}
+    </div>
+  );
+}
+
 export function ImportSessionBrowser({
   open,
   onOpenChange,
@@ -126,108 +107,121 @@ export function ImportSessionBrowser({
   onImported,
   onOpenExisting,
 }: ImportSessionBrowserProps) {
+  // The lane the dialog opened from, captured on open. The Work view's lane
+  // can change underneath an open dialog; nothing here may follow it.
+  const [openedLaneId, setOpenedLaneId] = useState<string | null>(open ? laneId : null);
+  if (open && openedLaneId === null) setOpenedLaneId(laneId);
+  if (!open && openedLaneId !== null) setOpenedLaneId(null);
+  const openLaneId = openedLaneId ?? laneId;
+
   const [sessions, setSessions] = useState<ExternalSessionSummary[]>([]);
   const [pendingProviders, setPendingProviders] = useState<ExternalSessionProvider[]>([]);
+  /** True once a scan of the current source finished; a refresh keeps it. */
+  const [scanDone, setScanDone] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [providerNotices, setProviderNotices] = useState<Partial<Record<ExternalSessionProvider, string>>>({});
+  const [failedProviders, setFailedProviders] = useState<ExternalSessionProvider[]>([]);
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
+  const [laneFilterChoice, setLaneFilterChoice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [importing, setImporting] = useState<string | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [selectedSession, setSelectedSession] = useState<ExternalSessionSummary | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [targetChoice, setTargetChoice] = useState<{ key: string; laneId: string } | null>(null);
+  const [surfacePrefs, setSurfacePrefs] = useState<Partial<Record<ExternalSessionProvider, ImportSurface>>>({});
+  const [modelChoice, setModelChoice] = useState<{ key: string; model: string } | null>(null);
+  const [confirmToken, setConfirmToken] = useState<string | null>(null);
+  // A chat copy asks for its model first: the first "Copy" click arms it and
+  // shows the picker, the next click (or Enter) makes the copy.
+  const [copyArmedToken, setCopyArmedToken] = useState<string | null>(null);
+  // Enter never imports the row the dialog picked on its own: the user must
+  // have chosen a row (click, arrow keys) or typed a search first.
+  const [selectionTouched, setSelectionTouched] = useState(false);
+  const [importing, setImporting] = useState<{ key: string; mode: ImportPlanAction["mode"] } | null>(null);
+  const [importError, setImportError] = useState<{ key: string; message: string } | null>(null);
+  const requestSeq = useRef(0);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // ── Sources (which computer to scan) ────────────────────────────────────
   const fallbackLanes = useMemo<LaneComboboxLane[]>(
     () => lanes.length ? lanes : [{ id: laneId, name: laneName }],
     [laneId, laneName, lanes],
   );
-  const fallbackSource = useMemo<ExternalSessionSource>(
-    () => ({
+  const sourceOptions = useMemo<ExternalSessionSource[]>(
+    () => sources?.length ? sources : [{
       machineId: THIS_MACHINE_ID,
       machineName: THIS_MACHINE_NAME,
       lanes: fallbackLanes,
       binding: null,
       runtimePin: null,
       online: true,
-    }),
-    [fallbackLanes],
-  );
-  const sourceOptions = useMemo<ExternalSessionSource[]>(
-    () => sources?.length ? sources : [fallbackSource],
-    [fallbackSource, sources],
+    }],
+    [fallbackLanes, sources],
   );
   const defaultSource = sourceOptions.find((source) => source.machineId === THIS_MACHINE_ID)
     ?? sourceOptions[0]
     ?? null;
   const defaultSourceId = defaultSource?.machineId ?? null;
-  const defaultLane = defaultSource?.lanes.find((lane) => lane.id === laneId)
-    ?? defaultSource?.lanes.find((lane) => lane.laneType === "primary")
-    ?? defaultSource?.lanes.find((lane) => lane.name.trim().toLowerCase() === "primary")
-    ?? defaultSource?.lanes[0]
-    ?? null;
-  const defaultLaneId = defaultLane?.id ?? laneId;
   const [selectedSourceId, setSelectedSourceId] = useState(defaultSourceId);
   const [sourceSelectionTouched, setSourceSelectionTouched] = useState(false);
-  const [targetLaneId, setTargetLaneId] = useState(defaultLaneId);
-  const requestSeq = useRef(0);
   const selectedSource = sourceOptions.find((source) => source.machineId === selectedSourceId)
     ?? defaultSource;
-
-  const availableLanes = useMemo<LaneComboboxLane[]>(
+  const machineName = selectedSource?.machineName ?? THIS_MACHINE_NAME;
+  const runtimePin = selectedSource?.runtimePin ?? null;
+  const availableLanes = useMemo<Array<LaneComboboxLane & { laneType?: string | null }>>(
     () => selectedSource?.lanes.length ? selectedSource.lanes : fallbackLanes,
     [fallbackLanes, selectedSource],
   );
-  const targetLaneName = availableLanes.find((lane) => lane.id === targetLaneId)?.name ?? targetLaneId;
-  const loading = pendingProviders.length > 0;
+  const lanesById = useMemo(() => new Map(availableLanes.map((lane) => [lane.id, lane])), [availableLanes]);
+  // The scan passes a lane as context for the host. Derived from the lane
+  // captured on open, so a Work lane switch never triggers a rescan.
+  const scanLaneId = defaultLaneOf(availableLanes, openLaneId);
+  const fallbackTargetLaneId = scanLaneId;
 
-  // Closing the dialog always returns the next open to the local computer. A
-  // deliberate choice remains in force for the current browse, but it should
-  // never become a surprising default the next time the importer opens.
+  const resetBrowseState = useCallback(() => {
+    setSessions([]);
+    setScanDone(false);
+    setLoadError(null);
+    setFailedProviders([]);
+    setProviderFilter("all");
+    setLaneFilterChoice(null);
+    setQuery("");
+    setSelectedKey(null);
+    setTargetChoice(null);
+    setModelChoice(null);
+    setConfirmToken(null);
+    setImportError(null);
+  }, []);
+
+  // Closing always returns the next open to this computer with fresh state.
   useEffect(() => {
     if (open) return;
+    requestSeq.current += 1;
+    setPendingProviders([]);
+    setImporting(null);
     setSelectedSourceId((current) => current === defaultSourceId ? current : defaultSourceId);
     setSourceSelectionTouched(false);
-    setTargetLaneId((current) => current === defaultLaneId ? current : defaultLaneId);
-  }, [defaultLaneId, defaultSourceId, open]);
+    resetBrowseState();
+  }, [defaultSourceId, open, resetBrowseState]);
 
-  // A disconnected source can disappear from the live catalog while the
-  // dialog is open. Fall back to the local source and its primary lane rather
-  // than leaving a stale lane id driving the next scan.
+  // A source can drop out of the live catalog while the dialog is open.
   useEffect(() => {
     const sourceStillExists = selectedSourceId != null
       && sourceOptions.some((source) => source.machineId === selectedSourceId);
-    const shouldUseDefault = !sourceStillExists
-      || (!sourceSelectionTouched && selectedSourceId !== defaultSourceId);
-    if (shouldUseDefault) {
+    if (!sourceStillExists || (!sourceSelectionTouched && selectedSourceId !== defaultSourceId)) {
       setSelectedSourceId((current) => current === defaultSourceId ? current : defaultSourceId);
       setSourceSelectionTouched(false);
-      setTargetLaneId((current) => current === defaultLaneId ? current : defaultLaneId);
-      return;
     }
-    if (!availableLanes.some((lane) => lane.id === targetLaneId)) {
-      setTargetLaneId(defaultLaneId);
-    }
-  }, [availableLanes, defaultLaneId, defaultSourceId, selectedSourceId, sourceOptions, sourceSelectionTouched, targetLaneId]);
+  }, [defaultSourceId, selectedSourceId, sourceOptions, sourceSelectionTouched]);
 
   const handleSourceChange = useCallback((nextSourceId: string) => {
     const nextSource = sourceOptions.find((source) => source.machineId === nextSourceId);
     if (!nextSource || !nextSource.online) return;
-    const nextLane = nextSource.lanes.find((lane) => lane.laneType === "primary")
-      ?? nextSource.lanes.find((lane) => lane.name.trim().toLowerCase() === "primary")
-      ?? nextSource.lanes[0]
-      ?? null;
     setSelectedSourceId(nextSourceId);
     setSourceSelectionTouched(true);
-    setTargetLaneId(nextLane?.id ?? laneId);
-    setSessions([]);
-    setLoadError(null);
-    setProviderNotices({});
-    setImportError(null);
-    setSelectedSession(null);
-    setActiveIndex(0);
-    setQuery("");
-  }, [laneId, sourceOptions]);
+    resetBrowseState();
+  }, [resetBrowseState, sourceOptions]);
 
-  const load = useCallback(async () => {
+  // ── Scan ────────────────────────────────────────────────────────────────
+  const load = useCallback(async (attempt = 0) => {
     const api = getExternalSessionsApi();
     if (!api) {
       setLoadError("Importing sessions isn't available in this window.");
@@ -236,172 +230,349 @@ export function ImportSessionBrowser({
       return;
     }
     const seq = ++requestSeq.current;
-    const providers = providerFilter === "all" ? ALL_IMPORT_PROVIDERS : [providerFilter];
-    setSessions([]);
+    const providers = ALL_IMPORT_PROVIDERS;
     setLoadError(null);
-    setProviderNotices({});
+    setFailedProviders([]);
     setPendingProviders(providers);
     let failures = 0;
-    const runtimePin = selectedSource?.runtimePin ?? null;
-    await Promise.all(
-      providers.map(async (provider) => {
-        try {
-          const request = {
-            providers: [provider],
-            scope: "project" as const,
-            laneId: targetLaneId,
-            limit: BROWSE_LIMIT,
-          };
-          const result = runtimePin
-            ? await api.list(request, runtimePin)
-            : await api.list(request);
-          if (seq !== requestSeq.current) return;
-          const rows = normalizeListResult(result).filter(hasPrompts);
-          setSessions((prev) => mergeSessions(prev, rows));
-          setSelectedSession((current) => {
-            if (!current) return null;
-            return rows.find((row) => row.provider === current.provider && row.id === current.id) ?? current;
-          });
-        } catch {
-          if (seq !== requestSeq.current) return;
-          failures += 1;
-          setProviderNotices((prev) => ({
-            ...prev,
-            [provider]: `${providerDisplayName(provider)} couldn't be scanned on ${selectedSource?.machineName ?? THIS_MACHINE_NAME}.`,
-          }));
-        } finally {
-          if (seq === requestSeq.current) {
-            setPendingProviders((prev) => prev.filter((p) => p !== provider));
-          }
+    await Promise.all(providers.map(async (provider) => {
+      try {
+        const request = {
+          providers: [provider],
+          scope: "project" as const,
+          ...(scanLaneId ? { laneId: scanLaneId } : {}),
+          limit: BROWSE_LIMIT,
+        };
+        const result = runtimePin ? await api.list(request, runtimePin) : await api.list(request);
+        if (seq !== requestSeq.current) return;
+        const rows = normalizeListResult(result).filter(hasPrompts);
+        // A refresh swaps each provider's rows in place, so the list never
+        // blanks while the rest of the scan is still running.
+        setSessions((prev) => replaceProviderRows(prev, provider, rows));
+      } catch {
+        if (seq !== requestSeq.current) return;
+        failures += 1;
+        setFailedProviders((prev) => prev.includes(provider) ? prev : [...prev, provider]);
+      } finally {
+        if (seq === requestSeq.current) {
+          setPendingProviders((prev) => prev.filter((p) => p !== provider));
         }
-      }),
-    );
+      }
+    }));
     if (seq !== requestSeq.current) return;
-    if (failures === providers.length) {
-      setLoadError(externalSessionScanFailureMessage(
-        providers,
-        selectedSource?.machineName ?? THIS_MACHINE_NAME,
-      ));
+    // Every provider failing at once is a host that is not ready yet (a brain
+    // still starting), not ten broken providers: wait and scan once more
+    // before showing the error.
+    if (failures === providers.length && attempt === 0) {
+      await new Promise((resolve) => setTimeout(resolve, SCAN_RETRY_DELAY_MS));
+      if (seq !== requestSeq.current) return;
+      await load(1);
+      return;
     }
-  }, [providerFilter, selectedSource?.machineName, selectedSource?.runtimePin, targetLaneId]);
+    setScanDone(true);
+    if (failures === providers.length) setLoadError(scanFailureMessage(machineName));
+  }, [machineName, runtimePin, scanLaneId]);
 
   useEffect(() => {
     if (!open) return;
     void load();
   }, [open, load]);
 
+  // Open ready to type: search takes focus, and ↑/↓/Enter work from there.
+  // Deferred past the dialog's own open auto-focus.
   useEffect(() => {
     if (!open) return;
-    setImporting(null);
-    setImportError(null);
-    setActiveIndex(0);
-    setSelectedSession(null);
-    setTargetLaneId(defaultLaneId);
-  }, [defaultLaneId, laneId, open]);
+    const timer = setTimeout(() => searchRef.current?.focus({ preventScroll: true }), 0);
+    return () => clearTimeout(timer);
+  }, [open]);
 
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return sessions
-      .filter(hasPrompts)
-      .filter((s) => (providerFilter === "all" ? true : s.provider === providerFilter))
-      .filter((s) =>
-        q
-          ? [s.title, s.preview, s.cwd, s.id, ...(s.messages ?? []).map((m) => m.text)]
-              .some((value) => value?.toLowerCase().includes(q))
-          : true,
-      )
-      .slice()
-      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-  }, [sessions, providerFilter, query]);
+  // Scanning from the moment the dialog opens, not from when the effect runs,
+  // so the first frame never claims there are no sessions.
+  const loading = pendingProviders.length > 0 || (open && !scanDone && !loadError);
 
-  const grouped = useMemo(() => {
-    const groups: Array<{ label: string; rows: ExternalSessionSummary[] }> = [];
+  // ── Filters, counts, list ───────────────────────────────────────────────
+  const places = useMemo(() => {
+    const map = new Map<string, SessionPlace>();
+    for (const summary of sessions) map.set(sessionKey(summary), sessionPlace(summary, lanesById));
+    return map;
+  }, [lanesById, sessions]);
+  const placeOf = useCallback(
+    (summary: ExternalSessionSummary) => places.get(sessionKey(summary)) ?? sessionPlace(summary, lanesById),
+    [lanesById, places],
+  );
+
+  const scanLaneKeys = useMemo(() => new Set(sessions.map(laneFilterKey).filter((key): key is string => key != null)), [sessions]);
+  const openLaneHasSessions = scanLaneKeys.has(openLaneId);
+  // Default: the lane the dialog came from — kept while the scan may still
+  // find its sessions, dropped to All lanes once the scan shows it has none.
+  const laneFilter = laneFilterChoice
+    ?? ((openLaneHasSessions || (loading && lanesById.has(openLaneId))) ? openLaneId : ALL_LANES_ID);
+
+  const providerCountsAll = useMemo(() => countBy(sessions, (s) => s.provider), [sessions]);
+  const effectiveProviderFilter: ProviderFilter = providerFilter !== "all" && providerCountsAll.has(providerFilter)
+    ? providerFilter
+    : "all";
+
+  const inLane = useMemo(() => sessions.filter((s) => matchesLaneFilter(s, laneFilter)), [laneFilter, sessions]);
+  const inProvider = useMemo(
+    () => sessions.filter((s) => matchesProviderFilter(s, effectiveProviderFilter)),
+    [effectiveProviderFilter, sessions],
+  );
+  const providerCounts = useMemo(() => countBy(inLane, (s) => s.provider), [inLane]);
+  const laneCounts = useMemo(() => countBy(inProvider, laneFilterKey), [inProvider]);
+  const providerChips = useMemo(
+    // Only providers with a session under the current lane filter get a chip;
+    // the chosen provider keeps its chip so the filter can be cleared.
+    () => EXTERNAL_SESSION_PROVIDERS
+      .filter((provider) => (providerCounts.get(provider) ?? 0) > 0 || provider === effectiveProviderFilter)
+      .map((provider) => ({ provider, count: providerCounts.get(provider) ?? 0 })),
+    [effectiveProviderFilter, providerCounts],
+  );
+
+  const laneOptions = useMemo<LaneComboboxLane[]>(() => {
+    const options: LaneComboboxLane[] = [];
+    const seen = new Set<string>();
+    const detailOf = (id: string) => String(laneCounts.get(id) ?? 0);
+    for (const lane of availableLanes) {
+      if (!scanLaneKeys.has(lane.id) && lane.id !== laneFilter) continue;
+      seen.add(lane.id);
+      options.push({ id: lane.id, name: lane.name, color: lane.color, branchRef: lane.branchRef, detail: detailOf(lane.id) });
+    }
+    // A home lane this source's list does not carry still gets a row.
+    for (const summary of sessions) {
+      const home = summary.home;
+      if (home?.kind !== "lane" || !home.laneId || seen.has(home.laneId)) continue;
+      seen.add(home.laneId);
+      options.push({
+        id: home.laneId,
+        name: home.laneName ?? "Lane",
+        color: home.color,
+        branchRef: home.branchRef,
+        detail: detailOf(home.laneId),
+      });
+    }
+    if (scanLaneKeys.has(OTHER_FOLDERS_ID) || laneFilter === OTHER_FOLDERS_ID) {
+      options.push({
+        id: OTHER_FOLDERS_ID,
+        name: "Other folders",
+        detail: detailOf(OTHER_FOLDERS_ID),
+        icon: <FolderSimple size={12} className="shrink-0 text-muted-fg/60" />,
+      });
+    }
+    return options;
+  }, [availableLanes, laneCounts, laneFilter, scanLaneKeys, sessions]);
+
+  const visible = useMemo(
+    () => sortByRecent(inLane.filter((s) => (
+      matchesProviderFilter(s, effectiveProviderFilter) && matchesSearch(s, placeOf(s), query)
+    ))),
+    [effectiveProviderFilter, inLane, placeOf, query],
+  );
+  // A search that finds nothing in the chosen lane may still match elsewhere;
+  // the empty state offers those instead of a dead end.
+  const matchesInOtherLanes = useMemo(() => {
+    if (!query.trim() || laneFilter === ALL_LANES_ID) return 0;
+    return sessions.filter((s) => (
+      !matchesLaneFilter(s, laneFilter)
+      && matchesProviderFilter(s, effectiveProviderFilter)
+      && matchesSearch(s, placeOf(s), query)
+    )).length;
+  }, [effectiveProviderFilter, laneFilter, placeOf, query, sessions]);
+  const groups = useMemo<SessionGroup[]>(() => {
+    const result: SessionGroup[] = [];
     for (const summary of visible) {
       const label = sessionDateGroup(summary.updatedAt);
-      const last = groups.at(-1);
+      const last = result.at(-1);
       if (last?.label === label) last.rows.push(summary);
-      else groups.push({ label, rows: [summary] });
+      else result.push({ label, rows: [summary] });
     }
-    return groups;
+    return result;
   }, [visible]);
 
-  useEffect(() => {
-    setActiveIndex((idx) => Math.min(idx, Math.max(0, visible.length - 1)));
-  }, [visible.length]);
+  // The first visible row is always selected, so the preview is never empty.
+  const active = (selectedKey ? visible.find((s) => sessionKey(s) === selectedKey) : undefined) ?? visible[0] ?? null;
+  const activeKey = active ? sessionKey(active) : null;
+  const activePlace = active ? placeOf(active) : null;
 
-  const noticeText = useMemo(() => {
-    const messages = Object.values(providerNotices).filter((message): message is string => Boolean(message));
-    return messages.length ? messages.join(" ") : null;
-  }, [providerNotices]);
-
-  const runImport = useCallback(
-    async (summary: ExternalSessionSummary, affordance: ImportAffordance, model?: string) => {
-      if (!affordance.enabled || importing || loading) return;
-      const api = getExternalSessionsApi();
-      if (!api) {
-        setImportError("Importing sessions isn't available in this window.");
-        return;
-      }
-      const key = `${summary.id}:${affordance.kind}`;
-      setImporting(key);
-      setImportError(null);
-      try {
-        const request = {
-          provider: summary.provider,
-          sessionId: summary.id,
-          laneId: targetLaneId,
-          target: affordance.target,
-          mode: affordance.mode,
-          ...(model ? { model } : {}),
-        };
-        const runtimePin = selectedSource?.runtimePin ?? null;
-        const result = runtimePin
-          ? await api.import(request, runtimePin)
-          : await api.import(request);
-        onImported(summary, result, selectedSource ?? undefined);
-        onOpenChange(false);
-      } catch {
-        setImportError(`Couldn't ${affordance.label.toLowerCase()} on ${selectedSource?.machineName ?? THIS_MACHINE_NAME}.`);
-      } finally {
-        setImporting(null);
-      }
-    },
-    [importing, loading, onImported, onOpenChange, selectedSource, targetLaneId],
+  // ── Plan for the selected session ───────────────────────────────────────
+  const activeProvider = active?.provider ?? null;
+  const surfacePref = useMemo(
+    () => activeProvider ? surfacePrefs[activeProvider] ?? readSurfacePreference(activeProvider) : null,
+    [activeProvider, surfacePrefs],
   );
+  const requestedTarget = active && targetChoice?.key === activeKey
+    ? targetChoice.laneId
+    : active
+      ? homeLaneIdIn(active, lanesById) ?? fallbackTargetLaneId
+      : null;
+  const plan: ImportPlan | null = useMemo(() => {
+    if (!active) return null;
+    return planImport(active, {
+      surface: surfacePref,
+      targetLaneId: requestedTarget,
+      laneName: (id) => lanesById.get(id)?.name ?? null,
+    });
+  }, [active, lanesById, requestedTarget, surfacePref]);
+  const model = active
+    ? (modelChoice?.key === activeKey ? modelChoice.model : defaultForkModel(active))
+    : null;
+  const importedRef = active?.alreadyImported ? readImportedSessionRef(active) : null;
+  const needsLiveConfirm = Boolean(active?.possiblyActive && plan?.primary?.mode === "resume");
+  const currentConfirmToken = active && plan ? `${activeKey}|${plan.surface}|${plan.targetLaneId}` : null;
+  const confirming = needsLiveConfirm && confirmToken != null && confirmToken === currentConfirmToken;
+  const copyArmed = copyArmedToken != null && copyArmedToken === currentConfirmToken;
 
-  const handleOpenExisting = useCallback(
-    (ref: ImportedSessionRef) => {
-      onOpenExisting?.(ref, selectedSource ?? undefined);
+  useEffect(() => () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+  }, []);
+
+  const handleSelect = useCallback((key: string) => {
+    setSelectedKey(key);
+    setSelectionTouched(true);
+    setImportError(null);
+  }, []);
+
+  const handleSurfaceChange = useCallback((surface: ImportSurface) => {
+    if (!active) return;
+    writeSurfacePreference(active.provider, surface);
+    setSurfacePrefs((prev) => ({ ...prev, [active.provider]: surface }));
+  }, [active]);
+
+  const handleTargetLaneChange = useCallback((nextLaneId: string) => {
+    if (!activeKey) return;
+    setTargetChoice({ key: activeKey, laneId: nextLaneId });
+  }, [activeKey]);
+
+  const handleModelChange = useCallback((nextModel: string) => {
+    if (!activeKey) return;
+    setModelChoice({ key: activeKey, model: nextModel });
+  }, [activeKey]);
+
+  const runImport = useCallback(async (summary: ExternalSessionSummary, action: ImportPlanAction, laneForImport: string) => {
+    const api = getExternalSessionsApi();
+    const key = sessionKey(summary);
+    if (!api) {
+      setImportError({ key, message: "Importing sessions isn't available in this window." });
+      return;
+    }
+    setImporting({ key, mode: action.mode });
+    setImportError(null);
+    try {
+      const request = {
+        provider: summary.provider,
+        sessionId: summary.id,
+        laneId: laneForImport,
+        target: action.target,
+        mode: action.mode,
+        ...(action.needsModel && action.target === "chat" && model ? { model } : {}),
+      };
+      const result = runtimePin ? await api.import(request, runtimePin) : await api.import(request);
+      onImported(summary, result, selectedSource ?? undefined);
       onOpenChange(false);
-    },
-    [onOpenExisting, onOpenChange, selectedSource],
-  );
+    } catch {
+      const verb = action.label.charAt(0).toLowerCase() + action.label.slice(1);
+      setImportError({ key, message: `Couldn't ${verb} on ${machineName}.` });
+    } finally {
+      setImporting(null);
+    }
+  }, [machineName, model, onImported, onOpenChange, runtimePin, selectedSource]);
 
-  const onListKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      const target = event.target as HTMLElement;
-      if (target.closest("input,button,select,textarea,[role='combobox']")) return;
-      if (selectedSession) return;
-      if (!visible.length) return;
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setActiveIndex((idx) => Math.min(idx + 1, visible.length - 1));
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setActiveIndex((idx) => Math.max(idx - 1, 0));
-      } else if (event.key === "Enter") {
-        const summary = visible[activeIndex];
-        if (!summary) return;
-        event.preventDefault();
-        const importedRef = readImportedSessionRef(summary);
-        if (summary.alreadyImported && importedRef && onOpenExisting) {
-          handleOpenExisting(importedRef);
-          return;
-        }
-        setSelectedSession(summary);
-      }
-    },
-    [activeIndex, handleOpenExisting, onOpenExisting, selectedSession, visible],
+  const handleRun = useCallback((action: ImportPlanAction) => {
+    if (!active || !plan || importing || !plan.targetLaneId) return;
+    const isSecondaryChatCopy = action === plan.secondary && action.needsModel && action.target === "chat";
+    if (isSecondaryChatCopy && !copyArmed) {
+      setCopyArmedToken(currentConfirmToken);
+      return;
+    }
+    setCopyArmedToken(null);
+    const isLiveContinue = action.mode === "resume" && active.possiblyActive;
+    if (isLiveContinue && !confirming) {
+      setConfirmToken(currentConfirmToken);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      confirmTimer.current = setTimeout(() => setConfirmToken(null), LIVE_CONFIRM_MS);
+      return;
+    }
+    setConfirmToken(null);
+    void runImport(active, action, plan.targetLaneId);
+  }, [active, confirming, copyArmed, currentConfirmToken, importing, plan, runImport]);
+
+  const handleOpenExisting = useCallback((ref: ImportedSessionRef) => {
+    onOpenExisting?.(ref, selectedSource ?? undefined);
+    onOpenChange(false);
+  }, [onOpenChange, onOpenExisting, selectedSource]);
+
+  const runPrimary = useCallback(() => {
+    if (!active) return;
+    if (importedRef && onOpenExisting) {
+      handleOpenExisting(importedRef);
+      return;
+    }
+    if (copyArmed && plan?.secondary) {
+      handleRun(plan.secondary);
+      return;
+    }
+    if (plan?.primary) handleRun(plan.primary);
+  }, [active, copyArmed, handleOpenExisting, handleRun, importedRef, onOpenExisting, plan]);
+
+  // ── Keyboard: ↑/↓ move the selection, Enter runs the main action ─────────
+  const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target as HTMLElement;
+    const inSearch = Boolean(target.closest("[data-import-search]"));
+    const inField = Boolean(target.closest(
+      "input,textarea,select,[contenteditable='true'],[role='combobox'],[role='listbox']:not([aria-label='Sessions']),[role='menu']",
+    ));
+    if (inField && !inSearch) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (target.closest("[data-import-transcript],[role='radiogroup']") || !visible.length) return;
+      event.preventDefault();
+      const index = activeKey ? visible.findIndex((s) => sessionKey(s) === activeKey) : -1;
+      const nextIndex = event.key === "ArrowDown"
+        ? Math.min(index + 1, visible.length - 1)
+        : Math.max(index - 1, 0);
+      const next = visible[nextIndex];
+      if (next) handleSelect(sessionKey(next));
+      return;
+    }
+    if (event.key === "Enter") {
+      // A focused control keeps its own Enter.
+      if (target.closest("button,a,[role='radio']") && !target.closest("[data-import-row]")) return;
+      event.preventDefault();
+      if (!selectionTouched && !query.trim() && !target.closest("[data-import-row]")) return;
+      runPrimary();
+    }
+  }, [activeKey, handleSelect, query, runPrimary, selectionTouched, visible]);
+
+  // ── Render ──────────────────────────────────────────────────────────────
+  const failedNotice = failedProviders.length
+    ? `${failedProviders.map(providerDisplayName).join(", ")} couldn't be scanned.`
+    : null;
+  const laneFilterName = laneFilter === OTHER_FOLDERS_ID
+    ? "other folders"
+    : laneOptions.find((lane) => lane.id === laneFilter)?.name ?? lanesById.get(laneFilter)?.name ?? "this lane";
+  const noSessionsAtAll = !loading && !loadError && sessions.length === 0;
+  const searching = query.trim().length > 0;
+  const showAllLanesLabel = searching
+    ? matchesInOtherLanes > 0
+      ? `Show ${matchesInOtherLanes} in other lanes`
+      : null
+    : "Show all lanes";
+  const listEmpty = laneFilter !== ALL_LANES_ID ? (
+    <CenterState
+      title={searching ? `No matches in ${laneFilterName}` : `No sessions in ${laneFilterName}`}
+      action={showAllLanesLabel ? (
+        <button
+          type="button"
+          onClick={() => setLaneFilterChoice(ALL_LANES_ID)}
+          className="mt-3 inline-flex h-7 items-center rounded-full border border-white/[0.1] px-3 text-[11px] text-fg/85 transition-colors hover:bg-white/[0.05]"
+        >
+          {showAllLanesLabel}
+        </button>
+      ) : undefined}
+    />
+  ) : (
+    <CenterState title="No matching sessions" />
   );
 
   return (
@@ -410,146 +581,41 @@ export function ImportSessionBrowser({
       onOpenChange={onOpenChange}
       title="Import session"
       icon={DownloadSimple}
-      widthClassName="w-[min(980px,calc(100vw-4rem))]"
+      widthClassName="w-[min(1180px,calc(100vw-4rem))]"
       heightClassName="h-[min(860px,calc(100dvh-4rem))]"
       scrollBody={false}
       busy={Boolean(importing)}
     >
-      <div className="flex h-full min-h-0 flex-col gap-3" onKeyDown={onListKeyDown}>
-        {!selectedSession ? <div className="flex shrink-0 flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {PROVIDER_FILTERS.map((filter) => {
-              const selected = providerFilter === filter.id;
-              const isAll = filter.id === "all";
-              return (
-                <button
-                  key={filter.id}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => setProviderFilter(filter.id)}
-                  className={cn(
-                    "inline-flex h-7 items-center gap-1.5 rounded-full border text-[11px] font-medium transition-colors",
-                    isAll ? "px-3" : "pl-2 pr-3",
-                    selected
-                      ? "border-white/[0.14] bg-white/[0.08] text-fg"
-                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/80 hover:text-fg",
-                  )}
-                >
-                  {filter.id !== "all" ? (
-                    <ToolLogo
-                      toolType={PROVIDER_TOOL_TYPE[filter.id]}
-                      size={18}
-                      className={cn("transition-opacity", selected ? "opacity-100" : "opacity-75")}
-                    />
-                  ) : null}
-                  {filter.label}
-                </button>
-              );
-            })}
-            <DraftMachinePicker
-              machines={sourceOptions.map((source) => ({
-                id: source.machineId,
-                name: source.machineName,
-                unavailableReason: source.online
-                  ? null
-                  : "This computer is offline. Reconnect it to scan chats.",
-              }))}
-              selectedMachineId={selectedSourceId}
-              onChange={handleSourceChange}
-              disabled={Boolean(importing)}
-              tooltipLabel="Import from"
-              triggerLabel="Choose import source"
-              tooltipDescription="Choose which connected computer to scan. The session list and import actions follow this computer."
-            />
-            <div className="ml-auto flex items-center gap-2">
-              {loading && sessions.length ? (
-                <span className="inline-flex items-center gap-1.5 text-[10.5px] text-muted-fg/60">
-                  <CircleNotch size={11} className="animate-spin" />
-                  Scanning {pendingProviders.map(providerDisplayName).join(", ")}…
-                </span>
-              ) : null}
-              <SmartTooltip content={{ label: "Refresh", description: "Re-scan chats from outside ADE." }}>
-                <button
-                  type="button"
-                  onClick={() => void load()}
-                  disabled={loading}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.06] bg-white/[0.02] text-muted-fg/80 transition-colors hover:text-fg disabled:opacity-50"
-                  aria-label="Refresh session list"
-                >
-                  {loading ? <CircleNotch size={13} className="animate-spin" /> : <ArrowClockwise size={13} />}
-                </button>
-              </SmartTooltip>
-            </div>
-          </div>
-          <div className="relative">
-            <MagnifyingGlass
-              size={13}
-              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/60"
-            />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search sessions"
-              className="h-8 w-full rounded-lg border border-white/[0.06] bg-white/[0.02] pl-8 pr-3 text-[12px] text-fg placeholder:text-muted-fg/50 focus:border-white/[0.14] focus:outline-none"
-            />
-          </div>
-        </div> : null}
-
-        {!selectedSession && noticeText && !loadError ? (
-          <div className="flex shrink-0 items-start gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-[11px] text-muted-fg/70">
-            <Warning size={13} className="mt-px shrink-0 text-muted-fg/60" />
-            <span>{noticeText}</span>
-          </div>
-        ) : null}
-
-        {importError ? (
-          <div className="flex shrink-0 items-start gap-2 rounded-lg border border-red-400/20 bg-red-500/[0.06] px-3 py-2 text-[11px] text-red-300">
-            <Warning size={14} className="mt-px shrink-0" />
-            <span>{importError}</span>
-          </div>
-        ) : null}
-
-        {selectedSession ? (
-          <ImportSessionDetail
-            summary={selectedSession}
-            lanes={availableLanes}
-            targetLaneId={targetLaneId}
-            targetLaneName={targetLaneName}
-            importingKey={importing}
-            refreshing={loading}
-            onBack={() => setSelectedSession(null)}
-            onTargetLaneChange={setTargetLaneId}
-            onImport={(affordance, model) => void runImport(selectedSession, affordance, model)}
-            onOpenExisting={onOpenExisting ? handleOpenExisting : undefined}
-            runtimePin={selectedSource?.runtimePin ?? null}
-          />
-        ) : loading && !sessions.length ? (
-          <ScrollPort>
-            <div className="flex min-h-full flex-col items-center justify-center gap-4 px-6 py-8 text-center">
-              <div
-                className="inline-flex items-center gap-2 text-[12px] font-medium text-fg"
-                role="status"
-                aria-live="polite"
-              >
-                <CircleNotch size={16} className="animate-spin text-violet-300" />
-                Scanning external chats…
-              </div>
-              <p className="max-w-sm text-[11px] leading-relaxed text-muted-fg/65">
-                Checking {pendingProviders.map(providerDisplayName).join(", ")} on {selectedSource?.machineName ?? THIS_MACHINE_NAME}.
-              </p>
-              <ul className="w-full max-w-2xl space-y-2 opacity-60" aria-hidden="true">
-                {Array.from({ length: 3 }, (_, index) => (
-                  <li key={index} className="h-[62px] animate-pulse rounded-xl border border-white/[0.05] bg-white/[0.03]" />
-                ))}
-              </ul>
-            </div>
-          </ScrollPort>
-        ) : loadError ? (
+      {/* Bleeds past the shell's body padding so the split view runs edge to edge. */}
+      <div
+        className="-mx-4 -my-3 flex h-[calc(100%+1.5rem)] min-h-0 flex-col sm:-mx-5 sm:-my-4 sm:h-[calc(100%+2rem)]"
+        onKeyDown={onKeyDown}
+      >
+        <ImportTopBar
+          providerChips={providerChips}
+          totalCount={inLane.length}
+          providerFilter={effectiveProviderFilter}
+          onProviderFilterChange={setProviderFilter}
+          laneOptions={laneOptions}
+          laneFilter={laneFilter}
+          onLaneFilterChange={setLaneFilterChoice}
+          laneFilterTotal={inProvider.length}
+          query={query}
+          onQueryChange={setQuery}
+          searchRef={searchRef}
+          loading={loading}
+          onRefresh={() => void load()}
+          sources={sourceOptions}
+          selectedSourceId={selectedSourceId}
+          onSourceChange={handleSourceChange}
+          sourceDisabled={Boolean(importing)}
+        />
+        {loadError && !sessions.length ? (
           <CenterState
             icon={<Warning size={18} className="text-amber-400" />}
-            title="External chats couldn't be loaded"
+            title="Sessions couldn't be loaded"
             detail={loadError}
-            action={
+            action={(
               <button
                 type="button"
                 onClick={() => void load()}
@@ -558,426 +624,67 @@ export function ImportSessionBrowser({
               >
                 <ArrowClockwise size={12} className={loading ? "animate-spin" : undefined} /> Retry scan
               </button>
-            }
+            )}
           />
-        ) : !visible.length ? (
+        ) : noSessionsAtAll ? (
           <CenterState
-            icon={<DownloadSimple size={18} className="text-muted-fg/60" />}
-            title="No chats found"
-            detail="No Claude, Codex, Cursor, Droid, OpenCode, or Pi chats in this project."
+            icon={<DownloadSimple size={18} />}
+            title="No sessions found"
+            detail={`Checked ${ALL_IMPORT_PROVIDERS.map(providerDisplayName).join(", ")} on ${machineName}.`}
           />
         ) : (
-          <ScrollPort>
-            <div className="flex flex-col gap-4">
-              {grouped.map((group) => (
-                <section key={group.label}>
-                  <h3 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-fg/55">
-                    {group.label}
-                  </h3>
-                  <ul className="flex flex-col gap-2">
-                    {group.rows.map((summary) => {
-                      const index = visible.indexOf(summary);
-                      return (
-                        <ImportSessionRow
-                          key={`${summary.provider}:${summary.id}`}
-                          summary={summary}
-                          active={index === activeIndex}
-                          onActivate={() => setActiveIndex(index)}
-                          onSelect={() => setSelectedSession(summary)}
-                        />
-                      );
-                    })}
-                  </ul>
-                </section>
-              ))}
-              {loading ? (
-                <ul className="flex flex-col gap-2">
-                  {Array.from({ length: 2 }, (_, index) => (
-                    <li key={`sk-${index}`} className="h-[72px] animate-pulse rounded-xl border border-white/[0.05] bg-white/[0.03]" />
-                  ))}
-                </ul>
+          <div className="flex min-h-0 flex-1">
+            <aside className="flex w-[360px] shrink-0 flex-col border-r border-white/[0.06]">
+              <ImportSessionList
+                groups={groups}
+                activeKey={activeKey}
+                placeOf={placeOf}
+                hidePlace={laneFilter !== ALL_LANES_ID && laneFilter !== OTHER_FOLDERS_ID}
+                onSelect={handleSelect}
+                loading={loading}
+                empty={listEmpty}
+                notice={failedNotice}
+              />
+            </aside>
+            <section className="flex min-w-0 flex-1 flex-col" aria-label="Session preview">
+              {active && activePlace && plan ? (
+                <>
+                  <ImportSessionPreview
+                    key={activeKey}
+                    summary={active}
+                    place={activePlace}
+                    runtimePin={runtimePin}
+                  />
+                  <ImportActionBar
+                    plan={plan}
+                    onSurfaceChange={handleSurfaceChange}
+                    lanes={availableLanes}
+                    homeLane={activePlace.kind === "lane" ? { name: activePlace.name, color: activePlace.color } : null}
+                    onTargetLaneChange={handleTargetLaneChange}
+                    model={model}
+                    onModelChange={handleModelChange}
+                    running={importing?.key === activeKey ? importing.mode : null}
+                    disabled={Boolean(importing)}
+                    confirming={confirming}
+                    copyArmed={copyArmed}
+                    onCancelCopy={() => setCopyArmedToken(null)}
+                    noteTone={needsLiveConfirm ? "warning" : "muted"}
+                    error={importError?.key === activeKey ? importError.message : null}
+                    onRun={handleRun}
+                    openExisting={importedRef && onOpenExisting ? { onOpen: () => handleOpenExisting(importedRef) } : null}
+                  />
+                </>
+              ) : loading ? (
+                <div className="flex flex-1 flex-col gap-4 px-6 py-6" aria-hidden="true">
+                  <div className="h-4 w-1/3 animate-pulse rounded bg-white/[0.05]" />
+                  <div className="ml-auto h-9 w-1/2 animate-pulse rounded-2xl bg-white/[0.04]" />
+                  <div className="h-4 w-3/5 animate-pulse rounded bg-white/[0.035]" />
+                </div>
               ) : null}
-            </div>
-          </ScrollPort>
+            </section>
+          </div>
         )}
       </div>
     </LaneDialogShell>
-  );
-}
-
-function CenterState({
-  icon,
-  title,
-  detail,
-  action,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  detail?: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-      <div className="mb-2 text-muted-fg">{icon}</div>
-      <div className="text-[12px] font-medium text-fg">{title}</div>
-      {detail ? <div className="mt-1 max-w-sm text-[11px] leading-relaxed text-muted-fg/70">{detail}</div> : null}
-      {action}
-    </div>
-  );
-}
-
-function ImportSessionRow({
-  summary,
-  active,
-  onActivate,
-  onSelect,
-}: {
-  summary: ExternalSessionSummary;
-  active: boolean;
-  onActivate: () => void;
-  onSelect: () => void;
-}) {
-  const heading = sessionHeading(summary);
-
-  return (
-    <li
-      onMouseEnter={onActivate}
-      className={cn(
-        "group rounded-xl border px-4 py-3 transition-colors",
-        active
-          ? "border-white/[0.14] bg-white/[0.05]"
-          : "border-white/[0.05] bg-white/[0.02] hover:bg-white/[0.035]",
-      )}
-    >
-      <button type="button" onClick={onSelect} className="flex w-full items-start gap-3 text-left">
-        <ToolLogo toolType={PROVIDER_TOOL_TYPE[summary.provider]} size={22} className="mt-0.5" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-[13px] font-medium text-fg">{heading}</span>
-            {summary.alreadyImported ? (
-              <span className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.04] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-muted-fg/80">
-                Imported
-              </span>
-            ) : null}
-            {summary.possiblyActive ? (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-400/25 bg-emerald-500/[0.1] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-emerald-200">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.9)]" />
-                Live
-              </span>
-            ) : null}
-          </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-fg/70">
-            {formatUpdatedAt(summary.updatedAt) ? <span>{formatUpdatedAt(summary.updatedAt)}</span> : null}
-            {summary.messageCount != null ? (
-              <>
-                <span className="text-muted-fg/40">·</span>
-                <span>
-                  {summary.messageCount} prompt{summary.messageCount === 1 ? "" : "s"}
-                </span>
-              </>
-            ) : null}
-            {summary.cwd ? (
-              <span
-                className="ml-0.5 max-w-[240px] truncate rounded border border-white/[0.05] bg-white/[0.03] px-1.5 py-px font-mono text-[9.5px] text-muted-fg/60"
-                title={summary.cwd}
-              >
-                {shortenCwd(summary.cwd, 2)}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <span className="mt-0.5 shrink-0 rounded-full border border-white/[0.1] bg-white/[0.06] px-2.5 py-1 text-[10.5px] font-medium text-fg/85 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-          Show details
-        </span>
-      </button>
-    </li>
-  );
-}
-
-function ImportSessionDetail({
-  summary,
-  lanes,
-  targetLaneId,
-  targetLaneName,
-  importingKey,
-  refreshing,
-  onBack,
-  onTargetLaneChange,
-  onImport,
-  onOpenExisting,
-  runtimePin,
-}: {
-  summary: ExternalSessionSummary;
-  lanes: LaneComboboxLane[];
-  targetLaneId: string;
-  targetLaneName: string;
-  importingKey: string | null;
-  refreshing: boolean;
-  onBack: () => void;
-  onTargetLaneChange: (laneId: string) => void;
-  onImport: (affordance: ImportAffordance, model?: string) => void;
-  onOpenExisting?: (ref: ImportedSessionRef) => void;
-  runtimePin: OpenProjectBinding | null;
-}) {
-  const importedRef = summary.alreadyImported ? readImportedSessionRef(summary) : null;
-  const allAffordances = importAffordancesFor(summary);
-  const available = allAffordances
-    .filter((action) => action.enabled)
-    .filter((action) => !importedRef || action.mode === "fork")
-    .sort((left, right) => {
-      if (!summary.possiblyActive || left.mode === right.mode) return 0;
-      return left.mode === "fork" ? -1 : 1;
-    });
-  const unavailable = allAffordances.filter((action) => !action.enabled);
-  const heading = sessionHeading(summary);
-  const [detail, setDetail] = useState<ExternalSessionDetail | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  // The recorded launch model is whatever the foreign CLI wrote down, so it only
-  // seeds the picker when the shared registry can actually resolve it — an
-  // unresolvable id would leave the fork with no family and no descriptor.
-  const [forkModel, setForkModel] = useState(() => {
-    const recorded = summary.launch?.model?.trim();
-    return recorded && resolveModelDescriptor(recorded) ? recorded : DEFAULT_FORK_MODEL;
-  });
-
-  useEffect(() => {
-    const api = getExternalSessionsApi();
-    if (!api) return;
-    const watchId = `${summary.provider}:${summary.id}`;
-    let cancelled = false;
-    const apply = (next: ExternalSessionDetail) => {
-      if (!cancelled) setDetail(next);
-    };
-    setDetailError(null);
-    const localWatch = runtimePin?.kind !== "remote" && api.watchDetail ? api.watchDetail : null;
-    void (async () => {
-      try {
-        const loaded = localWatch
-          ? await localWatch({ provider: summary.provider, sessionId: summary.id, watchId })
-          : await api.getDetail?.(
-            { provider: summary.provider, sessionId: summary.id },
-            runtimePin,
-          );
-        if (loaded) apply(loaded);
-      } catch {
-        if (!cancelled) {
-          setDetailError("Couldn't load this conversation from the selected computer.");
-        }
-      }
-    })();
-    const unsubscribe = localWatch
-      ? api.onDetailUpdated?.((event) => {
-        if (event.watchId === watchId) apply(event.detail);
-      })
-      : undefined;
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-      if (localWatch) void api.unwatchDetail?.({ watchId });
-    };
-  }, [runtimePin, summary.id, summary.provider]);
-
-  const messages = detail?.messages?.length ? detail.messages : (summary.messages ?? []);
-  const modelLabel = detail?.model ?? summary.launch?.model ?? null;
-  const forkFamily = resolveModelDescriptor(forkModel)?.family ?? null;
-  const sourceFamily = PROVIDER_FAMILY[summary.provider];
-  const crossFamily = Boolean(forkFamily && forkFamily !== sourceFamily);
-
-  const choose = (affordance: ImportAffordance) => {
-    if (
-      summary.possiblyActive
-      && affordance.mode === "resume"
-      && !window.confirm("This chat is live in another app. Close it there before continuing here, or make a copy instead. Continue anyway?")
-    ) {
-      return;
-    }
-    onImport(affordance, affordance.kind === "fork-as-chat" ? forkModel : undefined);
-  };
-
-  return (
-    <ScrollPort>
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 pb-4">
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-[11px] text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
-      >
-        <ArrowLeft size={13} /> All sessions
-      </button>
-
-      <section className="flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.025]">
-        <div className="shrink-0 border-b border-white/[0.06] p-4">
-          <div className="flex items-start gap-3">
-            <ToolLogo toolType={PROVIDER_TOOL_TYPE[summary.provider]} size={28} className="mt-0.5" />
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-[16px] font-semibold text-fg">{heading}</h3>
-                {summary.alreadyImported ? (
-                  <span className="rounded-full bg-emerald-500/[0.1] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">In ADE</span>
-                ) : null}
-                {summary.possiblyActive ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/[0.12] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-200">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" /> Live
-                  </span>
-                ) : null}
-              </div>
-              <div className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-fg/70">
-                <span>{providerDisplayName(summary.provider)}</span>
-                {formatUpdatedAt(summary.updatedAt) ? <span>· {formatUpdatedAt(summary.updatedAt)}</span> : null}
-                {summary.messageCount != null ? (
-                  <span>· {summary.messageCount} prompt{summary.messageCount === 1 ? "" : "s"}</span>
-                ) : null}
-                {modelLabel ? <span>· {modelLabel}</span> : null}
-              </div>
-            </div>
-          </div>
-        </div>
-        <div
-          className="px-4 py-3"
-          role="region"
-          aria-label="Session conversation"
-        >
-          {detailError ? (
-            <p className="text-[11px] text-amber-200/80">{detailError}</p>
-          ) : !detail && !messages.length ? (
-            <div className="flex flex-col gap-2">
-              <div className="h-10 animate-pulse rounded-2xl bg-white/[0.04]" />
-              <div className="ml-auto h-10 w-2/3 animate-pulse rounded-2xl bg-white/[0.06]" />
-            </div>
-          ) : messages.length ? (
-            <div className="flex flex-col gap-2">
-              {messages.map((message, index) => (
-                <div
-                  key={`${message.at ?? index}-${index}`}
-                  className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}
-                >
-                  <div
-                    className={cn(
-                      "max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-[12px] leading-relaxed",
-                      message.role === "user"
-                        ? "rounded-br-md bg-violet-500/20 text-fg"
-                        : "rounded-bl-md bg-white/[0.05] text-fg/85",
-                    )}
-                  >
-                    {message.text}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-[11px] text-muted-fg/60">No conversation preview was recoverable for this chat.</p>
-          )}
-        </div>
-        <dl className="grid shrink-0 gap-2 border-t border-white/[0.06] px-4 py-3 text-[10.5px] sm:grid-cols-2">
-          <div className="min-w-0">
-            <dt className="text-muted-fg/50">Folder</dt>
-            <dd className="truncate text-left font-mono text-muted-fg/80" dir="rtl" title={summary.cwd ?? undefined}>
-              <bdi dir="ltr">{shortenCwd(detail?.cwd ?? summary.cwd, 5)}</bdi>
-            </dd>
-          </div>
-          <div className="min-w-0">
-            <dt className="text-muted-fg/50">Session</dt>
-            <dd className="truncate font-mono text-muted-fg/80" title={summary.id}>{summary.id}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section className="shrink-0 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-[12px] font-semibold text-fg">Import into</div>
-            <div className="mt-0.5 text-[10.5px] text-muted-fg/65">Actions update to match the selected lane.</div>
-          </div>
-          <LaneCombobox
-            lanes={lanes}
-            value={targetLaneId}
-            onChange={onTargetLaneChange}
-            variant="pill"
-            aria-label="Import into lane"
-          />
-        </div>
-      </section>
-
-      {importedRef && onOpenExisting ? (
-        <section className="flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.04] p-4">
-          <div>
-            <div className="text-[12px] font-semibold text-fg">Already imported</div>
-            <div className="mt-0.5 text-[10.5px] text-muted-fg/70">
-              Open the existing {importedRef.kind === "chat" ? "ADE chat" : "CLI session"}, or create another copy below.
-            </div>
-          </div>
-          <button type="button" onClick={() => onOpenExisting(importedRef)} className="shrink-0 rounded-full bg-emerald-300 px-4 py-2 text-[11px] font-semibold text-[#0F0D14]">Open existing</button>
-        </section>
-      ) : null}
-
-      <section className="shrink-0">
-        <div className="mb-2 flex items-center gap-2 text-[12px] font-semibold text-fg">
-          Choose an action for {targetLaneName}
-          {refreshing ? <CircleNotch size={12} className="animate-spin text-muted-fg" /> : null}
-        </div>
-        {summary.possiblyActive ? (
-          <div className="mb-3 flex gap-2 rounded-xl border border-amber-400/15 bg-amber-500/[0.04] px-3 py-2 text-[10.5px] leading-relaxed text-amber-200/80">
-            <Warning size={13} className="mt-px shrink-0" /> This chat is live elsewhere. A copy is the safer option.
-          </div>
-        ) : null}
-        {available.length ? (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {available.map((affordance) => {
-              const busy = importingKey === `${summary.id}:${affordance.kind}`;
-              const isForkChat = affordance.kind === "fork-as-chat";
-              return (
-                <div
-                  key={affordance.kind}
-                  className="rounded-xl border border-white/[0.09] bg-white/[0.025] p-4"
-                >
-                  <button
-                    type="button"
-                    disabled={Boolean(importingKey) || refreshing}
-                    onClick={() => choose(affordance)}
-                    className="w-full text-left transition-colors disabled:opacity-50"
-                  >
-                    <div className="flex items-center gap-2 text-[12px] font-semibold text-fg">
-                      {busy ? <CircleNotch size={13} className="animate-spin" /> : null}
-                      {affordance.label}
-                    </div>
-                    <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted-fg/70">{affordance.description}</p>
-                    {affordance.hint || affordance.foreignCwd ? (
-                      <p className="mt-2 text-[10px] leading-relaxed text-violet-300/75">
-                        {affordance.hint ?? `Runs in ${shortenCwd(affordance.foreignCwd, 5)}, not ${targetLaneName}.`}
-                      </p>
-                    ) : null}
-                  </button>
-                  {isForkChat ? (
-                    <div className="mt-3 border-t border-white/[0.06] pt-3" onClick={(event) => event.stopPropagation()}>
-                      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg/60">
-                        Fork with model
-                      </div>
-                      <ModelPicker
-                        value={forkModel}
-                        onChange={(modelId) => setForkModel(modelId)}
-                        compact
-                      />
-                      {crossFamily ? (
-                        <p className="mt-2 text-[10px] leading-relaxed text-muted-fg/65">
-                          Carries the conversation, not provider-internal state.
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-[11px] leading-relaxed text-muted-fg/70">
-            This provider cannot safely continue or copy the session into {targetLaneName}. Choose the session's original lane or another provider-supported target.
-          </div>
-        )}
-        {unavailable.map((action) => (
-          <p key={action.kind} className="mt-2 text-[10px] text-muted-fg/55">{action.disabledReason}</p>
-        ))}
-      </section>
-    </div>
-    </ScrollPort>
   );
 }

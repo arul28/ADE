@@ -255,6 +255,7 @@ describe("externalSessionsService", () => {
             toolType: "claude",
             resumeMetadata: { provider: "claude", targetKind: "session", targetId: id, launch: {} },
           } as TerminalSessionSummary,
+          { id: "chat-session", toolType: "claude-chat" } as TerminalSessionSummary,
         ],
         listClaudeSessionPointers: () => [{ sessionId: id, chatSessionId: "chat-session" }],
       },
@@ -759,7 +760,22 @@ describe("externalSessionsService", () => {
     const id = "open-missing-cwd";
     fs.mkdirSync(laneCwd, { recursive: true });
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(openCodePath, "#!/bin/sh\n", "utf8");
+    // A real script, not an `execFile` mock: discovery reads the CLI's stdout
+    // from a file (OpenCode cuts a piped stdout short).
+    const payloadPath = path.join(binDir, "opencode-payload.cjs");
+    fs.writeFileSync(
+      payloadPath,
+      `require("node:fs").writeFileSync(${JSON.stringify(path.join(binDir, "cwd.txt"))}, process.cwd());\n`
+        + `process.stdout.write(${JSON.stringify(JSON.stringify([{ id, title: "OpenCode without cwd" }]))});\n`,
+      "utf8",
+    );
+    fs.writeFileSync(
+      openCodePath,
+      process.platform === "win32"
+        ? `@echo off\r\n"${process.execPath}" "%~dp0opencode-payload.cjs"\r\n`
+        : `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/opencode-payload.cjs"\n`,
+      "utf8",
+    );
     fs.chmodSync(openCodePath, 0o755);
 
     const previousPath = process.env.PATH;
@@ -768,14 +784,6 @@ describe("externalSessionsService", () => {
     process.env.ADE_DISABLE_BUNDLED_OPENCODE = "1";
     clearOpenCodeBinaryCache();
     try {
-      execFileMock.mockImplementation((...callArgs: any[]) => {
-        const callback = callArgs.at(-1) as (error: Error | null, stdout: unknown, stderr: string) => void;
-        callback(null, {
-          stdout: JSON.stringify([{ id, title: "OpenCode without cwd" }]),
-          stderr: "",
-        }, "");
-        return { pid: 123 } as ReturnType<typeof execFile>;
-      });
       const create = vi.fn(async (_args: PtyCreateArgs) => ({
         sessionId: "terminal-opencode",
         ptyId: "pty-opencode",
@@ -804,7 +812,8 @@ describe("externalSessionsService", () => {
         laneId: "lane-1",
       });
 
-      expect(execFileMock.mock.calls[0]?.[2]).toMatchObject({ cwd: fs.realpathSync(laneCwd) });
+      // The list ran in the destination lane, OpenCode's only scope for a row with no cwd.
+      expect(fs.realpathSync(fs.readFileSync(path.join(binDir, "cwd.txt"), "utf8"))).toBe(fs.realpathSync(laneCwd));
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         cwd: fs.realpathSync(laneCwd),
         allowExternalCwd: false,
@@ -1481,18 +1490,21 @@ describe("externalSessionsService imported-session marking", () => {
     ]);
   });
 
-  it("marks both ids of a Codex chat fork and stops listing the fork as a new session", async () => {
+  it("hides a Codex chat fork's new thread and keeps listing its untouched original", async () => {
     const { homeDir, projectRoot, laneCwd } = laneSetup();
     const sourceId = "c0dec0de-0000-4000-8000-000000000001";
     const forkId = "c0dec0de-0000-4000-8000-000000000002";
     for (const threadId of [sourceId, forkId]) {
       writeJsonl(
         path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-2026-07-06T10-00-00-${threadId}.jsonl`),
-        [{
-          timestamp: "2026-07-06T10:00:00.000Z",
-          type: "session_meta",
-          payload: { id: threadId, cwd: laneCwd, timestamp: "2026-07-06T10:00:00.000Z" },
-        }],
+        [
+          {
+            timestamp: "2026-07-06T10:00:00.000Z",
+            type: "session_meta",
+            payload: { id: threadId, cwd: laneCwd, timestamp: "2026-07-06T10:00:00.000Z" },
+          },
+          { timestamp: "2026-07-06T10:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: "fix the build" } },
+        ],
       );
     }
     const service = createExternalSessionsService({
@@ -1524,20 +1536,94 @@ describe("externalSessionsService imported-session marking", () => {
     });
 
     const rows = await service.list({ providers: ["codex"], laneId: "lane-1", scope: "project", limit: 10 });
-    expect(rows).toEqual([]);
-    const lookedUp = await service.list({
+    expect(rows.map((row) => row.id)).toEqual([sourceId]);
+    expect(rows[0]).toMatchObject({ alreadyImported: false, importedBefore: true, importedSessionRef: null });
+    const lookedUpFork = await service.list({
       providers: ["codex"],
       laneId: "lane-1",
       scope: "project",
-      sessionId: sourceId,
+      sessionId: forkId,
     });
-    expect(lookedUp[0]).toMatchObject({
+    expect(lookedUpFork[0]).toMatchObject({
       alreadyImported: true,
       importedSessionRef: { kind: "chat", sessionId: "chat-codex" },
     });
   });
 
-  it("hides the Claude transcript ADE transplanted for a cross-folder fork", async () => {
+  it("lists a Claude session again once the chat its pointer names is deleted", async () => {
+    // 2026-09-23: deleting an imported chat left its pointer behind, and the
+    // session stayed hidden from the importer for good.
+    const { homeDir, projectRoot, laneCwd } = laneSetup();
+    const id = "abababab-abab-4bab-8bab-abababababab";
+    writeClaudeSession({ homeDir, cwd: laneCwd, id, text: "was imported, chat deleted" });
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: {
+        list: () => [],
+        listClaudeSessionPointers: () => [{ sessionId: id, chatSessionId: "deleted-chat" }],
+      },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const rows = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id, alreadyImported: false, importedBefore: true, importedSessionRef: null });
+  });
+
+  it("keeps listing an original that its ADE copy absorbed through shared history", async () => {
+    // 2026-09-23 live test: a copy shares the original's record uuids, so
+    // discovery folded the original into the (hidden) copy and it vanished.
+    const { homeDir, projectRoot, laneCwd } = laneSetup();
+    const otherLane = path.join(projectRoot, ".ade", "worktrees", "lane-2");
+    fs.mkdirSync(otherLane, { recursive: true });
+    const id = "cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd";
+    const rows = Array.from({ length: 6 }, (_, index) => ({
+      type: index % 2 === 0 ? "user" : "assistant",
+      uuid: `00000000-0000-4000-8000-00000000000${index}`,
+      parentUuid: index ? `00000000-0000-4000-8000-00000000000${index - 1}` : null,
+      sessionId: id,
+      cwd: laneCwd,
+      timestamp: `2026-07-06T10:00:0${index}.000Z`,
+      message: index % 2 === 0
+        ? { role: "user", content: `question ${index}` }
+        : { role: "assistant", content: [{ type: "text", text: `answer ${index}` }] },
+    }));
+    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(laneCwd), `${id}.jsonl`), rows);
+    const terminals: TerminalSessionSummary[] = [];
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: {
+        getLaneWorktreePath: (laneId: string) => (laneId === "lane-2" ? otherLane : laneCwd),
+        list: () => [
+          { id: "lane-1", name: "Lane one", branchRef: "refs/heads/one", color: null, laneType: "worktree", worktreePath: laneCwd },
+          { id: "lane-2", name: "Lane two", branchRef: "refs/heads/two", color: null, laneType: "worktree", worktreePath: otherLane },
+        ],
+      },
+      sessionService: { list: () => terminals, listClaudeSessionPointers: () => [] },
+      ptyService: {
+        create: vi.fn(async (args: PtyCreateArgs) => {
+          terminals.push({ id: "copy-terminal", toolType: "claude", resumeMetadata: args.resumeMetadata } as TerminalSessionSummary);
+          return { sessionId: "copy-terminal", ptyId: "pty", pid: 7 };
+        }),
+      },
+      logger: makeLogger(),
+    });
+
+    await service.importExternalSession({ provider: "claude", sessionId: id, laneId: "lane-2", target: "cli", mode: "fork" });
+    const rows2 = await service.list({ providers: ["claude"], scope: "project", limit: 10 });
+
+    expect(rows2.map((row) => row.id)).toEqual([id]);
+    expect(rows2[0]).toMatchObject({ importedBefore: true, alreadyImported: false });
+  });
+
+  it("hides the transplanted Claude copy but keeps listing the untouched original", async () => {
     const homeDir = path.join(root, "home");
     const projectRoot = path.join(root, "repo");
     const sourceCwd = path.join(projectRoot, "source");
@@ -1582,18 +1668,11 @@ describe("externalSessionsService imported-session marking", () => {
     expect(fs.readdirSync(laneProjectDir).filter((name) => name.endsWith(".jsonl"))).toHaveLength(1);
 
     // The transplanted copy is a real Claude transcript on disk; it must not
-    // come back as a session the user can import into ADE a second time.
+    // come back as a session the user can import into ADE a second time. The
+    // original is untouched by a copy, so it stays importable with a hint.
     const rows = await service.list({ providers: ["claude"], scope: "all", limit: 10 });
-    expect(rows).toEqual([]);
-    const lookedUp = await service.list({
-      providers: ["claude"],
-      scope: "all",
-      sessionId: id,
-    });
-    expect(lookedUp[0]).toMatchObject({
-      alreadyImported: true,
-      importedSessionRef: { kind: "cli", sessionId: "terminal-transplant" },
-    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id, alreadyImported: false, importedBefore: true });
   });
 
   it("marks a continuation-chain leaf that was imported under an ancestor id", async () => {

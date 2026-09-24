@@ -1,3 +1,4 @@
+import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
@@ -677,7 +678,9 @@ function readString(source: Record<string, unknown> | null | undefined, key: str
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
 // session (nested session guard). ADE is a host app, not a nested session, so
 // strip the marker env var so the SDK can spawn the CLI cleanly.
-delete process.env.CLAUDECODE;
+// The same holds for every other marker of a parent Claude session: a `claude`
+// in an ADE terminal would inherit them and stop saving its transcript.
+stripParentClaudeSessionEnv(process.env);
 
 if (process.env.VITE_DEV_SERVER_URL) {
   // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.

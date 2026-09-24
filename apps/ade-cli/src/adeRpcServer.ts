@@ -1,3 +1,4 @@
+import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -3231,7 +3232,7 @@ const APPLE_AGENT_DRIVING_ACTIONS = new Set([
 ]);
 
 const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
-const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
+const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(EXTERNAL_SESSION_PROVIDERS);
 
 function isExternalSessionProviderName(value: string | null): value is ExternalSessionProvider {
   return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));

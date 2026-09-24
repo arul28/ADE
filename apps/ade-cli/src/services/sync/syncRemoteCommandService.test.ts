@@ -19,6 +19,17 @@ import {
 } from "./attachmentUploadService";
 import { resetSharedProviderInstanceStoresForTests } from "../providerInstances/providerInstanceStore";
 
+const externalSessionDetailMocks = vi.hoisted(() => ({
+  loadExternalSessionDetail: vi.fn(),
+}));
+
+// The detail loader reads provider stores under the real home directory, so
+// `work.getExternalSessionDetail` tests stand in for it.
+vi.mock("../../../../desktop/src/main/services/externalSessions/externalSessionDetail", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadExternalSessionDetail: externalSessionDetailMocks.loadExternalSessionDetail,
+}));
+
 function makePayload(
   action: string,
   args: Record<string, unknown> = {},
@@ -1792,6 +1803,129 @@ describe("createSyncRemoteCommandService", () => {
       limit: Number.POSITIVE_INFINITY,
     }))).rejects.toThrow("work.listExternalSessions limit must be a finite number.");
     expect(list).not.toHaveBeenCalled();
+  });
+
+  it("routes work.getExternalSessionDetail to the detail loader with a mobile page size", async () => {
+    const detail = {
+      provider: "claude",
+      id: "session-1",
+      cwd: "/repo",
+      title: "Fix tests",
+      model: "claude-sonnet",
+      createdAt: 10,
+      updatedAt: 20,
+      messageCount: 2,
+      messages: [{ role: "user", text: "hi", at: 10 }],
+      sourcePath: "/home/.claude/projects/repo/session-1.jsonl",
+      watchable: true,
+      events: [
+        {
+          sessionId: "external-preview:claude:session-1",
+          timestamp: "2026-09-23T00:00:00.000Z",
+          event: { type: "user_message", text: "hi" },
+        },
+        {
+          sessionId: "external-preview:claude:session-1",
+          timestamp: "2026-09-23T00:00:01.000Z",
+          event: { type: "tool_result", tool: "Read", result: "x".repeat(200_000), itemId: "tool-1" },
+        },
+      ],
+      hasOlder: true,
+      olderCursor: "cursor-older",
+    };
+    externalSessionDetailMocks.loadExternalSessionDetail.mockResolvedValueOnce(detail);
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn() },
+    });
+
+    expect(service.getDescriptor("work.getExternalSessionDetail")).toEqual({
+      action: "work.getExternalSessionDetail",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+
+    const result = await service.execute(makePayload("work.getExternalSessionDetail", {
+      provider: " Claude ",
+      sessionId: " session-1 ",
+      before: " cursor-newer ",
+    })) as typeof detail;
+
+    expect(externalSessionDetailMocks.loadExternalSessionDetail).toHaveBeenCalledWith(
+      { provider: "claude", sessionId: "session-1", before: "cursor-newer" },
+      { maxEvents: 120 },
+    );
+    // `events` carries the conversation, so the text tail is not sent twice.
+    expect(result.messages).toEqual([]);
+    expect(result.hasOlder).toBe(true);
+    expect(result.olderCursor).toBe("cursor-older");
+    expect(result.events[0]).toEqual(detail.events[0]);
+    const toolResult = result.events[1]!.event as Record<string, unknown>;
+    expect(toolResult.type).toBe("tool_result");
+    // Compacted for the phone, but without the "Show full result" flag: a
+    // preview has no stored transcript to fetch the rest from.
+    expect(JSON.stringify(toolResult.result).length).toBeLessThan(200_000);
+    expect(toolResult.resultOmittedBytes).toBeGreaterThan(0);
+    expect(toolResult).not.toHaveProperty("resultTruncatedForMobile");
+  });
+
+  it("keeps the text tail when the host produced no events for work.getExternalSessionDetail", async () => {
+    const detail = {
+      provider: "codex",
+      id: "thread-1",
+      cwd: null,
+      title: null,
+      model: null,
+      createdAt: null,
+      updatedAt: null,
+      messageCount: null,
+      messages: [{ role: "assistant", text: "done", at: null }],
+      sourcePath: null,
+      watchable: false,
+      events: null,
+      hasOlder: false,
+      olderCursor: null,
+    };
+    externalSessionDetailMocks.loadExternalSessionDetail.mockResolvedValueOnce(detail);
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn() },
+    });
+
+    await expect(service.execute(makePayload("work.getExternalSessionDetail", {
+      provider: "codex",
+      sessionId: "thread-1",
+    }))).resolves.toEqual(detail);
+    expect(externalSessionDetailMocks.loadExternalSessionDetail).toHaveBeenLastCalledWith(
+      { provider: "codex", sessionId: "thread-1" },
+      { maxEvents: 120 },
+    );
+  });
+
+  it("rejects invalid work.getExternalSessionDetail payloads and runtimes without external sessions", async () => {
+    externalSessionDetailMocks.loadExternalSessionDetail.mockClear();
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession: vi.fn() },
+    });
+
+    await expect(service.execute(makePayload("work.getExternalSessionDetail", {
+      provider: "bogus",
+      sessionId: "session-1",
+    }))).rejects.toThrow("work.getExternalSessionDetail requires a valid provider.");
+    await expect(service.execute(makePayload("work.getExternalSessionDetail", {
+      provider: "claude",
+      sessionId: "  ",
+    }))).rejects.toThrow("work.getExternalSessionDetail requires sessionId.");
+    await expect(service.execute(makePayload("work.getExternalSessionDetail", {
+      provider: "claude",
+      sessionId: "session-1",
+      before: 42,
+    }))).rejects.toThrow("work.getExternalSessionDetail before must be a string.");
+
+    const { service: bare } = createService();
+    await expect(bare.execute(makePayload("work.getExternalSessionDetail", {
+      provider: "claude",
+      sessionId: "session-1",
+    }))).rejects.toThrow("External sessions service not available.");
+    expect(externalSessionDetailMocks.loadExternalSessionDetail).not.toHaveBeenCalled();
   });
 
   it("routes work.importExternalSession to the external session service", async () => {

@@ -383,6 +383,10 @@ const EXTERNAL_SESSION_NOISE_TAGS = [
   "command-args",
   "ide_opened_file",
   "ide_selection",
+  // Cursor: slash-command bodies, attached-image notes, and the environment block.
+  "cursor_commands",
+  "image_files",
+  "user_info",
 ] as const;
 
 function stripKnownNoiseTags(raw: string): string {
@@ -442,13 +446,40 @@ function isProviderGeneratedNotice(text: string): boolean {
 }
 
 /**
+ * The one-line prompts ADE's provider probes send (`chat/acpHost/fixtures`,
+ * runtime-title checks): "Reply with exactly the word ping and nothing else".
+ * Only a session with at most one prompt can be a probe.
+ */
+const ADE_PROBE_PROMPT = /^(?:reply with (?:exactly |only )?(?:the )?(?:single )?word\b|runtime title audit\b|for a runtime-title probe\b|reply with only continued\b|reply with only the word continued\b)/iu;
+
+export function isAdeProbeSession(session: { preview?: string | null; messageCount?: number | null }): boolean {
+  if (session.messageCount != null && session.messageCount > 1) return false;
+  return ADE_PROBE_PROMPT.test(session.preview?.trim() ?? "");
+}
+
+/**
+ * A prompt ADE itself wrote to restore context in a fresh provider session
+ * (`agentChatService` prefixes it; older builds said "CTO reconstruction").
+ * A session that starts this way is ADE's own work, not the user's.
+ */
+export function isAdeContinuityPrompt(text: string | null | undefined): boolean {
+  return /^\s*System context \((?:CTO reconstruction|ADE continuity), do not echo verbatim\)/u.test(text ?? "");
+}
+
+/**
  * Remove provider/ADE transport markup while preserving the user's actual
  * request. Known local-command wrappers are removed with their contents; a
  * generic tag strip alone would surface `/model` plumbing and caveat text.
  */
 export function cleanExternalSessionUserText(raw: string): string | null {
-  let text = stripKnownNoiseTags(stripTerminalControlSequences(raw));
-  const hasKnownAdePreamble = /\[ADE launch directive\]|## ADE CLI primer|## Project agent rules|ADE session guidance|# AGENTS\.md instructions/iu.test(text);
+  // Cursor puts the send time beside the query
+  // (`<timestamp>…</timestamp> <user_query>…</user_query>`); left in place it
+  // counts as text outside the query and the raw markup became the title.
+  let text = stripKnownNoiseTags(stripTerminalControlSequences(raw))
+    .replace(/<timestamp>[\s\S]*?<\/timestamp>/giu, " ");
+  // Cursor marks each attached image as `[Image]` before its `<image_files>` note.
+  text = text.replace(/\[Image\]/gu, " ");
+  const hasKnownAdePreamble = /\[ADE launch directive\]|## ADE CLI primer|## Project agent rules|ADE session guidance|# AGENTS\.md instructions|## Computer Use\nYou have computer-use capabilities available/iu.test(text);
 
   const queryMatches = Array.from(text.matchAll(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/giu));
   const lastQueryMatch = queryMatches.at(-1);
@@ -463,7 +494,9 @@ export function cleanExternalSessionUserText(raw: string): string | null {
     .replace(/## ADE CLI primer[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
     .replace(/## Project agent rules[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
     .replace(/ADE session guidance[\s\S]*?(?=\n\n|$)/giu, " ")
-    .replace(/# AGENTS\.md instructions[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ");
+    .replace(/# AGENTS\.md instructions[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
+    // ADE's computer-use directive (`agentChatService` builds it) runs up to the request.
+    .replace(/## Computer Use\nYou have computer-use capabilities available[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ");
 
   if (hasKnownAdePreamble) {
     const markers = ["User request:", "User prompt:"];
@@ -711,12 +744,78 @@ export function countExternalSessionUserMessages(
   );
 }
 
+/** Past this size a count is not worth one scan's time. */
+const MESSAGE_COUNT_STREAM_MAX_BYTES = 256 * 1024 * 1024;
+const MESSAGE_COUNT_CHUNK_BYTES = 1024 * 1024;
+const messageCountCache = new Map<string, { size: number; mtimeMs: number; count: number | null }>();
+
+/**
+ * Only lines that can be a user turn are worth `JSON.parse`: a long agent
+ * session is mostly tool output. Loose on purpose; the parsed record decides.
+ */
+const USER_LINE_HINT = /"role"\s*:\s*"user"|"type"\s*:\s*"user|user_message|"user\.message"/u;
+
+/**
+ * Streams a large JSONL file line by line and parses only candidate user
+ * lines. Large sessions used to report no prompt count at all (the whole-file
+ * parse stopped at 768 KB), which left most real sessions without one.
+ */
+function countLargeJsonlUserMessages(filePath: string, provider: ExternalSessionProvider): number | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.alloc(MESSAGE_COUNT_CHUNK_BYTES);
+    const records: unknown[] = [];
+    let carry = "";
+    for (;;) {
+      const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (read <= 0) break;
+      const text = carry + buffer.toString("utf8", 0, read);
+      const lines = text.split(/\r?\n/u);
+      carry = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!USER_LINE_HINT.test(line)) continue;
+        const record = safeParseJson(line);
+        if (record != null) records.push(record);
+      }
+    }
+    if (carry && USER_LINE_HINT.test(carry)) {
+      const record = safeParseJson(carry);
+      if (record != null) records.push(record);
+    }
+    return countExternalSessionUserMessages(records, provider);
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+}
+
 export function countJsonlUserMessagesCheap(
   filePath: string,
   provider: ExternalSessionProvider,
 ): number | null {
-  const records = jsonlRecordsForSemanticCount(filePath);
-  return records == null ? null : countExternalSessionUserMessages(records, provider);
+  const stat = safeStat(filePath);
+  if (!stat) return null;
+  if (stat.size <= MESSAGE_COUNT_MAX_BYTES) {
+    const records = jsonlRecordsForSemanticCount(filePath);
+    return records == null ? null : countExternalSessionUserMessages(records, provider);
+  }
+  if (stat.size > MESSAGE_COUNT_STREAM_MAX_BYTES) return null;
+  // Keyed on size and mtime: a live session re-counts only when it grows.
+  const key = `${provider}:${filePath}`;
+  const cached = messageCountCache.get(key);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.count;
+  const count = countLargeJsonlUserMessages(filePath, provider);
+  if (messageCountCache.size > 4096) messageCountCache.clear();
+  messageCountCache.set(key, { size: stat.size, mtimeMs: stat.mtimeMs, count });
+  return count;
 }
 
 export function claudeProjectSlugForCwd(cwd: string): string {
@@ -903,10 +1002,50 @@ function cursorSlugAnchors(parts: string[]): Array<{ root: string; index: number
   return anchors;
 }
 
+/**
+ * Subdirectory listings for one discovery call.
+ *
+ * The greedy walk below tests every way the remaining slug parts can split
+ * into a folder name; with one `stat` per guess, 103 slugs of deleted lane
+ * folders cost ~1.9 s per scan (2026-09-23). Reading each directory once per
+ * call turns those guesses into set lookups. Scoped to one call, never kept
+ * across calls, so a folder created a moment ago is always seen. Keys fold
+ * case on macOS and Windows, whose file systems resolve names
+ * case-insensitively, as the `stat` did.
+ */
+export type SlugDirCache = Map<string, Map<string, string> | null>;
+
+export function createSlugDirCache(): SlugDirCache {
+  return new Map();
+}
+
+const foldsCase = process.platform === "darwin" || process.platform === "win32";
+
+function subdirectoryNamed(cache: SlugDirCache, dir: string, name: string): string | null {
+  let names = cache.get(dir);
+  if (names === undefined) {
+    try {
+      names = new Map();
+      for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+        // A symlink may point at a directory; `stat` followed it, so check it.
+        const isDir = dirent.isDirectory()
+          || (dirent.isSymbolicLink() && safeStat(path.join(dir, dirent.name))?.isDirectory() === true);
+        if (isDir) names.set(foldsCase ? dirent.name.toLowerCase() : dirent.name, dirent.name);
+      }
+    } catch {
+      names = null;
+    }
+    cache.set(dir, names);
+  }
+  const actual = names?.get(foldsCase ? name.toLowerCase() : name);
+  return actual ? path.join(dir, actual) : null;
+}
+
 function greedyCursorSlugCwdCandidateFrom(
   parts: string[],
   root: string,
   startIndex: number,
+  cache: SlugDirCache,
 ): string | null {
   let current = root;
   let index = startIndex;
@@ -916,9 +1055,8 @@ function greedyCursorSlugCwdCandidateFrom(
     for (let nextIndex = parts.length; nextIndex > index; nextIndex -= 1) {
       const segmentParts = parts.slice(index, nextIndex);
       for (const name of cursorSlugSegmentNames(segmentParts)) {
-        const candidate = path.join(current, name);
-        const stat = safeStat(candidate);
-        if (stat?.isDirectory()) {
+        const candidate = subdirectoryNamed(cache, current, name);
+        if (candidate) {
           matched = { dir: candidate, nextIndex };
           break;
         }
@@ -933,23 +1071,23 @@ function greedyCursorSlugCwdCandidateFrom(
   return current;
 }
 
-function greedyCursorSlugCwdCandidate(slug: string): string | null {
+function greedyCursorSlugCwdCandidate(slug: string, cache: SlugDirCache): string | null {
   const parts = slug.split("-").filter((part) => part.length > 0);
   if (!parts.length) return null;
   for (const anchor of cursorSlugAnchors(parts)) {
-    const resolved = greedyCursorSlugCwdCandidateFrom(parts, anchor.root, anchor.index);
+    const resolved = greedyCursorSlugCwdCandidateFrom(parts, anchor.root, anchor.index, cache);
     if (resolved) return resolved;
   }
   return null;
 }
 
-export function cursorSlugCwdCandidates(slug: string): string[] {
+export function cursorSlugCwdCandidates(slug: string, cache: SlugDirCache = createSlugDirCache()): string[] {
   const candidates: string[] = [];
   const add = (candidate: string) => {
     if (!candidates.includes(candidate)) candidates.push(candidate);
   };
 
-  const greedy = greedyCursorSlugCwdCandidate(slug);
+  const greedy = greedyCursorSlugCwdCandidate(slug, cache);
   if (greedy) add(greedy);
 
   // Home-relative guess. On macOS a home-anchored slug starts `Users-<name>-`;
@@ -987,8 +1125,8 @@ export function cursorSlugCwdCandidates(slug: string): string[] {
   return candidates;
 }
 
-export function resolveCursorCwdFromSlug(slug: string): string | null {
-  for (const candidate of cursorSlugCwdCandidates(slug)) {
+export function resolveCursorCwdFromSlug(slug: string, cache: SlugDirCache = createSlugDirCache()): string | null {
+  for (const candidate of cursorSlugCwdCandidates(slug, cache)) {
     const resolved = resolveExistingPath(candidate);
     if (resolved) return resolved;
   }

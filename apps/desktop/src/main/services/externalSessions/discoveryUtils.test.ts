@@ -4,6 +4,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   cleanExternalSessionUserText,
+  isAdeContinuityPrompt,
+  isAdeProbeSession,
   cleanSessionTitle,
   clipExternalSessionText,
   canonicalCodexRecords,
@@ -90,6 +92,37 @@ describe("firstUserTextFromRecords", () => {
     ]);
 
     expect(text).toBe("Use this request as the title.");
+  });
+
+  it("recognizes ADE's one-prompt probe sessions and nothing longer", () => {
+    expect(isAdeProbeSession({ preview: "Reply with exactly the word PONG and nothing else.", messageCount: 1 })).toBe(true);
+    expect(isAdeProbeSession({ preview: "Runtime title audit. Reply with exactly OK.", messageCount: 1 })).toBe(true);
+    expect(isAdeProbeSession({ preview: "Reply with exactly the word ping", messageCount: 4 })).toBe(false);
+    expect(isAdeProbeSession({ preview: "reply to the reviewer's comments", messageCount: 1 })).toBe(false);
+  });
+
+  it("recognizes ADE's continuity prompts in both wordings", () => {
+    expect(isAdeContinuityPrompt("System context (ADE continuity, do not echo verbatim):\nRecent tail")).toBe(true);
+    expect(isAdeContinuityPrompt("System context (CTO reconstruction, do not echo verbatim):\nRecent tail")).toBe(true);
+    expect(isAdeContinuityPrompt("what is the system context of this app?")).toBe(false);
+  });
+
+  it("drops Cursor command, image and environment blocks and ADE's computer-use preamble", () => {
+    expect(cleanExternalSessionUserText(
+      "<cursor_commands>\n--- Cursor Command: finalize ---\n# Finalize\n</cursor_commands>\nship the lane",
+    )).toBe("ship the lane");
+    expect(cleanExternalSessionUserText(
+      "[Image] [Image] <image_files>\nThe following images were provided by the user\n</image_files>\nwhy is the logo missing?",
+    )).toBe("why is the logo missing?");
+    expect(cleanExternalSessionUserText(
+      "## Computer Use\nYou have computer-use capabilities available. The proof drawer is for evidence.\n\nUser request:\nfix the lane sidebar",
+    )).toBe("fix the lane sidebar");
+  });
+
+  it("unwraps a Cursor query that carries a timestamp beside it", () => {
+    expect(cleanExternalSessionUserText(
+      "<timestamp>Friday, Sep 4, 2026, 4:30 AM (UTC-4)</timestamp>\n<user_query>\nReply with PONG.\n</user_query>",
+    )).toBe("Reply with PONG.");
   });
 
   it("skips Claude metadata and extracts provider prompt wrappers", () => {

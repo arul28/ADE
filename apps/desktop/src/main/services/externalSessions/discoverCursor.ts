@@ -5,11 +5,14 @@ import {
   asEpochMs,
   asRecord,
   asString,
+  cleanExternalSessionUserText,
   cleanSessionTitle,
   closeExternalSessionDb,
   countJsonlUserMessagesCheap,
   cwdCandidatesIncludeScope,
   cwdIsInScope,
+  extractText,
+  isAdeContinuityPrompt,
   firstUserTextFromRecords,
   moreCompleteFileCandidate,
   normalizeExternalSessionLimit,
@@ -19,7 +22,9 @@ import {
   readJsonlRecords,
   recordWithFile,
   cursorSlugCwdCandidates,
+  createSlugDirCache,
   resolveCursorCwdFromSlug,
+  type SlugDirCache,
   resolveHomeDir,
   safeReadDir,
   safeParseJson,
@@ -147,6 +152,64 @@ function readCursorStoreMeta(
   }
 }
 
+/** Bounds for reading prompts out of a store with no transcript beside it. */
+const CURSOR_STORE_PROMPT_SCAN_ROWS = 400;
+const CURSOR_STORE_PROMPT_MAX_BLOB_BYTES = 256 * 1024;
+
+export type CursorStorePrompts = {
+  firstUserText: string | null;
+  userCount: number;
+  /** ADE's CTO agent drove this chat through the Cursor SDK. */
+  adeOrigin: boolean;
+};
+
+function blobText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+  return null;
+}
+
+/**
+ * The prompts of a Cursor chat that exists only as `store.db` (no
+ * agent-transcript): its messages are JSON blobs `{ role, content }`. Without
+ * this, such chats listed as "Untitled Cursor chat" with no preview — 11 of
+ * 27 Cursor rows on 2026-09-23. Bounded by row count and blob size.
+ */
+export function readCursorStorePrompts(
+  storePath: string,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): CursorStorePrompts | null {
+  const db = openExternalSessionDb(storePath, logger);
+  if (!db) return null;
+  try {
+    const rows = db.prepare(
+      `SELECT data FROM blobs WHERE length(data) <= ${CURSOR_STORE_PROMPT_MAX_BLOB_BYTES} LIMIT ${CURSOR_STORE_PROMPT_SCAN_ROWS}`,
+    ).all() as Array<{ data?: unknown }>;
+    let firstUserText: string | null = null;
+    let userCount = 0;
+    let adeOrigin = false;
+    for (const row of rows) {
+      const text = blobText(row.data);
+      if (!text || !text.trimStart().startsWith("{")) continue;
+      const record = asRecord(safeParseJson(text));
+      if (asString(record?.role) !== "user") continue;
+      const raw = extractText(record?.content);
+      if (!raw) continue;
+      if (isAdeContinuityPrompt(cleanExternalSessionUserText(raw))) adeOrigin = true;
+      const cleaned = cleanExternalSessionUserText(raw);
+      // Cursor sends a `<user_info>` environment block as its own user message.
+      if (!cleaned || /^<user_info>/u.test(raw.trim())) continue;
+      userCount += 1;
+      firstUserText ??= cleaned;
+    }
+    return { firstUserText, userCount, adeOrigin };
+  } catch {
+    return null;
+  } finally {
+    closeExternalSessionDb(db);
+  }
+}
+
 type CursorArtifact = {
   filePath: string;
   mtimeMs: number;
@@ -263,11 +326,12 @@ function cursorTranscriptScope(
   trustedCwd: string | null,
   args: ExternalSessionDiscoveryArgs,
   resolveSlugCwd: (slug: string) => string | null,
+  slugDirCache: SlugDirCache,
 ): CursorScope {
   if (
     cwdIsInScope(trustedCwd, args.scopeRoots)
     || slugMatchesScopeRoots(projectSlug, args.scopeRoots, cursorProjectSlugForCwd)
-    || cwdCandidatesIncludeScope(cursorSlugCwdCandidates(projectSlug), args.scopeRoots)
+    || cwdCandidatesIncludeScope(cursorSlugCwdCandidates(projectSlug, slugDirCache), args.scopeRoots)
   ) {
     return "in";
   }
@@ -282,12 +346,13 @@ function collectCursorTranscripts(
   args: ExternalSessionDiscoveryArgs,
   resolveSlugCwd: (slug: string) => string | null,
   groups: Map<string, CursorSessionGroup>,
+  slugDirCache: SlugDirCache,
 ): void {
   for (const projectEntry of safeReadDir(projectsDir)) {
     if (!projectEntry.isDirectory()) continue;
     const projectDir = path.join(projectsDir, projectEntry.name);
     const trustedCwd = trustedCursorWorkspacePath(projectDir);
-    const scope = cursorTranscriptScope(projectEntry.name, trustedCwd, args, resolveSlugCwd);
+    const scope = cursorTranscriptScope(projectEntry.name, trustedCwd, args, resolveSlugCwd, slugDirCache);
     if (scope === "out") continue;
     const transcriptRoot = path.join(projectDir, "agent-transcripts");
     const ids = lookupId
@@ -324,10 +389,11 @@ export async function discoverCursorSessions(
   // De-slugging walks the filesystem, and the same slug is consulted once per
   // bucket lookup and again per transcript directory.
   const slugCwdCache = new Map<string, string | null>();
+  const slugDirCache = createSlugDirCache();
   const resolveSlugCwd = (slug: string): string | null => {
     const cached = slugCwdCache.get(slug);
     if (cached !== undefined) return cached;
-    const resolved = resolveCursorCwdFromSlug(slug);
+    const resolved = resolveCursorCwdFromSlug(slug, slugDirCache);
     slugCwdCache.set(slug, resolved);
     return resolved;
   };
@@ -335,7 +401,7 @@ export async function discoverCursorSessions(
   const groups = new Map<string, CursorSessionGroup>();
   const workspaceByHash = cursorWorkspaceByHash(projectsDir, args.scopeRoots, resolveSlugCwd);
   collectCursorStores(chatsDir, workspaceByHash, lookupId, args, groups);
-  collectCursorTranscripts(projectsDir, lookupId, args, resolveSlugCwd, groups);
+  collectCursorTranscripts(projectsDir, lookupId, args, resolveSlugCwd, groups, slugDirCache);
 
   // Conversations already proven in project are read first, so a machine full of
   // out-of-project Cursor usage cannot crowd them out of the read budget.
@@ -352,6 +418,10 @@ export async function discoverCursorSessions(
   for (const group of ordered) {
     const storeMeta = group.store ? readCursorStoreMeta(group.store.filePath, args.logger) : null;
     const jsonl = group.transcript ? readJsonlRecords(group.transcript.filePath) : [];
+    const storePrompts = !group.transcript && group.store
+      ? readCursorStorePrompts(group.store.filePath, args.logger)
+      : null;
+    if (storePrompts?.adeOrigin) continue;
     const first = asRecord(jsonl[0]);
     const cwd = group.store?.cwd
       ?? cursorCwdFromRecords(jsonl)
@@ -360,12 +430,12 @@ export async function discoverCursorSessions(
     // A conversation whose cwd nothing recorded still belongs in an unscoped
     // listing; `cwdIsInScope` is what keeps it out of a project-scoped one.
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
-    records.push(recordWithFile({
+    const record = recordWithFile({
       provider: "cursor",
       id: group.id,
       cwd,
       title: storeMeta?.title ?? group.store?.meta?.title ?? null,
-      preview: jsonl.length ? firstUserTextFromRecords(jsonl) : null,
+      preview: jsonl.length ? firstUserTextFromRecords(jsonl) : storePrompts?.firstUserText ?? null,
       createdAt: storeMeta?.createdAt
         ?? group.store?.meta?.createdAt
         ?? asEpochMs(first?.timestamp)
@@ -373,10 +443,13 @@ export async function discoverCursorSessions(
       updatedAt: group.mtimeMs,
       messageCount: group.transcript
         ? countJsonlUserMessagesCheap(group.transcript.filePath, "cursor")
-        : null,
+        : storePrompts?.userCount ?? null,
       filePath: group.transcript?.filePath ?? group.store?.filePath ?? null,
       sourceMtimeMs: group.mtimeMs,
-    }));
+    });
+    // The same file `filePath` names above, so the size describes the source.
+    record.sizeBytes = group.transcript?.size ?? group.store?.size ?? null;
+    records.push(record);
   }
 
   return sortDiscoveryRecords(records, limit);

@@ -11902,6 +11902,34 @@ final class SyncService: ObservableObject {
     return result.sessions
   }
 
+  /// Whether the host can send an external session's whole conversation.
+  /// Older hosts only have the list's sampled messages.
+  var supportsExternalSessionDetail: Bool {
+    supportsRemoteAction("work.getExternalSessionDetail")
+  }
+
+  /// One page of an external session's conversation as ADE chat events, newest
+  /// page first; pass the previous page's `olderCursor` as `before` for the
+  /// page before it.
+  func getExternalSessionDetail(
+    provider: String,
+    sessionId: String,
+    before: String? = nil
+  ) async throws -> ExternalSessionDetail {
+    var args: [String: Any] = [
+      "provider": provider,
+      "sessionId": sessionId,
+    ]
+    if let before, !before.isEmpty {
+      args["before"] = before
+    }
+    return try await sendDecodableCommand(
+      action: "work.getExternalSessionDetail",
+      args: args,
+      as: ExternalSessionDetail.self
+    )
+  }
+
   func importExternalSession(
     provider: String,
     sessionId: String,

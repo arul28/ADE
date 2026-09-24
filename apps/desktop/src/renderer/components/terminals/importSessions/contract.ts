@@ -15,6 +15,10 @@ import type {
   ExternalSessionDetailUpdatedEvent,
   ExternalSessionDetailWatchArgs,
 } from "../../../../shared/types/externalSessionDetail";
+import {
+  EXTERNAL_SESSION_PROVIDER_LABELS,
+  EXTERNAL_SESSION_PROVIDERS,
+} from "../../../../shared/types/externalSessions";
 import type {
   ExternalSessionProvider,
   ExternalSessionImportArgs,
@@ -42,14 +46,7 @@ export type {
 } from "../../../../shared/types/externalSessionDetail";
 
 /** Every provider we scan when no specific filter is applied. */
-export const ALL_IMPORT_PROVIDERS: ExternalSessionProvider[] = [
-  "claude",
-  "codex",
-  "cursor",
-  "droid",
-  "opencode",
-  "pi",
-];
+export const ALL_IMPORT_PROVIDERS: ExternalSessionProvider[] = [...EXTERNAL_SESSION_PROVIDERS];
 
 /**
  * Provenance marker stamped by the backend onto imported terminal/chat
@@ -124,17 +121,8 @@ export function readImportedFrom(session: unknown): ImportedFrom | null {
   };
 }
 
-const PROVIDER_LABELS: Record<ExternalSessionProvider, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  cursor: "Cursor",
-  droid: "Droid",
-  opencode: "OpenCode",
-  pi: "Pi",
-};
-
 export function providerDisplayName(provider: ExternalSessionProvider): string {
-  return PROVIDER_LABELS[provider] ?? provider;
+  return EXTERNAL_SESSION_PROVIDER_LABELS[provider] ?? provider;
 }
 
 /** Maps an external provider to the terminal toolType used for its CLI runtime. */
@@ -145,6 +133,10 @@ export const PROVIDER_TOOL_TYPE: Record<ExternalSessionProvider, TerminalToolTyp
   droid: "droid",
   opencode: "opencode",
   pi: "pi",
+  qwen: "qwen",
+  kimi: "kimi",
+  grok: "grok",
+  copilot: "copilot",
 };
 
 export const PROVIDER_FAMILY: Record<ExternalSessionProvider, ProviderFamily> = {
@@ -154,4 +146,8 @@ export const PROVIDER_FAMILY: Record<ExternalSessionProvider, ProviderFamily> = 
   droid: "factory",
   opencode: "opencode",
   pi: "pi",
+  qwen: "qwen",
+  kimi: "moonshot",
+  grok: "xai",
+  copilot: "github-copilot",
 };

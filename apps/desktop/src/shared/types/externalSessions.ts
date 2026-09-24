@@ -1,4 +1,65 @@
-export type ExternalSessionProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+export type ExternalSessionProvider =
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  // ACP providers: discovered from their own on-disk stores.
+  | "qwen"
+  | "kimi"
+  | "grok"
+  | "copilot";
+
+/** Every provider the importer knows, in display order. */
+export const EXTERNAL_SESSION_PROVIDERS: readonly ExternalSessionProvider[] = [
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+];
+
+export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  droid: "Droid",
+  opencode: "OpenCode",
+  pi: "Pi",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  grok: "Grok",
+  copilot: "Copilot",
+};
+
+export function isExternalSessionProvider(value: unknown): value is ExternalSessionProvider {
+  return typeof value === "string"
+    && (EXTERNAL_SESSION_PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * Where a session lives, resolved against the project's lanes.
+ *
+ * - `lane`: the session folder is a live lane's worktree or a folder inside it.
+ * - `removed-lane`: the folder sits under `.ade/worktrees/` but no live lane owns it.
+ * - `outside`: any other folder in the project (never a lane).
+ */
+export interface ExternalSessionHome {
+  kind: "lane" | "removed-lane" | "outside";
+  laneId: string | null;
+  laneName: string | null;
+  branchRef: string | null;
+  color: string | null;
+  laneType: string | null;
+  /** True when the session folder is exactly the lane worktree root, not a subfolder. */
+  atLaneRoot: boolean;
+}
 
 export interface ExternalSessionCapabilities {
   resumeInPlace: boolean;
@@ -46,6 +107,10 @@ export interface ExternalSessionSummary {
   importedBefore?: boolean;
   cwdMatchesRequestedLane: boolean | null;
   capabilities: ExternalSessionCapabilities;
+  /** The lane this session belongs to. Optional: older hosts do not send it. */
+  home?: ExternalSessionHome | null;
+  /** Size of the provider's session store entry on disk, when one stat call finds it. */
+  sizeBytes?: number | null;
 }
 
 export interface ExternalSessionListArgs {

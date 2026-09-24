@@ -2,9 +2,16 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { discoverCursorSessions } from "./discoverCursor";
+import { createRequire } from "node:module";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import { discoverCursorSessions, readCursorStorePrompts } from "./discoverCursor";
 
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
+
+// Loaded at run time: Vite cannot resolve a static `node:sqlite` import.
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: new (dbPath: string) => DatabaseSyncType;
+};
 
 function writeTranscript(home: string, slug: string, agentId: string, cwd: string): void {
   const dir = path.join(home, ".cursor", "projects", slug, "agent-transcripts", agentId);
@@ -57,6 +64,50 @@ describe("discoverCursorSessions", () => {
     try {
       const records = await discoverCursorSessions({ homeDir: home, scopeRoots: [workspace], limit: 10 });
       expect(records.map((record) => record.id)).toContain("chat-deleted");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readCursorStorePrompts", () => {
+  function writeStore(filePath: string, messages: unknown[]): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const db = new DatabaseSync(filePath);
+    db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
+    const insert = db.prepare("INSERT INTO blobs (id, data) VALUES (?, ?)");
+    messages.forEach((message, index) => insert.run(String(index), Buffer.from(JSON.stringify(message))));
+    db.close();
+  }
+
+  it("reads the first real prompt and skips the environment block", () => {
+    // 2026-09-23: store-only Cursor chats listed as "Untitled Cursor chat".
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-"));
+    try {
+      const store = path.join(root, "store.db");
+      writeStore(store, [
+        { role: "user", content: "<user_info>\nOS Version: darwin\n</user_info>" },
+        { role: "user", content: [{ type: "text", text: "<user_query>\nkeep this branch up to date with main\n</user_query>" }] },
+        { role: "assistant", content: "Done." },
+      ]);
+      expect(readCursorStorePrompts(store, null)).toEqual({
+        firstUserText: "keep this branch up to date with main",
+        userCount: 1,
+        adeOrigin: false,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("marks chats ADE's CTO agent drove", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-"));
+    try {
+      const store = path.join(root, "store.db");
+      writeStore(store, [
+        { role: "user", content: "<user_query>\nSystem context (CTO reconstruction, do not echo verbatim):\n…\n</user_query>" },
+      ]);
+      expect(readCursorStorePrompts(store, null)?.adeOrigin).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
