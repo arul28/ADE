@@ -77,7 +77,7 @@ export function LaneSidebarBulkRebaseDialog({
       title={count === 1 ? "Rebase 1 lane" : `Rebase ${count} lanes`}
       description="Each lane is rebased onto its base, one at a time. Nothing is pushed."
       icon={ArrowsClockwise}
-      widthClassName="w-[min(520px,calc(100vw-1rem))]"
+      width="min(520px, calc(100vw - 1rem))"
       busy={busy}
       footer={(
         <div className="flex items-center justify-end gap-2">

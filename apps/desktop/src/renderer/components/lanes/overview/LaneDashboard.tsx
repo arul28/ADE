@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { GitBranch, Warning, X } from "@phosphor-icons/react";
+import { GitBranch, Warning } from "@phosphor-icons/react";
 import type { GitCommitSummary } from "../../../../shared/types";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
@@ -33,7 +33,8 @@ import {
   laneOverviewSections,
   splitLanePrs,
 } from "./laneOverviewModel";
-import { OverviewCollapseContext, TextButton, type OverviewCollapse } from "./sectionUi";
+import { Banner } from "../../ui/notice";
+import { OverviewCollapseContext, type OverviewCollapse } from "./sectionUi";
 import {
   laneHistorySessionsFrom,
   useLaneCommits,
@@ -93,39 +94,27 @@ function RebaseNotice({
   onOpen: () => void;
   onDismiss: (() => void) | null;
 }) {
-  const color = tone === "danger" ? COLORS.danger : COLORS.warning;
   return (
-    <div
-      role="status"
-      data-testid="lane-rebase-notice"
-      data-source={source}
-      className="-mx-2 flex h-9 min-w-0 items-center gap-2.5 rounded-md pl-2 pr-1 text-[12.5px]"
-      style={{
-        background: `color-mix(in srgb, ${color} 8%, transparent)`,
-        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 16%, transparent)`,
+    <Banner
+      layout="inline"
+      testId="lane-rebase-notice"
+      style={{ margin: "0 -8px" }}
+      model={{
+        id: `lane-rebase-notice:${source}`,
+        tone: tone === "danger" ? "error" : "warning",
+        icon: tone === "danger"
+          ? <Warning size={13} weight="fill" />
+          : <GitBranch size={13} weight="bold" />,
+        title: label,
+        actions: [{
+          label: source === "suggestion" ? "Rebase…" : "Review",
+          onClick: onOpen,
+        }],
+        dismiss: onDismiss
+          ? { onDismiss, label: "Dismiss", title: "Dismiss until the base moves again" }
+          : false,
       }}
-    >
-      <span className="flex w-4 shrink-0 justify-center">
-        {tone === "danger"
-          ? <Warning size={14} weight="fill" style={{ color }} />
-          : <GitBranch size={14} weight="bold" style={{ color }} />}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-fg/85">{label}</span>
-      <TextButton onClick={onOpen} className="text-fg/85">
-        {source === "suggestion" ? "Rebase…" : "Review"}
-      </TextButton>
-      {onDismiss ? (
-        <button
-          type="button"
-          onClick={onDismiss}
-          aria-label="Dismiss"
-          title="Dismiss until the base moves again"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"
-        >
-          <X size={11} weight="bold" />
-        </button>
-      ) : null}
-    </div>
+    />
   );
 }
 

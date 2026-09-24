@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { CaretDown, Check, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
 import type { LaneBranchActiveWorkItem, LaneSummary } from "../../../../shared/types";
-import { useClampedFixedPosition, type FixedAnchor } from "../../../hooks/useClampedFixedPosition";
-import { useClickOutside } from "../../../hooks/useClickOutside";
 import { useAppStore } from "../../../state/appStore";
+import { AnchoredMenu } from "../../ui/AnchoredMenu";
+import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "../laneDesignTokens";
 import {
@@ -76,39 +75,12 @@ export function LaneBranchSwitcher({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // Where the menu opens: just under the trigger, in viewport pixels.
-  const [anchor, setAnchor] = useState<FixedAnchor | null>(null);
-  const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(
-    open ? anchor : null,
-    `${branches.length}:${newBranchFormOpen}:${pendingSwitch?.branchName ?? ""}:${branchesLoading}`,
-  );
 
   const toggleOpen = useCallback(() => {
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect) setAnchor({ x: rect.left, y: rect.bottom + 4 });
     setOpen((prev) => !prev);
   }, []);
 
-  // The menu lives in a portal, so clicks inside it are not inside rootRef.
-  const insideMenu = useCallback((target: Node) => menuRef.current?.contains(target) ?? false, [menuRef]);
   const close = useCallback(() => setOpen(false), []);
-  useClickOutside(rootRef, close, open, insideMenu);
-
-  // A fixed menu would drift away from its trigger, so close it when the
-  // page scrolls or the window resizes. Scrolling the branch list is fine.
-  useEffect(() => {
-    if (!open) return;
-    const onScroll = (event: Event) => {
-      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
-      setOpen(false);
-    };
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", close);
-    return () => {
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [open, close, menuRef]);
 
   // Clear stale results whenever the lane changes, or lane A's branches would
   // linger in lane B's dropdown until the new fetch resolves.
@@ -298,25 +270,22 @@ export function LaneBranchSwitcher({
           </button>
         </span>
       ) : null}
-      {/* Portaled to the body so the lane header and panes cannot clip it. */}
-      {open && anchor ? createPortal(
-        <div
-          ref={menuRef}
-          className="ade-liquid-glass-menu flex flex-col overflow-hidden"
-          style={{
-            position: "fixed",
-            zIndex: 200,
-            left: menuPosition?.left ?? anchor.x,
-            top: menuPosition?.top ?? anchor.y,
-            visibility: menuPosition ? "visible" : "hidden",
-            maxHeight: "min(480px, calc(100vh - 16px))",
-            width: 360,
-            padding: "4px 0",
-            border: `1px solid ${COLORS.outlineBorder}`,
-            background: COLORS.cardBgSolid,
-            boxShadow: "0 24px 56px -20px rgba(0, 0, 0, 0.7)",
-          }}
-        >
+      <AnchoredMenu
+        open={open}
+        anchorRef={triggerRef}
+        onClose={close}
+        zIndex={Z_LAYERS.popover}
+        remeasureKey={`${branches.length}:${newBranchFormOpen}:${pendingSwitch?.branchName ?? ""}:${branchesLoading}`}
+        className="ade-liquid-glass-menu flex flex-col overflow-hidden"
+        style={{
+          maxHeight: "min(480px, calc(100vh - 16px))",
+          width: 360,
+          padding: "4px 0",
+          border: `1px solid ${COLORS.outlineBorder}`,
+          background: COLORS.cardBgSolid,
+          boxShadow: "0 24px 56px -20px rgba(0, 0, 0, 0.7)",
+        }}
+      >
           <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
             <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
             <input
@@ -487,9 +456,7 @@ export function LaneBranchSwitcher({
               <div style={{ padding: "6px 12px", fontSize: 11, color: COLORS.danger }}>{error}</div>
             ) : null}
           </div>
-        </div>,
-        document.body,
-      ) : null}
+      </AnchoredMenu>
     </div>
   );
 }

@@ -152,11 +152,11 @@ describe("AccountSignedOutBanner", () => {
 
   it("hides on the Account section of Settings, and only there", () => {
     renderBanner("/settings?tab=account");
-    expect(screen.queryByTestId("account-signed-out-banner")).toBeNull();
+    expect(signedOutBanner()).toBeNull();
 
     cleanup();
     renderBanner("/settings?tab=appearance");
-    expect(screen.getByTestId("account-signed-out-banner")).toBeTruthy();
+    expect(signedOutBanner()).toBeTruthy();
   });
 });
 
