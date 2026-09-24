@@ -211,17 +211,9 @@ function chatEventSearchText(envelope: AgentChatEventEnvelope): string | null {
   };
   if (!event || typeof event !== "object") return null;
   if (event.type === "user_message") {
-    // Accepted steers are persisted again when they become processed or
-    // terminally unprocessed so every transcript surface can fold the latest
-    // delivery state. The first accepted event already owns the searchable
-    // message body; lifecycle snapshots must not create duplicate hits.
-    if (
-      event.deliveryState === "queued"
-      || event.deliveryState === "processed"
-      || event.deliveryState === "unprocessed"
-    ) {
-      return null;
-    }
+    // A staged steer is not a sent message yet. Its later lifecycle rows are
+    // folded onto one doc per steerId by the indexer (`chatEventSteerId`).
+    if (event.deliveryState === "queued") return null;
     const display = typeof event.displayText === "string" ? event.displayText : "";
     const text = typeof event.text === "string" ? event.text : "";
     return display.trim() || text.trim() || null;
@@ -231,6 +223,18 @@ function chatEventSearchText(envelope: AgentChatEventEnvelope): string | null {
     return text.trim() || null;
   }
   return null;
+}
+
+/**
+ * A steer writes its row once per lifecycle state on one steerId (`accepted`
+ * then `inline`, `processed`, `delivered`, ...), with the same text. Keying
+ * its doc by steerId makes it one hit. The first row indexed keeps the doc, so
+ * the hit links to where the message first showed.
+ */
+function chatEventSteerId(envelope: AgentChatEventEnvelope): string | null {
+  const event = envelope.event as { type?: string; steerId?: unknown } | null | undefined;
+  if (!event || event.type !== "user_message" || typeof event.steerId !== "string") return null;
+  return event.steerId.trim() || null;
 }
 
 export type SearchService = ReturnType<typeof createSearchService>;
@@ -756,8 +760,11 @@ export function createSearchService(deps: SearchServiceDeps) {
           typeof envelope.sequence === "number" && envelope.sequence >= 0
             ? envelope.sequence
             : seq;
+        const steerId = chatEventSteerId(envelope);
+        const docId = steerId ? `chat:${sessionId}:steer:${steerId}` : `chat:${sessionId}:${seq}`;
+        if (steerId && getRow("SELECT 1 FROM docs WHERE doc_id = ?", [docId])) continue;
         upsertDoc({
-          docId: `chat:${sessionId}:${seq}`,
+          docId,
           kind: "chat",
           laneId,
           laneName,

@@ -1,4 +1,5 @@
 import { HOST_ONLY_CHAT_METADATA_KEYS } from "../../../shared/chatAutoResume";
+import { isDroppedSteerDeliveryState, isSettledSteerDeliveryState } from "../../../shared/chatTranscript";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatEventMetadata } from "../../../shared/types/chat";
 
 /**
@@ -38,8 +39,10 @@ export const countHumanChildMessagesForTurn = (
   turnId: string,
 ): number => {
   let count = 0;
-  // A steer's row is written again as it moves through its lifecycle
-  // (`accepted` then `inline`, or `processed`); it is still one message.
+  // A steer's row is written once per lifecycle state (`accepted` then
+  // `inline`, or `processed`); it is one message, counted on the row where the
+  // model got it. An `accepted` row is not counted: a refused steer is sent
+  // later, on another turn. A `failed` or `unprocessed` one never reached it.
   const countedSteerIds = new Set<string>();
   for (const envelope of history) {
     const event = envelope.event;
@@ -48,6 +51,8 @@ export const countHumanChildMessagesForTurn = (
     if (!isHumanChildMessage(event)) continue;
     const steerId = event.steerId?.trim();
     if (steerId) {
+      if (!isSettledSteerDeliveryState(event.deliveryState)) continue;
+      if (isDroppedSteerDeliveryState(event.deliveryState)) continue;
       if (countedSteerIds.has(steerId)) continue;
       countedSteerIds.add(steerId);
     }
@@ -139,4 +144,48 @@ export const messageClearsAttentionMarkers = (
   // so it must not count as agent activity. Every other target does.
   if (metadata.boardMove) return metadata.boardMove.to !== "needs_you";
   return !HOST_AUTHORED_NON_USER_ACTIVITY_KEYS.some((key) => metadata[key]);
+};
+
+/**
+ * The child turn a spawn-ended report is filed under when the end event
+ * carried no turn id (a delete, or a done event that lost its id).
+ *
+ * The id is the report's dedupe key, so it anchors on the child's latest real
+ * turn: a report that turn's done path already delivered then dedupes, and one
+ * whose delivery failed still lands. Recent conversation entries are not
+ * enough on their own: Codex emits the user message before the server assigns
+ * a turn id, so a child that never streamed text has no turn id there. The
+ * lifecycle events (`status` / `done`) do.
+ *
+ * - Mid-turn after a reported turn: that turn's id would dedupe this report
+ *   away, so it takes the live turn's id, or `fallbackId` when it has none.
+ * - No turn ever got an id: no done event could have reported it, so
+ *   `fallbackId` cannot double-report, and the parent still hears once that a
+ *   child it is waiting on was stopped before its first turn.
+ */
+export const resolveSpawnEndedTurnId = (args: {
+  history: readonly AgentChatEventEnvelope[];
+  childMidTurn: boolean;
+  liveTurnId: string | null | undefined;
+  recentEntryTurnId: string | null | undefined;
+  fallbackId: string;
+}): string => {
+  let latestLifecycleTurnId: string | null = null;
+  const doneTurnIds = new Set<string>();
+  for (const envelope of args.history) {
+    // A Codex subagent thread's lifecycle is not the child chat's own.
+    if (envelope.provenance?.targetKind === "codex_subagent") continue;
+    const event = envelope.event;
+    if (event.type !== "status" && event.type !== "done") continue;
+    const lifecycleTurnId = event.turnId?.trim();
+    if (!lifecycleTurnId) continue;
+    latestLifecycleTurnId = lifecycleTurnId;
+    if (event.type === "done") doneTurnIds.add(lifecycleTurnId);
+  }
+  const liveTurnId = args.liveTurnId?.trim();
+  if (latestLifecycleTurnId && doneTurnIds.has(latestLifecycleTurnId)) {
+    if (!args.childMidTurn) return latestLifecycleTurnId;
+    return liveTurnId || args.fallbackId;
+  }
+  return liveTurnId || latestLifecycleTurnId || args.recentEntryTurnId?.trim() || args.fallbackId;
 };

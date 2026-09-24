@@ -1984,8 +1984,10 @@ export function appendCollapsedChatTranscriptEvent(
         : null;
       // Key per delivered completion, not per parent turn: several wakes from
       // one child can steer into the same parent turn, and a shared key makes
-      // the virtualized list render ghost rows. The early return above keeps a
-      // re-delivered steer (same `steerId`) from pushing a second divider.
+      // the virtualized list render ghost rows. The early return above covers a
+      // re-delivered message on the same `steerId`. The `rows.some` scan covers
+      // older transcripts that already hold the same child turn's report twice,
+      // under different steerIds: the second would repeat this key.
       const deliveryId = completion.childTurnId?.trim() || steerId || event.turnId || String(sequence);
       const key = `spawn-wake:${childSessionId}:${deliveryId}`;
       if (childSessionId && spawnKind && status && !rows.some((row) => row.key === key)) {

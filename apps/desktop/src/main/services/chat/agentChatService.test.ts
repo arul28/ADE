@@ -976,7 +976,8 @@ vi.mock("./permissionMapping", () => ({
   })),
 }));
 
-vi.mock("../../../shared/chatTranscript", () => ({
+vi.mock("../../../shared/chatTranscript", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../shared/chatTranscript")>()),
   parseAgentChatTranscript: vi.fn(() => []),
 }));
 

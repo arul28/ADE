@@ -4,6 +4,7 @@ import type {
   AgentChatProvider,
   AgentChatReplayForkDisclosure,
 } from "../../../shared/types/chat";
+import { canonicalSteerRows, isDroppedSteerDeliveryState } from "../../../shared/chatTranscript";
 
 /**
  * Cross-provider (and native-fork-unsupported) full-transcript replay.
@@ -170,27 +171,22 @@ export function buildTranscriptReplayDocument(
     current = [];
   };
 
-  // An `accepted` steer row is written again once the steer settles
-  // (`inline`, `processed`, or `delivered` on a later turn). The settled row is
-  // where the model actually got the message, so only it is replayed.
-  const settledSteerIds = new Set<string>();
-  for (const envelope of envelopes) {
-    const event = envelope.event;
-    if (event?.type !== "user_message") continue;
-    const steerId = event.steerId?.trim();
-    if (steerId && event.deliveryState !== "accepted" && event.deliveryState !== "queued") {
-      settledSteerIds.add(steerId);
-    }
-  }
-  for (const envelope of envelopes) {
-    const event = envelope.event;
+  // A steer writes one row per lifecycle state (`queued`, `accepted`, then
+  // `inline`, `processed`, or `delivered`). It is one user message, replayed
+  // once where the model got it (see `canonicalSteerRows`). A steer that
+  // settled without reaching the model (`failed`, Codex's `unprocessed`) is not
+  // replayed: the new model would answer a message the old one never saw.
+  const steerRows = canonicalSteerRows(envelopes);
+  for (let index = 0; index < envelopes.length; index += 1) {
+    let event = envelopes[index]!.event;
     if (!event) continue;
-    if (
-      event.type === "user_message"
-      && event.deliveryState === "accepted"
-      && settledSteerIds.has(event.steerId?.trim() ?? "")
-    ) {
-      continue;
+    if (event.type === "user_message") {
+      const steerRow = steerRows.get(index);
+      if (steerRow === null) continue;
+      if (steerRow?.event.type === "user_message") {
+        if (isDroppedSteerDeliveryState(steerRow.event.deliveryState)) continue;
+        event = steerRow.event;
+      }
     }
     const body = eventText(event);
     if (!body) continue;
