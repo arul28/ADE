@@ -50,6 +50,7 @@ import {
   readValue,
   renderKeyValues,
   renderTable,
+  requireTypedText,
   requireValue,
   standalonePositionals,
   takeArgsAfterTerminator,
@@ -395,7 +396,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     }, "mac-desktop-action");
   }
   if (sub === "type" || sub === "type-text") {
-    const text = requireValue(
+    const text = requireTypedText(
       readValue(args, ["--value", "--input-text"]) ?? positionals(args)[0] ?? null,
       "text",
     );

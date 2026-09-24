@@ -106,6 +106,41 @@ re-lists, which lands it on the picker. Attaching the device a lane already
 holds is answered as-is; the picker only offers this behind a confirmation that
 names the lane being interrupted.
 
+**Agents use only their lane's own device.** The takeover and plain attach
+above are the user's, through the picker. For an agent caller, the RPC server
+sets `agentCaller: true` on every `ios_simulator` call (a caller cannot set or
+clear it), and the registry then refuses `device-attach` and `start --udid`
+for any simulator the lane does not already hold, with
+`APPLE_DEVICE_NOT_LANE_OWNED`. That covers a device another lane holds, a
+booted device (a test run or the user may be using it), and a stopped device
+ADE did not create (the user's own, which the next test run may boot). Nothing
+is bound, released or booted. The refusal names the fix:
+`ade apple device-create`, or `ade apple start --create <udid>`. An agent's
+`start` on a lane with no device and no udid clones the project's last-used
+stopped simulator, like `device-create`, and boots only the clone. A clone is
+a new simulator on disk (its data directory grows as it is used) and is
+deleted when the lane is archived.
+
+Every other device verb follows the same rule for an agent
+(`guardAgentDeviceActions` in `iosSimulatorService.ts`): `launch`, input,
+screenshots, element queries, recording, streaming, proof and device settings
+run on the lane's device only. A `--device`/`--udid` naming another simulator
+is refused with `APPLE_DEVICE_NOT_LANE_OWNED`, and so is `stop --udid`. With no
+lane device there is no "first booted iPhone" fallback: the call is refused
+with a message naming `ade apple start`, except `launch` and `open-device`,
+which create the lane's clone. User clients keep the fallback.
+
+"Agent caller" means a chat, run, step or attempt identity, or an `ade`
+process with no chat identity (`ade-cli:<pid>` / `ade-rpc-stdio-proxy:<pid>`
+at role `agent`). The same scoping pins the lane: a bound agent acts on its
+chat's lane, an unbound `ade` process standing in a lane worktree (it sends
+`callerRoot`) acts on that lane, and naming another lane is refused. With no
+lane at all, an agent may only read status and listings (`getStatus`,
+`listDevices`, `listLaunchTargets`, `deviceList`, `getStreamStatus`). The
+agent's `chatSessionId` is its own chat's, or dropped when it has none. User
+clients (the desktop, and the web and phone clients through `apple.*`) are not
+affected.
+
 ## Desktop surface
 
 The tool is **Apple Development**, one pane inside the Work tools pane. There
@@ -231,7 +266,7 @@ ade --socket apple record-stop [--keep|--discard] --text
 ade --socket apple record-list --text
 ade --socket apple record-delete --id <id> --text
 
-ade --socket apple start [--udid <udid>|--create <sourceUdid>] --text
+ade --socket apple start [--udid <lane device udid>|--create <sourceUdid>] --text
 ade --socket apple stop [--force] --text
 ade --socket apple device-detach [--force] --text
 ade --socket apple show [--floating] --text

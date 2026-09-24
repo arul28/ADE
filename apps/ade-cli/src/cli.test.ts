@@ -14055,6 +14055,26 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("app-control launch resolves a relative --cwd from the shell's own directory", () => {
+    const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-cwd-"));
+    fs.mkdirSync(path.join(shellDir, "counter-app"));
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(shellDir);
+    try {
+      const argsOf = (argv: string[]) => {
+        const plan = buildCliPlan(argv);
+        if (plan.kind !== "execute") throw new Error("expected an execute plan");
+        return (plan.steps[0]?.params as { arguments: { args: Record<string, unknown> } }).arguments.args;
+      };
+      expect(argsOf(["app-control", "launch", "--command", "npm start", "--cwd", "counter-app"]).cwd)
+        .toBe(path.join(shellDir, "counter-app"));
+      // A folder that is not here is left for the runtime to resolve.
+      expect(argsOf(["app-control", "launch", "--command", "npm start", "--cwd", "apps/web"]).cwd).toBe("apps/web");
+    } finally {
+      cwdSpy.mockRestore();
+      fs.rmSync(shellDir, { recursive: true, force: true });
+    }
+  });
+
   it("app-control launch, connect, and claim carry the agent lane claim", () => {
     const previousLane = process.env.ADE_LANE_ID;
     const previousChat = process.env.ADE_CHAT_SESSION_ID;

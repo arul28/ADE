@@ -6054,7 +6054,7 @@ describe("adeRpcServer", () => {
     // environment (every OpenCode agent). It passed as a user client, so it could
     // name another chat or the human's takeover controller and act as that lease
     // holder, on any lane.
-    async function setup() {
+    async function setup(callerId = "ade-cli:4242") {
       setPlatform("darwin");
       const fixture = createRuntime();
       const observe = vi.fn(async (args: unknown) => args);
@@ -6067,7 +6067,7 @@ describe("adeRpcServer", () => {
       fs.mkdirSync(lane1Subdir, { recursive: true });
       fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-2"), { recursive: true });
       const shell = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(shell, { callerId: "ade-cli:4242", role: "agent" });
+      await initialize(shell, { callerId, role: "agent" });
       const call = (action: string, args: Record<string, unknown>, callerRoot?: string) =>
         callTool(shell, "run_ade_action", {
           domain: "mac_desktop",
@@ -6092,6 +6092,18 @@ describe("adeRpcServer", () => {
       expect(forwarded).not.toHaveProperty("chatSessionId");
       expect(forwarded).not.toHaveProperty("controllerId");
       expect(forwarded).not.toHaveProperty("holderId");
+    });
+
+    it("binds a socket CLI call, which arrives through the stdio proxy, the same way", async () => {
+      // Every `ade` command that reaches a machine brain over its socket
+      // initializes as `ade-rpc-stdio-proxy:<pid>`, not `ade-cli:<pid>`.
+      const { click, lane1Subdir, call } = await setup("ade-rpc-stdio-proxy:77355");
+      const result = await call("click", { x: 1, y: 1, ...impersonation }, lane1Subdir);
+      expect(result?.isError).toBeUndefined();
+      const forwarded = click.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(forwarded).toMatchObject({ laneId: "lane-1" });
+      expect(forwarded).not.toHaveProperty("chatSessionId");
+      expect(forwarded).not.toHaveProperty("controllerId");
     });
 
     it("refuses another lane from inside a lane worktree, naming both lanes", async () => {
@@ -6173,6 +6185,87 @@ describe("adeRpcServer", () => {
         callerRoot: lane1Subdir,
       });
       expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ laneId: "lane-2", chatSessionId: "chat-a" }));
+    });
+  });
+
+  describe("ios_simulator for agent callers", () => {
+    // Live failure: an agent in a lane with no device read the booted
+    // simulators off `ade apple devices` and ran `ade apple start --udid` on
+    // one another session's test run was using. The service refuses a foreign
+    // device only when it knows the caller is an agent, so that bit is the
+    // RPC server's to set and never the caller's.
+    async function setup() {
+      const fixture = createRuntime();
+      fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+        sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-2" } : null
+      ));
+      const deviceStart = vi.fn(async (args: unknown) => args);
+      const deviceAttach = vi.fn(async (args: unknown) => args);
+      const tap = vi.fn(async (args: unknown) => args);
+      const getStatus = vi.fn(async (args: unknown) => args);
+      fixture.runtime.iosSimulatorService = { deviceStart, deviceAttach, tap, getStatus };
+      const lane1Root = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+      fs.mkdirSync(lane1Root, { recursive: true });
+      const connect = async (identity: Record<string, unknown>, params: Record<string, unknown> = {}) => {
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, identity, params);
+        return (action: string, args: Record<string, unknown>, callerRoot?: string) =>
+          callTool(handler, "run_ade_action", {
+            domain: "ios_simulator",
+            action,
+            args,
+            ...(callerRoot ? { callerRoot } : {}),
+          });
+      };
+      return { deviceStart, deviceAttach, tap, getStatus, lane1Root, connect };
+    }
+
+    it.each([
+      ["a bound agent, pinned to its chat's lane", { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, "lane-2", undefined, "chat-a"],
+      ["an ade process with no chat, placed by its worktree", { callerId: "ade-rpc-stdio-proxy:77355", role: "agent" }, "lane-1", "lane1Root", undefined],
+    ])("marks %s as an agent and refuses another lane", async (_label, identity, ownLane, root, ownChat) => {
+      const { deviceStart, deviceAttach, lane1Root, connect } = await setup();
+      const call = await connect(identity);
+      const callerRoot = root ? lane1Root : undefined;
+
+      // A forged `agentCaller: false` does not survive.
+      // Nor does another chat's id: the agent speaks only for its own chat.
+      const started = await call("deviceStart", { udid: "SIM-BUSY", agentCaller: false, chatSessionId: "chat-b" }, callerRoot);
+      expect(started?.isError).toBeUndefined();
+      const forwarded = deviceStart.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(forwarded).toMatchObject({ udid: "SIM-BUSY", laneId: ownLane, agentCaller: true });
+      expect(forwarded.chatSessionId).toBe(ownChat);
+
+      const refused = await call("deviceAttach", { simulator: "SIM-BUSY", laneId: "lane-3" }, callerRoot);
+      expect(refused?.isError).toBe(true);
+      expect(JSON.stringify(refused)).toContain("--lane lane-3 was refused");
+      expect(deviceAttach).not.toHaveBeenCalled();
+    });
+
+    it("gives an agent with no lane status and listings only", async () => {
+      const { tap, getStatus, connect } = await setup();
+      const call = await connect({ callerId: "ade-cli:4242", role: "agent" });
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-outside-"));
+      try {
+        const refused = await call("tap", { x: 1, y: 1 }, outside);
+        expect(refused?.isError).toBe(true);
+        expect(JSON.stringify(refused)).toContain("needs a lane");
+        expect(tap).not.toHaveBeenCalled();
+        expect((await call("getStatus", {}, outside))?.isError).toBeUndefined();
+        expect(getStatus).toHaveBeenCalled();
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it("leaves the desktop's device picker as it was", async () => {
+      const { deviceAttach, connect } = await setup();
+      const call = await connect({ callerId: "desktop-1", role: "cto" }, { clientInfo: { name: "ade-desktop-local" } });
+
+      const attached = await call("deviceAttach", { simulator: "SIM-BUSY", laneId: "lane-3" });
+
+      expect(attached?.isError).toBeUndefined();
+      expect(deviceAttach).toHaveBeenCalledWith({ simulator: "SIM-BUSY", laneId: "lane-3" });
     });
   });
 

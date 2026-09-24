@@ -178,6 +178,8 @@ describe("ade mac-desktop dispatch", () => {
     expect(actionArgs(plan(["mac-desktop", "type", "--submit", "reddit"])))
       .toMatchObject({ text: "reddit", submit: true });
     expect(actionArgs(plan(["mac-desktop", "type", "hi"])).submit).toBeUndefined();
+    // Typed text is sent as given: a leading space is part of what to type.
+    expect(actionArgs(plan(["mac-desktop", "type", " - done "])).text).toBe(" - done ");
     expect(actionArgs(plan(["mac-desktop", "key", "tab"]))).toMatchObject({ key: "tab" });
     expect(actionArgs(plan(["mac-desktop", "observe", "--map", "--limit", "50"])))
       .toMatchObject({ map: true, limit: 50 });

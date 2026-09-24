@@ -126,11 +126,15 @@ describe("action effect", () => {
     expect(compare(snapshot(), snapshot({ url: "https://app.test/saved", title: "Saved" })))
       .toEqual({ status: "observed", reason: "the URL changed" });
     expect(compare(snapshot(), snapshot({ elements: [button, { ...field, value: "Grace" }] })))
-      .toEqual({ status: "observed", reason: "1 element changed" });
+      .toEqual({ status: "observed", reason: '1 element changed (textbox "Name")' });
     expect(compare(snapshot(), snapshot({ focusKey: "input|textbox|name||input#name" })))
       .toEqual({ status: "observed", reason: "the focused element changed" });
     expect(compare(snapshot(), snapshot({ scroll: { x: 0, y: 400 } })))
       .toEqual({ status: "observed", reason: "the view scrolled" });
+    // The element list holds only interactive elements: a click that changes
+    // a heading ("Count: 1") is seen through the page text.
+    expect(compare(snapshot({ textKey: "a1:8" }), snapshot({ textKey: "b2:8" })))
+      .toEqual({ status: "observed", reason: "the page text changed" });
   });
 
   it("ignores noise: reordering, sub-grid jitter, whitespace, and a spinner's value", () => {

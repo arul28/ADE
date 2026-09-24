@@ -371,6 +371,19 @@ function(inputArg) {
     .slice(0, maxElements)
     .map((entry, index) => describe(entry.node, index + 1, entry.ctx))
     .filter(Boolean);
+  // The page's visible text, hashed. The element list holds only interactive
+  // elements, so a click that changes a heading or a status line ("Count: 1")
+  // would otherwise read as no effect. Capped so a huge page stays cheap.
+  const textKeyNow = () => {
+    const body = document.body;
+    const text = body ? String(body.innerText || "").replace(/\s+/g, " ").trim().slice(0, 20000) : "";
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16) + ":" + text.length;
+  };
   const snapshot = {
     url: location.href,
     title: document.title,
@@ -379,7 +392,8 @@ function(inputArg) {
     scroll: { x: window.scrollX, y: window.scrollY },
     elementCount: stable.length,
     elements,
-    focusKey: focusKeyNow()
+    focusKey: focusKeyNow(),
+    textKey: textKeyNow()
   };
 
   const findBySelector = (selector) => {
@@ -596,6 +610,8 @@ export type AgentEffectFingerprint = {
   windows?: string | null;
   focus?: string | null;
   scroll?: string | null;
+  /** A hash of the page's visible text (DOM surfaces). */
+  text?: string | null;
   /** Elements found before any cap trimmed the list. */
   elementCount?: number | null;
   /** One key per listed element, in walk order. */
@@ -606,8 +622,11 @@ export type AgentEffectFingerprint = {
   frameHash?: string | null;
 };
 
-/** What an element says (`content`) and where it sits (`layout`), each hashed. */
-export type AgentEffectElementKey = { content: string; layout: string };
+/**
+ * What an element says (`content`) and where it sits (`layout`), each hashed,
+ * plus a short readable `name` (role and label) that the effect reason quotes.
+ */
+export type AgentEffectElementKey = { content: string; layout: string; name?: string };
 
 /** Frames compare on a 4-point grid: sub-pixel layout jitter is not a change. */
 const EFFECT_FRAME_GRID = 4;
@@ -655,7 +674,9 @@ export function agentEffectElementKey(element: {
   const role = effectText(element.role);
   const value = VOLATILE_VALUE_ROLES.has(role.toLowerCase()) ? "" : effectText(element.value);
   const frame = element.frame;
+  const label = effectText(element.label) || effectText(element.text).slice(0, 40);
   return {
+    name: label ? `${role} "${label.slice(0, 40)}"` : role,
     content: hashEffectString(
       [role, effectText(element.label), value, effectText(element.text), element.disabled === true ? "d" : ""].join("\u0000"),
     ),
@@ -666,38 +687,74 @@ export function agentEffectElementKey(element: {
 }
 
 /**
- * How many elements differ between two lists, as a multiset: a list that only
+ * Which elements differ between two lists, as a multiset: a list that only
  * reordered is unchanged, and one that swapped an element counts it once.
  * When either list was capped, only the shared prefix is compared; the totals
  * are compared separately through `elementCount`.
  */
-function changedElementCount(
+function diffEffectElements(
   before: AgentEffectFingerprint,
   after: AgentEffectFingerprint,
   ignoreLayout: boolean,
-): number {
-  if (!before.elements || !after.elements) return 0;
+): { added: AgentEffectElementKey[]; removed: AgentEffectElementKey[] } {
+  if (!before.elements || !after.elements) return { added: [], removed: [] };
   const capped = before.truncated === true || after.truncated === true;
   const length = Math.min(before.elements.length, after.elements.length);
   const left = capped ? before.elements.slice(0, length) : before.elements;
   const right = capped ? after.elements.slice(0, length) : after.elements;
   const keyOf = (entry: AgentEffectElementKey): string =>
     ignoreLayout ? entry.content : `${entry.content}@${entry.layout}`;
-  const remaining = new Map<string, number>();
+  const remaining = new Map<string, AgentEffectElementKey[]>();
   for (const entry of left) {
     const key = keyOf(entry);
-    remaining.set(key, (remaining.get(key) ?? 0) + 1);
+    remaining.set(key, [...(remaining.get(key) ?? []), entry]);
   }
-  let added = 0;
+  const added: AgentEffectElementKey[] = [];
   for (const entry of right) {
     const key = keyOf(entry);
-    const count = remaining.get(key) ?? 0;
-    if (count > 0) remaining.set(key, count - 1);
-    else added += 1;
+    const pool = remaining.get(key);
+    if (pool && pool.length > 0) pool.pop();
+    else added.push(entry);
   }
-  let removed = 0;
-  for (const count of remaining.values()) removed += count;
-  return Math.max(added, removed);
+  const removed = [...remaining.values()].flat();
+  return { added, removed };
+}
+
+/** Up to three quoted names, then "and N more". */
+function nameSome(names: string[]): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, 3).join(", ");
+  return unique.length > 3 ? `${shown} and ${unique.length - 3} more` : shown;
+}
+
+/**
+ * One readable sentence for an element diff. An element whose name is on both
+ * sides changed in place (its value, state or position); the rest appeared or
+ * went away. The sentence names them, so an agent can tell a menu that opened
+ * from the text it typed.
+ */
+function describeElementDiff(added: AgentEffectElementKey[], removed: AgentEffectElementKey[]): string {
+  const removedNames = removed.map((entry) => entry.name ?? "");
+  const changed: string[] = [];
+  const appeared: string[] = [];
+  for (const entry of added) {
+    const name = entry.name ?? "";
+    const match = name ? removedNames.indexOf(name) : -1;
+    if (match >= 0) {
+      changed.push(name);
+      removedNames.splice(match, 1);
+    } else {
+      appeared.push(name);
+    }
+  }
+  const gone = removedNames;
+  const parts: string[] = [];
+  const count = (list: string[], one: string, many: string): string =>
+    list.length === 1 ? one : `${list.length} ${many}`;
+  if (changed.length) parts.push(`${count(changed, "1 element", "elements")} changed (${nameSome(changed)})`);
+  if (appeared.length) parts.push(`${count(appeared, "1 element", "elements")} appeared (${nameSome(appeared)})`);
+  if (gone.length) parts.push(`${count(gone, "1 element", "elements")} went away (${nameSome(gone)})`);
+  return parts.join("; ").replace(/ \(\)/g, "");
 }
 
 /**
@@ -727,11 +784,14 @@ export function compareAgentEffectFingerprints(
   if (differs(before.title, after.title)) return observed("the title changed");
   if (differs(before.windows, after.windows)) return observed("a window opened, closed or changed title");
   if (!ignoreLayout && differs(before.scroll, after.scroll)) return observed("the view scrolled");
-  const changed = changedElementCount(before, after, ignoreLayout);
-  if (changed > 0) return observed(changed === 1 ? "1 element changed" : `${changed} elements changed`);
+  const diff = diffEffectElements(before, after, ignoreLayout);
+  if (diff.added.length > 0 || diff.removed.length > 0) {
+    return observed(describeElementDiff(diff.added, diff.removed));
+  }
   if (differs(before.elementCount, after.elementCount)) {
     return observed(`the element count changed from ${before.elementCount ?? 0} to ${after.elementCount ?? 0}`);
   }
+  if (differs(before.text, after.text)) return observed("the page text changed");
   if (differs(before.focus, after.focus)) return observed("the focused element changed");
   if (differs(before.frameHash, after.frameHash)) return observed("the screen image changed");
   return { status: "unconfirmed", reason: "nothing on screen changed" };

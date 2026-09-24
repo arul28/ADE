@@ -2459,8 +2459,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT. You can also put
   {ADE_APP_CONTROL_DEBUG_FLAGS} in the command string for explicit substitution.
 
-  Pass \`--cwd\` to launch from a project subdirectory. Relative paths resolve
-  against the lane root.
+  Pass \`--cwd\` to launch from a subdirectory. A relative path resolves from the
+  directory you run \`ade\` in, as in any shell command.
 
   Discovery and lifecycle:
     $ ade app-control status --text                Show active session and provider readiness
@@ -4070,6 +4070,33 @@ function readJsonPayloadOption(
 
 export function requireValue(value: string | null, label: string): string {
   if (value && value.trim().length > 0) return value.trim();
+  throw new CliUsageError(`${label} is required.`);
+}
+
+/**
+ * Text an agent types into an app, exactly as given. `requireValue` trims,
+ * which is right for ids and wrong here: `type " - done"` must keep its space.
+ */
+/**
+ * A relative `--cwd` means "from where this shell stands", as it does for any
+ * shell command. The runtime used to resolve it against the project root, so
+ * an agent in a lane worktree that passed `--cwd counter-app` got the project
+ * root's (missing) folder. Resolved here only when the folder exists on this
+ * machine; otherwise it is passed through for the runtime to resolve, which
+ * keeps a remote runtime's own relative paths working.
+ */
+export function resolveShellRelativeCwd(cwd: string | null): string | null {
+  if (!cwd || path.isAbsolute(cwd)) return cwd;
+  const resolved = path.resolve(process.cwd(), cwd);
+  try {
+    return fs.statSync(resolved).isDirectory() ? resolved : cwd;
+  } catch {
+    return cwd;
+  }
+}
+
+export function requireTypedText(value: string | null, label: string): string {
+  if (value && value.trim().length > 0) return value;
   throw new CliUsageError(`${label} is required.`);
 }
 
@@ -10883,6 +10910,13 @@ function buildIosSimulatorPlan(
    * than the plain shape, such as a formatter, a timeout floor, or a second
    * step.
    */
+  /**
+   * One `ios_simulator` action step. `callerRoot` rides beside the args, as
+   * for `ade mac-desktop`, so a shell with no chat identity is placed in the
+   * lane whose worktree it stands in (`scopeAppleAdeActionArgs`).
+   */
+  const iosStep = (key: string, method: string, payload: JsonObject): InvocationStep =>
+    actionStep(key, "ios_simulator", method, payload, proofCallerRootArgs());
   const iosAction = (
     label: string,
     method: string,
@@ -10891,7 +10925,7 @@ function buildIosSimulatorPlan(
     kind: "execute" as const,
     label,
     steps: [
-      actionStep("result", "ios_simulator", method, collectGenericObjectArgs(args, payload)),
+      iosStep("result", method, collectGenericObjectArgs(args, payload)),
     ],
   });
   if (sub === "actions")
@@ -10974,12 +11008,7 @@ function buildIosSimulatorPlan(
           }
         : {}),
       steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "launch",
-          collectGenericObjectArgs(args, launchArgs),
-        ),
+        iosStep("result", "launch", collectGenericObjectArgs(args, launchArgs)),
       ],
     };
   }
@@ -11004,7 +11033,7 @@ function buildIosSimulatorPlan(
       kind: "execute",
       label: "iOS simulator proof",
       steps: [
-        actionStep("screenshot", "ios_simulator", "screenshot", screenshotArgs),
+        iosStep("screenshot", "screenshot", screenshotArgs),
         {
           key: "result",
           method: "ade/actions/call",
@@ -11267,11 +11296,11 @@ function buildIosSimulatorPlan(
       args.filter((arg) => arg !== "--text").join(" ");
     return iosAction("iOS simulator type", "typeText", {
       deviceUdid,
-      // After `requireValue`, which trims: the Return must survive it. With
+      // After the empty check, so the Return survives it. With
       // `--submit` and no text this presses Return alone.
       text: submit
-        ? `${typed.trim() ? requireValue(typed, "text") : ""}\n`
-        : requireValue(typed, "text"),
+        ? `${typed.trim() ? requireTypedText(typed, "text") : ""}\n`
+        : requireTypedText(typed, "text"),
     });
   }
   if (sub === "key") {
@@ -11658,7 +11687,7 @@ function buildIosSimulatorPlan(
     // Read the query first: it claims `--text <value>`, so the fill value has
     // to be read after it or the two flags fight over the same token.
     const target = elementTargetArgs();
-    const text = requireValue(
+    const text = requireTypedText(
       readValue(args, ["--value", "--input-text"]) ?? firstPositional(args),
       "text",
     );
@@ -12028,7 +12057,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     const appKind = readValue(args, ["--kind", "--app-kind"]) ?? "electron";
     const projectRoot = readValue(args, ["--project-root", "--root"]);
     const laneId = claimArgs.laneId;
-    const cwd = readValue(args, ["--cwd", "--working-directory"]);
+    const cwd = resolveShellRelativeCwd(readValue(args, ["--cwd", "--working-directory"]));
     const debugPort = readNumberOption(args, ["--debug-port", "--port"]);
     const cdpPort = readNumberOption(args, ["--cdp-port"]);
     const label = readValue(args, ["--label", "--name"]);
@@ -12578,7 +12607,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
           "agentType",
           collectGenericObjectArgs(args, {
             ...actionArgs,
-            text: requireValue(
+            text: requireTypedText(
               readValue(args, ["--value", "--message", "--input-text"]) ??
                 readCommandTextValue(args, ["--text"]) ??
                 args.filter((arg) => arg !== "--text").join(" "),

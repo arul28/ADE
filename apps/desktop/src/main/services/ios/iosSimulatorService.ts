@@ -131,7 +131,13 @@ import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
-import { AppleDeviceExistsError, appleDeviceFamily, createLaneDeviceRegistry, type LaneDeviceStore } from "./laneDeviceRegistry";
+import {
+  AppleDeviceExistsError,
+  AppleDeviceNotLaneOwnedError,
+  appleDeviceFamily,
+  createLaneDeviceRegistry,
+  type LaneDeviceStore,
+} from "./laneDeviceRegistry";
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
@@ -2097,6 +2103,33 @@ function assertTargetIdWithinRoot(targetIdValue: string, projectRoot: string): v
 }
 
 export type IosSimulatorService = ReturnType<typeof createIosSimulatorService>;
+
+/** What an agent hears when its lane has no device and the action needs one. */
+const AGENT_NO_LANE_DEVICE_MESSAGE =
+  "This lane has no Apple device yet. Run `ade apple start` to give it its own (it clones a simulator and boots it), "
+  + "or `ade apple device-create`.";
+
+/**
+ * Actions that drive or read a device: for an agent they run on the lane's own
+ * device only, and refuse when the lane has none (`launch` and `openDevice`
+ * create it). See `guardAgentDeviceActions`.
+ */
+const AGENT_DEVICE_DRIVING_ACTIONS = [
+  "launch", "openDevice", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint",
+  "startStream", "frame", "tap", "pressButton", "rotate", "typeText", "drag", "swipe", "scroll", "selectPoint",
+  "recordStart", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation",
+  "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp",
+  "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "getForegroundApp", "startEventLog",
+  "findElement", "tapElement", "fillElement", "waitForElement", "assertVisible", "captureProofBundle",
+] as const;
+
+/**
+ * Actions that may name a device but need none: an agent's explicit udid must
+ * still be its lane's device (`stop --udid` must not power off someone else's).
+ */
+const AGENT_DEVICE_CHECKED_ACTIONS = [
+  "deviceStop", "closeDevice", "stopStream", "stopEventLog", "getEventLog", "listLaunchTargets",
+] as const;
 
 export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   let lastSelectedItem: IosElementContextItem | null = null;
@@ -5903,6 +5936,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       from: deviceArgs.from,
       name: deviceArgs.name,
     });
+    invalidateDeviceList();
     invalidateStatus(runtime);
     return device;
   };
@@ -5910,7 +5944,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const deviceAttach = async (deviceArgs: AppleDeviceAttachArgs): Promise<AppleLaneDevice> => {
     assertDarwin();
     const runtime = requireLaneScope(deviceArgs);
-    const device = await laneDevices.deviceAttach({ laneId: runtime.key, simulator: deviceArgs.simulator });
+    const device = await laneDevices.deviceAttach({
+      laneId: runtime.key,
+      simulator: deviceArgs.simulator,
+      agentCaller: deviceArgs.agentCaller === true,
+    });
     invalidateStatus(runtime);
     return device;
   };
@@ -5954,15 +5992,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const laneId = runtime.key;
     const requestedUdid = deviceArgs.udid?.trim() || null;
     const sourceUdid = deviceArgs.create?.sourceUdid?.trim() || null;
+    const agentCaller = deviceArgs.agentCaller === true;
     let laneDevice = laneDevices.get(laneId);
     if (!laneDevice) {
       if (sourceUdid) {
         laneDevice = await laneDevices.deviceCreate({ laneId, from: sourceUdid });
       } else if (requestedUdid) {
-        laneDevice = await laneDevices.deviceAttach({ laneId, simulator: requestedUdid });
+        laneDevice = await laneDevices.deviceAttach({ laneId, simulator: requestedUdid, agentCaller });
+      } else if (agentCaller) {
+        // An agent gets its lane's own clone rather than an error it has to
+        // translate into a second command. Same template choice as
+        // `device-create`: the project's last-used simulator, never a booted
+        // one, so nobody else's device is booted, cloned while running or used.
+        laneDevice = await laneDevices.deviceCreate({ laneId });
       } else {
-        throw new Error("The lane has no Apple device yet. Pass a simulator udid to attach, or create: { sourceUdid } to clone one.");
+        throw new Error(
+          "This lane has no Apple device yet. Run `ade apple device-create` to give it its own, "
+            + "or `ade apple start --create <udid>` to clone a specific simulator.",
+        );
       }
+      // A clone is a simulator the cached device list has never seen.
+      invalidateDeviceList();
       invalidateStatus(runtime);
     } else if (requestedUdid && requestedUdid !== laneDevice.udid) {
       throw new AppleDeviceExistsError(laneDevice);
@@ -6110,6 +6160,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const existing = laneDevices.get(runtime.key);
     if (existing) return existing;
     const created = await laneDevices.ensure({ laneId: runtime.key });
+    invalidateDeviceList();
     invalidateStatus(runtime);
     return created;
   };
@@ -6197,7 +6248,62 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  return {
+  /**
+   * The one place an agent's device is decided, for every action below.
+   *
+   * With `agentCaller` (set by the RPC server, never by the agent), an action
+   * that drives or reads a device acts on the lane's own device and nothing
+   * else. An explicit `deviceUdid`/`udid` naming any other simulator is
+   * refused, and a lane with no device is refused rather than falling back to
+   * "the first booted iPhone" — which is how an agent once drove a simulator
+   * another session's test run was using. `launch` and `openDevice` create the
+   * lane's clone instead, as they always did on first ask. The lane's device
+   * udid is then passed in as `deviceUdid`, so no inner fallback can pick a
+   * different one. User callers pass straight through.
+   */
+  const guardAgentDeviceActions = <T extends Record<string, unknown>>(service: T): T => {
+    const guarded: Record<string, unknown> = { ...service };
+    const refuseForeign = async (udid: string): Promise<never> => {
+      const known = (await listDevices().catch(() => [])).find((device) => device.udid === udid);
+      throw new AppleDeviceNotLaneOwnedError(
+        { udid, name: known?.name ?? "that simulator" },
+        known?.state === "Booted" ? { kind: "running" } : { kind: "not-created" },
+      );
+    };
+    const wrap = (action: string, mode: "drive" | "check") => {
+      const original = service[action];
+      if (typeof original !== "function") return;
+      guarded[action] = async (actionArgs: Record<string, unknown> | undefined, ...rest: unknown[]) => {
+        if (!actionArgs || actionArgs.agentCaller !== true) {
+          return (original as (...params: unknown[]) => unknown)(actionArgs, ...rest);
+        }
+        const { agentCaller: _agent, ...callArgs } = actionArgs;
+        const runtime = resolveRuntime(callArgs as { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null });
+        if (!runtime.key) {
+          throw new Error(`ios_simulator.${action} needs a lane: run ade from a lane worktree, or pass --lane <lane-id>.`);
+        }
+        const explicit = [callArgs.deviceUdid, callArgs.udid]
+          .map((value) => (typeof value === "string" ? value.trim() : ""))
+          .find(Boolean) ?? null;
+        let laneDevice = laneDevices.get(runtime.key);
+        if (explicit && explicit !== laneDevice?.udid) await refuseForeign(explicit);
+        if (!laneDevice && mode === "drive") {
+          if (action === "launch" || action === "openDevice") {
+            laneDevice = await ensureLaneDevice(runtime);
+          } else {
+            throw new Error(AGENT_NO_LANE_DEVICE_MESSAGE);
+          }
+        }
+        const pinned = mode === "drive" && laneDevice ? { ...callArgs, deviceUdid: laneDevice.udid } : callArgs;
+        return (original as (...params: unknown[]) => unknown)(pinned, ...rest);
+      };
+    };
+    for (const action of AGENT_DEVICE_DRIVING_ACTIONS) wrap(action, "drive");
+    for (const action of AGENT_DEVICE_CHECKED_ACTIONS) wrap(action, "check");
+    return guarded as T;
+  };
+
+  return guardAgentDeviceActions({
     getStatus,
     claim,
     listDevices,
@@ -6410,5 +6516,5 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         disposeXcodeMcpBridge(bridge, new Error("iOS simulator service disposed."));
       }
     },
-  };
+   });
 }

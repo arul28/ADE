@@ -882,7 +882,7 @@ describe("appControlService agent actions", () => {
       );
       const changed = await service.agentClick({ x: 30, y: 30, coordinateSpace: "viewport", waitAfterMs: 0 });
       expect(changed.resolved).toBeNull();
-      expect(changed.effect).toEqual({ status: "observed", reason: "1 element changed" });
+      expect(changed.effect).toEqual({ status: "observed", reason: '1 element appeared (textbox "Saved")' });
     } finally {
       service.dispose();
     }

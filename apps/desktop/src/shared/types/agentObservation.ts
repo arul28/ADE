@@ -53,6 +53,8 @@ export type AgentDomSnapshot = {
    * a snapshot an older collector wrote. Read only by the action-effect check.
    */
   focusKey?: string | null;
+  /** A hash of the page's visible text; the action-effect check compares it. */
+  textKey?: string;
 };
 
 /**

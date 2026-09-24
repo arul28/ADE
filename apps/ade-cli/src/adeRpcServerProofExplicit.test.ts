@@ -346,11 +346,11 @@ describe("explicit proof capture", () => {
       inputs: [{ kind: "screenshot", title: "Screen", path: shotPath }],
     });
 
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     await ingestShot();
     const capturedSha = sha256Of(shotPath);
     // Same path, other bytes: no longer the capture.
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     fs.writeFileSync(shotPath, "an older screenshot");
     await ingestShot();
 
@@ -408,7 +408,7 @@ describe("explicit proof capture", () => {
         return { filePath: shotPath, deviceUdid: "SIM-1" };
       }),
     };
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await callTool(handler, "ingest_computer_use_artifacts", {
         backendStyle: "manual",
@@ -436,7 +436,7 @@ describe("explicit proof capture", () => {
     fixture.ingest.mockImplementationOnce(() => {
       throw new Error("disk full");
     });
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     const outcomes: boolean[] = [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await callTool(handler, "ingest_computer_use_artifacts", {

@@ -17,6 +17,7 @@ import {
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
+  APPLE_DEVICE_NOT_LANE_OWNED_CODE,
   APPLE_DEVICE_OWNED_BY_LANE_CODE,
   APPLE_TEMPLATE_BOOTED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
@@ -581,6 +582,8 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
   const installed = [
     simulator({ udid: "repro", name: "ADE Repro" }),
     simulator({ udid: "free", name: "iPhone Air" }),
+    // Booted by someone else, e.g. an `xcodebuild test` run; no lane holds it.
+    simulator({ udid: "busy", name: "iPhone 17 Pro", state: "Booted" }),
   ];
 
   function takeoverRegistry(overrides: Partial<{ releaseLaneDevice: (device: unknown) => void }> = {}) {
@@ -695,6 +698,31 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
     expect(device).toMatchObject({ laneId: "lane-b", udid: "free", origin: "attached", templateUdid: null });
     expect(released).toEqual([]);
     expect(Object.keys(store.rows).sort()).toEqual(["lane-a", "lane-b"]);
+  });
+
+  it.each([
+    ["another lane's device", "repro", /ADE Repro \(repro\) belongs to lane Lane lane-a\./],
+    ["a booted device no lane holds", "busy", /iPhone 17 Pro \(busy\) is not this lane's device and it is already running/],
+    ["a stopped device no lane holds", "free", /iPhone Air \(free\) is not this lane's device/],
+  ])("refuses an agent attach of %s, and binds and releases nothing", async (_label, wanted, message) => {
+    const { registry, store, released } = takeoverRegistry();
+
+    const refusal = registry.deviceAttach({ laneId: "lane-b", simulator: wanted, agentCaller: true });
+
+    await expect(refusal).rejects.toMatchObject({ code: APPLE_DEVICE_NOT_LANE_OWNED_CODE });
+    await expect(refusal).rejects.toThrow(message);
+    await expect(refusal).rejects.toThrow(/ade apple device-create/);
+    expect(Object.keys(store.rows)).toEqual(["lane-a"]);
+    expect(store.rows["lane-a"]).toMatchObject({ udid: "repro" });
+    expect(released).toEqual([]);
+  });
+
+  it("lets an agent attach the device its lane already holds", async () => {
+    const { registry } = takeoverRegistry();
+
+    const device = await registry.deviceAttach({ laneId: "lane-a", simulator: "repro", agentCaller: true });
+
+    expect(device).toMatchObject({ laneId: "lane-a", udid: "repro" });
   });
 
   it("moves the binding in hosts with no database, too", async () => {

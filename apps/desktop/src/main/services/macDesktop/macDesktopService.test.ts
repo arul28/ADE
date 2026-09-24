@@ -731,7 +731,10 @@ describe("macDesktopService real input and the lease", () => {
     expect(result.observation?.id).toContain("after");
     // The same pair of trees answers whether the click changed anything.
     expect(result.ok && "effect" in result ? result.effect : null)
-      .toEqual({ status: "observed", reason: "1 element changed" });
+      .toEqual({
+        status: "observed",
+        reason: '1 element appeared (AXTextArea); 1 element went away (AXButton "New Document")',
+      });
     service.dispose();
   });
 

@@ -138,6 +138,7 @@ export function normalizeAgentDomSnapshot(value: unknown): AgentDomSnapshot | nu
     ...(typeof value.focusKey === "string" || value.focusKey === null
       ? { focusKey: value.focusKey as string | null }
       : {}),
+    ...(typeof value.textKey === "string" ? { textKey: value.textKey } : {}),
   };
 }
 
@@ -153,6 +154,7 @@ export function agentDomEffectFingerprint(
     title: snapshot.title,
     // Undefined for a snapshot an older collector wrote: unknown, not "none".
     focus: snapshot.focusKey,
+    text: snapshot.textKey,
     scroll: `${Math.round(snapshot.scroll.x)},${Math.round(snapshot.scroll.y)}`,
     elementCount: snapshot.elementCount,
     elements: snapshot.elements.map((element) =>
