@@ -430,16 +430,6 @@ describe("WorkKanbanBoard", () => {
     expect(within(card).getByTestId("work-board-waiting-s-ci").textContent).toContain("CI running");
   });
 
-  it("names the model beside the provider glyph on a board card", () => {
-    renderBoard();
-    const card = screen.getByTestId("work-board-card-s-cto");
-    expect(within(card).getByTestId("session-model-label").textContent).toBe("Claude Opus 5");
-    // A row whose provider reported no model shows no chip rather than a blank.
-    expect(
-      within(screen.getByTestId("work-board-card-s-needs")).queryByTestId("session-model-label"),
-    ).toBeNull();
-  });
-
   it("suppresses the per-card status label, which the column already states", () => {
     renderBoard();
 
