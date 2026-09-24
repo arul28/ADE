@@ -248,10 +248,11 @@ describe("AppBannerHost", () => {
     expect(getAppBannerEntries()).toHaveLength(1);
   });
 
-  it("runs the owner's latest action closure", () => {
+  it("tracks handler presence while running the owner's latest action closure", () => {
     const first = vi.fn();
     const second = vi.fn();
-    const item = (onClick: () => void): Item[] => [{ model: banner("x", { actions: [{ label: "Go", onClick }] }) }];
+    const third = vi.fn();
+    const item = (onClick?: () => void): Item[] => [{ model: banner("x", { actions: [{ label: "Go", onClick }] }) }];
     const { rerender } = render(
       <>
         <Owner items={item(first)} />
@@ -270,5 +271,79 @@ describe("AppBannerHost", () => {
     });
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <>
+        <Owner items={item()} />
+        <AppBannerHost />
+      </>,
+    );
+    act(() => {
+      screen.getByRole("button", { name: "Go" }).click();
+    });
+    expect(second).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <>
+        <Owner items={item(third)} />
+        <AppBannerHost />
+      </>,
+    );
+    act(() => {
+      screen.getByRole("button", { name: "Go" }).click();
+    });
+    expect(third).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes visible and accessible props when the owner keeps the same id", () => {
+    const icons = {
+      old: <span data-testid="old-action-icon">old</span>,
+      new: <span data-testid="new-action-icon">new</span>,
+    };
+    const item = (version: "old" | "new", expanded?: boolean): Item[] => [{
+      model: banner("stable", {
+        error: `${version} error`,
+        actions: [{
+          label: "Details",
+          icon: icons[version],
+          expanded,
+          onClick: vi.fn(),
+        }],
+        dismiss: {
+          title: "Dismiss banner",
+          label: `Close ${version}`,
+          onDismiss: vi.fn(),
+        },
+      }),
+    }];
+    const { rerender } = render(
+      <>
+        <Owner items={item("old")} />
+        <AppBannerHost />
+      </>,
+    );
+
+    rerender(
+      <>
+        <Owner items={item("new", false)} />
+        <AppBannerHost />
+      </>,
+    );
+
+    expect(screen.queryByText("old error")).toBeNull();
+    expect(screen.getByText("new error")).toBeTruthy();
+    expect(screen.queryByTestId("old-action-icon")).toBeNull();
+    expect(screen.getByTestId("new-action-icon")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Details" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Close old" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close new" })).toBeTruthy();
+
+    rerender(
+      <>
+        <Owner items={item("new")} />
+        <AppBannerHost />
+      </>,
+    );
+    expect(screen.getByRole("button", { name: "Details" }).hasAttribute("aria-expanded")).toBe(false);
   });
 });

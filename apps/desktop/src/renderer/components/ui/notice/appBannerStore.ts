@@ -111,9 +111,12 @@ function sameActions(a: BannerModel["actions"], b: BannerModel["actions"]): bool
       action.label === other.label &&
       action.variant === other.variant &&
       action.href === other.href &&
+      Boolean(action.onClick) === Boolean(other.onClick) &&
+      Object.is(action.icon, other.icon) &&
       Boolean(action.disabled) === Boolean(other.disabled) &&
       Boolean(action.busy) === Boolean(other.busy) &&
-      action.title === other.title
+      action.title === other.title &&
+      action.expanded === other.expanded
     );
   });
 }
@@ -121,12 +124,12 @@ function sameActions(a: BannerModel["actions"], b: BannerModel["actions"]): bool
 function sameDismiss(a: BannerModel["dismiss"], b: BannerModel["dismiss"]): boolean {
   if (!a || !b) return !a === !b;
   if ("key" in a && "key" in b) return a.key === b.key && a.fingerprint === b.fingerprint;
-  if ("onDismiss" in a && "onDismiss" in b) return a.title === b.title;
+  if ("onDismiss" in a && "onDismiss" in b) return a.title === b.title && a.label === b.label;
   return false;
 }
 
-/** Whether a re-registration changes anything the host would draw. */
-function sameVisible(a: BannerModel, b: BannerModel): boolean {
+/** Whether re-registration leaves the host's rendered model intact. */
+function sameRenderedModel(a: BannerModel, b: BannerModel): boolean {
   const text = (value: unknown) => typeof value === "string" || value == null;
   return (
     a.tone === b.tone &&
@@ -138,6 +141,7 @@ function sameVisible(a: BannerModel, b: BannerModel): boolean {
     Object.is(a.extra, b.extra) &&
     Boolean(a.busy) === Boolean(b.busy) &&
     a.ariaLabel === b.ariaLabel &&
+    a.error === b.error &&
     sameActions(a.actions, b.actions) &&
     sameDismiss(a.dismiss, b.dismiss)
   );
@@ -165,7 +169,7 @@ function syncOwner(owner: symbol, next: Array<{ model: BannerModel; options?: Ap
     keepIds.add(entry.id);
     const placement = replacement.options?.placement ?? "docked";
     const priority = replacement.options?.priority ?? APP_BANNER_PRIORITY.default;
-    if (placement !== entry.placement || priority !== entry.priority || !sameVisible(entry.model, replacement.model)) {
+    if (placement !== entry.placement || priority !== entry.priority || !sameRenderedModel(entry.model, replacement.model)) {
       changed = true;
       entry.live.model = replacement.model;
       updated.push({ ...entry, placement, priority, model: liveModel(entry.live) });

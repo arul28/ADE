@@ -586,8 +586,8 @@ export function ImportSessionBrowser({
       onOpenChange={onOpenChange}
       title="Import session"
       icon={DownloadSimple}
-      widthClassName="w-[min(1180px,calc(100vw-4rem))]"
-      heightClassName="h-[min(860px,calc(100dvh-4rem))]"
+      width="min(1180px, calc(100vw - 4rem))"
+      height="min(860px, calc(100dvh - 4rem))"
       scrollBody={false}
       busy={Boolean(importing)}
     >
