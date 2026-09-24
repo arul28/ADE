@@ -188,7 +188,7 @@ describe("createAdeCliService", () => {
       .toBe(fs.realpathSync(path.join(resourcesPath, "agent-skills")));
   });
 
-  it("regression: names the CLI entry next to ADE_CLI_PATH, replacing an inherited one from another build", () => {
+  it("names the CLI entry next to ADE_CLI_PATH, replacing an inherited one from another build", () => {
     const root = makeTempRoot();
     const resourcesPath = path.join(root, "Resources");
     const packagedCommandPath = path.join(resourcesPath, "ade-cli", "bin", "ade");

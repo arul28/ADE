@@ -79,7 +79,7 @@ describe("workToolShowRequests", () => {
     );
   });
 
-  it("regression: a later held answer that opened the tool keeps `opened`", async () => {
+  it("a later held answer that opened the tool keeps `opened`", async () => {
     const { service, emitted } = setup();
     const pending = service.show({ surface: "apple", chatSessionId: "chat-1" });
     const requestId = emitted[0]!.requestId;

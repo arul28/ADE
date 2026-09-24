@@ -475,7 +475,7 @@ describe("iosSimulatorService single-owner lock contract", () => {
     }
   });
 
-  it("regression: a launch naming ANOTHER lane cannot drive a device this chat owns", async () => {
+  it("prevents another chat from launching an owned simulator without force", async () => {
     /*
      * Found by a test agent that was asked to try it.
      *
@@ -2639,7 +2639,7 @@ describe("iosSimulatorService device tool targeting", () => {
     }
   });
 
-  it("regression: places a lane-less caller by the worktree it stands in, not by whichever lane is busy", async () => {
+  it("resolves lane-less callers from their worktree before active lanes", async () => {
     // A shell with no ADE_LANE_ID — every OpenCode agent, because a shared
     // `opencode serve` cannot carry a per-chat environment — sends its
     // workspace as projectRoot and no lane id. The service used that path for
@@ -2799,7 +2799,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: deviceDeleteInstalled stops an un-laned stream, the recording and the helper session before the delete", async () => {
+  it("deviceDeleteInstalled stops an un-laned stream, the recording and the helper session before the delete", async () => {
     // A stream from an un-laned caller kept reading the deleted device, and
     // the helper kept its session for a device that no longer existed.
     let sentAtShutdown: string[] = [];
@@ -2870,7 +2870,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: tells agents about no user-only verb", async () => {
+  it("omits user-only simulator actions from agent capabilities", async () => {
     const { service, dispose } = setup();
     try {
       const status = await service.getStatus({ laneId: "lane-a" });
@@ -2912,7 +2912,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: a viewer attaching to a device that is off gets APPLE_DEVICE_OFF and never boots it", async () => {
+  it("a viewer attaching to a device that is off gets APPLE_DEVICE_OFF and never boots it", async () => {
     // The owner's 2026-09-23 report: reopening the tools pane after ADE
     // restarted booted the simulator instead of showing "{name} is off."
     // Watching is not asking for power.
@@ -2940,9 +2940,10 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: a stream left 'running' on a device that has since gone off is published stopped, not handed out", async () => {
+  it("clears stale stream state when its device powers off outside ADE", async () => {
     // A restart (or Xcode) powers the device off under a live status. The fast
     // path used to hand that capture's dead address to the next viewer.
+    vi.useFakeTimers();
     const { service, calls, events, devices, helper, dispose } = setup();
     try {
       await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
@@ -2950,7 +2951,7 @@ describe("iosSimulatorService boot contract", () => {
       const captures = helper.sent.filter((command) => command.type === "capture-start").length;
       // Powered off outside ADE: simctl now says Shutdown, and no event said so.
       devices.find((device) => device.udid === "device-2")!.state = "Shutdown";
-      await new Promise((resolve) => setTimeout(resolve, 600)); // past the device-list cache
+      await vi.advanceTimersByTimeAsync(601); // past the device-list cache
       calls.length = 0;
 
       await expect(service.startStream({ laneId: "lane-a", localViewer: true }))
@@ -2962,10 +2963,11 @@ describe("iosSimulatorService boot contract", () => {
       expect(helper.sent.filter((command) => command.type === "capture-start").length).toBe(captures);
     } finally {
       dispose();
+      vi.useRealTimers();
     }
   });
 
-  it("regression: a remote viewer on an off device (relay openSource) is refused and nothing boots", async () => {
+  it("a remote viewer on an off device (relay openSource) is refused and nothing boots", async () => {
     // The phone and the web tab reach the service through the relay. Before,
     // `startStream` booted the device for them, so opening the viewer on a
     // phone powered the Mac's simulator on.
@@ -2995,7 +2997,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: the Mac's last viewer leaving does not cut off a phone reading the same capture", async () => {
+  it("the Mac's last viewer leaving does not cut off a phone reading the same capture", async () => {
     // The owner's 2026-09-23 report: the floating player went away and its
     // lane-scoped stop ended the capture the phone was watching through the
     // relay. The phone kept going only because it reconnected.
@@ -3039,7 +3041,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: the last phone leaving lifts its bitrate cap for the Mac that is still watching", async () => {
+  it("the last phone leaving lifts its bitrate cap for the Mac that is still watching", async () => {
     // D11: the cap a remote viewer set stayed on the live encoder after it
     // left, so the Mac's own view ran at the phone's bitrate until a restart.
     const { service, helper, dispose } = setup();
@@ -3094,7 +3096,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: a phone that rejoins while the cap is being lifted keeps its cap", async () => {
+  it("a phone that rejoins while the cap is being lifted keeps its cap", async () => {
     // L6: the lift cleared the cap only after the helper answered, so a rejoin
     // during that wait saw its own cap still recorded, sent nothing, and then
     // watched uncapped once the lift landed.
@@ -3124,7 +3126,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: a helper exit tells the pane the lane's recording stopped", async () => {
+  it("a helper exit tells the pane the lane's recording stopped", async () => {
     const { service, helper, events, dispose } = setup();
     try {
       await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
@@ -3216,7 +3218,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: deviceStop ends the device's recording before it powers the device off", async () => {
+  it("deviceStop ends the device's recording before it powers the device off", async () => {
     // A recording outlived its device's power cycle on 2026-09-22, and every
     // later `record-start` on the device was refused until the helper was killed.
     let sentAtShutdown: string[] = [];
@@ -3236,7 +3238,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: deviceStop resets the helper's session for the device before it powers it off", async () => {
+  it("deviceStop resets the helper's session for the device before it powers it off", async () => {
     // 2026-09-23, live on a MacBook: a lane simulator was powered off and
     // booted again under a helper that stayed up, and every tap afterwards
     // answered ok in ~11 ms while the screen never changed. The helper's HID
@@ -3257,7 +3259,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: booting a device that was off resets its helper session; an already-booted device keeps it", async () => {
+  it("booting a device that was off resets its helper session; an already-booted device keeps it", async () => {
     let sentAtBoot: string[] | null = null;
     const { service, helper, dispose } = setup({
       onBoot: (udid) => {
@@ -3291,7 +3293,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: a helper restart stops every lane's stream and the next startStream opens a fresh capture", async () => {
+  it("a helper restart stops every lane's stream and the next startStream opens a fresh capture", async () => {
     // 2026-09-23, live: after the helper restarted, getStreamStatus still said
     // running with the dead pid and port, and startStream reused it, so every
     // viewer got a dead port until someone called stopStream.
@@ -3322,7 +3324,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("startStream will not reuse a running status stamped by a helper that is no longer the live one", async () => {
+  it("starts a fresh stream when the recorded helper PID is stale", async () => {
     // The second guard: even if no exit event reached the service, a status
     // whose helperPid is not the live helper's points at a dead port.
     let livePid = 4321;
@@ -3378,7 +3380,7 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("regression: deleting a lane's clone powers it off once, through the power path", async () => {
+  it("deleting a lane's clone powers it off once, through the power path", async () => {
     let sentAtShutdown: string[] = [];
     const { service, calls, helper, dispose } = setup({
       onShutdown: () => { sentAtShutdown = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`); },

@@ -36,7 +36,7 @@ describe("clampTerminalScrollOffset", () => {
     expect(clampTerminalScrollOffset(Number.NaN, 100)).toBe(0);
   });
 
-  it("allows scrolling well past 500 rows (desync regression: cursor must keep advancing)", () => {
+  it("allows scrolling beyond the terminal scrollback boundary", () => {
     // The old slice(-500) pinned the buffer; scrollback must reach the full
     // retained window (e.g. 2000 rows), not be capped near 500.
     expect(clampTerminalScrollOffset(1_900, 2_000)).toBe(1_900);

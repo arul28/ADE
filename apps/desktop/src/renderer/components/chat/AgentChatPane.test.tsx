@@ -2104,7 +2104,7 @@ describe("AgentChatPane companion drawers", () => {
     layout.mockRestore();
   });
 
-  it("regression: ade ui show proof shows a chat's proof in a visible tile that is not focused, and says so when there is none", async () => {
+  it("ade ui show proof shows a chat's proof in a visible tile that is not focused, and says so when there is none", async () => {
     setDocumentVisibleForTests(true);
     const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockReturnValue({ width: 400, height: 600 } as DOMRect);
@@ -2421,7 +2421,7 @@ describe("AgentChatPane companion drawers", () => {
     }
   }, 15_000);
 
-  it("regression: a proof show held while the chat was out of view opens its drawer when the chat mounts", async () => {
+  it("a proof show held while the chat was out of view opens its drawer when the chat mounts", async () => {
     setDocumentVisibleForTests(true);
     const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockReturnValue({ width: 400, height: 600 } as DOMRect);

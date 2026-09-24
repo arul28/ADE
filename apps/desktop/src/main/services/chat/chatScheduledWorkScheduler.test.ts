@@ -227,7 +227,7 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
-  it("quarantines restored and newly persisted provider work when its owner is no longer active", async () => {
+  it("pauses provider work when its owner is inactive", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
     let state: ChatScheduledWorkState | null = storedState([wakeup({

@@ -247,7 +247,7 @@ describe("startFreshIdentitySession", () => {
 
 describe("getSessionTurnHealth", () => {
   /** Only the overflow verdict blocks: one failed turn is bad luck. */
-  it("blocks a thread that no longer fits and lets an unlucky one through", () => {
+  it("blocks known context overflow but allows transient failures", () => {
     const overflow = createIdentityThreadRotation(makeDeps().deps)
       .getSessionTurnHealth({ sessionId: "session-old" });
     expect(overflow).toMatchObject({ canTakeTurn: false, blockedReason: "context_overflow" });

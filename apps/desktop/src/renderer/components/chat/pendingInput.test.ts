@@ -166,7 +166,7 @@ describe("derivePendingInputRequests", () => {
   // An explicit `allowsFreeform: false` has to survive the parser: collapsing it
   // to undefined makes "the provider declined freeform" indistinguishable from
   // "unspecified", and the composer renders a note row for unspecified.
-  it("regression: preserves allowsFreeform in both directions", () => {
+  it("preserves allowsFreeform in both directions", () => {
     const build = (allowsFreeform: boolean) => readPendingInputRequest({
       requestId: "req-freeform",
       source: "ade",

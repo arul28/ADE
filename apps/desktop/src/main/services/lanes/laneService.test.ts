@@ -7371,7 +7371,7 @@ describe("laneService branch drift", () => {
     });
   });
 
-  it("rejects a resolution whose expected HEAD no longer matches the worktree", async () => {
+  it("rejects branch resolution when expected HEAD differs from the worktree", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-drift-stale-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-stale", repoRoot });

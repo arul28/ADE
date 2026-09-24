@@ -450,7 +450,7 @@ describe("the lane device cache", () => {
 });
 
 describe("openAppleMiniPlayer machine binding", () => {
-  it("regression: keeps the device's machine after the window switches machines", () => {
+  it("keeps the device's machine after the window switches machines", () => {
     // A Studio device floated with runtimePin null, meaning "the bound
     // machine". The window then switched to a MacBook project, the null pin
     // started naming the MacBook, and the player floated a black box.

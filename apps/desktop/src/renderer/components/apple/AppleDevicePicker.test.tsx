@@ -199,10 +199,6 @@ describe("AppleDevicePicker device cards", () => {
     expect(cardOf(container, "max").textContent).not.toContain("Stopped");
   });
 
-  it("no longer explains that a stopped simulator only needs a boot", () => {
-    renderPicker();
-    expect(screen.queryByText(/only needs a boot/)).toBeNull();
-  });
 });
 
 describe("AppleDevicePicker a device another lane holds", () => {

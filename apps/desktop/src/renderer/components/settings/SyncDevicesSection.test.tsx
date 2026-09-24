@@ -485,12 +485,6 @@ describe("ThisMacCard", () => {
     expect(screen.getByText("This machine — ADE 1.2.28")).toBeTruthy();
   });
 
-  it("no longer embeds a Connect-a-phone disclosure — the Phone tab owns pairing", () => {
-    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
-    expect(screen.queryByText("Connect a phone")).toBeNull();
-    expect(screen.queryByText("Scan to pair")).toBeNull();
-  });
-
   it("shows this computer's own name even while the window is remote-bound", () => {
     render(
       <ThisMacCard

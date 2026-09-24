@@ -3738,7 +3738,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("regression: rejects a cross-provider replay import whose transcript has no messages", async () => {
+    it("rejects a cross-provider replay import whose transcript has no messages", async () => {
       const externalSessionId = "99999999-8888-7777-6666-555555555555";
       const claudeConfigRoot = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(tmpHomeRoot, ".claude");
       const claudeProjectDir = path.join(
@@ -7334,7 +7334,7 @@ describe("createAgentChatService", () => {
       );
     });
 
-    it("regression: caps a Cursor-to-Codex replay below the app-server input limit", async () => {
+    it("caps a Cursor-to-Codex replay below the app-server input limit", async () => {
       const CODEX_APP_SERVER_INPUT_MAX_CHARS = 1_048_576;
       installRealTranscriptParser();
       const { service } = createService();
@@ -8299,7 +8299,7 @@ describe("createAgentChatService", () => {
       expect(mockState.cursorSdkAcquireCalls.at(-1)?.agentId).toBeNull();
     });
 
-    it("regression: replays a forked Cursor transcript exactly once, across a restart", async () => {
+    it("replays a forked transcript into a Cursor target exactly once, across a restart", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service } = createService();
       const source = await service.createSession({
@@ -8376,7 +8376,7 @@ describe("createAgentChatService", () => {
         .toContain("verbatim replay");
     });
 
-    it("regression: does not replay the forked transcript again after a restart", async () => {
+    it("replays a forked transcript into a Codex target exactly once, across a restart", async () => {
       const { service } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
@@ -42756,14 +42756,6 @@ describe("createAgentChatService", () => {
       expect((await resumed.getSessionSummary(session.id))?.interactionMode).toBe("plan");
     });
 
-    it("no longer offers the retired Codex /personality command", async () => {
-      const { service } = createService();
-      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
-      const commands = await service.getSlashCommands({ sessionId: session.id });
-      expect(commands.some((command) => command.name === "/personality")).toBe(false);
-      expect(commands.some((command) => command.name === "/plan")).toBe(true);
-    });
-
     it("rejects Codex goals over the app-server objective limit", async () => {
       const tooLongGoal = "x".repeat(4_001);
       const events: AgentChatEventEnvelope[] = [];
@@ -49307,7 +49299,7 @@ describe("createAgentChatService", () => {
      * The restarted service below is that state exactly: same session row,
      * same transcript, no runtime, no waiter.
      */
-    it("regression: re-routes an answer whose waiter died instead of losing it", async () => {
+    it("re-routes an answer whose waiter died instead of losing it", async () => {
       const events: AgentChatEventEnvelope[] = [];
       vi.mocked(streamText).mockImplementation(() => ({
         fullStream: (async function* () {

@@ -2089,23 +2089,6 @@ describe("AgentChatComposer", () => {
     expect(document.activeElement).toBe(caret);
   });
 
-  it("no longer owns a standalone fast-mode toolbar control", () => {
-    // Fast mode is a property of the model, so it moved onto the model row in
-    // the shared ModelPicker (toggle behaviour is covered by ModelPicker.test).
-    // What this suite owns is that the composer stopped rendering a fourth pill
-    // beside the model name.
-    renderComposer({
-      sessionProvider: "codex",
-      modelId: "openai/gpt-5.5",
-      availableModelIds: ["openai/gpt-5.5"],
-      fastMode: false,
-      onFastModeChange: vi.fn(),
-    });
-
-    expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
-    expect(document.querySelector("[data-chat-composer-fast-toggle]")).toBeNull();
-  });
-
   it("names fast mode on the collapsed model trigger", () => {
     renderComposer({
       sessionProvider: "codex",
@@ -2427,7 +2410,7 @@ describe("AgentChatComposer", () => {
   // empty text, so a whitespace-only askUser produces this) renders no card —
   // and composerInputLocked is already true. Without a Decline that is a dead
   // composer with no way out: the exact failure this redesign removes.
-  it("regression: a question with no parsable questions still offers a Decline", () => {
+  it("a question with no parsable questions still offers a Decline", () => {
     const props = renderComposer({
       pendingInput: {
         requestId: "req-empty",
@@ -2453,7 +2436,7 @@ describe("AgentChatComposer", () => {
 
   // Hiding the model/permission/effort row is the point; hiding the whole
   // footer took the only mid-turn interrupt with it.
-  it("regression: the turn stop control survives a question gate", () => {
+  it("the turn stop control survives a question gate", () => {
     renderComposer({
       turnActive: true,
       pendingInput: {

@@ -1168,7 +1168,7 @@ describe("resolveTokenPrice", () => {
     expect(resolveTokenPrice("venice/claude-sonnet-4-5-20250929").input).toBe(3.75 / 1_000_000);
   });
 
-  it("prices a model the vendor no longer lists from a reseller row that names the vendor", () => {
+  it("uses reseller pricing when the vendor catalog omits a model", () => {
     // Anthropic's own models.dev entry dropped Opus 4; nano-gpt still lists
     // `anthropic/claude-opus-4`, with no cache-write rate.
     const price = resolveTokenPrice("claude-opus-4");

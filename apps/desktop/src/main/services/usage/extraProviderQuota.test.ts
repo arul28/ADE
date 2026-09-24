@@ -227,7 +227,7 @@ describe("extra provider quota polls", () => {
 
   // The bug: a `kimi login --region global` token lives in its own scoped file
   // named by `config.toml`, and ADE read only `kimi-code.json`.
-  it("regression: polls a --region global Kimi login from the slot config.toml names", async () => {
+  it("polls a --region global Kimi login from the slot config.toml names", async () => {
     const kimiCodeHome = kimiHome({
       "config.toml": [
         "[providers.\"managed:kimi-code\"]",
@@ -263,7 +263,7 @@ describe("extra provider quota polls", () => {
   // The bug: a failed identity call stamped the windows `<provider>:local`, a
   // different account to the burn-rate history, which lost the join for its
   // whole retention window.
-  it("regression: keeps the last known identity when the identity call fails", async () => {
+  it("keeps the last known identity when the identity call fails", async () => {
     const kimiCodeHome = kimiHome({ "credentials/kimi-code.json": JSON.stringify({ access_token: "kimi-access" }) });
     const kimiIo = (meStatus: number) => ({
       nowMs: NOW,
@@ -299,7 +299,7 @@ describe("extra provider quota polls", () => {
   // The bug: the remembered identity was keyed only by provider, so switching
   // accounts and then one failed `/me` or `/user` stamped the new account with
   // the old account's email.
-  it("regression: never reuses a remembered identity for a different credential", async () => {
+  it("never reuses a remembered identity for a different credential", async () => {
     const kimiCodeHome = kimiHome({ "credentials/kimi-code.json": JSON.stringify({ access_token: "first-account" }) });
     const kimiIo = (meStatus: number) => ({
       nowMs: NOW,

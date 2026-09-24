@@ -36,7 +36,7 @@ describe("agent skill roots", () => {
     expect(roots).toContain("/Applications/ADE.app/Contents/Resources/agent-skills");
   });
 
-  it("regression: never emits a skill root at the filesystem root", () => {
+  it("never emits a skill root at the filesystem root", () => {
     // A brain started by launchd or systemd inherits cwd "/". `joinPath`
     // strips the trailing separator, so this used to yield
     // "/apps/desktop/resources/agent-skills" and "/resources/agent-skills" —

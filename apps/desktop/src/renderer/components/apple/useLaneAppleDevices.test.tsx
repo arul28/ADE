@@ -194,7 +194,7 @@ describe("useAppleLaneDeviceCard", () => {
       vi.useRealTimers();
     });
 
-    it("regression: reads Off as soon as the device is shut down, without waiting for the poll", async () => {
+    it("reads Off as soon as the device is shut down, without waiting for the poll", async () => {
       // The owner's 2026-09-23 report: back on the tools grid after a shut down,
       // the Apple Development card still said Running. The grid's read landed
       // before `simctl shutdown` did, and nothing but the 6s poll re-read it.
@@ -229,7 +229,7 @@ describe("useAppleLaneDeviceCard", () => {
       await waitFor(() => expect(result.current).toBeNull());
     });
 
-    it("regression: a booted event reads Running at once, as streaming does", async () => {
+    it("a booted event reads Running at once, as streaming does", async () => {
       power = "Shutdown";
       const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
       await waitFor(() => expect(result.current?.state).toBe("off"));

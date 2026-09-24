@@ -1242,7 +1242,7 @@ describe("renderChatLines", () => {
     }
   });
 
-  it("fixes the system_notice continue regression (does not duplicate subsequent rows)", () => {
+  it("keeps transcript rows after a system notice without duplication", () => {
     const lines = renderChatLines({
       activeSession: null,
       notices: [],

@@ -206,7 +206,7 @@ describe("isAllowedAdeAction", () => {
     }
   });
 
-  it("regression: allows deleting an installed simulator on the bus but never to an automation", () => {
+  it("allows deleting an installed simulator on the bus but never to an automation", () => {
     expect(isAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
     expect(isUserOnlyAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
     expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(false);

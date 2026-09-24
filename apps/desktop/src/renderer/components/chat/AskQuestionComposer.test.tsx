@@ -87,7 +87,7 @@ describe("AskQuestionComposer rendering", () => {
     expect(screen.getByRole("group", { name: /codex has a question/i })).toBeTruthy();
   });
 
-  it("regression: preserves impact and the default assumption in the composer", () => {
+  it("preserves impact and the default assumption in the composer", () => {
     renderComposer(buildRequest([
       planQuestion({
         impact: "This changes every existing lane.",
@@ -110,7 +110,7 @@ describe("AskQuestionComposer rendering", () => {
     expect(onSubmit).toHaveBeenCalledWith({ plan_choice: " rebase " });
   });
 
-  it("regression: uses legacy request-level options when the first question has none", () => {
+  it("uses legacy request-level options when the first question has none", () => {
     const { onSubmit } = renderComposer(buildRequest(
       [planQuestion({ options: [], allowsFreeform: false })],
       { options: [{ label: "Rebase", value: "rebase" }] },
@@ -157,7 +157,7 @@ describe("AskQuestionComposer answer semantics", () => {
     expect(screen.getByTestId("ask-question-option-plan_choice-merge").getAttribute("aria-checked")).toBe("true");
   });
 
-  it("regression: selecting an option marks it and never submits on click", () => {
+  it("selecting an option marks it and never submits on click", () => {
     const { onSubmit } = renderComposer(buildRequest([planQuestion({ allowsFreeform: false })]));
 
     fireEvent.click(screen.getByTestId("ask-question-option-plan_choice-rebase"));
@@ -170,7 +170,7 @@ describe("AskQuestionComposer answer semantics", () => {
   });
 
   // The same click, with and without a note, must do the same thing.
-  it("regression: a click behaves identically whether or not a note is typed", () => {
+  it("a click behaves identically whether or not a note is typed", () => {
     const { onSubmit } = renderComposer(buildRequest([planQuestion()]));
 
     fireEvent.change(screen.getByTestId("ask-question-note-plan_choice"), {
@@ -296,7 +296,7 @@ describe("AskQuestionComposer previews", () => {
   // Bug 3. Hover used to set the focused option, which swapped the preview,
   // which changed the card height, which made the virtualizer re-measure and
   // reconcile scroll — so the row walked out from under the cursor.
-  it("regression: mouseEnter on an option changes no state and no preview", () => {
+  it("mouseEnter on an option changes no state and no preview", () => {
     renderComposer(strategyRequest);
 
     fireEvent.click(screen.getByTestId("ask-question-preview-toggle-strategy-squash"));
@@ -310,7 +310,7 @@ describe("AskQuestionComposer previews", () => {
     expect(screen.getByTestId("ask-question-preview-strategy-squash").textContent ?? "").toContain("Squash preview");
   });
 
-  it("regression: no preview is open until one is explicitly disclosed, recommended included", () => {
+  it("no preview is open until one is explicitly disclosed, recommended included", () => {
     renderComposer(strategyRequest);
     expect(screen.queryByTestId("ask-question-preview-strategy-squash")).toBeNull();
     expect(screen.queryByTestId("ask-question-preview-strategy-rebase")).toBeNull();
@@ -367,7 +367,7 @@ describe("AskQuestionComposer keyboard", () => {
   // B1. The note input handles its own Enter; `preventDefault` does not stop
   // propagation, so an unguarded root handler ran `advance()` a second time in
   // the same dispatch — two chat.respondToInput for one itemId.
-  it("regression: Enter in the note field submits exactly once", () => {
+  it("Enter in the note field submits exactly once", () => {
     const { onSubmit } = renderComposer(buildRequest([planQuestion()]));
 
     fireEvent.change(screen.getByTestId("ask-question-note-plan_choice"), { target: { value: "just this" } });
@@ -377,7 +377,7 @@ describe("AskQuestionComposer keyboard", () => {
     expect(onSubmit).toHaveBeenCalledWith({ plan_choice: "just this" });
   });
 
-  it("regression: Enter in the note field advances a paged set exactly once", () => {
+  it("Enter in the note field advances a paged set exactly once", () => {
     const { onSubmit } = renderComposer(buildRequest([
       planQuestion(),
       { id: "scope", header: "Scope", question: "How wide?", allowsFreeform: true },
@@ -486,7 +486,7 @@ describe("AskQuestionComposer teardown", () => {
   // it. Registering in the callback leaked a live ResizeObserver and scroll
   // listener per resolved question, each still calling setState on an unmounted
   // tree.
-  it("regression: disconnects its observers on unmount", () => {
+  it("disconnects its observers on unmount", () => {
     const disconnect = vi.fn();
     const observe = vi.fn();
     const original = globalThis.ResizeObserver;
@@ -516,7 +516,7 @@ describe("AskQuestionComposer teardown", () => {
 describe("AskQuestionComposer freeform opt-out", () => {
   // A provider that declined freeform must not be shown a note field, or we
   // send it text it never agreed to accept.
-  it("regression: renders no note row when allowsFreeform is explicitly false", () => {
+  it("renders no note row when allowsFreeform is explicitly false", () => {
     renderComposer(buildRequest([planQuestion({ allowsFreeform: false })]));
     expect(screen.queryByTestId("ask-question-note-plan_choice")).toBeNull();
   });

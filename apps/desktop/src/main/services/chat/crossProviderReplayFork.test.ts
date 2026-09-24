@@ -56,7 +56,7 @@ describe("buildTranscriptReplayDocument", () => {
     expect(document.text).not.toMatch(/\bsummariz(?:e|ed|ing)\b/i);
   });
 
-  it("regression: preserves leading and trailing whitespace in replayed text and tool results", () => {
+  it("preserves leading and trailing whitespace in replayed text and tool results", () => {
     const indentedResult = "  line one\n    line two\n";
     const document = buildTranscriptReplayDocument([
       envelope(1, { type: "user_message", text: "  keep my indentation  " }),
@@ -74,7 +74,7 @@ describe("buildTranscriptReplayDocument", () => {
     expect(document.text).toContain(`[tool result: Read]\n${indentedResult}`);
   });
 
-  it("regression: drops whitespace-only events instead of replaying blank turns", () => {
+  it("drops whitespace-only events instead of replaying blank turns", () => {
     const document = buildTranscriptReplayDocument([
       envelope(1, { type: "user_message", text: "   " }),
       envelope(2, { type: "text", text: "\n\t " }),
@@ -113,7 +113,7 @@ describe("fitTranscriptReplayToBudget", () => {
     expect(fit.text.length).toBeLessThanOrEqual(900);
   });
 
-  it("regression: rejects a newest turn that is larger than the whole budget", () => {
+  it("rejects a newest turn that is larger than the whole budget", () => {
     const document = buildTranscriptReplayDocument([
       envelope(1, { type: "user_message", text: "old turn" }),
       envelope(2, { type: "user_message", text: `huge ${"z".repeat(5_000)}` }),
@@ -128,7 +128,7 @@ describe("fitTranscriptReplayToBudget", () => {
     expect(fit.truncatedTurnCount).toBe(document.turnCount);
   });
 
-  it("regression: returns no replay text when even the header cannot fit", () => {
+  it("returns no replay text when even the header cannot fit", () => {
     const document = buildTranscriptReplayDocument([
       envelope(1, { type: "user_message", text: "anything" }),
     ]);
@@ -148,7 +148,7 @@ describe("replay budget", () => {
     expect(replayBudgetTokens(1_000_000)).toBe(600_000);
   });
 
-  it("regression: a 1M-token window no longer admits a ~1.4M-token replay", () => {
+  it("bounds replay text to the model context window", () => {
     // The old math was (window - 8k) * 4 chars, then counted at ~3 chars/token.
     const oldBudgetChars = (1_000_000 - 8_000) * 4;
     expect(estimateReplayTokens("x".repeat(oldBudgetChars))).toBeGreaterThan(1_000_000);
@@ -188,7 +188,7 @@ describe("buildFittedTranscriptReplay", () => {
     expect(fit.keptTurnCount).toBe(1);
   });
 
-  it("regression: honors a provider input cap below the model context window", () => {
+  it("honors a provider input cap below the model context window", () => {
     const fit = buildFittedTranscriptReplay([
       envelope(1, { type: "user_message", text: `oldest ${"o".repeat(600_000)}` }),
       envelope(2, { type: "user_message", text: `newest ${"n".repeat(600_000)}` }),

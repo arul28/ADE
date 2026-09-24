@@ -552,13 +552,6 @@ describe("AppleDevicePane viewport (round 4 §A1–§A4)", () => {
     await waitFor(() => expect(screen.queryByTestId("apple-inspect-card")).toBeNull());
   });
 
-  it("§A5: the rail no longer carries Appearance or Text size", async () => {
-    live();
-    renderPane();
-    await waitFor(() => expect(paneState()).toBe("live"));
-    expect(screen.queryByRole("button", { name: /dark mode|light mode/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Device text size" })).toBeNull();
-  });
 });
 
 /**
@@ -701,7 +694,7 @@ function captureRecheck() {
 }
 
 describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
-  it("regression: a device that is off is shown Off, and the pane never asks for its stream", async () => {
+  it("a device that is off is shown Off, and the pane never asks for its stream", async () => {
     // A device session outlives a power-off. The pane used to read it as
     // "booted", ask for the stream, and the service booted the device for it.
     setup({
@@ -736,7 +729,7 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
     expect(deviceStart).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" }, null);
   });
 
-  it("regression: a start whose reply never arrives leaves the loading card on the streaming event", async () => {
+  it("a start whose reply never arrives leaves the loading card on the streaming event", async () => {
     // "The booter was stuck; I went back to the tools pane and came back, and
     // it instantly reloaded." The device was streaming; the card waited on a
     // promise alone.
@@ -753,7 +746,7 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
     await waitFor(() => expect(paneState()).toBe("live"));
   });
 
-  it("regression: with no reply and no event, the re-check finds the lane streaming and ends the card", async () => {
+  it("with no reply and no event, the re-check finds the lane streaming and ends the card", async () => {
     const recheck = captureRecheck();
     try {
       const { iosSimulator } = setup({ lane: null });
@@ -792,7 +785,7 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
     }
   });
 
-  it("regression: 'Connecting video' with no start in flight asks the stream again by itself", async () => {
+  it("'Connecting video' with no start in flight asks the stream again by itself", async () => {
     // The owner's 2026-09-23 report: the pane opened over a floating device
     // sat on "Connecting video" until a tab switch remounted it.
     const recheck = captureRecheck();

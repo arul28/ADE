@@ -9169,7 +9169,7 @@ describe("ADE CLI", () => {
       ).toThrow(/proof attach failed — the runtime reported artifact-1/);
     });
 
-    it("regression: fails when the record lands with no lane and no chat session", () => {
+    it("fails when the record lands with no lane and no chat session", () => {
       // The incident this guard exists for. The runtime filed the row, the
       // re-read found it — because the unscoped caller lists project-wide —
       // and the only owner was a process id, so no drawer could show it. The
@@ -9190,7 +9190,7 @@ describe("ADE CLI", () => {
       ).toThrow(/proof attach failed — filed artifact-1 with no lane, chat session, automation run, PR or issue/);
     });
 
-    it("regression: accepts the owners the server accepts: an automation run, a PR or an issue", () => {
+    it("accepts the owners the server accepts: an automation run, a PR or an issue", () => {
       // The server stores these, so failing here would turn the retry into a PROOF_DUPLICATE.
       const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
       for (const ownerKind of ["automation_run", "github_pr", "linear_issue"]) {

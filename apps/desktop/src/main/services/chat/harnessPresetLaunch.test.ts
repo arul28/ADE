@@ -586,7 +586,7 @@ describe("resolveHarnessPresetForLaunch", () => {
     expect(plan).not.toHaveProperty("permissionMode");
   });
 
-  it("reports a key that is no longer in the store", () => {
+  it("reports a missing preset key as unsupported", () => {
     const plan = resolveHarnessPresetForLaunch("hp_1", deps({
       readPresets: () => [preset()],
       getCredentialSummary: () => null,

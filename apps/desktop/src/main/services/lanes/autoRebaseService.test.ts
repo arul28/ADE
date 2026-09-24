@@ -498,7 +498,7 @@ describe("autoRebaseService", () => {
   // ---------------------------------------------------------------------------
 
   describe("listStatuses — parent lane disappearance", () => {
-    it("clears status when the stored parentLaneId no longer exists in lane list", async () => {
+    it("clears status when the stored parent lane is missing", async () => {
       const service = createService();
 
       // Lane references a parent that does not exist
@@ -1175,7 +1175,7 @@ describe("autoRebaseService", () => {
       });
     });
 
-    it("skips legacy parent links when the lane baseRef no longer matches the parent branch", async () => {
+    it("ignores legacy parent links when the lane base differs from the parent branch", async () => {
       const service = createService();
       const root = makeLane("root", {
         laneType: "primary",

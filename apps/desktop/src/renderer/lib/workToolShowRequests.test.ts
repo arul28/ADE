@@ -176,7 +176,7 @@ describe("work surface on screen", () => {
     return element;
   }
 
-  it("regression: a tool is on screen only when its own pane is laid out, on its own machine", () => {
+  it("a tool is on screen only when its own pane is laid out, on its own machine", () => {
     // Another tools pane is wide open; the Apple tool's own pane is a 19px sliver.
     pane(400);
     const own = pane(19);

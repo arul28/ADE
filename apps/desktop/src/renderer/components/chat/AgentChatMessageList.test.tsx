@@ -5082,7 +5082,7 @@ describe("AgentChatMessageList question receipts", () => {
     expect(detail.textContent ?? "").toContain("only if CI is green");
   });
 
-  it("regression: labels legacy request-level option answers as picks, not notes", () => {
+  it("labels legacy request-level option answers as picks, not notes", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [{
@@ -5118,7 +5118,7 @@ describe("AgentChatMessageList question receipts", () => {
 
   // The answer to an isSecret question never reaches the (durable, synced)
   // resolution event, so there is nothing for the receipt to show.
-  it("regression: a secret question's answer is never displayed", () => {
+  it("a secret question's answer is never displayed", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [
@@ -5133,7 +5133,7 @@ describe("AgentChatMessageList question receipts", () => {
     expect(receipt.textContent ?? "").toContain("answer hidden");
   });
 
-  it("regression: a declined secret question is unanswered, not hidden", () => {
+  it("a declined secret question is unanswered, not hidden", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [

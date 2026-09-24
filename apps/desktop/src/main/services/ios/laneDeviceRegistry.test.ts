@@ -221,32 +221,26 @@ describe("laneDeviceRegistry device lifecycle", () => {
     ]);
   });
 
-  it("regression: a delete that names a udid leaves a device the lane took since alone", async () => {
-    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
-    const { registry, store } = registryWith(run);
-    await registry.deviceCreate({ laneId: "lane-1" });
-    run.mockClear();
+  it.each(["cloned", "attached"] as const)(
+    "ignores a stale device ID when deleting a lane's %s device",
+    async (currentDevice) => {
+      const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
+      const { registry, store } = registryWith(run);
+      if (currentDevice === "cloned") {
+        await registry.deviceCreate({ laneId: "lane-1" });
+      } else {
+        await registry.deviceAttach({ laneId: "lane-1", simulator: "iPhone 17 Pro" });
+      }
+      run.mockClear();
 
-    await registry.deviceDelete({ laneId: "lane-1", udid: "some-older-clone" });
+      await registry.deviceDelete({ laneId: "lane-1", udid: "some-older-clone" });
 
-    expect(run).not.toHaveBeenCalled();
-    expect(store.rows["lane-1"]).toBeDefined();
-  });
+      expect(run).not.toHaveBeenCalled();
+      expect(store.rows["lane-1"]).toBeDefined();
+    },
+  );
 
-  it("regression: a delete that names a udid resolves when the lane attached another device since", async () => {
-    // Not the "attached, pass force" refusal: the caller passed force for a
-    // clone it read, and this device is one it never named.
-    const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
-    const { registry, store } = registryWith(run);
-    await registry.deviceAttach({ laneId: "lane-1", simulator: "iPhone 17 Pro" });
-
-    await expect(registry.deviceDelete({ laneId: "lane-1", udid: "some-older-clone" })).resolves.toBeUndefined();
-
-    expect(run).not.toHaveBeenCalled();
-    expect(store.rows["lane-1"]).toBeDefined();
-  });
-
-  it("regression: never picks a booted device as the clone template", async () => {
+  it("never picks a booted device as the clone template", async () => {
     // `simctl clone` fails on a booted device with error 405, "Unable to clone
     // device in current state: Booted". Nothing looked at state, so on a Mac
     // whose newest iPhone was running, the automatic pick chose the one device
@@ -282,7 +276,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
     expect(run.mock.calls.some((call) => (call[1] as string[])?.[1] === "clone")).toBe(false);
   });
 
-  it("regression: a takeover ends EVERY stale binding, not just the first", async () => {
+  it("a takeover ends EVERY stale binding, not just the first", async () => {
     // On the owner's machine ADE Repro was bound to two lanes at once — a
     // state this file is supposed to make impossible, from before the move was
     // atomic. `rebind` moves one row, so a takeover moved one and left the
@@ -872,7 +866,7 @@ describe("lane device lifecycle", () => {
   }
 
   describe("laneDeviceLifecycle", () => {
-    it("regression: deviceDetach refuses a device another chat is driving, as deviceStop does", async () => {
+    it("deviceDetach refuses a device another chat is driving, as deviceStop does", async () => {
       const { lifecycle, laneDevices, shutdown, bound } = setup("chat-owner");
 
       await expect(lifecycle.deviceDetach({ laneId: "lane-b", chatSessionId: "chat-other" }))
@@ -906,7 +900,7 @@ describe("lane device lifecycle", () => {
       expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
     });
 
-    it("regression: a forced deviceDelete from another chat cannot detach or delete the owner's device", async () => {
+    it("a forced deviceDelete from another chat cannot detach or delete the owner's device", async () => {
       const attachedCase = setup("chat-a");
       const attached = { ...device, origin: "attached" as const };
       (attachedCase.laneDevices as unknown as { get: () => AppleLaneDevice }).get = () => attached;
@@ -928,7 +922,7 @@ describe("lane device lifecycle", () => {
       expect(cloneCase.laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b", udid: "device-clone" });
     });
 
-    it("regression: a delete queued behind another chat's start is refused once that chat claims the session", async () => {
+    it("a delete queued behind another chat's start is refused once that chat claims the session", async () => {
       const { lifecycle, laneDevices, shutdown, serializeDeviceLifecycle, setOwner, bound } = setup(null);
       let claimed = () => {};
       const claim = new Promise<void>((resolve) => { claimed = resolve; });
@@ -949,7 +943,7 @@ describe("lane device lifecycle", () => {
       expect(bound()).toBe(device);
     });
 
-    it("regression: an unforced delete of an attached device is refused before the stream stops", async () => {
+    it("an unforced delete of an attached device is refused before the stream stops", async () => {
       const { lifecycle, laneDevices, shutdown, setBound } = setup("chat-owner");
       const attached = { ...device, origin: "attached" as const };
       setBound(attached);
@@ -961,7 +955,7 @@ describe("lane device lifecycle", () => {
       expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
     });
 
-    it("regression: a delete reads the lane's device once, in the queue, after a start in flight has changed it", async () => {
+    it("a delete reads the lane's device once, in the queue, after a start in flight has changed it", async () => {
       const attached = { ...device, origin: "attached" as const };
 
       // Forced: the device the start left behind is attached, so it is detached, not deleted.

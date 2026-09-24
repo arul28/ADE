@@ -192,7 +192,7 @@ describe("apple.* remote command handlers", () => {
     expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok" });
   });
 
-  it("regression: a viewer's ticket on a device that is off is refused with APPLE_DEVICE_OFF, and no ticket is issued", async () => {
+  it("a viewer's ticket on a device that is off is refused with APPLE_DEVICE_OFF, and no ticket is issued", async () => {
     const off = Object.assign(new Error("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it."), {
       code: "APPLE_DEVICE_OFF",
     });

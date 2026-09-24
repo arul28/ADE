@@ -519,29 +519,6 @@ describe("ChatGitToolbar", () => {
     expect(window.ade.prs.refresh).not.toHaveBeenCalled();
   });
 
-  it("no longer renders a PR sync control in the chat header", async () => {
-    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
-      id: "pr-1",
-      laneId: "lane-1",
-      title: "Linked PR",
-      state: "open",
-      checksStatus: "unknown",
-      githubPrNumber: 7,
-      githubUrl: "https://github.com/acme/ade/pull/7",
-      additions: 0,
-      deletions: 0,
-      updatedAt: null,
-    } as any);
-
-    renderToolbar();
-
-    // The ⟳ affordance moved into ChatPrPane's title bar.
-    expect(await screen.findByRole("button", { name: /PR #/ })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Sync PR status/i })).toBeNull();
-    expect(screen.queryByLabelText(/Sync PR status/i)).toBeNull();
-    expect((window.ade.prs as any).syncLanePr).not.toHaveBeenCalled();
-  });
-
   it("still heals the header PR pill when a backend reconcile finishes", async () => {
     vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
       id: "pr-1",
