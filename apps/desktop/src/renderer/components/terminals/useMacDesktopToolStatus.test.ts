@@ -11,6 +11,10 @@ import { macDesktopStatusLineText, macDesktopToolStateFromEntry } from "./useMac
  * pane that never reported anything measured.
  */
 
+// Fixed, not `new Date()`: two calls a millisecond apart made unequal
+// objects, and the `toEqual` below failed now and then under load.
+const STAMP = "2026-09-24T12:00:00.000Z";
+
 function display(): MacDesktopDisplay {
   return {
     laneId: "lane-a",
@@ -21,9 +25,9 @@ function display(): MacDesktopDisplay {
     height: 1440,
     scale: 1,
     origin: { x: -2560, y: 0 },
-    createdAt: new Date().toISOString(),
+    createdAt: STAMP,
     windowCount: 0,
-    lastActivityAt: new Date().toISOString(),
+    lastActivityAt: STAMP,
   };
 }
 
