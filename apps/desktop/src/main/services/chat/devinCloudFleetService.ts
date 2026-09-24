@@ -411,9 +411,10 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
     const prior = pullIntoLaneChains.get(id) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(() => pullIntoLaneInternal(devinSessionId));
     pullIntoLaneChains.set(id, next);
-    void next.finally(() => {
-      if (pullIntoLaneChains.get(id) === next) pullIntoLaneChains.delete(id);
-    });
+    void next.then(
+      () => { if (pullIntoLaneChains.get(id) === next) pullIntoLaneChains.delete(id); },
+      () => { if (pullIntoLaneChains.get(id) === next) pullIntoLaneChains.delete(id); },
+    );
     return next;
   };
 
