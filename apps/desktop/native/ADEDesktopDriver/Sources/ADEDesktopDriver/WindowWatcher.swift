@@ -21,7 +21,11 @@ extension WindowControl {
     func startWatching(pid: pid_t, laneId: String, launched: Bool) {
         let alreadyWatching = newWindows.isWatching(pid: pid)
         let existing = alreadyWatching || launched ? [] : listWindows(pid: pid).map(\.id)
-        newWindows.watch(pid: pid, laneId: laneId, launched: launched, existing: existing)
+        guard newWindows.watch(pid: pid, laneId: laneId, launched: launched, existing: existing) else {
+            // Another lane launched this app and keeps watching it.
+            log("pid \(pid) stays watched by lane \(newWindows.laneId(forPid: pid) ?? "?"), which launched it; lane \(laneId) does not take the watch over")
+            return
+        }
         if !alreadyWatching {
             installObserver(pid: pid)
         }
@@ -107,16 +111,28 @@ extension WindowControl {
                 unowned: unowned,
                 minimized: Set(current.filter(\.minimized).map(\.id))
             )
-            let origin = newWindows.originForNewWindow(pid: pid)
             for windowId in candidates {
-                // The display can go away inside this loop: a park pumps the
-                // run loop, and a `display.destroy` runs inside that pump.
-                guard placement(forLane: laneId) != nil, newWindows.isWatching(pid: pid) else { break }
+                // Re-checked before every candidate, because every park pumps
+                // the run loop: a `display.destroy`, a Release that handed the
+                // app to the user, or another lane's watch can all have run
+                // inside the previous one.
+                guard placement(forLane: laneId) != nil,
+                      !stopGate.isStopping(laneId),
+                      newWindows.laneId(forPid: pid) == laneId
+                else { break }
+                // A window some lane took inside the previous park's wait is
+                // no longer a new window.
+                guard ownership.owner(ofWindow: Int(windowId)) == nil else { continue }
+                let origin = newWindows.originForNewWindow(pid: pid)
                 do {
                     _ = try park(laneId: laneId, windowId: windowId, origin: origin)
                     touchedLanes.insert(laneId)
                 } catch {
                     let code = (error as? DriverError)?.code
+                    if ParkRecheck.isLaneGone(code: code) {
+                        // The lane is going or gone: not news about the window.
+                        break
+                    }
                     if code == DriverErrorCode.windowNotReady {
                         // Not a failure, a "not yet" — but not forever. A
                         // restored window that never publishes an element

@@ -139,6 +139,10 @@ final class CaptureEngine {
     /// Appended frames per recording lane, so "captured nothing" is a fact this
     /// process can state before `record.stop` decides what to do with a file.
     private var recordedFrameCounts: [String: Int] = [:]
+    /// Lanes whose stream or recording is starting. A stop cancels the
+    /// start; a second start is refused. See `CaptureStartReservations`.
+    private let startingStreams = CaptureStartReservations()
+    private let startingRecordings = CaptureStartReservations()
     private let lock = NSRecursiveLock()
     /// Serialises recording appends against the stop path.
     ///
@@ -652,9 +656,22 @@ final class CaptureEngine {
             lock.unlock()
             return (existing.server.port, existing.width, existing.height, existing.codec)
         }
+        // Reserved before the first wait: a `stream.stop` inside it cancels
+        // this start instead of finding nothing to stop.
+        guard let reservation = startingStreams.reserve(laneId) else {
+            lock.unlock()
+            throw CaptureStartReservations.alreadyStarting(laneId: laneId, what: "live stream")
+        }
         lock.unlock()
+        // Every exit that does not install a stream ends the reservation.
+        var reservationEnded = false
+        defer { if !reservationEnded { startingStreams.finish(reservation) } }
+        let cancelled = {
+            CaptureError.failed("Lane \(laneId)'s live stream was stopped while it was starting.")
+        }
 
         let (_, width, height) = try retryingFilter(displayId: displayId, windowId: nil, label: "stream.start")
+        guard !startingStreams.isCancelled(reservation) else { throw cancelled() }
         lock.lock()
         let cursorVisible = showsCursor ?? cursorVisibleByLane[laneId] ?? false
         cursorVisibleByLane[laneId] = cursorVisible
@@ -669,24 +686,33 @@ final class CaptureEngine {
         let server = StreamByteServer()
         let port = try server.start()
 
-        let encoder = try H264Encoder(
-            width: configuration.width,
-            height: configuration.height,
-            fps: fps
-        ) { [weak self] payload, keyframe, codec in
-            guard let self else { return }
-            if let codec {
+        // Every callback below checks that the lane's stream is still THIS
+        // one: a start that was cancelled keeps delivering for a beat after
+        // its capture is told to stop, and must not write into the state of
+        // the stream that replaced it.
+        let encoder: H264Encoder
+        do {
+            encoder = try H264Encoder(
+                width: configuration.width,
+                height: configuration.height,
+                fps: fps
+            ) { [weak self] payload, keyframe, codec in
+                guard let self else { return }
                 self.lock.lock()
-                if self.streams[laneId]?.codec != codec {
+                let isCurrent = self.streams[laneId]?.server === server
+                if isCurrent, let codec, self.streams[laneId]?.codec != codec {
                     self.streams[laneId]?.codec = codec
                     server.setConfig(codec: codec)
                 }
+                if isCurrent { self.streams[laneId]?.lastEncodedAt = Date() }
                 self.lock.unlock()
+                server.broadcast(StreamRecord.accessUnitRecord(payload: payload, keyframe: keyframe))
             }
-            self.lock.lock()
-            self.streams[laneId]?.lastEncodedAt = Date()
-            self.lock.unlock()
-            server.broadcast(StreamRecord.accessUnitRecord(payload: payload, keyframe: keyframe))
+        } catch {
+            // The listener is already open, and a failed start must not leave
+            // it listening.
+            server.stop()
+            throw error
         }
         // A reader attaching is the one moment a keyframe is owed immediately.
         server.onClientAttached = { [weak self] in
@@ -700,9 +726,11 @@ final class CaptureEngine {
                 let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 if let self {
                     self.lock.lock()
-                    if self.streams[laneId] != nil {
-                        self.streams[laneId]?.lastBuffer = buffer
-                        if CMTIME_IS_NUMERIC(time) { self.streams[laneId]?.lastPresentationTime = time }
+                    if let current = self.streams[laneId] {
+                        if current.server === server {
+                            self.streams[laneId]?.lastBuffer = buffer
+                            if CMTIME_IS_NUMERIC(time) { self.streams[laneId]?.lastPresentationTime = time }
+                        }
                     } else {
                         early.buffer = buffer
                         if CMTIME_IS_NUMERIC(time) { early.presentationTime = time }
@@ -720,6 +748,18 @@ final class CaptureEngine {
                 )
             }
         )
+        // Every resource this request opened is released before a throw, so
+        // a retry from the caller starts from the same state as the first
+        // attempt rather than from a leaked listener and encoder.
+        let release = {
+            server.onClientAttached = nil
+            server.stop()
+            encoder.stop()
+        }
+        guard !startingStreams.isCancelled(reservation) else {
+            release()
+            throw cancelled()
+        }
         let stream: SCStream
         do {
             stream = try startCaptureStream(
@@ -730,16 +770,23 @@ final class CaptureEngine {
                 label: "stream.start"
             )
         } catch {
-            // Every resource this request opened is released before the throw,
-            // so a retry from the caller starts from the same state as the
-            // first attempt rather than from a leaked listener and encoder.
-            server.onClientAttached = nil
-            server.stop()
-            encoder.stop()
+            release()
             throw error
         }
 
         lock.lock()
+        // The start waited with the run loop pumping. A stop inside that wait
+        // cancelled it; what it built goes, rather than streaming a lane
+        // nobody is showing any more.
+        guard startingStreams.finish(reservation), streams[laneId] == nil else {
+            lock.unlock()
+            reservationEnded = true
+            stream.stopCapture { _ in }
+            release()
+            log("stream for lane \(laneId) was stopped while it was starting; discarded it")
+            throw cancelled()
+        }
+        reservationEnded = true
         streams[laneId] = StreamState(
             server: server,
             encoder: encoder,
@@ -845,8 +892,11 @@ final class CaptureEngine {
     func stopStream(laneId: String) -> Bool {
         lock.lock()
         guard let state = streams.removeValue(forKey: laneId) else {
+            // A start still waiting on ScreenCaptureKit is cancelled: it tears
+            // down what it built when it resumes.
+            let cancelled = startingStreams.cancel(laneId)
             lock.unlock()
-            return false
+            return cancelled
         }
         lock.unlock()
         state.keepAlive?.cancel()
@@ -873,12 +923,25 @@ final class CaptureEngine {
         }
         lock.lock()
         let alreadyRunning = recordings[laneId] != nil
+        // Reserved before the first wait, the same as a stream start: a
+        // `record.stop` inside it cancels this start, and a second
+        // `record.start` is refused rather than racing it for the same lane.
+        let reservation = alreadyRunning ? nil : startingRecordings.reserve(laneId)
         lock.unlock()
         guard !alreadyRunning else {
             throw CaptureError.failed("Lane \(laneId) is already recording.")
         }
+        guard let reservation else {
+            throw CaptureStartReservations.alreadyStarting(laneId: laneId, what: "recording")
+        }
+        var reservationEnded = false
+        defer { if !reservationEnded { startingRecordings.finish(reservation) } }
+        let cancelled = {
+            CaptureError.failed("Lane \(laneId)'s recording was stopped while it was starting.")
+        }
 
         let (_, width, height) = try retryingFilter(displayId: displayId, windowId: nil, label: "record.start")
+        guard !startingRecordings.isCancelled(reservation) else { throw cancelled() }
         let evenWidth = max(2, width - width % 2)
         let evenHeight = max(2, height - height % 2)
         let url = URL(fileURLWithPath: filePath)
@@ -996,6 +1059,19 @@ final class CaptureEngine {
 
         let startedAt = Date()
         lock.lock()
+        // A stop inside the capture wait cancelled this start. The writer has
+        // not been handed a frame (the sink finds no state), so it is
+        // cancelled with its empty file.
+        guard startingRecordings.finish(reservation), recordings[laneId] == nil else {
+            lock.unlock()
+            reservationEnded = true
+            stream.stopCapture { _ in }
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: url)
+            log("recording for lane \(laneId) was stopped while it was starting; discarded it")
+            throw cancelled()
+        }
+        reservationEnded = true
         recordings[laneId] = RecordingState(
             writer: writer,
             input: input,
@@ -1023,7 +1099,12 @@ final class CaptureEngine {
         var idleCutMs: Int
     }
 
-    func stopRecording(laneId: String) throws -> FinishedRecording {
+    /// `finalizeBudget` bounds the wait for `finishWriting`; shutdown passes
+    /// what is left of its own deadline.
+    func stopRecording(
+        laneId: String,
+        finalizeBudget: TimeInterval = CaptureEngine.recordingFinalizeBudget
+    ) throws -> FinishedRecording {
         // Taken before the state is removed and held through the finalize:
         // every append either finished before this line or will find its
         // recording gone and return without touching the adaptor.
@@ -1031,10 +1112,13 @@ final class CaptureEngine {
         defer { appendLock.unlock() }
         lock.lock()
         guard let state = recordings.removeValue(forKey: laneId) else {
+            let cancelledStart = startingRecordings.cancel(laneId)
             lock.unlock()
             throw DriverError(
                 code: DriverErrorCode.recordingNotRunning,
-                message: "Lane \(laneId) is not recording."
+                message: cancelledStart
+                    ? "Lane \(laneId)'s recording was still starting; the start was cancelled and there is no file."
+                    : "Lane \(laneId) is not recording."
             )
         }
         lock.unlock()
@@ -1079,6 +1163,7 @@ final class CaptureEngine {
                 writer: writer,
                 input: state.input,
                 endTime: CMTime(seconds: finish.end, preferredTimescale: 600),
+                timeout: finalizeBudget,
                 onCompletion: { [weak self] in self?.releaseAbandonedWriter(writer) }
             )
             if !settled {
@@ -1092,7 +1177,7 @@ final class CaptureEngine {
                 throw DriverError(
                     code: DriverErrorCode.internalError,
                     message: "The recording for lane \(laneId) did not finalise within "
-                        + "\(Int(Self.recordingFinalizeBudget))s; \(state.filePath) may be unplayable, "
+                        + "\(String(format: "%.1f", finalizeBudget))s; \(state.filePath) may be unplayable, "
                         + "and its finalisation is still running."
                 )
             }
@@ -1207,16 +1292,25 @@ final class CaptureEngine {
         return recordedFrameCounts[laneId] ?? 0
     }
 
-    func dispose() {
+    /// Stops everything. `finalizeBudget` is shared by all recordings, so a
+    /// driver that is exiting finishes inside the client's kill window
+    /// however many lanes were recording.
+    func dispose(finalizeBudget: TimeInterval = CaptureEngine.recordingFinalizeBudget) {
         lock.lock()
+        startingStreams.cancelAll()
+        startingRecordings.cancelAll()
         let laneIds = Array(streams.keys)
         let recordingLanes = Array(recordings.keys)
         lock.unlock()
         for laneId in laneIds {
             stopStream(laneId: laneId)
         }
+        let deadline = Date().addingTimeInterval(finalizeBudget)
         for laneId in recordingLanes {
-            _ = try? stopRecording(laneId: laneId)
+            _ = try? stopRecording(
+                laneId: laneId,
+                finalizeBudget: max(0.05, deadline.timeIntervalSinceNow)
+            )
         }
     }
 }

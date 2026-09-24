@@ -1142,9 +1142,10 @@ export type DesktopSeatProvider = {
    * Releases one window. A window of an app the lane launched hands the whole
    * app instance to the user: `releasedWindowIds` names every window that left
    * the lane, and `handedOverPid` the instance the lane no longer watches or
-   * quits on stop.
+   * quits on stop. With `laneId`, the driver refuses a window another lane
+   * holds.
    */
-  unpark(args: { windowId: number }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null }>;
+  unpark(args: { windowId: number; laneId?: string }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null }>;
   launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
   present(args: { laneId: string; destination: "main" | "display" }): Promise<DesktopSeatReply>;
   observe(args: {

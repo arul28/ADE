@@ -175,6 +175,12 @@ public enum DriverErrorCode {
     /// button held for its whole timeout. Refusing immediately hands the retry
     /// decision to the caller, which is the only side that knows its deadline.
     public static let gestureInFlight = "gesture_in_flight"
+    /// The lane's display is being torn down, so nothing new may start on
+    /// it. See `LaneStopGate`.
+    public static let laneStopping = "lane_stopping"
+    /// A stream or recording for the lane is already starting. See
+    /// `CaptureStartReservations`.
+    public static let captureStarting = "capture_starting"
     public static let unknownOp = "unknown_op"
     public static let protocolError = "protocol_error"
     public static let invalidArgument = "invalid_argument"
@@ -222,7 +228,7 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `request-permission` | `which,allowPrompt` | `{requested, permissions}` — prompts only when `allowPrompt` |
 /// | `window.list` | `laneId?`, `pid?` | `{windows: MacDesktopWindow[]}` — a window carries `iconPng` (base64 PNG, 32x32) only on the first window of its bundle id in the reply; readers join it across that app's rows |
 /// | `window.park` | `laneId,windowId` | `MacDesktopWindow` |
-/// | `window.unpark` | `windowId` | `{window: MacDesktopWindow?}` |
+/// | `window.unpark` | `windowId,laneId?` | `{window: MacDesktopWindow?, releasedWindowIds, handedOverPid}` — refused when `laneId` is given and another lane holds the window |
 /// | `app.launch` | `laneId,target,args?` | `MacDesktopOpenResult` |
 /// | `present` | `laneId,destination` | `{moved}` |
 /// | `observe` | `laneId,windowId?,limit?,map?,screenshotPath?,mapPath?,caption?` | `MacDesktopObservation` |

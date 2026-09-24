@@ -108,6 +108,16 @@ public final class OwnershipRegistry: @unchecked Sendable {
         return released.sorted { $0.windowId < $1.windowId }
     }
 
+    /// The refusal for `laneId` releasing a window, or nil when it may.
+    ///
+    /// A release that names no lane (older clients) and a window no lane
+    /// holds are both allowed; only a window held by a different lane is
+    /// refused, so one lane's Release can never hand over another lane's app.
+    public func releaseRefusal(windowId: Int, laneId: String?) -> OwnershipError? {
+        guard let laneId, let holder = owner(ofWindow: windowId), holder != laneId else { return nil }
+        return .windowOwnedByOtherLane(windowId: windowId, holderLaneId: holder)
+    }
+
     public func owner(ofWindow windowId: Int) -> String? {
         lock.lock()
         defer { lock.unlock() }

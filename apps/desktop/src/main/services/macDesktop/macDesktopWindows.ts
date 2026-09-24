@@ -152,7 +152,9 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       // window of that app, so a later target may already be the user's.
       if (alreadyReleased.has(windowId)) continue;
       try {
-        const reply = await seat.unpark({ windowId });
+        // The lane is named so the driver refuses a window another lane
+        // holds: one lane's Release must never hand over another's app.
+        const reply = await seat.unpark({ windowId, laneId });
         const releasedIds = reply.releasedWindowIds.includes(windowId)
           ? reply.releasedWindowIds
           : [windowId, ...reply.releasedWindowIds];

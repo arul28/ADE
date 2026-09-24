@@ -17,7 +17,7 @@ function harness(options: {
   const owned = options.owned ?? [11, 12];
   const released: number[] = [];
   const unwatched: number[] = [];
-  const unpark = vi.fn(async ({ windowId }: { windowId: number }): Promise<UnparkReply> => {
+  const unpark = vi.fn(async ({ windowId }: { windowId: number; laneId?: string }): Promise<UnparkReply> => {
     const reply = options.unpark ? await options.unpark(windowId) : undefined;
     return reply ?? { releasedWindowIds: [windowId], handedOverPid: null };
   });
@@ -85,6 +85,8 @@ describe("releaseWindow", () => {
     await expect(windows.releaseWindow({ laneId: "lane-a" })).resolves.toEqual({ released: 3 });
     // 12 went with 11, so the driver is not asked for it again.
     expect(unpark.mock.calls.map(([args]) => args.windowId)).toEqual([11, 13]);
+    // Every unpark names the lane, so the driver can refuse another lane's window.
+    expect(unpark.mock.calls.map(([args]) => args.laneId)).toEqual(["lane-a", "lane-a"]);
     expect(released).toEqual([11, 12, 13]);
     expect(unwatched).toEqual([73002]);
   });

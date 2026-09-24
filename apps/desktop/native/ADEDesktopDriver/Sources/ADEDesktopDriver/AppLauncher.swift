@@ -23,6 +23,7 @@ extension WindowControl {
     /// The window the app opens usually does not exist yet when this returns,
     /// which is why the pid is watched rather than the result being awaited.
     func launch(laneId: String, target: String, arguments: [String]) throws -> LaunchResult {
+        if let refusal = stopGate.refusal(laneId: laneId, action: "open an app") { throw refusal }
         guard placement(forLane: laneId) != nil else {
             throw DriverError(
                 code: DriverErrorCode.noDisplay,
@@ -104,6 +105,33 @@ extension WindowControl {
         }
 
         let pid = launched.processIdentifier
+        let isNewInstance = !runningBefore.contains(pid)
+        // The wait above pumped the run loop, and the lane's stop can have run
+        // inside it: its apps were collected to quit before this one existed,
+        // so nothing would ever quit it. A new instance goes now.
+        if let refusal = stopGate.refusal(laneId: laneId, action: "open an app")
+            ?? (placement(forLane: laneId) == nil
+                ? DriverError(
+                    code: DriverErrorCode.noDisplay,
+                    message: "Lane \(laneId) stopped while \"\(target)\" was opening; it was closed again."
+                )
+                : nil)
+        {
+            if isNewInstance, launchedApps.laneId(forPid: pid) == nil {
+                discard(launched, reason: "lane \(laneId) stopped while it was opening")
+            }
+            throw refusal
+        }
+        // An instance another lane launched (a single-instance app hands it
+        // back) is that lane's: this lane neither watches it nor takes its
+        // windows, and that lane's stop quits it.
+        if let refusal = launchedApps.refusal(
+            pid: pid,
+            laneId: laneId,
+            appName: launched.localizedName ?? target
+        ) {
+            throw refusal
+        }
         if let bundleId = launched.bundleIdentifier,
            Self.isSingleInstance(bundleId: bundleId, application: launched),
            let holder = ownership.singleInstanceHolder(bundleId: bundleId),
@@ -117,7 +145,7 @@ extension WindowControl {
             laneId: laneId,
             appName: launched.localizedName ?? target,
             bundleId: launched.bundleIdentifier,
-            wasRunningBefore: runningBefore.contains(pid)
+            wasRunningBefore: !isNewInstance
         )
         if !isLanes {
             log("launch of \"\(target)\" handed back pid \(pid), which was already running; only its new windows are parked, and stop does not quit it")
@@ -127,12 +155,20 @@ extension WindowControl {
         // instance the user started keeps the windows it already had.
         var parked: [DesktopWindow] = []
         let windowDeadline = Date().addingTimeInterval(3)
-        while isLanes, Date() < windowDeadline, parked.isEmpty {
+        // Each park pumps the run loop, and the lane can stop or the user can
+        // take the app with Release inside it. Either ends this loop: the app
+        // is no longer the lane's to park.
+        let stillLanes: () -> Bool = {
+            self.launchedApps.isLaunched(pid: pid, byLane: laneId)
+                && self.placement(forLane: laneId) != nil
+                && !self.stopGate.isStopping(laneId)
+        }
+        while isLanes, stillLanes(), Date() < windowDeadline, parked.isEmpty {
             for window in listWindows(pid: pid) where window.laneId == nil {
                 // Checked per window as well: each park that is not ready yet
                 // waits about 1.5 s, and a dozen restored windows would have
                 // run this past the dispatcher's watchdog.
-                guard Date() < windowDeadline else { break }
+                guard Date() < windowDeadline, stillLanes() else { break }
                 do {
                     parked.append(try park(laneId: laneId, windowId: window.id, origin: "ade_launched"))
                 } catch {
@@ -143,7 +179,7 @@ extension WindowControl {
                     log("launch could not park window \(window.id) yet: \(error)")
                 }
             }
-            if parked.isEmpty {
+            if parked.isEmpty, stillLanes() {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.15))
             }
         }
@@ -154,6 +190,26 @@ extension WindowControl {
             windows: parked,
             watching: true
         )
+    }
+
+    /// Quits an instance a launch started for a lane that is gone, and
+    /// force-quits it if it is still running after `quitGrace`.
+    ///
+    /// Not waited for: this runs inside a request, and the lane's own stop is
+    /// already waiting on the main thread. `NSRunningApplication` is bound to
+    /// the process, not the pid, so the late force quit cannot hit a process
+    /// that reused the pid.
+    func discard(_ application: NSRunningApplication, reason: String) {
+        let name = application.localizedName ?? "pid \(application.processIdentifier)"
+        log("quitting \(name): \(reason)")
+        if !application.terminate() {
+            log("\(name) refused the request to quit")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.quitGrace) { [weak self] in
+            guard !application.isTerminated else { return }
+            self?.log("\(name) did not quit within \(Self.quitGrace)s; force-quitting it")
+            application.forceTerminate()
+        }
     }
 
     /// Whether the app behind a launch target reads AppKit defaults from its

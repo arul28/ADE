@@ -141,7 +141,10 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
     },
 
     async unpark(args) {
-      const reply = await request(MAC_DESKTOP_DRIVER_OPS.unparkWindow, { windowId: args.windowId });
+      const reply = await request(MAC_DESKTOP_DRIVER_OPS.unparkWindow, {
+        windowId: args.windowId,
+        ...(args.laneId ? { laneId: args.laneId } : {}),
+      });
       // An older helper released only the one window and did not say so.
       const releasedWindowIds = Array.isArray(reply.releasedWindowIds)
         ? reply.releasedWindowIds.filter((id): id is number => typeof id === "number")

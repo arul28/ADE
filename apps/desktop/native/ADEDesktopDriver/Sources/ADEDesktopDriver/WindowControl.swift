@@ -135,6 +135,9 @@ final class WindowControl {
     /// The app instances each lane started. Only these quit when the lane's
     /// display goes away.
     let launchedApps = LaunchedAppRegistry()
+    /// The lanes being stopped right now. `launch` and `park` refuse them;
+    /// `DriverRuntime` sets it around every stop and checks it for captures.
+    let stopGate = LaneStopGate()
     /// True while a sweep runs. A park inside a sweep pumps the run loop, and
     /// the poll timer or an observer callback would otherwise start a second
     /// sweep inside the first one.
@@ -584,6 +587,7 @@ final class WindowControl {
     // -----------------------------------------------------------------------
 
     func park(laneId: String, windowId: CGWindowID, origin: String = "claimed") throws -> DesktopWindow {
+        if let refusal = stopGate.refusal(laneId: laneId, action: "take a window") { throw refusal }
         guard let placement = placement(forLane: laneId) else {
             throw DriverError(
                 code: DriverErrorCode.noDisplay,
@@ -595,6 +599,11 @@ final class WindowControl {
                 code: DriverErrorCode.windowNotFound,
                 message: "No window \(windowId) on this Mac. Window ids die with their process; list again."
             )
+        }
+        // A window of an app another lane launched is that lane's: its stop
+        // quits the app, and the window with it.
+        if let refusal = launchedApps.refusal(pid: window.pid, laneId: laneId, appName: window.appName) {
+            throw refusal
         }
         do {
             try ownership.park(
@@ -620,8 +629,27 @@ final class WindowControl {
         case .success(let resolved):
             element = resolved
         case .failure(let failure):
-            ownership.unpark(windowId: Int(windowId))
+            // Only this park's hold: a release and a re-claim by another
+            // lane inside the wait are not this park's to undo.
+            if ownership.owner(ofWindow: Int(windowId)) == laneId {
+                ownership.unpark(windowId: Int(windowId))
+            }
             throw failure.driverError(windowId: Int(windowId))
+        }
+        // The wait pumped the run loop, and a stop, a release or another
+        // lane's claim can have run to completion inside it.
+        switch ParkRecheck.decide(
+            laneId: laneId,
+            windowId: Int(windowId),
+            ownerNow: ownership.owner(ofWindow: Int(windowId)),
+            hasPlacement: self.placement(forLane: laneId) != nil,
+            isStopping: stopGate.isStopping(laneId)
+        ) {
+        case .proceed:
+            break
+        case .refuse(let error, let dropHold):
+            if dropHold { forgetParked(windowId: windowId) }
+            throw error
         }
         let index = ownership.windows(forLane: laneId).count - 1
         let size = CGSize(
@@ -635,7 +663,9 @@ final class WindowControl {
         parked.laneId = laneId
         parked.frame = Self.frame(of: element) ?? target
         parked.origin = origin
+        lock.lock()
         parked.onDisplayId = displayIds[laneId]
+        lock.unlock()
         startWatching(pid: window.pid, laneId: laneId, launched: launchedApps.isLaunched(pid: window.pid, byLane: laneId))
         newWindows.noteParked(pid: window.pid, windowId: windowId)
         emitWindowsChanged(laneId: laneId)
@@ -823,13 +853,30 @@ final class WindowControl {
 
     /// Every lane's apps at once, for a driver that is exiting because ADE
     /// quit: one grace period for all of them, not one per lane.
-    func quitAllLaunchedApps() -> LaneQuitReport {
+    ///
+    /// `duringGrace` runs after every app was asked to quit and before the
+    /// wait, and its time counts against the grace. Shutdown finalises its
+    /// recordings there: the client sends SIGKILL two seconds after SIGTERM,
+    /// and finalising first pushed the force quit past that kill, which left
+    /// an app with a save dialog on the user's screen after ADE was gone.
+    func quitAllLaunchedApps(duringGrace: () -> Void = {}) -> LaneQuitReport {
         let lanes = Set(launchedApps.all.map(\.laneId))
-        return quit(apps: lanes.sorted().flatMap { launchedApps.forgetLane($0) }, grace: Self.exitQuitGrace)
+        return quit(
+            apps: lanes.sorted().flatMap { launchedApps.forgetLane($0) },
+            grace: Self.exitQuitGrace,
+            duringGrace: duringGrace
+        )
     }
 
-    private func quit(apps: [LaunchedAppRegistry.App], grace: TimeInterval) -> LaneQuitReport {
-        guard !apps.isEmpty else { return .empty }
+    private func quit(
+        apps: [LaunchedAppRegistry.App],
+        grace: TimeInterval,
+        duringGrace: () -> Void = {}
+    ) -> LaneQuitReport {
+        guard !apps.isEmpty else {
+            duringGrace()
+            return .empty
+        }
         var asked: [pid_t: NSRunningApplication] = [:]
         for app in apps {
             // Unwatched first: a save sheet or a last window the app shows
@@ -842,14 +889,30 @@ final class WindowControl {
                 log("\(app.appName) (pid \(app.pid)) refused the request to quit")
             }
         }
+        let graceEnds = Date().addingTimeInterval(grace)
+        duringGrace()
         let isGone: (pid_t) -> Bool = { pid in
             (asked[pid]?.isTerminated ?? true) || kill(pid, 0) != 0
         }
-        RunLoopPump.wait(until: { asked.keys.allSatisfy(isGone) }, timeout: grace)
+        RunLoopPump.wait(
+            until: { asked.keys.allSatisfy(isGone) },
+            timeout: max(0, graceEnds.timeIntervalSinceNow)
+        )
         let stayed = apps.filter { asked[$0.pid] != nil && !isGone($0.pid) }
         for app in stayed {
             log("\(app.appName) (pid \(app.pid)) did not quit within \(grace)s; force-quitting it")
             if asked[app.pid]?.forceTerminate() != true {
+                // A raw kill is by pid, and the pid may have been reused
+                // since the app was asked to quit: only the same app dies.
+                let current = NSRunningApplication(processIdentifier: app.pid)
+                guard app.isStillRunning(
+                    currentBundleId: current?.bundleIdentifier,
+                    isTerminated: current?.isTerminated ?? true,
+                    hasProcess: current != nil
+                ) else {
+                    log("pid \(app.pid) is no longer \(app.appName); not sending it SIGKILL")
+                    continue
+                }
                 kill(app.pid, SIGKILL)
             }
         }

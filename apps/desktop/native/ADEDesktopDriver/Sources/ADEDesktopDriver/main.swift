@@ -95,6 +95,12 @@ final class DriverRuntime: NSObject {
     /// one still held its lanes' virtual displays.
     private static let forcedExitGrace: TimeInterval = 5
 
+    /// What shutdown gives every recording together to finalise. Inside the
+    /// apps' quit grace (`WindowControl.exitQuitGrace`), so the force quit
+    /// still lands before the client's SIGKILL; a normal finalise takes tens
+    /// of milliseconds.
+    private static let shutdownFinalizeBudget: TimeInterval = 1.0
+
     /// Every request currently being handled, and the right to answer it.
     ///
     /// The dispatcher is synchronous, so the ordinary paths answer by
@@ -247,14 +253,18 @@ final class DriverRuntime: NSObject {
         watchdog = nil
         permissionTimer?.invalidate()
         permissionTimer = nil
-        // Recordings first: `CaptureEngine.dispose` is what finalises each
-        // AVAssetWriter, and everything below it only releases handles.
-        capture.dispose()
         // The apps the lanes opened go with their displays, the same as on a
         // `stop`: quitting ADE is a deliberate stop of every lane. One grace
         // period for all lanes, then a force quit, so a save dialog cannot
         // keep a lane's copy alive on the user's screen after ADE is gone.
-        _ = windows.quitAllLaunchedApps()
+        //
+        // The apps are asked to quit first and the recordings finalise inside
+        // their grace (`CaptureEngine.dispose` is what writes each MP4's moov),
+        // with a bounded budget: the client sends SIGKILL two seconds after
+        // SIGTERM, and finalising first used to push the force quit past it.
+        _ = windows.quitAllLaunchedApps(duringGrace: { [capture] in
+            capture.dispose(finalizeBudget: Self.shutdownFinalizeBudget)
+        })
         windows.dispose()
         displays.destroyAll()
         exit(0)
@@ -331,6 +341,12 @@ final class DriverRuntime: NSObject {
     private func dispatch(_ request: DriverRequest) {
         pending.begin(id: request.id, op: request.op, budget: Self.watchdogBudget(for: request))
         defer { pending.finish(id: request.id) }
+        // Shutdown pumps the run loop while apps quit and recordings close,
+        // and a request run inside it could start something nothing stops.
+        if let refusal = RequestAdmission.refusal(op: request.knownOp, isShuttingDown: isShuttingDown) {
+            respond(.failure(id: request.id, error: refusal))
+            return
+        }
         do {
             let result = try handle(request)
             respond(.success(id: request.id, result: result))
@@ -543,6 +559,11 @@ final class DriverRuntime: NSObject {
 
     private func destroyDisplay(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
+        // Held for the whole stop: quitting the apps pumps the run loop for
+        // seconds, and a launch, park or capture start run inside that pump
+        // would outlive the lane.
+        windows.stopGate.begin(laneId)
+        defer { windows.stopGate.end(laneId) }
         capture.stopStream(laneId: laneId)
         _ = try? capture.stopRecording(laneId: laneId)
         // Before the windows are released and while the display still exists:
@@ -573,6 +594,8 @@ final class DriverRuntime: NSObject {
     /// and the same `display-destroyed` event with a reason of its own, so the
     /// service drops the lane rather than keep reporting a screen that is gone.
     private func displayTerminated(laneId: String) {
+        windows.stopGate.begin(laneId)
+        defer { windows.stopGate.end(laneId) }
         capture.stopStream(laneId: laneId)
         _ = try? capture.stopRecording(laneId: laneId)
         let quit = windows.quitLaunchedApps(laneId: laneId)
@@ -593,9 +616,15 @@ final class DriverRuntime: NSObject {
         let live = Set(request.stringArray("liveLaneIds") ?? [])
         var destroyed: [String] = []
         for laneId in displays.reconcile(liveLaneIds: live) {
+            // The same stop as `display.destroy`, recording included: a
+            // recording left running captured a display that no longer exists.
+            windows.stopGate.begin(laneId)
             capture.stopStream(laneId: laneId)
+            _ = try? capture.stopRecording(laneId: laneId)
+            recordingCaptions.removeValue(forKey: laneId)
             _ = windows.quitLaunchedApps(laneId: laneId)
             _ = windows.releaseLane(laneId)
+            windows.stopGate.end(laneId)
             destroyed.append(laneId)
         }
         updatePermissionProbe()
@@ -631,6 +660,11 @@ final class DriverRuntime: NSObject {
     /// `handedOverPid` the instance the lane no longer watches or quits.
     private func unparkWindow(_ request: DriverRequest) throws -> [String: JSONValue] {
         let windowId = CGWindowID(try request.requireInt("windowId"))
+        // A client that names its lane can only release that lane's windows;
+        // one lane's Release must never hand over another lane's app.
+        if let refusal = ownership.releaseRefusal(windowId: Int(windowId), laneId: request.string("laneId")) {
+            throw refusal.driverError
+        }
         guard let result = windows.release(windowId: windowId) else {
             return ["window": .null, "releasedWindowIds": .array([])]
         }
@@ -833,6 +867,7 @@ final class DriverRuntime: NSObject {
 
     private func startStream(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
+        if let refusal = windows.stopGate.refusal(laneId: laneId, action: "start a live stream") { throw refusal }
         guard let handle = displays.handle(forLane: laneId) else {
             throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
         }
@@ -891,6 +926,7 @@ final class DriverRuntime: NSObject {
 
     private func startRecording(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
+        if let refusal = windows.stopGate.refusal(laneId: laneId, action: "start a recording") { throw refusal }
         guard let handle = displays.handle(forLane: laneId) else {
             throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
         }

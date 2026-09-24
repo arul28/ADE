@@ -152,7 +152,14 @@ public final class NewWindowTracker: @unchecked Sendable {
     /// so only windows it opens later are candidates. A second call for a pid
     /// that is already watched changes nothing, except that a launch upgrades
     /// a claimed watch.
-    public func watch(pid: Int32, laneId: String, launched: Bool, existing: [UInt32]) {
+    ///
+    /// Another lane never takes over a launched watch: the app is the
+    /// launching lane's, its new windows park there, and that lane's stop
+    /// quits it. Before this, lane B claiming one window of lane A's app
+    /// replaced A's watch, so A's next windows parked on B while A's stop
+    /// still quit the app under B. Returns false for that refusal.
+    @discardableResult
+    public func watch(pid: Int32, laneId: String, launched: Bool, existing: [UInt32]) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if var current = watches[pid], current.laneId == laneId {
@@ -160,7 +167,10 @@ public final class NewWindowTracker: @unchecked Sendable {
                 current.launched = true
                 watches[pid] = current
             }
-            return
+            return true
+        }
+        if let current = watches[pid], current.launched {
+            return false
         }
         watches[pid] = Watch(
             laneId: laneId,
@@ -168,6 +178,7 @@ public final class NewWindowTracker: @unchecked Sendable {
             settled: launched ? [] : Set(existing),
             notReady: [:]
         )
+        return true
     }
 
     public func unwatch(pid: Int32) {
@@ -288,6 +299,14 @@ public final class LaunchedAppRegistry: @unchecked Sendable {
             self.appName = appName
             self.bundleId = bundleId
         }
+
+        /// Whether the process now running under this pid is still this app,
+        /// so a raw `SIGKILL` by pid cannot land on a process that reused it.
+        /// `currentBundleId` is nil and `isTerminated` true when nothing (or
+        /// nothing AppKit knows) runs under the pid.
+        public func isStillRunning(currentBundleId: String?, isTerminated: Bool, hasProcess: Bool) -> Bool {
+            hasProcess && !isTerminated && currentBundleId == bundleId
+        }
     }
 
     private let lock = NSLock()
@@ -324,6 +343,27 @@ public final class LaunchedAppRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return byPid[pid]?.laneId == laneId
+    }
+
+    /// The lane that launched this instance, if one did.
+    public func laneId(forPid pid: Int32) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return byPid[pid]?.laneId
+    }
+
+    /// The refusal for `laneId` taking a window of (or a launch handing back)
+    /// an instance another lane launched, or nil when it may.
+    ///
+    /// The instance is the launching lane's: its stop quits it, with every
+    /// window in it. A second lane holding one of those windows would lose
+    /// it to the other lane's stop.
+    public func refusal(pid: Int32, laneId: String, appName: String) -> DriverError? {
+        guard let holder = self.laneId(forPid: pid), holder != laneId else { return nil }
+        return DriverError(
+            code: DriverErrorCode.appOwnedByOtherLane,
+            message: "\(appName) was opened by lane \(holder), and its windows belong to that lane. Release it there first."
+        )
     }
 
     public func apps(forLane laneId: String) -> [App] {
