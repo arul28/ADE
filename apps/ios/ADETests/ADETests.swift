@@ -436,6 +436,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workExternalSessionSizeText(20480), "20 KB")
     XCTAssertEqual(workExternalSessionSizeText(5 * 1024 * 1024), "5.0 MB")
     XCTAssertEqual(workExternalSessionSizeText(3 * 1024 * 1024 * 1024), "3.0 GB")
+    XCTAssertNotNil(workExternalSessionSizeText(1e308))
   }
 
   func testImportPlanWarnsBeforeContinuingLiveSession() {

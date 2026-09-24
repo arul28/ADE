@@ -162,7 +162,8 @@ func workExternalSessionSizeText(_ bytes: Double?) -> String? {
     value /= 1024
     unit += 1
   }
-  let text = unit == 0 || value >= 10 ? String(Int(value.rounded())) : String(format: "%.1f", value)
+  // `%.0f`, not `Int(...)`: a bogus huge size from the host must not trap.
+  let text = unit == 0 || value >= 10 ? String(format: "%.0f", value.rounded()) : String(format: "%.1f", value)
   return "\(text) \(units[unit])"
 }
 
