@@ -27,6 +27,9 @@ import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { liveClaudeSessionIds } from "./claudeLiveSessions";
 import { claudeConfigDir } from "./discoverClaude";
 import { EXTERNAL_SESSION_DISCOVERERS } from "./discoverers";
+import { validateExternalSessionId } from "./sessionIds";
+
+export { validateExternalSessionId };
 import { loadExternalSessionDetail } from "./externalSessionDetail";
 import { createSessionHomeResolver, type SessionHomeLane, type SessionHomeResolver } from "./sessionHome";
 import { importRejectionReason } from "../../../shared/externalSessionPolicy";
@@ -147,8 +150,6 @@ type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
 };
 
 const PROVIDERS: ExternalSessionProvider[] = [...EXTERNAL_SESSION_PROVIDERS];
-const UUID_EXTERNAL_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
 const PROJECT_SCOPE_DISCOVERY_LIMIT = 200;
 /** Originals re-listed per call after their ADE copy absorbed them (see `list`). */
 const MAX_RESCUED_COPY_ORIGINALS = 25;
@@ -374,23 +375,6 @@ function toolTypeForProvider(provider: ExternalSessionProvider): TerminalToolTyp
   return provider;
 }
 
-export function validateExternalSessionId(provider: ExternalSessionProvider, id: string): string {
-  const trimmed = id.trim();
-  if (provider === "cursor" && trimmed.startsWith("agent-")) {
-    throw new Error(
-      "cursor external session id is not resumable by cursor-agent; refusing to import SDK-origin transcript.",
-    );
-  }
-  const pattern = provider === "claude" || provider === "codex"
-    ? UUID_EXTERNAL_SESSION_ID
-    : CLI_EXTERNAL_SESSION_ID;
-  if (!pattern.test(trimmed)) {
-    throw new Error(
-      `${provider} external session id is invalid; refusing to import '${trimmed || "(empty)"}'.`,
-    );
-  }
-  return trimmed;
-}
 
 function targetKindForProvider(provider: ExternalSessionProvider): TerminalResumeMetadata["targetKind"] {
   return provider === "codex" ? "thread" : "session";

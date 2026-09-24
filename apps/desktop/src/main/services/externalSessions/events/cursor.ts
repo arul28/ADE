@@ -129,6 +129,16 @@ export function loadCursorStorePage(args: {
       // so never spends the page's byte budget.
       if (size > CURSOR_STORE_MAX_MESSAGE_BYTES) {
         start = index;
+        // Say where it was: a silent gap reads as a complete conversation.
+        const sink = new EnvelopeSink(args.options);
+        sink.push({
+          type: "system_notice",
+          noticeKind: "info",
+          severity: "info",
+          message: `One message (${Math.round(size / (1024 * 1024))} MB) was left out of this Cursor chat.`,
+        }, new Date(args.fallbackBaseMs + index).toISOString(), `cursor-store:${index}:omitted`);
+        chunks.push(sink.out);
+        count += sink.out.length;
         continue;
       }
       if (bytes + size > args.maxBytes && bytes > 0) {

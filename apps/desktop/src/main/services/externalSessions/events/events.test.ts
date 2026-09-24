@@ -642,6 +642,7 @@ describe("loadExternalSessionEvents — Cursor store.db", () => {
     });
     expect(shape([...(page?.earlier ?? []), ...(page?.page ?? [])])).toEqual([
       "user_message:dump the log",
+      "notice:One message (8 MB) was left out of this Cursor chat.",
       "text:Too long to show.",
     ]);
     expect(page?.bytesTruncated).toBe(false);

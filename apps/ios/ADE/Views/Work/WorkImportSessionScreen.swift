@@ -183,6 +183,18 @@ struct WorkImportSessionScreen: View {
     return "\(names) couldn't be scanned."
   }
 
+  /// The empty state names what was checked and, when some scans failed, which
+  /// ones: "no sessions" must not hide a provider that never answered.
+  private var emptyScanDetail: String {
+    let checked = scanProviders
+      .filter { !failedProviders.contains($0) }
+      .map(workExternalSessionProviderName)
+      .joined(separator: ", ")
+    let place = scope == "project" ? "in this project" : "in every folder"
+    let summary = checked.isEmpty ? "" : "Checked \(checked) \(place)."
+    return [summary, failedNotice].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " ")
+  }
+
   // MARK: - Body
 
   var body: some View {
@@ -321,7 +333,7 @@ struct WorkImportSessionScreen: View {
         systemImage: "tray",
         tint: ADEColor.textMuted,
         title: "No sessions found",
-        detail: "Checked \(scanProviders.map(workExternalSessionProviderName).joined(separator: ", ")) \(scope == "project" ? "in this project" : "in every folder").",
+        detail: emptyScanDetail,
         actionTitle: "Scan again",
         action: { Task { await loadSessions() } }
       )

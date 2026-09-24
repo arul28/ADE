@@ -87,7 +87,7 @@ describe("externalSessionDetail", () => {
     vi.mocked(discoverClaudeSessions).mockResolvedValue([
       {
         provider: "claude",
-        id: "sess-1",
+        id: "11111111-1111-4111-8111-111111111111",
         cwd: "/Users/dev/project",
         title: "Fix login",
         preview: "turn 1",
@@ -100,7 +100,7 @@ describe("externalSessionDetail", () => {
       },
     ]);
 
-    const detail = await loadExternalSessionDetail({ provider: "claude", sessionId: "sess-1" });
+    const detail = await loadExternalSessionDetail({ provider: "claude", sessionId: "11111111-1111-4111-8111-111111111111" });
     expect(detail.messages.length).toBeGreaterThan(2);
     expect(detail.messages.at(-1)?.text).toContain("turn 12");
     expect(detail.model).toBe("anthropic/claude-sonnet-5");
@@ -137,7 +137,7 @@ describe("externalSessionDetail", () => {
     vi.mocked(discoverClaudeSessions).mockResolvedValue([
       {
         provider: "claude",
-        id: "sess-events",
+        id: "22222222-2222-4222-8222-222222222222",
         cwd: "/Users/dev/project",
         title: null,
         preview: null,
@@ -148,12 +148,12 @@ describe("externalSessionDetail", () => {
       },
     ]);
 
-    const detail = await loadExternalSessionDetail({ provider: "claude", sessionId: "sess-events" });
+    const detail = await loadExternalSessionDetail({ provider: "claude", sessionId: "22222222-2222-4222-8222-222222222222" });
     // `messages` keeps its old shape for iOS and the TUI.
     expect(detail.messages.at(-1)).toMatchObject({ role: "user", text: "question 149" });
     const events = detail.events ?? [];
     expect(events).toHaveLength(200);
-    expect(events.every((envelope) => envelope.sessionId === "external-preview:claude:sess-events")).toBe(true);
+    expect(events.every((envelope) => envelope.sessionId === "external-preview:claude:22222222-2222-4222-8222-222222222222")).toBe(true);
     expect(events.some(({ event }) => event.type === "system_notice")).toBe(false);
     expect(events.at(-2)?.event).toMatchObject({ type: "tool_call", tool: "Read", itemId: "toolu_149" });
     expect(events.at(-1)?.event).toMatchObject({ type: "tool_result", itemId: "toolu_149" });
@@ -162,7 +162,7 @@ describe("externalSessionDetail", () => {
 
     const older = await loadExternalSessionDetail({
       provider: "claude",
-      sessionId: "sess-events",
+      sessionId: "22222222-2222-4222-8222-222222222222",
       before: detail.olderCursor,
     });
     expect(older.events).toHaveLength(200);
@@ -172,7 +172,7 @@ describe("externalSessionDetail", () => {
 
     const oldest = await loadExternalSessionDetail({
       provider: "claude",
-      sessionId: "sess-events",
+      sessionId: "22222222-2222-4222-8222-222222222222",
       before: older.olderCursor,
     });
     expect(oldest.events).toHaveLength(50);
@@ -209,12 +209,19 @@ describe("externalSessionDetail", () => {
   it("threads the home it is given into discovery", async () => {
     vi.mocked(discoverClaudeSessions).mockResolvedValue([]);
     const env = { HOME: "/Users/other" };
-    await loadExternalSessionDetail({ provider: "claude", sessionId: "sess-home" }, { homeDir: "/Users/other", env });
+    await loadExternalSessionDetail({ provider: "claude", sessionId: "33333333-3333-4333-8333-333333333333" }, { homeDir: "/Users/other", env });
     expect(discoverClaudeSessions).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "sess-home",
+      sessionId: "33333333-3333-4333-8333-333333333333",
       homeDir: "/Users/other",
       env,
     }));
+  });
+
+  it("refuses an id that could address a path outside the provider store", async () => {
+    const detail = await loadExternalSessionDetail({ provider: "cursor", sessionId: "../../../Library/Other/chat" });
+    expect(discoverCursorSessions).not.toHaveBeenCalled();
+    expect(detail.messages).toEqual([]);
+    expect(detail.events ?? []).toEqual([]);
   });
 
   it("marks OpenCode details unwatchable when there is no session file", async () => {
@@ -247,7 +254,7 @@ describe("externalSessionDetail", () => {
     vi.mocked(discoverClaudeSessions).mockImplementation(async () => ([
       {
         provider: "claude" as const,
-        id: "watch-1",
+        id: "44444444-4444-4444-8444-444444444444",
         cwd: "/tmp",
         title: null,
         preview: "first",
@@ -262,12 +269,12 @@ describe("externalSessionDetail", () => {
       senderId: 1,
       watchId: "w1",
       provider: "claude",
-      sessionId: "watch-1",
+      sessionId: "44444444-4444-4444-8444-444444444444",
       onUpdate: () => undefined,
     });
     expect(first.watchable).toBe(true);
     fs.appendFileSync(filePath, `${JSON.stringify({ type: "user", role: "user", text: "third", timestamp: 3 })}\n`);
-    const reloaded = await loadExternalSessionDetail({ provider: "claude", sessionId: "watch-1" });
+    const reloaded = await loadExternalSessionDetail({ provider: "claude", sessionId: "44444444-4444-4444-8444-444444444444" });
     expect(reloaded.messages.some((message) => message.text.includes("third"))).toBe(true);
     stopExternalSessionDetailWatch(1, "w1");
     stopExternalSessionDetailWatch(1, "w1");
@@ -297,11 +304,11 @@ describe("externalSessionDetail", () => {
         senderId: 3,
         watchId: "loader",
         provider: "claude",
-        sessionId: "watch-loader",
+        sessionId: "55555555-5555-4555-8555-555555555555",
         onUpdate,
         loadDetail,
       });
-      expect(loadDetail).toHaveBeenCalledWith({ provider: "claude", sessionId: "watch-loader" });
+      expect(loadDetail).toHaveBeenCalledWith({ provider: "claude", sessionId: "55555555-5555-4555-8555-555555555555" });
       fs.appendFileSync(filePath, `${JSON.stringify({ type: "user", role: "user", text: "second", timestamp: 2 })}\n`);
       await vi.waitFor(() => expect(onUpdate).toHaveBeenCalled(), { timeout: 3000 });
       expect(loadDetail.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -322,7 +329,7 @@ describe("externalSessionDetail", () => {
       return [
         {
           provider: "claude" as const,
-          id: "race-1",
+          id: "66666666-6666-4666-8666-666666666666",
           cwd: "/tmp",
           title: null,
           preview: "first",
@@ -342,7 +349,7 @@ describe("externalSessionDetail", () => {
         senderId: 7,
         watchId: "race",
         provider: "claude",
-        sessionId: "race-1",
+        sessionId: "66666666-6666-4666-8666-666666666666",
         onUpdate: () => undefined,
       });
       const first = start();
