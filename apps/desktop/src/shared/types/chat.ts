@@ -18,6 +18,7 @@ import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
 import type { CursorCloudServiceTier } from "./config";
+import type { ExternalSessionProvider } from "./externalSessions";
 
 /** Plain-language causes the interrupted-turn card renders verbatim. */
 export const CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted";
@@ -822,12 +823,19 @@ export type AgentChatCompletionReport = {
 
 export type AgentChatRuntime = "local" | "cloud";
 
-export type AgentChatImportProvider = "claude" | "codex";
+/** Any provider the session importer lists can be opened as an ADE chat. */
+export type AgentChatImportProvider = ExternalSessionProvider;
 
 export type AgentChatImportedFrom = {
   provider: string;
   sessionId: string;
   importedAt: number;
+  /**
+   * `fork` when the chat is a copy (native fork or replay). A copy leaves the
+   * original session untouched, so the importer keeps listing the original.
+   * Absent on chats imported before this field existed: treated as `continue`.
+   */
+  mode?: "continue" | "fork";
 };
 
 export type AgentChatCloudRunStatus =
@@ -3413,6 +3421,14 @@ export type AgentChatImportExternalSessionArgs = {
   title?: string;
   /** Catalog model id for the imported ADE chat. Cross-family values replay the transcript. */
   model?: string;
+  /**
+   * The model the source session last ran on, as the provider recorded it.
+   * Picks the model when `model` is absent; ignored when it does not resolve
+   * to a model of the source provider's family.
+   */
+  sourceModel?: string | null;
+  /** The thinking level the source session ran with; kept when the model is. */
+  sourceReasoningEffort?: string | null;
 };
 
 export type AgentChatImportExternalSessionResult = {

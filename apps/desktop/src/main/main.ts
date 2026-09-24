@@ -1,3 +1,4 @@
+import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
@@ -86,7 +87,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
+import { capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -148,7 +149,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { createProjectSearchService } from "./services/search/searchServiceWiring";
 import type { SearchService } from "./services/search/searchService";
 import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
-import { providerPointersFromChatRecord } from "./services/externalSessions/liveChatProviderRefs";
+import { chatImportedRefsProvider } from "./services/externalSessions/liveChatProviderRefs";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -677,7 +678,9 @@ function readString(source: Record<string, unknown> | null | undefined, key: str
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
 // session (nested session guard). ADE is a host app, not a nested session, so
 // strip the marker env var so the SDK can spawn the CLI cleanly.
-delete process.env.CLAUDECODE;
+// The same holds for every other marker of a parent Claude session: a `claude`
+// in an ADE terminal would inherit them and stop saving its transcript.
+stripParentClaudeSessionEnv(process.env);
 
 if (process.env.VITE_DEV_SERVER_URL) {
   // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.
@@ -4461,27 +4464,18 @@ app.whenReady().then(async () => {
       ptyService,
       logger,
       chatImporter: agentChatService,
-      chatImportedRefsProvider: async () => {
-        const sessions = await agentChatService.listSessions(undefined, {
-          includeIdentity: true,
-          includeAutomation: true,
-          includeArchived: false,
-        });
-        // Same extractor the on-disk scan uses, so both sides key a chat the
-        // same way. Rolling our own here is how `unified` (OpenCode's persisted
-        // provider value) ended up keyed as `unified:<id>` on one path and
-        // `opencode:<id>` on the other, leaving live OpenCode chats visible in
-        // the import list.
-        return sessions.flatMap((session) =>
-          providerPointersFromChatRecord(session).map((pointer) => ({
-            provider: pointer.provider,
-            externalId: pointer.externalId,
-            chatSessionId: session.sessionId,
-          })));
-      },
+      chatImportedRefsProvider: chatImportedRefsProvider(agentChatService),
       chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
       homeDir: os.homedir(),
       env: process.env,
+      onImportOutcome: ({ provider, target, mode, outcome }) => captureSessionImportAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        target,
+        mode,
+        outcome,
+        provider,
+      }),
     });
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,

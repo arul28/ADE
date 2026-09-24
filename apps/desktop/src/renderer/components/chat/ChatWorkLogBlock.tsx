@@ -1068,7 +1068,7 @@ export function ChatTurnWorkSummary({
             >
               <Wrench size={11} weight="bold" aria-hidden />
               <span className="font-mono tabular-nums">{tools.length}</span>
-              <span>tools</span>
+              <span>{tools.length === 1 ? "tool" : "tools"}</span>
               {open === "tools"
                 ? <CaretDown size={9} weight="bold" aria-hidden />
                 : <CaretRight size={9} weight="bold" aria-hidden />}

@@ -72,6 +72,10 @@ export type LaneComboboxLane = {
   branchRef?: string | null;
   /** Machine the lane lives on. Unset means the default (first) machine. */
   machineId?: string | null;
+  /** Optional trailing text on the option row, e.g. a count. */
+  detail?: string | null;
+  /** Optional icon replacing the lane mark, for pseudo-options that are not lanes. */
+  icon?: React.ReactNode;
 };
 
 /** A machine group header. Names are absolute ("This computer", "MacBook Pro (97)"). */
@@ -86,6 +90,8 @@ type LaneListItem = {
   color: string | null;
   /** Short display branch (e.g. from refs/heads/foo); `null` for the "all" row. */
   branchLabel: string | null;
+  detail?: string | null;
+  icon?: React.ReactNode;
 };
 
 type LaneListEntry =
@@ -124,6 +130,7 @@ export function laneMatchesSearch(
 }
 
 function laneListIcon(item: LaneListItem) {
+  if (item.icon) return item.icon;
   const color = item.color ? laneDisplayColor(item.color) : "var(--color-muted-fg)";
   return item.color ? (
     <LaneLogoMark color={color} size={12} />
@@ -141,6 +148,8 @@ function laneListItemFromLane(
     name: lane.name,
     color: lane.color ?? null,
     branchLabel: resolveBranchLabel(lane.branchRef),
+    detail: lane.detail ?? null,
+    icon: lane.icon,
   };
 }
 
@@ -153,6 +162,7 @@ function buildLaneListEntries(input: {
   machines: LaneComboboxMachine[];
   showAllOption: boolean;
   allLabel: string;
+  allDetail?: string | null;
   search: string;
 }): LaneListEntry[] {
   const entries: LaneListEntry[] = [];
@@ -164,7 +174,13 @@ function buildLaneListEntries(input: {
   };
 
   if (input.showAllOption) {
-    pushItem("all", { id: "all", name: input.allLabel, color: null, branchLabel: null });
+    pushItem("all", {
+      id: "all",
+      name: input.allLabel,
+      color: null,
+      branchLabel: null,
+      detail: input.allDetail ?? null,
+    });
   }
 
   if (input.machines.length < 2) {
@@ -294,6 +310,8 @@ type LaneComboboxProps = {
   onChange: (laneId: string) => void;
   showAllOption?: boolean;
   allLabel?: string;
+  /** Optional trailing text on the "all" row, e.g. a total count. */
+  allDetail?: string | null;
   placeholder?: string;
   compact?: boolean;
   /**
@@ -311,6 +329,7 @@ export function LaneCombobox({
   onChange,
   showAllOption = false,
   allLabel = "All lanes",
+  allDetail = null,
   placeholder = "Select lane...",
   compact = false,
   variant = "default",
@@ -348,9 +367,10 @@ export function LaneCombobox({
       machines: machines ?? [],
       showAllOption,
       allLabel,
+      allDetail,
       search,
     }),
-    [lanes, machines, showAllOption, allLabel, search],
+    [lanes, machines, showAllOption, allLabel, allDetail, search],
   );
 
   // Keyboard navigation and the highlight index address selectable rows only —
@@ -523,7 +543,9 @@ export function LaneCombobox({
         data-open={open ? "true" : "false"}
         onClick={() => setOpen(!open)}
       >
-        {displayColor ? <LaneLogoMark color={displayColor} size={11} /> : null}
+        {value !== "all" && selectedLane?.icon
+          ? selectedLane.icon
+          : displayColor ? <LaneLogoMark color={displayColor} size={11} /> : null}
         <span className="min-w-0 shrink truncate">{displayLabel}</span>
         {selectedBranchLabel ? (
           // Shrink factor puts every pixel of squeeze on the branch first: the
@@ -655,8 +677,17 @@ export function LaneCombobox({
                             <span className="truncate">{item.branchLabel}</span>
                           </span>
                         ) : null}
+                        {item.detail ? (
+                          <span className="ml-auto shrink-0 pl-2 text-[10px] tabular-nums text-muted-fg/55">
+                            {item.detail}
+                          </span>
+                        ) : null}
                         {isSelected ? (
-                          <Check size={12} weight="bold" className="ml-auto shrink-0 text-accent" />
+                          <Check
+                            size={12}
+                            weight="bold"
+                            className={cn("shrink-0 text-accent", item.detail ? null : "ml-auto")}
+                          />
                         ) : null}
                       </button>
                     );

@@ -84,7 +84,9 @@ describe("terminalSessionSignals", () => {
   it("returns default resume command for known tools", () => {
     expect(defaultResumeCommandForTool("claude")).toBe("claude --resume");
     expect(defaultResumeCommandForTool("codex")).toBe("codex resume");
-    expect(defaultResumeCommandForTool("cursor-cli")).toBe("cursor-agent --model auto --continue");
+    // Cursor, like Pi below, has no safe default: `--continue` opens the most
+    // recent chat, which need not be this terminal's.
+    expect(defaultResumeCommandForTool("cursor-cli")).toBeNull();
     expect(defaultResumeCommandForTool("droid")).toBe("droid --resume");
     expect(defaultResumeCommandForTool("opencode")).toBe("opencode --continue");
     expect(defaultResumeCommandForTool("opencode-orchestrated")).toBe("opencode --continue");
@@ -490,4 +492,59 @@ describe("terminalSessionSignals", () => {
     const chunk = "[ADE] Resume with cursor-agent --resume chat-abc";
     expect(extractResumeCommandFromOutput(chunk, "cursor-cli")).toBe("cursor-agent --resume chat-abc");
   });
+
+  it.each([
+    ["qwen --session-id 11111111-1111-4111-8111-111111111111 --approval-mode default", "11111111-1111-4111-8111-111111111111"],
+    ["qwen --session-id=11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111"],
+    ["qwen -r 11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111"],
+    ["qwen -c", null],
+    // A fork mints a new id; the source it resumes from is not this launch's target.
+    ["qwen --resume 11111111-1111-4111-8111-111111111111 --fork-session", null],
+    ["grok --no-alt-screen -s 22222222-2222-4222-8222-222222222222 --permission-mode default", "22222222-2222-4222-8222-222222222222"],
+    ["grok --session-id=22222222-2222-4222-8222-222222222222", "22222222-2222-4222-8222-222222222222"],
+    ["grok -r 33333333-3333-4333-8333-333333333333 --fork-session -s 22222222-2222-4222-8222-222222222222", "22222222-2222-4222-8222-222222222222"],
+    ["grok -r 33333333-3333-4333-8333-333333333333 --fork-session", null],
+    ["copilot --no-alt-screen --session-id=44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444"],
+    ["copilot --session-id 44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444"],
+    ["copilot --resume=44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444"],
+    ["copilot --continue", null],
+  ] as const)("reads the resume target of `%s`", (command, targetId) => {
+    const provider = command.split(" ")[0];
+    expect(parseTrackedCliResumeCommand(command, provider as "qwen" | "grok" | "copilot")).toEqual({ provider, targetId });
+  });
+
+  it("treats a plain fresh ACP launch as having no resume target", () => {
+    expect(parseTrackedCliResumeCommand("qwen --approval-mode default", "qwen")).toBeNull();
+    // qwen's `-s` is --sandbox, not a session id.
+    expect(parseTrackedCliResumeCommand("qwen -s --approval-mode default", "qwen")).toBeNull();
+    expect(parseTrackedCliResumeCommand("grok --no-alt-screen", "grok")).toBeNull();
+  });
+
+  it("reads a Claude fork's own id, never the source it forks from", () => {
+    expect(parseTrackedCliResumeCommand(
+      "claude --resume 11111111-1111-4111-8111-111111111111 --fork-session --session-id 22222222-2222-4222-8222-222222222222",
+      "claude",
+    )).toEqual({ provider: "claude", targetId: "22222222-2222-4222-8222-222222222222" });
+    expect(parseTrackedCliResumeCommand(
+      "claude --permission-mode default --resume 11111111-1111-4111-8111-111111111111 --fork-session",
+      "claude",
+    )).toEqual({ provider: "claude", targetId: null });
+    expect(parseTrackedCliResumeCommand("claude --resume 11111111-1111-4111-8111-111111111111", "claude"))
+      .toEqual({ provider: "claude", targetId: "11111111-1111-4111-8111-111111111111" });
+  });
+
+  it.each(["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot"] as const)(
+    "round-trips a captured %s id through the canonical resume builder",
+    (provider) => {
+      const targetId = provider === "kimi" ? "session_0f0e0d0c-0b0a-4908-8706-050403020100" : "0f0e0d0c-0b0a-4908-8706-050403020100";
+      const command = buildTrackedCliResumeCommand({
+        provider,
+        targetKind: provider === "codex" ? "thread" : "session",
+        targetId,
+        launch: {},
+      });
+      const toolType = provider === "cursor" ? "cursor-cli" : provider;
+      expect(parseTrackedCliResumeCommand(command, toolType)).toEqual({ provider, targetId });
+    },
+  );
 });

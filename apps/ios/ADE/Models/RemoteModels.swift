@@ -5861,6 +5861,58 @@ struct ExternalSessionMessage: Codable, Equatable {
   }
 }
 
+/// Where an external session lives, resolved by the host against the project's
+/// lanes. `kind` is "lane", "removed-lane" or "outside". Every field decodes
+/// leniently: a malformed `home` must never drop the whole row.
+struct ExternalSessionHome: Codable, Equatable {
+  var kind: String
+  var laneId: String?
+  var laneName: String?
+  var branchRef: String?
+  var color: String?
+  var laneType: String?
+  var atLaneRoot: Bool
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case laneId
+    case laneName
+    case branchRef
+    case color
+    case laneType
+    case atLaneRoot
+  }
+
+  init(
+    kind: String,
+    laneId: String? = nil,
+    laneName: String? = nil,
+    branchRef: String? = nil,
+    color: String? = nil,
+    laneType: String? = nil,
+    atLaneRoot: Bool = false
+  ) {
+    self.kind = kind
+    self.laneId = laneId
+    self.laneName = laneName
+    self.branchRef = branchRef
+    self.color = color
+    self.laneType = laneType
+    self.atLaneRoot = atLaneRoot
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    kind = (try? container.decodeIfPresent(String.self, forKey: .kind)) ?? "outside"
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    laneName = try? container.decodeIfPresent(String.self, forKey: .laneName)
+    branchRef = try? container.decodeIfPresent(String.self, forKey: .branchRef)
+    color = try? container.decodeIfPresent(String.self, forKey: .color)
+    laneType = try? container.decodeIfPresent(String.self, forKey: .laneType)
+    atLaneRoot = (try? container.decodeIfPresent(Bool.self, forKey: .atLaneRoot)) ?? false
+  }
+}
+
 struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var provider: String
   var id: String
@@ -5874,8 +5926,15 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var alreadyImported: Bool
   var importedSessionRef: ExternalSessionImportedRef?
   var possiblyActive: Bool
+  /// ADE imported this session before and that ADE row is gone. A hint shown
+  /// as "Copied before"; the row stays importable.
+  var importedBefore: Bool
   var cwdMatchesRequestedLane: Bool?
   var capabilities: ExternalSessionCapabilities
+  /// The lane this session belongs to. Older hosts do not send it.
+  var home: ExternalSessionHome?
+  /// Size of the provider's session store entry on disk, when the host has it.
+  var sizeBytes: Double?
 
   private enum CodingKeys: String, CodingKey {
     case provider
@@ -5890,8 +5949,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     case alreadyImported
     case importedSessionRef
     case possiblyActive
+    case importedBefore
     case cwdMatchesRequestedLane
     case capabilities
+    case home
+    case sizeBytes
   }
 
   init(
@@ -5907,8 +5969,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     alreadyImported: Bool = false,
     importedSessionRef: ExternalSessionImportedRef? = nil,
     possiblyActive: Bool = false,
+    importedBefore: Bool = false,
     cwdMatchesRequestedLane: Bool? = nil,
-    capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities()
+    capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities(),
+    home: ExternalSessionHome? = nil,
+    sizeBytes: Double? = nil
   ) {
     self.provider = provider
     self.id = id
@@ -5922,8 +5987,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     self.alreadyImported = alreadyImported
     self.importedSessionRef = importedSessionRef
     self.possiblyActive = possiblyActive
+    self.importedBefore = importedBefore
     self.cwdMatchesRequestedLane = cwdMatchesRequestedLane
     self.capabilities = capabilities
+    self.home = home
+    self.sizeBytes = sizeBytes
   }
 
   init(from decoder: Decoder) throws {
@@ -5953,6 +6021,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     cwdMatchesRequestedLane = try container.decodeIfPresent(Bool.self, forKey: .cwdMatchesRequestedLane)
     capabilities = try container.decodeIfPresent(ExternalSessionCapabilities.self, forKey: .capabilities)
       ?? ExternalSessionCapabilities()
+    // Newer optional fields decode with `try?`: a malformed value drops the
+    // field, never the row.
+    home = try? container.decodeIfPresent(ExternalSessionHome.self, forKey: .home)
+    sizeBytes = try? container.decodeIfPresent(Double.self, forKey: .sizeBytes)
+    importedBefore = (try? container.decodeIfPresent(Bool.self, forKey: .importedBefore)) ?? false
   }
 }
 
@@ -5990,6 +6063,108 @@ struct ExternalSessionListResult: Decodable, Equatable {
   }
 }
 
+/// One external session's conversation from `work.getExternalSessionDetail`:
+/// a page of ADE chat events (oldest to newest), plus the cursor for the page
+/// before it. Every field decodes leniently — a bad field is dropped, never the
+/// whole detail — and a row this build cannot decode drops out of `events`
+/// alone. `messages` is the text tail a host sends when it produced no events.
+struct ExternalSessionDetail: Decodable, Equatable {
+  var provider: String?
+  var id: String?
+  var cwd: String?
+  var title: String?
+  var model: String?
+  var createdAt: Double?
+  var updatedAt: Double?
+  var messageCount: Int?
+  var events: [AgentChatEventEnvelope]
+  var messages: [ExternalSessionMessage]
+  var sourcePath: String?
+  var watchable: Bool?
+  var hasOlder: Bool
+  var olderCursor: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case provider
+    case id
+    case cwd
+    case title
+    case model
+    case createdAt
+    case updatedAt
+    case messageCount
+    case events
+    case messages
+    case sourcePath
+    case watchable
+    case hasOlder
+    case olderCursor
+  }
+
+  init(
+    provider: String? = nil,
+    id: String? = nil,
+    cwd: String? = nil,
+    title: String? = nil,
+    model: String? = nil,
+    createdAt: Double? = nil,
+    updatedAt: Double? = nil,
+    messageCount: Int? = nil,
+    events: [AgentChatEventEnvelope] = [],
+    messages: [ExternalSessionMessage] = [],
+    sourcePath: String? = nil,
+    watchable: Bool? = nil,
+    hasOlder: Bool = false,
+    olderCursor: String? = nil
+  ) {
+    self.provider = provider
+    self.id = id
+    self.cwd = cwd
+    self.title = title
+    self.model = model
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+    self.messageCount = messageCount
+    self.events = events
+    self.messages = messages
+    self.sourcePath = sourcePath
+    self.watchable = watchable
+    self.hasOlder = hasOlder
+    self.olderCursor = olderCursor
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    provider = try? container.decodeIfPresent(String.self, forKey: .provider)
+    id = try? container.decodeIfPresent(String.self, forKey: .id)
+    cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
+    title = try? container.decodeIfPresent(String.self, forKey: .title)
+    model = try? container.decodeIfPresent(String.self, forKey: .model)
+    createdAt = try? container.decodeIfPresent(Double.self, forKey: .createdAt)
+    updatedAt = try? container.decodeIfPresent(Double.self, forKey: .updatedAt)
+    messageCount = try? container.decodeIfPresent(Int.self, forKey: .messageCount)
+    events = (try? container.decodeIfPresent(
+      ADELossyArray<AgentChatEventEnvelope>.self,
+      forKey: .events
+    ))?.wrappedValue ?? []
+    messages = (try? container.decodeIfPresent(
+      ADELossyArray<ExternalSessionMessage>.self,
+      forKey: .messages
+    ))?.wrappedValue ?? []
+    sourcePath = try? container.decodeIfPresent(String.self, forKey: .sourcePath)
+    watchable = try? container.decodeIfPresent(Bool.self, forKey: .watchable)
+    hasOlder = (try? container.decodeIfPresent(Bool.self, forKey: .hasOlder)) ?? false
+    let cursor = (try? container.decodeIfPresent(String.self, forKey: .olderCursor))?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    olderCursor = cursor.isEmpty ? nil : cursor
+  }
+}
+
+/// The host's answer to `work.importExternalSession`. By the time it arrives
+/// the import already happened on the host, so only `kind` and the ids are
+/// required: an embedded `session`/`chatSummary` this build cannot decode is
+/// dropped (the screen re-fetches the chat summary) instead of failing the
+/// whole result and inviting a duplicate import.
 struct ExternalSessionImportResult: Codable, Equatable {
   var kind: String
   var sessionId: String?
@@ -5998,6 +6173,45 @@ struct ExternalSessionImportResult: Codable, Equatable {
   var chatSessionId: String?
   var session: TerminalSessionSummary?
   var chatSummary: AgentChatSessionSummary?
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case sessionId
+    case ptyId
+    case laneId
+    case chatSessionId
+    case session
+    case chatSummary
+  }
+
+  init(
+    kind: String,
+    sessionId: String? = nil,
+    ptyId: String? = nil,
+    laneId: String? = nil,
+    chatSessionId: String? = nil,
+    session: TerminalSessionSummary? = nil,
+    chatSummary: AgentChatSessionSummary? = nil
+  ) {
+    self.kind = kind
+    self.sessionId = sessionId
+    self.ptyId = ptyId
+    self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.session = session
+    self.chatSummary = chatSummary
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    kind = try container.decode(String.self, forKey: .kind)
+    sessionId = try? container.decodeIfPresent(String.self, forKey: .sessionId)
+    ptyId = try? container.decodeIfPresent(String.self, forKey: .ptyId)
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    chatSessionId = try? container.decodeIfPresent(String.self, forKey: .chatSessionId)
+    session = try? container.decodeIfPresent(TerminalSessionSummary.self, forKey: .session)
+    chatSummary = try? container.decodeIfPresent(AgentChatSessionSummary.self, forKey: .chatSummary)
+  }
 }
 
 struct SyncScalarBytes: Codable, Equatable {

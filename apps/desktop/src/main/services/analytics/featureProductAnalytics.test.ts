@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
   captureNewLaneLaunchAnalytics,
+  captureSessionImportAnalytics,
   providerAccountAnalyticsCapture,
   coarseProviderFamily,
   type FeatureAnalytics,
@@ -79,5 +80,28 @@ describe("captureNewLaneLaunchAnalytics", () => {
     // The allowlist keeps every value: nothing is silently dropped at the boundary.
     const sanitized = sanitizeProductAnalyticsProperties("ade_feature_used", (captured[0] as { properties: Record<string, unknown> }).properties as never);
     expect(sanitized).toMatchObject({ feature: "chat", action: "new_lane_launch", outcome: "cancelled", provider: "codex" });
+  });
+});
+
+describe("captureSessionImportAnalytics", () => {
+  it("records how an external session came in, with only closed values that survive the allowlist", () => {
+    const { analytics, captured } = recorder();
+    captureSessionImportAnalytics({ analytics, surface: "desktop", target: "chat", mode: "resume", outcome: "completed", provider: "claude" });
+    captureSessionImportAnalytics({ analytics, surface: "api", target: "cli", mode: "fork", outcome: "failed", provider: "copilot" });
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).toMatchObject({
+      event: "ade_feature_used",
+      surface: "desktop",
+      dedupeKey: "feature:work:session_continue_chat:completed:claude",
+      properties: { feature: "work", action: "session_continue_chat", outcome: "completed", provider: "claude" },
+    });
+    // An ACP provider has no family of its own: it is reported as "other".
+    expect(captured[1]).toMatchObject({
+      properties: { feature: "work", action: "session_copy_cli", outcome: "failed", provider: "other" },
+    });
+    for (const entry of captured) {
+      const properties = (entry as { properties: Record<string, unknown> }).properties;
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", properties as never)).toEqual(properties);
+    }
   });
 });

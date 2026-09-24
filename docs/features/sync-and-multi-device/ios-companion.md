@@ -590,9 +590,12 @@ apps/ios/
 │   │   │                            # WorkUsageLimitResumeViews (neutral pill +
 │   │   │                            #   compact bottom sheet and actions),
 │   │   │                            # WorkImportSessionScreen +
-│   │   │                            #   WorkExternalSessionAffordances
+│   │   │                            #   WorkImportSessionRows/Preview/
+│   │   │                            #   Presentation + WorkImportActionBar
 │   │   │                            #   (provider session browse/details,
-│   │   │                            #   lane picker, Continue/Copy policy),
+│   │   │                            #   preview, plan-driven action bar),
+│   │   │                            # WorkExternalSessionAffordances (Swift
+│   │   │                            #   port of the import policy),
 │   │   │                            # WorkLanePickerDropdown (sheet-presented
 │   │   │                            #   searchable lane list; reports its
 │   │   │                            #   presentation state so a caller can
@@ -2680,12 +2683,30 @@ save through the same contract, then `workCliInitialInput` serializes the temp
 paths into the desktop-compatible `Attached files and images:` manifest inside
 `work.startCliSession.initialInput`.
 
-Work can also import provider-native Claude, Codex, Cursor, Droid, and OpenCode
-CLI sessions. `WorkImportSessionScreen` first shows a compact searchable list,
-then opens details with `WorkLanePickerDropdown` and the safe Continue/Copy
-actions derived by `WorkExternalSessionAffordances.swift`. Listing and import
-run on the paired host through `work.listExternalSessions` and
-`work.importExternalSession`; the phone never reads provider storage. Import
+Work can also import provider-native CLI sessions from all 10 import providers
+(Claude, Codex, Cursor, Droid, OpenCode, Pi, Qwen, Kimi, Grok, Copilot).
+`WorkImportSessionScreen` first shows a compact searchable list with provider
+chips, a lane filter menu (per-lane counts plus "Other folders"), and a
+project/all scope picker; rows (`WorkImportSessionRows.swift`) name the
+session's home lane, never a worktree path. Selecting a row opens its detail:
+the header, the preview (`WorkImportSessionPreview.swift`), and
+`WorkImportActionBar`, which renders `workPlanImport` from
+`WorkExternalSessionAffordances.swift` (the Swift port of
+`shared/externalSessionPolicy.ts`): mode switch, lane control
+(`WorkLanePickerDropdown`, or a locked lane with its reason), note, primary
+action, and optional Copy. The target starts on the session's home lane, and a
+continue with `confirmBeforeRun` needs a second tap ("Continue anyway").
+Listing and import run on the paired host through `work.listExternalSessions`
+and `work.importExternalSession`; the phone never reads provider storage. The
+detail's preview asks the host for the whole conversation through
+`work.getExternalSessionDetail` and renders it with the Work chat pipeline
+(`makeWorkChatTranscript` → `buildWorkChatTimelineSnapshot` →
+`workPresentedTimelineEntries`) and the same row views as a chat
+(`WorkChatMessageBubble`, `WorkToolCardView`, `WorkToolCallsPanelView`, …),
+in a bounded scroller that opens at the newest message with "Load earlier"
+paging back through `olderCursor`. Against a host without the command, while
+the first page loads, or when the call fails, the preview is the list's sampled
+`messages`, as before. Import
 results include the persisted chat or terminal summary, which Work caches before
 navigating so replication latency cannot produce a blank destination screen.
 
@@ -3686,7 +3707,7 @@ the stats and shows update guidance.
 | Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
-| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, cross-client activity carousel in the new-chat screen's collapsible header (kept mounted, collapsed rather than unmounted, when the header tier hides it) |
+| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/preview/import (`work.listExternalSessions` / `work.getExternalSessionDetail` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, cross-client activity carousel in the new-chat screen's collapsible header (kept mounted, collapsed rather than unmounted, when the header tier hides it) |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | Automations / History tabs | Planned |

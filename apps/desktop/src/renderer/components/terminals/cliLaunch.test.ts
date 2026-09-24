@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseCommandLine } from "../../../shared/shell";
 import {
+  buildClaudeForkLaunchCommand,
   buildCliIdentityResumeMetadata,
+  claudeArgsResumeExistingSession,
+  preassignedSessionIdInArgs,
+  providerArgsResumeExistingSession,
+  withPreassignedSessionIdInCommandLine,
   buildPtyContinuationLaunchFields,
   buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliSessionActivityGuidance,
@@ -377,7 +382,7 @@ describe("defaultTrackedCliStartupCommand", () => {
     expect(defaultTrackedCliStartupCommand("qwen")).toBe("qwen");
     expect(defaultTrackedCliStartupCommand("kimi")).toBe("kimi");
     expect(defaultTrackedCliStartupCommand("grok")).toBe("grok --no-alt-screen");
-    expect(defaultTrackedCliStartupCommand("copilot")).toBe("copilot --no-alt-screen");
+    expect(defaultTrackedCliStartupCommand("copilot")).toBe("copilot");
   });
 });
 
@@ -486,7 +491,7 @@ describe("ACP CLI providers", () => {
     expect(preset.args).toEqual(expect.arrayContaining(["--model", "openai/gpt-x"]));
   });
 
-  it("assigns a Copilot session through --resume and maps plan to tool denials", () => {
+  it("assigns a Copilot session through --session-id and maps plan to tool denials", () => {
     const launch = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({
       provider: "copilot",
       permissionMode: "plan",
@@ -496,7 +501,10 @@ describe("ACP CLI providers", () => {
     }));
     expect(launch.command).toBe("copilot");
     expect(launch.assignedSessionId).toBe("11111111-2222-3333-4444-555555555555");
-    expect(launch.args).toContain("--resume=11111111-2222-3333-4444-555555555555");
+    // `copilot --help` documents `--session-id=<uuid>` for a NEW session;
+    // `--resume=<id>` is documented only for an existing one.
+    expect(launch.args).toContain("--session-id=11111111-2222-3333-4444-555555555555");
+    expect(launch.args.some((arg) => arg.startsWith("--resume"))).toBe(false);
     expect(launch.args).toEqual(expect.arrayContaining(["--model", "gpt-5.4"]));
     expect(launch.args).toEqual(expect.arrayContaining(["--deny-tool=write", "--deny-tool=shell"]));
     expect(launch.args).toEqual(expect.arrayContaining(["-i", "Plan the change."]));
@@ -1960,7 +1968,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: null,
       launch: { permissionMode: "plan" },
-    })).toBe("cursor-agent --mode plan --continue");
+    })).toBe("cursor-agent --mode plan");
 
     expect(buildTrackedCliResumeCommand({
       provider: "droid",
@@ -2214,5 +2222,86 @@ describe("provider account (instance) launch env", () => {
       { platform: "linux" },
     );
     expect(resumed.env?.CODEX_HOME).toBeUndefined();
+  });
+});
+
+describe("pre-assigned ACP session ids", () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+
+  it("inserts each provider's own assign flag right after the binary", () => {
+    expect(withPreassignedSessionIdInCommandLine("qwen --approval-mode default", "qwen", id))
+      .toBe(`qwen --session-id ${id} --approval-mode default`);
+    expect(withPreassignedSessionIdInCommandLine("FOO=1 grok --no-alt-screen", "grok", id))
+      .toBe(`FOO=1 grok -s ${id} --no-alt-screen`);
+    expect(withPreassignedSessionIdInCommandLine("/opt/homebrew/bin/copilot --no-alt-screen", "copilot", id))
+      .toBe(`/opt/homebrew/bin/copilot --session-id=${id} --no-alt-screen`);
+  });
+
+  it("leaves continuation launches and lines that already name an id untouched", () => {
+    for (const line of ["qwen --resume abc", "qwen -c", "qwen --session-id other"]) {
+      expect(withPreassignedSessionIdInCommandLine(line, "qwen", id)).toBe(line);
+    }
+    for (const line of ["grok -r abc", "grok --continue", "grok -s other"]) {
+      expect(withPreassignedSessionIdInCommandLine(line, "grok", id)).toBe(line);
+    }
+    for (const line of ["copilot --resume=abc", "copilot --continue", "copilot --connect", "copilot --session-id=other"]) {
+      expect(withPreassignedSessionIdInCommandLine(line, "copilot", id)).toBe(line);
+    }
+    expect(withPreassignedSessionIdInCommandLine("claude --model x", "qwen", id)).toBe("claude --model x");
+  });
+
+  it("reads back and classifies launch argv", () => {
+    expect(preassignedSessionIdInArgs("grok", ["--no-alt-screen", "-s", id])).toBe(id);
+    expect(preassignedSessionIdInArgs("copilot", [`--session-id=${id}`])).toBe(id);
+    // qwen's `-s` is --sandbox, never a session id.
+    expect(preassignedSessionIdInArgs("qwen", ["-s"])).toBeNull();
+    expect(providerArgsResumeExistingSession("qwen", ["-r", "abc"])).toBe(true);
+    expect(providerArgsResumeExistingSession("copilot", ["--resume=abc"])).toBe(true);
+    expect(providerArgsResumeExistingSession("grok", ["--no-alt-screen"])).toBe(false);
+  });
+
+  it("fresh qwen and grok launches carry the assigned id; kimi never does", () => {
+    const qwen = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({ provider: "qwen", permissionMode: "default", sessionId: id }));
+    expect(qwen.args.slice(0, 2)).toEqual(["--session-id", id]);
+    expect(qwen.startupCommand).toContain(`--session-id ${id}`);
+    const grok = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({ provider: "grok", permissionMode: "default", sessionId: id }));
+    expect(grok.args).toEqual(expect.arrayContaining(["-s", id]));
+    expect(grok.assignedSessionId).toBe(id);
+    const kimi = withProcessPlatform("darwin", () => buildTrackedCliLaunchCommand({ provider: "kimi", permissionMode: "default", sessionId: id }));
+    expect(kimi.assignedSessionId).toBeUndefined();
+    expect(kimi.args).not.toContain(id);
+  });
+});
+
+describe("Claude fork with a pre-assigned id", () => {
+  const source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const fork = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const metadata = {
+    provider: "claude" as const,
+    targetKind: "session" as const,
+    targetId: source,
+    launch: { permissionMode: "default" as const },
+  };
+
+  it("builds `--resume <source> --fork-session --session-id <new>` with the prompt last", () => {
+    const launch = buildClaudeForkLaunchCommand(metadata, fork, { prompt: "keep going" });
+    expect(launch.command).toBe("claude");
+    expect(launch.assignedSessionId).toBe(fork);
+    const resumeIndex = launch.args.indexOf("--resume");
+    expect(launch.args.slice(resumeIndex)).toEqual(["--resume", source, "--fork-session", "--session-id", fork, "keep going"]);
+    expect(launch.startupCommand).toBe(`claude ${launch.args.slice(0, -1).join(" ")} "keep going"`);
+  });
+
+  it("rejects a non-Claude source, a missing source id, and a non-UUID new id", () => {
+    expect(() => buildClaudeForkLaunchCommand({ ...metadata, provider: "codex", targetKind: "thread" }, fork)).toThrow(/Claude/);
+    expect(() => buildClaudeForkLaunchCommand({ ...metadata, targetId: null }, fork)).toThrow(/source session id/);
+    expect(() => buildClaudeForkLaunchCommand(metadata, "not-a-uuid")).toThrow(/UUID/);
+  });
+
+  it("lets a fork take --session-id while a plain resume still cannot", () => {
+    expect(claudeArgsResumeExistingSession(["--resume", source])).toBe(true);
+    expect(claudeArgsResumeExistingSession(["--resume", source, "--fork-session"])).toBe(false);
+    expect(withClaudeSessionIdInCommandLine(`claude --resume ${source} --fork-session`, fork))
+      .toBe(`claude --session-id ${fork} --resume ${source} --fork-session`);
   });
 });

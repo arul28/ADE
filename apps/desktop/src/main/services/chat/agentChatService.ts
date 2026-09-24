@@ -1,3 +1,4 @@
+import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
@@ -8,6 +9,11 @@ import {
   transplantClaudeSession as staticTransplantClaudeSession,
 } from "../externalSessions/claudeSessionTransplant";
 import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
+import { loadExternalSessionEvents } from "../externalSessions/events";
+import {
+  EXTERNAL_SESSION_PROVIDER_LABELS,
+  isExternalSessionProvider,
+} from "../../../shared/types/externalSessions";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
@@ -666,6 +672,7 @@ import {
 import {
   getActiveModelManifest,
   onModelManifestApplied,
+  getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
   getDynamicPiModelDescriptors,
@@ -688,6 +695,7 @@ import {
   resolveModelAlias,
   resolveOpenCodeFastEffortSelection,
   resolveModelDescriptorForProvider,
+  findProviderModelByRecordedName,
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
   type LocalProviderFamily,
@@ -9065,7 +9073,10 @@ function normalizeImportedFrom(value: unknown): AgentChatImportedFrom | undefine
     ? record.importedAt
     : undefined;
   if (!provider || !sessionId || importedAt === undefined) return undefined;
-  return { provider, sessionId, importedAt };
+  // Dropping `mode` here would turn every copy back into a continue on the
+  // next persist, and the importer would hide the untouched original again.
+  const mode = record.mode === "fork" || record.mode === "continue" ? record.mode : undefined;
+  return { provider, sessionId, importedAt, ...(mode ? { mode } : {}) };
 }
 
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
@@ -16998,13 +17009,15 @@ export function createAgentChatService(args: {
 
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
-    patch: { providerSessionId?: string; droidSdkSessionId?: string },
+    patch: { providerSessionId?: string; droidSdkSessionId?: string; piSessionId?: string; acpSessionId?: string },
   ): void => {
     // Mirror in memory first: a persist that runs while the new runtime is
     // starting cannot read prevPersisted (runtime is non-null), so the disk
     // write alone would be clobbered in that window.
     if (patch.providerSessionId) managed.seededProviderSessionId = patch.providerSessionId;
     if (patch.droidSdkSessionId) managed.seededDroidSdkSessionId = patch.droidSdkSessionId;
+    if (patch.piSessionId) managed.seededPiSessionId = patch.piSessionId;
+    if (patch.acpSessionId) managed.seededAcpSessionId = patch.acpSessionId;
     const sessionId = managed.session.id;
     const current = readPersistedState(sessionId);
     if (!current) return;
@@ -20459,10 +20472,13 @@ export function createAgentChatService(args: {
 
   const appendImportedChatEvents = async (
     managed: ManagedChatSession,
-    envelopes: AgentChatEventEnvelope[],
+    rawEnvelopes: AgentChatEventEnvelope[],
   ): Promise<void> => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+    // Provider transcripts have no turn boundaries, and the transcript shows
+    // finished tool calls only in a turn's `done` summary.
+    const envelopes = withImportedTurnBoundaries(rawEnvelopes);
 
     // Imported envelopes are historical: no client can be viewing a session
     // whose history is still being seeded, and every reader loads seeded
@@ -41312,21 +41328,121 @@ export function createAgentChatService(args: {
     return { transplantClaudeSession: staticTransplantClaudeSession };
   };
 
+  const importProviderLabel = (provider: AgentChatImportProvider): string =>
+    EXTERNAL_SESSION_PROVIDER_LABELS[provider] ?? provider;
+
+  /**
+   * Providers whose own session an ADE chat continues in place, by seeding the
+   * provider pointer the chat already restores from after a restart. Each one
+   * is here because its runtime opens that pointer from the store the CLI
+   * writes: Droid's SDK `resumeSession` (`droid.load_session`, same binary and
+   * `~/.factory/sessions`), OpenCode's `session.get` on the user-env server
+   * (same data dir as the CLI), Pi's `SessionManager.list(cwd)` over the one
+   * store chat and CLI share. Copilot's ACP server loads a CLI-created
+   * session over `session/load` from the same `~/.copilot/session-state`
+   * (verified live on 1.0.88, 2026-09-24); ADE already holds the transcript,
+   * so the load replay is suppressed. Qwen, Kimi and Grok are left out until
+   * the same is shown for them.
+   */
+  const NATIVE_CHAT_CONTINUE_PROVIDERS: ReadonlySet<AgentChatImportProvider> = new Set<AgentChatImportProvider>([
+    "droid",
+    "opencode",
+    "pi",
+    "copilot",
+  ]);
+
+  const importedChatTitle = (
+    envelopes: AgentChatEventEnvelope[],
+    provider: AgentChatImportProvider,
+  ): string => {
+    const derived = deriveImportedChatTitle(envelopes, provider);
+    // The shared converter only knows the Claude and Codex fallback names.
+    return provider !== "codex" && derived === "Imported Codex chat"
+      ? `Imported ${importProviderLabel(provider)} chat`
+      : derived;
+  };
+
   const applyImportedChatMetadata = (
     managed: ManagedChatSession,
     args: AgentChatImportExternalSessionArgs,
     envelopes: AgentChatEventEnvelope[],
     importedAt: number,
+    mode: NonNullable<AgentChatImportedFrom["mode"]>,
   ): void => {
     managed.session.importedFrom = {
       provider: args.provider,
       sessionId: args.externalSessionId,
       importedAt,
+      mode,
     };
     const explicitTitle = typeof args.title === "string" ? args.title.trim() : "";
     if (!explicitTitle) {
-      setManagedSessionTitle(managed, deriveImportedChatTitle(envelopes, args.provider), { syncToRuntime: false });
+      setManagedSessionTitle(managed, importedChatTitle(envelopes, args.provider), { syncToRuntime: false });
     }
+  };
+
+  /**
+   * A model of `provider`'s own family named by `value` (a catalog id, an
+   * alias, or the provider's native model string), or null.
+   */
+  /**
+   * The source session's thinking level, when the chat keeps the source's own
+   * model and that model accepts the level. A continue of a low-effort session
+   * otherwise resumed on the default (medium).
+   */
+  const importedReasoningEffort = (
+    args: AgentChatImportExternalSessionArgs,
+    targetDescriptor: ReturnType<typeof getModelById> | null | undefined,
+  ): string | null => {
+    const effort = typeof args.sourceReasoningEffort === "string" ? args.sourceReasoningEffort.trim() : "";
+    if (!effort || !targetDescriptor) return null;
+    const source = typeof args.sourceModel === "string" ? args.sourceModel.trim() : "";
+    const sameModel = source.length > 0 && (
+      targetDescriptor.id === source
+      || targetDescriptor.providerModelId === source
+      || resolveModelAlias(source)?.id === targetDescriptor.id
+    );
+    if (!sameModel) return null;
+    const tiers = targetDescriptor.reasoningTiers ?? [];
+    return tiers.length === 0 || tiers.includes(effort) ? effort : null;
+  };
+
+  const resolveImportFamilyModel = (
+    provider: AgentChatImportProvider,
+    value: string | null | undefined,
+  ): NonNullable<ReturnType<typeof getModelById>> | null => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) return null;
+    const storedId = resolveModelIdFromStoredValue(trimmed, provider);
+    const descriptor = getModelById(trimmed)
+      ?? resolveModelAlias(trimmed)
+      ?? (storedId ? getModelById(storedId) : undefined);
+    if (descriptor && !descriptor.deprecated && resolveProviderGroupForModel(descriptor) === provider) {
+      return descriptor;
+    }
+    // A name another provider also registers (Pi's `openai/gpt-5.2`).
+    return findProviderModelByRecordedName(provider, trimmed) ?? null;
+  };
+
+  /**
+   * The external session's conversation as chat events, from the per-provider
+   * converter registry. Written under a placeholder chat id; the caller
+   * re-keys the envelopes onto the chat it creates.
+   */
+  const loadExternalImportEvents = async (
+    args: AgentChatImportExternalSessionArgs,
+    importedAt: number,
+  ): Promise<AgentChatEventEnvelope[]> => {
+    const page = await loadExternalSessionEvents({
+      provider: args.provider,
+      sessionId: args.externalSessionId,
+      record: null,
+      chatSessionId: "import-preview",
+      laneId: args.laneId,
+      purpose: "import",
+      importedAt,
+    });
+    return page.events;
   };
 
   const persistedImportedChatResult = async (
@@ -41416,6 +41532,7 @@ export function createAgentChatService(args: {
           : defaultClaudeModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -41447,7 +41564,14 @@ export function createAgentChatService(args: {
         transcriptBytesTruncated: targetTranscriptTruncated,
         transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
       });
-      applyImportedChatMetadata(managed, args, events, importedAt);
+      // A transplant writes a new Claude session and leaves the source as-is.
+      applyImportedChatMetadata(
+        managed,
+        args,
+        events,
+        importedAt,
+        targetClaudeSessionId === externalSessionId ? "continue" : "fork",
+      );
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
@@ -41544,6 +41668,7 @@ export function createAgentChatService(args: {
           : defaultCodexModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -41600,7 +41725,7 @@ export function createAgentChatService(args: {
         importedAt,
         laneId: managed.session.laneId,
       });
-      applyImportedChatMetadata(managed, args, events, importedAt);
+      applyImportedChatMetadata(managed, args, events, importedAt, args.fork ? "fork" : "continue");
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
@@ -41703,10 +41828,7 @@ export function createAgentChatService(args: {
         }
       }
     } else {
-      throw externalChatImportError(
-        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
-        `Cross-provider replay import from ${args.provider} is not available yet; import as ${args.provider} first, then fork to the target model.`,
-      );
+      envelopes = await loadExternalImportEvents(args, options.importedAt);
     }
 
     // A replay import with nothing to replay would create an empty chat and
@@ -41743,7 +41865,7 @@ export function createAgentChatService(args: {
           sourceSessionId: externalSessionId,
         },
       }));
-      applyImportedChatMetadata(managed, args, seeded, options.importedAt);
+      applyImportedChatMetadata(managed, args, seeded, options.importedAt, "fork");
       persistChatState(managed);
       if (seeded.length) await appendImportedChatEvents(managed, seeded);
       const replayFork = stageTranscriptReplayOnSession(
@@ -41767,13 +41889,107 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Continue a Droid, OpenCode or Pi session as an ADE chat: a chat in the
+   * session's own lane whose provider pointer is the external session id, so
+   * the first turn opens that session the same way a restart reopens one of
+   * ADE's own chats. The history is written for display only — the provider
+   * already holds it, so nothing is replayed into the prompt.
+   */
+  const importNativeContinueExternalChatSession = async (
+    args: AgentChatImportExternalSessionArgs,
+    laneWorktreePath: string,
+    importedAt: number,
+    requestedDescriptor: ReturnType<typeof getModelById> | null,
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const provider = args.provider;
+    const label = importProviderLabel(provider);
+    const externalSessionId = args.externalSessionId;
+    if (!NATIVE_CHAT_CONTINUE_PROVIDERS.has(provider)) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `${label} sessions can't be continued as an ADE chat. Open a copy instead.`,
+      );
+    }
+    if (hasPathSeparator(externalSessionId)) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `${label} session id must be an id, not a path.`);
+    }
+    // Every one of these runtimes opens the session in the lane root; a
+    // session from another folder would run against the wrong files (Pi
+    // refuses it outright).
+    if (!args.cwd || !isSameCwd(args.cwd, laneWorktreePath)) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `${label} sessions can only be continued in the lane folder they ran in. Open a copy instead.`,
+      );
+    }
+    if (requestedDescriptor && resolveProviderGroupForModel(requestedDescriptor) !== provider) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `A ${label} session can only be continued on a ${label} model. Open a copy to switch models.`,
+      );
+    }
+    const descriptor = requestedDescriptor
+      ?? resolveImportFamilyModel(provider, args.sourceModel)
+      ?? getDefaultModelDescriptor(provider)
+      ?? null;
+    if (!descriptor) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `No ${label} model is available to continue this session.`,
+      );
+    }
+    // Read before the chat exists, so an unreadable session creates nothing.
+    const loaded = await loadExternalImportEvents(args, importedAt);
+
+    let createdSessionId: string | null = null;
+    try {
+      const created = await createSession({
+        laneId: args.laneId,
+        provider,
+        model: descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id,
+        modelId: descriptor.id,
+        ...(provider === "pi" ? { piSessionId: externalSessionId } : {}),
+        ...(importedReasoningEffort(args, descriptor) ? { reasoningEffort: importedReasoningEffort(args, descriptor) } : {}),
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      createdSessionId = created.id;
+      const managed = ensureManagedSession(created.id);
+      if (provider === "droid") {
+        seedForkedProviderPointer(managed, { droidSdkSessionId: externalSessionId });
+      } else if (provider === "opencode") {
+        seedForkedProviderPointer(managed, { providerSessionId: externalSessionId });
+      } else if (provider === "pi") {
+        seedForkedProviderPointer(managed, { piSessionId: externalSessionId });
+      } else if (provider === "copilot") {
+        seedForkedProviderPointer(managed, { acpSessionId: externalSessionId });
+      }
+      const events = loaded.map((envelope) => ({ ...envelope, sessionId: created.id }));
+      applyImportedChatMetadata(managed, args, events, importedAt, "continue");
+      persistChatState(managed);
+      if (events.length) await appendImportedChatEvents(managed, events);
+      persistChatState(managed);
+      return await persistedImportedChatResult(managed, provider, externalSessionId);
+    } catch (error) {
+      if (createdSessionId) {
+        await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_cleanup_failed", {
+            sessionId: createdSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+  };
+
   const importExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const provider = args.provider;
     const externalSessionId = typeof args.externalSessionId === "string" ? args.externalSessionId.trim() : "";
     const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
-    if (provider !== "claude" && provider !== "codex") {
+    if (!isExternalSessionProvider(provider)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unsupported chat import provider '${String(provider)}'.`);
     }
     if (!externalSessionId) {
@@ -41789,13 +42005,15 @@ export function createAgentChatService(args: {
     if (requestedModelId && (!targetDescriptor || targetDescriptor.deprecated)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unknown model '${requestedModelId}'.`);
     }
-    const targetProvider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : provider;
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
       laneId,
       purpose: "import this chat",
     });
+    const sourceModel = typeof args.sourceModel === "string" && args.sourceModel.trim().length
+      ? args.sourceModel.trim()
+      : null;
     const normalizedArgs: AgentChatImportExternalSessionArgs = {
       ...args,
       provider,
@@ -41805,20 +42023,57 @@ export function createAgentChatService(args: {
       fork: args.fork === true,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       ...(requestedModelId ? { model: requestedModelId } : {}),
+      sourceModel,
+      sourceReasoningEffort: typeof args.sourceReasoningEffort === "string" && args.sourceReasoningEffort.trim()
+        ? args.sourceReasoningEffort.trim()
+        : null,
     };
     const importedAt = Date.now();
-    if (targetProvider !== provider) {
-      return importExternalChatSessionViaReplay(normalizedArgs, {
-        targetProvider,
-        targetDescriptor: targetDescriptor!,
-        laneWorktreePath: launchContext.laneWorktreePath,
+    if (provider === "claude" || provider === "codex") {
+      // No model chosen (a continue): keep the one the session ran on, so a
+      // Haiku session does not silently resume on the default model.
+      const effectiveDescriptor = targetDescriptor ?? resolveImportFamilyModel(provider, sourceModel) ?? null;
+      const targetProvider = effectiveDescriptor ? resolveProviderGroupForModel(effectiveDescriptor) : provider;
+      if (targetProvider !== provider) {
+        return importExternalChatSessionViaReplay(normalizedArgs, {
+          targetProvider,
+          targetDescriptor: effectiveDescriptor!,
+          laneWorktreePath: launchContext.laneWorktreePath,
+          importedAt,
+        });
+      }
+      if (provider === "claude") {
+        return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, effectiveDescriptor ?? undefined);
+      }
+      return importCodexExternalChatSession(normalizedArgs, importedAt, effectiveDescriptor ?? undefined);
+    }
+    if (!normalizedArgs.fork) {
+      return importNativeContinueExternalChatSession(
+        normalizedArgs,
+        launchContext.laneWorktreePath,
         importedAt,
-      });
+        targetDescriptor,
+      );
     }
-    if (provider === "claude") {
-      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, targetDescriptor ?? undefined);
+    // Every other provider copies by replay, into the family's own model too:
+    // none of them can fork a session into an ADE chat natively.
+    const replayDescriptor = targetDescriptor
+      ?? resolveImportFamilyModel(provider, sourceModel)
+      ?? getDefaultModelDescriptor(provider)
+      ?? getAppDefaultModelDescriptor()
+      ?? null;
+    if (!replayDescriptor) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `No model is available to open this ${importProviderLabel(provider)} session as an ADE chat.`,
+      );
     }
-    return importCodexExternalChatSession(normalizedArgs, importedAt, targetDescriptor ?? undefined);
+    return importExternalChatSessionViaReplay(normalizedArgs, {
+      targetProvider: resolveProviderGroupForModel(replayDescriptor),
+      targetDescriptor: replayDescriptor,
+      laneWorktreePath: launchContext.laneWorktreePath,
+      importedAt,
+    });
   };
 
   const prepareSendMessage = ({

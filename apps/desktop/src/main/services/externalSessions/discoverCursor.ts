@@ -5,11 +5,14 @@ import {
   asEpochMs,
   asRecord,
   asString,
+  cleanExternalSessionUserText,
   cleanSessionTitle,
   closeExternalSessionDb,
   countJsonlUserMessagesCheap,
   cwdCandidatesIncludeScope,
   cwdIsInScope,
+  extractText,
+  isAdeContinuityPrompt,
   firstUserTextFromRecords,
   moreCompleteFileCandidate,
   normalizeExternalSessionLimit,
@@ -19,7 +22,9 @@ import {
   readJsonlRecords,
   recordWithFile,
   cursorSlugCwdCandidates,
+  createSlugDirCache,
   resolveCursorCwdFromSlug,
+  type SlugDirCache,
   resolveHomeDir,
   safeReadDir,
   safeParseJson,
@@ -147,6 +152,232 @@ function readCursorStoreMeta(
   }
 }
 
+/** Bounds for reading prompts out of a store with no transcript beside it. */
+const CURSOR_STORE_PROMPT_SCAN_MESSAGES = 1000;
+const CURSOR_STORE_PROMPT_MAX_BLOB_BYTES = 256 * 1024;
+
+export type CursorStorePrompts = {
+  firstUserText: string | null;
+  /** Null when the bounded scan ended before any prompt: unknown, not zero. */
+  userCount: number | null;
+  /** ADE's CTO agent drove this chat through the Cursor SDK. */
+  adeOrigin: boolean;
+};
+
+function blobText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+  return null;
+}
+
+/**
+ * Cursor sends its environment block (`<user_info>` then `<git_status>`) as a
+ * user message of its own; it is not a prompt the user typed.
+ */
+export function isCursorEnvironmentMessage(raw: string): boolean {
+  return /^<user_info>/u.test(raw.trim());
+}
+
+/**
+ * The prompts of a Cursor chat that exists only as `store.db` (no
+ * agent-transcript), walked in conversation order so a repeated prompt (one
+ * content-addressed blob listed twice) counts each time. Without this, such
+ * chats listed as "Untitled Cursor chat" with no preview — 11 of 27 Cursor
+ * rows on 2026-09-23. Bounded by message count and blob size.
+ */
+export function readCursorStorePrompts(
+  storePath: string,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): CursorStorePrompts | null {
+  const conversation = openCursorStoreConversation(storePath, logger);
+  if (!conversation) return null;
+  try {
+    let firstUserText: string | null = null;
+    let userCount = 0;
+    let adeOrigin = false;
+    let skippedAny = false;
+    for (const id of conversation.messageIds.slice(0, CURSOR_STORE_PROMPT_SCAN_MESSAGES)) {
+      const size = conversation.messageSize(id);
+      if (size === null || size > CURSOR_STORE_PROMPT_MAX_BLOB_BYTES) {
+        skippedAny = true;
+        continue;
+      }
+      const record = conversation.readMessage(id);
+      if (asString(record?.role) !== "user") continue;
+      const raw = extractText(record?.content);
+      if (!raw) continue;
+      const cleaned = cleanExternalSessionUserText(raw);
+      if (isAdeContinuityPrompt(cleaned)) adeOrigin = true;
+      if (!cleaned || isCursorEnvironmentMessage(raw)) continue;
+      userCount += 1;
+      firstUserText ??= cleaned;
+    }
+    // A scan that was capped or skipped a message and saw no prompt proves
+    // nothing; a zero here would drop the chat from Import as "no prompts".
+    const scanWasPartial = skippedAny || conversation.messageIds.length > CURSOR_STORE_PROMPT_SCAN_MESSAGES;
+    return { firstUserText, userCount: userCount === 0 && scanWasPartial ? null : userCount, adeOrigin };
+  } catch {
+    return null;
+  } finally {
+    conversation.close();
+  }
+}
+
+/**
+ * Top-level fields of a protobuf message: field number and raw bytes
+ * (length-delimited) or number (varint). Null when the bytes are not one.
+ */
+function protobufFields(bytes: Uint8Array): Array<[number, Uint8Array | number]> | null {
+  const fields: Array<[number, Uint8Array | number]> = [];
+  let offset = 0;
+  const varint = (): number | null => {
+    let value = 0;
+    let scale = 1;
+    for (let i = 0; i < 10 && offset < bytes.length; i += 1) {
+      const byte = bytes[offset++]!;
+      value += (byte & 0x7f) * scale;
+      if (!(byte & 0x80)) return value;
+      scale *= 128;
+    }
+    return null;
+  };
+  while (offset < bytes.length) {
+    const tag = varint();
+    if (tag === null) return null;
+    const field = Math.floor(tag / 8);
+    switch (tag % 8) {
+      case 0: {
+        const value = varint();
+        if (value === null) return null;
+        fields.push([field, value]);
+        break;
+      }
+      case 1:
+        offset += 8;
+        break;
+      case 2: {
+        const length = varint();
+        if (length === null || offset + length > bytes.length) return null;
+        fields.push([field, bytes.subarray(offset, offset + length)]);
+        offset += length;
+        break;
+      }
+      case 5:
+        offset += 4;
+        break;
+      default:
+        return null;
+    }
+  }
+  return offset === bytes.length ? fields : null;
+}
+
+/** Repeated 32-byte blob references (content hashes) under `field`, in order. */
+function protobufBlobRefs(fields: Array<[number, Uint8Array | number]>, field: number): string[] {
+  const refs: string[] = [];
+  for (const [number, value] of fields) {
+    if (number === field && value instanceof Uint8Array && value.length === 32) {
+      refs.push(Buffer.from(value).toString("hex"));
+    }
+  }
+  return refs;
+}
+
+/** Bytes of the largest message blob the conversation reader will decode. */
+export const CURSOR_STORE_MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The conversation inside a Cursor `store.db`, verified on 2026-09-24 against
+ * 42 stores. `blobs` is content-addressed (`id` = sha256 of `data`), so row
+ * order is not conversation order. `meta['0']` (hex JSON) names
+ * `latestRootBlobId`; that root is a protobuf whose repeated field 1 lists the
+ * message blob ids oldest first. Each message blob is AI SDK JSON
+ * `{ role, content }`. After a summarization the root starts over from the
+ * summary, and its field 13 names a summary blob whose field 1 lists the
+ * messages it replaced and field 4 the summary message the root carries.
+ */
+export type CursorStoreConversation = {
+  /** Message blob ids, oldest first (ids repeat when a message does). */
+  messageIds: string[];
+  /** Index in `messageIds` where the latest summarization's messages end. */
+  summaryIndex: number | null;
+  /** Summary blob id of that summarization. */
+  summaryId: string | null;
+  /** Byte length of one message blob, or null when it is missing. */
+  messageSize: (id: string) => number | null;
+  /** One message as `{ role, content }`, or null when it is not readable JSON. */
+  readMessage: (id: string) => Record<string, unknown> | null;
+  close: () => void;
+};
+
+export function openCursorStoreConversation(
+  storePath: string,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): CursorStoreConversation | null {
+  const db = openExternalSessionDb(storePath, logger);
+  if (!db) return null;
+  try {
+    const metaRow = db.prepare("SELECT value FROM meta WHERE key = '0'").get() as { value?: unknown } | undefined;
+    const encoded = typeof metaRow?.value === "string" ? metaRow.value.trim() : "";
+    const json = /^[0-9a-f]+$/iu.test(encoded) && encoded.length % 2 === 0
+      ? Buffer.from(encoded, "hex").toString("utf8")
+      : encoded;
+    const rootId = asString(asRecord(safeParseJson(json))?.latestRootBlobId);
+    if (!rootId) {
+      closeExternalSessionDb(db);
+      return null;
+    }
+    const selectData = db.prepare("SELECT data FROM blobs WHERE id = ?");
+    const selectSize = db.prepare("SELECT length(data) AS size FROM blobs WHERE id = ?");
+    const readProtobuf = (id: string) => {
+      const row = selectData.get(id) as { data?: unknown } | undefined;
+      return row?.data instanceof Uint8Array ? protobufFields(row.data) : null;
+    };
+    const root = readProtobuf(rootId);
+    const rootIds = root ? protobufBlobRefs(root, 1) : [];
+    if (!root || rootIds.length === 0) {
+      closeExternalSessionDb(db);
+      return null;
+    }
+    let messageIds = rootIds;
+    let summaryIndex: number | null = null;
+    let summaryId: string | null = null;
+    // A summarized chat's root holds only what followed the summary; the
+    // summary blob keeps the turns it replaced.
+    const summaryRef = protobufBlobRefs(root, 13)[0] ?? null;
+    const summary = summaryRef ? readProtobuf(summaryRef) : null;
+    if (summary) {
+      const replaced = protobufBlobRefs(summary, 1);
+      const summaryMessage = protobufBlobRefs(summary, 4)[0] ?? null;
+      const resumeAt = summaryMessage ? rootIds.indexOf(summaryMessage) : -1;
+      if (replaced.length > 0 && resumeAt >= 0) {
+        messageIds = [...replaced, ...rootIds.slice(resumeAt + 1)];
+        summaryIndex = replaced.length;
+        summaryId = summaryRef;
+      }
+    }
+    return {
+      messageIds,
+      summaryIndex,
+      summaryId,
+      messageSize: (id) => {
+        const row = selectSize.get(id) as { size?: unknown } | undefined;
+        return typeof row?.size === "number" ? row.size : null;
+      },
+      readMessage: (id) => {
+        const row = selectData.get(id) as { data?: unknown } | undefined;
+        const text = blobText(row?.data);
+        if (!text || !text.trimStart().startsWith("{")) return null;
+        return asRecord(safeParseJson(text));
+      },
+      close: () => closeExternalSessionDb(db),
+    };
+  } catch {
+    closeExternalSessionDb(db);
+    return null;
+  }
+}
+
 type CursorArtifact = {
   filePath: string;
   mtimeMs: number;
@@ -263,11 +494,12 @@ function cursorTranscriptScope(
   trustedCwd: string | null,
   args: ExternalSessionDiscoveryArgs,
   resolveSlugCwd: (slug: string) => string | null,
+  slugDirCache: SlugDirCache,
 ): CursorScope {
   if (
     cwdIsInScope(trustedCwd, args.scopeRoots)
     || slugMatchesScopeRoots(projectSlug, args.scopeRoots, cursorProjectSlugForCwd)
-    || cwdCandidatesIncludeScope(cursorSlugCwdCandidates(projectSlug), args.scopeRoots)
+    || cwdCandidatesIncludeScope(cursorSlugCwdCandidates(projectSlug, slugDirCache), args.scopeRoots)
   ) {
     return "in";
   }
@@ -282,12 +514,13 @@ function collectCursorTranscripts(
   args: ExternalSessionDiscoveryArgs,
   resolveSlugCwd: (slug: string) => string | null,
   groups: Map<string, CursorSessionGroup>,
+  slugDirCache: SlugDirCache,
 ): void {
   for (const projectEntry of safeReadDir(projectsDir)) {
     if (!projectEntry.isDirectory()) continue;
     const projectDir = path.join(projectsDir, projectEntry.name);
     const trustedCwd = trustedCursorWorkspacePath(projectDir);
-    const scope = cursorTranscriptScope(projectEntry.name, trustedCwd, args, resolveSlugCwd);
+    const scope = cursorTranscriptScope(projectEntry.name, trustedCwd, args, resolveSlugCwd, slugDirCache);
     if (scope === "out") continue;
     const transcriptRoot = path.join(projectDir, "agent-transcripts");
     const ids = lookupId
@@ -324,10 +557,11 @@ export async function discoverCursorSessions(
   // De-slugging walks the filesystem, and the same slug is consulted once per
   // bucket lookup and again per transcript directory.
   const slugCwdCache = new Map<string, string | null>();
+  const slugDirCache = createSlugDirCache();
   const resolveSlugCwd = (slug: string): string | null => {
     const cached = slugCwdCache.get(slug);
     if (cached !== undefined) return cached;
-    const resolved = resolveCursorCwdFromSlug(slug);
+    const resolved = resolveCursorCwdFromSlug(slug, slugDirCache);
     slugCwdCache.set(slug, resolved);
     return resolved;
   };
@@ -335,7 +569,7 @@ export async function discoverCursorSessions(
   const groups = new Map<string, CursorSessionGroup>();
   const workspaceByHash = cursorWorkspaceByHash(projectsDir, args.scopeRoots, resolveSlugCwd);
   collectCursorStores(chatsDir, workspaceByHash, lookupId, args, groups);
-  collectCursorTranscripts(projectsDir, lookupId, args, resolveSlugCwd, groups);
+  collectCursorTranscripts(projectsDir, lookupId, args, resolveSlugCwd, groups, slugDirCache);
 
   // Conversations already proven in project are read first, so a machine full of
   // out-of-project Cursor usage cannot crowd them out of the read budget.
@@ -352,6 +586,10 @@ export async function discoverCursorSessions(
   for (const group of ordered) {
     const storeMeta = group.store ? readCursorStoreMeta(group.store.filePath, args.logger) : null;
     const jsonl = group.transcript ? readJsonlRecords(group.transcript.filePath) : [];
+    const storePrompts = !group.transcript && group.store
+      ? readCursorStorePrompts(group.store.filePath, args.logger)
+      : null;
+    if (storePrompts?.adeOrigin) continue;
     const first = asRecord(jsonl[0]);
     const cwd = group.store?.cwd
       ?? cursorCwdFromRecords(jsonl)
@@ -360,12 +598,12 @@ export async function discoverCursorSessions(
     // A conversation whose cwd nothing recorded still belongs in an unscoped
     // listing; `cwdIsInScope` is what keeps it out of a project-scoped one.
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
-    records.push(recordWithFile({
+    const record = recordWithFile({
       provider: "cursor",
       id: group.id,
       cwd,
       title: storeMeta?.title ?? group.store?.meta?.title ?? null,
-      preview: jsonl.length ? firstUserTextFromRecords(jsonl) : null,
+      preview: jsonl.length ? firstUserTextFromRecords(jsonl) : storePrompts?.firstUserText ?? null,
       createdAt: storeMeta?.createdAt
         ?? group.store?.meta?.createdAt
         ?? asEpochMs(first?.timestamp)
@@ -373,10 +611,13 @@ export async function discoverCursorSessions(
       updatedAt: group.mtimeMs,
       messageCount: group.transcript
         ? countJsonlUserMessagesCheap(group.transcript.filePath, "cursor")
-        : null,
+        : storePrompts?.userCount ?? null,
       filePath: group.transcript?.filePath ?? group.store?.filePath ?? null,
       sourceMtimeMs: group.mtimeMs,
-    }));
+    });
+    // The same file `filePath` names above, so the size describes the source.
+    record.sizeBytes = group.transcript?.size ?? group.store?.size ?? null;
+    records.push(record);
   }
 
   return sortDiscoveryRecords(records, limit);

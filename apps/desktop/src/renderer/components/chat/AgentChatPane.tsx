@@ -209,11 +209,11 @@ import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionB
 import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
   readImportedFrom,
-  providerDisplayName as externalProviderDisplayName,
   type ExternalSessionImportResult,
   type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "../terminals/importSessions/contract";
+import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
@@ -6083,7 +6083,7 @@ export function AgentChatPane({
     const chips = [...resolvedChips];
     if (selectedSessionImportedProvider) {
       chips.push({
-        label: `Imported · ${externalProviderDisplayName(selectedSessionImportedProvider)}`,
+        label: `Imported · ${importProviderLabel(selectedSessionImportedProvider)}`,
         tone: "muted",
       });
     }

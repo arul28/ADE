@@ -3010,6 +3010,22 @@ export function providerTierIsPreview(provider: ModelProviderGroup): boolean {
   return models.length > 0 && models.every((model) => model.previewTier === true);
 }
 
+/**
+ * A provider's own model for a name its CLI recorded. Pi records
+ * `openai/gpt-5.2`, which also names a Codex model, while ADE registers the Pi
+ * row as `pi/<profile>/openai/gpt-5.2`; only this provider's rows are searched.
+ */
+export function findProviderModelByRecordedName(
+  provider: ModelProviderGroup,
+  recorded: string | null | undefined,
+): ModelDescriptor | undefined {
+  const name = String(recorded ?? "").trim().toLowerCase();
+  if (!name) return undefined;
+  const models = listModelDescriptorsForProvider(provider).filter((model) => !model.deprecated);
+  return models.find((model) => model.providerModelId?.toLowerCase() === name)
+    ?? models.find((model) => model.id.toLowerCase().endsWith(`/${name}`));
+}
+
 export function listModelDescriptorsForProvider(
   provider: ModelProviderGroup,
 ): ModelDescriptor[] {

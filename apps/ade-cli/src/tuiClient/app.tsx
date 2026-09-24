@@ -397,14 +397,19 @@ import {
 } from "./state";
 import {
   clampExternalSessionBrowserContent,
+  EXTERNAL_SESSION_ROW_RESET,
   externalSessionActionKey,
   externalSessionBrowserActions,
+  externalSessionBrowserTargetOptions,
   externalSessionProviderLabel,
-  isImportAffordance,
+  isImportEntry,
   nextExternalSessionProviderFilter,
+  nextExternalSessionTargetLane,
   normalizeExternalSessionListResult,
+  resolveExternalSessionTargetLane,
   visibleExternalSessions,
-  type ImportAffordance,
+  withReloadedExternalSessions,
+  type ExternalSessionImportEntry,
 } from "./externalSessionBrowser";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
@@ -9928,14 +9933,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (externalSessionListGenerationRef.current !== generation) return;
       setRightPane((prev) => {
         if (prev.kind !== "external-session-browser" || prev.laneId !== laneId) return prev;
-        return clampExternalSessionBrowserContent({
+        return withReloadedExternalSessions({
           ...prev,
-          sessions,
           loading: false,
           error: null,
           importError: null,
           loadedAt: Date.now(),
-        });
+        }, sessions);
       });
     } catch (err) {
       if (externalSessionListGenerationRef.current !== generation) return;
@@ -10078,18 +10082,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const importExternalSessionFromBrowser = useCallback(async (
     summary: ExternalSessionSummary,
-    affordance: ImportAffordance,
+    entry: ExternalSessionImportEntry,
   ) => {
     if (externalSessionImportInFlightRef.current) return;
     const pane = rightPaneRef.current;
     if (pane.kind !== "external-session-browser") return;
-    if (!affordance.enabled) {
-      const message = affordance.disabledReason ?? "This action is not available for that session.";
-      setRightPane((prev) => prev.kind === "external-session-browser"
-        ? { ...prev, importError: message }
-        : prev);
-      return;
-    }
     const conn = connectionRef.current;
     if (!conn) {
       setRightPane((prev) => prev.kind === "external-session-browser"
@@ -10097,18 +10094,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : prev);
       return;
     }
-    const importingKey = externalSessionActionKey(summary, affordance);
+    const importingKey = externalSessionActionKey(summary, entry);
     externalSessionImportInFlightRef.current = true;
     setRightPane((prev) => prev.kind === "external-session-browser"
-      ? { ...prev, importError: null, importingKey }
+      ? { ...prev, importError: null, importingKey, confirmKey: null }
       : prev);
     try {
+      // The plan already resolved (and, when locked, pinned) the lane.
       const result = await conn.action<ExternalSessionImportResult>("external-sessions", "import", {
         provider: summary.provider,
         sessionId: summary.id,
-        laneId: pane.laneId,
-        target: affordance.target,
-        mode: affordance.mode,
+        laneId: entry.laneId ?? pane.laneId,
+        target: entry.action.target,
+        mode: entry.action.mode,
       });
       externalSessionListGenerationRef.current += 1;
       await adoptImportedExternalSession(summary, result);
@@ -15912,10 +15910,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ? Math.min(Math.max(0, browser.selectedIndex), visible.length - 1)
         : 0;
       const selectedSession = visible[selectedIndex] ?? null;
-      const actions = selectedSession ? externalSessionBrowserActions(selectedSession) : [];
+      const targetOptions = externalSessionBrowserTargetOptions(browser);
+      const actions = selectedSession ? externalSessionBrowserActions(selectedSession, targetOptions) : [];
       const actionIndex = actions.length
         ? Math.min(Math.max(0, browser.actionIndex), actions.length - 1)
         : 0;
+      // A new row starts on its own home lane, with nothing waiting on confirm.
+      const rowReset = EXTERNAL_SESSION_ROW_RESET;
 
       if (key.escape) {
         setRightPane({ kind: "empty" });
@@ -15930,7 +15931,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ? clampExternalSessionBrowserContent({
               ...prev,
               selectedIndex: Math.max(0, selectedIndex - 1),
-              actionIndex: 0,
+              ...rowReset,
               importError: null,
             })
           : prev);
@@ -15941,7 +15942,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ? clampExternalSessionBrowserContent({
               ...prev,
               selectedIndex: visible.length ? Math.min(visible.length - 1, selectedIndex + 1) : 0,
-              actionIndex: 0,
+              ...rowReset,
               importError: null,
             })
           : prev);
@@ -15953,6 +15954,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ? clampExternalSessionBrowserContent({
               ...prev,
               actionIndex: actions.length ? (actionIndex + delta + actions.length) % actions.length : 0,
+              confirmKey: null,
               importError: null,
             })
           : prev);
@@ -15960,18 +15962,51 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (key.return) {
         if (!selectedSession) return;
-        const action = actions[actionIndex] ?? actions.find((entry) => entry.enabled) ?? actions[0];
+        const action = actions[actionIndex] ?? actions[0];
         if (!action) {
           setRightPane((prev) => prev.kind === "external-session-browser"
             ? { ...prev, importError: "No import action available for that session." }
             : prev);
           return;
         }
-        if (!isImportAffordance(action)) {
+        if (!isImportEntry(action)) {
           void openExistingExternalSession(selectedSession, browser.laneId);
-        } else {
-          void importExternalSessionFromBrowser(selectedSession, action);
+          return;
         }
+        const confirmKey = externalSessionActionKey(selectedSession, action);
+        if (action.action.confirmBeforeRun && browser.confirmKey !== confirmKey) {
+          setRightPane((prev) => prev.kind === "external-session-browser"
+            ? { ...prev, confirmKey, importError: null }
+            : prev);
+          return;
+        }
+        void importExternalSessionFromBrowser(selectedSession, action);
+        return;
+      }
+      if (input === "L" && !key.ctrl && !key.meta && !browser.query) {
+        if (!selectedSession) return;
+        const importEntries = actions.filter(isImportEntry);
+        if (importEntries.length && importEntries.every((entry) => entry.laneLocked)) {
+          setRightPane((prev) => prev.kind === "external-session-browser"
+            ? { ...prev, importError: importEntries[0]?.lockReason ?? "This session stays in its own lane." }
+            : prev);
+          return;
+        }
+        const laneIds = lanes
+          .filter((lane) => !lane.archivedAt && !unavailableLaneIds.has(lane.id))
+          .map((lane) => lane.id);
+        const current = resolveExternalSessionTargetLane(selectedSession, targetOptions);
+        const nextLaneId = nextExternalSessionTargetLane(laneIds, current);
+        if (!nextLaneId) return;
+        setRightPane((prev) => prev.kind === "external-session-browser"
+          ? clampExternalSessionBrowserContent({
+              ...prev,
+              targetLaneId: nextLaneId,
+              targetLaneLabel: lanesById[nextLaneId]?.name ?? null,
+              confirmKey: null,
+              importError: null,
+            })
+          : prev);
         return;
       }
       if (input === "O" && !key.ctrl && !key.meta && !browser.query) {
@@ -15994,7 +16029,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               ...prev,
               providerFilter: nextExternalSessionProviderFilter(prev.providerFilter),
               selectedIndex: 0,
-              actionIndex: 0,
+              ...rowReset,
               importError: null,
             })
           : prev);
@@ -16006,7 +16041,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               ...prev,
               query: "",
               selectedIndex: 0,
-              actionIndex: 0,
+              ...rowReset,
               importError: null,
             })
           : prev);
@@ -16018,7 +16053,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               ...prev,
               query: prev.query.slice(0, -1),
               selectedIndex: 0,
-              actionIndex: 0,
+              ...rowReset,
               importError: null,
             })
           : prev);
@@ -16032,7 +16067,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 ...prev,
                 query: `${prev.query}${suffix}`,
                 selectedIndex: 0,
-                actionIndex: 0,
+                ...rowReset,
                 importError: null,
               })
             : prev);
