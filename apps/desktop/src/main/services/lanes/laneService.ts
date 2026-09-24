@@ -3834,6 +3834,9 @@ export function createLaneService({
   type StoredLeftoverWorktree = LaneDeleteLeftoverWorktree & {
     dev: number | null;
     ino: number | null;
+    /** Basename of the token file written into the leftover directory. */
+    tokenName: string | null;
+    token: string | null;
   };
   const leftoverWorktreeByLaneId = new Map<string, StoredLeftoverWorktree>();
   const leftoverWorktreeFile = path.join(projectRoot, ".ade", "leftover-worktrees.json");
@@ -3863,22 +3866,36 @@ export function createLaneService({
         laneName: row.laneName,
         dev: typeof row.dev === "number" ? row.dev : null,
         ino: typeof row.ino === "number" ? row.ino : null,
+        tokenName: typeof row.tokenName === "string" ? row.tokenName : null,
+        token: typeof row.token === "string" ? row.token : null,
       });
     }
   };
   loadLeftoverWorktrees();
   const rememberLeftoverWorktree = async (laneId: string, leftover: LaneDeleteLeftoverWorktree) => {
-    let stored: StoredLeftoverWorktree = { ...leftover, dev: null, ino: null };
+    let stored: StoredLeftoverWorktree = {
+      ...leftover,
+      dev: null,
+      ino: null,
+      tokenName: null,
+      token: null,
+    };
     if (leftover.canDelete) {
       try {
         const stat = await fs.promises.lstat(leftover.path);
-        if (stat.isSymbolicLink()) {
-          stored = { ...leftover, canDelete: false, dev: null, ino: null };
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+          stored = { ...stored, canDelete: false };
         } else {
-          stored = { ...leftover, dev: stat.dev, ino: stat.ino };
+          // Linux can recycle an inode as soon as the directory is removed, so
+          // the inode alone cannot tell a replacement from the original folder.
+          // A token file written here is absent from a directory that reused the path.
+          const tokenName = `.ade-leftover-${randomUUID()}`;
+          const token = randomUUID();
+          await fs.promises.writeFile(path.join(leftover.path, tokenName), token, { flag: "wx" });
+          stored = { ...leftover, dev: stat.dev, ino: stat.ino, tokenName, token };
         }
       } catch {
-        stored = { ...leftover, canDelete: false, dev: null, ino: null };
+        stored = { ...stored, canDelete: false };
       }
     }
     leftoverWorktreeByLaneId.set(laneId, stored);
@@ -8099,7 +8116,23 @@ export function createLaneService({
       }
       if (leftover.dev !== null && leftover.ino !== null) {
         const stat = await fs.promises.lstat(targetPath);
-        if (stat.dev !== leftover.dev || stat.ino !== leftover.ino) {
+        if (stat.dev !== leftover.dev || stat.ino !== leftover.ino || !stat.isDirectory()) {
+          throw new Error("That folder was replaced after the lane was deleted.");
+        }
+      }
+      if (leftover.tokenName && leftover.token) {
+        const tokenPath = path.join(targetPath, leftover.tokenName);
+        let contents = "";
+        try {
+          const tokenStat = await fs.promises.lstat(tokenPath);
+          if (tokenStat.isSymbolicLink() || !tokenStat.isFile()) {
+            throw new Error("token is not a file");
+          }
+          contents = await fs.promises.readFile(tokenPath, "utf8");
+        } catch {
+          throw new Error("That folder was replaced after the lane was deleted.");
+        }
+        if (contents !== leftover.token) {
           throw new Error("That folder was replaced after the lane was deleted.");
         }
       }

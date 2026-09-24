@@ -759,7 +759,8 @@ forgotten it, or Git unregisters it and leaves the directory, the lane row is
 still deleted and the folder stays on disk. The desktop then asks whether to
 reveal that folder or delete it. Close leaves the folder. A symbolic link is
 never followed. Delete folder refuses the path if a different directory has
-replaced it, and the offer survives a runtime restart.
+replaced it. ADE writes a hidden token into the leftover directory so a
+reused inode cannot pass that check. The offer survives a runtime restart.
 
 Rails checked before `git worktree remove`, for every lane:
 
