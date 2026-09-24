@@ -19,6 +19,11 @@ vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
   confirmDialog: vi.fn(async () => false),
 }));
 import {
+  ProjectSidebarSlotProvider,
+  useProjectSidebarSlotTarget,
+} from "../app/projectSidebar/ProjectSidebarSlot";
+import { setProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
+import {
   forgetWorkPtyLaunchPin,
   rememberWorkPtyLaunchPin,
   workPtyLaunchPinFor,
@@ -176,7 +181,6 @@ const workMocks = vi.hoisted(() => {
     workBoardWaitingReasons: new Map(),
     workCollapsedLaneIds: [],
     workCollapsedSectionIds: [],
-    workFocusSessionsHidden: false,
     workSidebarOpen: false,
     workSidebarWidthPct: 36,
     pinnedSessionIds: [],
@@ -195,7 +199,6 @@ const workMocks = vi.hoisted(() => {
     toggleWorkSectionCollapsed: vi.fn(),
     stopRuntime: vi.fn().mockResolvedValue(undefined),
     removeSessionFromList: vi.fn(),
-    setWorkFocusSessionsHidden: vi.fn(),
     setWorkSidebarOpen: vi.fn(),
     setWorkSidebarWidthPct: vi.fn(),
     reorderLaneSessions: vi.fn(),
@@ -242,6 +245,7 @@ const sidebarProps = vi.hoisted(() => ({
 }));
 
 type MockSessionListPaneProps = {
+  boardHost?: HTMLElement | null;
   runningFiltered: TerminalSessionSummary[];
   awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
@@ -396,16 +400,6 @@ vi.mock("./useWorkSessions", async () => {
 
 vi.mock("./useWorkLaneDeleteProgress", () => ({
   useWorkLaneDeleteProgress: () => undefined,
-}));
-
-vi.mock("../ui/PaneTilingLayout", () => ({
-  PaneTilingLayout: ({ panes }: { panes: Record<string, { children: React.ReactNode }> }) => (
-    <div data-testid="pane-tiling-layout">
-      {Object.entries(panes).map(([id, pane]) => (
-        <section key={id} data-testid={`pane:${id}`}>{pane.children}</section>
-      ))}
-    </div>
-  ),
 }));
 
 vi.mock("./SessionListPane", () => ({
@@ -646,49 +640,87 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   /* ────────────────────────────────────────────────────────────────────────
-     BOARD MODE OWNS THE WHOLE TAB.
-
-     Four columns inside the ~390px sessions pane is not a board: at a normal
-     window width two of them are off-screen behind the board's own horizontal
-     scrollbar while the chat pane sits idle. So board mode must not render the
-     split at all — and must not get there by driving the splitter, because
-     `workSidebarWidthPct` is the user's LIST-mode layout and has to survive the
-     round trip untouched.
+     The session list lives in the project sidebar. The board needs the full
+     width, so it draws in the main area: beside the list while the sidebar
+     shows, and as the whole pane when there is no sidebar on screen. Board
+     mode never drives `workSidebarWidthPct`, the user's LIST-mode layout.
      ──────────────────────────────────────────────────────────────────────── */
 
-  it("renders the board full width and does not mount the split layout", async () => {
-    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
+  function SidebarBody() {
+    const setTarget = useProjectSidebarSlotTarget();
+    return <div data-testid="sidebar-body" ref={setTarget} />;
+  }
+
+  function renderWithProjectSidebar() {
+    return render(
+      <ProjectSidebarSlotProvider>
+        <SidebarBody />
+        <TerminalsPage />
+      </ProjectSidebarSlotProvider>,
+    );
+  }
+
+  function mockBrowserEvents() {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
+  }
 
-    render(<TerminalsPage />);
+  it("renders the session list in the project sidebar and only the view in the main area", async () => {
+    mockBrowserEvents();
 
-    expect(await screen.findByTestId("work-board-surface")).toBeTruthy();
-    // The whole point: no split, so no narrow sessions pane and no idle chat
-    // pane beside it.
-    expect(screen.queryByTestId("pane-tiling-layout")).toBeNull();
-    expect(screen.queryByTestId("pane:sessions")).toBeNull();
-    expect(screen.queryByTestId("pane:view")).toBeNull();
-    // Same roster element either way, so the toolbar — and the List/Board
-    // toggle in it — does not move under the cursor between modes.
-    expect(screen.getByTestId("session-list-pane")).toBeTruthy();
-    // The stored list-mode width is never written on the way in.
+    renderWithProjectSidebar();
+
+    const sidebar = screen.getByTestId("sidebar-body");
+    const list = await screen.findByTestId("session-list-pane");
+    expect(sidebar.contains(list)).toBe(true);
+    expect(sidebar.contains(screen.getByTestId("work-view-area"))).toBe(false);
+    expect(screen.queryByTestId("work-board-surface")).toBeNull();
+    expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
+  });
+
+  it("keeps the list in the sidebar and portals the board into the main area", async () => {
+    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
+    mockBrowserEvents();
+
+    renderWithProjectSidebar();
+
+    const sidebar = screen.getByTestId("sidebar-body");
+    const board = await screen.findByTestId("work-board-surface");
+    expect(sidebar.contains(screen.getByTestId("session-list-pane"))).toBe(true);
+    expect(sidebar.contains(board)).toBe(false);
+    await waitFor(() => expect(sessionListPaneProps.latest?.boardHost).toBe(board));
+    // No chat beside the board, and the list-mode tools width is never written.
+    expect(screen.queryByTestId("work-view-area")).toBeNull();
     expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
   });
 
-  it("keeps the split layout in list mode", async () => {
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
-    });
+  it("gives the board the whole pane while the project sidebar is hidden", async () => {
+    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
+    mockBrowserEvents();
+    setProjectSidebarHidden(true);
+    try {
+      renderWithProjectSidebar();
+
+      const board = await screen.findByTestId("work-board-surface");
+      // The pane is the board, toolbar and all, so the List/Board toggle is
+      // still reachable without the sidebar.
+      expect(board.contains(screen.getByTestId("session-list-pane"))).toBe(true);
+      expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
+    } finally {
+      setProjectSidebarHidden(false);
+    }
+  });
+
+  it("keeps a plain list column when there is no project sidebar", async () => {
+    mockBrowserEvents();
 
     render(<TerminalsPage />);
 
-    expect(await screen.findByTestId("pane-tiling-layout")).toBeTruthy();
-    expect(screen.getByTestId("pane:sessions")).toBeTruthy();
-    expect(screen.getByTestId("pane:view")).toBeTruthy();
+    const column = await screen.findByTestId("work-sessions-column");
+    expect(column.contains(screen.getByTestId("session-list-pane"))).toBe(true);
+    expect(screen.getByTestId("work-view-area")).toBeTruthy();
     expect(screen.queryByTestId("work-board-surface")).toBeNull();
   });
 
@@ -2847,27 +2879,6 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.mouseDown(separator, { clientX: 600 });
     fireEvent.mouseUp(document);
     expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(36);
-  });
-
-  it("recovers a collapsed sessions list from a thin left rail", () => {
-    workMocks.currentWork = {
-      ...workMocks.baseWork,
-      workFocusSessionsHidden: true,
-      closingPtyIds: new Set<string>(),
-    };
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
-    });
-
-    render(<TerminalsPage />);
-
-    expect(screen.queryByTestId("session-list-pane")).toBeNull();
-    const rail = screen.getByTestId("work-sessions-collapsed-rail");
-    const show = screen.getByRole("button", { name: "Show sessions" });
-    expect(rail.contains(show)).toBe(true);
-    fireEvent.click(show);
-    expect(workMocks.currentWork.setWorkFocusSessionsHidden).toHaveBeenCalledWith(false);
   });
 
   /* ── Apple device ────────────────────────────────────────────────────── */

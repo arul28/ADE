@@ -9,6 +9,7 @@ import {
   totalBackgroundWork,
   type SessionBackgroundWork,
 } from "../../../shared/sessionCanonicalState";
+import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
@@ -55,26 +56,36 @@ function backgroundActivity(summary: {
   return (work?.workingCount ?? 0) > 0 ? "working" : "monitoring";
 }
 
+/**
+ * The activity the Work tab would show for this session row. The Work list,
+ * the Activity pane and iOS all read the canonical session state, so a lane
+ * view that used its own mapping could call a chat "Idle" while Work calls it
+ * "Working". When a terminal row exists, it decides.
+ */
+function canonicalActivity(summary: TerminalSessionSummary): LaneAgentActivity {
+  const state = sessionCanonicalUiState(canonicalInputFromSummary(summary));
+  switch (state.phase) {
+    case "starting":
+      return "working";
+    case "running":
+      return state.liveness && state.liveness !== "turn" ? "monitoring" : "working";
+    case "needs_you":
+      return "awaiting-input";
+    case "ended":
+    case "settled":
+    case "stopped":
+    case "failed":
+      return "ended";
+    default:
+      return "idle";
+  }
+}
+
 function chatActivity(summary: AgentChatSessionSummary): LaneAgentActivity {
   if (summary.status === "ended") return "ended";
   if (summary.awaitingInput) return "awaiting-input";
   if (summary.status === "active") return "working";
   return backgroundActivity(summary) ?? "idle";
-}
-
-function cliActivity(summary: TerminalSessionSummary): LaneAgentActivity {
-  if (
-    summary.pendingInputItemId
-    || summary.attentionRequestedAt
-    || summary.attentionSource === "provider_structured"
-  ) return "awaiting-input";
-  switch (summary.runtimeState) {
-    case "running": return "working";
-    case "waiting-input": return backgroundActivity(summary) ?? "idle";
-    case "exited":
-    case "killed": return "ended";
-    default: return backgroundActivity(summary) ?? "idle";
-  }
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -91,7 +102,7 @@ function cliProviderLabel(toolType: TerminalToolType | null): string {
   return PROVIDER_LABELS[base] ?? "CLI";
 }
 
-function chatAgentFrom(summary: AgentChatSessionSummary): LaneAgent {
+function chatAgentFrom(summary: AgentChatSessionSummary, row: TerminalSessionSummary | undefined): LaneAgent {
   return {
     sessionId: summary.sessionId,
     laneId: summary.laneId,
@@ -99,7 +110,7 @@ function chatAgentFrom(summary: AgentChatSessionSummary): LaneAgent {
     name: summary.title?.trim() || summary.goal?.trim() || "Chat agent",
     modelId: summary.modelId ?? summary.model ?? null,
     providerLabel: PROVIDER_LABELS[summary.provider] ?? summary.provider,
-    activity: chatActivity(summary),
+    activity: row ? canonicalActivity(row) : chatActivity(summary),
     lastHint: summary.awaitingInput
       ? "Awaiting your input"
       : backgroundHint(summary, summary.status === "active")
@@ -144,7 +155,7 @@ function cliAgentFrom(summary: TerminalSessionSummary): LaneAgent {
     name: summary.title?.trim() || summary.goal?.trim() || cliProviderLabel(summary.toolType),
     modelId: null,
     providerLabel: cliProviderLabel(summary.toolType),
-    activity: cliActivity(summary),
+    activity: canonicalActivity(summary),
     lastHint:
       summary.pendingInputItemId
       || summary.attentionRequestedAt
@@ -168,12 +179,15 @@ export function buildLaneAgents(
   cliSessions: TerminalSessionSummary[],
 ): LaneAgent[] {
   const agents: LaneAgent[] = [];
+  // A chat is mirrored as a terminal row with the same id; that row carries
+  // the canonical state the Work tab shows.
+  const rowById = new Map(cliSessions.map((row) => [row.id, row]));
   const chatSessionIds = new Set<string>();
   for (const summary of chatSessions) {
     if (summary.archivedAt) continue;
     if (chatSessionIds.has(summary.sessionId)) continue;
     chatSessionIds.add(summary.sessionId);
-    agents.push(chatAgentFrom(summary));
+    agents.push(chatAgentFrom(summary, rowById.get(summary.sessionId)));
   }
   const cliSessionIds = new Set<string>();
   for (const summary of cliSessions) {

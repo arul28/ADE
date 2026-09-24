@@ -62,8 +62,10 @@ function useAccountBannerModel(navigate: NavigateFunction): BannerModel | null {
   if (loading) return null;
 
   // Already on the account page — the bar would point at the page you are on.
-  // The page's own card carries the same Reconnect button.
+  // The page's own card carries the same Reconnect button. Inside a project
+  // the account page is the Account section of Settings.
   if (location.pathname === "/account" || location.pathname.startsWith("/account/")) return null;
+  if (location.pathname === "/settings" && new URLSearchParams(location.search).get("tab") === "account") return null;
 
   if (copy) {
     return {

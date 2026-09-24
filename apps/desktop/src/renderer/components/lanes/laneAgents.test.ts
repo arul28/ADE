@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatSessionSummary, TerminalSessionSummary } from "../../../shared/types";
+import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { buildLaneAgents } from "./laneAgents";
 
 function chat(overrides: Partial<AgentChatSessionSummary>): AgentChatSessionSummary {
@@ -161,9 +162,23 @@ describe("buildLaneAgents", () => {
   });
 
   it("does not infer awaiting input from a CLI runtime marker alone", () => {
-    const agents = buildLaneAgents([], [cli({ id: "waiting", runtimeState: "waiting-input" })]);
-    expect(agents[0]?.activity).toBe("idle");
+    // A running CLI at its prompt reads the way the Work tab reads it (the
+    // canonical session state), and a runtime marker alone never means "needs you".
+    const row = cli({ id: "waiting", runtimeState: "waiting-input" });
+    const agents = buildLaneAgents([], [row]);
+    expect(sessionCanonicalUiState(canonicalInputFromSummary(row)).phase).toBe("running");
+    expect(agents[0]?.activity).toBe("working");
     expect(agents[0]?.lastHint).toBeNull();
+  });
+
+  it("uses the mirrored terminal row for a chat, so lanes and Work agree", () => {
+    const agents = buildLaneAgents(
+      [chat({ sessionId: "c1", status: "idle" })],
+      [cli({ id: "c1", toolType: "claude-chat" as TerminalSessionSummary["toolType"], status: "running", runtimeState: "running" })],
+    );
+    expect(agents).toHaveLength(1);
+    expect(agents[0]?.kind).toBe("chat");
+    expect(agents[0]?.activity).toBe("working");
   });
 
   it("marks provider-structured CLI attention as awaiting input", () => {

@@ -29,7 +29,6 @@ import {
 } from "../apple/appleMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
-import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
@@ -287,38 +286,26 @@ function WorkGitTool({
   if (pinnedMachineOffline) {
     return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
-  const hasDiffSelection = Boolean(selectedPath || selectedCommit);
+  // The pane shows the selected file or commit's diff itself, in place of the
+  // file list, so it gets the full height. Wrapping it in an auto-height box
+  // and mounting a second diff below squeezed the pane's own sections to
+  // nothing and loaded every diff twice.
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={cn("min-h-0 overflow-auto", hasDiffSelection ? "max-h-[58%] shrink-0" : "flex-1")}>
-        <LaneGitActionsPane
-          key={`work-git:${mountScope}:${laneId}`}
-          laneId={laneId}
-          runtimePin={runtimePin}
-          variant="pane"
-          autoRebaseEnabled={false}
-          onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
-          onSelectFile={onSelectFile}
-          onSelectCommit={onSelectCommit}
-          onClearDiffSelection={onClearDiffSelection}
-          selectedPath={selectedPath}
-          selectedMode={selectedMode}
-          selectedCommit={selectedCommit}
-          selectedCommitSha={selectedCommit?.sha ?? null}
-        />
-      </div>
-      {hasDiffSelection ? (
-        <div className="min-h-0 flex-1 border-t border-white/[0.08]">
-          <LaneDiffPane
-            laneId={laneId}
-            runtimePin={runtimePin}
-            selectedPath={selectedPath}
-            selectedFileMode={selectedMode}
-            selectedCommit={selectedCommit}
-            liveSync
-          />
-        </div>
-      ) : null}
+      <LaneGitActionsPane
+        key={`work-git:${mountScope}:${laneId}`}
+        laneId={laneId}
+        runtimePin={runtimePin}
+        autoRebaseEnabled={false}
+        onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
+        onSelectFile={onSelectFile}
+        onSelectCommit={onSelectCommit}
+        onClearDiffSelection={onClearDiffSelection}
+        selectedPath={selectedPath}
+        selectedMode={selectedMode}
+        selectedCommit={selectedCommit}
+        selectedCommitSha={selectedCommit?.sha ?? null}
+      />
     </div>
   );
 }

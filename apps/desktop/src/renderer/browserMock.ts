@@ -878,10 +878,76 @@ function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
   });
 }
 
+/**
+ * Stand-in lanes appended to the snapshot's real lanes so every Lanes sidebar
+ * State group has a member: a lane whose PR merged (Done, and behind main on
+ * purpose, since merged lanes usually are), an old lane with no PR (Stale) plus
+ * a stacked child in the same group (indented), and a fresh child of the first
+ * live-PR lane (Quiet, shown with a "↳ parent" hint because its parent sits in
+ * another group). The Done lane's merged PR is added in `mockLiveLanePrs`.
+ */
+const MOCK_SIDEBAR_DONE_LANE_ID = "mock-sidebar-done";
+function mockSidebarGroupLanes(realLanes: any[]): any[] {
+  const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const liveParent = realLanes.find(
+    (lane: any) => lane.laneType !== "primary" && !String(lane.name ?? "").startsWith("t3code/"),
+  );
+  const primaryId = realLanes.find((lane: any) => lane.laneType === "primary")?.id ?? null;
+  const withCommit = (lane: any, lastCommitAt: string, behind = 0) => ({
+    ...lane,
+    parentLaneId: lane.parentLaneId === "lane-main" ? primaryId : lane.parentLaneId,
+    lastCommitAt,
+    status: { ...lane.status, behind, lastCommitAt },
+  });
+  const lanes = [
+    withCommit(
+      makeLane(MOCK_SIDEBAR_DONE_LANE_ID, "Usage meter polish", "refs/heads/ade/usage-meter-polish", {
+        createdAt: hoursAgo(4 * 24),
+        color: "#34d399",
+      }),
+      hoursAgo(2 * 24),
+      6,
+    ),
+    withCommit(
+      makeLane("mock-sidebar-stale", "Onboarding copy spike", "refs/heads/ade/onboarding-copy-spike", {
+        createdAt: hoursAgo(45 * 24),
+        childCount: 1,
+      }),
+      hoursAgo(31 * 24),
+    ),
+    withCommit(
+      makeLane("mock-sidebar-stale-child", "Onboarding empty states", "refs/heads/ade/onboarding-empty-states", {
+        createdAt: hoursAgo(40 * 24),
+        parentLaneId: "mock-sidebar-stale",
+        stackDepth: 1,
+      }),
+      hoursAgo(33 * 24),
+    ),
+  ];
+  if (liveParent) {
+    liveParent.childCount = (liveParent.childCount ?? 0) + 1;
+    lanes.push(
+      withCommit(
+        makeLane("mock-sidebar-child", "Timeline filters", "refs/heads/ade/timeline-filters", {
+          createdAt: hoursAgo(20),
+          parentLaneId: liveParent.id,
+          baseRef: String(liveParent.branchRef ?? "main").replace(/^refs\/heads\//, ""),
+          stackDepth: 1,
+        }),
+        hoursAgo(5),
+      ),
+    );
+  }
+  return lanes;
+}
+
 const MOCK_LANES: any[] = USE_ADE_DB_SNAPSHOT
-  ? buildMockLanesFromAdeSnapshot(
-      Array.isArray(ADE_DB_SNAPSHOT?.lanes) ? ADE_DB_SNAPSHOT.lanes : [],
-    )
+  ? (() => {
+      const real = buildMockLanesFromAdeSnapshot(
+        Array.isArray(ADE_DB_SNAPSHOT?.lanes) ? ADE_DB_SNAPSHOT.lanes : [],
+      );
+      return [...real, ...mockSidebarGroupLanes(real)];
+    })()
   : BUILTIN_MOCK_LANES;
 
 const ADE_DB_PR_SNAPSHOTS: any[] =
@@ -891,6 +957,64 @@ const ADE_DB_PR_SNAPSHOTS: any[] =
 const ADE_DB_PR_SNAPSHOT_BY_ID = new Map<string, any>(
   ADE_DB_PR_SNAPSHOTS.map((snapshot) => [String(snapshot.prId), snapshot]),
 );
+/**
+ * The snapshot has no git log, so lanes get a stand-in: real commit subjects
+ * from the exported PR snapshots, dated back from the lane's newest commit.
+ * The newest `ahead` rows play the lane's own commits and a few older rows play
+ * base history. Messages carry Co-Authored-By trailers so agent attribution shows.
+ */
+const MOCK_COMMIT_POOL: any[] = (() => {
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const snapshot of ADE_DB_PR_SNAPSHOTS) {
+    for (const commit of snapshot?.commits ?? []) {
+      if (!commit?.sha || seen.has(commit.sha)) continue;
+      seen.add(commit.sha);
+      out.push(commit);
+    }
+  }
+  return out;
+})();
+const MOCK_COMMIT_TRAILERS = [
+  "Claude Opus 5.5 <noreply@anthropic.com>",
+  "Codex <noreply@openai.com>",
+  "Claude Opus 5.5 <noreply@anthropic.com>",
+  "Cursor Agent <cursoragent@cursor.com>",
+  null,
+];
+const MOCK_COMMIT_MESSAGES = new Map<string, string>();
+
+function mockLaneRecentCommits(args: any = {}): any[] | null {
+  const lane = MOCK_LANES.find((row) => row.id === args?.laneId);
+  if (!lane || MOCK_COMMIT_POOL.length === 0) return null;
+  const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 30;
+  const ahead = lane.laneType === "primary" ? limit : Math.max(0, lane.status?.ahead ?? 0);
+  const count = Math.min(limit, ahead + 5);
+  let seed = 0;
+  for (const ch of String(lane.id)) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+  const end = Date.parse(lane.lastCommitAt ?? "") || Date.now() - 20 * 60_000;
+  const start = Date.parse(lane.createdAt ?? "") || end - 7 * 86_400_000;
+  const step = Math.max(12 * 60_000, (end - start) / Math.max(1, Math.min(ahead, count)));
+  const lanePrefix = String(lane.id).replace(/[^0-9a-f]/gi, "").padEnd(8, "0").slice(0, 8);
+  return Array.from({ length: count }, (_, index) => {
+    const source = MOCK_COMMIT_POOL[(seed + index) % MOCK_COMMIT_POOL.length];
+    const sourceSha = String(source.sha);
+    const sha = `${sourceSha.slice(0, 7)}${index.toString(16).padStart(4, "0")}${lanePrefix}${sourceSha.slice(19)}`;
+    const subject = String(source.message ?? "").split("\n")[0] ?? "";
+    const trailer = MOCK_COMMIT_TRAILERS[(seed + index) % MOCK_COMMIT_TRAILERS.length];
+    MOCK_COMMIT_MESSAGES.set(sha, trailer ? `${subject}\n\nCo-Authored-By: ${trailer}` : subject);
+    return {
+      sha,
+      shortSha: sha.slice(0, 7),
+      parents: [],
+      authorName: String(source.author?.name ?? "ADE"),
+      authoredAt: new Date(end - index * step).toISOString(),
+      subject,
+      pushed: index > 0,
+    };
+  });
+}
+
 const ADE_DB_OPERATIONS: any[] =
   USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.operations)
     ? ADE_DB_SNAPSHOT.operations
@@ -1680,11 +1804,101 @@ const INTEGRATION_PRS: any[] = [
   ),
 ];
 
+/**
+ * The exported snapshot only carries PRs of lanes that are long gone, so the
+ * Lanes dashboard would never show a live PR. Three live lanes get stand-in
+ * PRs built from their own name and branch: open with failing checks and
+ * changes requested (plus one earlier merged PR), a draft with checks
+ * running, and an open approved PR with passing checks.
+ */
+function mockLiveLanePrs(): any[] {
+  const lanes = MOCK_LANES.filter(
+    (lane: any) => lane.laneType !== "primary" && !String(lane.name ?? "").startsWith("t3code/"),
+  ).slice(0, 3);
+  const looks = [
+    { state: "open", checksStatus: "failing", reviewStatus: "changes_requested", mergeConflicts: true, additions: 412, deletions: 96 },
+    { state: "draft", checksStatus: "pending", reviewStatus: "none", mergeConflicts: false, additions: 58, deletions: 12 },
+    { state: "open", checksStatus: "passing", reviewStatus: "approved", mergeConflicts: false, additions: 1204, deletions: 377 },
+  ];
+  const out: any[] = [];
+  // The sidebar's Done stand-in lane (see `mockSidebarGroupLanes`) merged.
+  const doneLane = MOCK_LANES.find((lane: any) => lane.id === MOCK_SIDEBAR_DONE_LANE_ID);
+  if (doneLane) {
+    out.push({
+      laneId: doneLane.id,
+      projectId: MOCK_PROJECT.id ?? "mock-project",
+      repoOwner: "arul28",
+      repoName: "ADE",
+      githubNodeId: null,
+      baseBranch: "main",
+      lastSyncedAt: now,
+      id: "mock-sidebar-pr-1227",
+      githubPrNumber: 1227,
+      githubUrl: "https://github.com/arul28/ADE/pull/1227",
+      title: String(doneLane.name),
+      headBranch: String(doneLane.branchRef).replace(/^refs\/heads\//, ""),
+      state: "merged",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      mergeConflicts: false,
+      additions: 184,
+      deletions: 52,
+      createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+      updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+      mergedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    });
+  }
+  lanes.forEach((lane: any, index: number) => {
+    const look = looks[index]!;
+    const branch = String(lane.branchRef ?? "").replace(/^refs\/heads\//, "");
+    const number = 1301 + index;
+    const base = {
+      laneId: lane.id,
+      projectId: MOCK_PROJECT.id ?? "mock-project",
+      repoOwner: "arul28",
+      repoName: "ADE",
+      githubNodeId: null,
+      baseBranch: "main",
+      lastSyncedAt: now,
+    };
+    out.push({
+      ...base,
+      id: `mock-live-pr-${number}`,
+      githubPrNumber: number,
+      githubUrl: `https://github.com/arul28/ADE/pull/${number}`,
+      title: String(lane.name ?? branch),
+      headBranch: branch,
+      ...look,
+      createdAt: new Date(Date.now() - (index + 1) * 26 * 3_600_000).toISOString(),
+      updatedAt: new Date(Date.now() - (index + 1) * 40 * 60_000).toISOString(),
+      mergedAt: null,
+    });
+    if (index === 0) {
+      out.push({
+        ...base,
+        id: `mock-live-pr-${number}-earlier`,
+        githubPrNumber: 1240,
+        githubUrl: "https://github.com/arul28/ADE/pull/1240",
+        title: `${String(lane.name ?? branch)}: first pass`,
+        headBranch: `${branch}-v1`,
+        state: "merged",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        mergeConflicts: false,
+        additions: 230,
+        deletions: 41,
+        createdAt: new Date(Date.now() - 9 * 86_400_000).toISOString(),
+        updatedAt: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+        mergedAt: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+      });
+    }
+  });
+  return out;
+}
+
 // ── All PRs combined ──────────────────────────────────────────
 const ALL_PRS = USE_ADE_DB_SNAPSHOT
-  ? Array.isArray(ADE_DB_SNAPSHOT?.prs)
-    ? ADE_DB_SNAPSHOT.prs
-    : []
+  ? [...(Array.isArray(ADE_DB_SNAPSHOT?.prs) ? ADE_DB_SNAPSHOT.prs : []), ...mockLiveLanePrs()]
   : [...NORMAL_PRS, ...INTEGRATION_PRS];
 
 function getAdeDbPrSnapshotByGithubCoordinates(args: any): any | null {
@@ -2166,6 +2380,102 @@ const MOCK_STATUS_BY_PR: Record<string, any> = {
     behindBaseBy: 3,
   },
 };
+
+/**
+ * Checks, reviews, merge status and changed files for the stand-in live lane
+ * PRs (see `mockLiveLanePrs`), so the Lanes overview's pull request section
+ * has something real to show: #1301 failing with conflicts, #1302 a draft
+ * with checks still running, #1303 approved and green.
+ */
+const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
+(function seedMockLivePrDetail() {
+  const iso = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const check = (name: string, state: "passed" | "failed" | "running" | "queued" | "skipped", minutes = 4) => ({
+    name,
+    status: state === "running" ? "in_progress" : state === "queued" ? "queued" : "completed",
+    conclusion: state === "passed" ? "success" : state === "failed" ? "failure" : state === "skipped" ? "skipped" : null,
+    detailsUrl: null,
+    startedAt: state === "queued" ? null : iso(60),
+    completedAt: state === "passed" || state === "failed" || state === "skipped" ? iso(60 - minutes) : null,
+  });
+  const files = (paths: Array<[string, string, number, number]>) =>
+    paths.map(([filename, status, additions, deletions]) => ({ filename, status, additions, deletions, patch: null, previousFilename: null }));
+  const livePrs = ALL_PRS.filter((pr: any) => String(pr.id ?? "").startsWith("mock-live-pr-") && !String(pr.id).endsWith("-earlier"));
+  const looks: Array<{ checks: any[]; reviews: any[]; status: Record<string, unknown>; files: any[] }> = [
+    {
+      checks: [
+        check("ci / typecheck", "passed", 3),
+        check("ci / unit (desktop)", "failed", 7),
+        check("ci / unit (ios)", "passed", 11),
+        check("ci / lint", "passed", 2),
+        check("ci / build (macos)", "running"),
+      ],
+      reviews: [
+        { reviewer: "coderabbitai", reviewerAvatarUrl: null, reviewerIsBot: true, state: "commented", body: null, submittedAt: iso(300) },
+        { reviewer: "arul28", reviewerAvatarUrl: null, state: "changes_requested", body: null, submittedAt: iso(200) },
+      ],
+      status: { mergeConflicts: true, isMergeable: false, behindBaseBy: 12 },
+      files: files([
+        ["apps/desktop/src/renderer/components/lanes/LanesPage.tsx", "modified", 212, 88],
+        ["apps/desktop/src/renderer/components/lanes/overview/LaneTimeline.tsx", "added", 164, 0],
+        ["apps/desktop/src/renderer/components/lanes/overview/laneTimelineModel.ts", "added", 96, 0],
+        ["apps/desktop/src/main/services/lanes/laneEventService.ts", "modified", 44, 8],
+        ["apps/desktop/src/renderer/components/lanes/LaneStackPane.tsx", "removed", 0, 131],
+        ["docs/features/lanes/README.md", "modified", 12, 4],
+      ]),
+    },
+    {
+      checks: [
+        check("ci / typecheck", "passed", 3),
+        check("ci / lint", "passed", 2),
+        check("ci / unit (desktop)", "running"),
+        check("ci / build (macos)", "queued"),
+        check("ci / build (windows)", "queued"),
+      ],
+      reviews: [],
+      status: { mergeConflicts: false, isMergeable: true, behindBaseBy: 0 },
+      files: files([
+        ["apps/desktop/src/main/services/macDesktop/virtualDisplay.ts", "added", 41, 0],
+        ["apps/desktop/src/main/services/macDesktop/displayRegistry.ts", "modified", 12, 9],
+        ["apps/ios/ADE/Views/MacDesktop/MacDesktopView.swift", "modified", 5, 3],
+      ]),
+    },
+    {
+      checks: [
+        "ci / typecheck", "ci / lint", "ci / unit (desktop)", "ci / unit (ios)", "ci / unit (cli)",
+        "ci / build (macos)", "ci / build (windows)", "ci / e2e", "CodeRabbit",
+      ].map((name, index) => check(name, "passed", 2 + index)),
+      reviews: [
+        { reviewer: "arul28", reviewerAvatarUrl: null, state: "approved", body: null, submittedAt: iso(50) },
+      ],
+      status: { mergeConflicts: false, isMergeable: true, behindBaseBy: 0 },
+      files: files([
+        ["apps/desktop/src/main/services/macDesktop/macDesktopSeat.ts", "modified", 388, 120],
+        ["apps/desktop/src/main/services/macDesktop/h264Decoder.ts", "renamed", 210, 77],
+        ["apps/desktop/src/renderer/components/macDesktop/MacDesktopPane.tsx", "modified", 301, 94],
+        ["apps/desktop/src/renderer/components/macDesktop/useMacDesktopStream.ts", "added", 142, 0],
+        ["apps/desktop/src/shared/types/macDesktop.ts", "modified", 36, 11],
+        ["apps/ade-cli/src/commands/macDesktop.ts", "modified", 58, 21],
+        ["apps/desktop/src/main/services/macDesktop/legacyCapture.ts", "removed", 0, 54],
+        ["docs/features/mac-desktop/README.md", "modified", 29, 0],
+      ]),
+    },
+  ];
+  livePrs.forEach((pr: any, index: number) => {
+    const look = looks[index];
+    if (!look) return;
+    MOCK_CHECKS_BY_PR[pr.id] = look.checks;
+    MOCK_REVIEWS_BY_PR[pr.id] = look.reviews;
+    MOCK_STATUS_BY_PR[pr.id] = {
+      prId: pr.id,
+      state: pr.state,
+      checksStatus: pr.checksStatus,
+      reviewStatus: pr.reviewStatus,
+      ...look.status,
+    };
+    MOCK_LIVE_PR_FILES[pr.id] = look.files;
+  });
+})();
 
 // ── Rebase Needs (all urgency categories) ─────────────────────
 const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
@@ -6237,19 +6547,21 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       discardFile: resolvedArg({ ok: true }),
       restoreStagedFile: resolvedArg({ ok: true }),
       commit: resolvedArg({ ok: true }),
-      listRecentCommits: resolvedArg([
-        {
-          sha: "abcdef1234567890",
-          shortSha: "abcdef1",
-          parents: [],
-          authorName: "ADE Browser Mock",
-          authoredAt: now,
-          subject: "Browser mock HEAD commit",
-          pushed: true,
-        },
-      ]),
+      listRecentCommits: async (args: any = {}) =>
+        mockLaneRecentCommits(args) ?? [
+          {
+            sha: "abcdef1234567890",
+            shortSha: "abcdef1",
+            parents: [],
+            authorName: "ADE Browser Mock",
+            authoredAt: now,
+            subject: "Browser mock HEAD commit",
+            pushed: true,
+          },
+        ],
       listCommitFiles: resolvedArg([]),
-      getCommitMessage: resolvedArg(""),
+      getCommitMessage: async (args: any = {}) =>
+        MOCK_COMMIT_MESSAGES.get(String(args?.commitSha ?? "")) ?? "",
       getCommit: resolvedArg(null),
       isCommitInLaneHistory: resolvedArg(true),
       revertCommit: resolvedArg({ ok: true }),
@@ -6830,7 +7142,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           linkedIssues: [],
         },
       getFiles: async (prId: string) =>
-        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.files ?? [],
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.files ?? MOCK_LIVE_PR_FILES[prId] ?? [],
       getCommits: async (prId: string) =>
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.commits ?? [],
       getDeployments: resolvedArg([]),

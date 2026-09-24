@@ -1,5 +1,6 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useRef } from "react";
 import { Funnel, X } from "@phosphor-icons/react";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import {
@@ -119,6 +120,7 @@ export function WorkFilterBar({
       ) === index,
   );
   const hasFilters = activeTokens.length > 0;
+  const filterButtonRef = useRef<HTMLButtonElement | null>(null);
 
   return (
     <div className="relative flex shrink-0 items-center gap-1.5">
@@ -140,6 +142,7 @@ export function WorkFilterBar({
         </button>
       ))}
       <button
+        ref={filterButtonRef}
         type="button"
         className={
           filterMenuKey
@@ -158,15 +161,23 @@ export function WorkFilterBar({
           </span>
         ) : null}
       </button>
+      {/* Portalled: the palette clips its content, so a short result list
+          would cut the menu off. */}
       {filterMenuKey ? (
-        <div
+        <AnchoredMenu
+          open
+          anchorRef={filterButtonRef}
+          onClose={() => onMenuKeyChange(null)}
+          placement="bottom-end"
+          zIndex={130}
+          remeasureKey={filterMenuKey}
           role="menu"
           aria-label={
             filterMenuKey === "choose"
               ? "Work filter facets"
               : `${WORK_FILTER_LABELS[filterMenuKey]} filter values`
           }
-          className="absolute right-0 top-full z-20 mt-1 max-h-64 min-w-44 overflow-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-popup-bg)] p-1 shadow-xl"
+          className="max-h-64 min-w-44 overflow-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-popup-bg)] p-1 shadow-xl"
         >
           {filterMenuKey === "choose" ? (
             <>
@@ -251,7 +262,7 @@ export function WorkFilterBar({
               </div>
             </>
           )}
-        </div>
+        </AnchoredMenu>
       ) : null}
       <span className="sr-only">Search: {query}</span>
     </div>

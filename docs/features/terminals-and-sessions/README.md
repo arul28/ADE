@@ -911,10 +911,10 @@ Renderer surfaces:
   plus one in `WORK_TOOL_DEFINITIONS`.
 - `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
-  `WorkToolPickerBackdrop.tsx` is only the React shell. The shell takes a
-  `variant`: `pane` (the new-chat surface and the tools picker) or `header`
-  (the chat header bar: a wider slice of the same mesh, with more drift and a
-  stronger pointer bloom, from `HEADER_SLICE` and `headerBackdropScale`). The shader module is
+  `WorkToolPickerBackdrop.tsx` is only the React shell. It paints the
+  new-chat surface and the tools picker; `field="window"` makes a canvas draw
+  its part of one window-sized field, so the top bar, the new-chat pane and
+  the welcome screen meet as one gradient. The shader module is
   data: the two GLSL programs, the light and dark palettes (`backdropThemeFor`
   — no colour is named in the fragment shader; dark walks `--color-bg` through
   `--color-accent-deep`, indigo `#6366F1`, `--color-accent`, and
@@ -1377,10 +1377,8 @@ Renderer surfaces:
   - `WorkSurfaceHeader` is the CLI session header: title and lane chip on
     the left, then the git toolbar, trailing actions, the optional
     `actionsToggle`, and the Tools toggle on the right.
-  - `CenteredWorkSurfaceHeader` is the ADE chat header. It has no lane chip.
-    A header slice of the new-chat mesh (`WorkToolPickerBackdrop`
-    `variant="header"`) paints behind it. The thread title is centered over
-    that mesh. The snooze chip, Claude cache badge, trailing actions, git
+  - `CenteredWorkSurfaceHeader` is the ADE chat header. It has no lane chip
+    and no gradient. The thread title is centered. The snooze chip, Claude cache badge, trailing actions, git
     toolbar, `actionsToggle` (the chat progress icon), and Tools toggle are
     in the right cluster.
   - `prBadgeOnly` hides the create-PR button. The PR badge still shows when
@@ -1753,7 +1751,7 @@ Renderer surfaces:
   `laneId`, `profile`, optional overrides, and the `disposition` field),
   and `WorkPtyLaunchResult` (alias of `PtyCreateResult`). These types
   unify the inline prop shapes that `WorkStartSurface`, `WorkViewArea`,
-  `useLaneWorkSessions`, `useWorkSessions`, and `AgentChatPane` all
+  `useWorkSessions`, and `AgentChatPane` all
   previously duplicated.
 - `apps/desktop/src/shared/shell.ts` — shared shell-quoting and
   command-line parsing utilities (`quoteShellArg`, `commandArrayToLine`,

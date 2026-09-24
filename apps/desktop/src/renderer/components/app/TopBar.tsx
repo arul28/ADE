@@ -15,7 +15,6 @@ import {
   Folder,
   FolderOpen,
   Plus,
-  Minus,
   Plugs,
   Trash,
   UploadSimple,
@@ -25,29 +24,25 @@ import {
 import { Dialog as AppDialog } from "../ui/dialog/Dialog";
 
 import { useAppStore } from "../../state/appStore";
+import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
-import {
-  ZOOM_LEVEL_KEY,
-  MIN_ZOOM_LEVEL,
-  MAX_ZOOM_LEVEL,
-  DEFAULT_ZOOM,
-  ZOOM_STEP,
-  displayZoomToLevel,
-  getStoredZoomLevel,
-  applyShellHeaderInset,
-} from "../../lib/zoom";
+import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
 import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
-import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice/Banner";
 import {
   readStoredProjectRoute,
   removeStoredProjectRoute,
 } from "./projectRouteStorage";
+import { ProjectSidebarToggle } from "./projectSidebar/ProjectSidebarToggle";
+import {
+  PROJECT_SIDEBAR_TOGGLE_KEYBINDING,
+  projectSidebarShortcutLabel,
+} from "./projectSidebar/projectSidebarTabs";
 import {
   activeMachineForGroup,
   groupProjectTabs,
@@ -59,7 +54,7 @@ import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { confirmDialog } from "../ui/dialog/confirm";
-import { isMac, modifierKeyLabel } from "../../lib/platform";
+import { isMac } from "../../lib/platform";
 import type {
   ProjectIcon,
   OpenProjectBinding,
@@ -72,9 +67,7 @@ import type {
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { ChannelBadge } from "./ChannelBadge";
-import { FeedbackReporterModal } from "./FeedbackReporterModal";
 import { HeaderSheet } from "./HeaderSheet";
-import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
@@ -924,6 +917,7 @@ export function TopBar({
   onOpenActivityPane?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  const theme = useAppStore((s) => s.theme);
   const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
@@ -953,7 +947,6 @@ export function TopBar({
   // In the browser web client there are no OS windows to open/close and no
   // desktop auto-updater; hide those controls so web shows no dead buttons.
   const webMode = isWebClientMode();
-  const [zoom, setZoom] = useState(getStoredZoomLevel);
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(
     null,
   );
@@ -969,7 +962,6 @@ export function TopBar({
     },
     [],
   );
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
   const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
@@ -1017,6 +1009,18 @@ export function TopBar({
     Boolean(project?.rootPath) &&
     !remoteBinding;
   const resourceUsage = useResourcePressureUsage(workspaceProjectOpen);
+  // The sidebar toggle only shows while a project surface is on screen: not on
+  // the welcome page, a new tab, Chats, or the account page.
+  const projectSurfaceVisible =
+    projectHydrated === true &&
+    showWelcome !== true &&
+    isNewTabOpen !== true &&
+    Boolean(project?.rootPath) &&
+    !personalChatsRouteActive &&
+    !accountRouteActive &&
+    !hubRouteActive;
+  const keybindings = useAppStore((s) => s.keybindings);
+  const sidebarToggleShortcut = projectSidebarShortcutLabel(keybindings, PROJECT_SIDEBAR_TOGGLE_KEYBINDING);
 
   const projectRootForRemote = workspaceProjectOpen
     ? (project?.rootPath ?? null)
@@ -1069,28 +1073,10 @@ export function TopBar({
     openRemoteProjectTabsRef.current = openRemoteProjectTabs;
   }, [openRemoteProjectTabs]);
 
-  // Mirrors the latest applied zoom so menu/keyboard commands compound off the
-  // current level. Updated synchronously inside applyZoom (not via a passive
-  // effect) so back-to-back commands before the next render don't reuse a stale
-  // value and collapse multiple steps into one.
-  const zoomRef = useRef(zoom);
-  const applyZoom = useCallback((pct: number) => {
-    const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
-    window.ade.zoom.setLevel(displayZoomToLevel(clamped));
-    localStorage.setItem(ZOOM_LEVEL_KEY, String(clamped));
-    applyShellHeaderInset(clamped);
-    // Windows twin of the traffic-light inset: the native caption strip is
-    // sized in DIP and does not follow renderer zoom on its own.
-    syncWindowsTitleBarOverlay({ displayZoom: clamped });
-    zoomRef.current = clamped;
-    setZoom(clamped);
-  }, []);
-
-  const zoomIn = useCallback(() => applyZoom(zoom + ZOOM_STEP), [applyZoom, zoom]);
-  const zoomOut = useCallback(() => applyZoom(zoom - ZOOM_STEP), [applyZoom, zoom]);
-
-  // Route native View-menu (and keyboard) zoom through the same applyZoom path
-  // so display %, persistence, and the macOS traffic-light inset stay in sync.
+  // Route native View-menu (and keyboard) zoom through the shared zoom store,
+  // the same path the settings sidebar's zoom buttons use, so the display %,
+  // persistence, and the traffic-light inset stay in sync. The bar has no zoom
+  // buttons of its own; it listens here because it is always mounted.
   useEffect(() => {
     const onCommand = window.ade?.zoom?.onCommand;
     if (typeof onCommand !== "function") return;
@@ -1100,11 +1086,11 @@ export function TopBar({
       // content — the built-in browser's page zoom — has to be offered the
       // command here. It declines unless it actually has focus.
       if (consumeAppZoomCommand(command)) return;
-      if (command === "in") applyZoom(zoomRef.current + ZOOM_STEP);
-      else if (command === "out") applyZoom(zoomRef.current - ZOOM_STEP);
-      else applyZoom(DEFAULT_ZOOM);
+      if (command === "in") zoomAppIn();
+      else if (command === "out") zoomAppOut();
+      else resetAppZoom();
     });
-  }, [applyZoom]);
+  }, []);
 
   /**
    * ⌘F and ⌘W, offered to the pane that has the keyboard before the app
@@ -2266,9 +2252,17 @@ export function TopBar({
 
   return (
     <header
-      className="ade-shell-header flex items-center gap-3"
+      className="ade-shell-header relative isolate flex items-center gap-3"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
+      {/* The top bar's part of the window gradient. It is one field with the
+          welcome screen and the new chat pane, so where they meet there is
+          no seam. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <WorkToolPickerBackdrop theme={theme} field="window" />
+      </div>
+      {projectSurfaceVisible ? <ProjectSidebarToggle shortcut={sidebarToggleShortcut} /> : null}
+
       {/* Branding */}
       <img
         src="./logo.png"
@@ -2805,117 +2799,37 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Trailing controls: activity · status · updates · utility cluster.
+      {/* Trailing controls: activity · status · updates.
           The group must be able to shrink: the header reserves room for the
           native window controls (macOS traffic lights at the start, Windows
           caption buttons at the end) with padding, and a shrink-0 group would
           simply overflow that padding at narrow widths and slide back under
-          them. The status/update strip therefore clips first so the utility
-          cluster — feedback, help, zoom — always stays inside the reservation. */}
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          {/* Account-wide Activity — the one place every machine's work surfaces,
-              reachable from every tab and project without a nav detour. */}
-          <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+          them, so it clips instead. Feedback, help, and zoom live in the
+          settings sidebar. */}
+      <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+        {/* Account-wide Activity — the one place every machine's work surfaces,
+            reachable from every tab and project without a nav detour. */}
+        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
-          {/* App-global voice capture — visible from any tab while recording. */}
-          <GlobalVoiceCaptureIndicator />
+        {/* App-global voice capture — visible from any tab while recording. */}
+        <GlobalVoiceCaptureIndicator />
 
-          <ResourcePressureIndicator usage={resourceUsage} />
-          <StoragePressureIndicator enabled={workspaceProjectOpen} />
+        <ResourcePressureIndicator usage={resourceUsage} />
+        <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
-          <div className="hidden md:flex items-center gap-1.5">
-            {renderHeaderStatusControls()}
-          </div>
-
-          <HeaderStatusMenu
-            remoteConnected={remoteConnected}
-            syncConnected={syncConnected || (!webMode && webConnected)}
-            showSyncControl={showSyncControl}
-          >
-            {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
-          </HeaderStatusMenu>
-
-          {!webMode ? <AutoUpdateControl /> : null}
+        <div className="hidden md:flex items-center gap-1.5">
+          {renderHeaderStatusControls()}
         </div>
 
-        <div
-          className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        <HeaderStatusMenu
+          remoteConnected={remoteConnected}
+          syncConnected={syncConnected || (!webMode && webConnected)}
+          showSyncControl={showSyncControl}
         >
-          <SmartTooltip
-            content={{
-              label: "Send feedback",
-              description: "Report a bug, suggest a feature, or ask a question — the report goes to the ADE team with helpful context attached.",
-            }}
-          >
-            <button
-              type="button"
-              className={cn(
-                "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-                "transition-[background-color,color,border-color,box-shadow] duration-150",
-              )}
-              data-variant="ghost"
-              onClick={() => setFeedbackOpen(true)}
-              aria-label="Report bug or suggest feature"
-            >
-              <ChatCircleDots size={13} weight="regular" />
-            </button>
-          </SmartTooltip>
+          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+        </HeaderStatusMenu>
 
-          <HelpMenu />
-
-          <div className="inline-flex items-center gap-0">
-            <SmartTooltip
-              content={{
-                label: "Zoom out",
-                description: "Shrink everything in the window.",
-                shortcut: `${modifierKeyLabel}-`,
-              }}
-            >
-              <button
-                type="button"
-                className={cn(
-                  "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-                  "transition-[background-color,color,border-color,box-shadow] duration-150",
-                )}
-                data-variant="ghost"
-                onClick={zoomOut}
-                aria-label="Zoom out"
-              >
-                <Minus size={11} weight="bold" />
-              </button>
-            </SmartTooltip>
-            <span
-              className={cn(
-                "ade-shell-control-kbd ade-shell-header-utility-zoom inline-flex items-center justify-center border-x-0",
-                "select-none text-center font-mono",
-              )}
-            >
-              {zoom}%
-            </span>
-            <SmartTooltip
-              content={{
-                label: "Zoom in",
-                description: "Enlarge everything in the window.",
-                shortcut: `${modifierKeyLabel}+`,
-              }}
-            >
-              <button
-                type="button"
-                className={cn(
-                  "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-                  "transition-[background-color,color,border-color,box-shadow] duration-150",
-                )}
-                data-variant="ghost"
-                onClick={zoomIn}
-                aria-label="Zoom in"
-              >
-                <Plus size={11} weight="bold" />
-              </button>
-            </SmartTooltip>
-          </div>
-        </div>
+        {!webMode ? <AutoUpdateControl /> : null}
       </div>
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
@@ -2935,11 +2849,6 @@ export function TopBar({
           onRemoveRequested={handleRemoteTargetRemoveRequested}
         />
       </HeaderSheet>
-
-      <FeedbackReporterModal
-        open={feedbackOpen}
-        onOpenChange={setFeedbackOpen}
-      />
 
       <PublishToGitHubDialog
         open={publishOpen}

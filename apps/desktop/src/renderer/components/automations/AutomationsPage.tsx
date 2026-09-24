@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import type { AutomationRuleDraft } from "../../../shared/types";
 import { AutomationsWorkspace } from "./AutomationsWorkspace";
 import { ProductionAutomationsComingSoon } from "./AutomationsComingSoon";
-import { takeTemplateDraft } from "./templates/draftHandoff";
 
 type AutomationsAvailabilityState = "checking" | "disabled" | "enabled";
 
@@ -72,16 +71,13 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
     console.info(`renderer.page ${JSON.stringify({ page: "automations" })}`);
   }, []);
 
-  // The templates screen stashes its draft in the module mailbox (the tab
-  // host strips location.state — see templates/draftHandoff.ts). Keep the
-  // location.state read as a fallback for direct navigations outside the host.
+  // /automations/templates is a view of this page, not its own page, so the
+  // rule list and whatever you had open stay put while you browse templates.
+  const templatesOpen = location.pathname === "/automations/templates";
+
+  // A draft handed over in location.state, for direct navigations.
   useEffect(() => {
     if (!active) return;
-    const stashed = takeTemplateDraft();
-    if (stashed) {
-      setPendingDraft(stashed);
-      return;
-    }
     const state = location.state as { draft?: AutomationRuleDraft } | null;
     if (state?.draft) {
       setPendingDraft(state.draft);
@@ -99,6 +95,10 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
             pendingDraft={pendingDraft}
             onDraftConsumed={() => setPendingDraft(null)}
             onOpenTemplates={() => navigate("/automations/templates")}
+            templatesOpen={templatesOpen}
+            onCloseTemplates={() => {
+              if (templatesOpen) navigate("/automations");
+            }}
           />
         </div>
       </div>

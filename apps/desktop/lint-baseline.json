@@ -13,9 +13,6 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/app/TabNav.tsx": {
-      "ade-ui/no-fixed-overlay": 1
-    },
     "apps/desktop/src/renderer/components/capture/CaptureFlyIn.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
@@ -90,11 +87,14 @@
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/lanes/LanesPage.tsx": {
-      "ade-ui/no-fixed-overlay": 4,
-      "ade-ui/no-raw-z-index": 7
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
     },
     "apps/desktop/src/renderer/components/lanes/LinearIssueBadge.tsx": {
       "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/lanes/sidebar/PointMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1
     },
     "apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
@@ -166,6 +166,9 @@
     "apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1
     },
+    "apps/desktop/src/renderer/components/ui/AnchoredMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1
+    },
     "apps/desktop/src/renderer/components/ui/MenuSubmenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
@@ -179,10 +182,6 @@
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/ui/paneMenuTokens.ts": {
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/webclient/shell/ScreenShell.tsx": {

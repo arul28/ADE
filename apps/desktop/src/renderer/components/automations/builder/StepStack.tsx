@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState, type RefObject } from "react";
 import { Broom, CaretDown, Plus } from "@phosphor-icons/react";
 import type { TestSuiteDefinition } from "../../../../shared/types";
-import { useClickOutside } from "../../../hooks/useClickOutside";
+import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
 import { ADD_STEP_ORDER, stepDef, type StepKind } from "../actionCatalog";
 import { blankStep, type WorkflowStep } from "./draftBridge";
@@ -138,17 +138,11 @@ export function StepStack({
 
 function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  useClickOutside(wrapRef, () => setOpen(false), open);
-  useEffect(() => {
-    if (!open) return;
-    const escape = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("keydown", escape);
-    return () => document.removeEventListener("keydown", escape);
-  }, [open]);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
   return (
-    <div ref={wrapRef} className="relative flex items-center justify-center py-1">
+    <div className="relative flex items-center justify-center py-1">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
@@ -161,32 +155,26 @@ function StepInserter({ onAdd }: { onAdd: (kind: StepKind) => void }) {
       >
         <Plus size={11} weight="bold" />
       </button>
-      {open ? (
-        <StepMenu
-          onPick={(kind) => {
-            onAdd(kind);
-            setOpen(false);
-          }}
-          className="absolute top-7 z-30"
-        />
-      ) : null}
+      <StepMenu
+        open={open}
+        anchorRef={buttonRef}
+        onClose={() => setOpen(false)}
+        onPick={(kind) => {
+          onAdd(kind);
+          setOpen(false);
+        }}
+      />
     </div>
   );
 }
 
 function AddStepButton({ onAdd }: { onAdd: (kind: StepKind) => void }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  useClickOutside(wrapRef, () => setOpen(false), open);
-  useEffect(() => {
-    if (!open) return;
-    const escape = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("keydown", escape);
-    return () => document.removeEventListener("keydown", escape);
-  }, [open]);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
   return (
-    <div ref={wrapRef} className="relative">
+    <div className="relative">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
@@ -202,22 +190,39 @@ function AddStepButton({ onAdd }: { onAdd: (kind: StepKind) => void }) {
         </span>
         <CaretDown size={11} weight="bold" className={cn("text-muted-fg/60 transition-transform", open && "rotate-180")} />
       </button>
-      {open ? (
-        <StepMenu
-          onPick={(kind) => {
-            onAdd(kind);
-            setOpen(false);
-          }}
-          className="absolute left-0 right-0 z-30 mt-1"
-        />
-      ) : null}
+      <StepMenu
+        open={open}
+        anchorRef={buttonRef}
+        onClose={() => setOpen(false)}
+        onPick={(kind) => {
+          onAdd(kind);
+          setOpen(false);
+        }}
+      />
     </div>
   );
 }
 
-function StepMenu({ onPick, className }: { onPick: (kind: StepKind) => void; className?: string }) {
+/** Portalled so the builder's scroll pane cannot cut the list off. */
+function StepMenu({
+  open,
+  anchorRef,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  anchorRef: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  onPick: (kind: StepKind) => void;
+}) {
   return (
-    <div className={cn("w-[280px] rounded-xl border border-white/[0.08] bg-surface-overlay p-1 shadow-float", className)} role="menu">
+    <AnchoredMenu
+      open={open}
+      anchorRef={anchorRef}
+      onClose={onClose}
+      className="max-h-[70vh] w-[280px] overflow-y-auto rounded-xl border border-white/[0.08] bg-surface-overlay p-1 shadow-float"
+      role="menu"
+    >
       {ADDABLE_KINDS.map((kind) => {
         const def = stepDef(kind);
         const Icon = def.icon;
@@ -239,7 +244,7 @@ function StepMenu({ onPick, className }: { onPick: (kind: StepKind) => void; cla
           </button>
         );
       })}
-    </div>
+    </AnchoredMenu>
   );
 }
 

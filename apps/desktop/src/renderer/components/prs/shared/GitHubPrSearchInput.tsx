@@ -6,13 +6,11 @@ import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 export type GitHubPrSearchInputProps = {
   value: string;
   onChange: (value: string) => void;
-  compact?: boolean;
 };
 
 export const GitHubPrSearchInput = memo(function GitHubPrSearchInput({
   value,
   onChange,
-  compact = false,
 }: GitHubPrSearchInputProps) {
   return (
     <div
@@ -22,9 +20,8 @@ export const GitHubPrSearchInput = memo(function GitHubPrSearchInput({
         display: "flex",
         alignItems: "center",
         gap: 8,
-        height: compact ? 30 : 32,
-        padding: "0 10px",
-        maxWidth: compact ? 420 : undefined,
+        height: 28,
+        padding: "0 9px",
         background: "rgba(255,255,255,0.03)",
         border: "1px solid rgba(255,255,255,0.06)",
         borderRadius: 8,
@@ -35,7 +32,7 @@ export const GitHubPrSearchInput = memo(function GitHubPrSearchInput({
         type="text"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="Search pull requests..."
+        placeholder="Search pull requests"
         style={{
           flex: 1,
           minWidth: 0,

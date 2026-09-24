@@ -484,7 +484,7 @@ describe("WorkKanbanBoard", () => {
       // column holding a long chat title would claim more than its share.
       expect(cls).toContain("flex-1");
       expect(cls).toContain("basis-0");
-      expect(cls).toContain("min-w-[15.5rem]");
+      expect(cls).toContain("min-w-[14rem]");
       expect(cls).not.toContain("shrink-0");
     }
   });

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLaneActionClearedSearch,
-  getDeferredLanePaneDelayMs,
   githubPrMatchesCurrentBranch,
   laneIsOnBaseBranch,
   laneHasAncestor,
@@ -9,10 +8,9 @@ import {
   lanePrMatchesCurrentBranch,
   lanePrRole,
   planLaneDeleteBatches,
-  resolveLaneDeleteStartSelection,
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
-  resolveVisibleLaneIds,
+  resolveLaneSelectionAfterDelete,
   runLaneDeleteBatchWithConcurrency,
   selectGithubLanePrTag,
   selectChatPrs,
@@ -21,13 +19,8 @@ import {
   selectLanePrTag,
   selectVisibleLanePrRefreshIds,
   shouldApplyLaneIdsDeepLink,
-  sortLaneListRows,
 } from "./lanePageModel";
-import {
-  buildLaneSplitColumnsKey,
-  shouldMountGitActionsPane,
-  shouldRetryLaneGithubSnapshotForceRefresh,
-} from "./LanesPage";
+import { shouldRetryLaneGithubSnapshotForceRefresh } from "./LanesPage";
 import type {
   GitHubPrListItem,
   LaneSummary,
@@ -277,124 +270,29 @@ describe("laneHasAncestor", () => {
   });
 });
 
-describe("resolveLaneDeleteStartSelection", () => {
-  it("moves selection and active panes away from lanes that just started deleting", () => {
-    const result = resolveLaneDeleteStartSelection({
-      deletingLaneIds: ["lane-b"],
+describe("resolveLaneSelectionAfterDelete", () => {
+  it("keeps the current lane when a different lane starts deleting", () => {
+    expect(resolveLaneSelectionAfterDelete({
+      deletingLaneIds: new Set(["lane-c"]),
       selectedLaneId: "lane-b",
-      activeLaneIds: ["lane-b", "lane-c"],
-      pinnedLaneIds: ["lane-b", "lane-d"],
-      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
-      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
-    });
-
-    expect(result.selectedLaneId).toBe("lane-c");
-    expect(result.activeLaneIds).toEqual(["lane-c", "lane-d"]);
-    expect(Array.from(result.pinnedLaneIds)).toEqual(["lane-d"]);
+      candidateLaneIds: ["lane-b", "lane-c"],
+    })).toBe("lane-b");
   });
 
-  it("keeps the current selected lane when a different split starts deleting", () => {
-    const result = resolveLaneDeleteStartSelection({
-      deletingLaneIds: ["lane-c"],
+  it("moves to the first surviving lane in list order", () => {
+    expect(resolveLaneSelectionAfterDelete({
+      deletingLaneIds: new Set(["lane-b", "lane-c"]),
       selectedLaneId: "lane-b",
-      activeLaneIds: ["lane-b", "lane-c", "lane-d"],
-      pinnedLaneIds: [],
-      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
-      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
-    });
-
-    expect(result.selectedLaneId).toBe("lane-b");
-    expect(result.activeLaneIds).toEqual(["lane-b", "lane-d"]);
+      candidateLaneIds: ["lane-b", "lane-c", "lane-main"],
+    })).toBe("lane-main");
   });
 
-  it("falls back through sortedLaneIds when every filtered lane is being deleted", () => {
-    const result = resolveLaneDeleteStartSelection({
-      deletingLaneIds: ["lane-b", "lane-c", "lane-d"],
+  it("returns null when every lane is deleting", () => {
+    expect(resolveLaneSelectionAfterDelete({
+      deletingLaneIds: new Set(["lane-b"]),
       selectedLaneId: "lane-b",
-      activeLaneIds: ["lane-b", "lane-c"],
-      pinnedLaneIds: ["lane-b", "lane-d"],
-      // Every filtered lane is being deleted, so the function must fall
-      // through to sortedLaneIds and pick the first non-deleting entry there
-      // (lane-main) rather than re-selecting one of the deleting lanes.
-      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
-      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
-    });
-
-    expect(result.selectedLaneId).toBe("lane-main");
-    expect(result.activeLaneIds).toEqual(["lane-main"]);
-    expect(Array.from(result.pinnedLaneIds)).toEqual([]);
-  });
-});
-
-describe("resolveVisibleLaneIds", () => {
-  it("keeps a fallback lane visible when every filtered lane is deleting", () => {
-    expect(resolveVisibleLaneIds({
-      activeLaneIds: ["lane-main"],
-      existingLaneIds: ["lane-main", "lane-deleting"],
-      filteredLaneIds: ["lane-deleting"],
-      selectableFilteredLaneIds: [],
-      deletingLaneIds: ["lane-deleting"],
-    })).toEqual(["lane-main"]);
-  });
-
-  it("does not bypass an ordinary empty filter", () => {
-    expect(resolveVisibleLaneIds({
-      activeLaneIds: ["lane-main"],
-      existingLaneIds: ["lane-main", "lane-other"],
-      filteredLaneIds: [],
-      selectableFilteredLaneIds: [],
-      deletingLaneIds: [],
-    })).toEqual([]);
-  });
-
-  it("keeps normal filter scoping when a selectable filtered lane remains", () => {
-    expect(resolveVisibleLaneIds({
-      activeLaneIds: ["lane-main", "lane-other"],
-      existingLaneIds: ["lane-main", "lane-other", "lane-deleting"],
-      filteredLaneIds: ["lane-deleting", "lane-other"],
-      selectableFilteredLaneIds: ["lane-other"],
-      deletingLaneIds: ["lane-deleting"],
-    })).toEqual(["lane-other"]);
-  });
-});
-
-describe("getDeferredLanePaneDelayMs", () => {
-  it("keeps the first visible lane eager and staggers later lanes", () => {
-    const visibleLaneIds = ["lane-a", "lane-b", "lane-c"];
-
-    expect(getDeferredLanePaneDelayMs({ laneId: "lane-a", visibleLaneIds, stepMs: 100 })).toBe(0);
-    expect(getDeferredLanePaneDelayMs({ laneId: "lane-b", visibleLaneIds, stepMs: 100 })).toBe(100);
-    expect(getDeferredLanePaneDelayMs({ laneId: "lane-c", visibleLaneIds, stepMs: 100 })).toBe(200);
-  });
-
-  it("does not defer unknown lanes and caps long queues", () => {
-    expect(getDeferredLanePaneDelayMs({
-      laneId: "lane-z",
-      visibleLaneIds: ["lane-a", "lane-b"],
-      stepMs: 100,
-      maxMs: 150,
-    })).toBe(0);
-    expect(getDeferredLanePaneDelayMs({
-      laneId: "lane-d",
-      visibleLaneIds: ["lane-a", "lane-b", "lane-c", "lane-d"],
-      stepMs: 100,
-      maxMs: 150,
-    })).toBe(150);
-  });
-});
-
-describe("buildLaneSplitColumnsKey", () => {
-  it("does not depend on the current split lane ids", () => {
-    const beforeDelete = buildLaneSplitColumnsKey({
-      laneTilingLayoutSuffix: ":wf",
-      gridResetKey: 2,
-    });
-    const afterDelete = buildLaneSplitColumnsKey({
-      laneTilingLayoutSuffix: ":wf",
-      gridResetKey: 2,
-    });
-
-    expect(afterDelete).toBe(beforeDelete);
+      candidateLaneIds: ["lane-b"],
+    })).toBeNull();
   });
 });
 
@@ -872,81 +770,6 @@ describe("selectVisibleLanePrRefreshIds", () => {
       ],
       limit: 1,
     })).toEqual(["shared-pr"]);
-  });
-});
-
-describe("sortLaneListRows", () => {
-  it("keeps primary first and promotes pinned lanes before runtime buckets", () => {
-    const lanes = [
-      { id: "primary", laneType: "primary" },
-      { id: "running", laneType: "worktree" },
-      { id: "pinned-ended", laneType: "worktree" },
-      { id: "idle", laneType: "worktree" },
-    ] as const;
-
-    const result = sortLaneListRows({
-      lanes: [...lanes],
-      laneRuntimeById: new Map([
-        ["running", { bucket: "running" }],
-        ["pinned-ended", { bucket: "ended" }],
-        ["idle", { bucket: "none" }],
-      ]),
-      laneStatusFilter: "all",
-      laneOrderById: new Map(lanes.map((lane, index) => [lane.id, index])),
-      pinnedLaneIds: new Set(["pinned-ended"]),
-    });
-
-    expect(result.map((lane) => lane.id)).toEqual(["primary", "pinned-ended", "running", "idle"]);
-  });
-
-  it("keeps pinned ordering after applying a status filter", () => {
-    const lanes = [
-      { id: "running-a", laneType: "worktree" },
-      { id: "running-pinned", laneType: "worktree" },
-      { id: "ended", laneType: "worktree" },
-    ] as const;
-
-    const result = sortLaneListRows({
-      lanes: [...lanes],
-      laneRuntimeById: new Map([
-        ["running-a", { bucket: "running" }],
-        ["running-pinned", { bucket: "running" }],
-        ["ended", { bucket: "ended" }],
-      ]),
-      laneStatusFilter: "running",
-      laneOrderById: new Map(lanes.map((lane, index) => [lane.id, index])),
-      pinnedLaneIds: new Set(["running-pinned"]),
-    });
-
-    expect(result.map((lane) => lane.id)).toEqual(["running-pinned", "running-a"]);
-  });
-});
-
-describe("shouldMountGitActionsPane", () => {
-  it("mounts one Git Actions pane owner when a lane is expanded", () => {
-    expect(shouldMountGitActionsPane({
-      laneId: "lane-1",
-      expandedGitActionsLaneId: "lane-1",
-      surface: "inline",
-    })).toBe(false);
-
-    expect(shouldMountGitActionsPane({
-      laneId: "lane-1",
-      expandedGitActionsLaneId: "lane-1",
-      surface: "git-actions-fullscreen",
-    })).toBe(true);
-
-    expect(shouldMountGitActionsPane({
-      laneId: "lane-2",
-      expandedGitActionsLaneId: "lane-1",
-      surface: "inline",
-    })).toBe(true);
-
-    expect(shouldMountGitActionsPane({
-      laneId: "lane-1",
-      expandedGitActionsLaneId: null,
-      surface: "inline",
-    })).toBe(true);
   });
 });
 

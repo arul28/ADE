@@ -1,15 +1,29 @@
+import { ArrowLeft } from "@phosphor-icons/react";
 import type { AutomationRuleDraft } from "../../../../shared/types";
 import { TemplateCard } from "./TemplateCard";
 import { TEMPLATE_GROUPS } from "./templateData";
 
 export function TemplateGallery({
   onUseTemplate,
+  onBack,
 }: {
   onUseTemplate: (draft: Omit<AutomationRuleDraft, "id">) => void;
+  /** A quiet link above the title, back to where you were in Automations. */
+  onBack?: () => void;
 }) {
   return (
     <div className="h-full overflow-y-auto bg-bg px-6 py-6 text-fg">
       <div className="mx-auto max-w-6xl">
+        {onBack ? (
+          <button
+            type="button"
+            className="-ml-1 mb-3 inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[12px] font-medium text-muted-fg/70 transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+            onClick={onBack}
+          >
+            <ArrowLeft size={12} />
+            Back to automations
+          </button>
+        ) : null}
         <div className="max-w-2xl">
           <div className="text-[15px] font-semibold text-fg">Start from a template</div>
           <div className="mt-1 text-[13px] leading-relaxed text-muted-fg/75">
