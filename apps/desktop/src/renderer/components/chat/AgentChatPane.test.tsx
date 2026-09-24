@@ -26,6 +26,7 @@ import type {
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { openChatHandoff, takeChatHandoff } from "../../lib/chatHandoffIntent";
+import { stashComposerHandoffOrigin } from "./launch/chatLaunchDock";
 import { CLAUDE_SESSION_QUOTA_CARD_ACTION, CLAUDE_SESSION_QUOTA_FORK_NOTE } from "../../../shared/claudeSessionQuota";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
@@ -3449,6 +3450,114 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText("Open the simulator screen in preview.")).toBeTruthy();
     });
+  });
+
+  it("seeds the first bubble before a reused single-chat pane plays its handoff", async () => {
+    const sessionA = buildSession("session-a", { status: "idle" });
+    const sessionB = buildSession("session-b", { status: "idle" });
+    installAdeMocks({ sessions: [sessionA, sessionB] });
+
+    const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const animationCalls: Array<{ cardIsInDom: boolean; cardText: string }> = [];
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.matches("[data-chat-user-message-card]")) {
+          return {
+            x: 360,
+            y: 260,
+            left: 360,
+            top: 260,
+            right: 660,
+            bottom: 300,
+            width: 300,
+            height: 40,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return originalRect.call(this);
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "animate", {
+      configurable: true,
+      writable: true,
+      value(this: HTMLElement) {
+        const card = document.querySelector<HTMLElement>("[data-chat-user-message-card]");
+        animationCalls.push({ cardIsInDom: Boolean(card?.isConnected), cardText: card?.textContent ?? "" });
+        return { addEventListener: vi.fn() } as unknown as Animation;
+      },
+    });
+
+    try {
+      const view = render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionA.laneId}
+            lockSessionId={sessionA.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionA}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+      await screen.findByRole("textbox");
+
+      const firstMessageText = "Seed the reused pane before its flight.";
+      const firstMessage: AgentChatEventEnvelope = {
+        sessionId: sessionB.sessionId,
+        timestamp: "2026-09-22T10:00:00.000Z",
+        event: { type: "user_message", text: firstMessageText, deliveryState: "queued" },
+      };
+      stashComposerHandoffOrigin(sessionB.sessionId, {
+        composer: { left: 120, top: 180, width: 520, height: 120 },
+        text: {
+          left: 148,
+          top: 200,
+          box: { left: 120, top: 180, width: 520, height: 120 },
+          typed: {
+            text: firstMessageText,
+            width: 480,
+            height: 80,
+            font: "14px sans-serif",
+            lineHeight: "20px",
+            letterSpacing: "normal",
+            color: "white",
+          },
+        },
+        firstMessage,
+      });
+
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionB.laneId}
+            lockSessionId={sessionB.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionB}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => {
+        const card = document.querySelector<HTMLElement>("[data-chat-user-message-card]");
+        expect(card?.textContent).toContain(firstMessageText);
+      });
+      await waitFor(() => expect(animationCalls.length).toBeGreaterThan(0));
+      expect(animationCalls.every((call) => call.cardIsInDom && call.cardText.includes(firstMessageText))).toBe(true);
+    } finally {
+      if (originalAnimate) {
+        Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "animate");
+      }
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+        configurable: true,
+        writable: true,
+        value: originalRect,
+      });
+    }
   });
 
   it("matches a recovered committed user message to the optimistic first bubble", () => {
@@ -7682,8 +7791,17 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => expect(send).toHaveBeenCalled());
 
     firstPane.unmount();
+    const savedBeforeRemount = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    savedBeforeRemount.mentionLabels = {
+      "@chat:chat-1": "Submitted chat",
+      "@chat:chat-2": "Follow-up chat",
+    };
+    window.localStorage.setItem(draftStorageKey, JSON.stringify(savedBeforeRemount));
     const remountedPane = renderAutoCreateDraftPane({ draftContextTargetId });
-    expect(await screen.findByDisplayValue(submittedPrompt)).toBeTruthy();
+    const remountedTextbox = await screen.findByDisplayValue(submittedPrompt) as HTMLTextAreaElement;
+    fireEvent.change(remountedTextbox, {
+      target: { value: `${submittedPrompt} and preserve this follow-up @chat:chat-2` },
+    });
     expect(await screen.findByText("submitted.png")).toBeTruthy();
     act(() => {
       window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
@@ -7701,7 +7819,8 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
-    expect(saved.text).toBe("");
+    expect(saved.text).toBe(" and preserve this follow-up @chat:chat-2");
+    expect(saved.mentionLabels).toEqual({ "@chat:chat-2": "Follow-up chat" });
     expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([laterAttachment]);
   });
 
@@ -10085,7 +10204,7 @@ describe("AgentChatPane submit recovery", () => {
 // Pure function unit tests (consolidated from AgentChatPane.test.ts)
 // ---------------------------------------------------------------------------
 
-describe("AgentChatPane brain-owned new-lane launch", () => {
+describe("AgentChatPane Work draft launches", () => {
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   afterEach(() => {
@@ -10236,6 +10355,45 @@ describe("AgentChatPane brain-owned new-lane launch", () => {
     });
     const [args] = api.start.mock.calls[0] as unknown as [ChatLaunchArgs];
     expect(getChatLaunchEntry(args.launchId)).toBeNull();
+  });
+
+  it("holds one foreground launch when the draft is edited and resubmitted while sending", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    const submittedPrompt = "Send this prompt once.";
+    fireEvent.change(textbox, { target: { value: submittedPrompt } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(textbox, { target: { value: "A different follow-up prompt." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSend();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a failed start as a failed launch instead of retrying locally", async () => {

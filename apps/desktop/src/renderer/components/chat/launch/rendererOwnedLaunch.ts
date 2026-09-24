@@ -17,7 +17,8 @@ import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import type { ComposerHandoff } from "./chatLaunchDock";
 
 export function clearSubmittedDraftText(current: string, submitted: string): string {
-  return current === submitted ? "" : current;
+  if (!submitted || !current.startsWith(submitted)) return current;
+  return current.slice(submitted.length);
 }
 
 export function removeSubmittedDraftItems<T>(

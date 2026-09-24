@@ -132,7 +132,7 @@ export function prefersReducedMotion(): boolean {
 }
 
 function measureTextOrigin(composer: Element): ComposerTextOrigin | null {
-  const text = composer.querySelector(COMPOSER_TEXT_SELECTOR);
+  const text = composer.querySelector<HTMLElement>(COMPOSER_TEXT_SELECTOR);
   if (!text || typeof text.getBoundingClientRect !== "function") return null;
   const rect = text.getBoundingClientRect();
   if (!(rect.width > 0 && rect.height > 0)) return null;
@@ -140,7 +140,7 @@ function measureTextOrigin(composer: Element): ComposerTextOrigin | null {
   const px = (value: string) => Number.parseFloat(value) || 0;
   const padLeft = px(style.paddingLeft);
   const padTop = px(style.paddingTop);
-  const typedText = text instanceof HTMLTextAreaElement ? text.value : (text as HTMLElement).innerText ?? "";
+  const typedText = text instanceof HTMLTextAreaElement ? text.value : text.innerText ?? "";
   // A plain textarea with chips paints transparent glyphs over an overlay;
   // the overlay (and the text box's parent) carries the visible color.
   const visibleColor = /rgba\([^)]*,\s*0\)|transparent/.test(style.color)

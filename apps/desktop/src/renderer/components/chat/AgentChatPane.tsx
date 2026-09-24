@@ -345,6 +345,7 @@ import {
   stashComposerHandoffOrigin,
   stashComposerDockOrigin,
   takeComposerDockOrigin,
+  USER_MESSAGE_CARD_SELECTOR,
   type ComposerHandoff,
 } from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
@@ -3994,6 +3995,7 @@ export function AgentChatPane({
     const firstMessage = lockSessionId ? peekComposerHandoffFirstMessage(lockSessionId) : null;
     return firstMessage && lockSessionId ? { sessionId: lockSessionId, envelope: firstMessage } : null;
   });
+  const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(optimisticOutgoingMessage);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
@@ -4050,6 +4052,7 @@ export function AgentChatPane({
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
+  const pendingComposerHandoffAnimationRef = useRef<{ sessionId: string; handoff: ComposerHandoff } | null>(null);
   // First message of a chat launched from a draft in another pane: glide the
   // docked composer down from where the draft composer sat and fly the first
   // bubble up from where the prompt text sat (see `chatLaunchDock`). Layout
@@ -4058,11 +4061,38 @@ export function AgentChatPane({
     if (!lockSessionId) return;
     const handoff = takeComposerDockOrigin(lockSessionId);
     if (!handoff) return;
+    if (handoff.firstMessage) {
+      // Single-chat panes are reused when Work switches sessions. Seed the
+      // incoming launch bubble before the next layout pass plays its flight;
+      // the lazy state initializer only covers a newly mounted pane.
+      const optimistic = { sessionId: lockSessionId, envelope: handoff.firstMessage };
+      pendingComposerHandoffAnimationRef.current = { sessionId: lockSessionId, handoff };
+      optimisticOutgoingMessageRef.current = optimistic;
+      setOptimisticOutgoingMessage(optimistic);
+      return;
+    }
     playComposerDock(composerDockRef.current, handoff.composer);
     playFirstMessageFlight(shellRef.current, handoff.text);
     // The draft's mode switcher morphs into this chat's header.
     playDepartingDraftChrome(handoff.departing, shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR));
   }, [lockSessionId]);
+  useLayoutEffect(() => {
+    const pending = pendingComposerHandoffAnimationRef.current;
+    if (!pending || pending.sessionId !== lockSessionId) return;
+    const optimistic = optimisticOutgoingMessage;
+    if (optimistic?.sessionId !== pending.sessionId || optimistic.envelope !== pending.handoff.firstMessage) return;
+    const shell = shellRef.current;
+    // The seeded event must have committed through AgentChatMessageList before
+    // the flight measures its target card.
+    if (!shell?.querySelector(USER_MESSAGE_CARD_SELECTOR)) return;
+    pendingComposerHandoffAnimationRef.current = null;
+    playComposerDock(composerDockRef.current, pending.handoff.composer);
+    playFirstMessageFlight(shell, pending.handoff.text);
+    playDepartingDraftChrome(
+      pending.handoff.departing,
+      shell.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR),
+    );
+  }, [lockSessionId, optimisticOutgoingMessage]);
   // The same handoff for a chat this pane creates in place (no draft launch):
   // measured before the create round trip, played on the commit that swaps the
   // empty state for the thread.
@@ -4483,7 +4513,6 @@ export function AgentChatPane({
     && !eventsBySession[renderedSessionId]
     && !peekAgentChatSessionViewCache(renderedSessionId),
   );
-  const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
     const shouldRenderOptimistic =
       optimisticOutgoingMessage
@@ -9731,7 +9760,9 @@ export function AgentChatPane({
       return {
         ...saved,
         text,
-        mentionLabels: clearText ? {} : saved.mentionLabels,
+        mentionLabels: clearText
+          ? Object.fromEntries(Object.entries(saved.mentionLabels).filter(([token]) => text.includes(token)))
+          : saved.mentionLabels,
         attachments,
         contextAttachments,
         iosContextItems,
@@ -9771,7 +9802,7 @@ export function AgentChatPane({
     setDraft((current) => {
       const next = clearSubmittedDraftText(current, snapshot.draft);
       if (next === current) return current;
-      draftsPerSessionRef.current.set(companionStateKey, "");
+      draftsPerSessionRef.current.set(companionStateKey, next);
       return next;
     });
     setAttachments((current) => removeSubmittedDraftItems(current, snapshot.attachments, sameStoredDraftItem));
@@ -10387,6 +10418,19 @@ export function AgentChatPane({
     }
     if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
     if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
+    if (kind === "chat" && mode === "foreground") {
+      const scopedJobs = rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+        ?? EMPTY_DRAFT_LAUNCH_JOBS;
+      if (scopedJobs.some((job) => (
+        job.draftKind === "chat"
+        && job.mode === "foreground"
+        && !isDraftLaunchJobTerminal(job.status)
+      ))) {
+        // A changed composer snapshot has a different request key, but it is
+        // still the same held foreground launch until the first chat settles.
+        return;
+      }
+    }
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -10470,6 +10514,7 @@ export function AgentChatPane({
     clearPromptSuggestionForSession,
     clearDraftLaunchComposer,
     draftLaunchJobExists,
+    draftLaunchJobsScopeKey,
     draftLaunchTargetIsAutoCreate,
     isWorkCliLaunchDraft,
     laneId,
@@ -10479,7 +10524,6 @@ export function AgentChatPane({
     openLaunchedDraftSession,
     patchDraftLaunchJob,
     parallelLaunchBusy,
-    projectBinding,
     projectTransitionBlocksChat,
     copyPromptForLaunch,
     refreshLanesStore,

@@ -527,6 +527,8 @@ describe("renderer-owned launch handoff", () => {
     expect(removeSubmittedDraftItems(currentAttachments, [capturedAttachment], sameStoredDraftItem))
       .toEqual([{ id: "added-while-waiting" }]);
     expect(clearSubmittedDraftText("submitted prompt", "submitted prompt")).toBe("");
+    expect(clearSubmittedDraftText("submitted prompt plus a later thought", "submitted prompt"))
+      .toBe(" plus a later thought");
     expect(clearSubmittedDraftText("new prompt typed while waiting", "submitted prompt"))
       .toBe("new prompt typed while waiting");
   });
