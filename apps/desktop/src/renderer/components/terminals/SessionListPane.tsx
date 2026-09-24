@@ -20,6 +20,7 @@ import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore } from "../../state/appStore";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
+  requestCrossMachineLanesForMachine,
   useCrossMachineLaneUnion,
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
@@ -65,9 +66,8 @@ import {
 import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization, WorkViewMode } from "../../state/appStore";
 import { WorkKanbanBoard, WORK_BOARD_COLUMNS } from "./WorkKanbanBoard";
 import {
-  buildWorkBoardModel,
+  appendForeignMachinesToBoard,
   lanePrWaitingReason,
-  partitionRosterForBoard,
   type WorkBoardWaitingReason,
 } from "./useWorkSessions";
 import {
@@ -1615,14 +1615,6 @@ export const SessionListPane = React.memo(function SessionListPane({
         sessionRow: EMPTY_FOREIGN_SESSION_ROWS,
       };
     }
-    const buckets: Record<WorkBoardColumn, TerminalSessionSummary[]> = {
-      needs_you: [...workBoardBuckets.needs_you],
-      working: [...workBoardBuckets.working],
-      waiting: [...workBoardBuckets.waiting],
-      done: [...workBoardBuckets.done],
-    };
-    const waitingReasons = new Map(workBoardWaitingReasons);
-    const filing = filingBucketsForForeignSessions(foreignRows.flatMap((row) => row.sessions));
     const sessionsByMachine = new Map<string, TerminalSessionSummary[]>();
     for (const row of visibleForeignRows) {
       const list = sessionsByMachine.get(row.machineId) ?? [];
@@ -1631,27 +1623,24 @@ export const SessionListPane = React.memo(function SessionListPane({
         if (sessionRow.get(session.id) === row) list.push(session);
       }
     }
-    for (const [machineId, sessions] of sessionsByMachine) {
-      if (sessions.length === 0) continue;
-      const partitioned = partitionRosterForBoard(sessions, filing, foreignFilingNowMs);
-      const model = buildWorkBoardModel({
-        runningFiltered: partitioned.runningFiltered,
-        needsYouFiltered: partitioned.needsYouFiltered,
-        restingFiltered: partitioned.restingFiltered,
-        endedFiltered: partitioned.endedFiltered,
-        settledFiltered: partitioned.settledFiltered,
-        snoozedFiltered: partitioned.snoozedFiltered,
+    const fullSessionsByMachine = new Map<string, TerminalSessionSummary[]>();
+    for (const row of foreignRows) {
+      const list = fullSessionsByMachine.get(row.machineId) ?? [];
+      if (!fullSessionsByMachine.has(row.machineId)) fullSessionsByMachine.set(row.machineId, list);
+      list.push(...row.sessions);
+    }
+    const { buckets, waitingReasons } = appendForeignMachinesToBoard({
+      buckets: workBoardBuckets,
+      waitingReasons: workBoardWaitingReasons,
+      nowMs: foreignFilingNowMs,
+      machines: [...sessionsByMachine.entries()].map(([machineId, sessions]) => ({
+        sessions,
+        filingBuckets: filingBucketsForForeignSessions(fullSessionsByMachine.get(machineId) ?? sessions),
         laneWaitingReason: (laneId) => lanePrWaitingReason(
           lanePrsForMachine(prsByLaneId, machineId, laneId),
         ),
-      });
-      for (const column of WORK_BOARD_COLUMNS) {
-        buckets[column.key].push(...model.buckets[column.key]);
-      }
-      for (const [sessionId, reason] of model.waitingReasonBySessionId) {
-        waitingReasons.set(sessionId, reason);
-      }
-    }
+      })),
+    });
     return { buckets, waitingReasons, sessionRow };
   }, [
     filingBucketsForForeignSessions,
@@ -2415,6 +2404,30 @@ export const SessionListPane = React.memo(function SessionListPane({
    * glyph, the CTO/lineage chip and the cross-fading note line are not
    * reimplemented here. There is no second code path to keep in sync.
    */
+  const foreignSingletonLaneActions = (
+    row: CrossMachineLaneRow,
+  ): SessionContextMenuLaneActions | null => {
+    const binding = row.binding;
+    if (!binding) return null;
+    return {
+      laneId: row.lane.id,
+      laneName: row.lane.name,
+      lane: row.lane,
+      binding,
+      machineId: row.machineId,
+      onToggleWorkPin: toggleWorkLanePinned,
+      workPinnedLaneIds,
+      workPinLaneId: `${row.machineId}:${row.lane.id}`,
+      open: ({ x, y }) => triggerForeignLaneContextMenu(
+        row.lane,
+        binding,
+        row.machineName,
+        row.machineId,
+        { preventDefault: () => {}, clientX: x, clientY: y },
+      ),
+    };
+  };
+
   const renderBoardCard = (session: TerminalSessionSummary): React.ReactNode => {
     const foreignRow = boardUnion.sessionRow.get(session.id);
     const lane = foreignRow?.lane ?? laneById.get(session.laneId) ?? null;
@@ -2425,24 +2438,8 @@ export const SessionListPane = React.memo(function SessionListPane({
       : [];
     const primaryPr = lane ? selectPrimaryLanePr(lane, lanePrs) : null;
     const markerKey = foreignRow ? `${foreignRow.machineId}:${foreignRow.lane.id}` : session.laneId;
-    const laneActions: SessionContextMenuLaneActions | null = foreignRow?.binding
-      ? {
-          laneId: foreignRow.lane.id,
-          laneName: foreignRow.lane.name,
-          lane: foreignRow.lane,
-          binding: foreignRow.binding,
-          machineId: foreignRow.machineId,
-          onToggleWorkPin: toggleWorkLanePinned,
-          workPinnedLaneIds,
-          workPinLaneId: `${foreignRow.machineId}:${foreignRow.lane.id}`,
-          open: ({ x, y }) => triggerForeignLaneContextMenu(
-            foreignRow.lane,
-            foreignRow.binding!,
-            foreignRow.machineName,
-            foreignRow.machineId,
-            { preventDefault: () => {}, clientX: x, clientY: y },
-          ),
-        }
+    const laneActions: SessionContextMenuLaneActions | null = foreignRow
+      ? foreignSingletonLaneActions(foreignRow)
       : lane
         ? {
             laneId: lane.id,
@@ -2468,8 +2465,11 @@ export const SessionListPane = React.memo(function SessionListPane({
       suppressStatusLabel: true,
       lanePr: primaryPr,
       lanePrs,
-      onOpenLanePrs: foreignRow && primaryPr
-        ? () => openLanePr(primaryPr, { foreign: true, navigate })
+      // A foreign "+N" chip stays inert, matching the sidebar singleton: the
+      // primary click already opens that machine's PR, and the list opener
+      // would point at this machine's PR page.
+      onOpenLanePrs: foreignRow
+        ? undefined
         : lane
           ? () => navigate(`/prs${buildPrsRouteSearch({
               activeTab: "normal",
@@ -2502,7 +2502,11 @@ export const SessionListPane = React.memo(function SessionListPane({
     let changed = false;
     const next = new Map(boardMovePulses);
     for (const [sessionId, movedAt] of boardMovePulses) {
-      const session = allSessionsUnfiltered.find((candidate) => candidate.id === sessionId);
+      const foreignSession = foreignRows
+        .flatMap((row) => row.sessions)
+        .find((candidate) => candidate.id === sessionId);
+      const session = allSessionsUnfiltered.find((candidate) => candidate.id === sessionId)
+        ?? foreignSession;
       const activity = session?.lastActivityAt ?? null;
       if (!session || (activity && activity > movedAt)) {
         next.delete(sessionId);
@@ -2510,7 +2514,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       }
     }
     if (changed) setBoardMovePulses(next);
-  }, [allSessionsUnfiltered, boardMovePulses]);
+  }, [allSessionsUnfiltered, boardMovePulses, foreignRows]);
 
   /**
    * Apply a board drop.
@@ -2539,7 +2543,8 @@ export const SessionListPane = React.memo(function SessionListPane({
       // to translate; Waiting is refused by the guard because it is derived.
       if (!isWorkBoardMoveTarget(column)) return;
       const to = column;
-      const binding = boardUnion.sessionRow.get(session.id)?.binding ?? null;
+      const foreignRow = boardUnion.sessionRow.get(session.id);
+      const binding = foreignRow?.binding ?? null;
       void move(session.id, to, binding)
         .then((result) => {
           if (!result?.changed || !result.moveId) {
@@ -2570,6 +2575,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             return;
           }
           const moveId = result.moveId;
+          if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
           setBoardMovePulses((previous) => {
             const next = new Map(previous);
             next.set(session.id, new Date().toISOString());
@@ -2587,6 +2593,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 if (typeof undo !== "function") return;
                 void undo(session.id, moveId, binding)
                   .then((undone) => {
+                    if (foreignRow) requestCrossMachineLanesForMachine(foreignRow.machineId);
                     setBoardMovePulses((previous) => {
                       const next = new Map(previous);
                       next.delete(session.id);
@@ -3129,25 +3136,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     // The lane menu would otherwise have no right-click target once the divider
     // is gone. Same rescue `renderLaneGroup` performs for a local singleton,
     // routed through the foreign menu so its actions stay binding-aware.
-    const singletonLaneActions = row.binding
-      ? {
-          laneId: row.lane.id,
-          laneName: row.lane.name,
-          lane: row.lane,
-          binding: row.binding,
-          machineId: row.machineId,
-          onToggleWorkPin: toggleWorkLanePinned,
-          workPinnedLaneIds,
-          workPinLaneId: compositeLaneId,
-          open: ({ x, y }: { x: number; y: number }) => triggerForeignLaneContextMenu(
-            row.lane,
-            row.binding!,
-            row.machineName,
-            row.machineId,
-            { preventDefault: () => {}, clientX: x, clientY: y },
-          ),
-        }
-      : null;
+    const singletonLaneActions = foreignSingletonLaneActions(row);
     return (
       <StickyGroupHeader
         key={compositeLaneId}

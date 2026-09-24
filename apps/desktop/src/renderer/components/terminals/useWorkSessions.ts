@@ -305,6 +305,57 @@ export function partitionRosterForBoard(
   };
 }
 
+/**
+ * Append each other machine's already-filtered chats onto the bound-machine
+ * board. Filing stays per machine so a child cannot pair with another
+ * machine's parent, and each machine's PR wait can only park its own rows.
+ */
+export function appendForeignMachinesToBoard(args: {
+  buckets: WorkBoardBuckets;
+  waitingReasons: ReadonlyMap<string, WorkBoardWaitingReason>;
+  machines: readonly {
+    sessions: readonly TerminalSessionSummary[];
+    filingBuckets: ReadonlyMap<string, ReturnType<typeof sessionFilingBucket>>;
+    laneWaitingReason: (laneId: string) => WorkBoardWaitingReason | null;
+  }[];
+  nowMs: number;
+}): {
+  buckets: WorkBoardBuckets;
+  waitingReasons: Map<string, WorkBoardWaitingReason>;
+} {
+  const buckets: WorkBoardBuckets = {
+    needs_you: [...args.buckets.needs_you],
+    working: [...args.buckets.working],
+    waiting: [...args.buckets.waiting],
+    done: [...args.buckets.done],
+  };
+  const waitingReasons = new Map(args.waitingReasons);
+  for (const machine of args.machines) {
+    if (machine.sessions.length === 0) continue;
+    const partitioned = partitionRosterForBoard(
+      machine.sessions,
+      machine.filingBuckets,
+      args.nowMs,
+    );
+    const model = buildWorkBoardModel({
+      runningFiltered: partitioned.runningFiltered,
+      needsYouFiltered: partitioned.needsYouFiltered,
+      restingFiltered: partitioned.restingFiltered,
+      endedFiltered: partitioned.endedFiltered,
+      settledFiltered: partitioned.settledFiltered,
+      snoozedFiltered: partitioned.snoozedFiltered,
+      laneWaitingReason: machine.laneWaitingReason,
+    });
+    for (const column of Object.keys(buckets) as WorkBoardColumn[]) {
+      buckets[column].push(...model.buckets[column]);
+    }
+    for (const [sessionId, reason] of model.waitingReasonBySessionId) {
+      waitingReasons.set(sessionId, reason);
+    }
+  }
+  return { buckets, waitingReasons };
+}
+
 export function buildWorkBoardModel(args: {
   runningFiltered: readonly TerminalSessionSummary[];
   /**
