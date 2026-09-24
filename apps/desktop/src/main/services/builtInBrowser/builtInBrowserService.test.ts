@@ -3617,7 +3617,21 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
       const observation = await service.observe({ tabId, maxElements: 5, includeElementMap: true }, browserWin);
       await service.click({ tabId, selector: "button#save", observe: false }, browserWin);
-      await service.click({ tabId, handle: observation.dom?.elements[0]?.handle ?? "", observe: false }, browserWin);
+      const byHandle = await service.click(
+        { tabId, handle: observation.dom?.elements[0]?.handle ?? "", observe: false },
+        browserWin,
+      );
+      // The answer names the element the locate found, under the caller's handle.
+      expect(byHandle.resolved).toMatchObject({
+        selector: "button#save",
+        label: "Save",
+        handle: observation.dom?.elements[0]?.handle,
+      });
+      expect(byHandle.effect.status).toBe("not_checked");
+      // With an observation after the click, the locate's snapshot is the
+      // "before"; this fake page never changes, so the click is unconfirmed.
+      const observed = await service.click({ tabId, selector: "button#save", waitAfterMs: 0 }, browserWin);
+      expect(observed.effect).toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
       await expect(service.click({
         tabId,
         handle: "obs-x/../../outside:e:1",

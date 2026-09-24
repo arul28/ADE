@@ -47,6 +47,26 @@ export type AgentDomSnapshot = {
   scroll: { x: number; y: number };
   elementCount: number;
   elements: AgentElementSnapshot[];
+  /**
+   * A short key for the element that had keyboard focus when the snapshot was
+   * taken (tag, role, id, name, label), or null when nothing did. Absent from
+   * a snapshot an older collector wrote. Read only by the action-effect check.
+   */
+  focusKey?: string | null;
+};
+
+/**
+ * Did an acting command visibly change anything?
+ *
+ * Every computer-use surface (browser, App Control, Mac Desktop, Apple
+ * device) answers with this, so an agent learns the same two facts from every
+ * action: which element it hit, and whether the screen changed after it.
+ */
+export type ComputerUseActionEffect = {
+  /** "observed": the screen/DOM visibly changed after the action. "unconfirmed": the input was sent, but nothing ADE can see changed. "not_checked": this action/surface did not compare (say why in `reason`). */
+  status: "observed" | "unconfirmed" | "not_checked";
+  /** One short plain-English sentence, e.g. "the focused element changed", "the URL changed", "3 elements changed", "nothing on screen changed". */
+  reason: string;
 };
 
 /**

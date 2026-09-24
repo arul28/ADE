@@ -6,6 +6,8 @@
  * `ade` daemon) can import it.
  */
 
+import type { ComputerUseActionEffect } from "./types/agentObservation";
+
 /** Every observation id starts with this prefix, which handles encode. */
 export const AGENT_OBSERVATION_ID_PREFIX = "obs-";
 
@@ -267,6 +269,42 @@ function(inputArg) {
     if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
     return node.matches(interactiveSelector) ? node : node.closest(interactiveSelector) || node;
   };
+  // The deepest focused element, through open shadow roots and same-origin
+  // frames, as a short key. The action-effect check only asks whether focus
+  // moved, so this names the element; it does not describe it.
+  const focusKeyNow = () => {
+    let node = document.activeElement;
+    for (let depth = 0; node && depth < 8; depth += 1) {
+      if (node.shadowRoot && node.shadowRoot.activeElement) {
+        node = node.shadowRoot.activeElement;
+        continue;
+      }
+      const tag = node.tagName ? node.tagName.toLowerCase() : "";
+      if (tag === "iframe" || tag === "frame") {
+        let inner = null;
+        try {
+          inner = node.contentDocument ? node.contentDocument.activeElement : null;
+        } catch {
+          inner = null;
+        }
+        if (inner && inner !== node.contentDocument.body) {
+          node = inner;
+          continue;
+        }
+      }
+      break;
+    }
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    const doc = node.ownerDocument || document;
+    if (node === doc.body || node === doc.documentElement) return null;
+    return [
+      node.tagName.toLowerCase(),
+      node.getAttribute("role") || "",
+      node.getAttribute("name") || "",
+      normalizeText(node.getAttribute("aria-label")).slice(0, 80),
+      selectorFor(node)
+    ].join("|");
+  };
   const contexts = [];
   const collectContexts = (root, doc, win, offsetX, offsetY, framePath, shadowPath, depth) => {
     if (!root || typeof root.querySelectorAll !== "function" || depth > 4) return;
@@ -340,7 +378,8 @@ function(inputArg) {
     viewport: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
     scroll: { x: window.scrollX, y: window.scrollY },
     elementCount: stable.length,
-    elements
+    elements,
+    focusKey: focusKeyNow()
   };
 
   const findBySelector = (selector) => {
@@ -410,8 +449,10 @@ function(inputArg) {
   if (rawTarget && rawTarget.error) return { snapshot, target: null, error: rawTarget.error };
   let target = rawTarget && rawTarget.node && rawTarget.node.nodeType === Node.ELEMENT_NODE ? rawTarget.node : null;
   const targetContext = rawTarget && rawTarget.ctx ? rawTarget.ctx : contexts[0];
+  let scrolledIntoView = false;
   if (target && typeof target.scrollIntoView === "function" && !intersectsViewport(target, targetContext)) {
     target.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+    scrolledIntoView = true;
   }
   if (target && !isDisplayed(target, targetContext)) target = null;
   if (target && shouldFocus) {
@@ -443,6 +484,11 @@ function(inputArg) {
     readyState: document.readyState,
     snapshot,
     target: describedTarget,
+    // What the locate itself did before any input was sent: it may have
+    // focused the target and scrolled it into view. The action-effect check
+    // reads these so neither counts as the action's effect.
+    focusKeyAfterLocate: locate ? focusKeyNow() : undefined,
+    scrolledIntoView,
     error: locate && !describedTarget ? "No matching element was found." : null
   };
 }
@@ -532,3 +578,166 @@ function(inputArg) {
   return { ok: true, count };
 }
 `;
+
+/* ── Action effect ─────────────────────────────────────────────────────── */
+
+/**
+ * One side of an action, reduced to what "did anything change" needs.
+ *
+ * Built from state a surface already holds — a DOM snapshot, an accessibility
+ * observation, a frame hash — so taking one costs a string join, never a
+ * screenshot. A field left `undefined` means "this surface cannot see it", and
+ * the comparison skips it instead of calling a missing value a change.
+ */
+export type AgentEffectFingerprint = {
+  url?: string | null;
+  title?: string | null;
+  /** The window list as one string, e.g. "12:Notes — Draft|14:Safari". */
+  windows?: string | null;
+  focus?: string | null;
+  scroll?: string | null;
+  /** Elements found before any cap trimmed the list. */
+  elementCount?: number | null;
+  /** One key per listed element, in walk order. */
+  elements?: AgentEffectElementKey[] | null;
+  /** True when `elements` is only the start of a longer list. */
+  truncated?: boolean;
+  /** Pixel-only surfaces: a hash of the frame bytes. */
+  frameHash?: string | null;
+};
+
+/** What an element says (`content`) and where it sits (`layout`), each hashed. */
+export type AgentEffectElementKey = { content: string; layout: string };
+
+/** Frames compare on a 4-point grid: sub-pixel layout jitter is not a change. */
+const EFFECT_FRAME_GRID = 4;
+
+/**
+ * Roles whose value moves on its own (a spinner, a progress bar, a clock).
+ * Their value is left out of the key so a busy indicator does not read as the
+ * action's effect.
+ */
+const VOLATILE_VALUE_ROLES = new Set([
+  "progressbar",
+  "meter",
+  "timer",
+  "marquee",
+  "axprogressindicator",
+  "axbusyindicator",
+  "axlevelindicator",
+]);
+
+/** FNV-1a, 32-bit, as hex. Deterministic and dependency-free; not a security hash. */
+export function hashEffectString(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+const effectText = (value: string | null | undefined): string =>
+  typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 300) : "";
+
+const onEffectGrid = (value: number): number =>
+  Number.isFinite(value) ? Math.round(value / EFFECT_FRAME_GRID) * EFFECT_FRAME_GRID : 0;
+
+/** The stable key for one element: role, label, value, text, and a rounded frame. */
+export function agentEffectElementKey(element: {
+  role?: string | null;
+  label?: string | null;
+  value?: string | null;
+  text?: string | null;
+  disabled?: boolean | null;
+  frame?: { x: number; y: number; width: number; height: number } | null;
+}): AgentEffectElementKey {
+  const role = effectText(element.role);
+  const value = VOLATILE_VALUE_ROLES.has(role.toLowerCase()) ? "" : effectText(element.value);
+  const frame = element.frame;
+  return {
+    content: hashEffectString(
+      [role, effectText(element.label), value, effectText(element.text), element.disabled === true ? "d" : ""].join("\u0000"),
+    ),
+    layout: frame
+      ? hashEffectString([frame.x, frame.y, frame.width, frame.height].map(onEffectGrid).join(","))
+      : "",
+  };
+}
+
+/**
+ * How many elements differ between two lists, as a multiset: a list that only
+ * reordered is unchanged, and one that swapped an element counts it once.
+ * When either list was capped, only the shared prefix is compared; the totals
+ * are compared separately through `elementCount`.
+ */
+function changedElementCount(
+  before: AgentEffectFingerprint,
+  after: AgentEffectFingerprint,
+  ignoreLayout: boolean,
+): number {
+  if (!before.elements || !after.elements) return 0;
+  const capped = before.truncated === true || after.truncated === true;
+  const length = Math.min(before.elements.length, after.elements.length);
+  const left = capped ? before.elements.slice(0, length) : before.elements;
+  const right = capped ? after.elements.slice(0, length) : after.elements;
+  const keyOf = (entry: AgentEffectElementKey): string =>
+    ignoreLayout ? entry.content : `${entry.content}@${entry.layout}`;
+  const remaining = new Map<string, number>();
+  for (const entry of left) {
+    const key = keyOf(entry);
+    remaining.set(key, (remaining.get(key) ?? 0) + 1);
+  }
+  let added = 0;
+  for (const entry of right) {
+    const key = keyOf(entry);
+    const count = remaining.get(key) ?? 0;
+    if (count > 0) remaining.set(key, count - 1);
+    else added += 1;
+  }
+  let removed = 0;
+  for (const count of remaining.values()) removed += count;
+  return Math.max(added, removed);
+}
+
+/**
+ * Compare the state before an action with the state after it.
+ *
+ * Returns the first difference in a fixed order — URL, title, windows, scroll,
+ * elements, element count, focus, frame — as one plain sentence, so the answer
+ * is deterministic for the same pair. `ignoreLayout` drops scroll and frames:
+ * set it when ADE itself scrolled the target into view before acting.
+ */
+export function compareAgentEffectFingerprints(
+  before: AgentEffectFingerprint | null | undefined,
+  after: AgentEffectFingerprint | null | undefined,
+  options: { ignoreLayout?: boolean; missingReason?: string } = {},
+): ComputerUseActionEffect {
+  if (!before || !after) {
+    return {
+      status: "not_checked",
+      reason: options.missingReason ?? "ADE had no earlier state to compare with",
+    };
+  }
+  const ignoreLayout = options.ignoreLayout === true;
+  const differs = (left: unknown, right: unknown): boolean =>
+    left !== undefined && right !== undefined && (left ?? null) !== (right ?? null);
+  const observed = (reason: string): ComputerUseActionEffect => ({ status: "observed", reason });
+  if (differs(before.url, after.url)) return observed("the URL changed");
+  if (differs(before.title, after.title)) return observed("the title changed");
+  if (differs(before.windows, after.windows)) return observed("a window opened, closed or changed title");
+  if (!ignoreLayout && differs(before.scroll, after.scroll)) return observed("the view scrolled");
+  const changed = changedElementCount(before, after, ignoreLayout);
+  if (changed > 0) return observed(changed === 1 ? "1 element changed" : `${changed} elements changed`);
+  if (differs(before.elementCount, after.elementCount)) {
+    return observed(`the element count changed from ${before.elementCount ?? 0} to ${after.elementCount ?? 0}`);
+  }
+  if (differs(before.focus, after.focus)) return observed("the focused element changed");
+  if (differs(before.frameHash, after.frameHash)) return observed("the screen image changed");
+  return { status: "unconfirmed", reason: "nothing on screen changed" };
+}
+
+/** The answer for an action that compared nothing, with the reason. */
+export function notCheckedEffect(reason: string): ComputerUseActionEffect {
+  return { status: "not_checked", reason };
+}

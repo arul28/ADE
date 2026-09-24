@@ -5,6 +5,12 @@ description: Use this skill when you need to run or drive a local Electron/deskt
 
 # ADE App Control
 
+Not sure App Control is the right surface? The **ade-computer-use** skill picks
+between `ade apple`, `ade mac-desktop`, `ade app-control` and `ade browser`.
+App Control captures its own window. To keep the app fully off the user's
+screen, you may claim its window into the lane's Mac Desktop with
+`ade mac-desktop claim --window <id>` (optional).
+
 ## Use socket mode
 
 App Control is a live desktop drawer service, so every command below uses `--socket` (the general rule is in the **ade-cli-control-plane** skill):

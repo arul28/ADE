@@ -2835,14 +2835,15 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("$ADE_CLI_PATH");
     // The Codex/OpenAI computer-use plugin drives the real screen: only on request.
     expect(result).toMatch(/`mcp__computer_use`[^\n]*drives the user's real screen/);
-    // `ade proof capture/record` is the real screen too, so it is not the default.
-    expect(result).toMatch(/`ade proof capture` and `ade proof record` capture the user's whole real screen/);
+    // `ade proof capture/record` use the lane screen; the real screen only on request.
+    expect(result).toContain("all of them capture the lane's screen, never the user's");
+    expect(result).toMatch(/`--real-screen` captures the user's whole real screen — use it only when the user asks/);
   });
 
   it("says nothing about a lane screen on a host that cannot give one", () => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }))!;
     expect(result).not.toContain("Mac Desktop");
-    expect(result).toContain("Use `ade proof capture` for a reviewer-facing checkpoint");
+    expect(result).toContain("`ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`");
   });
 
   it("emits no directive when no artifact broker is attached", () => {

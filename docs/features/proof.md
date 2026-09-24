@@ -21,7 +21,7 @@ Three paths used to file records without anyone asking:
 | Path | Now |
 |---|---|
 | `captureScreenshot` chat tool (formerly `apps/desktop/src/main/services/ai/tools/workflowTools.ts`) | Gone, along with `workflowTools.ts` itself. It was a name with no registry behind it, so it filed nothing because it never ran. Agents use `ade proof capture --caption` / `ade proof attach`. |
-| `screenshot_environment` / `record_environment` RPC tools (`apps/ade-cli/src/adeRpcServer.ts`) | File a record only when the call passes `proof: true`, which `ade proof capture` and `ade proof record` set. A bare call — agent vision, an automation run's `browser` tool family — writes to `.ade/cache/tmp/computer-use/` and returns the path. |
+| `screenshot_environment` / `record_environment` RPC tools (`apps/ade-cli/src/adeRpcServer.ts`) | File a record only when the call passes `proof: true`, which `ade proof capture` and `ade proof record` set. A proof call captures the caller's lane Mac Desktop display, and is refused when the lane has none unless it also passes `realScreen: true`. A bare call — agent vision, an automation run's `browser` tool family — still captures the real screen, writes to `.ade/cache/tmp/computer-use/` and returns the path. |
 | `computer_use_artifacts` action domain (`apps/desktop/src/main/services/adeActions/registry.ts`) | No longer exposes `ingest`. `ade actions call computer_use_artifacts.ingest` reached the broker past `validateComputerUseOwnerClaims` and the authorized caller-root check; ingestion now happens only through `ingest_computer_use_artifacts`, where both live. The domain exposes reads and record lifecycle. |
 
 Nothing is lost on the scratch paths. The bytes stay on disk in a root the
@@ -60,14 +60,39 @@ Common subcommands under `ade proof` print a JSON summary on success and exit no
 
 ### `ade proof capture`
 
-Take a screenshot now and file it as proof for the current session.
+Take a screenshot of your lane's Mac Desktop display now and file it as proof.
 
 ```
-ade proof capture [--caption "<text>"] [--owner-kind chat|lane] [--owner-id <id>]
+ade proof capture [--caption "<text>"] [--real-screen] [--owner-kind chat|lane] [--owner-id <id>]
 ```
 
 - `--caption` — short free-text label. Prominent in the drawer grid.
+- `--real-screen` — capture the whole real screen with `screencapture` instead. macOS only.
 - Owner flags — override inferred owner (see below). Rarely needed.
+
+ADE does not capture your real screen by default. The runtime finds the
+caller's lane the same way it finds the proof owner: the chat's lane, then the
+lane whose worktree contains the caller's root, then a lane the caller named.
+
+- **The lane has a Mac Desktop display.** ADE takes the screenshot through the
+  Mac Desktop service and files it the way `ade mac-desktop proof` does:
+  "Captured by ADE", owned by the lane and the chat, and linked to the lane's
+  PR. `--text` prints a `captured from: Mac Desktop display …` line.
+- **The lane has no display.** The command is refused and captures nothing:
+
+  ```
+  ade: proof capture failed — refused: this lane has no Mac Desktop display, and ADE does not capture your real screen by default. Use `ade mac-desktop proof`, `ade apple proof`, `ade app-control proof` or `ade browser proof`, or pass --real-screen to capture the whole real screen.
+  ```
+
+  Off macOS no lane can have a display, so the line names only
+  `ade browser proof`, `ade app-control proof` and `ade proof attach <file>`.
+- **`--real-screen`.** The old path: `screencapture -x` on the runtime host,
+  filed as "Captured by ADE". It runs headless unless `--socket` is passed.
+  Off macOS it fails because `screencapture` does not exist.
+
+The default path talks to the running ADE runtime, because the lane display
+lives there. With no runtime reachable, the CLI falls back to headless mode,
+which has no display, so the command is refused.
 
 Example:
 
@@ -76,7 +101,9 @@ ade proof capture --caption "logged in as admin"
 ade proof capture --caption "order #1234 submitted, confirmation visible"
 ```
 
-Exit codes: `0` success, `2` capture failed (screencapture unavailable, unsupported OS), `3` owner could not be resolved.
+Exit codes: `0` success. `1` when the capture was refused or failed, or the
+record could not be read back; stderr has one `… failed — <reason>` line.
+`2` for a usage error.
 
 ### `ade proof attach`
 
@@ -238,7 +265,12 @@ what the caller asked for, so it reflects the authorized owner set.
 ### Other proof commands
 
 - `ade proof status --text` shows capture/back-end capabilities.
-- `ade proof record --seconds <n>` records a short video proof where supported.
+- `ade proof record --seconds <n>` records the lane's Mac Desktop display for
+  `n` seconds (1–120, default 10). It starts the Mac Desktop recorder, waits,
+  stops it, and files the video the way `ade mac-desktop record stop` does,
+  idle cut included. It refuses when a recording is already running on the
+  lane. With no lane display it is refused like `capture`; `--real-screen`
+  records the whole real screen with `screencapture -v` instead.
 - `ade proof launch`, `ade proof interact`, and `ade proof environment` are lower-level computer-use helpers for capture workflows.
 - `ade proof ingest --input-json ...` ingests externally produced artifacts directly through the proof broker.
 - `ade proof rm <artifact-id> [<artifact-id>…]` irreversibly deletes the selected
@@ -265,7 +297,7 @@ The CLI resolves the owner of a capture from environment variables set by the de
 
 Agents spawned inside ADE pick up the right owner automatically. If more than one var is set — e.g. a chat also has a lane — the highest-precedence kind wins.
 
-If no env var is set and no `--owner-kind`/`--owner-id` flags are passed, `ade proof capture` exits with code `3`. This is deliberate: an un-owned proof has no home in the UI.
+If no owner can be found, `ade proof capture` exits `1` with a `failed` line that says the record has no lane, chat session, automation run, PR or issue. This is deliberate: an un-owned proof has no home in the UI.
 
 ### Explicit owner on RPC tools
 
@@ -365,7 +397,14 @@ listed with an unavailable-preview state.
 
 When an agent session starts inside ADE, the system prompt includes a short priming directive:
 
-> When you reach a checkpoint worth showing — a login succeeds, a form submits, an error reproduces, a test passes — run `ade proof capture --caption "<short description>"`. Captions are what reviewers skim; write them like a teammate is reading them.
+> When you reach a checkpoint worth showing — a login succeeds, a form submits, an error reproduces, a test passes — file proof from the tool that shows it. Captions are what reviewers skim; write them like a teammate is reading them.
+
+The directive depends on the host. When the lane can have a Mac Desktop, it
+says `ade mac-desktop proof` / `ade proof capture` and `ade mac-desktop record`
+/ `ade proof record` capture the lane's screen, never the user's. Otherwise it
+points to `ade browser proof`, `ade app-control proof`, `ade apple proof` and
+`ade proof attach`. Both say `--real-screen` captures the user's whole screen
+and is for when the user asks.
 
 A good proof set is three to eight captures with captions a reviewer can read in one pass. Avoid dumping a screenshot after every click. Avoid captions like "screenshot 3"; prefer the exact state being proven.
 
@@ -382,7 +421,7 @@ A good proof set is three to eight captures with captions a reviewer can read in
 
 Headless-browser screenshots *are* supported — use `ade proof attach` with the output file path.
 
-`proof capture`, `proof record`, `proof environment`, `proof launch`, and `proof interact` set `preferHeadless: true` on the CLI plan: the connection layer drops to headless mode unless `--socket` is explicitly passed. This lets agent subprocesses capture proof without depending on the machine runtime endpoint being live; visual proof state still flows back to the broker on the next reconcile.
+`proof environment`, `proof launch`, `proof interact`, and `proof capture` / `proof record` with `--real-screen` set `preferHeadless: true` on the CLI plan: the connection layer drops to headless mode unless `--socket` is explicitly passed. This lets agent subprocesses capture proof without depending on the machine runtime endpoint being live; visual proof state still flows back to the broker on the next reconcile. Plain `proof capture` and `proof record` do not, because the lane display lives in the running runtime.
 
 ---
 
@@ -399,7 +438,10 @@ Headless-browser screenshots *are* supported — use `ade proof attach` with the
       ▼
   proof action (runtime: ade serve)
       │
-      ├── screencapture  ─► <runtime host>/.ade/artifacts/computer-use/<uuid>.png
+      ├── lane has a Mac Desktop display ─► macDesktopService.screenshot /
+      │     startRecording + stopRecording (files its own proof)
+      ├── --real-screen ─► screencapture ─► <runtime host>/.ade/artifacts/computer-use/<uuid>.png
+      ├── neither ─► refused, nothing captured
       │
       └── computerUseArtifactBrokerService
               │
@@ -416,6 +458,6 @@ Headless-browser screenshots *are* supported — use `ade proof attach` with the
 The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path. The `ade proof` CLI and every in-process caller go through it. RPC callers reach `ingest` through the `ingest_computer_use_artifacts` tool and the `proof: true` branch of `screenshot_environment` / `record_environment`. In-process callers are the Apple recorder and screenshot, scene stills, and the CTO's `captureProof`. An in-process caller passes `provenance` to say where the bytes came from. The same module is loaded by the desktop main process for local projects and by the standalone `ade serve` runtime for headless / remote use. Supporting modules in the same directory:
 
 - `controlPlane.ts` builds owner snapshots + backend status for the UI.
-- `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's.
+- `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's. The lane display path does not use these; the Mac Desktop service checks its own support.
 
 Provider execution can be provisioned by ADE (for example the signed direct Codex Computer Use MCP client), but proof remains explicit. Every piece downstream of `ade proof` is a thin line to disk, a broker insert, and the drawer. No passive observer promotes provider tool calls automatically — the proof observer was deleted with this rebuild, along with `ComputerUsePolicy` and the Settings > Computer Use panel.

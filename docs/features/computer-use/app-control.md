@@ -322,15 +322,18 @@ section above is the current story for OS-level control.
 
 `AppControlStatus.providers` reports availability per `AppControlProvider`:
 
-- `cdp` — Chrome DevTools Protocol against an Electron renderer. Fully supported; this is what `launch` / `connect` drive.
-- `os-accessibility` — placeholder for future macOS AX-based control of non-Electron apps. Currently `available: false`.
-- `external` — when an external automation tool (Playwright, agent-browser) holds the connection.
+- `cdp` — Chrome DevTools Protocol against an Electron renderer. This is what `launch` / `connect` drive. It reports `available: true` only while a session is `connected` with a CDP port. Otherwise `detail` says what ADE is waiting for.
+- `computer-use` — reports `available: true` on macOS ("macOS window proof and OS-level input can complement CDP.") and `available: false` elsewhere. It describes a complement to CDP, not a driver: the `computer_use` driver is still unimplemented (see "Drivers").
+
+`getStatus()` (`appControlService.ts`) emits only these two entries. The union
+also has `os-accessibility` and `external`, but no code reports them in
+`providers`. They exist only as provenance values on the type.
 
 Only one App Control session is active per project at a time. Re-launching/connecting with `force: true` cleans up the previous session first.
 
 ## Cross-links
 
-- [`README.md`](./README.md) — the proof-artifact broker; App Control sits next to it but does not write to `computer_use_artifacts`.
+- [`README.md`](./README.md) — the proof-artifact broker. App Control writes to `computer_use_artifacts` only through `ade app-control proof`, which observes and files the screenshot with `ingest_computer_use_artifacts` (`backendName: "ade-app-control"`).
 - [`../chat/composer-and-ui.md`](../chat/composer-and-ui.md) — composer chip rendering for `AppControlContextItem`s.
 - [`../terminals-and-sessions/README.md`](../terminals-and-sessions/README.md) — `chat_session_id` column and the new `ade.terminal.*` IPC surface.
 - [`../agents/tool-registration.md`](../agents/tool-registration.md) — how `ADE_CHAT_SESSION_ID` reaches the agent runtime and how `app_control` / `terminal` ADE CLI domains are exposed.

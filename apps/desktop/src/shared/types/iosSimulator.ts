@@ -1,3 +1,5 @@
+import type { ComputerUseActionEffect } from "./agentObservation";
+
 export type IosSimulatorDevice = {
   udid: string;
   name: string;
@@ -1301,6 +1303,15 @@ export type IosSimulatorElementMatch = {
 
 export type IosSimulatorElementActionKind = "tap" | "fill" | "wait" | "assert";
 
+/**
+ * Why an Apple device action answers `effect: not_checked`. Comparing the
+ * screen would cost a second accessibility snapshot (hundreds of
+ * milliseconds) on every tap, so the answer names the check to run instead.
+ * The CLI prints the same sentence for coordinate taps, drags and typing.
+ */
+export const IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON =
+  "Apple device actions do not compare the screen; run `ade apple find` or `ade apple screenshot` to check";
+
 export type IosSimulatorElementActionResult = {
   ok: boolean;
   action: IosSimulatorElementActionKind;
@@ -1308,6 +1319,11 @@ export type IosSimulatorElementActionResult = {
   matchCount: number;
   message: string | null;
   waitedMs: number | null;
+  /**
+   * Always `not_checked` today: comparing the screen would cost a second
+   * accessibility snapshot per tap, so the reason names the command to run.
+   */
+  effect: ComputerUseActionEffect;
 };
 
 export type IosSimulatorFindElementArgs = IosSimulatorDeviceArgs & {

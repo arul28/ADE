@@ -155,6 +155,7 @@ import {
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_PRIVACY_SERVICES,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
+  IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
   ADE_USAGE_RANGE_PRESETS,
@@ -494,6 +495,10 @@ export type FormatterId =
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
+  | "app-control-action"
+  | "apple-action"
+  | "apple-point-action"
+  | "browser-action"
   | "browser-status"
   | "browser-dev-servers"
   | "browser-sessions"
@@ -2171,20 +2176,23 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Proof commands capture or ingest reviewer-visible evidence for ADE work.
   Prefer screenshots/images, screen recordings, and browser captures/traces.
   Console logs are supporting diagnostics, not a replacement for visual proof.
-  Local screenshot/video fallback is macOS-only and runs headless by default
-  unless --socket is explicitly requested. Attached runtime mode has the best
-  parity for shared proof state.
+
+  capture and record use your lane's Mac Desktop display. They never touch
+  your real screen by default: with no lane display they are refused. Pass
+  --real-screen to capture the whole real screen (macOS only; runs headless
+  unless --socket is passed).
 
     $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
-    $ ade proof capture --caption "Done"            Capture a screenshot artifact
+    $ ade proof capture --caption "Done"            Capture the lane's Mac Desktop display
+    $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
     $ ade proof prune                               Preview broken proof records (does not delete)
     $ ade proof prune --broken                      Delete every broken proof record
-    $ ade proof record --seconds 20                 Capture a short video proof
+    $ ade proof record --seconds 20                 Record the lane's Mac Desktop display
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
     $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
 
@@ -4541,8 +4549,10 @@ export function actionStep(
   domain: string,
   action: string,
   args: JsonObject = {},
+  /** Tool-level fields beside `args`, e.g. `callerRoot`; never passed to the service. */
+  toolExtras: JsonObject = {},
 ): InvocationStep {
-  return actionCallStep(key, "run_ade_action", { domain, action, args });
+  return actionCallStep(key, "run_ade_action", { ...toolExtras, domain, action, args });
 }
 
 function accountActionStep(
@@ -10260,8 +10270,9 @@ function proofCallerRoot(): { path: string | null; source: string } {
   return { path: process.cwd(), source: "cwd" };
 }
 
-/** `callerRoot` + its provenance, as the ingest tool wants them. */
-function proofCallerRootArgs(): JsonObject {
+/** `callerRoot` + its provenance, as the ingest tool wants them. `ade
+ * mac-desktop` sends the same pair on its `run_ade_action` calls. */
+export function proofCallerRootArgs(): JsonObject {
   const callerRoot = proofCallerRoot();
   return {
     ...(callerRoot.path ? { callerRoot: callerRoot.path } : {}),
@@ -10478,6 +10489,7 @@ function buildProofPlan(args: string[]): CliPlan {
   if (sub === "screenshot" || sub === "capture") {
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
+    const realScreen = readFlag(args, ["--real-screen"]);
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     return {
       kind: "execute",
@@ -10499,17 +10511,23 @@ function buildProofPlan(args: string[]): CliPlan {
             // and record did not, so every capture from an OpenCode agent was
             // filed with no owner at all.
             ...proofCallerRootArgs(),
+            // The lane's Mac Desktop display is the default target; the
+            // user's real screen only on request.
+            ...(realScreen ? { realScreen: true } : {}),
             name: readValue(args, ["--name", "--title"]) ?? caption,
           }),
         ),
         ...(verify ? [proofVerifyStep()] : []),
       ],
-      preferHeadless: true,
+      // A lane display lives in the running brain, so only the real-screen
+      // path may drop to an in-process runtime by default.
+      ...(realScreen ? { preferHeadless: true } : {}),
     };
   }
   if (sub === "record") {
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
+    const realScreen = readFlag(args, ["--real-screen"]);
     return {
       kind: "execute",
       label: "computer-use record",
@@ -10525,6 +10543,7 @@ function buildProofPlan(args: string[]): CliPlan {
             // does not.
             proof: true,
             ...proofCallerRootArgs(),
+            ...(realScreen ? { realScreen: true } : {}),
             name:
               readValue(args, ["--name", "--title"]) ??
               readValue(args, ["--caption", "--description", "--desc"]),
@@ -10536,7 +10555,7 @@ function buildProofPlan(args: string[]): CliPlan {
         ),
         ...(verify ? [proofVerifyStep()] : []),
       ],
-      preferHeadless: true,
+      ...(realScreen ? { preferHeadless: true } : {}),
     };
   }
   if (sub === "launch")
@@ -24880,6 +24899,7 @@ function formatProofFiled(value: unknown): string {
       ? "verified: re-read through ade proof list"
       : "verified: skipped (--no-verify)",
     ...warnings.map((warning) => `warning: ${warning}`),
+    ...(asString(record.capturedFrom) ? [`captured from: ${asString(record.capturedFrom)}`] : []),
     "",
     confirmation,
   ].join("\n");
@@ -25485,6 +25505,155 @@ function formatBrowserSessions(value: unknown): string {
 }
 
 
+/* ── One action answer ─────────────────────────────────────────────────── */
+
+/** Actions that land on a point when they have no element. */
+const POINT_ACTIONS = new Set(["click", "tap", "hover", "drag", "swipe", "scroll"]);
+
+/** `button "Save" (obs-…:e:12)`: role, name, and the handle the agent can reuse. */
+function actionElementLabel(element: JsonObject): string {
+  const role = asString(element.role) ?? asString(element.tagName) ?? asString(element.elementType) ?? "element";
+  const name = asString(element.title)
+    ?? asString(element.label)
+    ?? asString(element.text)
+    ?? asString(element.value)
+    ?? asString(element.placeholder)
+    ?? asString(element.identifier);
+  const ref = asString(element.handle) ?? asString(element.ref) ?? asString(element.selector);
+  const shortName = name && name.length > 60 ? `${name.slice(0, 59)}…` : name;
+  return `${role}${shortName ? ` ${JSON.stringify(shortName)}` : ""}${ref ? ` (${ref})` : ""}`;
+}
+
+/**
+ * The two lines every acting command prints first, on every computer-use
+ * surface: which element it hit, and whether anything visibly changed.
+ *
+ * `hit` names the resolved element, or says there was none and where the
+ * input went instead. `effect` restates the result's `effect` field; an
+ * `unconfirmed` one tells the agent to look before it goes on, because the
+ * input was sent and nothing ADE can see changed.
+ */
+export function formatActionAnswerLines(
+  result: JsonObject,
+  options: {
+    action?: string | null;
+    resolved?: JsonObject | null;
+    /** Overrides the no-element sentence, e.g. "no element matched" for a wait. */
+    noElement?: string;
+    /** Used when the result carries no `effect` (a surface that never compares). */
+    fallbackEffect?: { status: string; reason: string };
+  } = {},
+): string[] {
+  const resolved = options.resolved !== undefined ? options.resolved : firstRecord(result, ["resolved"]);
+  const action = (options.action ?? asString(result.action) ?? "").toLowerCase();
+  const noElement = options.noElement
+    ?? (action === "wait"
+      ? "no element; a wait does not act"
+      : POINT_ACTIONS.has(action)
+        ? "no element; acted on a point"
+        : "no element; sent to whatever had focus");
+  const hit = `hit: ${resolved ? actionElementLabel(resolved) : noElement}`;
+  const effect = isRecord(result.effect) ? result.effect : options.fallbackEffect ?? null;
+  const status = asString(effect?.status);
+  const reason = asString(effect?.reason) ?? "";
+  let effectLine: string;
+  if (status === "observed") effectLine = `effect: observed — ${reason || "the screen changed"}`;
+  else if (status === "unconfirmed") {
+    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}; observe again before you continue`;
+  } else if (status === "not_checked") effectLine = `effect: not checked — ${reason || "this action did not compare"}`;
+  else effectLine = "effect: not checked — this ADE did not report an effect";
+  return [hit, effectLine];
+}
+
+/** The rows of a DOM element list, shared by the browser and App Control. */
+function domElementTable(elements: JsonObject[]): string {
+  const rows = elements.slice(0, 12).map((element) => {
+    const center = firstRecord(element, ["center"]);
+    const x = typeof center?.x === "number" ? Math.round(center.x) : "";
+    const y = typeof center?.y === "number" ? Math.round(center.y) : "";
+    return [
+      element.index,
+      element.handle,
+      element.role ?? element.tagName,
+      element.label ?? element.text ?? element.value,
+      x === "" || y === "" ? "" : `${x},${y}`,
+      element.selector,
+    ];
+  });
+  return renderTable(
+    ["#", "handle", "role/tag", "label", "center", "selector"],
+    rows,
+    "(no DOM elements)",
+  );
+}
+
+/** A browser acting command: the answer lines, then the post-action observation. */
+function formatBrowserAction(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const trace = firstRecord(result, ["trace"]);
+  return [
+    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    "",
+    formatBrowserObservation(value),
+  ].join("\n");
+}
+
+/** An App Control acting command: the answer lines, then what the app shows now. */
+function formatAppControlAction(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const trace = firstRecord(result, ["trace"]);
+  const observation = firstRecord(result, ["observation"]);
+  const dom = observation ? firstRecord(observation, ["dom"]) : null;
+  const elements = firstArray(dom ?? {}, ["elements"]);
+  const header = renderKeyValues("ADE App Control action", [
+    ["ok", result.ok ?? true],
+    ["action", trace?.action],
+    ["url", observation?.url],
+    ["title", observation?.title],
+    ["image", observation?.filePath ?? observation?.relativePath],
+    ["trace", trace?.id],
+    [
+      "dom elements",
+      dom ? `${elements.length}/${dom.elementCount ?? elements.length}` : null,
+    ],
+  ]);
+  const sections = [
+    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    "",
+    header,
+  ];
+  if (elements.length) sections.push("", domElementTable(elements));
+  return sections.join("\n");
+}
+
+/**
+ * An Apple device acting command. An element action carries its match and its
+ * own `effect`; a coordinate tap, drag or keystroke answers `{ ok: true }`, so
+ * it gets the same not-compared sentence the element actions use.
+ */
+function formatAppleAction(value: unknown, action: string): string {
+  const result = isRecord(value) ? value : {};
+  const match = firstRecord(result, ["match"]);
+  const element = match ? firstRecord(match, ["element"]) : null;
+  const resolved = element ? { ...element, ref: match?.ref ?? null } : null;
+  const lines = formatActionAnswerLines(result, {
+    action: asString(result.action) ?? action,
+    resolved,
+    ...(result.ok === false && !resolved ? { noElement: "no element matched; nothing was sent" } : {}),
+    fallbackEffect: { status: "not_checked", reason: IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON },
+  });
+  return [
+    ...lines,
+    "",
+    renderKeyValues("ADE Apple device action", [
+      ["ok", result.ok ?? true],
+      ["action", asString(result.action) ?? action],
+      ["matches", typeof result.matchCount === "number" && result.matchCount > 1 ? result.matchCount : null],
+      ["message", result.message],
+    ]),
+  ].join("\n");
+}
+
 function formatBrowserObservation(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const observation = firstRecord(result, ["observation"]) ?? result;
@@ -25535,30 +25704,8 @@ function formatBrowserObservation(value: unknown): string {
     ],
     ["scratch deleted", cleanup?.deletedCount],
   ]);
-  const rows = elements.slice(0, 12).map((element) => {
-    const center = firstRecord(element, ["center"]);
-    const x = typeof center?.x === "number" ? Math.round(center.x) : "";
-    const y = typeof center?.y === "number" ? Math.round(center.y) : "";
-    return [
-      element.index,
-      element.handle,
-      element.role ?? element.tagName,
-      element.label ?? element.text ?? element.value,
-      x === "" || y === "" ? "" : `${x},${y}`,
-      element.selector,
-    ];
-  });
   const sections = [header];
-  if (elements.length) {
-    sections.push(
-      "",
-      renderTable(
-        ["#", "handle", "role/tag", "label", "center", "selector"],
-        rows,
-        "(no DOM elements)",
-      ),
-    );
-  }
+  if (elements.length) sections.push("", domElementTable(elements));
   if (consoleDiagnostics.length) {
     sections.push(
       "",
@@ -26545,6 +26692,14 @@ function formatTextOutput(
       return formatMacDesktopObservation(value, { windowCapture: true });
     case "mac-desktop-action":
       return formatMacDesktopAction(value);
+    case "app-control-action":
+      return formatAppControlAction(value);
+    case "browser-action":
+      return formatBrowserAction(value);
+    case "apple-action":
+      return formatAppleAction(value, "type");
+    case "apple-point-action":
+      return formatAppleAction(value, "tap");
     case "mac-desktop-recording":
       return formatMacDesktopRecording(value);
     case "mac-desktop-proof":
@@ -26668,6 +26823,20 @@ function inferFormatter(
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "apple device rotate") return "ios-sim-rotate";
+  if (
+    label === "ios simulator tap" ||
+    label === "ios simulator drag" ||
+    label === "ios simulator swipe" ||
+    label === "apple device scroll"
+  )
+    return "apple-point-action";
+  if (
+    label === "ios simulator type" ||
+    label.startsWith("ios simulator key ") ||
+    label === "ios simulator tap element" ||
+    label === "ios simulator fill element"
+  )
+    return "apple-action";
   if (label === "ios simulator status") return "ios-sim-status";
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";
@@ -26711,6 +26880,17 @@ function inferFormatter(
   if (label === "app control select" || label === "app control inspect point")
     return "app-control-selection";
   if (
+    label === "app control click" ||
+    label === "app control hover" ||
+    label === "app control fill" ||
+    label === "app control clear" ||
+    label === "app control type" ||
+    label === "app control press" ||
+    label === "app control scroll" ||
+    label === "app control wait"
+  )
+    return "app-control-action";
+  if (
     label === "browser status" ||
     label === "browser claim" ||
     label === "browser panel" ||
@@ -26728,8 +26908,8 @@ function inferFormatter(
     label === "browser sessions"
   )
     return "browser-sessions";
+  if (label === "browser observe") return "browser-observation";
   if (
-    label === "browser observe" ||
     label === "browser click" ||
     label === "browser type" ||
     label === "browser key" ||
@@ -26742,7 +26922,7 @@ function inferFormatter(
     label === "browser select option" ||
     label === "browser upload"
   )
-    return "browser-observation";
+    return "browser-action";
   if (label === "browser trace") return "browser-trace";
   if (label === "shell start") return "pty-create";
   if (label === "terminal list" || label === "terminal active")
@@ -26897,6 +27077,17 @@ function summarizeProofFiling(
   // The broker's own notes, e.g. a video recorded before this request. The
   // agent has to repeat these to the user, so they travel with the result.
   const warnings = readProofWarnings(record);
+  // `proof capture` / `proof record` name the lane display they used, so the
+  // caller can see it was the lane's screen and not the user's.
+  const source = isRecord(record.capturedFrom) ? record.capturedFrom : null;
+  const capturedFrom = source
+    ? [
+        `Mac Desktop display ${asString(source.displayName) ?? "of lane " + (asString(source.laneId) ?? "?")}`,
+        typeof source.width === "number" && typeof source.height === "number"
+          ? `(${source.width}x${source.height})`
+          : null,
+      ].filter(Boolean).join(" ")
+    : null;
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -26915,6 +27106,7 @@ function summarizeProofFiling(
       uri: artifact.uri,
     })),
     ...(warnings.length ? { warnings } : {}),
+    ...(capturedFrom ? { capturedFrom } : {}),
     confirmation:
       `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
       + `to ${owner} (${title})`,

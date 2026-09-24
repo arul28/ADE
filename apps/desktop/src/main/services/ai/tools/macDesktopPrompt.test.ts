@@ -29,7 +29,7 @@ describe("buildMacDesktopDirective", () => {
     expect(MAC_DESKTOP_PROMPT_LINE.split("\n")).toHaveLength(1);
     // It must name the command and the skill, or the line buys nothing.
     expect(MAC_DESKTOP_PROMPT_LINE).toContain("ade mac-desktop");
-    expect(MAC_DESKTOP_PROMPT_LINE).toContain("ade-desktop");
+    expect(MAC_DESKTOP_PROMPT_LINE).toContain("ade-computer-use");
   });
 
   it("says nothing for a lane with no desktop", () => {

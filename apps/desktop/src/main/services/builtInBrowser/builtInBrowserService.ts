@@ -119,7 +119,12 @@ import {
   sanitizeObservationPathSegment,
 } from "../../../shared/agentObservation";
 import {
+  agentActionEffect,
   agentActionTargetForTrace,
+  createAgentActionEffectTracker,
+  noteAgentActionBaseline,
+  noteAgentActionResolved,
+  type AgentActionEffectTracker,
   resolveAgentElementLocatePayload,
   agentHasElementTarget as hasElementTarget,
   applyAgentObservationHandles as applyObservationHandles,
@@ -2585,6 +2590,14 @@ function createBuiltInBrowserWindowService(args: {
     return entry;
   };
 
+  /**
+   * The action in flight on each tab, and what it learned before sending
+   * input: the element it hit and the page state to compare the post-action
+   * observation with. Keyed by tab so the locate helpers and `actionResult`,
+   * which the tab-capability module also calls, need no extra parameter.
+   */
+  const actionEffectTrackers = new WeakMap<BrowserTabState, { action: string; tracker: AgentActionEffectTracker }>();
+
   const runTracedAgentAction = async (
     tab: BrowserTabState,
     action: string,
@@ -2593,6 +2606,8 @@ function createBuiltInBrowserWindowService(args: {
   ): Promise<BuiltInBrowserAgentActionResult> => {
     const sessionEntry = sessionFromInput(input);
     const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
+    const effectEntry = { action, tracker: createAgentActionEffectTracker() };
+    actionEffectTrackers.set(tab, effectEntry);
     try {
       await prepareAgentActionTab(tab, input);
       const result = await fn();
@@ -2613,6 +2628,33 @@ function createBuiltInBrowserWindowService(args: {
       });
       touchSession(sessionEntry, { lastTraceEntryId: trace.id });
       throw error;
+    } finally {
+      if (actionEffectTrackers.get(tab) === effectEntry) actionEffectTrackers.delete(tab);
+    }
+  };
+
+  /**
+   * The pre-action page state for an action that locates nothing first (a
+   * point, or whatever has focus). One collector pass, no screenshot. A
+   * failure only costs the effect check, never the action.
+   */
+  const captureActionBaseline = async (
+    tab: BrowserTabState,
+    input: BuiltInBrowserAgentActionArgs,
+  ): Promise<void> => {
+    const tracker = actionEffectTrackers.get(tab)?.tracker;
+    if (!tracker || tracker.before || input.observe === false) return;
+    try {
+      noteAgentActionBaseline(
+        tracker,
+        await evaluateBrowserDom(tab.webContents, {
+          maxElements: normalizeObservationMaxElements(input.maxElements),
+        }),
+      );
+    } catch (error) {
+      logger()?.debug("built_in_browser.action_baseline_failed", {
+        err: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -4607,6 +4649,7 @@ function createBuiltInBrowserWindowService(args: {
     return runTracedAgentAction(tab, "typeText", input, async () => {
       const text = stringOrNull(input.text);
       if (!text) throw new Error("Text is required.");
+      await captureActionBaseline(tab, input);
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
       });
@@ -4622,6 +4665,8 @@ function createBuiltInBrowserWindowService(args: {
       if (!key) throw new Error("Key is required.");
       if (hasElementTarget(input)) {
         await focusElementTarget(tab, input, { select: false });
+      } else {
+        await captureActionBaseline(tab, input);
       }
       const event = keyEventForAgentInput(key);
       await withTemporaryDebugger(tab.webContents, async () => {
@@ -4647,6 +4692,7 @@ function createBuiltInBrowserWindowService(args: {
       const deltaX = finiteNumber(input.deltaX) ?? 0;
       const deltaY = finiteNumber(input.deltaY) ?? 0;
       if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires deltaX or deltaY.");
+      await captureActionBaseline(tab, input);
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.dispatchMouseEvent", {
           type: "mouseWheel",
@@ -5264,6 +5310,7 @@ function createBuiltInBrowserWindowService(args: {
       if (x == null || y == null) {
         throw new Error("Browser click requires both x and y when using coordinates.");
       }
+      await captureActionBaseline(tab, input);
       return { x: normalizeDimension(x), y: normalizeDimension(y), element: null };
     }
 
@@ -5283,6 +5330,9 @@ function createBuiltInBrowserWindowService(args: {
       throw new Error("No matching browser element was found for click.");
     }
     if (target.disabled) throw new Error("Matching browser element is disabled.");
+    const tracker = actionEffectTrackers.get(tab)?.tracker;
+    noteAgentActionBaseline(tracker, record);
+    noteAgentActionResolved(tracker, target, input.handle);
     return {
       x: normalizeDimension(target.center.x),
       y: normalizeDimension(target.center.y),
@@ -5312,6 +5362,9 @@ function createBuiltInBrowserWindowService(args: {
     const target = normalizeElementSnapshot(record.target);
     if (!target) throw new Error("No matching browser element was found.");
     if (target.disabled) throw new Error("Matching browser element is disabled.");
+    const tracker = actionEffectTrackers.get(tab)?.tracker;
+    noteAgentActionBaseline(tracker, record);
+    noteAgentActionResolved(tracker, target, input.handle);
     return target;
   };
 
@@ -5440,12 +5493,21 @@ function createBuiltInBrowserWindowService(args: {
       const waitMs = normalizeActionObserveDelayMs(input.waitAfterMs);
       if (waitMs > 0) await delay(waitMs);
     }
+    const observation = input.observe === false ? null : await observe({ ...input, tabId: tab.id });
+    const effectEntry = actionEffectTrackers.get(tab);
+    const tracker = effectEntry?.tracker ?? createAgentActionEffectTracker();
     return {
       ok: true,
-      observation: input.observe === false ? null : await observe({ ...input, tabId: tab.id }),
+      observation,
       status: scopeStatusForInput(getStatus(), input),
       trace: null,
       session: sessionEntry ? sessionSnapshot(sessionEntry) : null,
+      resolved: tracker.resolved,
+      effect: agentActionEffect(tracker, {
+        action: effectEntry?.action ?? "action",
+        observed: observation != null,
+        after: observation?.dom,
+      }),
     };
   };
 

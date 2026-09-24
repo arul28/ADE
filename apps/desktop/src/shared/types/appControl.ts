@@ -3,6 +3,7 @@ import type {
   AgentDomSnapshot,
   AgentElementSnapshot,
   AgentFrame,
+  ComputerUseActionEffect,
 } from "./agentObservation";
 
 export type AppControlAppKind = "electron";
@@ -456,6 +457,13 @@ export type AppControlAgentActionResult = {
   observation: AppControlObservation | null;
   session: AppControlSession | null;
   trace: AppControlActionTraceEntry | null;
+  /**
+   * The element the target resolved to, or null when the action went to a
+   * point or to whatever had focus. Read before the input was sent.
+   */
+  resolved: AppControlElementSnapshot | null;
+  /** Whether anything visibly changed between the state before the input and the post-action observation. */
+  effect: ComputerUseActionEffect;
 };
 
 export type AppControlWindowsResult = {

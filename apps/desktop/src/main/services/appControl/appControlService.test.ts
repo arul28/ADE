@@ -855,6 +855,34 @@ describe("appControlService agent actions", () => {
       }));
       expect(result.trace?.target).toEqual(expect.objectContaining({ handle }));
       expect(service.getTrace().entries.map((entry) => entry.action)).toEqual(["click"]);
+      // The element the locate found is kept, under the handle the agent used.
+      expect(result.resolved).toEqual(expect.objectContaining({ selector: "button.save", label: "Save", handle }));
+      expect(result.effect).toEqual({ status: "not_checked", reason: "no observation was taken after the action" });
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("answers whether a click visibly changed the page, from the locate's snapshot and the observation after", async () => {
+    const service = await connectedService();
+    try {
+      // Nothing changed: the locate's snapshot and the post-action one match.
+      mockState.runtimeValues.push(
+        collectorSnapshot([saveButton(), inputField()], { target: saveButton() }),
+        collectorSnapshot([saveButton(), inputField()]),
+      );
+      const unchanged = await service.agentClick({ selector: "button.save", waitAfterMs: 0 });
+      expect(unchanged.resolved).toEqual(expect.objectContaining({ selector: "button.save" }));
+      expect(unchanged.effect).toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
+
+      // A coordinate click has no element; one cheap collector pass is the baseline.
+      mockState.runtimeValues.push(
+        collectorSnapshot([saveButton(), inputField()]),
+        collectorSnapshot([saveButton(), inputField(), { ...inputField(3), label: "Saved", selector: "p.toast" }]),
+      );
+      const changed = await service.agentClick({ x: 30, y: 30, coordinateSpace: "viewport", waitAfterMs: 0 });
+      expect(changed.resolved).toBeNull();
+      expect(changed.effect).toEqual({ status: "observed", reason: "1 element changed" });
     } finally {
       service.dispose();
     }

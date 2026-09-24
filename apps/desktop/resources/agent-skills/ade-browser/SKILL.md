@@ -5,6 +5,9 @@ description: Use this skill for any browser behavior at all — opening a URL, c
 
 # ADE browser
 
+This skill is for web pages and localhost URLs. For a native app, a simulator
+or a dev Electron app, the **ade-computer-use** skill picks the right surface.
+
 Use `ade --socket browser ...` for every browser task. Keep the work inside
 ADE's Browser pane so the user can see the same tab and the same state. ADE
 shares one persistent authentication profile across projects, while visible

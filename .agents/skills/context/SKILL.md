@@ -219,6 +219,8 @@ open the relevant one only when a task needs it.
   `ade help <command>` and `ade actions list --text`, not memory.
   → `ade-cli-control-plane`.
 - **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
+- **Computer use** (which surface to drive, the lane's private Mac Desktop)
+  → `ade-computer-use` (old name `ade-desktop` still resolves).
 - **App / browser / Apple-device control** → `ade-app-control`,
   `ade-browser`, `ade-apple` (old name `ade-ios-simulator` still resolves).
   Read `ade-apple` before you touch `xcodebuild`, `xcrun` or `simctl` by hand.

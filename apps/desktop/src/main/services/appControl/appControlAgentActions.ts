@@ -39,9 +39,14 @@ import {
 // the shared origin is visible at the use site — same idiom the browser service
 // uses for the same three symbols.
 import {
+  agentActionEffect,
   agentHasElementTarget as hasElementTarget,
   applyAgentObservationHandles as applyObservationHandles,
+  createAgentActionEffectTracker,
+  noteAgentActionBaseline,
+  noteAgentActionResolved,
   resolveAgentElementLocatePayload,
+  type AgentActionEffectTracker,
 } from "../../../shared/agentObservationNormalizers";
 import {
   pruneAgentObservationCacheRoot as pruneObservationCacheRoot,
@@ -79,7 +84,7 @@ import { nowIso } from "../shared/utils";
  * element list carrying stable `obs-…:e:N` handles, and every action resolves
  * its target, scrolls it into view, focuses it, refuses disabled targets,
  * records a bounded per-session trace entry, and answers with a fresh
- * post-action observation.
+ * post-action observation, the element it hit, and whether anything changed.
  *
  * The legacy `click` / `typeText` / `scroll` / `dispatchKey` primitives stay in
  * `appControlService` for the renderer's live-frame input; these are the agent
@@ -417,6 +422,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     session: AppControlSession,
     input: AppControlElementTargetArgs & AppControlObservationArgs,
     options: { focus?: boolean; select?: boolean; clear?: boolean; editableRequired?: boolean } = {},
+    tracker: AgentActionEffectTracker | null = null,
   ): Promise<AppControlElementSnapshot> => {
     if (!hasElementTarget(input)) {
       throw new Error("App Control element target requires selector, text, testId, elementIndex, or handle.");
@@ -434,13 +440,40 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     const target = normalizeElementSnapshot(result.target);
     if (!target) throw new Error("No matching App Control element was found.");
     if (target.disabled) throw new Error("Matching App Control element is disabled.");
+    noteAgentActionBaseline(tracker, result);
+    noteAgentActionResolved(tracker, target, input.handle);
     return target;
+  };
+
+  /**
+   * The pre-action state for an action that does not locate anything first
+   * (a point, or whatever has focus). One collector pass, no screenshot. A
+   * failure only costs the effect check, never the action.
+   */
+  const captureActionBaseline = async (
+    client: TClient,
+    input: AppControlAgentActionArgs,
+    tracker: AgentActionEffectTracker,
+  ): Promise<void> => {
+    // No observation after the action means nothing to compare against.
+    if (tracker.before || input.observe === false) return;
+    try {
+      noteAgentActionBaseline(
+        tracker,
+        await evaluateAgentDom(client, { maxElements: normalizeObservationMaxElements(input.maxElements) }),
+      );
+    } catch (error) {
+      deps.logger.debug?.("app_control.action_baseline_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const resolveAgentPoint = async (
     client: TClient,
     session: AppControlSession,
     input: AppControlAgentClickArgs | AppControlAgentHoverArgs,
+    tracker: AgentActionEffectTracker,
   ): Promise<{ x: number; y: number; element: AppControlElementSnapshot | null }> => {
     const x = optionalFiniteNumber(input.x);
     const y = optionalFiniteNumber(input.y);
@@ -454,9 +487,10 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         scale: input.scale ?? null,
         coordinateSpace: input.coordinateSpace ?? null,
       });
+      await captureActionBaseline(client, input, tracker);
       return { x: point.x, y: point.y, element: null };
     }
-    const element = await locateElementTarget(client, session, input, { focus: true });
+    const element = await locateElementTarget(client, session, input, { focus: true }, tracker);
     return { x: round(element.center.x), y: round(element.center.y), element };
   };
 
@@ -522,16 +556,29 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
   const runAgentAction = async (
     action: string,
     input: AppControlAgentActionArgs,
-    run: (client: TClient, session: AppControlSession) => Promise<void>,
+    run: (client: TClient, session: AppControlSession, tracker: AgentActionEffectTracker) => Promise<void>,
   ): Promise<AppControlAgentActionResult> => {
     agentSessionFor(input);
     return deps.withCdp(async (client, session) => {
       const draft = beginActionTrace(session, action, input as Record<string, unknown>);
+      const tracker = createAgentActionEffectTracker();
       try {
-        await run(client, session);
+        await run(client, session, tracker);
         const observation = await agentActionResult(client, session, input);
         const trace = finishActionTrace(draft, "ok", { observationId: observation?.id ?? null });
-        return { ok: true as const, observation, session: deps.getActiveSession(), trace };
+        const effect = agentActionEffect(tracker, {
+          action,
+          observed: observation != null,
+          after: observation?.dom,
+        });
+        return {
+          ok: true as const,
+          observation,
+          session: deps.getActiveSession(),
+          trace,
+          resolved: tracker.resolved,
+          effect,
+        };
       } catch (error) {
         finishActionTrace(draft, "error", { error });
         throw error;
@@ -540,8 +587,8 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
   };
 
   const agentClick = async (input: AppControlAgentClickArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("click", input, async (client, session) => {
-      const point = await resolveAgentPoint(client, session, input);
+    runAgentAction("click", input, async (client, session, tracker) => {
+      const point = await resolveAgentPoint(client, session, input, tracker);
       const button = input.button === "middle" || input.button === "right" ? input.button : "left";
       const clickCount = Math.max(1, Math.min(3, normalizePositiveInteger(input.clickCount) ?? 1));
       await deps.enablePageDomain(client);
@@ -562,8 +609,8 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     });
 
   const agentHover = async (input: AppControlAgentHoverArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("hover", input, async (client, session) => {
-      const point = await resolveAgentPoint(client, session, input);
+    runAgentAction("hover", input, async (client, session, tracker) => {
+      const point = await resolveAgentPoint(client, session, input, tracker);
       await deps.enablePageDomain(client);
       await client.send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
@@ -574,7 +621,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     });
 
   const agentFill = async (input: AppControlAgentFillArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("fill", input, async (client, session) => {
+    runAgentAction("fill", input, async (client, session, tracker) => {
       // `text` doubles as an element-match term, so only an explicit `value`
       // is ever treated as the payload to type.
       const fillValue = typeof input.value === "string" ? input.value : null;
@@ -584,35 +631,38 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         select: true,
         clear: true,
         editableRequired: true,
-      });
+      }, tracker);
       await deps.enablePageDomain(client);
       await client.send("Input.insertText", { text: fillValue });
     });
 
   const agentClear = async (input: AppControlAgentClearArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("clear", input, async (client, session) => {
+    runAgentAction("clear", input, async (client, session, tracker) => {
       await locateElementTarget(client, session, input, {
         focus: true,
         select: true,
         clear: true,
         editableRequired: true,
-      });
+      }, tracker);
     });
 
   const agentType = async (input: AppControlAgentTypeArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("type", input, async (client) => {
+    runAgentAction("type", input, async (client, _session, tracker) => {
       const text = typeof input.text === "string" ? input.text : "";
       if (!text.length) throw new Error("App Control type requires text.");
+      await captureActionBaseline(client, input, tracker);
       await deps.enablePageDomain(client);
       await client.send("Input.insertText", { text });
     });
 
   const agentPress = async (input: AppControlAgentPressArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("press", input, async (client, session) => {
+    runAgentAction("press", input, async (client, session, tracker) => {
       const key = stringOrNull(input.key);
       if (!key) throw new Error("App Control press requires a key.");
       if (hasElementTarget(input)) {
-        await locateElementTarget(client, session, input, { focus: true });
+        await locateElementTarget(client, session, input, { focus: true }, tracker);
+      } else {
+        await captureActionBaseline(client, input, tracker);
       }
       const event = keyEventForAgentInput(key);
       await deps.enablePageDomain(client);
@@ -626,10 +676,11 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     });
 
   const agentScroll = async (input: AppControlAgentScrollArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("scroll", input, async (client) => {
+    runAgentAction("scroll", input, async (client, _session, tracker) => {
       const deltaX = finiteNumber(input.deltaX);
       const deltaY = finiteNumber(input.deltaY);
       if (deltaX === 0 && deltaY === 0) throw new Error("App Control scroll requires deltaX or deltaY.");
+      await captureActionBaseline(client, input, tracker);
       const point = await deps.normalizeViewportPoint(client, {
         x: finiteNumber(input.x),
         y: finiteNumber(input.y),

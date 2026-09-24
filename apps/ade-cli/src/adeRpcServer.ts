@@ -371,6 +371,8 @@ const TOOL_SPECS: ToolSpec[] = [
         args: { type: "object" },
         argsList: { type: "array" },
         arg: {},
+        callerRoot: { type: "string", description: "Absolute directory the calling ade process stands in. For an ade process with no chat identity, a mac_desktop call made from inside a lane worktree is bound to that lane." },
+        callerRootSource: { type: "string", description: "Where callerRoot came from (e.g. \"cwd\" or \"env ADE_WORKSPACE_ROOT\")." },
       }
     }
   },
@@ -571,7 +573,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Capture a local screenshot and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof capture --caption \"…\"` sets.",
+    description: "Capture a local screenshot and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof capture --caption \"…\"` sets. A proof call captures the caller's lane Mac Desktop display and is refused when the lane has none, unless `realScreen` is true.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -582,13 +584,14 @@ const TOOL_SPECS: ToolSpec[] = [
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
         proof: { type: "boolean", default: false, description: "File the capture as reviewer-visible ADE proof. Set by `ade proof capture`; leave false for your own look at the screen." },
+        realScreen: { type: "boolean", default: false, description: "With `proof`, capture the user's whole real screen instead of the lane's Mac Desktop display. Set by `ade proof capture --real-screen`." },
         format: { type: "string", enum: ["png", "jpg"], default: "png" }
       }
     }
   },
   {
     name: "record_environment",
-    description: "Fallback-only: record a short local screen video and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof record` sets.",
+    description: "Fallback-only: record a short local screen video and return its file path. Scratch by default: nothing appears in the reviewer-facing proof drawer unless `proof` is true, which is what `ade proof record` sets. A proof call records the caller's lane Mac Desktop display and is refused when the lane has none, unless `realScreen` is true.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -598,6 +601,7 @@ const TOOL_SPECS: ToolSpec[] = [
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
         proof: { type: "boolean", default: false, description: "File the recording as reviewer-visible ADE proof. Set by `ade proof record`; leave false for your own look at the screen." },
+        realScreen: { type: "boolean", default: false, description: "With `proof`, record the user's whole real screen instead of the lane's Mac Desktop display. Set by `ade proof record --real-screen`." },
         durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
     }
@@ -2220,7 +2224,8 @@ async function inferUnboundCallerLaneId(
   runtime: AdeRuntime,
   session: SessionState,
   callerRoot: string | null,
-): Promise<{ laneId: string; root: string } | null> {
+  options: { logMiss?: boolean } = {},
+): Promise<{ laneId: string; root: string; primary: boolean } | null> {
   if (!callerRoot || !isUnboundAdeCliCaller(session)) return null;
   const lanes = await runtime.laneService
     .list({ includeArchived: false, includeStatus: false })
@@ -2239,10 +2244,10 @@ async function inferUnboundCallerLaneId(
         .map((root) => canonicalAuthorizationPath(root));
       return roots
         .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
-        .map((root) => ({ laneId: lane.id, root }));
+        .map((root) => ({ laneId: lane.id, root, primary: lane.laneType === "primary" }));
     })
     .sort((left, right) => right.root.length - left.root.length)[0] ?? null;
-  if (!match) {
+  if (!match && options.logMiss !== false) {
     // The one line that was missing while an agent's proof went nowhere: the
     // ingest refused, nothing was logged, and the CLI reported a generic
     // "requires an authorized lane worktree".
@@ -2370,6 +2375,181 @@ function resolveAuthorizedProofOwners(
  */
 export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean {
   return toolArgs?.proof === true;
+}
+
+/**
+ * Does this proof call ask for the user's whole real screen?
+ *
+ * A proof capture or recording goes to the caller's lane display by default.
+ * The real screen shows whatever the user has open, so ADE captures it only
+ * when the caller says so: `ade proof capture --real-screen` sends
+ * `realScreen: true`.
+ */
+export function isRealScreenProofCall(toolArgs: Record<string, unknown>): boolean {
+  return toolArgs?.realScreen === true;
+}
+
+/**
+ * The one line a proof capture or recording prints when the caller's lane has
+ * no Mac Desktop display and the caller did not ask for the real screen.
+ *
+ * The CLI prefixes it with `ade: proof capture failed — `, so a caller that
+ * greps for "failed" still sees it. Off macOS, no lane can have a display and
+ * `--real-screen` cannot help either, so the text names only the proof paths
+ * that work there.
+ */
+export function describeLaneDisplayProofRefusal(
+  kind: "screenshot" | "video_recording",
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const noun = kind === "screenshot" ? "capture" : "record";
+  if (platform !== "darwin") {
+    return `refused: ADE does not ${noun} your real screen by default, and this runtime host cannot run a Mac Desktop display. `
+      + "Use `ade browser proof`, `ade app-control proof` or `ade proof attach <file>`.";
+  }
+  const lanePaths = kind === "screenshot"
+    ? "`ade mac-desktop proof`, `ade apple proof`, `ade app-control proof` or `ade browser proof`"
+    : "`ade mac-desktop record`, `ade apple record-start` or `ade browser record`";
+  return `refused: this lane has no Mac Desktop display, and ADE does not ${noun} your real screen by default. `
+    + `Use ${lanePaths}, or pass --real-screen to ${noun} the whole real screen.`;
+}
+
+/**
+ * The lane and chat a proof capture belongs to, resolved the way the proof
+ * owner is: the chat's lane, else the lane whose worktree contains the
+ * caller's root. A lane the caller only NAMES counts for a CTO user client
+ * alone — the same rule `scopeMacDesktopAdeActionArgs` applies, so this door
+ * cannot reach a display the `mac_desktop` domain would refuse.
+ */
+async function resolveProofDisplayTarget(
+  runtime: AdeRuntime,
+  session: SessionState,
+  toolArgs: Record<string, unknown>,
+): Promise<{ laneId: string | null; chatSessionId: string | null }> {
+  const ownerKind = asOptionalTrimmedString(toolArgs.ownerKind);
+  const ownerId = asOptionalTrimmedString(toolArgs.ownerId);
+  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  const inferredLaneId = sessionLaneId
+    ? null
+    : (await inferUnboundCallerLaneId(runtime, session, asOptionalTrimmedString(toolArgs.callerRoot)))?.laneId ?? null;
+  const namedLaneId = session.identity.role === "cto" && isUserClientSession(session)
+    ? asOptionalTrimmedString(toolArgs.laneId) ?? (ownerKind === "lane" ? ownerId : null)
+    : null;
+  const sessionChatId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const chatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId)
+    ?? ((ownerKind === "chat" || ownerKind === "chat_session") ? ownerId : null)
+    ?? (sessionChatId && !isSyntheticCallerId(sessionChatId) ? sessionChatId : null);
+  return {
+    laneId: sessionLaneId ?? inferredLaneId ?? namedLaneId ?? null,
+    chatSessionId,
+  };
+}
+
+/**
+ * `ade proof capture` / `ade proof record` on the caller's lane display.
+ *
+ * Files through the Mac Desktop service's own proof path — the one the pane's
+ * Save screenshot and `mac-desktop record stop` use — so the provenance, the
+ * lane and chat owners, and the lane's PR link match `ade mac-desktop proof`.
+ * Refuses when the lane has no display: the real screen is the user's, and
+ * the caller has to ask for it with `realScreen: true`.
+ */
+async function fileLaneDisplayProof(args: {
+  runtime: AdeRuntime;
+  session: SessionState;
+  toolArgs: Record<string, unknown>;
+  kind: "screenshot" | "video_recording";
+  durationSec?: number;
+}): Promise<Record<string, unknown>> {
+  const { runtime, session, toolArgs, kind } = args;
+  validateComputerUseOwnerClaims(runtime, session, toolArgs);
+  const target = await resolveProofDisplayTarget(runtime, session, toolArgs);
+  const service = runtime.macDesktopService ?? null;
+  const laneId = target.laneId;
+  if (!laneId || !service || !service.hasDisplaySync(laneId)) {
+    runtime.logger.info("computer_use.proof_real_screen_refused", {
+      kind,
+      laneId,
+      macDesktopService: Boolean(service),
+    });
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      describeLaneDisplayProofRefusal(kind),
+      { kind: "proof_real_screen_refused", laneId },
+    );
+  }
+  const display = await service.getDisplay({ laneId }).catch(() => null);
+  const title = asOptionalTrimmedString(toolArgs.name)
+    ?? (kind === "screenshot" ? "Mac Desktop screenshot" : "Mac Desktop recording");
+  let filePath: string | null;
+  let artifactId: string | null;
+  let failure: string | null = null;
+  let metadata: Record<string, unknown>;
+  if (kind === "screenshot") {
+    const shot = await service.screenshot({ laneId, caption: title, chatSessionId: target.chatSessionId });
+    filePath = shot.filePath;
+    artifactId = shot.proofArtifactId ?? null;
+    metadata = { absolutePath: shot.filePath, width: shot.width, height: shot.height, format: "png" };
+  } else {
+    const durationSec = args.durationSec ?? 10;
+    const status = await service.getStatus({ laneId });
+    if (status.recording?.running) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.toolFailed,
+        `a Mac Desktop recording is already running on lane ${laneId}. Stop it with \`ade mac-desktop record stop\` first.`,
+      );
+    }
+    // The cap is a backstop: if this call dies mid-wait, the recorder still
+    // stops and files itself instead of running for the default ten minutes.
+    await service.startRecording({
+      laneId,
+      caption: title,
+      chatSessionId: target.chatSessionId,
+      maxSeconds: durationSec + 30,
+    });
+    await sleep(durationSec * 1000);
+    const stopped = await service.stopRecording({ laneId, chatSessionId: target.chatSessionId });
+    filePath = stopped.filePath ?? null;
+    artifactId = stopped.proofArtifactId ?? null;
+    failure = stopped.lastError ?? null;
+    metadata = {
+      absolutePath: filePath,
+      durationSec,
+      durationMs: stopped.durationMs ?? null,
+      wallDurationMs: stopped.wallDurationMs ?? null,
+      idleCutMs: stopped.idleCutMs ?? null,
+    };
+  }
+  if (!artifactId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.toolFailed,
+      `the Mac Desktop ${kind === "screenshot" ? "screenshot" : "recording"} of lane ${laneId} was not filed as proof`
+        + (failure ? `: ${failure}` : filePath ? ` (file kept at ${filePath})` : ""),
+    );
+  }
+  const [view] = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId });
+  const capturedFrom = {
+    kind: "mac_desktop",
+    laneId,
+    displayName: display?.name ?? null,
+    displayId: display?.displayId ?? null,
+    width: display?.width ?? null,
+    height: display?.height ?? null,
+  };
+  return {
+    proof: true,
+    capturedFrom,
+    artifact: {
+      type: kind,
+      title,
+      uri: view?.uri ?? (filePath ? toProjectArtifactUri(runtime.projectRoot, filePath) : null),
+      path: filePath,
+      mimeType: kind === "screenshot" ? "image/png" : "video/mp4",
+      metadata,
+    },
+    artifacts: view ? [view] : [{ id: artifactId, kind, title, laneId }],
+    links: view?.links ?? [{ ownerKind: "lane", ownerId: laneId }],
+  };
 }
 
 /** One capture registry per runtime, shared by every connection to it. */
@@ -3279,7 +3459,9 @@ export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
  *
  * User clients keep what they sent: the desktop renderer, the web client and a
  * paired phone each drive whichever lane's display their UI is showing, and the
- * human's takeover holds the lease under a `controllerId`, not a chat id.
+ * human's takeover holds the lease under a `controllerId`, not a chat id. The
+ * one "user client" that does not is an `ade` process with no chat identity;
+ * `scopeUnboundMacDesktopAdeActionArgs` scopes that one.
  *
  * A bound caller that names a *different* lane is refused out loud. The pin is
  * deliberate — an agent may only drive its own lane's display — but silently
@@ -3345,6 +3527,87 @@ export function scopeMacDesktopAdeActionArgs(
     ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
     ...(sessionLaneId ? { laneId: sessionLaneId } : {}),
   };
+}
+
+/**
+ * `mac_desktop` for an `ade` process with no chat identity (`ade-cli:<pid>`).
+ *
+ * That caller is either a person in a terminal or an agent whose shell carries
+ * no chat environment — every OpenCode agent, because one `opencode serve` is
+ * shared across chats. It counts as a user client, so it skipped
+ * `scopeMacDesktopAdeActionArgs` entirely and could name another chat's
+ * `chatSessionId`, or the human's takeover `controllerId`, and act as that
+ * holder of the input lease on any lane. The two cannot be told apart by env,
+ * so both get the same rule:
+ *
+ * - It never speaks for someone else. `chatSessionId`, `controllerId` and
+ *   `holderId` are stripped, so its input is held under no one's lease: the
+ *   accessibility-mode commands work (they check no lease), and `mode: "real"`
+ *   is refused by the service because no lease is held by an anonymous caller.
+ *   `requestInputLease` is refused outright rather than stripped: the lease is
+ *   granted to the chat that asks, after a card in that chat, and this caller
+ *   has no chat to ask in. A person who wants real input takes control from
+ *   the Mac Desktop panel instead.
+ * - It is placed by where it stands, not by what it claims. When its
+ *   `callerRoot` sits inside a lane worktree (the same containment the proof
+ *   path uses), the call is bound to that lane: `laneId` defaults to it, and a
+ *   different `--lane` is refused naming both lanes. The primary lane does not
+ *   bind, because its worktree is the project root, where a person runs `ade`
+ *   to reach any lane.
+ * - Outside every lane worktree it names the lane itself, as before.
+ *
+ * `callerRoot` is a claim too — a process can run from any directory — so this
+ * keeps honest callers on their own lane; the stripping is the hard boundary.
+ */
+export async function scopeUnboundMacDesktopAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  macDesktopArgs: Record<string, unknown>,
+  callerRootRaw: unknown,
+): Promise<Record<string, unknown>> {
+  const method = `run_ade_action:mac_desktop.${action}`;
+  if (action === "requestInputLease") {
+    scopeAccessDenied(
+      "mac_desktop.requestInputLease needs the chat that asks, and this ade process has none. "
+        + "Run it from an ADE chat, or take control from the Mac Desktop panel",
+      method,
+    );
+  }
+  const {
+    chatSessionId: _callerSupplied,
+    controllerId: _callerController,
+    holderId: _callerHolder,
+    ...rest
+  } = macDesktopArgs;
+  const callerRoot = asOptionalTrimmedString(callerRootRaw);
+  if (callerRoot && !path.isAbsolute(callerRoot)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
+  }
+  const standing = await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null, { logMiss: false });
+  const standingLaneId = standing && !standing.primary ? standing.laneId : null;
+  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
+  if (standingLaneId && requestedLaneId && requestedLaneId !== standingLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `This shell is inside lane ${standingLaneId}'s worktree (${callerRoot}); --lane ${requestedLaneId} was refused. `
+        + `Run ade from lane ${requestedLaneId}'s worktree or from the project root.`,
+      {
+        kind: "lane_bound",
+        method,
+        callerLaneId: standingLaneId,
+        requestedLaneId,
+      },
+    );
+  }
+  const laneId = standingLaneId ?? requestedLaneId;
+  if (!laneId && MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `mac_desktop.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`,
+    );
+  }
+  return { ...rest, ...(laneId ? { laneId } : {}) };
 }
 
 /** `work_tools` actions scoped for every role, the CTO's included. */
@@ -4208,16 +4471,19 @@ async function runTool(args: {
       return null;
     }
   };
-  const ensureLocalComputerUse = (
-    toolName: string,
-    capabilityKey: "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs" | "appLaunch" | "guiInteraction" | "environmentInfo",
-  ) => {
+  const ensureLocalComputerUseRole = (toolName: string): void => {
     if (!isLocalComputerUseAllowed(callerCtx)) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
         `Unsupported tool: ${toolName}`,
       );
     }
+  };
+  const ensureLocalComputerUse = (
+    toolName: string,
+    capabilityKey: "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs" | "appLaunch" | "guiInteraction" | "environmentInfo",
+  ) => {
+    ensureLocalComputerUseRole(toolName);
     const capabilities = getLocalComputerUseCapabilities();
     const capability =
       capabilityKey === "appLaunch" || capabilityKey === "guiInteraction" || capabilityKey === "environmentInfo"
@@ -4680,6 +4946,17 @@ async function runTool(args: {
         isUserClient,
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (domain === "mac_desktop" && isUnboundAdeCliCaller(session)) {
+      // A user client by shape, but possibly an agent whose shell has no chat
+      // identity (OpenCode). It may not act as any chat or controller, and it
+      // is placed by the lane worktree it stands in; see the function.
+      scopedObjectArgs = await scopeUnboundMacDesktopAdeActionArgs(
+        runtime,
+        session,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        toolArgs.callerRoot,
       );
     } else if (
       domain === "work_tools"
@@ -5553,6 +5830,12 @@ async function runTool(args: {
     if (target !== "local") {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "target must be local.");
     }
+    if (isExplicitProofCall(toolArgs) && !isRealScreenProofCall(toolArgs)) {
+      // Proof goes to the lane's display, never the user's screen by default.
+      // The display path needs no `screencapture`, so only the role gate runs.
+      ensureLocalComputerUseRole(name);
+      return await fileLaneDisplayProof({ runtime, session, toolArgs, kind: "screenshot" });
+    }
     ensureLocalComputerUse(name, "screenshot");
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const format = asOptionalTrimmedString(toolArgs.format) === "jpg" ? "jpg" : "png";
@@ -5584,9 +5867,13 @@ async function runTool(args: {
   }
 
   if (name === "record_environment") {
+    const durationSec = Math.max(1, Math.min(120, Math.floor(asNumber(toolArgs.durationSec, 10))));
+    if (isExplicitProofCall(toolArgs) && !isRealScreenProofCall(toolArgs)) {
+      ensureLocalComputerUseRole(name);
+      return await fileLaneDisplayProof({ runtime, session, toolArgs, kind: "video_recording", durationSec });
+    }
     ensureLocalComputerUse(name, "video_recording");
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
-    const durationSec = Math.max(1, Math.min(120, Math.floor(asNumber(toolArgs.durationSec, 10))));
     const title = asOptionalTrimmedString(toolArgs.name) ?? "Environment recording";
     const proof = isExplicitProofCall(toolArgs);
     const artifactPath = proof

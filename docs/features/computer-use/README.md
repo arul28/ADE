@@ -285,6 +285,59 @@ It changes nothing about the two responsibilities above:
 See [`../mac-desktop/README.md`](../mac-desktop/README.md) for the display,
 ownership, lease, and streaming model.
 
+## One action answer
+
+Four surfaces act for an agent: the built-in browser (`ade browser`), App
+Control (`ade app-control`), Mac Desktop (`ade mac-desktop`), and the Apple
+device tool (`ade apple`). Every acting command on them answers the same way.
+The agent learns two facts from each action: which element it hit, and whether
+the screen visibly changed.
+
+In `--text` mode, the first two lines are always:
+
+```
+hit: button "Save" (obs-…:e:12)
+effect: observed — the URL changed
+```
+
+- `hit` names the resolved element: role, name, and the handle (or selector,
+  or Apple ref) the agent can reuse. With no element it says where the input
+  went: `no element; acted on a point`, `no element; sent to whatever had
+  focus`, or `no element matched`.
+- `effect` has three states:
+  - `observed` — something visibly changed. The reason names the first change.
+  - `unconfirmed` — the input was sent, but nothing ADE can see changed. The
+    line ends with `observe again before you continue`.
+  - `not checked` — this action did not compare. The reason says why.
+
+In JSON, the same facts are the `resolved` and `effect` fields
+(`ComputerUseActionEffect` in `shared/types/agentObservation.ts`). They are
+additive; every older field stays.
+
+How each surface decides the effect:
+
+- **Browser and App Control.** The "before" is the DOM snapshot the in-page
+  collector already takes when it locates the target. An action with no target
+  (a point, `type`, `press` with no target, `scroll`) runs the collector once,
+  with no screenshot. The "after" is the post-action observation. Focus and
+  scroll that the locate caused are not counted. A `wait` and an action with
+  `--no-observe` answer `not checked`.
+- **Mac Desktop.** The "before" is the observation the target was resolved
+  against: the newest one for the lane. The "after" is the observation every
+  action already takes. A lane with no earlier observation answers
+  `not checked`. A silent takeover input has no effect.
+- **Apple device.** Always `not checked`. A compare would need a second
+  accessibility snapshot after every tap, which costs more than the tap. The
+  reason tells the agent to run `ade apple find` or `ade apple screenshot`.
+
+The compare is cheap and deterministic
+(`compareAgentEffectFingerprints` in `shared/agentObservation.ts`). It checks,
+in order: URL, title, windows, scroll, elements, element count, focus, and a
+frame hash for pixel-only callers. Each element is a hash of role, label,
+value, text, and its frame rounded to 4 points. Reordering, sub-grid jitter,
+whitespace, and the value of a progress or busy indicator do not count as a
+change. When either list was capped, only the shared prefix is compared.
+
 ## Cross-links
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.

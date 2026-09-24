@@ -466,6 +466,7 @@ const browserMockIosElementResult = (
   matchCount: 0,
   message: "Browser preview has no iOS simulator.",
   waitedMs: null,
+  effect: { status: "not_checked", reason: "nothing was sent" },
 });
 
 const WELCOME_VIDEO_STORAGE_KEY = "ade.browserMock.welcomeVideoState";

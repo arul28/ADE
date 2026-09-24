@@ -5,6 +5,9 @@ description: Use this skill when you need to see an iOS or SwiftUI change actual
 
 # ADE Apple Development
 
+This skill is for iOS and SwiftUI apps. For a macOS app, a dev Electron app or
+a web page, the **ade-computer-use** skill picks the right surface.
+
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
 `$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
 its brain, so your calls and the desktop's Apple Development tool share one

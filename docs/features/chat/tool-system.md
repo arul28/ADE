@@ -338,7 +338,7 @@ a display, or the tool is granted — and `null` otherwise. `composeLaunchDirect
 in `agentChatService.ts` drops the null, so a lane with the tool off produces a
 byte-identical system prompt to one built before the feature existed. Personal
 chats never get the line. The line itself points at `ade mac-desktop` and the
-bundled **ade-desktop** skill rather than restating the surface.
+bundled **ade-computer-use** skill rather than restating the surface.
 
 See [Mac Desktop](../mac-desktop/README.md).
 

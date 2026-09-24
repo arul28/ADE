@@ -6049,6 +6049,133 @@ describe("adeRpcServer", () => {
     }));
   });
 
+  describe("mac_desktop for an ade process with no chat identity", () => {
+    // `ade-cli:<pid>` is a person's terminal or an agent whose shell has no chat
+    // environment (every OpenCode agent). It passed as a user client, so it could
+    // name another chat or the human's takeover controller and act as that lease
+    // holder, on any lane.
+    async function setup() {
+      setPlatform("darwin");
+      const fixture = createRuntime();
+      const observe = vi.fn(async (args: unknown) => args);
+      const click = vi.fn(async (args: unknown) => args);
+      const getStatus = vi.fn(async () => ({ supported: true }));
+      const requestInputLease = vi.fn(async () => ({ granted: true }));
+      fixture.runtime.macDesktopService = { observe, click, getStatus, requestInputLease } as any;
+      const lane1Root = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+      const lane1Subdir = path.join(lane1Root, "packages", "app");
+      fs.mkdirSync(lane1Subdir, { recursive: true });
+      fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-2"), { recursive: true });
+      const shell = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(shell, { callerId: "ade-cli:4242", role: "agent" });
+      const call = (action: string, args: Record<string, unknown>, callerRoot?: string) =>
+        callTool(shell, "run_ade_action", {
+          domain: "mac_desktop",
+          action,
+          args,
+          ...(callerRoot ? { callerRoot } : {}),
+        });
+      return { fixture, observe, click, getStatus, requestInputLease, lane1Subdir, call };
+    }
+    const impersonation = {
+      chatSessionId: "chat-b",
+      controllerId: "ade-window:human-takeover",
+      holderId: "ade-window:human-takeover",
+    };
+
+    it("binds a call made inside a lane worktree to that lane and strips who it claims to be", async () => {
+      const { click, lane1Subdir, call } = await setup();
+      const result = await call("click", { x: 1, y: 1, mode: "real", ...impersonation }, lane1Subdir);
+      expect(result?.isError).toBeUndefined();
+      const forwarded = click.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(forwarded).toMatchObject({ laneId: "lane-1" });
+      expect(forwarded).not.toHaveProperty("chatSessionId");
+      expect(forwarded).not.toHaveProperty("controllerId");
+      expect(forwarded).not.toHaveProperty("holderId");
+    });
+
+    it("refuses another lane from inside a lane worktree, naming both lanes", async () => {
+      const { observe, lane1Subdir, call } = await setup();
+      const refused = await call("observe", { laneId: "lane-2" }, lane1Subdir);
+      expect(refused?.isError).toBe(true);
+      const text = JSON.stringify(refused);
+      expect(text).toContain("lane lane-1");
+      expect(text).toContain("--lane lane-2 was refused");
+      expect(observe).not.toHaveBeenCalled();
+      // Its own lane, named, is fine.
+      expect((await call("observe", { laneId: "lane-1" }, lane1Subdir))?.isError).toBeUndefined();
+    });
+
+    it("outside every lane worktree names any lane, but still as nobody", async () => {
+      const { fixture, click, call } = await setup();
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mac-desktop-outside-"));
+      try {
+        const result = await call("click", { laneId: "lane-2", x: 1, y: 1, mode: "real", ...impersonation }, outside);
+        expect(result?.isError).toBeUndefined();
+        const forwarded = click.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(forwarded).toMatchObject({ laneId: "lane-2", mode: "real" });
+        expect(forwarded).not.toHaveProperty("chatSessionId");
+        expect(forwarded).not.toHaveProperty("controllerId");
+        expect(forwarded).not.toHaveProperty("holderId");
+        // An acting command with no lane anywhere says how to give it one.
+        const noLane = await call("click", { x: 1, y: 1 }, outside);
+        expect(noLane?.isError).toBe(true);
+        expect(JSON.stringify(noLane)).toContain("needs a lane");
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+      // The primary lane's worktree is the project root, where a person runs
+      // `ade` to reach any lane, so standing there binds nothing.
+      const rows = await fixture.runtime.laneService.list();
+      fixture.runtime.laneService.list.mockResolvedValue([
+        { ...rows[0], id: "lane-primary", laneType: "primary", worktreePath: fixture.runtime.projectRoot },
+        ...rows,
+      ]);
+      click.mockClear();
+      const fromRoot = await call("click", { laneId: "lane-2", x: 1, y: 1 }, fixture.runtime.projectRoot);
+      expect(fromRoot?.isError).toBeUndefined();
+      expect(click).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-2" }));
+    });
+
+    it("refuses the input lease, which is granted to the chat that asks", async () => {
+      const { requestInputLease, lane1Subdir, call } = await setup();
+      const refused = await call("requestInputLease", { chatSessionId: "chat-b" }, lane1Subdir);
+      expect(refused?.isError).toBe(true);
+      expect(requestInputLease).not.toHaveBeenCalled();
+    });
+
+    it("leaves a desktop client and a bound agent as they were", async () => {
+      const { fixture, observe, click, lane1Subdir } = await setup();
+      fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+        sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-2" } : null
+      ));
+      const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(desktop, { callerId: "desktop-1", role: "cto" }, { clientInfo: { name: "ade-desktop-local" } });
+      await callTool(desktop, "run_ade_action", {
+        domain: "mac_desktop",
+        action: "click",
+        args: { laneId: "lane-2", x: 1, y: 1, chatSessionId: "chat-b", controllerId: "ade-window:human-takeover" },
+        callerRoot: lane1Subdir,
+      });
+      expect(click).toHaveBeenLastCalledWith(expect.objectContaining({
+        laneId: "lane-2",
+        chatSessionId: "chat-b",
+        controllerId: "ade-window:human-takeover",
+      }));
+
+      // A bound agent is pinned by its chat, not by where its shell stands.
+      const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+      await callTool(agent, "run_ade_action", {
+        domain: "mac_desktop",
+        action: "observe",
+        args: {},
+        callerRoot: lane1Subdir,
+      });
+      expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ laneId: "lane-2", chatSessionId: "chat-a" }));
+    });
+  });
+
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
     // `callerLaneId` IS the aggregator's ownership check, so it is never the
     // caller's to supply — including on the user-client path, where it used to
