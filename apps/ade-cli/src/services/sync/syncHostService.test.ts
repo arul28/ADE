@@ -12141,6 +12141,13 @@ describe("chat_subscribe snapshots", () => {
           windowTruncated: false,
           sessionFound: true,
         }),
+        getChatEventHistoryPage: vi.fn().mockResolvedValue({
+          sessionId,
+          events: [event],
+          startOffset: 0,
+          hasMore: false,
+          sessionFound: true,
+        }),
         getSessionSummary: vi.fn().mockResolvedValue({ status: "inactive" }),
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);

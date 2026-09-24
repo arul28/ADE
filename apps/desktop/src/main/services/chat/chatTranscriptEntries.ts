@@ -300,6 +300,7 @@ export function transcriptEntriesFromEnvelopes(
       ...(entry.turnId ? { turnId: entry.turnId } : {}),
       ...(entry.messageId ? { messageId: entry.messageId } : {}),
       ...(entry.itemId ? { itemId: entry.itemId } : {}),
+      ...(entry.phase ? { phase: entry.phase } : {}),
     };
     options?.onEntrySourceOffset?.(sourceOffsetByDraft.get(entry) ?? null);
     return [normalized];

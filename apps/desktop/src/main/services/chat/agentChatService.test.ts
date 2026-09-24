@@ -38045,6 +38045,7 @@ describe("createAgentChatService", () => {
       fs.rmSync(path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`), { force: true });
       fs.symlinkSync(outsideTranscriptPath, transcriptFile);
       vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+      vi.mocked(parseAgentChatTranscript).mockClear();
 
       const history = await service.getChatEventHistory(session.id);
 

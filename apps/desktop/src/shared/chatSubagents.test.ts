@@ -241,6 +241,7 @@ describe("chat pane scalability helpers", () => {
 describe("chatSubagents timeline helpers", () => {
   it("normalizes agent keys and prefers meaningful, richer summaries", () => {
     expect(subagentAgentKey({ agentId: "  agent-1  ", taskId: "task-1" })).toBe("agent-1");
+    expect(subagentAgentKey({ agentId: "cli-child", taskId: "chat:cli-child" })).toBe("chat:cli-child");
     expect(subagentAgentKey({ agentId: " ", taskId: " task-1 " })).toBe("task-1");
     expect(subagentAgentKey({ agentId: "", taskId: " " })).toBeNull();
 

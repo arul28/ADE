@@ -270,7 +270,12 @@ export function chatInfoHeaderModelAttribution(args: {
 }
 
 export function subagentAgentKey(event: { agentId?: string | null; taskId?: string | null }): string | null {
-  return textField(event.agentId) ?? textField(event.taskId);
+  const taskId = textField(event.taskId);
+  // A spawned ADE chat's stable id is `chat:<sessionId>`. Resume events repeat
+  // a short agentId (`cli-child`); the card key stays on the chat id so the
+  // same row reopens.
+  if (taskId?.startsWith("chat:")) return taskId;
+  return textField(event.agentId) ?? taskId;
 }
 
 /**

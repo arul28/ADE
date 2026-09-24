@@ -199,6 +199,9 @@ export type SubagentSpawnAnchorRenderEvent = {
   lastToolName: string | null;
   toolCount: number | null;
   startedAt: string;
+  /** A reopened card has no settled end or prior result. */
+  endedAt: null;
+  resultSummary: null;
   /**
    * Spawned-ADE-chat navigation. Set only when the source lifecycle event carried
    * a `chat:<id>` taskId (a spawned peer/subagent chat, not a runtime-native
@@ -2107,6 +2110,8 @@ function spawnAnchorEvent(
     lastToolName: state.lastToolName,
     toolCount: state.toolCount,
     startedAt: state.startedAt,
+    endedAt: null,
+    resultSummary: null,
     childSessionId: state.childSessionId,
     taskId: state.taskId,
     spawnKind: state.spawnKind,
