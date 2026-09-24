@@ -2,6 +2,7 @@ import type { MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import {
+  DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   type BackgroundLaunchNotice,
@@ -13,6 +14,145 @@ import {
 } from "../../../lib/draftLaunchJobs";
 import { extractError } from "../../../lib/format";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
+import type { ComposerHandoff } from "./chatLaunchDock";
+
+export type SubmittedDraftTextEdit = {
+  submittedText: string;
+  kind: "append" | "replacement";
+};
+
+export function clearSubmittedDraftText(
+  current: string,
+  submitted: string,
+  edit?: SubmittedDraftTextEdit | null,
+): string {
+  if (!submitted) return current;
+  if (current === submitted) {
+    return edit?.submittedText === submitted && edit.kind === "replacement" ? current : "";
+  }
+  if (
+    edit?.submittedText === submitted
+    && edit.kind === "append"
+    && current.startsWith(submitted)
+  ) return current.slice(submitted.length);
+  return current;
+}
+
+export function removeSubmittedDraftItems<T>(
+  current: T[],
+  submitted: readonly T[],
+  matches: (current: T, submitted: T) => boolean = Object.is,
+): T[] {
+  if (!current.length || !submitted.length) return current;
+  const remaining = [...submitted];
+  let changed = false;
+  const next = current.filter((item) => {
+    const index = remaining.findIndex((entry) => matches(item, entry));
+    if (index < 0) return true;
+    remaining.splice(index, 1);
+    changed = true;
+    return false;
+  });
+  return changed ? next : current;
+}
+
+export function removeSubmittedDraftItemsById<T>(
+  current: readonly T[],
+  currentIds: readonly string[],
+  submitted: readonly T[],
+  submittedIds: readonly string[],
+  fallbackMatches: (current: T, submitted: T) => boolean = Object.is,
+): { items: T[]; ids: string[] } {
+  const remaining = submitted.map((item, index) => ({ item, id: submittedIds[index] }));
+  const items: T[] = [];
+  const ids: string[] = [];
+  let changed = false;
+  current.forEach((item, index) => {
+    const id = currentIds[index];
+    const matchIndex = remaining.findIndex((entry) => (
+      id && entry.id ? id === entry.id : fallbackMatches(item, entry.item)
+    ));
+    if (matchIndex < 0) {
+      items.push(item);
+      ids.push(id ?? "");
+      changed = changed || !id;
+      return;
+    }
+    remaining.splice(matchIndex, 1);
+    changed = true;
+  });
+  return changed ? { items, ids } : { items: [...current], ids: [...currentIds] };
+}
+
+export function sameStoredDraftItem(left: unknown, right: unknown): boolean {
+  const withoutScreenshot = (value: unknown) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+    const copy = { ...value as Record<string, unknown> };
+    delete copy.screenshotDataUrl;
+    return copy;
+  };
+  try {
+    return JSON.stringify(withoutScreenshot(left)) === JSON.stringify(withoutScreenshot(right));
+  } catch {
+    return false;
+  }
+}
+
+type PendingRendererLaunchHandoff = {
+  handoff: ComposerHandoff;
+  capturedAtMs: number;
+  expiryTimer: number;
+};
+
+const pendingRendererLaunchHandoffs = new Map<string, PendingRendererLaunchHandoff>();
+
+function removePendingRendererLaunchHandoff(jobId: string): void {
+  const entry = pendingRendererLaunchHandoffs.get(jobId);
+  if (!entry) return;
+  window.clearTimeout(entry.expiryTimer);
+  pendingRendererLaunchHandoffs.delete(jobId);
+}
+
+function sweepRendererLaunchHandoffs(nowMs = Date.now()): void {
+  for (const [jobId, entry] of pendingRendererLaunchHandoffs) {
+    if (nowMs - entry.capturedAtMs > DRAFT_LAUNCH_JOB_STALE_AFTER_MS) {
+      removePendingRendererLaunchHandoff(jobId);
+    }
+  }
+}
+
+/** Keep the visual origin available if the foreground launch's pane remounts before IPC settles. */
+export function stashRendererLaunchHandoff(jobId: string, handoff: ComposerHandoff | null): void {
+  if (!handoff) {
+    discardRendererLaunchHandoff(jobId);
+    return;
+  }
+  sweepRendererLaunchHandoffs();
+  removePendingRendererLaunchHandoff(jobId);
+  const entry: PendingRendererLaunchHandoff = {
+    handoff,
+    capturedAtMs: Date.now(),
+    expiryTimer: 0,
+  };
+  entry.expiryTimer = window.setTimeout(() => {
+    if (pendingRendererLaunchHandoffs.get(jobId) === entry) {
+      pendingRendererLaunchHandoffs.delete(jobId);
+    }
+  }, DRAFT_LAUNCH_JOB_STALE_AFTER_MS);
+  pendingRendererLaunchHandoffs.set(jobId, entry);
+}
+
+/** Consume a captured origin when a remounted pane resumes a ready launch. */
+export function takeRendererLaunchHandoff(jobId: string): ComposerHandoff | null {
+  sweepRendererLaunchHandoffs();
+  const handoff = pendingRendererLaunchHandoffs.get(jobId)?.handoff ?? null;
+  removePendingRendererLaunchHandoff(jobId);
+  return handoff;
+}
+
+export function discardRendererLaunchHandoff(jobId: string | null | undefined): void {
+  if (jobId) removePendingRendererLaunchHandoff(jobId);
+}
 
 /**
  * The renderer-owned launch chain: resolve (or create) the lane, start the
@@ -36,6 +176,12 @@ export type StartedDraftLaunch = {
   draftKind: DraftLaunchKind;
 };
 
+export type OpenLaunchedDraftSessionInput = BackgroundLaunchNotice & {
+  jobId?: string;
+  firstMessage?: PreparedDraftLaunch;
+  composerHandoff?: ComposerHandoff | null;
+};
+
 export type RendererOwnedLaunchDeps = {
   kind: DraftLaunchKind;
   mode: DraftLaunchMode;
@@ -53,6 +199,7 @@ export type RendererOwnedLaunchDeps = {
   latestForegroundJobIdRef: MutableRefObject<string | null>;
   inFlightKeysRef: MutableRefObject<Set<string>>;
   paneMountedRef: MutableRefObject<boolean>;
+  captureHandoffOrigin: () => ComposerHandoff | null;
   prepare: (snapshot: DraftLaunchSnapshot) => PreparedDraftLaunch;
   resolveLane: (
     snapshot: DraftLaunchSnapshot,
@@ -85,7 +232,7 @@ export type RendererOwnedLaunchDeps = {
   canRefreshPinnedProject: (pin?: OpenProjectBinding | null) => boolean;
   refreshSessions: (options?: { force?: boolean }) => Promise<unknown>;
   refreshLanes: () => Promise<unknown>;
-  openLaunchedDraftSession: (launch: BackgroundLaunchNotice & { jobId?: string }) => void;
+  openLaunchedDraftSession: (launch: OpenLaunchedDraftSessionInput) => void;
   clearSelectedSession: () => void;
 };
 
@@ -143,11 +290,21 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
         : entry
     )),
   ]));
-  deps.clearDraftLaunchComposer(snapshot);
+  // A foreground chat keeps its prompt in the composer until the chat opens,
+  // so the text never vanishes into an empty wait; the opening chat then flies
+  // it up into the first bubble. Everything else clears at once as before.
+  const holdsComposerUntilOpen = kind === "chat" && mode === "foreground";
+  let composerHandoff: ComposerHandoff | null = null;
+  if (!holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);
 
   let targetLane: DraftLaunchLaneTarget | null = null;
 
   try {
+    if (holdsComposerUntilOpen) {
+      composerHandoff = deps.captureHandoffOrigin();
+      stashRendererLaunchHandoff(jobId, composerHandoff);
+    }
+    const prepared = deps.prepare(snapshot);
     targetLane = await withDraftLaunchTimeout(deps.resolveLane(snapshot, {
       onAutoCreateNameResolved: () => {
         deps.patchDraftLaunchJob(jobId, { status: "creating-lane" });
@@ -163,7 +320,6 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       laneId: targetLane.laneId,
       laneName: targetLane.laneName,
     });
-    const prepared = deps.prepare(snapshot);
     deps.patchDraftLaunchJob(jobId, {
       status: "sending-prompt",
       laneId: targetLane.laneId,
@@ -206,14 +362,25 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
       autoOpen: mode === "foreground" && canMutateLaunchUi,
     });
     if (!jobStillVisible) {
+      if (holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);
+      discardRendererLaunchHandoff(jobId);
       return;
     }
-    if (shouldAutoOpen && deps.paneMountedRef.current) {
+    if (holdsComposerUntilOpen) {
+      // Open first: the captured origin and sent prompt land together in the new pane.
+      if (shouldAutoOpen && deps.paneMountedRef.current) {
+        deps.openLaunchedDraftSession({ ...launch, jobId, firstMessage: prepared, composerHandoff });
+      } else if (!(shouldAutoOpen && !deps.paneMountedRef.current)) {
+        discardRendererLaunchHandoff(jobId);
+      }
+      deps.clearDraftLaunchComposer(snapshot);
+    } else if (shouldAutoOpen && deps.paneMountedRef.current) {
       deps.openLaunchedDraftSession({ ...launch, jobId });
     } else if (canMutateLaunchUi && mode === "background" && deps.paneMountedRef.current) {
       deps.clearSelectedSession();
     }
   } catch (launchError) {
+    discardRendererLaunchHandoff(jobId);
     if (targetLane?.autoCreated) {
       // Pin the rollback to the originating project so it deletes the lane we
       // created, even if the active project has since changed.

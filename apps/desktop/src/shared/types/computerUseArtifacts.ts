@@ -1,3 +1,5 @@
+import type { ComputerUseProofSource } from "../proofProvenance";
+
 export type ComputerUseArtifactKind =
   | "screenshot"
   | "video_recording"
@@ -109,11 +111,36 @@ export type ComputerUseArtifactIngestionRequest = {
    * a relative path resolves against the wrong tree and the capture is lost.
    */
   callerRoot?: string | null;
+  /**
+   * Where the bytes came from. Absent means an attach of an existing file,
+   * which is also the strictest case: the broker refuses bytes that are
+   * already proof and flags a video recorded before the chat's request.
+   * ADE's own recorders and captures pass their source and skip both checks.
+   */
+  provenance?: ComputerUseProofProvenanceInput | null;
+};
+
+export type ComputerUseProofProvenanceInput = {
+  source: ComputerUseProofSource;
+  /** When an ADE recorder started and stopped, as ISO times. */
+  recordedFrom?: string | null;
+  recordedTo?: string | null;
+  /** Refuse bytes already filed as proof. Defaults to true only for "attached". */
+  refuseDuplicates?: boolean;
+  /** Flag a video whose own creation time predates the chat's turn. Defaults to true only for "attached". */
+  flagOlderMedia?: boolean;
+  /**
+   * The sha256 each input had when ADE captured it, by input index. The broker
+   * hashes what it files and treats the call as "attached" on any mismatch.
+   */
+  capturedSha256?: string[] | null;
 };
 
 export type ComputerUseArtifactIngestionResult = {
   artifacts: ComputerUseArtifactRecord[];
   links: ComputerUseArtifactLink[];
+  /** Things the caller should repeat to the user, e.g. a video older than the request. */
+  warnings?: string[];
 };
 
 export type ComputerUseArtifactReviewState =
@@ -225,6 +252,14 @@ export type ComputerUseArtifactBrokenRecord = {
   laneId: string | null;
   /** Absolute path this record still resolves to inside a surviving worktree. */
   recoverablePath: string | null;
+  /**
+   * How many owners (lane, chat, run) this artifact is linked to.
+   *
+   * Zero means it is in nobody's proof drawer. Reported here because the only
+   * caller that can act on it — the broken-proof prune — otherwise has to ask
+   * per artifact, and a scoped caller could never reach an ownerless row at all.
+   */
+  ownerCount: number;
 };
 
 export type ComputerUseArtifactReviewArgs = {

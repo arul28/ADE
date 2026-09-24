@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   BRAIN_HEARTBEAT_STALE_MS,
+  servesMachineRuntimeEndpoint,
   BRAIN_WATCHER_CHECK_INTERVAL_MS,
   brainWatcherSuspendFloorMs,
   evaluateBrainHeartbeat,
@@ -346,5 +347,25 @@ describe("startBrainHeartbeat", () => {
     });
     expect(readBrainHeartbeat(runtimeDir)).toBeNull();
     stop();
+  });
+});
+
+describe("servesMachineRuntimeEndpoint", () => {
+  const machineSocketPath = "/Users/ada/.ade/sock/ade.sock";
+
+  it("lets the machine brain publish, including when it named its own socket", () => {
+    expect(servesMachineRuntimeEndpoint(machineSocketPath, machineSocketPath)).toBe(true);
+    expect(servesMachineRuntimeEndpoint(`${machineSocketPath}/`, machineSocketPath)).toBe(true);
+  });
+
+  it("regression: a dev brain on its own socket must NOT publish it", () => {
+    // `~/.ade/runtime` is shared by every brain on the box, and
+    // `com.ade.watchdog` reads the heartbeat to tell a wedged brain from a busy one.
+    expect(servesMachineRuntimeEndpoint("/tmp/ade-runtime-dev.sock", machineSocketPath)).toBe(false);
+  });
+
+  it("compares a named pipe verbatim, having no filesystem to resolve it against", () => {
+    expect(servesMachineRuntimeEndpoint("\\\\.\\pipe\\ade-machine", "\\\\.\\pipe\\ade-machine")).toBe(true);
+    expect(servesMachineRuntimeEndpoint("\\\\.\\pipe\\ade-dev", "\\\\.\\pipe\\ade-machine")).toBe(false);
   });
 });

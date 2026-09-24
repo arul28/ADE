@@ -596,7 +596,7 @@ jobs:
       # green only once this layer's CLI fixes compose, so the step lives here
       # rather than in the foundation layer.
       - name: Test Windows CLI contracts
-        run: cd apps/ade-cli && npx vitest run src/cli.test.ts
+        run: cd apps/ade-cli && npx vitest run src/cli.test.ts src/lib/cliDelegation.test.ts src/services/runtime/adeCliShim.test.ts
 
       # Daemon supervision, restart, and version/role-compatibility. Spawns real
       # `ade serve` daemons over the platform transport, so this is the only gate
@@ -652,8 +652,13 @@ jobs:
           src/main/services/chat/codexApprovalContainment.test.ts
           src/main/services/externalSessions/discoveryUtils.test.ts
           src/main/services/externalSessions/externalSessionsService.test.ts
+          src/main/services/externalSessions/sessionHome.test.ts
           src/main/services/lanes/laneStorageLifecycle.test.ts
           src/main/services/chat/piSession.test.ts
+          src/main/services/computerUse/artifactMediaServer.test.ts
+          src/shared/pathCase.test.ts
+          src/shared/pathContainment.test.ts
+          src/shared/artifactStreamUrl.test.ts
 
       # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
       # retry path. This suite spawns real `ade serve` daemons and connects to

@@ -1,3 +1,4 @@
+import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
@@ -8,6 +9,11 @@ import {
   transplantClaudeSession as staticTransplantClaudeSession,
 } from "../externalSessions/claudeSessionTransplant";
 import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
+import { loadExternalSessionEvents } from "../externalSessions/events";
+import {
+  EXTERNAL_SESSION_PROVIDER_LABELS,
+  isExternalSessionProvider,
+} from "../../../shared/types/externalSessions";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
@@ -73,6 +79,7 @@ import {
   repairClaudeResumeTranscript,
 } from "./claudeThinkingTranscriptRepair";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
+import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
@@ -669,6 +676,7 @@ import {
 import {
   getActiveModelManifest,
   onModelManifestApplied,
+  getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
   getDynamicPiModelDescriptors,
@@ -691,6 +699,7 @@ import {
   resolveModelAlias,
   resolveOpenCodeFastEffortSelection,
   resolveModelDescriptorForProvider,
+  findProviderModelByRecordedName,
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
   type LocalProviderFamily,
@@ -879,6 +888,11 @@ import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
+import {
+  createLaneAppleDeviceLookup,
+  resolveLaneAppleDeviceDirective,
+  type LaneAppleDeviceLookup,
+} from "./laneAppleDeviceDirective";
 import {
   buildOpenCodePromptParts,
   buildOpenCodeV2PromptAttachments,
@@ -4014,6 +4028,18 @@ type ReconstructionSectionSpan = {
   start: number;
 };
 
+/**
+ * The epoch directives that live only in memory. Each is re-sent when its key
+ * changes, and forgotten with the provider thread. A new one adds its name
+ * here and its key in `prepareSendMessage`.
+ */
+type EpochDirective =
+  /** The computer-use block, keyed by lane and available backends. */
+  | "computerUse"
+  /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
+  | "appleDevice";
+type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
+
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
@@ -4141,7 +4167,12 @@ type ManagedChatSession = {
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
-  lastComputerUseDirectiveKey: string | null;
+  /**
+   * The key of each epoch directive this session's provider thread was last
+   * told. In memory only: a brain restart re-announces once, which is cheaper
+   * than persisting it.
+   */
+  deliveredDirectiveKeys: EpochDirectiveKeys;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -4334,7 +4365,8 @@ type PreparedSendMessage = {
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
-  computerUseDirectiveKey?: string | null;
+  /** The epoch directives this turn's prompt carries, marked delivered after the run. */
+  epochDirectiveKeys?: EpochDirectiveKeys;
   providerSlashCommand?: boolean;
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
@@ -4347,6 +4379,14 @@ type PreparedSendMessage = {
   runtime?: AgentChatRuntime;
   cloudOverrides?: AgentChatCloudOverrides;
 };
+
+/** Where a Cursor turn runs: the turn's own choice, then the chat's default. */
+function effectiveCursorRuntime(
+  managed: ManagedChatSession,
+  runtime: AgentChatRuntime | null | undefined,
+): AgentChatRuntime {
+  return runtime ?? managed.session.cursorRuntime ?? "local";
+}
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath: string;
@@ -9106,7 +9146,10 @@ function normalizeImportedFrom(value: unknown): AgentChatImportedFrom | undefine
     ? record.importedAt
     : undefined;
   if (!provider || !sessionId || importedAt === undefined) return undefined;
-  return { provider, sessionId, importedAt };
+  // Dropping `mode` here would turn every copy back into a continue on the
+  // next persist, and the importer would hide the untouched original again.
+  const mode = record.mode === "fork" || record.mode === "continue" ? record.mode : undefined;
+  return { provider, sessionId, importedAt, ...(mode ? { mode } : {}) };
 }
 
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
@@ -9316,6 +9359,11 @@ export function createAgentChatService(args: {
     Pick<AdeDb, "getJson" | "setJson">
     & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
   ) | null;
+  /**
+   * Which Apple device a lane holds, for the `<ade-lane-tools>` hint. Defaults
+   * to a `lane_apple_devices` row read on `db` (macOS only); tests inject it.
+   */
+  lookupLaneAppleDevice?: LaneAppleDeviceLookup | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   /**
@@ -9450,6 +9498,7 @@ export function createAgentChatService(args: {
     processRegistry,
     projectConfigService,
     db,
+    lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
     aiIntegrationService,
     logger,
     appVersion,
@@ -9482,6 +9531,13 @@ export function createAgentChatService(args: {
   const browserActorCapabilityIssuer =
     args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
+  // `undefined` means "use the lanes DB"; an explicit `null` turns the hint off.
+  const laneAppleDeviceLookup: LaneAppleDeviceLookup | null = injectedLaneAppleDeviceLookup !== undefined
+    ? injectedLaneAppleDeviceLookup
+    : createLaneAppleDeviceLookup({
+        platform: process.platform,
+        store: db?.get ? { get: db.get } : null,
+      });
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
@@ -10300,6 +10356,13 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  /**
+   * When each chat's latest turn started. `currentTurnStartedAt` clears when
+   * the turn settles, and the proof broker still needs the time afterwards to
+   * tell a fresh video from an older one. An entry goes when its session ends
+   * or is deleted.
+   */
+  const lastTurnStartedAtBySession = new Map<string, string>();
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -17105,13 +17168,15 @@ export function createAgentChatService(args: {
 
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
-    patch: { providerSessionId?: string; droidSdkSessionId?: string },
+    patch: { providerSessionId?: string; droidSdkSessionId?: string; piSessionId?: string; acpSessionId?: string },
   ): void => {
     // Mirror in memory first: a persist that runs while the new runtime is
     // starting cannot read prevPersisted (runtime is non-null), so the disk
     // write alone would be clobbered in that window.
     if (patch.providerSessionId) managed.seededProviderSessionId = patch.providerSessionId;
     if (patch.droidSdkSessionId) managed.seededDroidSdkSessionId = patch.droidSdkSessionId;
+    if (patch.piSessionId) managed.seededPiSessionId = patch.piSessionId;
+    if (patch.acpSessionId) managed.seededAcpSessionId = patch.acpSessionId;
     const sessionId = managed.session.id;
     const current = readPersistedState(sessionId);
     if (!current) return;
@@ -17319,6 +17384,7 @@ export function createAgentChatService(args: {
   const setSessionActive = (managed: ManagedChatSession): void => {
     if (managed.session.status !== "active") {
       managed.session.currentTurnStartedAt = nowIso();
+      lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -20566,10 +20632,13 @@ export function createAgentChatService(args: {
 
   const appendImportedChatEvents = async (
     managed: ManagedChatSession,
-    envelopes: AgentChatEventEnvelope[],
+    rawEnvelopes: AgentChatEventEnvelope[],
   ): Promise<void> => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+    // Provider transcripts have no turn boundaries, and the transcript shows
+    // finished tool calls only in a turn's `done` summary.
+    const envelopes = withImportedTurnBoundaries(rawEnvelopes);
 
     // Imported envelopes are historical: no client can be viewing a session
     // whose history is still being seeded, and every reader loads seeded
@@ -22188,6 +22257,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    lastTurnStartedAtBySession.delete(managed.session.id);
     revokeBrowserActorToken(managed.session.id);
   };
 
@@ -22386,7 +22456,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       // Deliberately in-memory only: after a restart the directive is re-sent
       // once, which is the safe direction to fail.
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -22532,13 +22602,13 @@ export function createAgentChatService(args: {
   /**
    * Forget what this session's provider threads have been told, so a
    * replacement runtime (model switch, thread recycle, resume) is re-announced
-   * to. Both the lane directive and the computer-use directive are epoch-scoped
+   * to. The lane, computer-use and Apple-device directives are epoch-scoped
    * and would otherwise be suppressed for the new thread by a key the old one
    * set.
    */
   const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
-    managed.lastComputerUseDirectiveKey = null;
+    managed.deliveredDirectiveKeys = {};
     persistChatState(managed);
   };
 
@@ -37863,7 +37933,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -39061,7 +39131,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -41425,21 +41495,121 @@ export function createAgentChatService(args: {
     return { transplantClaudeSession: staticTransplantClaudeSession };
   };
 
+  const importProviderLabel = (provider: AgentChatImportProvider): string =>
+    EXTERNAL_SESSION_PROVIDER_LABELS[provider] ?? provider;
+
+  /**
+   * Providers whose own session an ADE chat continues in place, by seeding the
+   * provider pointer the chat already restores from after a restart. Each one
+   * is here because its runtime opens that pointer from the store the CLI
+   * writes: Droid's SDK `resumeSession` (`droid.load_session`, same binary and
+   * `~/.factory/sessions`), OpenCode's `session.get` on the user-env server
+   * (same data dir as the CLI), Pi's `SessionManager.list(cwd)` over the one
+   * store chat and CLI share. Copilot's ACP server loads a CLI-created
+   * session over `session/load` from the same `~/.copilot/session-state`
+   * (verified live on 1.0.88, 2026-09-24); ADE already holds the transcript,
+   * so the load replay is suppressed. Qwen, Kimi and Grok are left out until
+   * the same is shown for them.
+   */
+  const NATIVE_CHAT_CONTINUE_PROVIDERS: ReadonlySet<AgentChatImportProvider> = new Set<AgentChatImportProvider>([
+    "droid",
+    "opencode",
+    "pi",
+    "copilot",
+  ]);
+
+  const importedChatTitle = (
+    envelopes: AgentChatEventEnvelope[],
+    provider: AgentChatImportProvider,
+  ): string => {
+    const derived = deriveImportedChatTitle(envelopes, provider);
+    // The shared converter only knows the Claude and Codex fallback names.
+    return provider !== "codex" && derived === "Imported Codex chat"
+      ? `Imported ${importProviderLabel(provider)} chat`
+      : derived;
+  };
+
   const applyImportedChatMetadata = (
     managed: ManagedChatSession,
     args: AgentChatImportExternalSessionArgs,
     envelopes: AgentChatEventEnvelope[],
     importedAt: number,
+    mode: NonNullable<AgentChatImportedFrom["mode"]>,
   ): void => {
     managed.session.importedFrom = {
       provider: args.provider,
       sessionId: args.externalSessionId,
       importedAt,
+      mode,
     };
     const explicitTitle = typeof args.title === "string" ? args.title.trim() : "";
     if (!explicitTitle) {
-      setManagedSessionTitle(managed, deriveImportedChatTitle(envelopes, args.provider), { syncToRuntime: false });
+      setManagedSessionTitle(managed, importedChatTitle(envelopes, args.provider), { syncToRuntime: false });
     }
+  };
+
+  /**
+   * A model of `provider`'s own family named by `value` (a catalog id, an
+   * alias, or the provider's native model string), or null.
+   */
+  /**
+   * The source session's thinking level, when the chat keeps the source's own
+   * model and that model accepts the level. A continue of a low-effort session
+   * otherwise resumed on the default (medium).
+   */
+  const importedReasoningEffort = (
+    args: AgentChatImportExternalSessionArgs,
+    targetDescriptor: ReturnType<typeof getModelById> | null | undefined,
+  ): string | null => {
+    const effort = typeof args.sourceReasoningEffort === "string" ? args.sourceReasoningEffort.trim() : "";
+    if (!effort || !targetDescriptor) return null;
+    const source = typeof args.sourceModel === "string" ? args.sourceModel.trim() : "";
+    const sameModel = source.length > 0 && (
+      targetDescriptor.id === source
+      || targetDescriptor.providerModelId === source
+      || resolveModelAlias(source)?.id === targetDescriptor.id
+    );
+    if (!sameModel) return null;
+    const tiers = targetDescriptor.reasoningTiers ?? [];
+    return tiers.length === 0 || tiers.includes(effort) ? effort : null;
+  };
+
+  const resolveImportFamilyModel = (
+    provider: AgentChatImportProvider,
+    value: string | null | undefined,
+  ): NonNullable<ReturnType<typeof getModelById>> | null => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) return null;
+    const storedId = resolveModelIdFromStoredValue(trimmed, provider);
+    const descriptor = getModelById(trimmed)
+      ?? resolveModelAlias(trimmed)
+      ?? (storedId ? getModelById(storedId) : undefined);
+    if (descriptor && !descriptor.deprecated && resolveProviderGroupForModel(descriptor) === provider) {
+      return descriptor;
+    }
+    // A name another provider also registers (Pi's `openai/gpt-5.2`).
+    return findProviderModelByRecordedName(provider, trimmed) ?? null;
+  };
+
+  /**
+   * The external session's conversation as chat events, from the per-provider
+   * converter registry. Written under a placeholder chat id; the caller
+   * re-keys the envelopes onto the chat it creates.
+   */
+  const loadExternalImportEvents = async (
+    args: AgentChatImportExternalSessionArgs,
+    importedAt: number,
+  ): Promise<AgentChatEventEnvelope[]> => {
+    const page = await loadExternalSessionEvents({
+      provider: args.provider,
+      sessionId: args.externalSessionId,
+      record: null,
+      chatSessionId: "import-preview",
+      laneId: args.laneId,
+      purpose: "import",
+      importedAt,
+    });
+    return page.events;
   };
 
   const persistedImportedChatResult = async (
@@ -41529,6 +41699,7 @@ export function createAgentChatService(args: {
           : defaultClaudeModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -41560,7 +41731,14 @@ export function createAgentChatService(args: {
         transcriptBytesTruncated: targetTranscriptTruncated,
         transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
       });
-      applyImportedChatMetadata(managed, args, events, importedAt);
+      // A transplant writes a new Claude session and leaves the source as-is.
+      applyImportedChatMetadata(
+        managed,
+        args,
+        events,
+        importedAt,
+        targetClaudeSessionId === externalSessionId ? "continue" : "fork",
+      );
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
@@ -41657,6 +41835,7 @@ export function createAgentChatService(args: {
           : defaultCodexModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -41713,7 +41892,7 @@ export function createAgentChatService(args: {
         importedAt,
         laneId: managed.session.laneId,
       });
-      applyImportedChatMetadata(managed, args, events, importedAt);
+      applyImportedChatMetadata(managed, args, events, importedAt, args.fork ? "fork" : "continue");
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
@@ -41816,10 +41995,7 @@ export function createAgentChatService(args: {
         }
       }
     } else {
-      throw externalChatImportError(
-        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
-        `Cross-provider replay import from ${args.provider} is not available yet; import as ${args.provider} first, then fork to the target model.`,
-      );
+      envelopes = await loadExternalImportEvents(args, options.importedAt);
     }
 
     // A replay import with nothing to replay would create an empty chat and
@@ -41856,7 +42032,7 @@ export function createAgentChatService(args: {
           sourceSessionId: externalSessionId,
         },
       }));
-      applyImportedChatMetadata(managed, args, seeded, options.importedAt);
+      applyImportedChatMetadata(managed, args, seeded, options.importedAt, "fork");
       persistChatState(managed);
       if (seeded.length) await appendImportedChatEvents(managed, seeded);
       const replayFork = stageTranscriptReplayOnSession(
@@ -41880,13 +42056,107 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Continue a Droid, OpenCode or Pi session as an ADE chat: a chat in the
+   * session's own lane whose provider pointer is the external session id, so
+   * the first turn opens that session the same way a restart reopens one of
+   * ADE's own chats. The history is written for display only — the provider
+   * already holds it, so nothing is replayed into the prompt.
+   */
+  const importNativeContinueExternalChatSession = async (
+    args: AgentChatImportExternalSessionArgs,
+    laneWorktreePath: string,
+    importedAt: number,
+    requestedDescriptor: ReturnType<typeof getModelById> | null,
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const provider = args.provider;
+    const label = importProviderLabel(provider);
+    const externalSessionId = args.externalSessionId;
+    if (!NATIVE_CHAT_CONTINUE_PROVIDERS.has(provider)) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `${label} sessions can't be continued as an ADE chat. Open a copy instead.`,
+      );
+    }
+    if (hasPathSeparator(externalSessionId)) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `${label} session id must be an id, not a path.`);
+    }
+    // Every one of these runtimes opens the session in the lane root; a
+    // session from another folder would run against the wrong files (Pi
+    // refuses it outright).
+    if (!args.cwd || !isSameCwd(args.cwd, laneWorktreePath)) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `${label} sessions can only be continued in the lane folder they ran in. Open a copy instead.`,
+      );
+    }
+    if (requestedDescriptor && resolveProviderGroupForModel(requestedDescriptor) !== provider) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `A ${label} session can only be continued on a ${label} model. Open a copy to switch models.`,
+      );
+    }
+    const descriptor = requestedDescriptor
+      ?? resolveImportFamilyModel(provider, args.sourceModel)
+      ?? getDefaultModelDescriptor(provider)
+      ?? null;
+    if (!descriptor) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `No ${label} model is available to continue this session.`,
+      );
+    }
+    // Read before the chat exists, so an unreadable session creates nothing.
+    const loaded = await loadExternalImportEvents(args, importedAt);
+
+    let createdSessionId: string | null = null;
+    try {
+      const created = await createSession({
+        laneId: args.laneId,
+        provider,
+        model: descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id,
+        modelId: descriptor.id,
+        ...(provider === "pi" ? { piSessionId: externalSessionId } : {}),
+        ...(importedReasoningEffort(args, descriptor) ? { reasoningEffort: importedReasoningEffort(args, descriptor) } : {}),
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      createdSessionId = created.id;
+      const managed = ensureManagedSession(created.id);
+      if (provider === "droid") {
+        seedForkedProviderPointer(managed, { droidSdkSessionId: externalSessionId });
+      } else if (provider === "opencode") {
+        seedForkedProviderPointer(managed, { providerSessionId: externalSessionId });
+      } else if (provider === "pi") {
+        seedForkedProviderPointer(managed, { piSessionId: externalSessionId });
+      } else if (provider === "copilot") {
+        seedForkedProviderPointer(managed, { acpSessionId: externalSessionId });
+      }
+      const events = loaded.map((envelope) => ({ ...envelope, sessionId: created.id }));
+      applyImportedChatMetadata(managed, args, events, importedAt, "continue");
+      persistChatState(managed);
+      if (events.length) await appendImportedChatEvents(managed, events);
+      persistChatState(managed);
+      return await persistedImportedChatResult(managed, provider, externalSessionId);
+    } catch (error) {
+      if (createdSessionId) {
+        await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_cleanup_failed", {
+            sessionId: createdSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+  };
+
   const importExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const provider = args.provider;
     const externalSessionId = typeof args.externalSessionId === "string" ? args.externalSessionId.trim() : "";
     const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
-    if (provider !== "claude" && provider !== "codex") {
+    if (!isExternalSessionProvider(provider)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unsupported chat import provider '${String(provider)}'.`);
     }
     if (!externalSessionId) {
@@ -41902,13 +42172,15 @@ export function createAgentChatService(args: {
     if (requestedModelId && (!targetDescriptor || targetDescriptor.deprecated)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unknown model '${requestedModelId}'.`);
     }
-    const targetProvider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : provider;
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
       laneId,
       purpose: "import this chat",
     });
+    const sourceModel = typeof args.sourceModel === "string" && args.sourceModel.trim().length
+      ? args.sourceModel.trim()
+      : null;
     const normalizedArgs: AgentChatImportExternalSessionArgs = {
       ...args,
       provider,
@@ -41918,20 +42190,57 @@ export function createAgentChatService(args: {
       fork: args.fork === true,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       ...(requestedModelId ? { model: requestedModelId } : {}),
+      sourceModel,
+      sourceReasoningEffort: typeof args.sourceReasoningEffort === "string" && args.sourceReasoningEffort.trim()
+        ? args.sourceReasoningEffort.trim()
+        : null,
     };
     const importedAt = Date.now();
-    if (targetProvider !== provider) {
-      return importExternalChatSessionViaReplay(normalizedArgs, {
-        targetProvider,
-        targetDescriptor: targetDescriptor!,
-        laneWorktreePath: launchContext.laneWorktreePath,
+    if (provider === "claude" || provider === "codex") {
+      // No model chosen (a continue): keep the one the session ran on, so a
+      // Haiku session does not silently resume on the default model.
+      const effectiveDescriptor = targetDescriptor ?? resolveImportFamilyModel(provider, sourceModel) ?? null;
+      const targetProvider = effectiveDescriptor ? resolveProviderGroupForModel(effectiveDescriptor) : provider;
+      if (targetProvider !== provider) {
+        return importExternalChatSessionViaReplay(normalizedArgs, {
+          targetProvider,
+          targetDescriptor: effectiveDescriptor!,
+          laneWorktreePath: launchContext.laneWorktreePath,
+          importedAt,
+        });
+      }
+      if (provider === "claude") {
+        return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, effectiveDescriptor ?? undefined);
+      }
+      return importCodexExternalChatSession(normalizedArgs, importedAt, effectiveDescriptor ?? undefined);
+    }
+    if (!normalizedArgs.fork) {
+      return importNativeContinueExternalChatSession(
+        normalizedArgs,
+        launchContext.laneWorktreePath,
         importedAt,
-      });
+        targetDescriptor,
+      );
     }
-    if (provider === "claude") {
-      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, targetDescriptor ?? undefined);
+    // Every other provider copies by replay, into the family's own model too:
+    // none of them can fork a session into an ADE chat natively.
+    const replayDescriptor = targetDescriptor
+      ?? resolveImportFamilyModel(provider, sourceModel)
+      ?? getDefaultModelDescriptor(provider)
+      ?? getAppDefaultModelDescriptor()
+      ?? null;
+    if (!replayDescriptor) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `No model is available to open this ${importProviderLabel(provider)} session as an ADE chat.`,
+      );
     }
-    return importCodexExternalChatSession(normalizedArgs, importedAt, targetDescriptor ?? undefined);
+    return importExternalChatSessionViaReplay(normalizedArgs, {
+      targetProvider: resolveProviderGroupForModel(replayDescriptor),
+      targetDescriptor: replayDescriptor,
+      laneWorktreePath: launchContext.laneWorktreePath,
+      importedAt,
+    });
   };
 
   const prepareSendMessage = ({
@@ -42121,7 +42430,28 @@ export function createAgentChatService(args: {
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
       : null;
     const shouldInjectComputerUseDirective = computerUseDirectiveKey != null
-      && managed.lastComputerUseDirectiveKey !== computerUseDirectiveKey;
+      && managed.deliveredDirectiveKeys.computerUse !== computerUseDirectiveKey;
+    // The lane's Apple device, named at turn time so the agent drives it with
+    // `ade apple` instead of `simctl` / `open -a Simulator` without first
+    // having to find the `ade-apple` skill. Sent on the first turn after a
+    // device is bound and again only when the bound udid changes; a lookup
+    // failure means no hint, never a failed send. A Cursor cloud turn runs on
+    // Cursor's VM, which cannot reach this Mac's simulator, so it gets none.
+    const cursorCloudTurn = managed.session.provider === "cursor"
+      && effectiveCursorRuntime(managed, runtime) === "cloud";
+    const appleDevice = personalSession || cursorCloudTurn
+      ? null
+      : resolveLaneAppleDeviceDirective({
+          laneId: executionContext.laneId,
+          lookup: laneAppleDeviceLookup,
+          onLookupError: (error) => logger.warn("agent_chat.lane_apple_device_lookup_failed", {
+            sessionId,
+            laneId: executionContext.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        });
+    const shouldInjectAppleDeviceDirective = appleDevice != null
+      && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
@@ -42177,6 +42507,7 @@ export function createAgentChatService(args: {
               ))
             : null,
           shouldInjectComputerUseDirective ? computerUseDirective : null,
+          shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -42215,13 +42546,16 @@ export function createAgentChatService(args: {
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
       laneDirectiveKey: providerSlashCommand && !personalSession ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
       // A provider slash-command turn replaces the user text with the command's
-      // own markdown and never runs `composeLaunchDirectives`, so the directive
-      // above is not in `promptText`. Null the key for the same reason the lane
-      // key is nulled, or a slash-command turn would mark it delivered without
-      // delivering it and suppress it for the rest of the session.
-      computerUseDirectiveKey: providerSlashCommand && !personalSession
-        ? null
-        : shouldInjectComputerUseDirective ? computerUseDirectiveKey : null,
+      // own markdown and never runs `composeLaunchDirectives`, so no epoch
+      // directive is in `promptText`. It carries no keys for the same reason
+      // the lane key is nulled, or it would mark them delivered without
+      // delivering them and suppress them for the rest of the session.
+      epochDirectiveKeys: providerSlashCommand && !personalSession
+        ? {}
+        : {
+            ...(shouldInjectComputerUseDirective ? { computerUse: computerUseDirectiveKey } : {}),
+            ...(shouldInjectAppleDeviceDirective ? { appleDevice: appleDevice.key } : {}),
+          },
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
@@ -47965,7 +48299,7 @@ export function createAgentChatService(args: {
       metadata,
       reasoningEffort,
       laneDirectiveKey,
-      computerUseDirectiveKey,
+      epochDirectiveKeys,
       providerSlashCommand,
       forceClaudeUserMessage,
       steerId,
@@ -48007,10 +48341,10 @@ export function createAgentChatService(args: {
     //
     // Marking after the run returns is the safe direction: a duplicate delivery
     // is wasted tokens, a missed one leaves the agent unaware of a capability.
-    const markComputerUseDirectiveDelivered = (): void => {
-      if (computerUseDirectiveKey) {
-        managed.lastComputerUseDirectiveKey = computerUseDirectiveKey;
-      }
+    //
+    // The Apple-device hint (`<ade-lane-tools>`) follows the same rule.
+    const markEpochDirectivesDelivered = (): void => {
+      Object.assign(managed.deliveredDirectiveKeys, epochDirectiveKeys);
     };
 
     // OpenCode runtime dispatch
@@ -48049,7 +48383,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -48066,12 +48400,7 @@ export function createAgentChatService(args: {
         chatConfig.opencodePermissionMode,
       );
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-      const requestedRuntime = prepared.runtime;
-      const sessionDefaultRuntime = managed.session.cursorRuntime;
-      const effectiveRuntime: AgentChatRuntime = requestedRuntime
-        ?? sessionDefaultRuntime
-        ?? "local";
-      if (effectiveRuntime === "cloud") {
+      if (effectiveCursorRuntime(managed, prepared.runtime) === "cloud") {
         await runCursorCloudTurn(managed, {
           promptText,
           userText: submittedText,
@@ -48087,7 +48416,7 @@ export function createAgentChatService(args: {
           onBackendDispatched,
           ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
         });
-        markComputerUseDirectiveDelivered();
+        markEpochDirectivesDelivered();
         return;
       }
       await runCursorSdkTurn(managed, {
@@ -48104,7 +48433,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -48129,7 +48458,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -48170,7 +48499,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -48214,7 +48543,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -48336,7 +48665,7 @@ export function createAgentChatService(args: {
         optimisticCodexTurnStart,
         onDispatched: onBackendDispatched ?? onDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -48385,7 +48714,7 @@ export function createAgentChatService(args: {
       onDispatched,
       onBackendDispatched,
     });
-    markComputerUseDirectiveDelivered();
+    markEpochDirectivesDelivered();
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
@@ -53136,6 +53465,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    lastTurnStartedAtBySession.delete(sessionId);
     revokeBrowserActorToken(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
@@ -53758,7 +54088,7 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Settle a card the user answered but whose asker is already gone.
+   * Close a card nothing can consume, with a receipt and a notice.
    *
    * Returning silently is not enough, and "the UI will clear the stale entry"
    * is no longer true: the renderer defers to the summary for a card swept
@@ -53770,9 +54100,11 @@ export function createAgentChatService(args: {
    *
    * An accept is recorded as `cancel` because nothing consumed the acceptance;
    * saying "accepted" of an approval no runtime received would be a lie in the
-   * durable, synced transcript.
+   * durable, synced transcript. Reaching here with an ANSWER in hand is the
+   * one case this must not decide on its own — see
+   * `settleUnclaimedPendingInput`, which re-routes that answer first.
    */
-  const settleUnclaimedPendingInput = (
+  const settleDeadPendingInput = (
     managed: ManagedChatSession,
     itemId: string,
     decision: AgentChatApprovalDecision,
@@ -53789,6 +54121,97 @@ export function createAgentChatService(args: {
       message: "That request is no longer active.",
     });
     persistChatState(managed);
+  };
+
+  const PENDING_INPUT_ANSWER_REROUTED_MESSAGE =
+    "That request had already closed, so ADE sent your answer as a message instead.";
+
+  /**
+   * Deliver an answer whose waiter is gone, or refuse to lose it.
+   *
+   * The reported bug: an OpenCode question card sat open for 19 minutes while
+   * its runtime went away (a pooled server eviction, an idle teardown, or a
+   * brain restart — the card survives all three because it is a transcript
+   * event). The answer then arrived at a session with no waiter and no
+   * runtime, and the old settle recorded it as `cancelled` / "unanswered",
+   * painted "That request is no longer active.", and returned SUCCESS — so the
+   * composer cleared the draft too. The answer was lost twice: never delivered,
+   * and not even left on screen to retype. `answers` and `responseText` were
+   * not so much as read.
+   *
+   * So: a question answered with actual content is re-routed as an ordinary
+   * user message — the exact move that unblocked the reporter by hand, and the
+   * same mechanism `responseMode: "message"` already uses for Codex async
+   * questions. The receipt then says `accepted`, because the answer really did
+   * reach the agent.
+   *
+   * If even that fails, this THROWS rather than settling: a throw leaves the
+   * card open and makes the composer put the typed answer back, which is a
+   * re-offered question instead of a dead end. Approvals, plans and
+   * elicitations are not re-routed — "Approve and implement" is not prose, and
+   * the tool call behind it is long gone — so they keep the old settle.
+   */
+  const settleUnclaimedPendingInput = async (
+    managed: ManagedChatSession,
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    answer?: {
+      answers?: Record<string, string | string[]> | undefined;
+      responseText?: string | null | undefined;
+    },
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    const { request, resolvedAs } = await getChatEventHistory(sessionId, { maxEvents: 512 })
+      .then((history) => readPendingInputRecord(history.events, itemId))
+      .catch(() => ({ request: null, resolvedAs: null }));
+    if (resolvedAs === "accepted") {
+      // One gesture can still send two responses for one card (a click racing
+      // a keypress). The first one delivered; this one must not overwrite its
+      // receipt with a cancellation that reads as "unanswered", and must not
+      // re-send the same answer as a message either.
+      logger.info("agent_chat.pending_input_already_answered", { sessionId, itemId, decision });
+      return;
+    }
+    const accepted = decision === "accept" || decision === "accept_for_session";
+    if (accepted && isQuestionShapedPendingInput(request) && request) {
+      const normalizedAnswers = normalizePendingInputAnswers(request, answer?.answers, answer?.responseText);
+      const messageText = formatPendingInputAnswersAsMessage(request, normalizedAnswers);
+      if (messageText.trim().length) {
+        try {
+          // `kind: "auto"` steers into a live turn and starts one when there is
+          // none, so this works whether the runtime died or merely moved on.
+          await messageSession({ sessionId, text: messageText, kind: "auto" });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          logger.warn("agent_chat.pending_input_answer_reroute_failed", { sessionId, itemId, error: reason });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: "That request closed before your answer reached it, and ADE could not send the answer as a message either. It is back in the composer — send it again.",
+          });
+          persistChatState(managed);
+          throw new Error(`That request is no longer active, and your answer could not be sent as a message: ${reason}`);
+        }
+        logger.info("agent_chat.pending_input_answer_rerouted", { sessionId, itemId, provider: managed.session.provider });
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision,
+          turnId: request.turnId ?? null,
+          ...(answer?.answers ? { answers: answer.answers } : {}),
+          ...(answer?.responseText !== undefined ? { responseText: answer.responseText } : {}),
+          questions: request.questions ?? [],
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: PENDING_INPUT_ANSWER_REROUTED_MESSAGE,
+        });
+        persistChatState(managed);
+        return;
+      }
+    }
+    settleDeadPendingInput(managed, itemId, decision);
   };
 
   /**
@@ -53905,7 +54328,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       const ensureWritable = (): void => {
@@ -54020,7 +54443,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.approvals.delete(itemId);
@@ -54065,7 +54488,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.pendingApprovals.delete(itemId);
@@ -54100,7 +54523,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       cursorRuntime.permissionWaiters.delete(itemId);
@@ -54125,7 +54548,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.permissionWaiters.delete(itemId);
@@ -54148,7 +54571,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: resolvedDecision,
     });
-    settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+    await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
   };
 
   /**
@@ -54213,7 +54636,7 @@ export function createAgentChatService(args: {
       // No card by that id: settle it anyway rather than throwing. A click that
       // lands after the card is gone must still write a receipt, or the
       // transcript fallback keeps naming it.
-      settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
+      await settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
       onPendingInputDismissed?.({ provider: managed.session.provider });
       return;
     }
@@ -55375,6 +55798,7 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
+    lastTurnStartedAtBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -59122,6 +59546,13 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    /** The current turn's start, or the latest one's. Null when none ran in this process. */
+    getTurnStartedAt: (sessionId: string): string | null => {
+      const live = managedSessions.get(sessionId)?.session;
+      return (live?.status === "active" ? live.currentTurnStartedAt ?? null : null)
+        ?? lastTurnStartedAtBySession.get(sessionId)
+        ?? null;
+    },
     getTurnStatus,
     ensureSessionSurface,
     hasActiveWorkloads,

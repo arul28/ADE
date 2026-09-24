@@ -81,3 +81,26 @@ export function serializeComposerDom(root: Node): SerializedComposerDom {
   }
   return { text, labels };
 }
+
+/** Return a DOM selection point as an offset in the canonical serialized text. */
+export function serializedComposerOffsetAt(
+  root: HTMLElement,
+  container: Node,
+  offset: number,
+  serializedText = serializeComposerDom(root).text,
+): number {
+  if (container !== root && !root.contains(container)) return serializedText.length;
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.setEnd(container, offset);
+  const prefix = serializeComposerDom(range.cloneContents()).text;
+  let matchingLength = 0;
+  while (
+    matchingLength < prefix.length
+    && matchingLength < serializedText.length
+    && prefix[matchingLength] === serializedText[matchingLength]
+  ) {
+    matchingLength += 1;
+  }
+  return matchingLength;
+}

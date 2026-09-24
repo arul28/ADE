@@ -40,6 +40,19 @@ export const APPLE_HELPER_UNAVAILABLE_CODE = "APPLE_HELPER_UNAVAILABLE" as const
 
 export type SimHelperEventPayload = { type: string } & Record<string, unknown>;
 
+/**
+ * Synthesised by this client, never sent by the helper: the child process
+ * exited while ADE still wanted it (not on dispose). Carries the dead `pid`.
+ *
+ * Everything the helper held lives in that process — capture sockets,
+ * recordings, HID clients — so every piece of ADE state that points at it is
+ * stale the moment this fires. Proven live on 2026-09-23: after a helper
+ * restart the lane's stream status still said `running` with the dead pid and
+ * port, and `startStream` handed viewers that dead port until someone stopped
+ * the stream by hand.
+ */
+export const SIM_HELPER_EXITED_EVENT = "helper-exited" as const;
+
 export interface SimHelperTransport {
   /** Send one NDJSON command; resolves with the `ok` payload or rejects with SimHelperError {code,message}. */
   send(command: Record<string, unknown> & { type: string; udid?: string }): Promise<Record<string, unknown>>;
@@ -344,6 +357,7 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
       // or a restart inside the grace window has already replaced it, and an
       // unguarded handler would clear the NEW child's readiness.
       if (child !== spawned) return;
+      const exitedPid = helperPid ?? spawned.pid ?? null;
       child = null;
       ready = false;
       helperPid = null;
@@ -358,7 +372,12 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
         APPLE_HELPER_UNAVAILABLE_CODE,
         detail || `The simulator helper exited with ${signal ?? code ?? "an unknown status"}.`,
       ));
-      if (!disposed) scheduleRestart();
+      if (!disposed) {
+        // After `failPending`, so a listener that sends a fresh command is not
+        // answered with the dead child's rejection.
+        emit({ type: SIM_HELPER_EXITED_EVENT, pid: exitedPid, code: code ?? null, signal: signal ?? null });
+        scheduleRestart();
+      }
     });
     return true;
   }

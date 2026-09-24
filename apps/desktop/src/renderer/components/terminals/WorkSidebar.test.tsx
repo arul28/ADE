@@ -611,7 +611,7 @@ describe("WorkSidebar context targets", () => {
     await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
   });
 
-  it("warns when the iOS Simulator is attached to another lane while keeping Work controls usable", async () => {
+  it("never claims Apple Development for another lane, because a lane owns a device and not the pane", async () => {
     const { terminalWrite } = installAdeMock({ iosSession: otherLaneIosSession });
 
     renderSidebar({
@@ -620,7 +620,10 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This Apple Development view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByTestId("ios-panel")).toBeTruthy();
+    // The picker states ownership per DEVICE. A pane-level claim said the view
+    // was second-hand while the page below offered every free simulator.
+    expect(screen.queryByText(/Apple Development view is claimed by/)).toBeNull();
     expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
     expect(screen.getByTestId("ios-panel").getAttribute("data-ignore-chat-ownership")).toBe("true");
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);

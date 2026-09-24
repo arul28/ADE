@@ -6,24 +6,10 @@ import type {
 } from "../../../shared/types/iosSimulator";
 
 /**
- * What the picker is allowed to say, as arithmetic rather than as prose.
- *
- * Round 5's live test found a picker that lied three ways at once, and every
- * one of them was a rule that lived inside a JSX expression:
- *
- * - Five installed simulators read as four, because the hero was lifted out of
- *   its family section and so read as a separate kind of thing.
- * - The hero was NOT the lane's device. The lane had none, so the picker fell
- *   back to "the newest installed iPhone" — a card that says *your device* and
- *   is not. There is no fallback hero here; a lane with no device gets a slot
- *   that says so.
- * - It offered Open on a simulator another lane owned, with nothing on screen
- *   to say so. The same blind spot made an agent stop and ask a human for
- *   permission rather than create its own device.
- *
- * So membership is a partition computed here, over `deviceList().owners`, and
- * the component only renders it. Pure and separately tested, because "which
- * group is this device in" is the question the picker got wrong.
+ * Which group each installed device is in, computed over
+ * `deviceList().owners`. The picker only renders it: the lane's own device (no
+ * fallback), free devices, and devices another lane holds (never offered an
+ * Open).
  */
 
 export type ApplePickerElsewhereEntry = {
@@ -101,6 +87,24 @@ export function partitionApplePickerDevices(input: ApplePickerPartitionInput): A
   };
 }
 
+/** Udids another lane holds. */
+function appleUdidsHeldElsewhere(
+  owners: readonly AppleSimulatorOwner[] | null | undefined,
+): Set<string> {
+  return new Set((owners ?? []).filter((owner) => !owner.mine).map((owner) => owner.udid));
+}
+
+/**
+ * A device a copy can be made from: not booted (`simctl clone` refuses a
+ * booted device) and not held by another lane.
+ */
+export function isAppleCloneSource(
+  simulator: Pick<AppleInstalledSimulator, "udid" | "state">,
+  heldElsewhere: Pick<ReadonlySet<string>, "has">,
+): boolean {
+  return simulator.state !== "Booted" && !heldElsewhere.has(simulator.udid);
+}
+
 /**
  * Which device the Create control starts on.
  *
@@ -127,14 +131,11 @@ export function appleDefaultTemplateUdid(input: {
   lastUsedUdid?: string | null;
   owners?: readonly AppleSimulatorOwner[] | null;
 }): string {
+  const heldElsewhere = appleUdidsHeldElsewhere(input.owners);
+  const cloneable = input.installed.filter((entry) => isAppleCloneSource(entry, heldElsewhere));
+  // The last used template only wins while it is still cloneable.
   const lastUsed = input.lastUsedUdid?.trim();
-  if (lastUsed && input.installed.some((entry) => entry.udid === lastUsed)) return lastUsed;
-  const heldElsewhere = new Set(
-    (input.owners ?? []).filter((owner) => !owner.mine).map((owner) => owner.udid),
-  );
-  const cloneable = input.installed.filter(
-    (entry) => entry.state !== "Booted" && !heldElsewhere.has(entry.udid),
-  );
+  if (lastUsed && cloneable.some((entry) => entry.udid === lastUsed)) return lastUsed;
   const candidates = cloneable.length > 0 ? cloneable : input.installed;
   const phones = candidates.filter((entry) => entry.family === "iphone");
   const pool = phones.length > 0 ? phones : candidates;
@@ -143,59 +144,6 @@ export function appleDefaultTemplateUdid(input: {
     return byRuntime !== 0 ? byRuntime : a.name.localeCompare(b.name);
   })[0];
   return newest?.udid ?? "";
-}
-
-export type AppleInventorySummary = {
-  /** `iOS 26.3`, `iOS 26.3 and iPadOS 26.3`, `iOS 26.3 and 2 more runtimes`. */
-  runtimeLabel: string | null;
-  installedCount: number;
-  runningCount: number;
-  /** `iOS 26.3 · 5 simulators installed · 2 running`. */
-  text: string;
-};
-
-function plural(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
-}
-
-/**
- * The runtime, spelled out, because one install serves any number of devices.
- *
- * The owner did not know that. He counted his simulators and read five
- * separate things that each looked like it might cost another multi-gigabyte
- * download. Naming the runtime once, above a count of the devices sharing it,
- * is the whole point of this line — which is why the runtime comes FIRST and
- * the counts hang off it.
- */
-export function appleRuntimeLabel(installed: readonly AppleInstalledSimulator[]): string | null {
-  const counts = new Map<string, number>();
-  for (const simulator of installed) {
-    const runtime = simulator.runtime?.trim();
-    if (!runtime) continue;
-    counts.set(runtime, (counts.get(runtime) ?? 0) + 1);
-  }
-  const ordered = [...counts.entries()]
-    .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0], undefined, { numeric: true }))
-    .map(([runtime]) => runtime);
-  if (ordered.length === 0) return null;
-  if (ordered.length === 1) return ordered[0]!;
-  if (ordered.length === 2) return `${ordered[0]} and ${ordered[1]}`;
-  return `${ordered[0]} and ${plural(ordered.length - 1, "more runtime", "more runtimes")}`;
-}
-
-export function appleInventorySummary(
-  installed: readonly AppleInstalledSimulator[],
-): AppleInventorySummary {
-  const runtimeLabel = appleRuntimeLabel(installed);
-  const installedCount = installed.length;
-  const runningCount = installed.filter((simulator) => simulator.state === "Booted").length;
-  const counts = `${plural(installedCount, "simulator installed", "simulators installed")} · ${runningCount} running`;
-  return {
-    runtimeLabel,
-    installedCount,
-    runningCount,
-    text: runtimeLabel ? `${runtimeLabel} · ${counts}` : counts,
-  };
 }
 
 /**
@@ -207,8 +155,8 @@ export function appleInventorySummary(
  * count, because a device directory measured in bytes is a directory that is
  * not really there.
  */
-export function appleDiskLabel(bytes: number | null | undefined): string | null {
-  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return null;
+function appleDiskLabel(bytes: number): string | null {
+  if (!Number.isFinite(bytes) || bytes < 0) return null;
   const KIB = 1024;
   if (bytes < KIB) return "0 KB";
   if (bytes < KIB ** 2) return `${Math.round(bytes / KIB)} KB`;

@@ -5,12 +5,8 @@ import type {
   ExternalSessionDetailArgs,
   ExternalSessionDetailMessage,
 } from "../../../shared/types/externalSessionDetail";
-import { discoverClaudeSessions } from "./discoverClaude";
-import { discoverCodexSessions } from "./discoverCodex";
-import { discoverCursorSessions } from "./discoverCursor";
-import { discoverDroidSessions } from "./discoverDroid";
-import { discoverOpenCodeSessions } from "./discoverOpenCode";
-import { discoverPiSessions } from "./discoverPi";
+import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import { discoverExternalSessionRecord, jsonlSourceFor, loadExternalSessionEvents } from "./events";
 import {
   asRecord,
   asString,
@@ -57,36 +53,15 @@ function assertProvider(value: string): ExternalSessionProvider {
     case "droid":
     case "opencode":
     case "pi":
+    case "qwen":
+    case "kimi":
+    case "grok":
+    case "copilot":
       return value;
     default: {
       const _never: never = value as never;
       void _never;
       throw new Error("external session detail provider is invalid.");
-    }
-  }
-}
-
-async function discoverRecord(
-  provider: ExternalSessionProvider,
-  sessionId: string,
-): Promise<ExternalSessionDiscoveryRecord | null> {
-  const args = { sessionId, limit: 1 };
-  switch (provider) {
-    case "claude":
-      return (await discoverClaudeSessions(args))[0] ?? null;
-    case "codex":
-      return (await discoverCodexSessions(args))[0] ?? null;
-    case "cursor":
-      return (await discoverCursorSessions(args))[0] ?? null;
-    case "droid":
-      return (await discoverDroidSessions(args))[0] ?? null;
-    case "opencode":
-      return (await discoverOpenCodeSessions(args))[0] ?? null;
-    case "pi":
-      return (await discoverPiSessions(args))[0] ?? null;
-    default: {
-      const _never: never = provider;
-      return _never;
     }
   }
 }
@@ -106,6 +81,18 @@ function generousMessageFromRecord(record: unknown): ExternalSessionDetailMessag
     ? longer
     : clipExternalSessionText(sampled.text, DETAIL_MESSAGE_MAX_CHARS) ?? sampled.text;
   return { role: sampled.role, text, at: sampled.at };
+}
+
+function messagesFromEvents(events: readonly AgentChatEventEnvelope[]): ExternalSessionDetailMessage[] {
+  const messages: ExternalSessionDetailMessage[] = [];
+  for (const { event, timestamp } of events) {
+    if (event.type !== "user_message" && event.type !== "text") continue;
+    const text = clipPreservingNewlines(event.text.trim(), DETAIL_MESSAGE_MAX_CHARS);
+    if (!text) continue;
+    const at = Date.parse(timestamp);
+    messages.push({ role: event.type === "user_message" ? "user" : "assistant", text, at: Number.isFinite(at) ? at : null });
+  }
+  return messages.slice(-DETAIL_MAX_MESSAGES);
 }
 
 function messagesFromRecords(
@@ -167,22 +154,58 @@ export function normalizeExternalSessionDetailArgs(arg: unknown): ExternalSessio
   if (typeof record.sessionId !== "string" || !record.sessionId.trim()) {
     throw new Error("external session detail sessionId must be a string.");
   }
+  const before = typeof record.before === "string" && record.before.trim() ? record.before.trim() : null;
   return {
     provider: assertProvider(record.provider),
     sessionId: record.sessionId.trim(),
+    ...(before ? { before } : {}),
   };
 }
 
+/** The chat-session id preview events carry; also the renderer's list key. */
+export function externalSessionPreviewChatId(provider: ExternalSessionProvider, sessionId: string): string {
+  return `external-preview:${provider}:${sessionId}`;
+}
+
+/**
+ * One session's detail. `messages` stays the text tail old clients (iOS, TUI)
+ * read; `events` is the newest page of the full conversation as ADE chat
+ * events (or the page before `args.before`), with no "Session imported from"
+ * notice. `options.maxEvents` shrinks the page (the phone asks for fewer);
+ * paging stays exact because the cursor never encodes a page size.
+ */
 export async function loadExternalSessionDetail(
   args: ExternalSessionDetailArgs,
+  options: { maxEvents?: number; homeDir?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<ExternalSessionDetail> {
-  const record = await discoverRecord(args.provider, args.sessionId);
+  const home = {
+    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  };
+  const record = await discoverExternalSessionRecord(args.provider, args.sessionId, home);
   if (!record) return emptyDetail(args);
   const sourcePath = record.sourcePath?.trim() || null;
-  const suffix = sourcePath ? readJsonlRecordsFromSuffix(sourcePath, DETAIL_TAIL_BYTES) : [];
+  // The same conversation file the converters read: a session folder or a
+  // Cursor `store.db` is not JSONL.
+  const jsonlPath = jsonlSourceFor(args.provider, record);
+  const suffix = jsonlPath ? readJsonlRecordsFromSuffix(jsonlPath, DETAIL_TAIL_BYTES) : [];
+  const page = await loadExternalSessionEvents({
+    provider: args.provider,
+    sessionId: args.sessionId,
+    record,
+    chatSessionId: externalSessionPreviewChatId(args.provider, args.sessionId),
+    purpose: "preview",
+    before: args.before ?? null,
+    ...(options.maxEvents != null ? { maxEvents: options.maxEvents } : {}),
+    ...home,
+  }).catch(() => null);
+  // `messages` is the text tail older iOS and TUI clients read. Without a
+  // JSONL tail (a store-only Cursor chat) it comes from the preview events.
   const messages = suffix.length
     ? messagesFromRecords(args.provider, suffix)
-    : (record.messages ?? []);
+    : record.messages?.length
+      ? record.messages
+      : messagesFromEvents(page?.events ?? []);
   return {
     provider: record.provider,
     id: record.id,
@@ -195,6 +218,9 @@ export async function loadExternalSessionDetail(
     messages,
     sourcePath,
     watchable: Boolean(sourcePath),
+    events: page?.events ?? null,
+    hasOlder: page?.hasOlder ?? false,
+    olderCursor: page?.olderCursor ?? null,
   };
 }
 
@@ -233,12 +259,18 @@ export async function startExternalSessionDetailWatch(args: {
   provider: ExternalSessionProvider;
   sessionId: string;
   onUpdate: (detail: ExternalSessionDetail) => void;
+  /**
+   * Loads the detail, first and on every change; the external sessions
+   * service's `getDetail`, so the watch reads the same home as a plain get.
+   */
+  loadDetail: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
 }): Promise<ExternalSessionDetail> {
   stopExternalSessionDetailWatch(args.senderId, args.watchId);
   const key = watchKey(args.senderId, args.watchId);
   const generation = nextWatchGeneration++;
   watchGenerations.set(key, generation);
-  const detail = await loadExternalSessionDetail({
+  const { loadDetail } = args;
+  const detail = await loadDetail({
     provider: args.provider,
     sessionId: args.sessionId,
   });
@@ -257,7 +289,9 @@ export async function startExternalSessionDetailWatch(args: {
     if (entry.closed) return;
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
-      void loadExternalSessionDetail({
+      // Always the newest page (no `before`): a live update shows the tail,
+      // and a client that paged back keeps its older pages.
+      void loadDetail({
         provider: args.provider,
         sessionId: args.sessionId,
       }).then((next) => {

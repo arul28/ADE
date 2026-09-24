@@ -39,6 +39,20 @@ The mock stays the fallback for everything the bridge does not override. UI work
 > [Run a specific lane worktree](../../docs/development/local-development.md#run-a-specific-lane-worktree) in
 > the root README. Do not aim `dev:desktop --socket` at a runtime you do not want
 > `--auto` to shut down (e.g. the production `~/.ade/sock/ade.sock`).
+>
+> **Agents: start the Electron app detached, on the lane's own socket.** It runs
+> in the foreground for as long as the window is open, so a normal invocation
+> holds your turn open and the window dies when the turn ends. See
+> [Running the dev app](../../AGENTS.md#running-the-dev-app).
+
+### When the browser preview is enough
+
+Reach for `dev:vite` whenever the question is "does this page look right". It
+is seconds rather than an Electron build, it needs no runtime, and its mock
+covers the panes that used to be unreachable here — including the Apple
+Development picker, which reports a Mac with five simulators. A page checked
+only by unit tests is a page nobody has looked at: jsdom computes no styles, so
+a class-name assertion cannot tell a live utility from a dead one.
 
 ### Mock-only (fast UI shell)
 

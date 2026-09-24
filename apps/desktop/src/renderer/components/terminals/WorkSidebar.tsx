@@ -265,7 +265,6 @@ export function WorkSidebar({
   const {
     statuses,
     loading: statusesLoading,
-    iosSession,
     appControlSession,
   } = useWorkToolStatuses({
     enabled: active,
@@ -284,9 +283,7 @@ export function WorkSidebar({
     if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage(workToolLabel("app-control"), appControlSession.laneId, laneId, scopedLanes);
     }
-    if (effectiveTool === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
-      return laneMismatchMessage(workToolLabel("ios"), iosSession.laneId, laneId, scopedLanes);
-    }
+    // Apple has no pane-level claim: per-device ownership lives in the picker.
     return null;
   }
   // Lane attribution only. "This session cannot receive inserted context" is

@@ -478,80 +478,88 @@ private enum WorkPreviewData {
   WorkPreviewSessionListScreen()
 }
 
+/// The fixture chat every chat preview renders. `laneTools`, when given, fills
+/// the badge row's lane tool chips instead of polling a brain.
+@MainActor
+func workPreviewChatSessionView(laneTools: WorkLaneToolsPreview? = nil) -> WorkChatSessionView {
+  WorkChatSessionView(
+    session: WorkChatSessionRenderContext(WorkPreviewData.terminalSession),
+    chatSummaryContext: WorkChatSummaryRenderContext(WorkPreviewData.chatSummary),
+    transcript: WorkPreviewData.transcript,
+    transcriptRenderSignature: workChatEnvelopeListRenderSignature(WorkPreviewData.transcript),
+    allowsIncrementalTranscriptUpdate: false,
+    transcriptIncrementalDelta: .constant([]),
+    fallbackEntries: [],
+    fallbackEntriesRenderSignature: workFallbackEntriesRenderSignature([]),
+    artifacts: [WorkPreviewData.artifact],
+    artifactsRenderSignature: workArtifactSummariesRenderSignature([WorkPreviewData.artifact]),
+    optimisticPendingSteers: [],
+    optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature([]),
+    localEchoMessages: [],
+    localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature([]),
+    cardExpansionSnapshot: WorkCardExpansionState(expandedIds: ["cmd-1"]),
+    cardExpansionRenderSignature: workCardExpansionRenderSignature(
+      WorkCardExpansionState(expandedIds: ["cmd-1"])
+    ),
+    artifactContentRenderSignature: workLoadedArtifactContentRenderSignature([:]),
+    artifactDrawerPresentedSnapshot: false,
+    sendingSnapshot: false,
+    errorMessageSnapshot: nil,
+    cardExpansion: .constant(WorkCardExpansionState(expandedIds: ["cmd-1"])),
+    artifactContent: .constant([:]),
+    fullscreenImage: Binding<WorkFullscreenImage?>.constant(nil),
+    artifactDrawerPresented: .constant(false),
+    artifactRefreshInFlight: false,
+    artifactRefreshError: nil,
+    sending: .constant(false),
+    errorMessage: .constant(nil),
+    isLive: true,
+    hostUnreachable: false,
+    canComposeMessages: true,
+    canSendMessages: true,
+    sendWillQueue: false,
+    sendWillQueueIsReconnect: false,
+    activeSendModesAvailable: true,
+    queueAwareStopAvailable: true,
+    transportHealth: .connected,
+    composerDraftRestore: nil,
+    transitionNamespace: nil,
+    onOpenLane: {},
+    onSend: { _, _, _ in true },
+    onInterrupt: { _ in },
+    onRestoreCancelledQueue: nil,
+    onApproveRequest: { _, _, _ in },
+    onRespondToQuestion: { _, _, _, _ in },
+    onSubmitQuestionAnswers: { _, _, _ in },
+    onDeclineQuestion: { _ in },
+    onRespondToPermission: { _, _ in },
+    onRetryLoad: {},
+    onOpenFile: { _ in },
+    onOpenPr: { _ in },
+    onLoadArtifact: { _, _ in },
+    onRefreshArtifacts: {},
+    onCancelSteer: { _ in },
+    onEditSteer: { _, _ in },
+    onDispatchSteerInline: nil,
+    onDispatchSteerInterrupt: nil,
+    onSelectModel: { _ in },
+    onSelectRuntimeMode: { _ in true },
+    onSelectEffort: { _ in },
+    onSelectCodexFastMode: { _ in true },
+    resolvedSessionStatus: normalizedWorkChatSessionStatus(
+      session: WorkPreviewData.terminalSession,
+      summary: WorkPreviewData.chatSummary
+    ),
+    lanesRenderSignature: workLaneListRenderSignature([]),
+    subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature([]),
+    scheduledWorkSnapshotsRenderSignature: workScheduledWorkSnapshotsRenderSignature([]),
+    previewLaneTools: laneTools
+  )
+}
+
 #Preview("Work chat") {
   NavigationStack {
-    WorkChatSessionView(
-      session: WorkChatSessionRenderContext(WorkPreviewData.terminalSession),
-      chatSummaryContext: WorkChatSummaryRenderContext(WorkPreviewData.chatSummary),
-      transcript: WorkPreviewData.transcript,
-      transcriptRenderSignature: workChatEnvelopeListRenderSignature(WorkPreviewData.transcript),
-      allowsIncrementalTranscriptUpdate: false,
-      transcriptIncrementalDelta: .constant([]),
-      fallbackEntries: [],
-      fallbackEntriesRenderSignature: workFallbackEntriesRenderSignature([]),
-      artifacts: [WorkPreviewData.artifact],
-      artifactsRenderSignature: workArtifactSummariesRenderSignature([WorkPreviewData.artifact]),
-      optimisticPendingSteers: [],
-      optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature([]),
-      localEchoMessages: [],
-      localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature([]),
-      cardExpansionSnapshot: WorkCardExpansionState(expandedIds: ["cmd-1"]),
-      cardExpansionRenderSignature: workCardExpansionRenderSignature(
-        WorkCardExpansionState(expandedIds: ["cmd-1"])
-      ),
-      artifactContentRenderSignature: workLoadedArtifactContentRenderSignature([:]),
-      artifactDrawerPresentedSnapshot: false,
-      sendingSnapshot: false,
-      errorMessageSnapshot: nil,
-      cardExpansion: .constant(WorkCardExpansionState(expandedIds: ["cmd-1"])),
-      artifactContent: .constant([:]),
-      fullscreenImage: Binding<WorkFullscreenImage?>.constant(nil),
-      artifactDrawerPresented: .constant(false),
-      artifactRefreshInFlight: false,
-      artifactRefreshError: nil,
-      sending: .constant(false),
-      errorMessage: .constant(nil),
-      isLive: true,
-      hostUnreachable: false,
-      canComposeMessages: true,
-      canSendMessages: true,
-      sendWillQueue: false,
-      sendWillQueueIsReconnect: false,
-      activeSendModesAvailable: true,
-      queueAwareStopAvailable: true,
-      transportHealth: .connected,
-      composerDraftRestore: nil,
-      transitionNamespace: nil,
-      onOpenLane: {},
-      onSend: { _, _, _ in true },
-      onInterrupt: { _ in },
-      onRestoreCancelledQueue: nil,
-      onApproveRequest: { _, _, _ in },
-      onRespondToQuestion: { _, _, _, _ in },
-      onSubmitQuestionAnswers: { _, _, _ in },
-      onDeclineQuestion: { _ in },
-      onRespondToPermission: { _, _ in },
-      onRetryLoad: {},
-      onOpenFile: { _ in },
-      onOpenPr: { _ in },
-      onLoadArtifact: { _ in },
-      onRefreshArtifacts: {},
-      onCancelSteer: { _ in },
-      onEditSteer: { _, _ in },
-      onDispatchSteerInline: nil,
-      onDispatchSteerInterrupt: nil,
-      onSelectModel: { _ in },
-      onSelectRuntimeMode: { _ in true },
-      onSelectEffort: { _ in },
-      onSelectCodexFastMode: { _ in true },
-      resolvedSessionStatus: normalizedWorkChatSessionStatus(
-        session: WorkPreviewData.terminalSession,
-        summary: WorkPreviewData.chatSummary
-      ),
-      lanesRenderSignature: workLaneListRenderSignature([]),
-      subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature([]),
-      scheduledWorkSnapshotsRenderSignature: workScheduledWorkSnapshotsRenderSignature([])
-    )
+    workPreviewChatSessionView()
   }
   .environmentObject(WorkPreviewData.syncService)
   .environmentObject(WorkPreviewData.dictationController)
@@ -1158,6 +1166,29 @@ enum WorkProofPreviewData {
     ],
     appControl: nil
   )
+
+  /// The badge row's lane tool chips: the lane's simulator is up, the desktop
+  /// browser has two tabs (one driven by an agent), and App Control is attached.
+  static let toolChipsState = WorkToolsLaneState(
+    laneId: laneId,
+    activeTool: "ios",
+    browser: WorkToolsBrowserState(tabs: Array(toolsState.browser?.tabs.prefix(2) ?? [])),
+    agentBrowserPresence: toolsState.agentBrowserPresence,
+    appControl: WorkToolsAppControlState(appName: "Ghost", status: "attached", driver: "cdp")
+  )
+
+  static let toolChipsAppleStatus = AppleDeviceStatus(
+    laneId: laneId,
+    device: AppleDeviceStatusDevice(
+      udid: "preview-udid",
+      name: "iPhone 16 Pro",
+      family: "iphone",
+      runtime: "iOS 26.0",
+      state: "Booted"
+    ),
+    stream: AppleDeviceStatusStream(running: true),
+    laneDevice: AppleDeviceStatusLaneDevice(udid: "preview-udid")
+  )
 }
 
 /// A fixture screen selectable from the command line, so a screenshot of a
@@ -1172,6 +1203,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   case proofEmpty = "proof-empty"
   case proofViewer = "proof-viewer"
   case tools = "tools"
+  /// The real chat with the lane tool chips (simulator, browser, App Control)
+  /// in its floating badge row.
+  case toolChips = "tool-chips"
   /// Scroll benchmark over a real transcript file. See `WorkChatScrollBench.swift`.
   case chatScroll = "chat-scroll"
   case queuedSteerDetail = "queued-steer"
@@ -1209,7 +1243,7 @@ struct ADEPreviewScreenHost: View {
         isRefreshing: false,
         refreshError: nil,
         onRefresh: {},
-        onLoadArtifact: { _ in }
+        onLoadArtifact: { _, _ in }
       )
     case .proofEmpty:
       WorkProofSheet(
@@ -1218,14 +1252,14 @@ struct ADEPreviewScreenHost: View {
         isRefreshing: false,
         refreshError: nil,
         onRefresh: {},
-        onLoadArtifact: { _ in }
+        onLoadArtifact: { _, _ in }
       )
     case .proofViewer:
       WorkProofViewer(
         artifacts: WorkProofPreviewData.artifacts.reversed(),
         artifactContent: WorkProofPreviewData.content,
         initialArtifactId: "proof-1",
-        onLoadArtifact: { _ in }
+        onLoadArtifact: { _, _ in }
       )
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
@@ -1235,6 +1269,15 @@ struct ADEPreviewScreenHost: View {
         previewState: WorkProofPreviewData.toolsState,
         previewFrame: WorkProofPreviewData.toolsFrame
       )
+    case .toolChips:
+      NavigationStack {
+        workPreviewChatSessionView(
+          laneTools: WorkLaneToolsPreview(
+            state: WorkProofPreviewData.toolChipsState,
+            appleStatus: WorkProofPreviewData.toolChipsAppleStatus
+          )
+        )
+      }
     case .queuedSteerDetail:
       // Presented as a real sheet rather than rendered full-bleed, so the
       // detents and drag indicator the sheet declares are the ones in the
@@ -1327,6 +1370,12 @@ private enum WorkQueuedSteerPreviewData {
 
 #Preview("Work tools sheet") {
   ADEPreviewScreenHost(screen: .tools)
+    .environmentObject(WorkPreviewData.syncService)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Work chat - lane tool chips") {
+  ADEPreviewScreenHost(screen: .toolChips)
     .environmentObject(WorkPreviewData.syncService)
     .preferredColorScheme(.dark)
 }

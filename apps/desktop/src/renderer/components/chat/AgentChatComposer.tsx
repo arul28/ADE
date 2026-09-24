@@ -77,7 +77,7 @@ import {
   serializeComposerClipboard,
 } from "../../../shared/composerClipboard";
 import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "../../../shared/chips";
-import { serializeComposerDom } from "./composerChipDom";
+import { serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
   activeTurnDispatchModes,
   activeTurnInterruptContinues,
@@ -161,6 +161,12 @@ import {
 import {
   DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
 } from "../../lib/nativeLaunchControls";
+
+export type ComposerDraftEditIntent = {
+  previousText: string;
+  selectionStart: number;
+  selectionEnd: number;
+};
 
 // Attachment ceilings are not a renderer constant any more: they depend on the
 // leg the bytes take, which depends on the machine that owns the chat. See
@@ -1881,7 +1887,7 @@ export function AgentChatComposer({
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean) => void;
   onCursorCloudServiceTierChange?: (tier: CursorCloudServiceTier | null) => void;
-  onDraftChange: (value: string) => void;
+  onDraftChange: (value: string, editIntent?: ComposerDraftEditIntent) => void;
   /** Persisted display labels keyed by their canonical mention token. */
   mentionLabels?: Record<string, string>;
   onMentionLabelChange?: (token: string, title: string) => void;
@@ -2238,6 +2244,7 @@ export function AgentChatComposer({
   }, [mentionLabels]);
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
+  const pendingDraftEditIntentRef = useRef<ComposerDraftEditIntent | null>(null);
   const fileAddInProgressRef = useRef(false);
   const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
@@ -3030,6 +3037,55 @@ export function AgentChatComposer({
     if (!editor) return draft;
     return serializeComposerDom(editor).text;
   }, [draft]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    const captureTextareaEdit = () => {
+      if (!textarea) return;
+      pendingDraftEditIntentRef.current = {
+        previousText: textarea.value,
+        selectionStart: textarea.selectionStart ?? textarea.value.length,
+        selectionEnd: textarea.selectionEnd ?? textarea.value.length,
+      };
+    };
+    textarea?.addEventListener("beforeinput", captureTextareaEdit);
+
+    const editor = richEditorRef.current;
+    const captureRichEdit = () => {
+      if (!editor) return;
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      if (
+        !range
+        || !(range.startContainer === editor || editor.contains(range.startContainer))
+        || !(range.endContainer === editor || editor.contains(range.endContainer))
+      ) {
+        pendingDraftEditIntentRef.current = null;
+        return;
+      }
+      const previousText = serializeComposerDom(editor).text;
+      pendingDraftEditIntentRef.current = {
+        previousText,
+        selectionStart: serializedComposerOffsetAt(
+          editor,
+          range.startContainer,
+          range.startOffset,
+          previousText,
+        ),
+        selectionEnd: serializedComposerOffsetAt(
+          editor,
+          range.endContainer,
+          range.endOffset,
+          previousText,
+        ),
+      };
+    };
+    editor?.addEventListener("beforeinput", captureRichEdit);
+    return () => {
+      textarea?.removeEventListener("beforeinput", captureTextareaEdit);
+      editor?.removeEventListener("beforeinput", captureRichEdit);
+    };
+  }, [useRichComposer]);
 
   const syncRichDraft = useCallback(() => {
     if (!useRichComposer) return;
@@ -5092,13 +5148,15 @@ export function AgentChatComposer({
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
     if (!editor) return;
+    const editIntent = pendingDraftEditIntentRef.current;
+    pendingDraftEditIntentRef.current = null;
     clearPromptHistory();
     const inputType = (event?.nativeEvent as InputEvent | undefined)?.inputType ?? "";
     if (!imeComposingRef.current && (inputType === "insertParagraph" || /\s$/.test(editor.textContent ?? ""))) {
       if (tokenizeSmartLinksInEditor()) return;
     }
     const val = serializeRichEditor();
-    onDraftChange(val);
+    onDraftChange(val, editIntent ?? undefined);
     if (imeComposingRef.current) {
       captureRichSelection();
       return;
@@ -6598,6 +6656,7 @@ export function AgentChatComposer({
                   )}
                   data-chat-layout-variant={layoutVariant}
                   data-composer-answer-editor={answer ? "true" : undefined}
+                  data-chat-composer-text={answer ? undefined : ""}
                   onInput={handleRichEditorInput}
                   onCompositionStart={() => {
                     imeComposingRef.current = true;
@@ -6703,7 +6762,9 @@ export function AgentChatComposer({
                   onChange={(event) => {
                     const val = event.target.value;
                     clearPromptHistory();
-                    onDraftChange(val);
+                    const editIntent = pendingDraftEditIntentRef.current;
+                    pendingDraftEditIntentRef.current = null;
+                    onDraftChange(val, editIntent ?? undefined);
                     if (/\s$/.test(val) && findSmartLinks(val).length > 0) {
                       setSmartLinkEditorEnabled(true);
                     }
@@ -6752,6 +6813,7 @@ export function AgentChatComposer({
                   )}
                   style={plainOverlayContent ? { caretColor: "var(--color-fg)" } : undefined}
                   data-chat-layout-variant={layoutVariant}
+                  data-chat-composer-text=""
                   placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
                   onKeyDown={handleKeyDown}
                   onPaste={handlePaste}

@@ -23,6 +23,7 @@ import type {
   ExternalSessionListArgs,
   ExternalSessionSummary,
 } from "./externalSessions";
+import type { ExternalSessionDetail, ExternalSessionDetailArgs } from "./externalSessionDetail";
 import type { PtySendToSessionResult, SessionActivityReport, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 import type { LinearConnectionStatus } from "./linearSync";
@@ -1448,14 +1449,31 @@ export type SyncFileRequest =
   | { action: "stopWatching"; args: { workspaceId: string; includeIgnored?: boolean } }
   | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean; allowComposerPrefixFallback?: boolean; includeDirectories?: boolean } }
   | { action: "searchText"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
-  | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } };
+  | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } }
+  | {
+      action: "readArtifactRange";
+      args: { artifactId?: string; uri?: string; path?: string; offset?: number; length?: number };
+    };
+
+/**
+ * One bounded slice of a stored proof. A phone pulls a recording too large for
+ * `readArtifact` this way, chunk by chunk.
+ */
+export type SyncArtifactRange = {
+  path: string;
+  totalSize: number;
+  rangeStart: number;
+  rangeEnd: number;
+  encoding: "base64";
+  content: string;
+  eof: boolean;
+};
 
 export type SyncFileResponsePayload = {
   ok: boolean;
   action: SyncFileRequest["action"];
-  result?:
-    | unknown
-    | SyncFileBlob;
+  /** Per action: `SyncFileBlob` for the reads, `SyncArtifactRange` for `readArtifactRange`. */
+  result?: unknown;
   error?: {
     code: string;
     message: string;
@@ -1842,6 +1860,14 @@ export type SyncStartCliSessionResult = {
 export type SyncListExternalSessionsArgs = ExternalSessionListArgs;
 export type SyncListExternalSessionsResult = ExternalSessionSummary[];
 
+export type SyncGetExternalSessionDetailArgs = ExternalSessionDetailArgs;
+/**
+ * One external session's detail for a phone: at most 120 events per page
+ * (`SYNC_EXTERNAL_SESSION_DETAIL_MAX_EVENTS`), compacted for the mobile wire,
+ * and `messages` emptied whenever `events` carries the conversation.
+ */
+export type SyncGetExternalSessionDetailResult = ExternalSessionDetail;
+
 export type SyncImportExternalSessionArgs = ExternalSessionImportArgs;
 export type SyncImportExternalSessionResult = ExternalSessionImportResult;
 
@@ -1972,6 +1998,7 @@ export type SyncRemoteCommandAction =
   | "work.startCliSession"
   | "work.resumeCliSession"
   | "work.listExternalSessions"
+  | "work.getExternalSessionDetail"
   | "work.importExternalSession"
   | "work.sendToSession"
   | "work.stopRuntime"

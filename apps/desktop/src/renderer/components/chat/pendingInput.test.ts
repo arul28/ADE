@@ -5,9 +5,9 @@ import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../share
 import {
   derivePendingInputRequests,
   getPendingInputQuestionCount,
-  readPendingInputRequest,
   resolvePendingInputs,
 } from "./pendingInput";
+import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
 
 // ---------------------------------------------------------------------------
 // Helpers for building test envelopes

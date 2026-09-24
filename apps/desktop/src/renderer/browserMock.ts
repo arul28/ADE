@@ -94,6 +94,7 @@ import {
   INERT_KEEP_AWAKE_SNAPSHOT,
   type KeepAwakeSnapshot,
 } from "../shared/types/keepAwake";
+import { createMockExternalSessionsApi } from "./browserMockExternalSessions";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";
@@ -103,6 +104,19 @@ import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "./
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
 
 const noop = () => () => {};
+/**
+ * The owner's machine as the Apple picker sees it: one iOS runtime, five
+ * devices, two booted. Used by the Vite-only preview so the page can be looked
+ * at in a browser instead of only in a built Electron app.
+ */
+const BROWSER_MOCK_SIMULATORS = [
+  { udid: "pro", name: "iPhone 17 Pro", runtime: "iOS 26.3", state: "Booted", isAvailable: true, family: "iphone", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" },
+  { udid: "e", name: "iPhone 17e", runtime: "iOS 26.3", state: "Shutdown", isAvailable: true, family: "iphone", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17e" },
+  { udid: "repro", name: "ADE Repro", runtime: "iOS 26.3", state: "Booted", isAvailable: true, family: "iphone", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro" },
+  { udid: "pad", name: "iPad Air 11-inch (M4)", runtime: "iOS 26.3", state: "Shutdown", isAvailable: true, family: "ipad", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M4" },
+  { udid: "pad13", name: "iPad Air 13-inch (M4)", runtime: "iOS 26.3", state: "Shutdown", isAvailable: true, family: "ipad", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4" },
+] as const;
+
 const resolved =
   <T>(v: T) =>
   async () =>
@@ -4263,6 +4277,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getOwnerSnapshot: resolvedArg({} as any),
       updateArtifactReview: resolvedArg({} as any),
       readArtifactPreview: resolvedArg(null),
+      mediaBaseUrl: resolved(null),
       // The drawer calls these directly; without them the standalone web
       // renderer throws a TypeError on the delete and recover controls.
       deleteArtifacts: resolvedArg({ deleted: [], missing: [], failed: [], freedBytes: 0 }),
@@ -5559,14 +5574,49 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onEvent: () => () => {},
     },
     iosSimulator: {
+      /*
+       * Supported, with a device list, so the Apple picker renders in the web
+       * preview (jsdom computes no layout). Five simulators on one runtime, two
+       * booted, one held by another lane.
+       */
       getStatus: resolved({
         platform: "darwin",
-        supported: false,
+        supported: true,
         tools: [],
         activeDevice: null,
         activeSession: null,
         deviceSession: null,
+        laneDevice: null,
+        helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
       }),
+      deviceList: resolvedArg({
+        installed: BROWSER_MOCK_SIMULATORS,
+        lane: null,
+        owners: [{
+          udid: "repro",
+          laneId: "lane-other",
+          laneName: "Repro fix",
+          origin: "attached",
+          mine: false,
+        }],
+        disk: {
+          totalBytes: 18 * 1024 ** 3,
+          devices: [
+            { udid: "pro", bytes: 5 * 1024 ** 3 },
+            { udid: "repro", bytes: 2 * 1024 ** 3 },
+            { udid: "pad", bytes: 3.2 * 1024 ** 3 },
+          ],
+          root: "/mock/devices",
+          measuredAt: "2026-09-22T00:00:00.000Z",
+        },
+      } as any),
+      deviceStart: resolvedArg({} as any),
+      deviceStop: resolvedArg(undefined as any),
+      deviceCreate: resolvedArg({} as any),
+      deviceAttach: resolvedArg({} as any),
+      deviceDelete: resolvedArg(undefined as any),
+      deviceDetach: resolvedArg(null as any),
+      deviceDeleteInstalled: resolvedArg(undefined as any),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),
       launch: resolvedArg({} as any),
@@ -6026,10 +6076,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
     },
-    externalSessions: {
-      list: async () => [],
-      import: async () => ({ kind: "cli" as const, sessionId: "mock-session", ptyId: "mock", laneId: "mock-lane" }),
-    },
+    externalSessions: createMockExternalSessionsApi(() => MOCK_LANES),
     // Stateful on purpose: the accounts UI adds, renames and removes rows, and
     // a stub that always returned the same two entries would make every one of
     // those interactions look broken in the Vite-only preview.

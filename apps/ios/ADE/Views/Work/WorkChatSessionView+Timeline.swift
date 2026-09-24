@@ -398,7 +398,8 @@ extension WorkChatSessionView {
       content: artifactContent[artifact.id],
       isExpanded: cardIsExpanded(artifact.id, entryId: entryId),
       onToggle: { toggleCard(artifact.id, entryId: entryId) },
-      onAppear: { Task { await onLoadArtifact(artifact) } },
+      onAppear: { Task { await onLoadArtifact(artifact, .preview) } },
+      onPlay: { Task { await onLoadArtifact(artifact, .play) } },
       onOpenImage: { image in
         fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
       }

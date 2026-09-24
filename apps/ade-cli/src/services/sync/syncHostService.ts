@@ -69,6 +69,7 @@ import type {
   SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
+  SyncArtifactRange,
   SyncFileBlob,
   SyncFileRequest,
   SyncFileResponsePayload,
@@ -118,6 +119,10 @@ import {
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
   SYNC_MOBILE_CHAT_SLIM_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
+import {
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
+  PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
+} from "../../../../desktop/src/shared/types/pairedRuntime";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
 import {
@@ -129,6 +134,7 @@ import {
   type SubagentProgressCoalescer,
 } from "../../../../desktop/src/shared/chatMobileSlim";
 import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
+import { readArtifactByteRange } from "../../../../desktop/src/main/services/computerUse/artifactByteRange";
 import { findStoredToolResult } from "../../../../desktop/src/main/services/chat/chatToolResultLookup";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -704,6 +710,7 @@ export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | n
       return toOptionalString(payload.args.workspaceId);
     case "listWorkspaces":
     case "readArtifact":
+    case "readArtifactRange":
       return null;
     default:
       return null;
@@ -753,6 +760,7 @@ const CONCURRENT_READ_FILE_ACTIONS: ReadonlySet<string> = new Set<SyncFileReques
   "quickOpen",
   "searchText",
   "readArtifact",
+  "readArtifactRange",
 ]);
 
 const CONCURRENT_READ_COMMAND_PREFIXES = ["get", "list", "read", "search"] as const;
@@ -4665,7 +4673,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.pairedDeviceId = null;
       peer.pairingRecord = null;
       try {
-        peer.ws.close(4000, "Superseded by a newer connection for this device");
+        peer.ws.close(PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE, PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON);
       } catch {
         // ignore close failures
       }
@@ -6383,7 +6391,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     broadcastBrainStatus();
   }
 
-  function resolveArtifactPath(request: Extract<SyncFileRequest, { action: "readArtifact" }>["args"]): string {
+  function resolveArtifactPath(
+    request: Extract<SyncFileRequest, { action: "readArtifact" | "readArtifactRange" }>["args"],
+  ): string {
     const artifactId = toOptionalString(request.artifactId);
     const explicitUri = toOptionalString(request.uri) ?? toOptionalString(request.path);
     let candidate = explicitUri;
@@ -6449,6 +6459,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return createBlobFromBuffer(normalizeRelative(path.relative(args.projectRoot, artifactPath)), buffer);
   }
 
+  /**
+   * The same jail as `readArtifact`, one bounded slice at a time, so a phone
+   * can play a recording larger than the whole-file cap.
+   */
+  async function readArtifactRange(
+    request: Extract<SyncFileRequest, { action: "readArtifactRange" }>["args"],
+  ): Promise<SyncArtifactRange> {
+    const artifactPath = resolveArtifactPath(request);
+    const range = await readArtifactByteRange(artifactPath, request.offset, request.length);
+    return {
+      path: normalizeRelative(path.relative(args.projectRoot, artifactPath)),
+      totalSize: range.totalSize,
+      rangeStart: range.rangeStart,
+      rangeEnd: range.rangeEnd,
+      encoding: "base64",
+      content: range.base64,
+      eof: range.eof,
+    };
+  }
+
   function isMobilePeer(peer: PeerState): boolean {
     if (isRecordBackedSyncAuthKind(peer.authKind)) {
       return isMobilePairingRecord(peer.pairingRecord);
@@ -6492,6 +6522,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         | FilesQuickOpenItem[]
         | FilesSearchTextMatch[]
         | SyncFileBlob
+        | SyncArtifactRange
         | { ok: true } = { ok: true };
 
       switch (payload.action) {
@@ -6551,6 +6582,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           result = await readArtifactBlob(payload.args);
           break;
         }
+        case "readArtifactRange":
+          result = await readArtifactRange(payload.args);
+          break;
         default:
           throw new Error(`Unsupported file action: ${(payload as { action?: string }).action ?? "unknown"}`);
       }

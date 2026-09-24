@@ -77,6 +77,8 @@ export type DraftLaunchSnapshot = {
   interactionMode: AgentChatInteractionMode;
   nativeControls: NativeControlState;
   attachments: AgentChatFileRef[];
+  /** Renderer-only identities aligned one-to-one with attachments. */
+  attachmentDraftIds?: string[];
   contextAttachments: AgentChatContextAttachment[];
   iosContextItems: IosElementContextItem[];
   appControlContextItems: AppControlContextItem[];

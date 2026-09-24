@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +29,11 @@ import type {
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { normalizeComputerUseArtifactKind } from "../../../shared/proofArtifacts";
+import {
+  PROOF_PROVENANCE_METADATA_KEYS,
+  hasDrawerOwner,
+  type ComputerUseProofSource,
+} from "../../../shared/proofProvenance";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { SqlValue } from "../state/kvDb";
@@ -43,7 +48,15 @@ import {
   writeTextAtomic,
 } from "../shared/utils";
 import { commandExists } from "../ai/utils";
+import { readArtifactByteRange } from "./artifactByteRange";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
+import { isStreamableArtifactFile, knownArtifactMimeType } from "./artifactStreamProtocol";
+import {
+  createProofFingerprintJudge,
+  hashFile,
+  type AttachPolicy,
+  type ContentFingerprint,
+} from "./proofFingerprint";
 
 type StoredArtifactRow = {
   id: string;
@@ -71,21 +84,6 @@ const ARTIFACT_SELECT_COLUMNS = `
 const DEFAULT_REVIEW_STATE: ComputerUseArtifactReviewState = "accepted";
 const DEFAULT_WORKFLOW_STATE: ComputerUseArtifactWorkflowState = "evidence_only";
 const ARTIFACT_PREVIEW_SIZE_CAP = 10 * 1024 * 1024;
-const ARTIFACT_PREVIEW_MIME_BY_EXTENSION: Record<string, string> = {
-  bmp: "image/bmp",
-  gif: "image/gif",
-  jpeg: "image/jpeg",
-  jpg: "image/jpeg",
-  png: "image/png",
-  svg: "image/svg+xml",
-  webp: "image/webp",
-  m4v: "video/x-m4v",
-  mov: "video/quicktime",
-  mp4: "video/mp4",
-  ogv: "video/ogg",
-  webm: "video/webm",
-};
-
 type ComputerUseArtifactRecordInsert = Omit<ComputerUseArtifactRecord, "id" | "createdAt" | "backendStyle"> & {
   backendStyle?: ComputerUseBackendStyle | null;
 };
@@ -95,7 +93,28 @@ type ResolvedStoredArtifact = {
   storageKind: "file" | "url";
   mimeType: string | null;
   stagedFilePath: string | null;
+  /** Where the stored bytes live on disk, when they live in the store. */
+  storedFilePath: string | null;
+  /** True when the bytes came from a file the caller named, not inline text. */
+  fromCallerFile: boolean;
+  /** Filled while copying, so an imported file is read once. */
+  fingerprint: ContentFingerprint | null;
 };
+
+/** An input's own metadata, minus the keys only the broker may stamp. */
+function callerMetadata(metadata: unknown): Record<string, unknown> {
+  if (!isRecord(metadata)) return {};
+  const next: Record<string, unknown> = { ...metadata };
+  for (const key of PROOF_PROVENANCE_METADATA_KEYS) delete next[key];
+  return next;
+}
+
+function validIsoOrNull(value: unknown): string | null {
+  const text = toOptionalString(value);
+  if (!text) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
 
 type RecoverableSourceResolution =
   | { status: "found"; path: string }
@@ -216,8 +235,7 @@ async function readArtifactPreviewDataUrl(args: {
   try {
     const stat = await fs.promises.stat(canonical);
     if (!stat.isFile() || stat.size > ARTIFACT_PREVIEW_SIZE_CAP) return null;
-    const ext = path.extname(canonical).replace(/^\./, "").toLowerCase();
-    const mime = ARTIFACT_PREVIEW_MIME_BY_EXTENSION[ext];
+    const mime = knownArtifactMimeType(canonical);
     if (!mime) return null;
     const buf = await fs.promises.readFile(canonical);
     return `data:${mime};base64,${buf.toString("base64")}`;
@@ -226,7 +244,38 @@ async function readArtifactPreviewDataUrl(args: {
   }
 }
 
-function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void {
+/**
+ * One bounded slice of a stored proof, for a paired desktop that streams it
+ * into a `<video>` instead of taking the whole file as a data URL.
+ *
+ * The jail is the preview read's: the uri must resolve inside this project's
+ * `.ade/artifacts` after symlinks, and only preview media types are served.
+ * Nothing about the caller widens it; a length above the cap is cut down.
+ */
+async function readArtifactRangeChunk(args: {
+  uri?: string;
+  offset?: number;
+  length?: number;
+  projectRoot: string;
+  artifactsDir: string;
+}): Promise<{ totalSize: number; offset: number; data: string }> {
+  const uri = typeof args.uri === "string" ? args.uri.trim() : "";
+  if (!uri) throw new Error("Artifact uri is required.");
+  let resolved: string;
+  try {
+    resolved = resolvePathWithinRoot(
+      args.artifactsDir,
+      path.normalize(resolveRendererArtifactPath(uri, args.projectRoot)),
+    );
+  } catch {
+    throw new Error("Artifact path must resolve within .ade/artifacts.");
+  }
+  if (!isStreamableArtifactFile(resolved)) throw new Error("This artifact type cannot be streamed.");
+  const range = await readArtifactByteRange(resolved, args.offset, args.length);
+  return { totalSize: range.totalSize, offset: range.rangeStart, data: range.base64 };
+}
+
+function secureCopyFromDescriptor(sourcePath: string, targetPath: string): ContentFingerprint {
   const sourceFlags = fs.constants.O_RDONLY | (typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0);
   const sourceFd = fs.openSync(sourcePath, sourceFlags);
   const tempPath = `${targetPath}.tmp-${randomUUID()}`;
@@ -240,12 +289,16 @@ function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void 
 
     const targetFd = fs.openSync(tempPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC, sourceStat.mode & 0o777);
     tempCreated = true;
+    // Hashed on the way through, so the duplicate check costs no second read.
+    const hash = createHash("sha256");
+    let copiedBytes = 0;
     try {
       const buffer = Buffer.allocUnsafe(64 * 1024);
       let position = 0;
       for (;;) {
         const bytesRead = fs.readSync(sourceFd, buffer, 0, buffer.length, position);
         if (bytesRead === 0) break;
+        hash.update(buffer.subarray(0, bytesRead));
 
         let offset = 0;
         while (offset < bytesRead) {
@@ -253,6 +306,7 @@ function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void 
         }
         position += bytesRead;
       }
+      copiedBytes = position;
       fs.fsyncSync(targetFd);
     } finally {
       fs.closeSync(targetFd);
@@ -260,6 +314,7 @@ function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void 
 
     fs.renameSync(tempPath, targetPath);
     tempCreated = false;
+    return { sha256: hash.digest("hex"), bytes: copiedBytes };
   } finally {
     if (tempCreated) {
       try {
@@ -543,6 +598,9 @@ export function createComputerUseArtifactBrokerService(args: {
         storageKind: "url",
         mimeType: toOptionalString(input.mimeType),
         stagedFilePath: null,
+        storedFilePath: null,
+        fromCallerFile: false,
+        fingerprint: null,
       };
     }
 
@@ -600,6 +658,9 @@ export function createComputerUseArtifactBrokerService(args: {
           storageKind: "file",
           mimeType: toOptionalString(input.mimeType),
           stagedFilePath: null,
+          storedFilePath: existingArtifactPath,
+          fromCallerFile: true,
+          fingerprint: null,
         };
       } catch {
         // Fall through to external import handling.
@@ -610,12 +671,15 @@ export function createComputerUseArtifactBrokerService(args: {
       }
       const extension = inferArtifactExtension({ ...input, path: absolutePath }, kind);
       const targetPath = createComputerUseArtifactPath(projectRoot, title, extension);
-      secureCopyFromDescriptor(absolutePath, targetPath);
+      const fingerprint = secureCopyFromDescriptor(absolutePath, targetPath);
       return {
         uri: toProjectArtifactUri(projectRoot, targetPath),
         storageKind: "file",
         mimeType: toOptionalString(input.mimeType),
         stagedFilePath: targetPath,
+        storedFilePath: targetPath,
+        fromCallerFile: true,
+        fingerprint,
       };
     }
 
@@ -625,6 +689,9 @@ export function createComputerUseArtifactBrokerService(args: {
       storageKind: "file",
       mimeType: toOptionalString(input.mimeType),
       stagedFilePath: materialized.stagedFilePath,
+      storedFilePath: materialized.stagedFilePath,
+      fromCallerFile: false,
+      fingerprint: null,
     };
   };
 
@@ -751,6 +818,14 @@ export function createComputerUseArtifactBrokerService(args: {
       return null;
     }
   };
+
+  const proofJudge = createProofFingerprintJudge({
+    db,
+    projectId,
+    resolveStoredFilePath: ({ uri }) => resolveArtifactFilePath({ storageKind: "file", uri }),
+    projectRoot,
+    logger: args.logger,
+  });
 
   /**
    * Where a broken record's original bytes might still be. Ingest records the
@@ -1124,6 +1199,23 @@ export function createComputerUseArtifactBrokerService(args: {
   };
 
   /**
+   * Fill `ownerCount` for a whole page in ONE query.
+   *
+   * Asking per artifact would be an N+1 read on a path that already walks
+   * every file-backed row, and there is a test guarding the read count.
+   */
+  const withOwnerCounts = (
+    broken: ComputerUseArtifactBrokenRecord[],
+  ): ComputerUseArtifactBrokenRecord[] => {
+    if (!broken.length) return broken;
+    const counts = new Map<string, number>();
+    for (const link of readLinkRows(broken.map((entry) => entry.artifactId))) {
+      counts.set(link.artifactId, (counts.get(link.artifactId) ?? 0) + 1);
+    }
+    return broken.map((entry) => ({ ...entry, ownerCount: counts.get(entry.artifactId) ?? 0 }));
+  };
+
+  /**
    * Every record whose bytes cannot be served, with enough detail for the UI
    * to say what happened and offer recovery when the original file survives.
    */
@@ -1156,10 +1248,12 @@ export function createComputerUseArtifactBrokerService(args: {
           reason: availability === "unimported" ? "outside_artifact_store" : "missing_file",
           laneId: record.laneId ?? null,
           recoverablePath: findRecoverableSourcePath(record),
+          // Filled in one batch below; the per-record value is a placeholder.
+          ownerCount: 0,
         });
-        if (limit != null && broken.length >= limit) return broken;
+        if (limit != null && broken.length >= limit) return withOwnerCounts(broken);
       }
-      if (records.length < pageSize) return broken;
+      if (records.length < pageSize) return withOwnerCounts(broken);
       offset += records.length;
     }
   };
@@ -1169,89 +1263,239 @@ export function createComputerUseArtifactBrokerService(args: {
     return collectBrokenArtifacts(limit);
   };
 
-  return {
-    ingest(request: ComputerUseArtifactIngestionRequest): ComputerUseArtifactIngestionResult {
-      const owners = dedupeOwners(request.owners ?? []);
-      const callerRoot = toOptionalString(request.callerRoot);
-      const laneId = resolveLaneIdForOwners(owners);
-      // The broker accepts extra roots only from its own lane table. The RPC
-      // supplies `callerRoot` after authenticating it, but callers cannot turn
-      // an arbitrary path into an import root merely by placing it in metadata.
-      const requestImportRoots = laneId ? resolveLaneRoots(new Set([laneId])) : [];
-      // Resolve every input before persisting any of them. `resolveStoredUri`
-      // now throws (missing file, non-importable type, denied source), and a
-      // half-committed batch would leave the agent's retry inserting the
-      // already-stored inputs a second time.
-      const resolved: Array<{
-        input: ComputerUseArtifactInput;
-        kind: ComputerUseArtifactKind;
-        title: string;
-        stored: ResolvedStoredArtifact;
-      }> = [];
-      const stagedFilePaths: string[] = [];
-      try {
-        for (const input of request.inputs) {
-          const kind = normalizeInputKind(input);
-          const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
-          const stored = resolveStoredUri(input, kind, title, callerRoot, requestImportRoots);
-          if (stored.stagedFilePath) stagedFilePaths.push(stored.stagedFilePath);
-          resolved.push({ input, kind, title, stored });
+  type PreparedIngest = {
+    request: ComputerUseArtifactIngestionRequest;
+    owners: ComputerUseArtifactOwner[];
+    callerRoot: string | null;
+    laneId: string | null;
+    proofSource: ComputerUseProofSource;
+    policy: AttachPolicy;
+    /** An attach, or a capture whose hash is re-checked, is hashed while filing; other captures later, if ever. */
+    hashAtFiling: boolean;
+    /** The hash each input had when ADE captured it, or null when there is nothing to re-check. */
+    capturedSha256: string[] | null;
+    entries: Array<{
+      input: ComputerUseArtifactInput;
+      kind: ComputerUseArtifactKind;
+      title: string;
+      stored: ResolvedStoredArtifact;
+    }>;
+    /** Removes files this call copied into the store, when it is refused. */
+    discard: () => void;
+  };
+
+  /**
+   * Resolves every input before anything is persisted. `resolveStoredUri`
+   * throws (missing file, non-importable type, denied source), and a
+   * half-committed batch would leave the agent's retry inserting the
+   * already-stored inputs a second time.
+   */
+  const prepareIngest = (request: ComputerUseArtifactIngestionRequest): PreparedIngest => {
+    const owners = dedupeOwners(request.owners ?? []);
+    const callerRoot = toOptionalString(request.callerRoot);
+    const laneId = resolveLaneIdForOwners(owners);
+    if (!hasDrawerOwner(owners)) {
+      // Not refused: a CTO scene still legitimately files with no owner when
+      // no call is on a chat. But it IS worth a line, because a record with
+      // no owner is invisible in every drawer, and a run whose proof went
+      // nowhere left no trace of that anywhere until now.
+      args.logger?.warn("computer_use.artifact_ingest_without_owner", {
+        backend: request.backend?.name ?? null,
+        toolName: request.backend?.toolName ?? null,
+        callerRoot,
+        ownerKinds: owners.map((owner) => owner.kind),
+      });
+    }
+    // The broker accepts extra roots only from its own lane table. The RPC
+    // supplies `callerRoot` after authenticating it, but callers cannot turn
+    // an arbitrary path into an import root merely by placing it in metadata.
+    const requestImportRoots = laneId ? resolveLaneRoots(new Set([laneId])) : [];
+    // No provenance means an agent or a person attached a file that already
+    // existed. That is the case to check. ADE's recorders and captures say
+    // so, and they always write new bytes.
+    const proofSource: ComputerUseProofSource = request.provenance?.source ?? "attached";
+    const refuseDuplicates = request.provenance?.refuseDuplicates ?? proofSource === "attached";
+    const flagOlderMedia = request.provenance?.flagOlderMedia ?? proofSource === "attached";
+    const capturedSha256 = proofSource === "attached" ? null : request.provenance?.capturedSha256 ?? null;
+    const stagedFilePaths: string[] = [];
+    const discard = () => {
+      for (const stagedFilePath of stagedFilePaths) {
+        try {
+          fs.rmSync(stagedFilePath, { force: true });
+        } catch {
+          // Preserve the refusal; cleanup is best-effort.
         }
-      } catch (error) {
-        for (const stagedFilePath of stagedFilePaths) {
+      }
+    };
+    const entries: PreparedIngest["entries"] = [];
+    try {
+      for (const input of request.inputs) {
+        const kind = normalizeInputKind(input);
+        const title = toOptionalString(input.title) ?? defaultTitleForKind(kind);
+        const stored = resolveStoredUri(input, kind, title, callerRoot, requestImportRoots);
+        if (stored.stagedFilePath) stagedFilePaths.push(stored.stagedFilePath);
+        entries.push({ input, kind, title, stored });
+      }
+    } catch (error) {
+      discard();
+      throw error;
+    }
+    return {
+      request,
+      owners,
+      callerRoot,
+      laneId,
+      proofSource,
+      policy: proofJudge.policyFor(owners, {
+        refuseDuplicates,
+        flagOlderMedia,
+        toolName: request.backend?.toolName ?? null,
+      }),
+      hashAtFiling: refuseDuplicates || proofSource === "attached" || capturedSha256 !== null,
+      capturedSha256,
+      entries,
+      discard,
+    };
+  };
+
+  /** The file each entry still needs hashed, or null when it has a hash or needs none. */
+  const pathToHash = (prepared: PreparedIngest, entry: PreparedIngest["entries"][number]): string | null =>
+    !entry.stored.fingerprint && prepared.hashAtFiling ? entry.stored.storedFilePath : null;
+
+  /** Judges each entry against existing proof, then writes the rows. */
+  const commitIngest = (
+    prepared: PreparedIngest,
+    fingerprints: Array<ContentFingerprint | null>,
+  ): ComputerUseArtifactIngestionResult => {
+    const { request, owners, callerRoot, laneId, proofSource, policy } = prepared;
+    const recordedFrom = proofSource === "ade-recorder" ? validIsoOrNull(request.provenance?.recordedFrom) : null;
+    const recordedTo = proofSource === "ade-recorder" ? validIsoOrNull(request.provenance?.recordedTo) : null;
+    const warnings: string[] = [];
+    const judged: Array<PreparedIngest["entries"][number] & {
+      fingerprint: ContentFingerprint | null;
+      /** Size only, for a file not hashed at filing; it keeps the duplicate check's size filter cheap. */
+      unhashedBytes: number | null;
+      mediaCreatedAt: string | null;
+      recordedBeforeRequest: boolean;
+    }> = [];
+    try {
+      prepared.entries.forEach((entry, index) => {
+        const fingerprint = fingerprints[index] ?? null;
+        const judgement = proofJudge.judgeInput({
+          storedFilePath: entry.stored.storedFilePath,
+          fromCallerFile: entry.stored.fromCallerFile,
+          fingerprint,
+          earlier: judged,
+          policy,
+        });
+        if (judgement.warning) warnings.push(judgement.warning);
+        let unhashedBytes: number | null = null;
+        if (!fingerprint && entry.stored.storedFilePath) {
           try {
-            fs.rmSync(stagedFilePath, { force: true });
+            unhashedBytes = fs.statSync(entry.stored.storedFilePath).size;
           } catch {
-            // Preserve the validation error; cleanup is best-effort.
+            unhashedBytes = null;
           }
         }
-        throw error;
-      }
-      const artifacts = resolved.map(({ input, kind, title, stored }) => {
-        const { uri, storageKind, mimeType } = stored;
-        const metadata = {
-          ...(isRecord(input.metadata) ? input.metadata : {}),
-          sourcePath: toOptionalString(input.path),
-          sourceUri: toOptionalString(input.uri),
-          rawType: toOptionalString(input.rawType),
-          ...(callerRoot ? { callerRoot } : {}),
-        };
-        const record = insertArtifactRecord({
-          kind,
-          backendStyle: normalizeBackendStyle(request.backend.style),
-          backendName: request.backend.name,
-          sourceToolName: toOptionalString(request.backend.toolName) ?? toOptionalString(request.backend.command),
-          originalType: toOptionalString(input.rawType) ?? toOptionalString(input.kind),
-          title,
-          description: toOptionalString(input.description),
-          uri,
-          storageKind,
-          mimeType,
-          metadata,
-          laneId,
-        });
-        for (const owner of owners) {
-          insertLink(record.id, owner);
-          emit({
-            type: "artifact-linked",
-            artifactId: record.id,
-            at: nowIso(),
-            owner,
-          });
-        }
-        emit({
-          type: "artifact-ingested",
-          artifactId: record.id,
-          at: nowIso(),
-          owner: owners[0] ?? null,
-        });
-        return record;
+        judged.push({ ...entry, fingerprint, unhashedBytes, ...judgement });
       });
-      return {
-        artifacts,
-        links: readLinkRows(artifacts.map((artifact) => artifact.id)),
+    } catch (error) {
+      prepared.discard();
+      throw error;
+    }
+    const writeRows = () => judged.map(({ input, kind, title, stored, fingerprint, unhashedBytes, mediaCreatedAt, recordedBeforeRequest }) => {
+      const { uri, storageKind, mimeType } = stored;
+      const metadata = {
+        ...callerMetadata(input.metadata),
+        sourcePath: toOptionalString(input.path),
+        sourceUri: toOptionalString(input.uri),
+        rawType: toOptionalString(input.rawType),
+        ...(callerRoot ? { callerRoot } : {}),
+        proofSource,
+        ...(recordedFrom ? { recordedFrom } : {}),
+        ...(recordedTo ? { recordedTo } : {}),
+        ...(fingerprint ? { contentSha256: fingerprint.sha256, contentBytes: fingerprint.bytes } : {}),
+        ...(!fingerprint && unhashedBytes !== null ? { contentBytes: unhashedBytes } : {}),
+        ...(mediaCreatedAt ? { mediaCreatedAt } : {}),
+        ...(recordedBeforeRequest ? { recordedBeforeRequest: true } : {}),
       };
+      const record = insertArtifactRecord({
+        kind,
+        backendStyle: normalizeBackendStyle(request.backend.style),
+        backendName: request.backend.name,
+        sourceToolName: toOptionalString(request.backend.toolName) ?? toOptionalString(request.backend.command),
+        originalType: toOptionalString(input.rawType) ?? toOptionalString(input.kind),
+        title,
+        description: toOptionalString(input.description),
+        uri,
+        storageKind,
+        mimeType,
+        metadata,
+        laneId,
+      });
+      for (const owner of owners) insertLink(record.id, owner);
+      return record;
+    });
+    let artifacts: ComputerUseArtifactRecord[];
+    // One transaction, so a failed insert files nothing and a retry does not
+    // file the first rows again. A savepoint, so it also nests safely.
+    db.run("savepoint computer_use_ingest");
+    try {
+      artifacts = writeRows();
+      db.run("release computer_use_ingest");
+    } catch (error) {
+      try {
+        db.run("rollback to computer_use_ingest");
+        db.run("release computer_use_ingest");
+      } catch {
+        // Keep the insert error.
+      }
+      prepared.discard();
+      throw error;
+    }
+    // After the commit, so no listener reads a row that was rolled back.
+    for (const record of artifacts) {
+      for (const owner of owners) {
+        emit({ type: "artifact-linked", artifactId: record.id, at: nowIso(), owner });
+      }
+      emit({ type: "artifact-ingested", artifactId: record.id, at: nowIso(), owner: owners[0] ?? null });
+    }
+    return {
+      artifacts,
+      links: readLinkRows(artifacts.map((artifact) => artifact.id)),
+      ...(warnings.length ? { warnings } : {}),
+    };
+  };
+
+  return {
+    /**
+     * Files proof that needs no file hashed here: ADE's own captures, text, and
+     * copies (a copy is hashed as it is made). A file that would have to be
+     * read again for its hash goes through `ingestAsync`, so the hash never
+     * holds the event loop.
+     */
+    ingest(request: ComputerUseArtifactIngestionRequest): ComputerUseArtifactIngestionResult {
+      const prepared = prepareIngest(request);
+      if (prepared.entries.some((entry) => pathToHash(prepared, entry))) {
+        prepared.discard();
+        throw new Error("This proof needs its bytes hashed while filing. File it with ingestAsync.");
+      }
+      const fingerprints = prepared.entries.map((entry) => entry.stored.fingerprint);
+      return commitIngest(proofJudge.downgradeIfChanged(prepared, fingerprints), fingerprints);
     },
+
+    /** Files any proof, streaming the hash an attach or a re-checked capture needs. */
+    async ingestAsync(request: ComputerUseArtifactIngestionRequest): Promise<ComputerUseArtifactIngestionResult> {
+      const prepared = prepareIngest(request);
+      const fingerprints = await Promise.all(prepared.entries.map(async (entry) => {
+        const target = pathToHash(prepared, entry);
+        return entry.stored.fingerprint ?? (target ? await hashFile(target) : null);
+      }));
+      return commitIngest(proofJudge.downgradeIfChanged(prepared, fingerprints), fingerprints);
+    },
+
+    /** Late wiring for the chat service, which is built after the broker. */
+    setChatTurnStartResolver: proofJudge.setChatTurnStartResolver,
 
     listArtifacts(args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] {
       // Public callers cap ordinary list responses at 200. Internal proof
@@ -1491,6 +1735,16 @@ export function createComputerUseArtifactBrokerService(args: {
     readArtifactPreview(args: { uri?: string }): Promise<string | null> {
       return readArtifactPreviewDataUrl({
         uri: args?.uri,
+        projectRoot,
+        artifactsDir: layout.artifactsDir,
+      });
+    },
+
+    readArtifactRange(args: { uri?: string; offset?: number; length?: number }) {
+      return readArtifactRangeChunk({
+        uri: args?.uri,
+        offset: args?.offset,
+        length: args?.length,
         projectRoot,
         artifactsDir: layout.artifactsDir,
       });

@@ -1,3 +1,4 @@
+import { stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
@@ -86,7 +87,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
+import { capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -148,7 +149,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { createProjectSearchService } from "./services/search/searchServiceWiring";
 import type { SearchService } from "./services/search/searchService";
 import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
-import { providerPointersFromChatRecord } from "./services/externalSessions/liveChatProviderRefs";
+import { chatImportedRefsProvider } from "./services/externalSessions/liveChatProviderRefs";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -314,14 +315,10 @@ import { createDevinCloudFleetService } from "./services/chat/devinCloudFleetSer
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
-import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
 import {
-  ADE_ACTION_ALLOWLIST,
-  type AdeActionDomain,
+  createAutomationAdeActionLookup,
   flushStagedBoardMoves,
   getAdeActionDomainServices,
-  isAutomationAllowedAdeAction,
-  isCtoOnlyAdeAction,
 } from "./services/adeActions/registry";
 import {
   createUsageTrackingService,
@@ -363,6 +360,11 @@ import { createLinearIssueTracker, type LinearIssueTracker } from "./services/ct
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
+import {
+  respondToArtifactProtocolRequest,
+  type RemoteArtifactRangeReader,
+} from "./services/computerUse/artifactStreamProtocol";
+import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
 import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
@@ -677,7 +679,9 @@ function readString(source: Record<string, unknown> | null | undefined, key: str
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
 // session (nested session guard). ADE is a host app, not a nested session, so
 // strip the marker env var so the SDK can spawn the CLI cleanly.
-delete process.env.CLAUDECODE;
+// The same holds for every other marker of a parent Claude session: a `claude`
+// in an ADE terminal would inherit them and stop saving its transcript.
+stripParentClaudeSessionEnv(process.env);
 
 if (process.env.VITE_DEV_SERVER_URL) {
   // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.
@@ -1342,33 +1346,23 @@ app.whenReady().then(async () => {
     return;
   }
 
-  /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
+  /** Canonical artifacts dir for the active project; ade-artifact:// and the media server only serve under this path. */
   let adeArtifactAllowedDir: string | null = null;
+  /** Reads proof bytes from a paired computer; set once the runtime bridge is up. */
+  let remoteArtifactRangeReader: RemoteArtifactRangeReader | null = null;
 
-  const isPathInsideArtifactAllowRoot = (
-    resolvedFile: string,
-    allowedDir: string,
-  ): boolean => {
-    let allowed: string;
-    try {
-      allowed = fs.realpathSync(allowedDir);
-    } catch {
-      return false;
-    }
-    const normFile = path.normalize(resolvedFile);
-    const normAllowed = path.normalize(allowed);
-    if (process.platform === "win32") {
-      return (
-        normFile
-          .toLowerCase()
-          .startsWith(normAllowed.toLowerCase() + path.sep) ||
-        normFile.toLowerCase() === normAllowed.toLowerCase()
-      );
-    }
-    return (
-      normFile === normAllowed || normFile.startsWith(normAllowed + path.sep)
-    );
-  };
+  // Proof videos play from this loopback server, not `ade-artifact://`:
+  // `protocol.handle` cannot answer the second Range read a long recording
+  // needs. It starts on the first renderer ask and closes on quit.
+  const artifactMediaServer = createArtifactMediaServer({
+    localScope: () => ({ projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir }),
+    remoteReader: () => remoteArtifactRangeReader,
+    warn: (message, details) => console.warn(message, details),
+  });
+  ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
+  app.on("will-quit", () => {
+    void artifactMediaServer.close();
+  });
 
   // Handle ade-scene:// requests — serves agent-authored scenes from memory.
   // The id in `ade-scene://view/<id>` is a key into `sceneDocumentStore`, never
@@ -1379,137 +1373,12 @@ app.whenReady().then(async () => {
     return new Response(body, { status, headers });
   });
 
-  // Handle ade-artifact:// requests — serves local files for proof drawer previews.
-  // Path is encoded in the URL: ade-artifact:///absolute/path/to/file.png
-  protocol.handle("ade-artifact", (request) => {
-    const url = new URL(request.url);
-    let filePath = decodeURIComponent(url.pathname);
-    if (url.hostname === "project") {
-      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
-      filePath = path.resolve(activeProjectRoot, filePath.replace(/^[/\\]+/, ""));
-    }
-    // On Windows, pathname starts with /C:/... — strip leading slash
-    if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(filePath)) {
-      filePath = filePath.slice(1);
-    }
-    if (!path.isAbsolute(filePath)) {
-      if (!activeProjectRoot) return new Response("Not found", { status: 404 });
-      filePath = path.resolve(activeProjectRoot, filePath);
-    }
-    filePath = path.resolve(filePath);
-    let resolvedFile: string;
-    try {
-      resolvedFile = fs.realpathSync(filePath);
-    } catch {
-      console.warn("[ade-artifact] realpath failed", { filePath });
-      return new Response("Not found", { status: 404 });
-    }
-    const allowedDir = adeArtifactAllowedDir;
-    if (
-      !allowedDir ||
-      !isPathInsideArtifactAllowRoot(resolvedFile, allowedDir)
-    ) {
-      console.warn("[ade-artifact] rejected path outside artifacts dir", {
-        resolvedFile,
-        allowedDir,
-      });
-      return new Response("Not found", { status: 404 });
-    }
-    try {
-      const stat = fs.statSync(resolvedFile);
-      if (!stat.isFile()) return new Response("Not found", { status: 404 });
-      const fileSize = stat.size;
-      const ext = path.extname(resolvedFile).replace(/^\./, "").toLowerCase();
-      const mimeMap: Record<string, string> = {
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        webp: "image/webp",
-        gif: "image/gif",
-        bmp: "image/bmp",
-        svg: "image/svg+xml",
-        mp4: "video/mp4",
-        webm: "video/webm",
-        mov: "video/quicktime",
-        avi: "video/x-msvideo",
-        mkv: "video/x-matroska",
-      };
-      const mime = mimeMap[ext] ?? "application/octet-stream";
-
-      // Support Range requests — required for <video> playback and seeking
-      const rangeHeader = request.headers.get("Range");
-      if (rangeHeader) {
-        const match = /bytes=(\d+)-(\d*)/.exec(rangeHeader);
-        let start = match ? parseInt(match[1], 10) : 0;
-        let end =
-          match && match[2] !== undefined && match[2] !== ""
-            ? parseInt(match[2], 10)
-            : fileSize - 1;
-        if (!Number.isFinite(start) || start < 0) start = 0;
-        if (!Number.isFinite(end)) end = fileSize - 1;
-        if (end > fileSize - 1) end = fileSize - 1;
-        if (start >= fileSize || start > end) {
-          return new Response(null, {
-            status: 416,
-            headers: {
-              "Content-Range": `bytes */${fileSize}`,
-            },
-          });
-        }
-        const chunkSize = end - start + 1;
-        const fileStream = fs.createReadStream(resolvedFile, { start, end });
-        const webStream = new ReadableStream({
-          start(controller) {
-            fileStream.on("data", (chunk) =>
-              controller.enqueue(
-                typeof chunk === "string" ? Buffer.from(chunk) : chunk,
-              ),
-            );
-            fileStream.on("end", () => controller.close());
-            fileStream.on("error", (err) => controller.error(err));
-          },
-          cancel() {
-            fileStream.destroy();
-          },
-        });
-        return new Response(webStream, {
-          status: 206,
-          headers: {
-            "Content-Type": mime,
-            "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-            "Content-Length": String(chunkSize),
-            "Accept-Ranges": "bytes",
-          },
-        });
-      }
-
-      // Full file response (images, small files)
-      const fileStream = fs.createReadStream(resolvedFile);
-      const webStream = new ReadableStream({
-        start(controller) {
-          fileStream.on("data", (chunk) =>
-            controller.enqueue(
-              typeof chunk === "string" ? Buffer.from(chunk) : chunk,
-            ),
-          );
-          fileStream.on("end", () => controller.close());
-          fileStream.on("error", (err) => controller.error(err));
-        },
-        cancel() {
-          fileStream.destroy();
-        },
-      });
-      return new Response(webStream, {
-        headers: {
-          "Content-Type": mime,
-          "Content-Length": String(fileSize),
-          "Accept-Ranges": "bytes",
-        },
-      });
-    } catch {
-      return new Response("Not found", { status: 404 });
-    }
-  });
+  // Handle ade-artifact:// requests — serves local files for proof drawer images.
+  protocol.handle("ade-artifact", (request) => respondToArtifactProtocolRequest(
+    request,
+    { projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir },
+    (message, details) => console.warn(message, details),
+  ));
   // What this computer's GPU was told to do, decided before any project opens.
   logMachineEvent("info", "app.hardware_acceleration", {
     enabled: !disableHardwareAcceleration,
@@ -4588,6 +4457,10 @@ app.whenReady().then(async () => {
     agentChatService.setComputerUseArtifactBrokerService(
       computerUseArtifactBrokerService,
     );
+    // The broker judges an attached video against the chat's turn start.
+    computerUseArtifactBrokerService.setChatTurnStartResolver(
+      (sessionId) => agentChatService.getTurnStartedAt(sessionId),
+    );
 
     // Backfill starts well past the boot window so index writes never compete
     // with project startup.
@@ -4618,27 +4491,18 @@ app.whenReady().then(async () => {
       ptyService,
       logger,
       chatImporter: agentChatService,
-      chatImportedRefsProvider: async () => {
-        const sessions = await agentChatService.listSessions(undefined, {
-          includeIdentity: true,
-          includeAutomation: true,
-          includeArchived: false,
-        });
-        // Same extractor the on-disk scan uses, so both sides key a chat the
-        // same way. Rolling our own here is how `unified` (OpenCode's persisted
-        // provider value) ended up keyed as `unified:<id>` on one path and
-        // `opencode:<id>` on the other, leaving live OpenCode chats visible in
-        // the import list.
-        return sessions.flatMap((session) =>
-          providerPointersFromChatRecord(session).map((pointer) => ({
-            provider: pointer.provider,
-            externalId: pointer.externalId,
-            chatSessionId: session.sessionId,
-          })));
-      },
+      chatImportedRefsProvider: chatImportedRefsProvider(agentChatService),
       chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
       homeDir: os.homedir(),
       env: process.env,
+      onImportOutcome: ({ provider, target, mode, outcome }) => captureSessionImportAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        target,
+        mode,
+        outcome,
+        provider,
+      }),
     });
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
@@ -4647,6 +4511,15 @@ app.whenReady().then(async () => {
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {
           return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return null;
+        }
+      },
+      // The reverse, so a caller that names no lane is placed by the worktree
+      // it is standing in rather than by whichever lane happens to be busy.
+      resolveLaneIdForPath: (absolutePath: string): string | null => {
+        try {
+          return laneService.getLaneIdForPath(absolutePath);
         } catch {
           return null;
         }
@@ -5436,27 +5309,9 @@ app.whenReady().then(async () => {
     // that `ade-action` automation steps can invoke the same domain services
     // the RPC server exposes. We do this lazily — the registry re-resolves
     // services on every call so late-bound runtime state remains visible.
-    {
-      const adeActionLookup: AutomationAdeActionRegistry = {
-        isAllowed(domain: string, action: string): boolean {
-          return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
-        },
-        getService(domain: string): Record<string, unknown> | null {
-          const pseudoRuntime = buildAdeActionRuntimeForAutomations();
-          const services = getAdeActionDomainServices(pseudoRuntime);
-          const service = services[domain as AdeActionDomain] ?? null;
-          return (service ?? null) as Record<string, unknown> | null;
-        },
-        listDomains(): string[] {
-          return Object.keys(ADE_ACTION_ALLOWLIST);
-        },
-        listActions(domain: string): string[] {
-          return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-            .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
-        },
-      };
-      automationService?.bindAdeActionRegistry(adeActionLookup);
-    }
+    automationService?.bindAdeActionRegistry(
+      createAutomationAdeActionLookup(() => getAdeActionDomainServices(buildAdeActionRuntimeForAutomations())),
+    );
 
     // Helper: materialize an AdeRuntime-shaped bag from the current set of
     // locally-created services so that the registry's service map resolves.
@@ -7813,7 +7668,7 @@ app.whenReady().then(async () => {
     void (async () => {
       const handledByOwner = await dispatchOwnerAwareNavigation(request, {
         getLocalMachineKey: () =>
-          attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "",
+          ipcBridge?.getLocalMachineIdentity().machineKey ?? "",
         resolveLocalProjectRoot: (projectId, projectRoot) =>
           resolveLocalProjectRoot(projectId, projectRoot, {
             candidates: () => [
@@ -7843,22 +7698,22 @@ app.whenReady().then(async () => {
         },
         findRemote: (accountMachineKey, projectId, projectRoot) =>
           matchingRemoteProjectWindow(
-            attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null,
+            ipcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null,
             { projectId, rootPath: projectRoot },
           ),
         openRemote: async (accountMachineKey, projectId, projectRoot) => {
           // Never the focused window: a deeplink is a side errand, and rebinding
           // the window the user is working in throws away their project context.
           const win = await acquireRemoteAttentionHostWindow();
-          if (!win || win.isDestroyed() || !attentionIpcBridge) {
+          if (!win || win.isDestroyed() || !ipcBridge) {
             throw new Error("No ADE window is available for the owning machine.");
           }
-          const binding = await attentionIpcBridge.openAttentionProject({
+          const binding = await ipcBridge.openAttentionProject({
             machineKey: accountMachineKey,
             projectId,
             rootPath: projectRoot,
             machineName:
-              attentionIpcBridge.resolveTargetNameForMachineKey(accountMachineKey),
+              ipcBridge.resolveTargetNameForMachineKey(accountMachineKey),
             windowId: win.id,
           });
           return matchingRemoteProjectWindow(binding.targetId, {
@@ -8144,7 +7999,7 @@ app.whenReady().then(async () => {
 
   let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
   const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
-  let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
+  let ipcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
   accountAuthServiceForOwnerId = attentionAccountAuthService;
   const attentionRelayClient = createPushRelayClient({
@@ -8287,9 +8142,9 @@ app.whenReady().then(async () => {
   ): Promise<void> => {
     if (options.activateApp) activateAppForAttentionNotch();
     const accountMachineKey = item.machine.accountMachineKey?.trim() ?? "";
-    const localMachineKey = attentionIpcBridge?.getLocalMachineIdentity().machineKey ?? "";
+    const localMachineKey = ipcBridge?.getLocalMachineIdentity().machineKey ?? "";
     const targetId = accountMachineKey
-      ? attentionIpcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null
+      ? ipcBridge?.resolveTargetIdForMachineKey(accountMachineKey) ?? null
       : null;
     const requiresRemoteMachine = Boolean(
       accountMachineKey
@@ -8309,10 +8164,10 @@ app.whenReady().then(async () => {
       // No window is showing this remote project yet, so give it one of its
       // own — a reusable empty window if there is one, otherwise a new window.
       const win = await acquireRemoteAttentionHostWindow();
-      if (!win || win.isDestroyed() || !attentionIpcBridge) {
+      if (!win || win.isDestroyed() || !ipcBridge) {
         throw new Error("ADE could not open the remote Activity destination.");
       }
-      const binding = await attentionIpcBridge.openAttentionProject({
+      const binding = await ipcBridge.openAttentionProject({
         machineKey: accountMachineKey,
         projectId: item.project.projectId,
         // The item's uuid is not an id this runtime knows; its root path is.
@@ -8608,7 +8463,7 @@ app.whenReady().then(async () => {
     analytics: productAnalyticsService,
   });
 
-  attentionIpcBridge = registerIpc({
+  ipcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
       if (!ctx.autoUpdateService) {
@@ -8734,6 +8589,7 @@ app.whenReady().then(async () => {
     accountAttentionClient: attentionRelayClient,
     getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
+  remoteArtifactRangeReader = ipcBridge.readRemoteArtifactRange;
 
   // Explicit project launches still bind a project before the renderer boots;
   // normal launches stay on the welcome/recent-project surface.

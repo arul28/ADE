@@ -650,7 +650,17 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
-  await assertPathExists(captureHelperExePath, "packaged Windows capture helper");
+  // `ADE_SKIP_CAPTURE_HELPER_BUILD=1` is the documented way to build on a PC
+  // with no C++ toolchain, and the helper build honors it; this check used to
+  // fail that same build afterwards. Only a local test build may skip it: a
+  // release must never ship without the capture gesture by accident.
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_CAPTURE_HELPER_BUILD === "1") {
+    console.warn(
+      "[validate-win-artifacts] Local test build without the capture helper (ADE_SKIP_CAPTURE_HELPER_BUILD=1): the capture gesture is unavailable.",
+    );
+  } else {
+    await assertPathExists(captureHelperExePath, "packaged Windows capture helper");
+  }
   assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
     console.warn(

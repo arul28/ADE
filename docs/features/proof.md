@@ -35,6 +35,10 @@ promotes any of them after the fact.
 | `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` | Canonical ingest, list, delete, broken-record audit/prune/recovery, lane/project cleanup, review compatibility fields, and bounded preview reads. |
 | `apps/desktop/src/main/services/computerUse/controlPlane.ts` | Owner-scoped snapshots used by the proof drawer. |
 | `apps/desktop/src/main/services/computerUse/localComputerUse.ts` | Local capture capabilities plus artifact path/URI helpers. |
+| `apps/desktop/src/main/services/computerUse/proofFingerprint.ts`, `mediaCreationTime.ts` | Duplicate-bytes refusal (`PROOF_DUPLICATE`) and the older-video flag from the file's own `mvhd` creation time. |
+| `apps/desktop/src/shared/proofProvenance.ts` | `proofSource` values, broker-only metadata keys, and the provenance line each proof surface prints. |
+| `apps/ade-cli/src/services/proof/adeCaptureRegistry.ts` | Files the RPC server's capture actions wrote, by path and hash. A CLI ingest is filed as ADE's capture only on a one-shot match. |
+| `apps/desktop/src/main/services/computerUse/artifactMediaServer.ts`, `artifactStreamProtocol.ts`, `artifactByteRange.ts`, `apps/desktop/src/shared/artifactStreamUrl.ts` | Loopback video server, shared MIME/Range/containment rules, bounded range reads, and the preview URL scheme. |
 | `apps/desktop/src/main/services/state/kvDb.ts` | `computer_use_artifacts` / `computer_use_artifact_links` schema, including the optional lane ownership column used by lane cleanup. |
 | `apps/desktop/src/shared/types/computerUseArtifacts.ts` | Cross-process artifact, availability, deletion, recovery, event, and owner contracts. |
 | `apps/desktop/src/main/services/adeActions/registry.ts`, `apps/desktop/src/main/services/ipc/registerIpc.ts`, `apps/desktop/src/preload/preload.ts` | Runtime action, IPC, and renderer bridge for the proof surface. |
@@ -151,6 +155,56 @@ ade: proof attach failed — the runtime filed no proof record: Scratch capture 
 
 The file is copied into `.ade/artifacts/computer-use/`; the original is left in place. Internally `attach` calls the same `ingest_computer_use_artifacts` RPC tool with `backendStyle: "manual"` and `backendName: "ade-cli"`.
 
+### Already-filed bytes and older videos
+
+ADE stores the SHA-256 and byte size of every proof file it keeps
+(`metadata.contentSha256`, `metadata.contentBytes`). An attach whose bytes match
+earlier proof in the project, a renamed copy included, is refused:
+
+```
+ade: proof attach failed — PROOF_DUPLICATE: Same bytes as "Simulator recording · iPhone 17 · 0:12" (filed 5:19 AM). This file is already proof. Record a new one, or report that recording failed.
+```
+
+The check compares by size first and hashes only same-size rows that have no
+stored hash (at most 8 per attach, then written back). It also checks Apple
+recordings on disk under `.ade/artifacts/apple-recordings/` that never reached
+the drawer. Scene stills are not compared. The check applies to
+`ade proof attach`, `ade proof ingest`, and the CTO's `captureProof`. Two
+identical inputs in one call are also refused.
+
+The in-process recorders and captures (the Apple recorder, Apple screenshots,
+scene snapshots) pass `provenance` on the ingest request and skip the check.
+The CLI's capture commands (`ade apple proof`, `ade app-control proof`,
+`ade browser proof`, `ade proof capture`, `ade proof record`) file through the
+same `ingest_computer_use_artifacts` tool. The RPC server does not trust the
+labels in those arguments. Instead, it keeps a registry of the files that its
+own capture actions wrote, with each file's hash
+(`apps/ade-cli/src/services/proof/adeCaptureRegistry.ts`). An ingest is filed
+as ADE's capture only when every input is a remembered file with unchanged
+bytes, and all inputs come from the same source. Each match is one-shot: the
+first filing claims it, so a second filing of the same file is an attach. A
+failed filing gives the claim back. A still that ADE captured skips the
+duplicate check, because an unchanged screen can give the same bytes. A video
+never skips it. The broker hashes the bytes again when it files them. If they
+changed, it files the call as an attach, with every check on.
+
+For an attached MP4/MOV, ADE reads the video's own creation time from
+`moov/mvhd` (`metadata.mediaCreatedAt`). If it is more than 60 s before the
+owning chat's current or latest turn started, the attach still lands, with
+`metadata.recordedBeforeRequest: true`, and the command prints:
+
+```
+warning: This video was recorded at 5:19 AM, before this request. It will be marked as older in the proof drawer.
+```
+
+A missing or zero creation time is unknown and is never flagged.
+
+Every new proof also records `metadata.proofSource`: `ade-recorder` (the Apple
+recorder, `ade proof record`, with `recordedFrom`/`recordedTo`), `ade-capture`
+(ADE screenshots and scene snapshots), or `attached` (an existing file). The
+broker writes these fields itself and drops them from caller metadata. Rows
+filed before these fields existed have none and show nothing.
+
 On-disk imports are intentionally allow-listed to renderable evidence types
 (images, video, browser traces, and text/log files). Files such as `.env`,
 databases, private keys, and certificates are rejected even when they are under
@@ -222,6 +276,8 @@ The `screenshot_environment`, `record_environment`, `ingest_computer_use_artifac
 
 Explicit owners are added in addition to the session identity inferred from `ADE_*` env vars, so an agent can attach the same artifact to its current chat plus a specific PR in one call.
 
+A client whose environment names no chat and no attempt makes a caller id from its name and pid, such as `ade-cli:5504` or `ade-code:912` (`apps/desktop/src/shared/syntheticCallerId.ts`). That id identifies a process. It never becomes a `chat_session` owner. The RPC server also does not fill it in with the brain's own env identity.
+
 ---
 
 ## Storage
@@ -281,12 +337,22 @@ Proof surfaces across chat and linked workflow contexts:
   of the set is one swipe away; page dots show only when there is somewhere to
   swipe. Preview/share actions, no review-state chrome. See
   [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
+- **Where it came from** — the drawer tile, the timeline card, and the iOS
+  Proof sheet row print one quiet line under the title: `Recorded by ADE ·
+  10:24–10:25 AM` (plus `· idle cut 1:52` when the recorder cut still time),
+  `Captured by ADE`, or `Attached by the agent`. A video
+  flagged as older adds an amber line: `Recorded at 5:19 AM, before this
+  request.` Rows without `proofSource` print nothing.
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
 Both clients resolve media through the owning runtime instead of opening the
-runtime host's filesystem path. Desktop uses ADE's range-capable artifact
-protocol for local media and `ade.proof.readArtifactPreview` for remote media;
-the RPC response is capped at 10 MiB. The inline filmstrip can resolve local
+runtime host's filesystem path. Desktop shows local images through the
+`ade-artifact://project/` protocol and remote images through
+`computerUse.readArtifactPreview` (the RPC response is capped at 10 MiB). Every
+video, local or remote, plays from main's token-guarded loopback media server,
+which answers each Range read; a remote one is pulled in 2 MiB slices from that
+machine's broker. See
+[computer use › Renderer](./computer-use/README.md#renderer). The inline filmstrip can resolve local
 project-relative artifacts synchronously; remote filmstrip tiles fall back to a
 kind label and open the drawer, which performs the bounded runtime read. iOS requests artifact content over its
 sync command surface and caches renderable images locally. When a runtime is
@@ -343,11 +409,11 @@ Headless-browser screenshots *are* supported — use `ade proof attach` with the
                                      │
                                      ▼
                           drawer UI (renderer reads via
-                          window.ade.proof.* → preload →
+                          window.ade.computerUse.* → preload →
                           local or remote runtime RPC)
 ```
 
-The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path — both the `ade proof` CLI and any in-process call go through it. Its `ingest` is reachable from exactly two places: the `ingest_computer_use_artifacts` RPC tool, and the `proof: true` branch of `screenshot_environment` / `record_environment`. The same module is loaded by the desktop main process for local projects and by the standalone `ade serve` runtime for headless / remote use. Supporting modules in the same directory:
+The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path. The `ade proof` CLI and every in-process caller go through it. RPC callers reach `ingest` through the `ingest_computer_use_artifacts` tool and the `proof: true` branch of `screenshot_environment` / `record_environment`. In-process callers are the Apple recorder and screenshot, scene stills, and the CTO's `captureProof`. An in-process caller passes `provenance` to say where the bytes came from. The same module is loaded by the desktop main process for local projects and by the standalone `ade serve` runtime for headless / remote use. Supporting modules in the same directory:
 
 - `controlPlane.ts` builds owner snapshots + backend status for the UI.
 - `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's.

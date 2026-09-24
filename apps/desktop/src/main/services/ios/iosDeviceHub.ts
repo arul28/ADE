@@ -112,6 +112,18 @@ export type IosDeviceHubDeps = {
    */
   getAppSessionDeviceUdid: () => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
+  /**
+   * Boot a device and wait for `bootstatus`. True only when this call booted
+   * it. The service's one boot path (`simulatorPower.ts`), so a hub boot also
+   * resets the helper session and drops the cached device list.
+   */
+  bootDevice: (device: IosSimulatorDevice) => Promise<boolean>;
+  /**
+   * Stop the device's recording, reset its helper session, and power it off.
+   * True when it powered off, false when it was already off; throws on any
+   * other `simctl` failure.
+   */
+  powerOffDevice: (deviceUdid: string) => Promise<boolean>;
   logger: {
     info: (event: string, data?: Record<string, unknown>) => void;
     debug: (event: string, data?: Record<string, unknown>) => void;
@@ -326,10 +338,9 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
     // and `releaseDeviceIfOwnedBy` all shut devices down, and a guard on one
     // of them protects nothing on the other two.
     //
-    // `force` passes through because this is the only place in ADE that runs
-    // `simctl shutdown`. An absolute guard would leave a simulator no ADE
-    // command could shut down, and `close-device --force` already tells the
-    // user it closes one anyway.
+    // `force` passes through because this is the hub's only power-off. An
+    // absolute guard would leave a simulator no hub command could shut down,
+    // and `close-device --force` already tells the user it closes one anyway.
     if (
       shouldShutdown
       && !by.force
@@ -341,16 +352,13 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       shouldShutdown = false;
     }
     if (shouldShutdown) {
-      await deps.run("xcrun", ["simctl", "shutdown", previous.deviceUdid], { timeoutMs: 60_000 })
-        .then(() => {
-          shutdown = true;
-        })
-        .catch((error: unknown) => {
-          deps.logger.debug("ios_simulator.device_shutdown_failed", {
-            deviceUdid: previous.deviceUdid,
-            error: error instanceof Error ? error.message : String(error),
-          });
+      shutdown = await deps.powerOffDevice(previous.deviceUdid).catch((error: unknown) => {
+        deps.logger.debug("ios_simulator.device_shutdown_failed", {
+          deviceUdid: previous.deviceUdid,
+          error: error instanceof Error ? error.message : String(error),
         });
+        return false;
+      });
     }
     if (eventLog.activeDeviceUdid() === previous.deviceUdid) {
       eventLog.stop();
@@ -380,12 +388,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       return serializeDeviceSession(async () => {
         assertDeviceOwner(args.chatSessionId, args.force);
         const device = await deps.resolveDevice(args.deviceUdid ?? null);
-        const alreadyBooted = device.state === "Booted";
-        if (!alreadyBooted) {
-          await deps.run("xcrun", ["simctl", "boot", device.udid], { timeoutMs: 120_000 });
-          await deps.run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { timeoutMs: 120_000 })
-            .catch(() => undefined);
-        }
+        const bootedNow = await deps.bootDevice(device);
         if (args.openWindow !== false) deps.openSimulatorApp();
         const previous = deviceSession;
         const isSameDevice = previous?.deviceUdid === device.udid;
@@ -393,7 +396,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         // this?". The device is booted by the second call, so reading the state
         // alone would record `false` and leave `closeDevice` with no reason to
         // shut down a simulator ADE started.
-        const bootedByAde = (isSameDevice && previous?.bootedByAde === true) || !alreadyBooted;
+        const bootedByAde = (isSameDevice && previous?.bootedByAde === true) || bootedNow;
         if (previous && !isSameDevice) {
           // Opening another device ends the session on this one, so it is
           // released here rather than left untracked. ADE shuts it down when ADE
@@ -1012,6 +1015,11 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         logPath,
         caption: args.caption ?? null,
         capturedAt: shot.capturedAt,
+        // Carried so the service can file `screen.png` as the drawer row
+        // without taking a second screenshot to learn the device and size.
+        deviceUdid: shot.deviceUdid,
+        width: shot.width,
+        height: shot.height,
       };
     },
 

@@ -5,6 +5,7 @@ import {
   ADE_ACTION_CTO_ONLY,
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
+  isUserOnlyAdeAction,
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
@@ -203,6 +204,14 @@ describe("isAllowedAdeAction", () => {
       expect(isCtoOnlyAdeAction("session", action)).toBe(true);
       expect(isAutomationAllowedAdeAction("session", action)).toBe(false);
     }
+  });
+
+  it("regression: allows deleting an installed simulator on the bus but never to an automation", () => {
+    expect(isAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
+    expect(isUserOnlyAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
+    expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(false);
+    expect(isUserOnlyAdeAction("ios_simulator", "deviceDelete")).toBe(false);
+    expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDelete")).toBe(true);
   });
 
   it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {
@@ -517,6 +526,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
+      "readArtifactRange",
       "recoverArtifact",
     ]) {
       expect(isCtoOnlyAdeAction("computer_use_artifacts", action)).toBe(true);

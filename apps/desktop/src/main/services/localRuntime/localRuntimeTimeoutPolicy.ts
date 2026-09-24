@@ -157,6 +157,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceStop", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceCreate", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDelete", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.deviceDetach", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

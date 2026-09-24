@@ -357,7 +357,7 @@ final class AppleDeviceViewerModel: ObservableObject {
     do {
       ticket = try await syncService.requestAppleStreamTicket(laneId: laneId)
     } catch {
-      health.fail((error as NSError).localizedDescription)
+      health.fail(appleStreamTicketFailureMessage((error as NSError).localizedDescription))
       return
     }
     // The view may have been dismissed while the ticket round-trip was in

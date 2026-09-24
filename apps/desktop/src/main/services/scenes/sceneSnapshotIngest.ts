@@ -147,6 +147,8 @@ export async function ingestSceneSnapshot({
 
   const filed = broker.ingest({
     backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+    // The desktop drew these pixels; ADE captured them.
+    provenance: { source: "ade-capture" as const },
     ...(ownerSessionId ? { owners: [{ kind: "chat_session" as const, id: ownerSessionId }] } : {}),
     inputs: [{
       kind: "screenshot",

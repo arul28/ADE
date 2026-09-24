@@ -77,6 +77,11 @@ import type {
   WorkToolsReadObservationPreviewArgs,
   WorkToolsSetActiveToolArgs,
 } from "../shared/types/workTools";
+import {
+  WORK_TOOL_SHOW_REQUEST_EVENT,
+  type WorkToolShowAck,
+  type WorkToolShowRequest,
+} from "../shared/types/workToolShow";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   DiagnosticReportPayload,
@@ -813,6 +818,8 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDetachArgs,
+  AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
   AppleFrameArgs,
@@ -2668,6 +2675,11 @@ const remoteBuiltInBrowserRemoteRequestFanout =
     label: "built-in browser request",
     onSubscribe: () => ensureRemoteRuntimeEventPump(),
   });
+const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRequest>({
+  eventType: WORK_TOOL_SHOW_REQUEST_EVENT,
+  label: "work tool show request",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 
 /**
  * The wiring itself. Exported so a test can assert every listed domain reaches
@@ -2707,6 +2719,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteIosSimulatorEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
+  remoteWorkToolShowRequestFanout,
 ];
 
 function createLocalIpcEventSubscription<T>(
@@ -3419,6 +3432,26 @@ function subscribeRemoteBuiltInBrowserRemoteRequests(
   return remoteBuiltInBrowserRemoteRequestFanout.subscribe(cb);
 }
 
+/**
+ * `ade ui show` requests. Without a pin: the runtime this window is bound to,
+ * local or paired. With a pin: that session's machine, which is only a second
+ * stream when it is not the window's own binding — the unpinned subscription
+ * already hears that one, so a pin naming it adds nothing.
+ */
+function subscribeWorkToolShowRequests(
+  cb: (payload: WorkToolShowRequest) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  if (!pin) return remoteWorkToolShowRequestFanout.subscribe(cb);
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<WorkToolShowRequest>(payload, WORK_TOOL_SHOW_REQUEST_EVENT),
+    cb,
+    "work tool show request",
+  );
+  return removePinned ?? (() => {});
+}
+
 function subscribeAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
   pin?: OpenProjectBinding | null,
@@ -3958,6 +3991,8 @@ const agentChatEventFanout = createIpcEventFanout<AgentChatEventEnvelope>(
   // the 1s summary cache before listeners can read a stale value.
   () => agentChatSummaryCache.clear(),
 );
+let computerUseMediaBaseUrl: Promise<string | null> | null = null;
+
 const computerUseEventFanout = createIpcEventFanout<ComputerUseEventPayload>(
   IPC.computerUseEvent,
   () => computerUseOwnerSnapshotCache.clear(),
@@ -8072,6 +8107,18 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
       ),
+    // The loopback server proof videos play from. One per app launch, so the
+    // first answer is kept; a failed ask is not, so the next one retries.
+    mediaBaseUrl: (): Promise<string | null> => {
+      computerUseMediaBaseUrl ??= (ipcRenderer.invoke(IPC.computerUseMediaBaseUrl) as Promise<string | null>)
+        .then((base) => (typeof base === "string" && base ? base : null))
+        .catch(() => null)
+        .then((base) => {
+          if (!base) computerUseMediaBaseUrl = null;
+          return base;
+        });
+      return computerUseMediaBaseUrl;
+    },
     onEvent: subscribeComputerUseEvents,
   },
   iosSimulator: {
@@ -8325,6 +8372,20 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<void> =>
       callIosSimulatorMutation(pin, "deviceDelete", args, IPC.iosSimulatorDeviceDelete),
+
+    /** The lane gives up its device; the simulator stays installed. */
+    deviceDetach: (
+      args: AppleDeviceDetachArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleLaneDevice | null> =>
+      callIosSimulatorMutation(pin, "deviceDetach", args, IPC.iosSimulatorDeviceDetach),
+
+    /** Remove one installed simulator by udid — the picker's per-device menu. */
+    deviceDeleteInstalled: (
+      args: AppleDeviceDeleteInstalledArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> =>
+      callIosSimulatorMutation(pin, "deviceDeleteInstalled", args, IPC.iosSimulatorDeviceDeleteInstalled),
 
     /**
      * One decoded frame from the running stream.
@@ -11708,6 +11769,31 @@ const adeBridge = {
         { args: { path: observationPath } satisfies WorkToolsReadObservationPreviewArgs },
       );
       return runtime.handled ? runtime.result : null;
+    },
+    /** An agent asking this desktop to show a surface of its chat. */
+    onShowRequest: (
+      cb: (request: WorkToolShowRequest) => void,
+      pin?: OpenProjectBinding | null,
+    ): (() => void) => subscribeWorkToolShowRequests(cb, pin),
+    /**
+     * Tell the brain that asked what this desktop did. Routed to the runtime
+     * the request came from: the pin it was heard on, else the bound one.
+     */
+    acknowledgeShow: async (
+      ack: WorkToolShowAck,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> => {
+      try {
+        return await callPinnedOrBoundRuntimeActionOr<{ ok: boolean }>(
+          pin,
+          "work_tools",
+          "acknowledgeShow",
+          { args: ack },
+          async () => ({ ok: false }),
+        );
+      } catch {
+        return { ok: false };
+      }
     },
   },
   tests: {

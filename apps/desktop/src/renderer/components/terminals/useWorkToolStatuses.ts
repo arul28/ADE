@@ -3,7 +3,6 @@ import type {
   AppControlSession,
   BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
-  IosSimulatorSession,
   LaneSummary,
   OpenProjectBinding,
   PrSummary,
@@ -454,11 +453,10 @@ export function useWorkToolStatuses(args: {
   statuses: WorkToolStatusMap;
   loading: boolean;
   /**
-   * The raw sessions behind the iOS / App Control lines. The pane needs the
-   * owning lane id (not just the prose) to decide whether the tool it is about
-   * to render belongs to a different lane and needs its attribution banner.
+   * The raw session behind the App Control line. The pane needs the owning
+   * lane id (not just the prose) to decide whether the tool it is about to
+   * render belongs to a different lane and needs its attribution banner.
    */
-  iosSession: IosSimulatorSession | null;
   appControlSession: AppControlSession | null;
 } {
   const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null } = args;
@@ -489,7 +487,6 @@ export function useWorkToolStatuses(args: {
   // one handler to its fan-out; it opens nothing of its own.
   const {
     browserStatus,
-    iosSession,
     appControlSession,
     canBrowser,
     offline,
@@ -587,7 +584,6 @@ export function useWorkToolStatuses(args: {
   return {
     statuses,
     loading: enabled && !settled,
-    iosSession,
     appControlSession,
   };
 }

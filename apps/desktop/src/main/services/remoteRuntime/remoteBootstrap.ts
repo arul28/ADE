@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Client, ConnectConfig, SFTPWrapper } from "ssh2";
 import type { ProjectIcon } from "../../../shared/types/core";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import type {
   RemoteRuntimeCapabilities,
   RemoteRuntimeConnectResult,
@@ -1716,7 +1717,7 @@ async function openValidatedRuntimeClient(args: {
     let initializeResult: unknown;
     try {
       initializeResult = await client.initialize(
-        "ade-desktop-remote",
+        DESKTOP_CLIENT_NAMES.remote,
         args.appVersion,
       );
     } catch (error) {

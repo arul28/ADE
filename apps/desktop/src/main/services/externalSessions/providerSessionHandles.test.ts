@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import path from "node:path";
 import {
+  collectDescendantPidRoots,
+  handleIsOwnedByTrackedPty,
   handleInspectionUnavailableMessage,
   inspectLiveProviderSessions,
   parseHandleExePaths,
@@ -118,8 +120,109 @@ describe("providerSessionHandles", () => {
       "codex:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     ]);
     expect(index.byKey.get("claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).toEqual([
-      { provider: "claude", sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", filePath: claudeFile, pid: 101 },
+      { provider: "claude", sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", filePath: claudeFile, pid: 101, trackedRootPid: null },
     ]);
+  });
+
+  it("parses qwen, grok, copilot, and kimi session layouts", () => {
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".qwen", "projects", "-Users-dev-ADE", "chats", "11111111-1111-4111-8111-111111111111.jsonl"),
+      roots,
+    )).toEqual({ provider: "qwen", sessionId: "11111111-1111-4111-8111-111111111111" });
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".grok", "sessions", "%2FUsers%2Fdev%2FADE", "01a05696-9a7e-7643-89bc-ded3663297be", "chat_history.jsonl"),
+      roots,
+    )).toEqual({ provider: "grok", sessionId: "01a05696-9a7e-7643-89bc-ded3663297be" });
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".copilot", "session-state", "02d4d613-d443-4649-84ed-8b040fe50159", "events.jsonl"),
+      roots,
+    )).toEqual({ provider: "copilot", sessionId: "02d4d613-d443-4649-84ed-8b040fe50159" });
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".kimi-code", "sessions", "wd_ade_2151c536b962", "session_0f0e0d0c-0b0a-4908-8706-050403020100", "agents", "main", "wire.jsonl"),
+      roots,
+    )).toEqual({ provider: "kimi", sessionId: "session_0f0e0d0c-0b0a-4908-8706-050403020100" });
+  });
+
+  it("never mints an ACP session id from a fixed-name file outside a session folder", () => {
+    // Grok's per-cwd prompt history and Kimi's workspace-level files name no session.
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".grok", "sessions", "%2FUsers%2Fdev%2FADE", "prompt_history.jsonl"),
+      roots,
+    )).toBeNull();
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".kimi-code", "sessions", "index.jsonl"),
+      roots,
+    )).toBeNull();
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".qwen", "projects", "-Users-dev-ADE", "memory.json"),
+      roots,
+    )).toBeNull();
+  });
+
+  it("honors GROK_HOME for grok session roots", () => {
+    const grokRoots = providerSessionRoots({ homeDir, env: { HOME: homeDir, GROK_HOME: "/opt/grok-home" } });
+    expect(parseProviderSessionFromPath(
+      path.join("/opt/grok-home", "sessions", "%2Frepo", "01a05699-10f7-7aa0-8462-5618e0289e91", "updates.jsonl"),
+      grokRoots,
+    )).toEqual({ provider: "grok", sessionId: "01a05699-10f7-7aa0-8462-5618e0289e91" });
+  });
+
+  it("does not record the OpenCode SQLite database basename as a session id", () => {
+    for (const file of ["opencode.db", "opencode.db-wal", "opencode.db-shm"]) {
+      expect(parseProviderSessionFromPath(path.join(homeDir, ".local", "share", "opencode", file), roots)).toBeNull();
+    }
+    expect(parseProviderSessionFromPath(
+      path.join(homeDir, ".local", "share", "opencode", "storage", "session_diff", "ses_1991d0778ffekgkerhPrDEXmyf.json"),
+      roots,
+    )).toEqual({ provider: "opencode", sessionId: "ses_1991d0778ffekgkerhPrDEXmyf" });
+  });
+
+  it("attributes a session file held by a descendant to its tracked PTY root", async () => {
+    // PTY root 500 (shell) -> 501 (node) -> 502 (qwen) holds the chat file; the
+    // provider scan also finds 502, but the tracked root walks first.
+    const qwenFile = path.join(homeDir, ".qwen", "projects", "-Users-dev-ADE", "chats", "11111111-1111-4111-8111-111111111111.jsonl");
+    const externalFile = path.join(homeDir, ".claude", "projects", "-Users-dev-ADE", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl");
+    const children: Record<string, string> = { "500": "501\n", "501": "502\n" };
+    const runCommand: RunCommand = (command, commandArgs): CommandResult => {
+      if (command === "lsof" && commandArgs[0] === "-v") return { status: 0, stdout: "", stderr: "" };
+      if (command === "ps") return { status: 0, stdout: "  502 node /opt/homebrew/bin/qwen\n  900 claude\n", stderr: "" };
+      if (command === "pgrep") {
+        const out = children[commandArgs[1] ?? ""];
+        return out ? { status: 0, stdout: out, stderr: "" } : { status: 1, stdout: "", stderr: "" };
+      }
+      if (command === "lsof") {
+        return { status: 0, stdout: ["p502", `n${qwenFile}`, "p900", `n${externalFile}`].join("\n"), stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: "" };
+    };
+    const index = await inspectLiveProviderSessions({
+      homeDir,
+      env: { HOME: homeDir },
+      extraPids: [500],
+      runCommand,
+      platform: "darwin",
+    });
+    const [qwenHandle] = index.byKey.get("qwen:11111111-1111-4111-8111-111111111111") ?? [];
+    const [claudeHandle] = index.byKey.get("claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa") ?? [];
+    expect(qwenHandle).toMatchObject({ pid: 502, trackedRootPid: 500 });
+    expect(claudeHandle).toMatchObject({ pid: 900, trackedRootPid: null });
+    const tracked = new Set([500]);
+    expect(handleIsOwnedByTrackedPty(qwenHandle!, tracked)).toBe(true);
+    expect(handleIsOwnedByTrackedPty(claudeHandle!, tracked)).toBe(false);
+    // A root pid that holds the file itself still counts.
+    expect(handleIsOwnedByTrackedPty({ pid: 500, trackedRootPid: null }, tracked)).toBe(true);
+  });
+
+  it("maps Windows descendants to their tracked root through CIM", async () => {
+    const runCommand: RunCommand = (command, commandArgs): CommandResult => {
+      if (command !== "powershell.exe") return { status: 1, stdout: "", stderr: "" };
+      const script = commandArgs[commandArgs.length - 1] ?? "";
+      if (script.includes("ParentProcessId=40")) return { status: 0, stdout: "41\r\n", stderr: "" };
+      if (script.includes("ParentProcessId=41")) return { status: 0, stdout: "42\r\n", stderr: "" };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    const owners = await collectDescendantPidRoots([40, 90], runCommand, "win32");
+    expect([...owners.entries()].sort((a, b) => a[0] - b[0])).toEqual([[40, 40], [41, 40], [42, 40], [90, 90]]);
   });
 
   it("reports an unavailable index when lsof is missing", async () => {

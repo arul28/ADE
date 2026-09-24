@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
-import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { runOpenCodeToFile } from "./openCodeCliOutput";
 import {
   asEpochMs,
   asRecord,
@@ -20,7 +18,32 @@ import {
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
 
-const execFileAsync = promisify(execFile);
+/**
+ * ADE runs its own background prompts (terminal summaries, commit messages,
+ * chat titles…) through OpenCode, titled `ADE <task>` by
+ * `providerTaskRunner.runOpenCodeTask`. They land in the user's OpenCode store
+ * and are never the user's work: on 2026-09-23 they were 155 of 271 listed
+ * rows. Matched by the exact task names, so a user session titled
+ * "ADE router …" still lists.
+ */
+const ADE_BACKGROUND_TASK_TITLES = new Set([
+  // Current `AiFeatureKey` values.
+  "narratives",
+  "conflict_proposals",
+  "commit_messages",
+  "pr_descriptions",
+  "terminal_summaries",
+  "initial_context",
+  "api_credentials",
+  // Names older builds used.
+  "session summary",
+  "initial chat title",
+]);
+
+export function isAdeBackgroundTaskTitle(title: string | null | undefined): boolean {
+  const match = /^ADE (.+)$/u.exec(title?.trim() ?? "");
+  return Boolean(match && ADE_BACKGROUND_TASK_TITLES.has(match[1]!.trim().toLowerCase()));
+}
 
 export async function discoverOpenCodeSessions(
   args: ExternalSessionDiscoveryArgs = {},
@@ -50,38 +73,21 @@ export async function discoverOpenCodeSessions(
   const env: NodeJS.ProcessEnv = { ...process.env, ...(args.env ?? {}), NO_COLOR: "1" };
   delete env.FORCE_COLOR;
 
-  // `npm i -g opencode-ai` installs `%APPDATA%\npm\opencode.cmd` on Windows, and
-  // Node refuses to spawn a `.cmd`/`.bat` without a shell (it fails with a bare
-  // `spawn EINVAL`). The same install is a directly executable script on macOS,
-  // so this path only breaks on Windows. Route through the shared invocation
-  // helper, which shims those targets through cmd.exe and leaves a real `.exe`
-  // untouched.
-  const invocation = resolveCliSpawnInvocation(
+  // Through the shared helper: it shims a Windows `opencode.cmd` through
+  // cmd.exe, and it reads stdout from a file because OpenCode cuts a piped
+  // stdout short (a real 81 KB list arrived as 64 KB of broken JSON).
+  const result = await runOpenCodeToFile({
     executable,
-    ["session", "list", "--pure", "--format", "json", "--max-count", String(requestedLimit)],
+    argv: ["session", "list", "--pure", "--format", "json", "--max-count", String(requestedLimit)],
+    cwd: path.resolve(cwd),
     env,
-  );
-
-  let stdout: string;
-  try {
-    const result = await execFileAsync(
-      invocation.command,
-      invocation.args,
-      {
-        cwd: path.resolve(cwd),
-        encoding: "utf8",
-        timeout: 4000,
-        killSignal: "SIGTERM",
-        maxBuffer: 2 * 1024 * 1024,
-        env,
-        windowsHide: true,
-        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-      },
-    );
-    stdout = String(result.stdout ?? "");
-  } catch (error) {
-    throw new Error(`OpenCode session discovery failed: ${error instanceof Error ? error.message : String(error)}`);
+    timeoutMs: 4000,
+    maxBytes: 16 * 1024 * 1024,
+  });
+  if (!result.ok) {
+    throw new Error(`OpenCode session discovery failed: ${result.detail}`);
   }
+  const stdout = result.stdout;
   const jsonStart = stdout.indexOf("[");
   if (jsonStart < 0) {
     // `opencode session list --format json` prints nothing at all when there are
@@ -109,6 +115,8 @@ export async function discoverOpenCodeSessions(
     if (!record || !id || (lookupId && id !== lookupId)) continue;
     const rowCwd = normalizeProviderCwd(asString(record.directory) ?? asString(record.cwd)) ?? scopedCwdFallback;
     if (!cwdIsInScope(rowCwd, args.scopeRoots)) continue;
+    const rawTitle = asString(record.title) ?? asString(record.name);
+    if (isAdeBackgroundTaskTitle(rawTitle)) continue;
     const title = cleanSessionTitle(asString(record.title)) ?? cleanSessionTitle(asString(record.name));
     const preview = clipExternalSessionText(
       asString(record.summary) ?? asString(record.preview) ?? asString(record.snippet),
@@ -128,5 +136,56 @@ export async function discoverOpenCodeSessions(
     }));
   }
 
+  // `session list` only shows sessions of the folder it runs in, so an exact
+  // lookup from anywhere else (the preview has no folder to offer) found
+  // nothing and the preview stayed empty. `export` resolves an id from any
+  // folder; its `info` block is the record.
+  if (lookupId && records.length === 0) {
+    const exported = await openCodeRecordFromExport(executable, lookupId, env);
+    if (exported && cwdIsInScope(exported.cwd, args.scopeRoots)) records.push(exported);
+  }
+
   return sortDiscoveryRecords(records, limit);
+}
+
+async function openCodeRecordFromExport(
+  executable: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+): Promise<ExternalSessionDiscoveryRecord | null> {
+  let parsed: unknown;
+  try {
+    const result = await runOpenCodeToFile({
+      executable,
+      argv: ["export", "--pure", sessionId],
+      env,
+      timeoutMs: 15_000,
+      maxBytes: 96 * 1024 * 1024,
+    });
+    if (!result.ok) return null;
+    const start = result.stdout.indexOf("{");
+    if (start < 0) return null;
+    parsed = JSON.parse(result.stdout.slice(start));
+  } catch {
+    return null;
+  }
+  const root = asRecord(parsed);
+  const info = asRecord(root?.info);
+  if (!info || asString(info.id) !== sessionId) return null;
+  const time = asRecord(info.time);
+  const messages = Array.isArray(root?.messages) ? root.messages : [];
+  const userCount = messages.filter((message) => asString(asRecord(asRecord(message)?.info)?.role) === "user").length;
+  const updatedAt = asEpochMs(time?.updated) ?? asEpochMs(time?.created);
+  return recordWithFile({
+    provider: "opencode",
+    id: sessionId,
+    cwd: normalizeProviderCwd(asString(info.directory)),
+    title: cleanSessionTitle(asString(info.title)),
+    preview: null,
+    createdAt: asEpochMs(time?.created),
+    updatedAt,
+    messageCount: userCount,
+    filePath: null,
+    sourceMtimeMs: updatedAt,
+  });
 }

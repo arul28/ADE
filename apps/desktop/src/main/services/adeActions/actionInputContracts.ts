@@ -707,6 +707,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { artifactId: string, maxBytes?: number }",
       example: "ade actions run computer_use_artifacts.readArtifactPreview --input-json '{\"artifactId\":\"artifact-1\"}' --json",
     },
+    readArtifactRange: {
+      description: "Read one bounded slice of a stored proof inside .ade/artifacts, base64-encoded, so a paired desktop can stream a video.",
+      input: "object { uri: string, offset?: number, length?: number }",
+      example: "ade --role cto actions run computer_use_artifacts.readArtifactRange --input-json '{\"uri\":\".ade/artifacts/apple-recordings/lane-1/rec.mp4\",\"offset\":0,\"length\":1048576}' --json",
+    },
     updateArtifactReview: {
       description: "Mark a proof artifact approved, rejected, or needing more evidence, with an optional note.",
       input: "object { artifactId: string, reviewState: \"pending\" | \"accepted\" | \"needs_more\" | \"dismissed\", workflowState?: string | null, reviewNote?: string | null }",

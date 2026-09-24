@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { ToolLogo } from "../ToolLogos";
-import { ALL_IMPORT_PROVIDERS, PROVIDER_TOOL_TYPE } from "./contract";
+import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
+import { PROVIDER_TOOL_TYPE } from "./contract";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
 
@@ -62,6 +63,8 @@ export function ImportFloatingBadge({
     // flex-col where the logo is the only row meant to absorb overflow.
     <div className="flex w-full shrink-0 justify-center">
       <div
+        // Fades out with the rest of the draft when a sent chat opens (`chatLaunchDock`).
+        data-draft-depart="fade"
         className={cn(
           "relative inline-flex items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-[#1A1830] to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
           disabled ? "opacity-40" : "transition-transform hover:-translate-y-px",
@@ -75,14 +78,14 @@ export function ImportFloatingBadge({
           aria-label="Import your chats from outside ADE"
         >
           <span className="relative flex h-7 w-[92px] shrink-0 items-center">
-            {ALL_IMPORT_PROVIDERS.map((provider, index) => (
+            {EXTERNAL_SESSION_PROVIDERS.map((provider, index) => (
               <span
                 key={provider}
                 className="absolute rounded-full border border-black/40 bg-[#12101C] shadow-sm"
                 style={{
                   left: index * 12,
                   transform: `rotate(${index % 2 === 0 ? -8 : 7}deg)`,
-                  zIndex: ALL_IMPORT_PROVIDERS.length - index,
+                  zIndex: EXTERNAL_SESSION_PROVIDERS.length - index,
                 }}
               >
                 <ToolLogo toolType={PROVIDER_TOOL_TYPE[provider]} size={22} />

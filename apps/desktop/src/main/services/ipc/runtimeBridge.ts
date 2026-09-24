@@ -57,6 +57,7 @@ import {
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
+import type { RemoteArtifactRangeReader } from "../computerUse/artifactStreamProtocol";
 import {
   RemoteConnectionService,
   type AccountMachineReconciliationResult,
@@ -367,6 +368,8 @@ export type RuntimeBridgeRegistration = {
   isTargetConnected(targetId: string): boolean;
   /** Display name for the paired machine, for user-facing failure copy. */
   resolveTargetNameForMachineKey(machineKey: string): string | null;
+  /** One chunk of a proof file on a paired computer, for the media server. */
+  readRemoteArtifactRange: RemoteArtifactRangeReader;
   /**
    * Machine-scoped RPC to an already-paired target, for main-process callers
    * that have no project binding — account-wide usage, which asks each machine
@@ -445,6 +448,17 @@ export function registerRuntimeBridge({
     { appVersion, getAccountRelayProof, getAuthorizedAccountOwnerId },
     pairedMachineStore,
   );
+  // The media server's `/remote/...` route reads a proof video from a paired
+  // computer through this, one bounded chunk per call. The broker on that
+  // machine resolves the path inside its own `.ade/artifacts` and refuses the rest.
+  const readRemoteArtifactRange: RemoteArtifactRangeReader = async ({ targetId, projectId, relativePath, offset, length }) => {
+    const response = await remoteConnectionService.callAction(targetId, projectId, {
+      domain: "computer_use_artifacts",
+      action: "readArtifactRange",
+      args: { uri: relativePath, offset, length },
+    });
+    return response.result;
+  };
   const {
     addRuntimeEventSubscription,
     attachRuntimeEventSubscriptionCleanup,
@@ -525,6 +539,7 @@ export function registerRuntimeBridge({
       const target = targetForMachineKey(machineKey);
       return target?.name?.trim() || target?.hostname?.trim() || null;
     },
+    readRemoteArtifactRange,
     callMachineMethod: <T,>(
       targetId: string,
       method: string,

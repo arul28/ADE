@@ -688,6 +688,17 @@ ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --text   # --clear dro
 # Live view: the vendored Swift helper encodes H.264 next to the simulator, so a remote client still sees it.
 ade --socket apple stream-start --fps 60 --text                    # live-start and --backend are gone: one encoder
 ade --socket ios-sim stream-status --text                          # live view plus input state; stream-stop ends it
+# Per-lane device: one simulator per lane. `start` attaches or clones, boots, and streams.
+ade --socket apple start --text                                    # --udid <id> attaches, --create <sourceUdid> clones
+ade --socket apple stop --text                                     # power the lane's device off; `shutdown` only ends the chat's session
+ade --socket apple device-list --installed --text                  # also: device-create --from <id>, device-attach --simulator <id>
+ade --socket apple device-detach --text                            # give up the lane's device; the simulator stays installed
+ade --socket apple device-delete --text                            # delete a clone; --force detaches an attached device instead
+                                                                   # all three refuse another chat's device; --ignore-ownership passes (stop and device-detach also take --force)
+ade --socket apple type "reddit" --submit --text                   # --submit presses Return after the text
+ade --socket apple key return --text                               # named keys: return (alias enter), tab
+ade --socket apple record-start --text                             # record-stop --keep|--discard, record-list, record-delete --id <id>
+ade apple show --text                                              # put the device on the user's screen; --floating for the floating player
 # Device event log: the app's own log rows interleaved with what ADE did.
 ade --socket ios-sim log-start --bundle-id com.example.app --text   # --bundle-id is required; only the chat that started the log can stop it
 ade --socket ios-sim log --since 412 --limit 100 --text            # log-stop ends the capture; --force takes a log another chat started
@@ -782,8 +793,9 @@ ade --role cto actions list --domain attention --text # discover account-wide Ac
 ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id
-ade actions run external-sessions.list --input-json '{"scope":"project","limit":20}' --text   # claude/codex/cursor/droid/opencode/pi sessions on this machine; discovery that cannot run — `opencode` is not installed, say — fails the call when that provider is the only one asked for, rather than reporting an empty list; in a multi-provider scan it is skipped and logged
+ade actions run external-sessions.list --input-json '{"scope":"project","limit":20}' --text   # claude/codex/cursor/droid/opencode/pi/qwen/kimi/grok/copilot sessions on this machine; discovery that cannot run — `opencode` is not installed, say — fails the call when that provider is the only one asked for, rather than reporting an empty list; in a multi-provider scan it is skipped and logged
 ade actions run external-sessions.import --input-json '{"provider":"codex","sessionId":"thread-id","laneId":"lane-1","target":"cli","mode":"resume"}' --text
+ade actions run external-sessions.getDetail --input-json '{"provider":"claude","sessionId":"session-id"}' --text   # one session's preview page; pass olderCursor back as before for the previous page
 ade actions run ai.piLoginProviders --text                 # Pi providers that can be signed into, with the auth methods each accepts and whether it is already configured
 ade --role cto actions run ai.piLoginStart --input-json '{"providerId":"anthropic"}' --json   # blocks until the human finishes Pi's own OAuth/device-code flow
 ade actions call stream_events --arg category=runtime --json                                 # drain piAuthStatus prompts/notices raised by an in-flight sign-in

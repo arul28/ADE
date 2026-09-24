@@ -10,6 +10,7 @@ import {
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
 } from "../../../../desktop/src/shared/types/chat";
+import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { runWithAbortSignal } from "./abortSignal";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
@@ -173,11 +174,15 @@ import type {
   StartIntegrationResolutionArgs,
   SubmitPrReviewArgs,
   UnstackGitHubPrStackArgs,
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionListArgs,
   ExternalSessionProvider,
   ExternalSessionSummary,
+  SyncGetExternalSessionDetailArgs,
+  SyncGetExternalSessionDetailResult,
   SyncImportExternalSessionArgs,
   SyncImportExternalSessionResult,
   SyncListExternalSessionsArgs,
@@ -341,21 +346,16 @@ import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
 import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/terminalSessionSignals";
 import type { SyncPinStore } from "./syncPinStore";
+import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
   importExternalSession(args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult>;
+  getDetail(args: ExternalSessionDetailArgs, options?: { maxEvents?: number }): Promise<ExternalSessionDetail>;
 };
 
-const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>([
-  "claude",
-  "codex",
-  "cursor",
-  "droid",
-  "opencode",
-  "pi",
-]);
+const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>(EXTERNAL_SESSION_PROVIDER_LIST);
 
 type SyncRemoteCommandServiceArgs = {
   /**
@@ -1828,6 +1828,48 @@ function parseImportExternalSessionArgs(value: Record<string, unknown>): SyncImp
     ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
     ...(typeof value.fastMode === "boolean" ? { fastMode: value.fastMode } : {}),
     ...(asTrimmedString(value.permissionMode) ? { permissionMode: asTrimmedString(value.permissionMode)! } : {}),
+  };
+}
+
+function parseGetExternalSessionDetailArgs(value: Record<string, unknown>): SyncGetExternalSessionDetailArgs {
+  const provider = parseExternalSessionProvider(value.provider, "work.getExternalSessionDetail");
+  const sessionId = requireString(value.sessionId, "work.getExternalSessionDetail requires sessionId.");
+  if (value.before != null && typeof value.before !== "string") {
+    throw new Error("work.getExternalSessionDetail before must be a string.");
+  }
+  const before = asTrimmedString(value.before);
+  return { provider, sessionId, ...(before ? { before } : {}) };
+}
+
+/** Events per `work.getExternalSessionDetail` page; the desktop reads 200. */
+export const SYNC_EXTERNAL_SESSION_DETAIL_MAX_EVENTS = 120;
+
+/**
+ * The detail as a phone receives it. Events get the mobile-wire compaction
+ * (tool results cut to a head slice), minus `resultTruncatedForMobile`: that
+ * flag offers "Show full result", which fetches from a stored chat transcript,
+ * and a preview has none. `messages` (up to 80 x 4 KB of text) is dropped when
+ * `events` already carries the conversation; a host that produced no events
+ * keeps it as the phone's fallback.
+ */
+function compactExternalSessionDetailForMobile(
+  detail: SyncGetExternalSessionDetailResult,
+): SyncGetExternalSessionDetailResult {
+  const events = Array.isArray(detail.events) ? detail.events : null;
+  if (!events || events.length === 0) return detail;
+  return {
+    ...detail,
+    messages: [],
+    events: events.map((envelope) => {
+      const compacted = compactChatEventForMobileWire(envelope.event);
+      if (compacted === envelope.event) return envelope;
+      if (compacted.type === "tool_result" && compacted.resultTruncatedForMobile) {
+        const event = { ...compacted };
+        delete event.resultTruncatedForMobile;
+        return { ...envelope, event };
+      }
+      return { ...envelope, event: compacted };
+    }),
   };
 }
 
@@ -4480,6 +4522,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     const parsed = parseListExternalSessionsArgs(payload);
     const result = await resolveExternalSessionsService(args).list(parsed);
     return result satisfies SyncListExternalSessionsResult;
+  });
+  register("work.getExternalSessionDetail", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseGetExternalSessionDetailArgs(payload);
+    const detail = await resolveExternalSessionsService(args).getDetail(parsed, {
+      maxEvents: SYNC_EXTERNAL_SESSION_DETAIL_MAX_EVENTS,
+    });
+    return compactExternalSessionDetailForMobile(detail) satisfies SyncGetExternalSessionDetailResult;
   });
   register("work.importExternalSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseImportExternalSessionArgs(payload);

@@ -1,9 +1,12 @@
 import type { AppleStreamState } from "./useAppleDeviceStream";
 import type {
+  AppleDeviceListResult,
   AppleDeviceOrientation,
+  AppleDeviceStatePhase,
   AppleInstalledSimulator,
   IosElementContextItem,
   IosScreenElement,
+  IosSimulatorStatus,
 } from "../../../shared/types/iosSimulator";
 import { commandFor } from "./appleInspectGeometry";
 
@@ -116,6 +119,73 @@ export function sortAppleSimulators(
 
 export function isAppleSimulatorBooted(simulator: Pick<AppleInstalledSimulator, "state">): boolean {
   return simulator.state === "Booted";
+}
+
+/** What an `apple.device.state` phase says about power; null says nothing. */
+export function applePowerFromPhase(phase: AppleDeviceStatePhase): "on" | "off" | null {
+  if (phase === "booted" || phase === "streaming") return "on";
+  if (phase === "stopped") return "off";
+  return null;
+}
+
+/** Is the lane's own device booted, in one `deviceList` answer? */
+export function laneDeviceBooted(
+  listed: Pick<AppleDeviceListResult, "installed" | "lane"> | null | undefined,
+): boolean {
+  const lane = listed?.lane;
+  if (!lane) return false;
+  return listed.installed.some((entry) => entry.udid === lane.udid && isAppleSimulatorBooted(entry));
+}
+
+/**
+ * The pane's power reading for the lane's device.
+ *
+ * `simctl` is the truth. An open device session is not: it outlives a
+ * power-off, so it only counts before the installed list has loaded. A device
+ * the service just called off stays off until something says it is on again.
+ */
+export function appleLaneDeviceBooted(args: {
+  deviceUdid: string | null;
+  offUdid: string | null;
+  installedForLane: Pick<AppleInstalledSimulator, "state"> | null;
+  /** `appleStatusSaysBooted` for this device. */
+  statusSaysBooted: boolean;
+  /** The device the service's open session is on, if any. */
+  sessionUdid: string | null;
+}): boolean {
+  const { deviceUdid } = args;
+  if (!deviceUdid || deviceUdid === args.offUdid) return false;
+  if (args.statusSaysBooted) return true;
+  if (args.installedForLane) return isAppleSimulatorBooted(args.installedForLane);
+  return args.sessionUdid === deviceUdid;
+}
+
+/** The service's status reads this device as booted. */
+export function appleStatusSaysBooted(
+  status: Pick<IosSimulatorStatus, "activeDevice"> | null,
+  udid: string | null,
+): boolean {
+  return Boolean(udid) && status?.activeDevice?.udid === udid && status.activeDevice.state === "Booted";
+}
+
+/**
+ * Is a simulator event about this surface (a chat, on a lane)?
+ *
+ * A chat id must match; a lane id must match when both sides name one, and a
+ * lane-only event needs the surface's own lane. An event that names neither
+ * reaches only a surface that takes unscoped events (the chat tile in front).
+ */
+export function appleEventAddresses(
+  event: { chatSessionId?: string | null; laneId?: string | null },
+  surface: { chatSessionId: string | null; laneId: string | null; acceptUnscoped: boolean },
+): boolean {
+  const chat = event.chatSessionId?.trim() || null;
+  const lane = event.laneId?.trim() || null;
+  if (chat && chat !== surface.chatSessionId) return false;
+  if (lane && surface.laneId && lane !== surface.laneId) return false;
+  if (chat) return true;
+  if (lane) return lane === surface.laneId;
+  return surface.acceptUnscoped;
 }
 
 /** `iOS 26.2 · Running` — the row's one description line. */

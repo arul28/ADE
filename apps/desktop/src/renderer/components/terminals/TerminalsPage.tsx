@@ -11,6 +11,7 @@ import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
 import { WorkSidebar } from "./WorkSidebar";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
+import { useWorkShowRequests } from "./useWorkShowRequests";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
@@ -1129,6 +1130,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     setWorkSidebarTool("ios");
   }, [setWorkSidebarTool]);
 
+  const appleMiniPlayerSurface = useWorkShowRequests({
+    active,
+    activeWorkSession,
+    runtimePin: activeWorkSessionRuntimePin,
+    projectBinding,
+    activeLaneId,
+    workSidebarVisible,
+    workSidebarTool,
+    setWorkSidebarTool,
+  });
+
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -1531,7 +1543,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               in a pane of its own, because "float over chat" is the whole
               point of it — and it is opened by the rail, never by ADE.
             */}
-            <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} />
+            <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} surface={appleMiniPlayerSurface} />
             {/*
               §B3's "Shut down {device}?" — mounted beside the player because
               they are the same story: one asks before the tab close powers the
@@ -1629,6 +1641,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workViewArea,
       activeLaneDeleteProgress,
       openAppleTool,
+      appleMiniPlayerSurface,
     ],
   );
 

@@ -132,6 +132,7 @@ import {
   AgentChatComposer,
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
+  type ComposerDraftEditIntent,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
@@ -209,17 +210,19 @@ import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionB
 import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
   readImportedFrom,
-  providerDisplayName as externalProviderDisplayName,
   type ExternalSessionImportResult,
   type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "../terminals/importSessions/contract";
+import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
+import { useChatPaneShowRequests } from "./useChatPaneShowRequests";
+import { appleEventAddresses } from "../apple/appleDeviceState";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
@@ -338,12 +341,33 @@ import {
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
-import { playComposerDock, stashComposerDockOrigin, takeComposerDockOrigin } from "./launch/chatLaunchDock";
+import {
+  captureComposerHandoff,
+  CHAT_SHELL_HEADER_SELECTOR,
+  findDraftComposerHandoffElement,
+  peekComposerHandoffFirstMessage,
+  playComposerDock,
+  playDepartingDraftChrome,
+  playFirstMessageFlight,
+  refreshComposerHandoffDeparture,
+  stashComposerHandoffOrigin,
+  stashComposerDockOrigin,
+  takeComposerDockOrigin,
+  type ComposerHandoff,
+} from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
 import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
 import {
+  clearSubmittedDraftText,
+  removeSubmittedDraftItems,
+  removeSubmittedDraftItemsById,
   runRendererOwnedLaunch as runRendererOwnedDraftLaunch,
+  sameStoredDraftItem,
+  discardRendererLaunchHandoff,
+  takeRendererLaunchHandoff,
   type DraftLaunchLaneTarget,
+  type OpenLaunchedDraftSessionInput,
+  type SubmittedDraftTextEdit,
   type StartedDraftLaunch,
 } from "./launch/rendererOwnedLaunch";
 import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
@@ -355,7 +379,6 @@ import {
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   LAUNCH_PROJECT_CHANGED_MESSAGE,
-  type BackgroundLaunchNotice,
   type DraftLaunchJob,
   type DraftLaunchJobStatus,
   type DraftLaunchKind,
@@ -934,6 +957,14 @@ function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch 
 }
 
 /**
+ * Where a sent draft's departing chrome lives: the whole Work draft surface
+ * (its mode switcher sits outside this pane), or just this pane elsewhere.
+ */
+function draftDepartingScope(shell: HTMLElement | null): Element | null {
+  return shell?.closest("[data-work-draft-surface]") ?? shell;
+}
+
+/**
  * The opening `agentChat.send` for a drafted chat, minus the session id. Used
  * by the direct create-then-send path and by the brain-owned new-lane launch,
  * so both send the same message. `interactionMode` is only sent to Claude.
@@ -1476,6 +1507,8 @@ type ComposerDraftStorageSnapshot = {
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   attachments: AgentChatFileRef[];
+  attachmentDraftIds: string[];
+  submittedDraftTextEdit: SubmittedDraftTextEdit | null;
   attachmentOwnerBinding: OpenProjectBinding | null;
   contextAttachments: AgentChatContextAttachment[];
   iosContextItems: IosElementContextItem[];
@@ -1484,6 +1517,58 @@ type ComposerDraftStorageSnapshot = {
   draftLaunchTargetId: string | null;
   updatedAt: string;
 };
+
+let draftAttachmentIdSequence = 0;
+
+function createDraftAttachmentId(): string {
+  try {
+    const id = globalThis.crypto?.randomUUID?.();
+    if (id) return id;
+  } catch {
+    // Fall through in contexts without secure random UUID support.
+  }
+  draftAttachmentIdSequence += 1;
+  return `draft-attachment-${Date.now()}-${draftAttachmentIdSequence}`;
+}
+
+function reconcileDraftAttachmentIds(
+  current: readonly AgentChatFileRef[],
+  currentIds: readonly string[],
+  next: readonly AgentChatFileRef[],
+): string[] {
+  const available = new Set(current.map((_, index) => index));
+  return next.map((attachment) => {
+    const exactIndex = current.findIndex((candidate, index) => (
+      available.has(index) && candidate === attachment
+    ));
+    const currentIndex = exactIndex >= 0
+      ? exactIndex
+      : current.findIndex((candidate, index) => available.has(index) && candidate.path === attachment.path);
+    if (currentIndex < 0) return createDraftAttachmentId();
+    available.delete(currentIndex);
+    return currentIds[currentIndex] ?? createDraftAttachmentId();
+  });
+}
+
+function normalizeStoredDraftAttachmentIds(
+  value: unknown,
+  attachments: readonly AgentChatFileRef[],
+  updatedAt: string,
+): string[] {
+  const stored = Array.isArray(value) ? value : [];
+  return attachments.map((attachment, index) => (
+    nonEmptyString(stored[index]) ?? `legacy:${updatedAt}:${index}:${attachment.path}`
+  ));
+}
+
+function normalizeSubmittedDraftTextEdit(value: unknown): SubmittedDraftTextEdit | null {
+  if (!isRecord(value)) return null;
+  const submittedText = typeof value.submittedText === "string" ? value.submittedText : null;
+  const kind = value.kind;
+  return submittedText !== null && (kind === "append" || kind === "replacement")
+    ? { submittedText, kind }
+    : null;
+}
 
 function normalizeComposerAttachmentOwnerBinding(value: unknown): OpenProjectBinding | null {
   if (!isRecord(value)) return null;
@@ -2800,6 +2885,8 @@ function normalizeStoredComposerDraft(
 ): ComposerDraftStorageSnapshot | null {
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
+  const attachments = normalizeComposerFileAttachments(value.attachments);
+  const updatedAt = nonEmptyString(value.updatedAt) ?? new Date(0).toISOString();
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
@@ -2813,7 +2900,9 @@ function normalizeStoredComposerDraft(
       isRecord(value.controls) ? value.controls : {},
       defaults,
     ),
-    attachments: normalizeComposerFileAttachments(value.attachments),
+    attachments,
+    attachmentDraftIds: normalizeStoredDraftAttachmentIds(value.attachmentDraftIds, attachments, updatedAt),
+    submittedDraftTextEdit: normalizeSubmittedDraftTextEdit(value.submittedDraftTextEdit),
     attachmentOwnerBinding: normalizeComposerAttachmentOwnerBinding(
       value.attachmentOwnerBinding,
     ),
@@ -2822,7 +2911,7 @@ function normalizeStoredComposerDraft(
     appControlContextItems: normalizeComposerAppControlContextItems(value.appControlContextItems),
     builtInBrowserContextItems: normalizeComposerBuiltInBrowserContextItems(value.builtInBrowserContextItems),
     draftLaunchTargetId: nonEmptyString(value.draftLaunchTargetId),
-    updatedAt: nonEmptyString(value.updatedAt) ?? new Date(0).toISOString(),
+    updatedAt,
   };
 }
 
@@ -3732,7 +3821,28 @@ export function AgentChatPane({
         }
       : null,
   );
-  const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const [attachments, setAttachmentsState] = useState<AgentChatFileRef[]>([]);
+  const attachmentsRef = useRef<AgentChatFileRef[]>([]);
+  const attachmentDraftIdsRef = useRef<string[]>([]);
+  const setAttachments = useCallback((
+    update: AgentChatFileRef[] | ((current: AgentChatFileRef[]) => AgentChatFileRef[]),
+  ) => {
+    const current = attachmentsRef.current;
+    const next = typeof update === "function" ? update(current) : update;
+    if (next === current) return;
+    attachmentDraftIdsRef.current = reconcileDraftAttachmentIds(
+      current,
+      attachmentDraftIdsRef.current,
+      next,
+    );
+    attachmentsRef.current = next;
+    setAttachmentsState(next);
+  }, []);
+  const setAttachmentsWithIds = useCallback((next: AgentChatFileRef[], ids: readonly string[]) => {
+    attachmentsRef.current = next;
+    attachmentDraftIdsRef.current = next.map((_, index) => ids[index] ?? createDraftAttachmentId());
+    setAttachmentsState(next);
+  }, []);
   const chatPaneDropTargetRef = useRef<AgentChatAttachmentDropTarget | null>(null);
   const [chatPaneDropActive, setChatPaneDropActive] = useState(false);
   const clearChatPaneDropActive = useCallback(() => setChatPaneDropActive(false), []);
@@ -3765,10 +3875,16 @@ export function AgentChatPane({
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
+  const [submittedDraftTextEdit, setSubmittedDraftTextEdit] = useState<SubmittedDraftTextEdit | null>(null);
+  const submittedDraftTextEditRef = useRef<SubmittedDraftTextEdit | null>(null);
   const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
   const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
   const composerDraftWriteTimerRef = useRef<number | null>(null);
   const pendingComposerDraftWriteRef = useRef<{
+    storageKey: string;
+    snapshot: ComposerDraftStorageSnapshot;
+  } | null>(null);
+  const latestComposerDraftSnapshotRef = useRef<{
     storageKey: string;
     snapshot: ComposerDraftStorageSnapshot;
   } | null>(null);
@@ -3968,13 +4084,20 @@ export function AgentChatPane({
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);
   const composerDraftHydratingTextRef = useRef<string | null>(null);
+  const [hydratedComposerDraftStorageKey, setHydratedComposerDraftStorageKey] = useState<string | null>(null);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestionsBySession, setPromptSuggestionsBySession] = useState<Record<string, string>>({});
   const [optimisticOutgoingMessage, setOptimisticOutgoingMessage] = useState<{
     sessionId: string;
     envelope: AgentChatEventEnvelope;
-  } | null>(null);
+  } | null>(() => {
+    // A launch that opened this chat after creating it hands over its first
+    // message, so the bubble is on the first frame (see `chatLaunchDock`).
+    const firstMessage = lockSessionId ? peekComposerHandoffFirstMessage(lockSessionId) : null;
+    return firstMessage && lockSessionId ? { sessionId: lockSessionId, envelope: firstMessage } : null;
+  });
+  const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(optimisticOutgoingMessage);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
@@ -4031,15 +4154,65 @@ export function AgentChatPane({
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
-  // Foreground new-lane launch: glide the docked composer down from where the
-  // draft composer sat (see `chatLaunchDock`). Layout effect so the first
-  // painted frame is already at the old position.
+  const pendingComposerHandoffAnimationRef = useRef<{ sessionId: string; handoff: ComposerHandoff } | null>(null);
+  // First message of a chat launched from a draft in another pane: glide the
+  // docked composer down from where the draft composer sat and fly the first
+  // bubble up from where the prompt text sat (see `chatLaunchDock`). Layout
+  // effect so the first painted frame is already at the old positions.
   useLayoutEffect(() => {
     if (!lockSessionId) return;
-    const origin = takeComposerDockOrigin(lockSessionId);
-    if (!origin) return;
-    playComposerDock(composerDockRef.current, origin);
+    const handoff = takeComposerDockOrigin(lockSessionId);
+    if (!handoff) return;
+    if (handoff.firstMessage) {
+      // Single-chat panes are reused when Work switches sessions. Seed the
+      // incoming launch bubble before the next layout pass plays its flight;
+      // the lazy state initializer only covers a newly mounted pane.
+      const optimistic = { sessionId: lockSessionId, envelope: handoff.firstMessage };
+      pendingComposerHandoffAnimationRef.current = { sessionId: lockSessionId, handoff };
+      optimisticOutgoingMessageRef.current = optimistic;
+      setOptimisticOutgoingMessage(optimistic);
+      return;
+    }
+    playComposerDock(composerDockRef.current, handoff.composer);
+    playFirstMessageFlight(shellRef.current, handoff.text);
+    // The draft's mode switcher morphs into this chat's header.
+    playDepartingDraftChrome(handoff.departing, shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR));
   }, [lockSessionId]);
+  useLayoutEffect(() => {
+    const pending = pendingComposerHandoffAnimationRef.current;
+    if (!pending || pending.sessionId !== lockSessionId) return;
+    const optimistic = optimisticOutgoingMessage;
+    if (optimistic?.sessionId !== pending.sessionId || optimistic.envelope !== pending.handoff.firstMessage) return;
+    const shell = shellRef.current;
+    if (!shell) return;
+    pendingComposerHandoffAnimationRef.current = null;
+    playComposerDock(composerDockRef.current, pending.handoff.composer);
+    playFirstMessageFlight(shell, pending.handoff.text);
+    playDepartingDraftChrome(
+      pending.handoff.departing,
+      shell.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR),
+    );
+  }, [lockSessionId, optimisticOutgoingMessage]);
+  // The same handoff for a chat this pane creates in place (no draft launch):
+  // measured before the create round trip, played on the commit that swaps the
+  // empty state for the thread.
+  const inPlaceFirstSendHandoffRef = useRef<ComposerHandoff | null>(null);
+  useLayoutEffect(() => {
+    const handoff = inPlaceFirstSendHandoffRef.current;
+    if (!handoff || !selectedSessionId) return;
+    inPlaceFirstSendHandoffRef.current = null;
+    const shell = shellRef.current;
+    if (!shell) return;
+    // The empty state fades out around its own copy of the composer; hide
+    // that copy so only the docked one moves.
+    for (const ghost of shell.querySelectorAll<HTMLElement>("[data-chat-empty-state] [data-chat-composer-wrapper]")) {
+      ghost.style.visibility = "hidden";
+    }
+    const docked = Array.from(shell.querySelectorAll<HTMLDivElement>("[data-chat-composer-dock]"))
+      .find((element) => !element.closest("[data-chat-empty-state]")) ?? null;
+    playComposerDock(docked, handoff.composer);
+    playFirstMessageFlight(shell, handoff.text);
+  }, [selectedSessionId]);
   // Measure the chat surface width to drive the 3-quadrant pane reserve.
   const [chatAreaWidth, setChatAreaWidth] = useState(0);
   useEffect(() => {
@@ -4357,7 +4530,7 @@ export function AgentChatPane({
       linkedIosAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
-  }, []);
+  }, [setAttachments]);
   const removeAppControlContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
     setAppControlContextItems((current) => {
@@ -4369,7 +4542,7 @@ export function AgentChatPane({
       linkedAppControlAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
-  }, []);
+  }, [setAttachments]);
   const removeBuiltInBrowserContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
     setBuiltInBrowserContextItems((current) => {
@@ -4381,12 +4554,43 @@ export function AgentChatPane({
       linkedBuiltInBrowserAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
+  }, [setAttachments]);
+  const updateSubmittedDraftTextEdit = useCallback((value: SubmittedDraftTextEdit | null) => {
+    submittedDraftTextEditRef.current = value;
+    setSubmittedDraftTextEdit(value);
   }, []);
-  const updateComposerDraft = useCallback((value: string) => {
+  const updateComposerDraft = useCallback((value: string, editIntent?: ComposerDraftEditIntent) => {
+    const heldForegroundChat = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+      ?? EMPTY_DRAFT_LAUNCH_JOBS).find((job) => (
+      job.draftKind === "chat"
+      && job.mode === "foreground"
+      && !isDraftLaunchJobTerminal(job.status)
+    ));
+    if (heldForegroundChat) {
+      const submittedText = heldForegroundChat.snapshot.draft;
+      const previousEdit = submittedDraftTextEditRef.current;
+      const append = Boolean(
+        editIntent
+        && editIntent.previousText.startsWith(submittedText)
+        && editIntent.selectionStart >= submittedText.length
+        && editIntent.selectionEnd >= submittedText.length
+        && value.startsWith(submittedText),
+      );
+      let kind: SubmittedDraftTextEdit["kind"] = "replacement";
+      if (append && !(previousEdit?.submittedText === submittedText && previousEdit.kind === "replacement")) {
+        kind = "append";
+      }
+      updateSubmittedDraftTextEdit({
+        submittedText,
+        kind,
+      });
+    } else {
+      updateSubmittedDraftTextEdit(null);
+    }
     setDraft(value);
     draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
+  }, [clearPromptSuggestionForSession, companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
   const updateComposerMentionLabel = useCallback((token: string, title: string) => {
     const label = title.trim();
     if (!label) return;
@@ -4395,13 +4599,22 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const insertComposerDraft = useCallback((value: string) => {
-    setDraft((current) => {
-      const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
-      draftsPerSessionRef.current.set(companionStateKey, next);
-      return next;
+    const previousText = draft;
+    const foregroundChatLaunchPending = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+      ?? EMPTY_DRAFT_LAUNCH_JOBS).some((job) => (
+      job.draftKind === "chat"
+      && job.mode === "foreground"
+      && !isDraftLaunchJobTerminal(job.status)
+    ));
+    const appendedTo = foregroundChatLaunchPending ? previousText : previousText.trimEnd();
+    const next = appendedTo.trim().length ? `${appendedTo}\n\n${value}` : value;
+    updateComposerDraft(next, {
+      previousText,
+      selectionStart: previousText.length,
+      selectionEnd: previousText.length,
     });
     clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
+  }, [clearPromptSuggestionForSession, draft, draftLaunchJobsScopeKey, selectedSessionId, updateComposerDraft]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
@@ -4440,7 +4653,6 @@ export function AgentChatPane({
     && !eventsBySession[renderedSessionId]
     && !peekAgentChatSessionViewCache(renderedSessionId),
   );
-  const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
     const shouldRenderOptimistic =
       optimisticOutgoingMessage
@@ -5894,7 +6106,7 @@ export function AgentChatPane({
     const chips = [...resolvedChips];
     if (selectedSessionImportedProvider) {
       chips.push({
-        label: `Imported · ${externalProviderDisplayName(selectedSessionImportedProvider)}`,
+        label: `Imported · ${importProviderLabel(selectedSessionImportedProvider)}`,
         tone: "muted",
       });
     }
@@ -6726,7 +6938,7 @@ export function AgentChatPane({
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
-    options?: { force?: boolean },
+    options?: { force?: boolean; keepOnError?: boolean },
   ) => {
     if (!sessionId) {
       computerUseSnapshotInFlightRef.current = null;
@@ -6755,12 +6967,16 @@ export function AgentChatPane({
           sessionId,
           fetchedAt: Date.now(),
         };
-        if (selectedSessionIdRef.current === sessionId) {
+        // A read that a newer one replaced writes nothing: its data is older.
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
           setComputerUseSnapshot(snapshot);
         }
       } catch {
-        if (selectedSessionIdRef.current === sessionId) {
-          setComputerUseSnapshot(null);
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
+          // `keepOnError` keeps this chat's proof on screen, never another chat's.
+          setComputerUseSnapshot((current) => (
+            options?.keepOnError && current?.owner.kind === "chat_session" && current.owner.id === sessionId ? current : null
+          ));
         }
       } finally {
         if (request && computerUseSnapshotInFlightRef.current?.promise === request) {
@@ -7483,18 +7699,24 @@ export function AgentChatPane({
   const iosSimulatorAddressesThisPane = useCallback((
     chatSessionId?: string | null,
     eventLaneId?: string | null,
-  ) => {
-    const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
-      ? chatSessionId.trim()
-      : null;
-    const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
-      ? eventLaneId.trim()
-      : null;
-    if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
-    if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
-    if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
-    return true;
-  }, [isTileActive, laneId]);
+  ) => appleEventAddresses(
+    { chatSessionId, laneId: eventLaneId },
+    { chatSessionId: selectedSessionIdRef.current, laneId: laneId ?? null, acceptUnscoped: isTileActive },
+  ), [isTileActive, laneId]);
+
+  /**
+   * Open the chat's Apple drawer. It yields the right pane only on the closed
+   * to open transition, and only to App Control and Cursor Cloud, which cannot
+   * share the split; the chat actions drawer stays as the user left it.
+   */
+  const openIosSimulatorDrawer = useCallback(() => {
+    setIosSimulatorAvailable(true);
+    if (!iosSimulatorOpenRef.current) {
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+    }
+    setIosSimulatorOpen(true);
+  }, []);
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -7522,26 +7744,82 @@ export function AgentChatPane({
       }
       if (event.type !== "drawer-open-requested") return;
       if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
-      setIosSimulatorAvailable(true);
-      // This event now only arrives for surfaces the user drove (point selection
-      // and inspection, or a launch started from this drawer). Yield the right
-      // pane only on the closed → open transition, and only to App Control,
-      // which is the one panel that cannot share the split. Chat actions (proof)
-      // stays exactly as the user left it.
-      if (!iosSimulatorOpenRef.current) {
-        setAppControlOpen(false);
-        setCursorCloudPaneOpen(false);
-      }
-      setIosSimulatorOpen(true);
+      // Only for surfaces the user drove (point selection and inspection, or a
+      // launch started from this drawer).
+      openIosSimulatorDrawer();
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     }, chatRuntimePin);
-  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
+  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane, openIosSimulatorDrawer]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
       setIosSimulatorDrawerModeRequest(null);
     }
   }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
+
+  // `ade ui show proof` re-reads the chat's proof, then shows the proof
+  // section even when the chat has none (the drawer otherwise leaves it out).
+  // A visible grid tile that is not focused keeps no snapshot, and a proof
+  // filed just before the show may not be in this one yet. The section waits
+  // for that read, so "shown" and "no proof yet" both follow real data.
+  const [proofShowRequested, setProofShowRequested] = useState(false);
+  const [proofScrollNonce, setProofScrollNonce] = useState(0);
+  // One per show. Closing the drawer or changing chat bumps it too, so a read
+  // that comes back after either does not reopen a proof section nobody asked for.
+  const proofShowTokenRef = useRef(0);
+  const openProofDrawerForShow = useCallback(() => {
+    setChatActionsOpen(true);
+    const token = ++proofShowTokenRef.current;
+    // A failed read keeps the proof already on screen rather than blanking it.
+    void refreshComputerUseSnapshot(selectedSessionIdRef.current, { force: true, keepOnError: true }).finally(() => {
+      if (proofShowTokenRef.current !== token) return;
+      setProofShowRequested(true);
+      setProofScrollNonce((nonce) => nonce + 1);
+    });
+  }, [refreshComputerUseSnapshot]);
+  useEffect(() => {
+    if (chatActionsOpen) return;
+    proofShowTokenRef.current += 1;
+    setProofShowRequested(false);
+  }, [chatActionsOpen]);
+  // Before the show handler registers: a show held while this chat was out of
+  // view is delivered as the handler registers, and it must not be closed
+  // again by this reset in the same commit.
+  useEffect(() => {
+    setChatActionsOpen(false);
+    proofShowTokenRef.current += 1;
+    setProofShowRequested(false);
+    setHandoffBusy(false);
+    setModelPickerOpenRequest(undefined);
+    // Drop the pending bubble of the chat we left, but keep one that belongs to
+    // the chat just selected: a first send sets it in the same batch that
+    // selects the new chat, and a launched chat seeds it on mount.
+    if (optimisticOutgoingMessageRef.current?.sessionId !== selectedSessionId) {
+      optimisticOutgoingMessageRef.current = null;
+    }
+    setOptimisticOutgoingMessage((current) => (current?.sessionId === selectedSessionId ? current : null));
+    // The full composer bucket effect above owns draft/context hydration for
+    // session and lane switches; this effect resets transient chat UI only.
+  }, [selectedSessionId, laneId]);
+  const { proofDrawerRef: registerProofDrawer, appleDrawerRef } = useChatPaneShowRequests({
+    chatSessionId: selectedSessionId,
+    visible: isTileVisible,
+    laneToolDrawersHidden: hideLaneToolDrawers,
+    laneId: laneId ?? null,
+    openProofDrawer: openProofDrawerForShow,
+    openAppleDrawer: openIosSimulatorDrawer,
+  });
+  const proofSectionRef = useRef<HTMLDivElement | null>(null);
+  const proofDrawerRef = useCallback((element: HTMLDivElement | null) => {
+    proofSectionRef.current = element;
+    registerProofDrawer(element);
+  }, [registerProofDrawer]);
+  // The drawer is one scroll: a long agents list can put the proof below it,
+  // and "shown" has to mean the user can see it. Once per show, so a later
+  // capture does not pull the user back from wherever they scrolled.
+  useEffect(() => {
+    if (proofScrollNonce > 0) proofSectionRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [proofScrollNonce]);
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
@@ -7853,16 +8131,6 @@ export function AgentChatPane({
     readableSessionId,
     refreshComputerUseSnapshot,
   ]);
-
-  useEffect(() => {
-    setChatActionsOpen(false);
-    setHandoffBusy(false);
-    setModelPickerOpenRequest(undefined);
-    optimisticOutgoingMessageRef.current = null;
-    setOptimisticOutgoingMessage(null);
-    // The full composer bucket effect above owns draft/context hydration for
-    // session and lane switches; this effect resets transient chat UI only.
-  }, [selectedSessionId, laneId]);
 
   useEffect(() => {
     optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;
@@ -8531,7 +8799,7 @@ export function AgentChatPane({
       if (prev.some((entry) => entry.path === attachment.path)) return prev;
       return [...prev, attachment];
     });
-  }, [claimDraftAttachmentOwner]);
+  }, [claimDraftAttachmentOwner, setAttachments]);
 
   const saveContextScreenshot = useCallback(async (args: {
     dataUrl: string;
@@ -8606,7 +8874,7 @@ export function AgentChatPane({
       },
       ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
     ]);
-  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot]);
+  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot, setAttachments]);
 
   const addAppControlContext = useCallback(async (item: AppControlContextItem) => {
     claimDraftAttachmentOwner();
@@ -8933,7 +9201,7 @@ export function AgentChatPane({
     setIosElementContextItems((prev) => prev.filter((entry) => getIosContextAttachmentPath(entry) !== attachmentPath));
     setAppControlContextItems((prev) => prev.filter((entry) => getAppControlContextAttachmentPath(entry) !== attachmentPath));
     setBuiltInBrowserContextItems((prev) => prev.filter((entry) => getBuiltInBrowserContextAttachmentPath(entry) !== attachmentPath));
-  }, []);
+  }, [setAttachments]);
 
   const addContextAttachment = useCallback((attachment: AgentChatContextAttachment) => {
     setContextAttachments((prev) => mergeChatContextAttachments(prev, [attachment]));
@@ -9153,8 +9421,9 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
       setMentionLabels(saved.mentionLabels);
       setDraft(saved.text);
+      updateSubmittedDraftTextEdit(saved.submittedDraftTextEdit);
       draftAttachmentOwnerBindingRef.current = saved.attachmentOwnerBinding;
-      setAttachments(saved.attachments);
+      setAttachmentsWithIds(saved.attachments, saved.attachmentDraftIds);
       setContextAttachments(saved.contextAttachments);
       setIosElementContextItems(saved.iosContextItems);
       setAppControlContextItems(saved.appControlContextItems);
@@ -9174,26 +9443,77 @@ export function AgentChatPane({
           updatedAt: saved.updatedAt,
         });
       }
+      setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
       return;
     }
     const savedText = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setMentionLabels({});
     setDraft(savedText);
+    updateSubmittedDraftTextEdit(null);
     draftAttachmentOwnerBindingRef.current = null;
-    setAttachments([]);
+    setAttachmentsWithIds([], []);
     setContextAttachments([]);
     setIosElementContextItems([]);
     setAppControlContextItems([]);
     setBuiltInBrowserContextItems([]);
     setDraftLaunchTargetId(null);
+    setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
   }, [
     applyLaunchConfigToComposer,
     companionStateKey,
+    composerDraftStorageKeyValue,
     composerDraftStorageKeyValues,
     draftLaunchConfigScopeKey,
     initialNativeControls,
     selectedSessionId,
+    setAttachmentsWithIds,
+    updateSubmittedDraftTextEdit,
   ]);
+
+  const currentComposerDraftSnapshot = useMemo<ComposerDraftStorageSnapshot>(() => ({
+    version: 1,
+    text: draft,
+    mentionLabels,
+    modelId,
+    reasoningEffort,
+    fastMode,
+    cursorCloudServiceTier,
+    executionMode,
+    controls: {
+      ...currentNativeControls,
+      cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
+    },
+    attachments,
+    attachmentDraftIds: [...attachmentDraftIdsRef.current],
+    submittedDraftTextEdit,
+    attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
+    contextAttachments,
+    iosContextItems: iosElementContextItems,
+    appControlContextItems,
+    builtInBrowserContextItems,
+    draftLaunchTargetId,
+    updatedAt: new Date().toISOString(),
+  }), [
+    appControlContextItems,
+    attachments,
+    builtInBrowserContextItems,
+    contextAttachments,
+    cursorCloudServiceTier,
+    currentNativeControls,
+    draft,
+    draftLaunchTargetId,
+    executionMode,
+    fastMode,
+    iosElementContextItems,
+    mentionLabels,
+    modelId,
+    reasoningEffort,
+    submittedDraftTextEdit,
+  ]);
+  latestComposerDraftSnapshotRef.current = {
+    storageKey: composerDraftStorageKeyValue,
+    snapshot: currentComposerDraftSnapshot,
+  };
 
   useEffect(() => {
     if (composerDraftHydratingRef.current) {
@@ -9203,31 +9523,9 @@ export function AgentChatPane({
       if (draft === hydratedText) return;
     }
     draftsPerSessionRef.current.set(companionStateKey, draft);
-    const snapshot: ComposerDraftStorageSnapshot = {
-      version: 1,
-      text: draft,
-      mentionLabels,
-      modelId,
-      reasoningEffort,
-      fastMode,
-      cursorCloudServiceTier,
-      executionMode,
-      controls: {
-        ...currentNativeControls,
-        cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
-      },
-      attachments,
-      attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
-      contextAttachments,
-      iosContextItems: iosElementContextItems,
-      appControlContextItems,
-      builtInBrowserContextItems,
-      draftLaunchTargetId,
-      updatedAt: new Date().toISOString(),
-    };
     pendingComposerDraftWriteRef.current = {
       storageKey: composerDraftStorageKeyValue,
-      snapshot,
+      snapshot: currentComposerDraftSnapshot,
     };
     if (composerDraftWriteTimerRef.current != null) {
       window.clearTimeout(composerDraftWriteTimerRef.current);
@@ -9240,24 +9538,7 @@ export function AgentChatPane({
         writeComposerDraftSnapshot(pending.storageKey, pending.snapshot);
       }
     }, COMPOSER_DRAFT_WRITE_DEBOUNCE_MS);
-  }, [
-    appControlContextItems,
-    attachments,
-    builtInBrowserContextItems,
-    cursorCloudServiceTier,
-    fastMode,
-    companionStateKey,
-    composerDraftStorageKeyValue,
-    contextAttachments,
-    currentNativeControls,
-    draft,
-    draftLaunchTargetId,
-    executionMode,
-    iosElementContextItems,
-    modelId,
-    mentionLabels,
-    reasoningEffort,
-  ]);
+  }, [companionStateKey, composerDraftStorageKeyValue, currentComposerDraftSnapshot, draft]);
 
   useEffect(() => {
     if (!parallelChatMode) return;
@@ -9518,6 +9799,7 @@ export function AgentChatPane({
         cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
       },
       attachments: [...attachments],
+      attachmentDraftIds: [...attachmentDraftIdsRef.current],
       contextAttachments: contextAttachmentsSnapshot,
       iosContextItems: iosContextSnapshot,
       appControlContextItems: appControlContextSnapshot,
@@ -9529,6 +9811,7 @@ export function AgentChatPane({
   }, [
     appControlContextItems,
     attachments,
+    attachmentDraftIdsRef,
     builtInBrowserContextItems,
     cursorCloudServiceTier,
     fastMode,
@@ -9577,7 +9860,7 @@ export function AgentChatPane({
         updatedAt: new Date().toISOString(),
       });
     }
-  }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey]);
+  }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey, setAttachments]);
 
   // A cancelled or deleted new-lane launch hands its prompt back here, merged
   // into whatever is already typed (see `chatLaunchDraftRestore`).
@@ -9602,7 +9885,7 @@ export function AgentChatPane({
     if (chatLaunchDraftRestore.prompt.attachments.length) {
       setAttachments((current) => mergeAttachments(current, chatLaunchDraftRestore.prompt.attachments));
     }
-  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot]);
+  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot, setAttachments]);
 
   const patchDraftLaunchJob = useCallback((jobId: string, patch: Partial<DraftLaunchJob>) => {
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs(current.map((job) => (
@@ -9617,6 +9900,7 @@ export function AgentChatPane({
   }, [draftLaunchJobsScopeKey]);
 
   const dismissDraftLaunchJob = useCallback((jobId: string) => {
+    discardRendererLaunchHandoff(jobId);
     setDraftLaunchJobs((current) => current.filter((job) => job.id !== jobId));
   }, [setDraftLaunchJobs]);
 
@@ -9626,9 +9910,38 @@ export function AgentChatPane({
     if (options?.clearError) setError(null);
   }, [dismissDraftLaunchJob, restoreDraftLaunchSnapshot]);
 
-  const openLaunchedDraftSession = useCallback((launch: BackgroundLaunchNotice & { jobId?: string }) => {
+  const openLaunchedDraftSession = useCallback((launch: OpenLaunchedDraftSessionInput) => {
     if (launch.jobId) {
       dismissDraftLaunchJob(launch.jobId);
+    }
+    if (launch.draftKind === "chat" && launch.firstMessage) {
+      // The chat exists and its prompt is sent, but the new pane has nothing
+      // to show until history loads: hand it the prompt as its first bubble,
+      // plus where the composer and text sat so both can animate into place.
+      const prepared = launch.firstMessage;
+      const firstMessage: AgentChatEventEnvelope = {
+        sessionId: launch.sessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "user_message",
+          text: prepared.finalText,
+          displayText: prepared.finalDisplayText || "Selected visual app context",
+          ...(prepared.selectedAttachments.length ? { attachments: prepared.selectedAttachments } : {}),
+          ...(prepared.selectedContextAttachments.length ? { contextAttachments: prepared.selectedContextAttachments } : {}),
+        },
+      };
+      if (launch.composerHandoff) {
+        const handoff = refreshComposerHandoffDeparture(
+          launch.composerHandoff,
+          draftDepartingScope(shellRef.current),
+        );
+        stashComposerHandoffOrigin(launch.sessionId, { ...handoff, firstMessage });
+      } else {
+        stashComposerDockOrigin(launch.sessionId, findDraftComposerHandoffElement(shellRef.current), {
+          departingScope: draftDepartingScope(shellRef.current),
+          firstMessage,
+        });
+      }
     }
     if (projectRoot) {
       setWorkViewState(projectRoot, (prev) => ({
@@ -9674,8 +9987,118 @@ export function AgentChatPane({
   // directly with no status banner. If the inline open was skipped because this
   // pane remounted mid-launch, this effect opens the ready job from whichever
   // instance is mounted.
+  const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
+    const clearSubmittedContent = (saved: ComposerDraftStorageSnapshot): ComposerDraftStorageSnapshot => {
+      const text = clearSubmittedDraftText(saved.text, snapshot.draft, saved.submittedDraftTextEdit);
+      const clearText = text !== saved.text;
+      const attachmentResult = removeSubmittedDraftItemsById(
+        saved.attachments,
+        saved.attachmentDraftIds,
+        snapshot.attachments,
+        snapshot.attachmentDraftIds ?? [],
+        sameStoredDraftItem,
+      );
+      const consumesSubmittedTextEdit = saved.submittedDraftTextEdit?.submittedText === snapshot.draft;
+      const attachments = attachmentResult.items;
+      const contextAttachments = removeSubmittedDraftItems(
+        saved.contextAttachments,
+        snapshot.contextAttachments,
+        sameStoredDraftItem,
+      );
+      const iosContextItems = removeSubmittedDraftItems(saved.iosContextItems, snapshot.iosContextItems, sameStoredDraftItem);
+      const appControlContextItems = removeSubmittedDraftItems(
+        saved.appControlContextItems,
+        snapshot.appControlContextItems,
+        sameStoredDraftItem,
+      );
+      const builtInBrowserContextItems = removeSubmittedDraftItems(
+        saved.builtInBrowserContextItems,
+        snapshot.builtInBrowserContextItems,
+        sameStoredDraftItem,
+      );
+      if (
+        !clearText
+        && attachments.length === saved.attachments.length
+        && attachments.every((attachment, index) => attachment === saved.attachments[index])
+        && attachmentResult.ids.every((id, index) => id === saved.attachmentDraftIds[index])
+        && !consumesSubmittedTextEdit
+        && contextAttachments === saved.contextAttachments
+        && iosContextItems === saved.iosContextItems
+        && appControlContextItems === saved.appControlContextItems
+        && builtInBrowserContextItems === saved.builtInBrowserContextItems
+      ) return saved;
+      return {
+        ...saved,
+        text,
+        mentionLabels: text !== saved.text || consumesSubmittedTextEdit
+          ? Object.fromEntries(Object.entries(saved.mentionLabels).filter(([token]) => text.includes(token)))
+          : saved.mentionLabels,
+        attachments,
+        attachmentDraftIds: attachmentResult.ids,
+        submittedDraftTextEdit: consumesSubmittedTextEdit
+          ? null
+          : saved.submittedDraftTextEdit,
+        contextAttachments,
+        iosContextItems,
+        appControlContextItems,
+        builtInBrowserContextItems,
+        updatedAt: new Date().toISOString(),
+      };
+    };
+
+    const storageKeys = new Set(composerDraftStorageKeyValues);
+    // A detached renderer-owned launch callback may outlive a newer pane.
+    // That pane flushes its composer draft on unmount, so persisted storage is
+    // authoritative once this instance is gone.
+    const paneIsMounted = paneMountedRef.current;
+    const pending = paneIsMounted ? pendingComposerDraftWriteRef.current : null;
+    const latest = paneIsMounted ? latestComposerDraftSnapshotRef.current : null;
+    const latestDraft = latest && storageKeys.has(latest.storageKey) && !composerDraftHydratingRef.current
+      ? latest
+      : null;
+    for (const storageKey of storageKeys) {
+      const saved = readComposerDraftSnapshot(storageKey, initialNativeControls);
+      let current = saved;
+      if (pending?.storageKey === storageKey) current = pending.snapshot;
+      if (latestDraft?.storageKey === storageKey) current = latestDraft.snapshot;
+      const clearedSaved = saved ? clearSubmittedContent(saved) : null;
+      const clearedCurrent = current ? clearSubmittedContent(current) : null;
+      if (clearedSaved && clearedSaved !== saved) writeComposerDraftSnapshot(storageKey, clearedSaved);
+      if (clearedCurrent && clearedCurrent !== current) writeComposerDraftSnapshot(storageKey, clearedCurrent);
+      const reconciled = clearedCurrent ?? clearedSaved;
+      if (pending?.storageKey === storageKey && reconciled && pending.snapshot !== reconciled) {
+        pendingComposerDraftWriteRef.current = { ...pending, snapshot: reconciled };
+      }
+    }
+
+    const submittedTextEdit = submittedDraftTextEditRef.current;
+    setDraft((current) => {
+      const next = clearSubmittedDraftText(current, snapshot.draft, submittedTextEdit);
+      if (next === current) return current;
+      draftsPerSessionRef.current.set(companionStateKey, next);
+      return next;
+    });
+    updateSubmittedDraftTextEdit(null);
+    const liveAttachmentResult = removeSubmittedDraftItemsById(
+      attachmentsRef.current,
+      attachmentDraftIdsRef.current,
+      snapshot.attachments,
+      snapshot.attachmentDraftIds ?? [],
+      sameStoredDraftItem,
+    );
+    setAttachments(liveAttachmentResult.items);
+    setContextAttachments((current) => removeSubmittedDraftItems(current, snapshot.contextAttachments, sameStoredDraftItem));
+    setIosElementContextItems((current) => removeSubmittedDraftItems(current, snapshot.iosContextItems, sameStoredDraftItem));
+    setAppControlContextItems((current) => removeSubmittedDraftItems(current, snapshot.appControlContextItems, sameStoredDraftItem));
+    setBuiltInBrowserContextItems((current) => removeSubmittedDraftItems(current, snapshot.builtInBrowserContextItems, sameStoredDraftItem));
+  }, [companionStateKey, composerDraftStorageKeyValues, initialNativeControls, setAttachments, updateSubmittedDraftTextEdit]);
+
   useEffect(() => {
     if (!forceDraft) return;
+    // A ready launch can outlive the pane that started it. Wait for this
+    // mount's stored composer scope to commit before reconciling it; the first
+    // render still contains the empty pre-hydration state.
+    if (hydratedComposerDraftStorageKey !== composerDraftStorageKeyValue) return;
     const job = draftLaunchJobs.find(
       (entry) => entry.mode === "foreground"
         && entry.status === "ready"
@@ -9683,14 +10106,30 @@ export function AgentChatPane({
         && Boolean(entry.laneId && entry.laneName && entry.sessionId),
     );
     if (!job) return;
+    const composerHandoff = takeRendererLaunchHandoff(job.id);
+    if (job.mode === "foreground" && job.draftKind === "chat") {
+      // A remounted draft pane can collect more composer input while this
+      // launch is pending. Reconcile its persisted and debounced snapshots
+      // before changing composer scope so teardown cannot restore sent items.
+      clearDraftLaunchComposer(job.snapshot);
+    }
     openLaunchedDraftSession({
       laneId: job.laneId!,
       laneName: job.laneName!,
       sessionId: job.sessionId!,
       draftKind: job.draftKind,
       jobId: job.id,
+      ...(job.draftKind === "chat" ? { firstMessage: prepareDraftLaunch(job.snapshot) } : {}),
+      composerHandoff,
     });
-  }, [draftLaunchJobs, forceDraft, openLaunchedDraftSession]);
+  }, [
+    clearDraftLaunchComposer,
+    composerDraftStorageKeyValue,
+    draftLaunchJobs,
+    forceDraft,
+    hydratedComposerDraftStorageKey,
+    openLaunchedDraftSession,
+  ]);
 
   // Shared background-naming lifecycle: flag the affected lanes as "naming", ask
   // the backend for a name (it has its own timeout and returns the deterministic
@@ -9968,19 +10407,6 @@ export function AgentChatPane({
     startBackgroundLaneNaming,
   ]);
 
-  const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
-    setDraft((current) => {
-      if (current !== snapshot.draft) return current;
-      draftsPerSessionRef.current.set(companionStateKey, "");
-      return "";
-    });
-    setAttachments([]);
-    setContextAttachments([]);
-    setIosElementContextItems([]);
-    setAppControlContextItems([]);
-    setBuiltInBrowserContextItems([]);
-  }, [companionStateKey]);
-
   const cleanupDraftChatSession = useCallback(async (
     session: AgentChatSession,
     targetLane: DraftLaunchLaneTarget,
@@ -10223,7 +10649,9 @@ export function AgentChatPane({
     setError(null);
     const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
     if (opensNow) {
-      stashComposerDockOrigin(launchId, shellRef.current?.querySelector("[data-chat-composer-wrapper]"));
+      stashComposerDockOrigin(launchId, findDraftComposerHandoffElement(shellRef.current), {
+        departingScope: draftDepartingScope(shellRef.current),
+      });
     }
     clearDraftLaunchComposer(snapshot);
     if (opensNow) {
@@ -10271,6 +10699,20 @@ export function AgentChatPane({
     }
     if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
     if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
+    if (kind === "chat" && mode === "foreground") {
+      const scopedJobs = rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+        ?? EMPTY_DRAFT_LAUNCH_JOBS;
+      if (scopedJobs.some((job) => (
+        job.draftKind === "chat"
+        && job.mode === "foreground"
+        && !isDraftLaunchJobTerminal(job.status)
+      ))) {
+        // A changed composer snapshot has a different request key, but it is
+        // still the same held foreground launch until the first chat settles.
+        setError("A foreground chat launch is already in progress.");
+        return;
+      }
+    }
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -10315,6 +10757,10 @@ export function AgentChatPane({
       latestForegroundJobIdRef: latestForegroundDraftLaunchJobIdRef,
       inFlightKeysRef: draftLaunchInFlightKeysRef,
       paneMountedRef,
+      captureHandoffOrigin: () => captureComposerHandoff(
+        findDraftComposerHandoffElement(shellRef.current),
+        { departingScope: draftDepartingScope(shellRef.current) },
+      ),
       prepare: prepareDraftLaunch,
       resolveLane: resolveDraftLaunchLane,
       startChat: startDraftChatLaunch,
@@ -10350,6 +10796,7 @@ export function AgentChatPane({
     clearPromptSuggestionForSession,
     clearDraftLaunchComposer,
     draftLaunchJobExists,
+    draftLaunchJobsScopeKey,
     draftLaunchTargetIsAutoCreate,
     isWorkCliLaunchDraft,
     laneId,
@@ -10359,7 +10806,6 @@ export function AgentChatPane({
     openLaunchedDraftSession,
     patchDraftLaunchJob,
     parallelLaunchBusy,
-    projectBinding,
     projectTransitionBlocksChat,
     copyPromptForLaunch,
     refreshLanesStore,
@@ -11906,7 +12352,11 @@ export function AgentChatPane({
         deferredComposerSessionIdRef.current = null;
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
-        // No session yet — create one
+        // No session yet — create one. The empty-state composer holds the
+        // text until the chat exists; measure it now for the send handoff.
+        inPlaceFirstSendHandoffRef.current = suppressOptimisticOutgoing
+          ? null
+          : captureComposerHandoff(findDraftComposerHandoffElement(shellRef.current));
         sessionId = await createSession();
         if (!sessionId) {
           throw new Error("Unable to create chat session.");
@@ -12031,6 +12481,7 @@ export function AgentChatPane({
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setOptimisticOutgoingMessageSynced(null);
+      inPlaceFirstSendHandoffRef.current = null;
       setError(message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
@@ -12080,6 +12531,7 @@ export function AgentChatPane({
     selectedSessionId,
     selectedSessionModelId,
     setOptimisticOutgoingMessageSynced,
+    setAttachments,
     sessionProvider,
     cursorRuntime,
     touchSession,
@@ -13191,7 +13643,10 @@ export function AgentChatPane({
     </div>
   );
   const proofTabContent = (
-    <div className="border-t border-white/[0.06] px-4 py-3">
+    <div ref={proofDrawerRef} className="border-t border-white/[0.06] px-4 py-3">
+      {computerUseSnapshot && proofArtifactCount === 0 ? (
+        <p className="font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
+      ) : null}
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
@@ -13473,7 +13928,7 @@ export function AgentChatPane({
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       agentsContent={agentsTabContent}
-      proofContent={proofArtifactCount > 0 ? proofTabContent : null}
+      proofContent={proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot) ? proofTabContent : null}
       extras={(
         <>
           {selectedMission ? (
@@ -13557,7 +14012,7 @@ export function AgentChatPane({
           Close
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <div ref={appleDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
           <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
             {auxiliaryToolDisabledReason}
@@ -13644,11 +14099,7 @@ export function AgentChatPane({
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
         <IosSimulatorRunningPill
           deviceName={iosSimulatorSessionChip.deviceName}
-          onOpen={() => {
-            setAppControlOpen(false);
-            setCursorCloudPaneOpen(false);
-            setIosSimulatorOpen(true);
-          }}
+          onOpen={openIosSimulatorDrawer}
           onFloat={() => {
             // §7: Float opens the mini player, which owns native PiP in its
             // own hover bar. The auto-appearing corner card it used to ask is
@@ -14370,6 +14821,8 @@ export function AgentChatPane({
                   cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
                 },
                 attachments: [...attachments],
+                attachmentDraftIds: [...attachmentDraftIdsRef.current],
+                submittedDraftTextEdit: submittedDraftTextEditRef.current,
                 attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
                 contextAttachments: [...contextAttachments],
                 iosContextItems: [...iosElementContextItems],
@@ -14627,6 +15080,7 @@ export function AgentChatPane({
   const composerWithTypographyRoot = (
     <div
       ref={composerDockRef}
+      data-chat-composer-dock
       data-chat-appearance-root
       style={{ ...chatAppearanceRootStyle, paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
@@ -15246,6 +15700,7 @@ export function AgentChatPane({
                         appPanelOpen ? null : "max-w-[680px]",
                       )}>
                         <motion.div
+                          data-draft-depart="fade"
                           className={cn(
                             // The logo is the only flexible row: in a short window it absorbs the
                             // overflow down to a legible floor, so the composer stays visible far
@@ -15290,6 +15745,7 @@ export function AgentChatPane({
                                 ? "w-full"
                                 : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
                             )}
+                            data-draft-depart="fade"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
                             <div className="flex min-w-0 items-center gap-2">
@@ -15471,7 +15927,7 @@ export function AgentChatPane({
                             exit={{ opacity: 0, y: 6 }}
                             transition={{ duration: 0.28, ease: "easeOut" }}
                           >
-                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="">
+                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="" data-draft-depart="fade">
                               <WorkActivityModule />
                             </div>
                           </motion.div>

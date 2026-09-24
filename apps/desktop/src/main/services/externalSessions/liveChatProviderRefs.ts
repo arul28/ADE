@@ -15,6 +15,10 @@ const PROVIDERS = new Set<ExternalSessionProvider>([
   "droid",
   "opencode",
   "pi",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
 ]);
 
 function asProvider(value: unknown): ExternalSessionProvider | null {
@@ -50,6 +54,41 @@ export function providerPointersFromChatRecord(raw: unknown): ProviderPointer[] 
   return pointersFromRecord(raw);
 }
 
+/** The slice of the chat service the live-chat pointer scan needs. */
+export type LiveChatSessionLister = {
+  listSessions(
+    laneId: undefined,
+    options: { includeIdentity: boolean; includeAutomation: boolean; includeArchived: boolean },
+  ): Promise<ReadonlyArray<{ sessionId: string }>>;
+};
+
+/**
+ * Every provider pointer a live chat holds, not only `importedFrom`, so a
+ * session ADE itself runs never lists as importable. Both hosts (desktop main
+ * and the headless brain) wire this in, and it goes through the same extractor
+ * as the on-disk scan so both sides key a chat the same way: rolling a second
+ * one is how `unified` (OpenCode's persisted provider value) ended up keyed as
+ * `unified:<id>` on one path and `opencode:<id>` on the other, leaving live
+ * OpenCode chats visible in the import list.
+ */
+export function chatImportedRefsProvider(
+  chatService: LiveChatSessionLister,
+): () => Promise<ImportedChatSessionRef[]> {
+  return async () => {
+    const sessions = await chatService.listSessions(undefined, {
+      includeIdentity: true,
+      includeAutomation: true,
+      includeArchived: false,
+    });
+    return sessions.flatMap((session) =>
+      providerPointersFromChatRecord(session).map((pointer) => ({
+        provider: pointer.provider,
+        externalId: pointer.externalId,
+        chatSessionId: session.sessionId,
+      })));
+  };
+}
+
 function pointersFromRecord(raw: unknown): ProviderPointer[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const record = raw as Record<string, unknown>;
@@ -58,7 +97,10 @@ function pointersFromRecord(raw: unknown): ProviderPointer[] {
   const importedFrom = record.importedFrom && typeof record.importedFrom === "object"
     ? record.importedFrom as Record<string, unknown>
     : null;
-  pushPointer(pointers, asProvider(importedFrom?.provider) ?? provider, asId(importedFrom?.sessionId));
+  // A copy leaves its original untouched, so only a continue claims it.
+  if (importedFrom?.mode !== "fork") {
+    pushPointer(pointers, asProvider(importedFrom?.provider) ?? provider, asId(importedFrom?.sessionId));
+  }
   pushPointer(pointers, "claude", asId(record.sdkSessionId));
   pushPointer(pointers, "codex", asId(record.threadId));
   pushPointer(pointers, provider === "opencode" || !provider ? "opencode" : provider, asId(record.providerSessionId));
@@ -66,6 +108,9 @@ function pointersFromRecord(raw: unknown): ProviderPointer[] {
   pushPointer(pointers, "pi", asId(record.piSessionId) ?? asId(record.piSessionFile));
   pushPointer(pointers, "cursor", asId(record.cursorSdkAgentId));
   pushPointer(pointers, "cursor", asId(record.cursorCloudAgentId));
+  if (provider === "qwen" || provider === "kimi" || provider === "grok" || provider === "copilot") {
+    pushPointer(pointers, provider, asId(record.acpSessionId));
+  }
   return pointers;
 }
 

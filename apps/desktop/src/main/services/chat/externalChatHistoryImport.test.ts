@@ -79,6 +79,9 @@ describe("claudeJsonlToChatEvents", () => {
     ];
 
     const events = claudeJsonlToChatEvents(lines, baseOptions);
+    // The notice heads the history in time too, not only in order: a view
+    // sorted by time showed it under the whole conversation.
+    expect(Date.parse(events[0]!.timestamp)).toBeLessThan(Date.parse("2026-07-06T10:00:00.000Z"));
 
     expect(events.map((envelope) => envelope.event.type)).toEqual([
       "system_notice",
