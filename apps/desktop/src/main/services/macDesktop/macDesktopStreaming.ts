@@ -28,6 +28,24 @@ import {
 /** The transport the server minted, token included. Never leaves this process. */
 type LaneTransport = MacDesktopStreamTransportWithSecret;
 
+/**
+ * How long a running stream may carry no bytes before a `fresh` start treats
+ * it as dead. The driver re-sends a keyframe every second to a reader of a
+ * still desktop, so a healthy stream with a reader is never quiet this long.
+ */
+export const MAC_DESKTOP_STREAM_STALE_MS = 3_000;
+
+/**
+ * True when a run has sent nothing for `MAC_DESKTOP_STREAM_STALE_MS`, counted
+ * from its last byte or, before the first one, from its start.
+ */
+export function macDesktopStreamIsStale(
+  metrics: { startedAtMs: number; lastBytesAtMs: number | null },
+  nowMs: number,
+): boolean {
+  return nowMs - Math.max(metrics.startedAtMs, metrics.lastBytesAtMs ?? 0) >= MAC_DESKTOP_STREAM_STALE_MS;
+}
+
 export type MacDesktopStreamingDeps = {
   logger: Logger;
   now: () => number;
@@ -66,6 +84,15 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    * the lane look like a chat's turn is active.
    */
   const streamSubscriptions = new Map<string, Set<string>>();
+  /**
+   * laneId → the start that is waiting on the driver right now.
+   *
+   * A second ask for the same lane while the first is in flight joins it. The
+   * two used to both see "no stream" and both call the driver, which built two
+   * encoders on two ports: the viewer holding the first address read a stream
+   * nothing fed any more (the owner's 2026-09-24 "Connecting video" report).
+   */
+  const startingStreams = new Map<string, Promise<LaneTransport>>();
 
   /** True when this chat was not a viewer of the lane yet. */
   const addStreamOwner = (laneId: string, chatSessionId: string | null | undefined): boolean => {
@@ -183,24 +210,11 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     return false;
   };
 
-  async function startStreamFor(
-    args: Pick<MacDesktopStartStreamArgs, "laneId" | "fps" | "idleFps">,
-    owner: StreamOwner,
-  ): Promise<MacDesktopStreamStatus> {
-    const laneId = args.laneId.trim();
-    deps.requireDisplay(laneId);
-    const running = streamServer.getTransport(laneId);
-    if (running) {
-      // A reconnecting viewer asks again. Restarting would mint a second token
-      // and cut off every client holding the first one, so the live stream and
-      // its token are handed back unchanged; only a stopped stream mints one.
-      // A chat joining changes the viewer list the floating card reads.
-      if (addOwner(laneId, owner)) {
-        deps.emit({ type: "stream-status", status: buildStreamStatus(laneId, { redacted: true }) });
-      }
-      deps.touchDisplay(laneId);
-      return buildStreamStatus(laneId, { redacted: false, transport: running });
-    }
+  /** The driver half of a start: one encoder, one port, one token. */
+  async function openStream(
+    laneId: string,
+    args: Pick<MacDesktopStartStreamArgs, "fps" | "idleFps">,
+  ): Promise<LaneTransport> {
     const provider = await deps.ensureProvider();
     deps.assertPermission("screenRecording");
     const fps = clampFps(args.fps, MAC_DESKTOP_ACTIVE_FPS);
@@ -212,7 +226,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     if (!sourcePort) {
       throw deps.driverUnavailable("The desktop driver did not hand back a stream port.");
     }
-    const transport = await streamServer.start({
+    return await streamServer.start({
       laneId,
       sourcePort,
       codec: typeof reply.codec === "string" ? reply.codec : null,
@@ -221,11 +235,59 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       fps,
       idleFps,
     });
-    addOwner(laneId, owner);
+  }
+
+  async function startStreamFor(
+    args: Pick<MacDesktopStartStreamArgs, "laneId" | "fps" | "idleFps" | "fresh">,
+    owner: StreamOwner,
+  ): Promise<MacDesktopStreamStatus> {
+    const laneId = args.laneId.trim();
+    deps.requireDisplay(laneId);
+    let running = streamServer.getTransport(laneId);
+    const metrics = running ? streamServer.metrics(laneId) : null;
+    if (running && args.fresh === true && metrics && macDesktopStreamIsStale(metrics, deps.now())) {
+      // A viewer's Reconnect on a run that has sent nothing for seconds. Handing
+      // it the same run again is what left Reconnect doing nothing, so this run
+      // ends and a new one starts. Other viewers hear `stream-stopped` and ask
+      // again, which hands them the new run.
+      deps.logger.info("mac_desktop.stream_restarted_stale", {
+        laneId,
+        quietMs: deps.now() - Math.max(metrics.startedAtMs, metrics.lastBytesAtMs ?? 0),
+        clients: metrics.clients,
+      });
+      await stopStream(laneId, "stale-restart");
+      running = null;
+    }
+    if (running) {
+      // A reconnecting viewer asks again. Restarting would mint a second token
+      // and cut off every client holding the first one, so the live stream and
+      // its token are handed back unchanged; only a stopped stream mints one.
+      // A chat joining changes the viewer list the floating card reads.
+      if (addOwner(laneId, owner)) {
+        deps.emit({ type: "stream-status", status: buildStreamStatus(laneId, { redacted: true }) });
+      }
+      deps.touchDisplay(laneId);
+      return buildStreamStatus(laneId, { redacted: false, transport: running });
+    }
+    let pending = startingStreams.get(laneId);
+    const joined = pending !== undefined;
+    if (!pending) {
+      const opening = openStream(laneId, args).finally(() => {
+        if (startingStreams.get(laneId) === opening) startingStreams.delete(laneId);
+      });
+      startingStreams.set(laneId, opening);
+      pending = opening;
+    }
+    const transport = await pending;
+    const added = addOwner(laneId, owner);
     deps.touchDisplay(laneId);
     // The only call that hands out the token.
     const status = buildStreamStatus(laneId, { redacted: false, transport });
-    deps.emit({ type: "stream-started", status: buildStreamStatus(laneId, { redacted: true }) });
+    if (!joined) {
+      deps.emit({ type: "stream-started", status: buildStreamStatus(laneId, { redacted: true }) });
+    } else if (added) {
+      deps.emit({ type: "stream-status", status: buildStreamStatus(laneId, { redacted: true }) });
+    }
     return status;
   }
 

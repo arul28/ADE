@@ -157,8 +157,8 @@ extension DriverRuntime {
                 pid = first.pid
             } else {
                 throw DriverError(
-                    code: DriverErrorCode.noDisplay,
-                    message: "Lane \(laneId) has no window to send a key to."
+                    code: DriverErrorCode.noWindow,
+                    message: "Lane \(laneId) has a display but no window to send a key to."
                 )
             }
             // A ⌘-shortcut must act on the lane's window, never the user's: one
@@ -168,6 +168,7 @@ extension DriverRuntime {
             // The lane launched it (not merely claimed a window of it) and every
             // real window it has is on the lane: only then may ⌘Q quit it.
             let appBelongsToLane = !laneWindows.isEmpty
+                && windows.launchedApps.isLaunched(pid: pid, byLane: laneId)
                 && laneWindows.allSatisfy { $0.origin == "ade_launched" }
                 && !windows.listWindows(pid: pid).contains { !laneWindowIds.contains($0.id) }
             switch LaneShortcut.plan(key: key, modifiers: modifiers, appBelongsToLane: appBelongsToLane) {
@@ -217,8 +218,8 @@ extension DriverRuntime {
             }
             guard let first = windows.listWindows(laneId: laneId).first else {
                 throw DriverError(
-                    code: DriverErrorCode.noDisplay,
-                    message: "Lane \(laneId) has no window to scroll."
+                    code: DriverErrorCode.noWindow,
+                    message: "Lane \(laneId) has a display but no window to scroll."
                 )
             }
             try accessibility.scroll(pid: first.pid, direction: direction, amount: amount)

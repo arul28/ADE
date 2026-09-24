@@ -16,6 +16,7 @@
 import type {
   DesktopSeatProvider,
   DesktopSeatReply,
+  MacDesktopAppLeftOpen,
   MacDesktopInputMode,
   MacDesktopWalkStop,
   MacDesktopWindow,
@@ -56,6 +57,26 @@ export const asNumber = (value: unknown, fallback: number): number =>
 /** A driver field that should have been a non-empty string. */
 export const asNullableString = (value: unknown): string | null =>
   (typeof value === "string" && value.trim().length ? value.trim() : null);
+
+/** A driver field that should have been a list of strings; other entries are dropped. */
+export const asStringList = (value: unknown): string[] =>
+  (Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : []);
+
+/**
+ * The driver's `appsLeftOpen`: the apps a stopped lane opened that did not
+ * quit, usually because they asked to save. Malformed rows are dropped.
+ */
+export const asAppsLeftOpen = (value: unknown): MacDesktopAppLeftOpen[] =>
+  (Array.isArray(value) ? value : []).flatMap((entry) => {
+    const record = asRecord(entry);
+    const appName = asNullableString(record.appName);
+    if (!appName) return [];
+    return [{
+      pid: asNumber(record.pid, 0),
+      appName,
+      message: asNullableString(record.message) ?? `${appName} did not quit. It moved to your screen.`,
+    }];
+  });
 
 const WALK_STOPS: ReadonlySet<string> = new Set<MacDesktopWalkStop>(["timeout", "stalled", "node_cap", "limit"]);
 

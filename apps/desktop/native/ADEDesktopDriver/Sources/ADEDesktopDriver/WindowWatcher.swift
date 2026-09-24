@@ -13,12 +13,13 @@ import Foundation
 import ADEDesktopDriverCore
 
 extension WindowControl {
-    func startWatching(pid: pid_t, laneId: String) {
-        lock.lock()
-        let alreadyWatching = watchedPids[pid] != nil
-        watchedPids[pid] = laneId
-        knownWindowsByPid[pid] = Set(listWindows(pid: pid).map(\.id))
-        lock.unlock()
+    /// Watches a pid for new windows. `launched` is whether the lane started
+    /// this instance: every window of a launched app is the lane's, while
+    /// only the windows a claimed (user) app opens later are parked.
+    func startWatching(pid: pid_t, laneId: String, launched: Bool) {
+        let alreadyWatching = newWindows.isWatching(pid: pid)
+        let existing = alreadyWatching || launched ? [] : listWindows(pid: pid).map(\.id)
+        newWindows.watch(pid: pid, laneId: laneId, launched: launched, existing: existing)
         if !alreadyWatching {
             installObserver(pid: pid)
         }
@@ -26,10 +27,9 @@ extension WindowControl {
     }
 
     func stopWatching(pid: pid_t) {
+        newWindows.unwatch(pid: pid)
         lock.lock()
         defer { lock.unlock() }
-        watchedPids.removeValue(forKey: pid)
-        knownWindowsByPid.removeValue(forKey: pid)
         if let observer = observers.removeValue(forKey: pid) {
             CFRunLoopRemoveSource(
                 CFRunLoopGetMain(),
@@ -80,62 +80,76 @@ extension WindowControl {
 
     /// Adopt new windows of watched pids, and drag escaped windows back.
     func sweep() {
-        lock.lock()
-        let watched = watchedPids
-        lock.unlock()
+        // A park pumps the run loop while it waits for a window to be ready,
+        // and the poll timer and the observer callbacks fire inside that
+        // pump. A nested sweep would try the same window again inside the
+        // first attempt, so it is skipped; the next tick does its work.
+        guard !isSweeping else { return }
+        isSweeping = true
+        defer { isSweeping = false }
+        let watched = newWindows.watchedPids
         var touchedLanes = Set<String>()
 
         for (pid, laneId) in watched {
             guard NSRunningApplication(processIdentifier: pid) != nil else {
                 stopWatching(pid: pid)
+                launchedApps.forget(pid: pid)
                 touchedLanes.insert(laneId)
                 continue
             }
             let current = listWindows(pid: pid)
-            lock.lock()
-            let known = knownWindowsByPid[pid] ?? []
-            knownWindowsByPid[pid] = Set(current.map(\.id))
-            lock.unlock()
-            for window in current where !known.contains(window.id) && window.laneId == nil {
+            let unowned = Set(current.filter { $0.laneId == nil }.map(\.id))
+            let candidates = newWindows.candidates(pid: pid, current: current.map(\.id), unowned: unowned)
+            let origin = newWindows.originForNewWindow(pid: pid)
+            for windowId in candidates {
+                // The display can go away inside this loop: a park pumps the
+                // run loop, and a `display.destroy` runs inside that pump.
+                guard placement(forLane: laneId) != nil, newWindows.isWatching(pid: pid) else { break }
                 do {
-                    _ = try park(laneId: laneId, windowId: window.id, origin: "ade_launched")
-                    notReadyLogged.remove(window.id)
+                    _ = try park(laneId: laneId, windowId: windowId, origin: origin)
                     touchedLanes.insert(laneId)
                 } catch {
                     let code = (error as? DriverError)?.code
                     if code == DriverErrorCode.windowNotReady {
-                        // Not a failure, a "not yet". Forgetting the window here
-                        // is what makes the next poll try again: `known` is the
-                        // only record that this sweep already considered it.
-                        lock.lock()
-                        knownWindowsByPid[pid]?.remove(window.id)
-                        lock.unlock()
+                        // Not a failure, a "not yet" — but not forever. A
+                        // restored window that never publishes an element
+                        // cost a 1.5-second readiness wait on every sweep.
+                        let decision = newWindows.noteNotReady(pid: pid, windowId: windowId)
                         emit(
                             DriverEvent(
                                 event: "window-not-parked",
                                 fields: [
                                     "laneId": .string(laneId),
-                                    "windowId": .int(Int(window.id)),
+                                    "windowId": .int(Int(windowId)),
                                     "reason": .string("not_ready"),
                                 ]
                             )
                         )
-                        if notReadyLogged.insert(window.id).inserted {
-                            log("window \(window.id) of pid \(pid) is not ready yet; retrying on each poll")
+                        switch decision {
+                        case .retry(let isFirst):
+                            if isFirst {
+                                log("window \(windowId) of pid \(pid) is not ready yet; retrying up to \(newWindows.maxNotReadyAttempts) times")
+                            }
+                        case .giveUp:
+                            log("window \(windowId) of pid \(pid) never became ready; leaving it where it is")
                         }
                     } else {
+                        newWindows.noteFailed(pid: pid, windowId: windowId)
+                        // A window that ended between the listing and the park
+                        // is not news.
+                        guard code != DriverErrorCode.windowNotFound else { continue }
                         emit(
                             DriverEvent(
                                 event: "window-not-parked",
                                 fields: [
                                     "laneId": .string(laneId),
-                                    "windowId": .int(Int(window.id)),
+                                    "windowId": .int(Int(windowId)),
                                     "reason": .string(code ?? "error"),
                                     "message": .string((error as? DriverError)?.message ?? "\(error)"),
                                 ]
                             )
                         )
-                        log("could not park new window \(window.id) of pid \(pid): \(error)")
+                        log("could not park new window \(windowId) of pid \(pid): \(error)")
                     }
                 }
             }
@@ -203,10 +217,7 @@ extension WindowControl {
     func dispose() {
         pollTimer?.invalidate()
         pollTimer = nil
-        lock.lock()
-        let pids = Array(watchedPids.keys)
-        lock.unlock()
-        for pid in pids {
+        for pid in newWindows.watchedPids.keys {
             stopWatching(pid: pid)
         }
     }

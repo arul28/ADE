@@ -136,6 +136,10 @@ public enum DriverErrorCode {
     public static let permissionRequired = "MAC_DESKTOP_PERMISSION_REQUIRED"
     public static let displayUnavailable = "MAC_DESKTOP_DISPLAY_UNAVAILABLE"
     public static let noDisplay = "MAC_DESKTOP_NO_DISPLAY"
+    /// The lane has a display, but no window on it to act on. Not
+    /// `noDisplay`: that one sends the caller to `start`, which does nothing
+    /// for a display that already exists.
+    public static let noWindow = "MAC_DESKTOP_NO_WINDOW"
     public static let appOwnedByOtherLane = "MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE"
     public static let windowNotFound = "MAC_DESKTOP_WINDOW_NOT_FOUND"
     public static let handleExpired = "MAC_DESKTOP_HANDLE_EXPIRED"
@@ -212,7 +216,7 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// |---|---|---|
 /// | `ping` | — | `{version, permissions, displayMode, virtualDisplay, idleSeconds, pid}` |
 /// | `display.create` | `laneId,name,width,height,scale` | `MacDesktopDisplay` |
-/// | `display.destroy` | `laneId,reason?` | `{destroyed, releasedWindows}` |
+/// | `display.destroy` | `laneId,reason?` | `{destroyed, releasedWindows, quitApps, appsLeftOpen}` — quits the app instances the lane launched first |
 /// | `display.reconcile` | `liveLaneIds` | `{destroyed: string[]}` |
 /// | `watch-permissions` | `watch` | `{watch}` — refcounts the probe with the display condition |
 /// | `request-permission` | `which,allowPrompt` | `{requested, permissions}` — prompts only when `allowPrompt` |

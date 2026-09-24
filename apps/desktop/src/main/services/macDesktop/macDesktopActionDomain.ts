@@ -407,6 +407,8 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       laneId: requiredLaneId(args, "startStream"),
       fps: optionalNumber(args, "fps"),
       idleFps: optionalNumber(args, "idleFps"),
+      // A remote desktop's Reconnect: see `MacDesktopStartStreamArgs.fresh`.
+      fresh: optionalBoolean(args, "fresh"),
       ...chatSessionId(args),
     })),
     stopStream: (args?: unknown) => gated(() => service.stopStream({

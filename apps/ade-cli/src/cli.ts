@@ -163,6 +163,7 @@ import {
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
   MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
   MAC_DESKTOP_NO_DISPLAY_CODE,
+  MAC_DESKTOP_NO_WINDOW_CODE,
   MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
   MAC_DESKTOP_PROOF_BACKEND_NAME,
@@ -2380,7 +2381,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop start --text                     Create this lane's display
     $ ade mac-desktop display --text                   Show the resolution
     $ ade mac-desktop display 1440p --text             Set it (1080p, 1440p, 4k)
-    $ ade mac-desktop stop --text                      Destroy it and unpark its windows
+    $ ade mac-desktop stop --text                      Quit the apps it opened, return your windows
     $ ade mac-desktop show --text                      Show it to the user in the tools pane
     $ ade mac-desktop show --floating --text           ...or as the floating card over the chat
 
@@ -11989,6 +11990,11 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
     "No virtual display could be created on this Mac. `ade mac-desktop status --text` reports the mode it fell back to.",
   ],
   [MAC_DESKTOP_NO_DISPLAY_CODE, "This lane has no display yet — run: ade mac-desktop start"],
+  [
+    // The display exists; there is nothing on it to act on. `start` would not help.
+    MAC_DESKTOP_NO_WINDOW_CODE,
+    "This lane's display has no window — open an app (ade mac-desktop open <app>) or claim a window (ade mac-desktop claim --window <id>).",
+  ],
   [
     // The message already names the holding lane; the hint does not restate it.
     MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,

@@ -83,6 +83,10 @@ export type MacDesktopStreamLaneMetrics = {
   width: number | null;
   height: number | null;
   port: number;
+  /** When this run was started. */
+  startedAtMs: number;
+  /** When a reader was last sent bytes, or null for never. */
+  lastBytesAtMs: number | null;
 };
 
 export type MacDesktopStreamServerDeps = {
@@ -183,6 +187,8 @@ type LaneStream = {
   windowStartedAtMs: number;
   bitrateKbps: number | null;
   lastError: string | null;
+  startedAtMs: number;
+  lastBytesAtMs: number | null;
   graceTimer: ReturnType<typeof setTimeout> | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
 };
@@ -247,6 +253,7 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
 
   const recordBytes = (lane: LaneStream, byteLength: number): void => {
     lane.bytesInWindow += byteLength;
+    lane.lastBytesAtMs = now();
     const elapsedMs = now() - lane.windowStartedAtMs;
     if (elapsedMs < 1_000) return;
     lane.bitrateKbps = Math.round((lane.bytesInWindow * 8) / elapsedMs);
@@ -432,6 +439,8 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
     width: lane.width,
     height: lane.height,
     port,
+    startedAtMs: lane.startedAtMs,
+    lastBytesAtMs: lane.lastBytesAtMs,
   });
 
   const stopLane = (laneId: string, reason: string): boolean => {
@@ -482,6 +491,8 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
         windowStartedAtMs: now(),
         bitrateKbps: null,
         lastError: null,
+        startedAtMs: now(),
+        lastBytesAtMs: null,
         graceTimer: null,
         idleTimer: null,
       };

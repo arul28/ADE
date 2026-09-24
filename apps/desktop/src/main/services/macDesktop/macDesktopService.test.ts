@@ -20,6 +20,7 @@ import {
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
 import { createMacDesktopService } from "./macDesktopService";
+import { MAC_DESKTOP_STREAM_STALE_MS } from "./macDesktopStreaming";
 import { readProofProvenance } from "../../../shared/proofProvenance";
 
 const logger = {
@@ -1282,6 +1283,68 @@ describe("macDesktopService streaming", () => {
     service.dispose();
   });
 
+  it("regression: two starts in flight for one lane share one encoder and one token", async () => {
+    // Coming back to a chat mounted two viewers of the lane a beat apart, and
+    // both asked while the first start was still waiting on the driver. Each
+    // saw no running stream and started one, so the driver built two encoders
+    // on two ports and the viewer holding the first address read a dead one.
+    const releases: Array<() => void> = [];
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.startStream]: async () => {
+        await new Promise<void>((resolve) => {
+          releases.push(resolve);
+        });
+        return { port: 65_000, codec: "avc1.640032", width: 2560, height: 1440 };
+      },
+    });
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    const first = service.startStream({ laneId: "lane-1", chatSessionId: "chat-a" });
+    const second = service.startStream({ laneId: "lane-1", chatSessionId: "chat-b" });
+    await vi.waitFor(() => expect(releases.length).toBeGreaterThan(0));
+    // Let both callers reach the driver if they are going to.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (const release of releases) release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startStream)).toHaveLength(1);
+    expect(b.transport?.token).toBe(a.transport?.token);
+    expect(events.filter((event) => event.type === "stream-started")).toHaveLength(1);
+    // The second chat still joined the viewer list.
+    expect((await service.getStreamStatus({ laneId: "lane-1" })).viewerChatSessionIds.sort())
+      .toEqual(["chat-a", "chat-b"]);
+    service.dispose();
+  });
+
+  it("regression: Reconnect on a stream that delivers nothing starts a new one", async () => {
+    // Reconnect asked `startStream` again and was handed the same dead run
+    // every time, so it never recovered. A `fresh` ask on a stream that has
+    // carried no bytes for a while stops it and opens a new one.
+    let clock = 1_000_000;
+    let port = 65_000;
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.startStream]: () => ({ port: port++, codec: "avc1.640032", width: 2560, height: 1440 }),
+    });
+    const { service } = makeService({ driver, now: () => clock });
+    await service.start({ laneId: "lane-1" });
+    const first = await service.startStream({ laneId: "lane-1", chatSessionId: "chat-a" });
+    const starts = () => driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startStream).length;
+
+    // Just started: a fresh ask is still a read, not a restart.
+    clock += 500;
+    const early = await service.startStream({ laneId: "lane-1", chatSessionId: "chat-a", fresh: true });
+    expect(early.transport?.token).toBe(first.transport?.token);
+    expect(starts()).toBe(1);
+
+    // Nothing arrived for longer than a still desktop's keep-alive allows.
+    clock += MAC_DESKTOP_STREAM_STALE_MS;
+    const restarted = await service.startStream({ laneId: "lane-1", chatSessionId: "chat-a", fresh: true });
+    expect(starts()).toBe(2);
+    expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopStream)).toBe(true);
+    expect(restarted.transport?.token).toBeTruthy();
+    expect(restarted.transport?.token).not.toBe(first.transport?.token);
+    service.dispose();
+  });
+
   it("keeps a shared stream alive when one of its two chats ends", async () => {
     // The idempotent arm used to hand back the live stream without recording
     // who asked, so the first chat to end took down a stream the second chat
@@ -1446,6 +1509,44 @@ describe("macDesktopService teardown", () => {
     const destroyed = events.filter((event) => event.type === "display-destroyed");
     expect(destroyed).toHaveLength(1);
     expect(destroyed[0]).toMatchObject({ laneId: "lane-1", reason: "stopped" });
+    service.dispose();
+  });
+
+  it("stop names the apps the lane opened that quit, and the ones that stayed to save", async () => {
+    const driver = createFakeDriver();
+    const { service, events } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+    const message = "TextEdit did not quit, probably because it has unsaved work. It moved to your screen.";
+    driver.overrides[MAC_DESKTOP_DRIVER_OPS.destroyDisplay] = () => ({
+      destroyed: true,
+      releasedWindows: 1,
+      quitApps: ["Safari", 7],
+      appsLeftOpen: [{ pid: 88, appName: "TextEdit", message }, { pid: 3 }],
+    });
+    const result = await service.stop({ laneId: "lane-1" });
+    // Malformed rows are dropped rather than shown as blank names.
+    expect(result).toEqual({
+      stopped: true,
+      releasedWindows: 1,
+      quitApps: ["Safari"],
+      appsLeftOpen: [{ pid: 88, appName: "TextEdit", message }],
+    });
+    // Every surface hears it, not only the caller of `stop`: idle release has no caller.
+    expect(events.filter((event) => event.type === "display-destroyed")).toEqual([
+      { type: "display-destroyed", laneId: "lane-1", reason: "stopped", appsLeftOpen: [{ pid: 88, appName: "TextEdit", message }] },
+    ]);
+    service.dispose();
+  });
+
+  it("stop against an older driver answers with empty app lists", async () => {
+    const { service } = makeService();
+    await service.start({ laneId: "lane-1" });
+    await expect(service.stop({ laneId: "lane-1" })).resolves.toEqual({
+      stopped: true,
+      releasedWindows: 0,
+      quitApps: [],
+      appsLeftOpen: [],
+    });
     service.dispose();
   });
 

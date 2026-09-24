@@ -37,6 +37,8 @@ export const MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE = "MAC_DESKTOP_DRIVER_UNAVAILAB
 export const MAC_DESKTOP_PERMISSION_REQUIRED_CODE = "MAC_DESKTOP_PERMISSION_REQUIRED" as const;
 export const MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE = "MAC_DESKTOP_DISPLAY_UNAVAILABLE" as const;
 export const MAC_DESKTOP_NO_DISPLAY_CODE = "MAC_DESKTOP_NO_DISPLAY" as const;
+/** The lane has a display, but no window on it to send a key or a scroll to. */
+export const MAC_DESKTOP_NO_WINDOW_CODE = "MAC_DESKTOP_NO_WINDOW" as const;
 export const MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE = "MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE" as const;
 export const MAC_DESKTOP_WINDOW_NOT_FOUND_CODE = "MAC_DESKTOP_WINDOW_NOT_FOUND" as const;
 export const MAC_DESKTOP_HANDLE_EXPIRED_CODE = "MAC_DESKTOP_HANDLE_EXPIRED" as const;
@@ -59,6 +61,7 @@ export type MacDesktopErrorCode =
   | typeof MAC_DESKTOP_PERMISSION_REQUIRED_CODE
   | typeof MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE
   | typeof MAC_DESKTOP_NO_DISPLAY_CODE
+  | typeof MAC_DESKTOP_NO_WINDOW_CODE
   | typeof MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE
   | typeof MAC_DESKTOP_WINDOW_NOT_FOUND_CODE
   | typeof MAC_DESKTOP_HANDLE_EXPIRED_CODE
@@ -654,6 +657,13 @@ export type MacDesktopStartStreamArgs = {
   /** Rate while nothing is happening. The service clamps this. */
   idleFps?: number | null;
   chatSessionId?: string | null;
+  /**
+   * A viewer's Reconnect. A running stream is still handed back unchanged,
+   * unless it has sent nothing for `MAC_DESKTOP_STREAM_STALE_MS`: then it is
+   * stopped and a new one started, because handing back a dead run is what
+   * made Reconnect do nothing.
+   */
+  fresh?: boolean | null;
 };
 
 export type MacDesktopStopStreamArgs = {
@@ -860,10 +870,26 @@ export type MacDesktopStopArgs = {
   chatSessionId?: string | null;
 };
 
+/**
+ * An app the lane opened that did not quit when its display was stopped —
+ * usually because it asked to save — and whose windows moved to the user's
+ * main screen instead.
+ */
+export type MacDesktopAppLeftOpen = {
+  pid: number;
+  appName: string;
+  /** "TextEdit did not quit, probably because it has unsaved work. It moved to your screen." */
+  message: string;
+};
+
 export type MacDesktopStopResult = {
   stopped: boolean;
-  /** Windows moved back to the main display on the way out. */
+  /** Claimed windows moved back to the main display on the way out. */
   releasedWindows: number;
+  /** Apps the lane opened that quit. Absent from an older driver. */
+  quitApps?: string[];
+  /** Apps the lane opened that did not quit and moved to the main screen. */
+  appsLeftOpen?: MacDesktopAppLeftOpen[];
 };
 
 /** Move the lane's windows to the user's main display, and back again. */
@@ -879,7 +905,13 @@ export type MacDesktopPresentArgs = {
 
 export type MacDesktopEventPayload =
   | { type: "display-created"; display: MacDesktopDisplay }
-  | { type: "display-destroyed"; laneId: string; reason: "stopped" | "idle" | "lane_removed" | "driver_lost" }
+  | {
+    type: "display-destroyed";
+    laneId: string;
+    reason: "stopped" | "idle" | "lane_removed" | "driver_lost";
+    /** Apps the lane opened that did not quit and moved to the main screen. */
+    appsLeftOpen?: MacDesktopAppLeftOpen[];
+  }
   | { type: "windows-changed"; laneId: string; windows: MacDesktopWindow[] }
   | { type: "observation"; laneId: string; observation: MacDesktopObservation }
   | { type: "lease-changed"; laneId: string; lease: MacDesktopLeaseState | null }

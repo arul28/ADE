@@ -38,7 +38,12 @@ extension WindowControl {
         }
 
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.arguments = arguments
+        // A blank copy: no restored windows, tabs or documents. A new Safari
+        // instance restored every window the user had open. See `BlankLaunch`.
+        configuration.arguments = BlankLaunch.arguments(
+            engine: Self.launchEngine(for: url, workspace: workspace),
+            userArguments: arguments
+        )
         configuration.activates = false
         // A second copy keeps two lanes out of each other's process where the
         // app allows it. Single-instance apps ignore this and hand back the
@@ -50,6 +55,10 @@ extension WindowControl {
         // thread and is read on this one, and a plain captured `var` read
         // inside the pump loop below is a data race the optimiser may resolve
         // by never re-reading it.
+        // What ran before the launch, so an instance the user started — which
+        // a single-instance app hands back instead of a new one — is never
+        // taken for the lane's, and never quit by `stop`.
+        let runningBefore = Set(workspace.runningApplications.map(\.processIdentifier))
         let launchedBox = ValueBox<NSRunningApplication>()
         let failureBox = ValueBox<Error>()
         let settled = SettledFlag()
@@ -103,18 +112,34 @@ extension WindowControl {
             throw OwnershipError.appOwnedByOtherLane(bundleId: bundleId, holderLaneId: holder).driverError
         }
 
-        startWatching(pid: pid, laneId: laneId)
-        // Park whatever already exists; the watcher catches the rest.
+        let isLanes = launchedApps.record(
+            pid: pid,
+            laneId: laneId,
+            appName: launched.localizedName ?? target,
+            bundleId: launched.bundleIdentifier,
+            wasRunningBefore: runningBefore.contains(pid)
+        )
+        if !isLanes {
+            log("launch of \"\(target)\" handed back pid \(pid), which was already running; only its new windows are parked, and stop does not quit it")
+        }
+        startWatching(pid: pid, laneId: laneId, launched: isLanes)
+        // Park whatever already exists; the watcher catches the rest. An
+        // instance the user started keeps the windows it already had.
         var parked: [DesktopWindow] = []
         let windowDeadline = Date().addingTimeInterval(3)
-        while Date() < windowDeadline, parked.isEmpty {
+        while isLanes, Date() < windowDeadline, parked.isEmpty {
             for window in listWindows(pid: pid) where window.laneId == nil {
+                // Checked per window as well: each park that is not ready yet
+                // waits about 1.5 s, and a dozen restored windows would have
+                // run this past the dispatcher's watchdog.
+                guard Date() < windowDeadline else { break }
                 do {
                     parked.append(try park(laneId: laneId, windowId: window.id, origin: "ade_launched"))
                 } catch {
                     // A window that is not ready yet is the watcher's problem,
                     // not the launch's: `launch` answers with what is parked so
                     // far and `watching: true`, exactly as its result type says.
+                    // It stays a candidate for the watcher's sweep.
                     log("launch could not park window \(window.id) yet: \(error)")
                 }
             }
@@ -129,5 +154,28 @@ extension WindowControl {
             windows: parked,
             watching: true
         )
+    }
+
+    /// Whether the app behind a launch target reads AppKit defaults from its
+    /// command line. A target that is a document or a URL is judged by the
+    /// app that opens it. Unknown means AppKit: that is every Mac app that is
+    /// not a Chromium, Electron or Gecko shell.
+    static func launchEngine(for url: URL, workspace: NSWorkspace) -> BlankLaunch.Engine {
+        let appURL: URL?
+        if url.isFileURL, url.pathExtension == "app" {
+            appURL = url
+        } else {
+            appURL = workspace.urlForApplication(toOpen: url)
+        }
+        guard let appURL else { return .appKit }
+        let contents = appURL.appendingPathComponent("Contents")
+        let fileManager = FileManager.default
+        let frameworks = (try? fileManager.contentsOfDirectory(
+            atPath: contents.appendingPathComponent("Frameworks").path
+        )) ?? []
+        let executables = (try? fileManager.contentsOfDirectory(
+            atPath: contents.appendingPathComponent("MacOS").path
+        )) ?? []
+        return BlankLaunch.engine(frameworkNames: frameworks, executableNames: executables)
     }
 }

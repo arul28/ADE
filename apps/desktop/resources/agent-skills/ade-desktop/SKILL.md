@@ -10,6 +10,10 @@ apps on it, and drives them through the Accessibility API. The user's real
 display and real pointer are never touched, so you never have to ask before
 clicking — with one exception, the input lease below.
 
+For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser**
+skill) by default. Open Safari or another browser here only when the user names
+that app or asks for the Mac Desktop.
+
 macOS runtime hosts only. `ade mac-desktop status --text` answers everywhere;
 every other command refuses off macOS with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 `--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
@@ -42,7 +46,7 @@ Use these directly; you do not need `--help` for them.
 | Take a screenshot | `ade mac-desktop screenshot --out shot.png --text` |
 | Show the screen to the user | `ade mac-desktop show --text` (tools pane) or `--floating` |
 | Close your own window | `ade mac-desktop press w --cmd --text` |
-| Stop the screen | `ade mac-desktop stop --text` |
+| Stop the screen (quits the apps the lane opened) | `ade mac-desktop stop --text` |
 
 ## Operating loop
 
@@ -59,9 +63,10 @@ ade mac-desktop windows --text
 is the app's own argv. Run `start` first: `open` and the rest refuse with "Start
 one first" when the lane has no display. Viewing the screen does not start it,
 and an idle display with no windows and no viewer closes itself after a while.
-`open` starts a separate copy of the app for the lane, so it never shares a
-process with the user's windows. To adopt a window that is already running,
-claim it:
+`open` starts a separate, blank copy of the app for the lane: no restored
+windows, tabs or documents, and never a process shared with the user's windows.
+The copy still shares that app's data with the user (cookies, history, recent
+files). To adopt a window that is already running, claim it:
 
 ```bash
 ade mac-desktop claim --window <id> --text
@@ -72,9 +77,12 @@ Window ids die with their process. Re-run `windows` rather than caching one.
 
 `open` answers before the app has a window (`watching: yes`, no windows yet).
 Wait for it before you observe — `ade mac-desktop wait --label "<window title>"
---timeout 8000 --text`, or re-run `windows`. Some apps open no window when
-launched bare (TextEdit, Preview): open a file with them, or press ⌘N
-(`ade mac-desktop press n --cmd --text`) once the app is up.
+--timeout 8000 --text`, or re-run `windows`. A document app such as TextEdit
+opens an empty untitled document. An app that opens no window when launched
+bare (Preview): open a file with it, or press ⌘N (`ade mac-desktop press n
+--cmd --text`) once the app is up. `MAC_DESKTOP_NO_WINDOW` means the display
+exists but has no window yet: open an app or claim a window; do not run
+`start` again.
 
 ### 2. Observe before you act
 
@@ -135,8 +143,12 @@ a native menu, a control with no `AXPress`.
   To finish, close your own window with `ade mac-desktop press w --cmd --text`
   (it presses the window's close button) or `release` it. ⌘W refuses a window
   the lane claimed from the user — release that one — and ⌘Q quits only an app
-  the lane itself opened with `open`; for any other app it refuses. Do not "reset" an app the user has
-  open to get a clean start — open a new window for your task instead.
+  the lane itself opened with `open`; for any other app it refuses. Do not
+  "reset" an app the user has open to get a clean start — open a new window
+  for your task instead.
+- **`stop` quits the apps the lane opened.** Windows you claimed go back to the
+  user's screen; they are never quit. An app that asks to save does not quit:
+  it moves to the user's screen, and `stop` names it. Tell the user.
 - **`ade: Unknown command 'mac-desktop'` means your shell found an older
   `ade`,** not that the lane has no screen: a login shell can rebuild PATH and
   put an installed CLI ahead of the one this ADE launched. Run the same command

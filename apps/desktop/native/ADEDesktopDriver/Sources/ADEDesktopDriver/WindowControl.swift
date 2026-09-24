@@ -128,13 +128,17 @@ final class WindowControl {
     private var originalFrames: [CGWindowID: CGRect] = [:]
     var reparkAttempts: [CGWindowID: Int] = [:]
     private var windowOrigins: [CGWindowID: String] = [:]
-    var watchedPids: [pid_t: String] = [:]
     var observers: [pid_t: AXObserver] = [:]
-    var knownWindowsByPid: [pid_t: Set<CGWindowID>] = [:]
-    /// Windows the sweep has already logged as "not ready". The sweep retries
-    /// such a window every second, and its log now reaches the machine log,
-    /// so the line is written once per window rather than once per second.
-    var notReadyLogged: Set<CGWindowID> = []
+    /// The watched pids, and which of their windows the sweep still has to
+    /// park. See `NewWindowTracker`.
+    let newWindows = NewWindowTracker()
+    /// The app instances each lane started. Only these quit when the lane's
+    /// display goes away.
+    let launchedApps = LaunchedAppRegistry()
+    /// True while a sweep runs. A park inside a sweep pumps the run loop, and
+    /// the poll timer or an observer callback would otherwise start a second
+    /// sweep inside the first one.
+    var isSweeping = false
     var pollTimer: Timer?
     private var placements: [String: DisplayPlacement] = [:]
     private var displayIds: [String: CGDirectDisplayID] = [:]
@@ -173,7 +177,7 @@ final class WindowControl {
         defer { lock.unlock() }
         placements.removeValue(forKey: laneId)
         displayIds.removeValue(forKey: laneId)
-        for (pid, lane) in watchedPids where lane == laneId {
+        for (pid, lane) in newWindows.watchedPids where lane == laneId {
             stopWatching(pid: pid)
         }
     }
@@ -609,7 +613,8 @@ final class WindowControl {
         parked.frame = Self.frame(of: element) ?? target
         parked.origin = origin
         parked.onDisplayId = displayIds[laneId]
-        startWatching(pid: window.pid, laneId: laneId)
+        startWatching(pid: window.pid, laneId: laneId, launched: launchedApps.isLaunched(pid: window.pid, byLane: laneId))
+        newWindows.noteParked(pid: window.pid, windowId: windowId)
         emitWindowsChanged(laneId: laneId)
         return parked
     }
@@ -684,6 +689,90 @@ final class WindowControl {
         }
         clearPlacement(laneId: laneId)
         return held.count
+    }
+
+    /// How long `stop` waits for the lane's apps to quit before it moves the
+    /// ones still running to the user's screen. A healthy app quits in well
+    /// under a second; one that asks to save never quits on its own.
+    static let quitWait: TimeInterval = 4
+
+    /// Quits every app instance the lane launched, and moves the windows of
+    /// any that do not quit in time to the user's main screen.
+    ///
+    /// Runs before the lane's display goes away, so a save sheet the quit
+    /// brings up is attached to a window that is then moved where the user
+    /// can see it. Only instances in `launchedApps` are asked: an instance the
+    /// user started is never quit, even when the lane claimed one of its
+    /// windows. `wait` 0 asks and does not wait, for a driver that is exiting.
+    func quitLaunchedApps(laneId: String, wait: TimeInterval = WindowControl.quitWait) -> LaneQuitReport {
+        let apps = launchedApps.forgetLane(laneId)
+        guard !apps.isEmpty else { return .empty }
+        var asked: [pid_t: NSRunningApplication] = [:]
+        for app in apps {
+            // Unwatched first: a save sheet or a last window the app shows
+            // while it quits must not be parked again.
+            stopWatching(pid: app.pid)
+            guard let running = NSRunningApplication(processIdentifier: app.pid),
+                  !running.isTerminated else { continue }
+            asked[app.pid] = running
+            if !running.terminate() {
+                log("\(app.appName) (pid \(app.pid)) refused the request to quit")
+            }
+        }
+        guard wait > 0 else { return LaneQuitReport(quit: apps.map(\.appName), leftOpen: []) }
+        RunLoopPump.wait(until: { asked.values.allSatisfy(\.isTerminated) }, timeout: wait)
+        let stillRunning = Set(asked.filter { !$0.value.isTerminated }.map(\.key))
+        let report = LaneQuitReport.settle(
+            apps: apps.filter { asked[$0.pid] != nil },
+            stillRunning: stillRunning
+        )
+        for app in report.leftOpen {
+            let moved = moveWindowsToMainScreen(pid: app.pid, laneId: laneId)
+            log("\(app.appName) did not quit within \(Int(wait))s; moved \(moved) window(s) to the main screen")
+        }
+        if !report.quit.isEmpty {
+            log("quit \(report.quit.joined(separator: ", ")) for lane \(laneId)")
+        }
+        return report
+    }
+
+    /// Moves every window of `pid` that the lane holds or that sits on the
+    /// lane's display to the user's main screen, and drops the lane's hold on
+    /// them. Returns how many moved.
+    @discardableResult
+    func moveWindowsToMainScreen(pid: pid_t, laneId: String) -> Int {
+        let mainBounds = CGDisplayBounds(CGMainDisplayID())
+        let main = DisplayPlacement(
+            origin: mainBounds.origin,
+            width: mainBounds.width,
+            height: mainBounds.height,
+            scale: 1
+        )
+        lock.lock()
+        let laneDisplay = displayIds[laneId]
+        lock.unlock()
+        var moved = 0
+        for window in listWindows(pid: pid) {
+            let owned = ownership.owner(ofWindow: Int(window.id)) == laneId
+            guard owned || (laneDisplay != nil && window.onDisplayId == laneDisplay) else { continue }
+            if owned {
+                ownership.unpark(windowId: Int(window.id))
+                lock.lock()
+                originalFrames.removeValue(forKey: window.id)
+                reparkAttempts.removeValue(forKey: window.id)
+                windowOrigins.removeValue(forKey: window.id)
+                lock.unlock()
+            }
+            guard let element = axWindow(for: window) else { continue }
+            let size = CGSize(
+                width: min(window.frame.width, main.width),
+                height: min(window.frame.height, main.height)
+            )
+            if Self.setFrame(element, Geometry.cascadeFrame(index: moved, size: size, display: main)) {
+                moved += 1
+            }
+        }
+        return moved
     }
 
     /// `present`: bring the lane's windows to the user's main display, or send

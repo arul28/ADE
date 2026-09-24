@@ -2799,7 +2799,14 @@ describe("buildComputerUseDirective", () => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), {
       macDesktopAvailable: true,
     })!;
-    expect(result).toContain("### Mac Desktop — this lane's own screen (use it first)");
+    expect(result).toContain("### Mac Desktop — this lane's own screen (use it for desktop apps)");
+    // Web work goes to ADE's browser unless the user names a desktop browser.
+    expect(result).toContain("use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default");
+    expect(result).toContain("only when the user names that app or asks for the Mac Desktop");
+    // `open` is a blank copy that shares the app's data; `stop` quits what the lane opened.
+    expect(result).toContain("`open` starts a separate, blank copy of the app");
+    expect(result).toContain("shares that app's data (cookies, history) with the user");
+    expect(result).toContain("`ade mac-desktop stop` quits the apps the lane opened");
     expect(result).toContain("ade mac-desktop record start --caption");
     expect(result).toMatch(/do not fall back to the user's real screen/);
     // Same words as the Apple lane hint: an ok result is not a confirmed step,

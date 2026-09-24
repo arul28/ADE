@@ -25,6 +25,7 @@ import {
   type MacDesktopInputResult,
   type MacDesktopMoveArgs,
   type DesktopSeatProvider,
+  type MacDesktopAppLeftOpen,
   type MacDesktopClaimArgs,
   type MacDesktopClickArgs,
   type MacDesktopDisplay,
@@ -89,10 +90,12 @@ import { createMacDesktopObservations, MacDesktopObservationError } from "./macD
 import { createMacDesktopInput } from "./macDesktopInput";
 import { createMacDesktopRecording, readCaptureBytes } from "./macDesktopRecording";
 import {
+  asAppsLeftOpen,
   asDisplayLaneIds,
   asNullableString,
   asNumber,
   asRecord,
+  asStringList,
   asWindows,
   createMacVirtualDisplayProvider,
 } from "./macDesktopSeatProvider";
@@ -385,6 +388,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         deps.logger[payload.reason === "driver_lost" ? "warn" : "info"]("mac_desktop.display_destroyed", {
           laneId: payload.laneId,
           reason: payload.reason,
+          ...(payload.appsLeftOpen?.length ? { appsLeftOpen: payload.appsLeftOpen.map((app) => app.appName) } : {}),
         });
         return;
       case "stream-started":
@@ -713,7 +717,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // `terminated`: the window server ended the display. To every client
         // that is the same fact as a lost driver — the screen is gone and
         // nobody asked — so it is published with that reason.
-        forgetDisplay(laneId, asNullableString(event.reason) === "terminated" ? "driver_lost" : "stopped");
+        forgetDisplay(
+          laneId,
+          asNullableString(event.reason) === "terminated" ? "driver_lost" : "stopped",
+          asAppsLeftOpen(event.appsLeftOpen),
+        );
         return;
       }
       default:
@@ -750,7 +758,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
    * before the display itself. `destroyDisplay` is the path for a display ADE
    * asked to destroy.
    */
-  const forgetDisplay = (laneId: string, reason: MacDesktopDisplayDestroyedReason): void => {
+  const forgetDisplay = (
+    laneId: string,
+    reason: MacDesktopDisplayDestroyedReason,
+    appsLeftOpen: MacDesktopAppLeftOpen[] = [],
+  ): void => {
     const hadDisplay = ownership.hasDisplay(laneId);
     const hadWindows = ownership.windowCount(laneId) > 0;
     const wasStreaming = streamServer.isStreaming(laneId);
@@ -776,7 +788,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     }
     if (hadLease) emit({ type: "lease-changed", laneId, lease: null });
     if (hadWindows) emit({ type: "windows-changed", laneId, windows: [] });
-    if (hadDisplay) emit({ type: "display-destroyed", laneId, reason });
+    if (hadDisplay) {
+      emit({ type: "display-destroyed", laneId, reason, ...(appsLeftOpen.length ? { appsLeftOpen } : {}) });
+    }
   };
 
   const onDriverLost = (reason: string): void => {
@@ -963,8 +977,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // The driver has no resize op, so a new size is a new display. Saying
       // "ok" and leaving the old size in place — which is what returning the
       // existing display did — made `ade mac-desktop display 1080p` a no-op
-      // that reported success. The parked windows go back to the user's screen,
-      // the same as `stop`, and the caller re-opens what it still needs.
+      // that reported success. The same as `stop`: the apps the lane opened
+      // quit, claimed windows go back to the user's screen, and the caller
+      // re-opens what it still needs.
       await destroyDisplay(laneId, "stopped");
     }
     const seat = await ensureProvider();
@@ -1011,7 +1026,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const destroyDisplay = async (
     laneId: string,
     reason: "stopped" | "idle" | "lane_removed" | "driver_lost",
-  ): Promise<{ destroyed: boolean; releasedWindows: number }> => {
+  ): Promise<{
+    destroyed: boolean;
+    releasedWindows: number;
+    quitApps: string[];
+    appsLeftOpen: MacDesktopAppLeftOpen[];
+  }> => {
     const had = ownership.hasDisplay(laneId);
     destroyingLanes.add(laneId);
     try {
@@ -1023,11 +1043,26 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       observations.forgetLane(laneId);
       leases.releaseLane(laneId);
       let releasedWindows = ownership.windowCount(laneId);
+      // The helper quits the app instances this lane launched before the
+      // display goes; an app that stays (it asked to save) moved to the main
+      // screen, and is named so the person knows to look for it.
+      let quitApps: string[] = [];
+      let appsLeftOpen: MacDesktopAppLeftOpen[] = [];
       const seat = isDarwin ? activeProvider() : null;
       if (seat) {
         try {
           const reply = await seat.destroy({ laneId });
           releasedWindows = asNumber(reply.releasedWindows, releasedWindows);
+          quitApps = asStringList(reply.quitApps);
+          appsLeftOpen = asAppsLeftOpen(reply.appsLeftOpen);
+          if (quitApps.length || appsLeftOpen.length) {
+            deps.logger.info("mac_desktop.lane_apps_quit", {
+              laneId,
+              reason,
+              quit: quitApps,
+              leftOpen: appsLeftOpen.map((app) => app.appName),
+            });
+          }
         } catch (error) {
           deps.logger.warn("mac_desktop.destroy_display_failed", {
             laneId,
@@ -1036,8 +1071,15 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         }
       }
       ownership.removeDisplay(laneId);
-      if (had) emit({ type: "display-destroyed", laneId, reason });
-      return { destroyed: had, releasedWindows };
+      if (had) {
+        emit({
+          type: "display-destroyed",
+          laneId,
+          reason,
+          ...(appsLeftOpen.length ? { appsLeftOpen } : {}),
+        });
+      }
+      return { destroyed: had, releasedWindows, quitApps, appsLeftOpen };
     } finally {
       destroyingLanes.delete(laneId);
     }
@@ -1165,7 +1207,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async stop(args: MacDesktopStopArgs): Promise<MacDesktopStopResult> {
       assertSupported();
       const result = await destroyDisplay(args.laneId.trim(), "stopped");
-      return { stopped: result.destroyed, releasedWindows: result.releasedWindows };
+      return {
+        stopped: result.destroyed,
+        releasedWindows: result.releasedWindows,
+        quitApps: result.quitApps,
+        appsLeftOpen: result.appsLeftOpen,
+      };
     },
 
     async getDisplay(args: { laneId: string }): Promise<MacDesktopDisplay | null> {
@@ -1388,7 +1435,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           laneId: trimmed,
           error: error instanceof Error ? error.message : String(error),
         });
-        return { destroyed: false, releasedWindows: 0 };
+        return { destroyed: false, releasedWindows: 0, quitApps: [], appsLeftOpen: [] };
       });
       return { destroyed: result.destroyed };
     },

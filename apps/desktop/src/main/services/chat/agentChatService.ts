@@ -7672,12 +7672,14 @@ export function buildComputerUseDirective(
   if (options.macDesktopAvailable) {
     sections.push(
       [
-        "### Mac Desktop — this lane's own screen (use it first)",
+        "### Mac Desktop — this lane's own screen (use it for desktop apps)",
         "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-desktop** skill before your first action.",
+        "For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default. Open Safari or another browser on the Mac Desktop only when the user names that app or asks for the Mac Desktop.",
+        "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened.",
         "The loop: `ade mac-desktop start` (viewing the screen does not start it), `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`. To show the screen to the user, run `ade mac-desktop show`.",
         "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade mac-desktop observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
         "If recording fails, say so. Never attach an older recording or a file you did not just record.",
-        "If the shell answers `Unknown command 'mac-desktop'`, it found an older `ade` on PATH: run the same command as `\"$ADE_CLI_PATH\" mac-desktop …` and keep using `\"$ADE_CLI_PATH\"`. Close or `release` only the windows you opened on the lane screen; never quit an app. If `ade mac-desktop` still refuses, stop and report it; do not fall back to the user's real screen.",
+        "If the shell answers `Unknown command 'mac-desktop'`, it found an older `ade` on PATH: run the same command as `\"$ADE_CLI_PATH\" mac-desktop …` and keep using `\"$ADE_CLI_PATH\"`. Close or `release` only the windows you opened on the lane screen; do not quit apps yourself. If `ade mac-desktop` still refuses, stop and report it; do not fall back to the user's real screen.",
       ].join("\n"),
     );
   }

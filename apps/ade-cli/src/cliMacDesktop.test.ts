@@ -3,6 +3,8 @@ import {
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_HANDLE_EXPIRED_CODE,
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+  MAC_DESKTOP_NO_DISPLAY_CODE,
+  MAC_DESKTOP_NO_WINDOW_CODE,
   MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
@@ -249,6 +251,19 @@ describe("macDesktopErrorHint", () => {
     expect(macDesktopErrorHint(`${MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE}: /etc/x.png is outside both`))
       .toMatch(/lane worktree.*\$TMPDIR/);
     expect(macDesktopErrorHint("something else entirely")).toBeNull();
+  });
+
+  it("tells a lane with a display but no window to open an app, not to start", () => {
+    // `press n --cmd` on an empty display used to say "run: ade mac-desktop
+    // start" for a display that already existed.
+    const hint = macDesktopErrorHint(
+      `${MAC_DESKTOP_NO_WINDOW_CODE}: Lane lane-1 has a display but no window to send a key to.`,
+    );
+    expect(hint).toContain("ade mac-desktop open");
+    expect(hint).toContain("ade mac-desktop claim --window");
+    expect(hint).not.toContain("mac-desktop start");
+    expect(macDesktopErrorHint(`${MAC_DESKTOP_NO_DISPLAY_CODE}: Lane lane-1 has no display.`))
+      .toContain("ade mac-desktop start");
   });
 
   it("does not restate the lane the message already names", () => {

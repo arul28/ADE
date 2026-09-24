@@ -250,6 +250,13 @@ final class DriverRuntime: NSObject {
         // Recordings first: `CaptureEngine.dispose` is what finalises each
         // AVAssetWriter, and everything below it only releases handles.
         capture.dispose()
+        // The apps the lanes opened go with their displays. Asked, not waited
+        // for: the process is exiting, and an app that stays to ask about
+        // unsaved work is moved to a real screen by macOS when its display
+        // goes away below.
+        for app in windows.launchedApps.all {
+            _ = windows.quitLaunchedApps(laneId: app.laneId, wait: 0)
+        }
         windows.dispose()
         displays.destroyAll()
         exit(0)
@@ -540,17 +547,25 @@ final class DriverRuntime: NSObject {
         let laneId = try request.requireString("laneId")
         capture.stopStream(laneId: laneId)
         _ = try? capture.stopRecording(laneId: laneId)
+        // Before the windows are released and while the display still exists:
+        // an app that asks to save shows its sheet on a window that is then
+        // moved to the user's screen.
+        let quit = windows.quitLaunchedApps(laneId: laneId)
         let released = windows.releaseLane(laneId)
         let destroyed = displays.destroy(laneId: laneId)
         lastActivity.removeValue(forKey: laneId)
         emit(
             DriverEvent(
                 event: "display-destroyed",
-                fields: ["laneId": .string(laneId), "reason": .string(request.string("reason") ?? "stopped")]
+                fields: [
+                    "laneId": .string(laneId),
+                    "reason": .string(request.string("reason") ?? "stopped"),
+                ].merging(quit.jsonFields) { current, _ in current }
             )
         )
         updatePermissionProbe()
         return ["destroyed": .bool(destroyed), "releasedWindows": .int(released)]
+            .merging(quit.jsonFields) { current, _ in current }
     }
 
     /// The window server ended a lane's display without being asked.
@@ -561,6 +576,7 @@ final class DriverRuntime: NSObject {
     private func displayTerminated(laneId: String) {
         capture.stopStream(laneId: laneId)
         _ = try? capture.stopRecording(laneId: laneId)
+        let quit = windows.quitLaunchedApps(laneId: laneId)
         let released = windows.releaseLane(laneId)
         lastActivity.removeValue(forKey: laneId)
         log("lane \(laneId) lost its virtual display; released \(released) window(s)")
@@ -568,6 +584,7 @@ final class DriverRuntime: NSObject {
             DriverEvent(
                 event: "display-destroyed",
                 fields: ["laneId": .string(laneId), "reason": .string("terminated")]
+                    .merging(quit.jsonFields) { current, _ in current }
             )
         )
         updatePermissionProbe()
@@ -578,6 +595,7 @@ final class DriverRuntime: NSObject {
         var destroyed: [String] = []
         for laneId in displays.reconcile(liveLaneIds: live) {
             capture.stopStream(laneId: laneId)
+            _ = windows.quitLaunchedApps(laneId: laneId)
             _ = windows.releaseLane(laneId)
             destroyed.append(laneId)
         }
