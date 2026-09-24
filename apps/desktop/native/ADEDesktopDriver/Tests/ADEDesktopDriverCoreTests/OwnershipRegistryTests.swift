@@ -66,4 +66,19 @@ final class OwnershipRegistryTests: XCTestCase {
             try registry.park(laneId: "lane-b", windowId: 2, bundleId: "com.apple.dt.Xcode", singleInstance: true)
         )
     }
+
+    /// A park waits on the window, and a release plus a re-park by the same
+    /// lane can run inside that wait. The older take must not drop the newer.
+    func testARepark_byTheSameLane_isANewTake() throws {
+        let registry = OwnershipRegistry()
+        let first = try registry.park(laneId: "lane-a", windowId: 7)
+        XCTAssertTrue(registry.isCurrentHold(first))
+        registry.unpark(windowId: 7)
+        let second = try registry.park(laneId: "lane-a", windowId: 7)
+        XCTAssertNotEqual(first.holdSerial, second.holdSerial)
+        XCTAssertFalse(registry.isCurrentHold(first))
+        XCTAssertTrue(registry.isCurrentHold(second))
+        registry.unpark(windowId: 7)
+        XCTAssertFalse(registry.isCurrentHold(second))
+    }
 }

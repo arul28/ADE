@@ -192,7 +192,9 @@ describe("macDesktopStreaming release during a start", () => {
     const restart = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1", fresh: true });
     const restartOutcome = restart.then(() => "started", () => "stopped");
     await Promise.resolve();
-    await streaming.stopStream("lane-1", "stopped");
+    // The stop waits for the restart in flight, so the old run is let go
+    // while the stop is still waiting.
+    const stopping = streaming.stopStream("lane-1", "stopped");
     // The newer ask's driver start is still in flight when the restart
     // resumes, so the restart finds it pending and could join it.
     let finishNewer: () => void = () => {};
@@ -202,7 +204,7 @@ describe("macDesktopStreaming release during a start", () => {
     const newerAsk = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-2" });
     await Promise.resolve();
     finishStop();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await stopping;
     finishNewer();
     const newer = await newerAsk;
 
@@ -210,6 +212,51 @@ describe("macDesktopStreaming release during a start", () => {
     expect(newer.running).toBe(true);
     expect(streaming.streamServer.getTransport("lane-1")?.token).toBe(newer.transport?.token);
     expect(streaming.buildStreamStatus("lane-1").viewerChatSessionIds).toEqual(["chat-2"]);
+  });
+
+  it("a viewer that leaves during a stale restart leaves no ghost owner", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    disposers.push(() => vi.useRealTimers());
+    const { streaming, provider } = makeStreaming();
+    disposers.push(() => streaming.dispose());
+    await streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1" });
+    vi.setSystemTime(Date.now() + 10_000);
+
+    let finishStop: () => void = () => {};
+    provider.stopStream.mockImplementationOnce(() => new Promise<void>((resolve) => { finishStop = resolve; }));
+    const restart = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1", fresh: true });
+    await Promise.resolve();
+    // The pane closes while the old run is still ending.
+    const releasing = streaming.releaseViewer("lane-1", "chat-1");
+    finishStop();
+    await restart;
+    const released = await releasing;
+
+    expect(released.running).toBe(false);
+    expect(streaming.buildStreamStatus("lane-1").viewerChatSessionIds).toEqual([]);
+    expect(streaming.streamServer.isStreaming("lane-1")).toBe(false);
+  });
+
+  it("a stale restart joins a run another ask started during its wait, with no second driver start", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    disposers.push(() => vi.useRealTimers());
+    const { streaming, provider } = makeStreaming();
+    disposers.push(() => streaming.dispose());
+    await streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1" });
+    vi.setSystemTime(Date.now() + 10_000);
+
+    let finishStop: () => void = () => {};
+    provider.stopStream.mockImplementationOnce(() => new Promise<void>((resolve) => { finishStop = resolve; }));
+    const restart = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1", fresh: true });
+    await Promise.resolve();
+    const other = await streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-2" });
+    finishStop();
+    const restarted = await restart;
+
+    // One start for the first run, one for chat-2's run; the restart joined it.
+    expect(provider.startStream).toHaveBeenCalledTimes(2);
+    expect(restarted.transport?.token).toBe(other.transport?.token);
+    expect([...streaming.buildStreamStatus("lane-1").viewerChatSessionIds].sort()).toEqual(["chat-1", "chat-2"]);
   });
 
   it("an ask that arrives after the stop still gets a live run", async () => {

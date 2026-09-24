@@ -630,8 +630,9 @@ final class WindowControl {
         if let refusal = launchedApps.refusal(pid: window.pid, laneId: laneId, appName: window.appName) {
             throw refusal
         }
+        let hold: WindowOwnership
         do {
-            try ownership.park(
+            hold = try ownership.park(
                 laneId: laneId,
                 windowId: Int(windowId),
                 bundleId: window.bundleId,
@@ -655,10 +656,13 @@ final class WindowControl {
             element = resolved
         case .failure(let failure):
             // The wait pumped the run loop, so the same re-check as the
-            // success path decides whose hold this is. Still this park's own
-            // (it proceeds): drop it, the window never moved. A stop, a
-            // release or a later take of this lane inside the wait: leave the
-            // hold to them, or `releaseLane` never sees the window.
+            // success path decides what happened. A refusal is the real
+            // answer (a lane that stopped or lost its display ends the sweep
+            // through `ParkRecheck.isLaneGone`). Either way the hold is dropped
+            // only while it is still the take this park made: a release and a
+            // re-park inside the wait made a newer one, and a stopping lane's
+            // own stop sends its windows home.
+            let isOwnHold = ownership.isCurrentHold(hold)
             switch ParkRecheck.decide(
                 laneId: laneId,
                 windowId: Int(windowId),
@@ -668,11 +672,12 @@ final class WindowControl {
                 isStopping: stopGate.isStopping(laneId)
             ) {
             case .proceed:
-                _ = forgetParked(windowId: windowId)
-            case .refuse(_, let dropHold):
-                if dropHold { _ = forgetParked(windowId: windowId) }
+                if isOwnHold { _ = forgetParked(windowId: windowId) }
+                throw failure.driverError(windowId: Int(windowId))
+            case .refuse(let error, let dropHold):
+                if dropHold && isOwnHold { _ = forgetParked(windowId: windowId) }
+                throw error
             }
-            throw failure.driverError(windowId: Int(windowId))
         }
         // The wait pumped the run loop, and a stop, a release, another lane's
         // claim or a stop-and-start of this lane can have run inside it. The
@@ -689,7 +694,7 @@ final class WindowControl {
         case .proceed(let placementNow):
             current = placementNow
         case .refuse(let error, let dropHold):
-            if dropHold { forgetParked(windowId: windowId) }
+            if dropHold && ownership.isCurrentHold(hold) { forgetParked(windowId: windowId) }
             throw error
         }
         let placement = current.placement

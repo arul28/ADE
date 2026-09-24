@@ -94,6 +94,13 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    */
   const startingStreams = new Map<string, { promise: Promise<LaneTransport>; generation: number }>();
   /**
+   * A Reconnect that is ending a quiet run and starting the next one. It is
+   * not in `startingStreams` while it waits for the old run to end, so a
+   * release that only looked there would finish first and see its viewer
+   * added back afterwards. `settleStarts` waits for these too.
+   */
+  const restartingStreams = new Map<string, Promise<unknown>>();
+  /**
    * laneId → how many times a stop that outranks a start has run.
    *
    * An explicit stop, a lane teardown and the last reader leaving each bump
@@ -120,14 +127,22 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    * a running stream with a ghost owner nobody would ever release. A failed
    * start added nobody, so its rejection is not the release's to report.
    */
-  const settleStarts = async (laneId?: string): Promise<void> => {
-    const pending = (laneId === undefined
+  /** The starts and restarts in flight right now, for one lane or all. */
+  const startsInFlight = (laneId?: string): Array<Promise<unknown>> => {
+    const starts = (laneId === undefined
       ? [...startingStreams.values()]
       : [startingStreams.get(laneId)].filter((start) => start !== undefined)
-    ).map((start) => start.promise);
+    ).map((start) => start.promise as Promise<unknown>);
+    const restarts = laneId === undefined
+      ? [...restartingStreams.values()]
+      : [restartingStreams.get(laneId)].filter((restart) => restart !== undefined);
+    return [...starts, ...restarts];
+  };
+  const settle = async (pending: Array<Promise<unknown>>): Promise<void> => {
     if (pending.length === 0) return;
     await Promise.all(pending.map((start) => start.catch(() => undefined)));
   };
+  const settleStarts = async (laneId?: string): Promise<void> => settle(startsInFlight(laneId));
 
   /** True when this chat was not a viewer of the lane yet. */
   const addStreamOwner = (laneId: string, chatSessionId: string | null | undefined): boolean => {
@@ -312,7 +327,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     // The stop count this ask began under. A stop that outranks starts
     // (`stopStream`, `forgetLane`) moves it, and this ask then ends stopped.
     const generation = generationOf(laneId);
-    let running = streamServer.getTransport(laneId);
+    const running = streamServer.getTransport(laneId);
     const metrics = running ? streamServer.metrics(laneId) : null;
     if (running && args.fresh === true && metrics && macDesktopStreamIsStale(metrics, deps.now())) {
       // A viewer's Reconnect on a run that has sent nothing for seconds. Handing
@@ -324,11 +339,24 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
         quietMs: deps.now() - Math.max(metrics.startedAtMs, metrics.lastBytesAtMs ?? 0),
         clients: metrics.clients,
       });
-      await endRun(laneId, "stale-restart");
-      running = null;
-      // A stop or a teardown that landed during that wait outranks this ask.
-      // It ends stopped, and leaves alone any newer ask's run.
-      if (generationOf(laneId) !== generation) throw stoppedWhileStarting(laneId);
+      // The whole restart is one registered unit: a release waits for it,
+      // so it cannot see its viewer added back after it finished.
+      const restart = (async () => {
+        await endRun(laneId, "stale-restart");
+        // A stop or a teardown that landed during that wait outranks this
+        // ask. It ends stopped, and leaves alone any newer ask's run.
+        if (generationOf(laneId) !== generation) throw stoppedWhileStarting(laneId);
+        // Another ask may have started a run during the wait. The plain ask
+        // below joins it (or its pending start) rather than opening a second
+        // driver encoder.
+        return await startStreamFor({ ...args, fresh: false }, owner);
+      })();
+      restartingStreams.set(laneId, restart);
+      try {
+        return await restart;
+      } finally {
+        if (restartingStreams.get(laneId) === restart) restartingStreams.delete(laneId);
+      }
     }
     if (running) {
       // A reconnecting viewer asks again. Restarting would mint a second token
@@ -475,11 +503,14 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
    * lane stays stopped, and it answers only once that start has wound down.
    */
   async function stopStream(laneId: string, reason: string): Promise<MacDesktopStreamStatus> {
+    // Only the starts this stop overtakes: an ask that arrives after it is
+    // not cancelled and is not this stop's to wait for.
+    const overtaken = startsInFlight(laneId);
     cancelStarts(laneId);
     const status = await endRun(laneId, reason);
     // Safe to wait: a start never waits on a stop, and the cancelled one
     // only tears down what it built.
-    await settleStarts(laneId);
+    await settle(overtaken);
     return status;
   }
 

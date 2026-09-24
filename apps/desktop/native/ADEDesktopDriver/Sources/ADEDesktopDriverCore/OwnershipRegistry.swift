@@ -21,12 +21,17 @@ public struct WindowOwnership: Equatable, Sendable {
     public let laneId: String
     public let bundleId: String?
     public let singleInstance: Bool
+    /// Which take this is. Every `park` gets a new one, even a lane re-parking
+    /// its own window, so a park that waited can tell whether the hold is
+    /// still the one it took.
+    public let holdSerial: Int
 
-    public init(windowId: Int, laneId: String, bundleId: String?, singleInstance: Bool) {
+    public init(windowId: Int, laneId: String, bundleId: String?, singleInstance: Bool, holdSerial: Int = 0) {
         self.windowId = windowId
         self.laneId = laneId
         self.bundleId = bundleId
         self.singleInstance = singleInstance
+        self.holdSerial = holdSerial
     }
 }
 
@@ -54,6 +59,7 @@ public enum OwnershipError: Error, Equatable {
 
 public final class OwnershipRegistry: @unchecked Sendable {
     private var byWindow: [Int: WindowOwnership] = [:]
+    private var nextHoldSerial = 1
     private let lock = NSLock()
 
     public init() {}
@@ -82,8 +88,10 @@ public final class OwnershipRegistry: @unchecked Sendable {
             windowId: windowId,
             laneId: laneId,
             bundleId: bundleId,
-            singleInstance: singleInstance
+            singleInstance: singleInstance,
+            holdSerial: nextHoldSerial
         )
+        nextHoldSerial += 1
         byWindow[windowId] = ownership
         return ownership
     }
@@ -116,6 +124,13 @@ public final class OwnershipRegistry: @unchecked Sendable {
     public func releaseRefusal(windowId: Int, laneId: String?) -> OwnershipError? {
         guard let laneId, let holder = owner(ofWindow: windowId), holder != laneId else { return nil }
         return .windowOwnedByOtherLane(windowId: windowId, holderLaneId: holder)
+    }
+
+    /// True when `hold` is still the window's current take.
+    public func isCurrentHold(_ hold: WindowOwnership) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return byWindow[hold.windowId]?.holdSerial == hold.holdSerial
     }
 
     public func owner(ofWindow windowId: Int) -> String? {
