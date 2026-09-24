@@ -247,18 +247,13 @@ struct MacDesktopViewer: View {
   }
 
   private func startDesktop() {
-    guard !starting else { return }
-    starting = true
-    startError = nil
-    Task {
-      do {
-        try await syncService.macDesktopStart(laneId: laneId)
-        await refresh()
-      } catch {
-        startError = (error as NSError).localizedDescription
-      }
-      starting = false
-    }
+    macDesktopStartDisplay(
+      using: syncService,
+      laneId: laneId,
+      starting: $starting,
+      error: $startError,
+      refresh: { await refresh() }
+    )
   }
 
   // MARK: - Orientation
@@ -304,15 +299,10 @@ struct MacDesktopViewer: View {
   private func startSessionIfNeeded() {
     guard session == nil else { return }
     // Distinct from the sheet's id so the two can never unsubscribe each other.
-    let next = MacDesktopLiveSession(
+    let next = mountMacDesktopLiveSession(
       laneId: laneId,
       subscriptionId: "ios-\(syncService.deviceId)-mac-desktop-viewer-\(laneId)",
-      viewerLabel: MacDesktopLiveSession.defaultViewerLabel()
-    )
-    syncService.registerMacDesktopStream(
-      subscriptionId: next.subscriptionId,
-      onRecord: { [weak next] record in next?.consume(record) },
-      onEnded: { [weak next] ended in next?.noteEnded(ended) }
+      using: syncService
     )
     session = next
     Task { await next.start(using: syncService) }

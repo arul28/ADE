@@ -1,0 +1,45 @@
+import SwiftUI
+
+/// One live subscription: the session, registered for records and end notices.
+///
+/// Both the tools card and the full-screen viewer mount this way. The
+/// subscription id is the caller's, so the two can never unsubscribe each other.
+func mountMacDesktopLiveSession(
+  laneId: String,
+  subscriptionId: String,
+  using syncService: SyncService
+) -> MacDesktopLiveSession {
+  let session = MacDesktopLiveSession(
+    laneId: laneId,
+    subscriptionId: subscriptionId,
+    viewerLabel: MacDesktopLiveSession.defaultViewerLabel()
+  )
+  syncService.registerMacDesktopStream(
+    subscriptionId: session.subscriptionId,
+    onRecord: { [weak session] record in session?.consume(record) },
+    onEnded: { [weak session] ended in session?.noteEnded(ended) }
+  )
+  return session
+}
+
+/// Starts this lane's display. Both Start buttons report the system error string.
+func macDesktopStartDisplay(
+  using syncService: SyncService,
+  laneId: String,
+  starting: Binding<Bool>,
+  error: Binding<String?>,
+  refresh: @escaping () async -> Void
+) {
+  guard !starting.wrappedValue else { return }
+  starting.wrappedValue = true
+  error.wrappedValue = nil
+  Task {
+    do {
+      try await syncService.macDesktopStart(laneId: laneId)
+      await refresh()
+    } catch {
+      error.wrappedValue = (error as NSError).localizedDescription
+    }
+    starting.wrappedValue = false
+  }
+}

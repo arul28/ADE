@@ -147,6 +147,9 @@
 		E200000000000000000000B2 /* WorkProofSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B2 /* WorkProofSheet.swift */; };
 		E200000000000000000000B3 /* MacDesktopLiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B3 /* MacDesktopLiveView.swift */; };
 		E200000000000000000000B4 /* MacDesktopViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B4 /* MacDesktopViewer.swift */; };
+		E200000000000000000000B5 /* MacDesktopCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B5 /* MacDesktopCard.swift */; };
+		E200000000000000000000B6 /* MacDesktopStreamMath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B6 /* MacDesktopStreamMath.swift */; };
+		E200000000000000000000B7 /* MacDesktopLiveMount.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B7 /* MacDesktopLiveMount.swift */; };
 		E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000030 /* WorkMarkdownViews.swift */; };
 		E10000000000000000000031 /* WorkModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000031 /* WorkModels.swift */; };
 		E10000000000000000000601 /* WorkDraftPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000601 /* WorkDraftPersistence.swift */; };
@@ -505,6 +508,9 @@
 		D200000000000000000000B2 /* WorkProofSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofSheet.swift; path = ADE/Views/Work/WorkProofSheet.swift; sourceTree = "<group>"; };
 		D200000000000000000000B3 /* MacDesktopLiveView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopLiveView.swift; path = ADE/Views/Work/MacDesktopLiveView.swift; sourceTree = "<group>"; };
 		D200000000000000000000B4 /* MacDesktopViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopViewer.swift; path = ADE/Views/Work/MacDesktopViewer.swift; sourceTree = "<group>"; };
+		D200000000000000000000B5 /* MacDesktopCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopCard.swift; path = ADE/Views/Work/MacDesktopCard.swift; sourceTree = "<group>"; };
+		D200000000000000000000B6 /* MacDesktopStreamMath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopStreamMath.swift; path = ADE/Views/Work/MacDesktopStreamMath.swift; sourceTree = "<group>"; };
+		D200000000000000000000B7 /* MacDesktopLiveMount.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopLiveMount.swift; path = ADE/Views/Work/MacDesktopLiveMount.swift; sourceTree = "<group>"; };
 		D10000000000000000000030 /* WorkMarkdownViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownViews.swift; path = ADE/Views/Work/WorkMarkdownViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000031 /* WorkModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModels.swift; path = ADE/Views/Work/WorkModels.swift; sourceTree = "<group>"; };
 		D10000000000000000000601 /* WorkDraftPersistence.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkDraftPersistence.swift; path = ADE/Views/Work/WorkDraftPersistence.swift; sourceTree = "<group>"; };
@@ -1074,6 +1080,9 @@
 				D200000000000000000000B2 /* WorkProofSheet.swift */,
 				D200000000000000000000B3 /* MacDesktopLiveView.swift */,
 				D200000000000000000000B4 /* MacDesktopViewer.swift */,
+				D200000000000000000000B5 /* MacDesktopCard.swift */,
+				D200000000000000000000B6 /* MacDesktopStreamMath.swift */,
+				D200000000000000000000B7 /* MacDesktopLiveMount.swift */,
 				D10000000000000000000030 /* WorkMarkdownViews.swift */,
 				D10000000000000000000031 /* WorkModels.swift */,
 				D10000000000000000000601 /* WorkDraftPersistence.swift */,
@@ -1897,6 +1906,9 @@
 				E200000000000000000000B2 /* WorkProofSheet.swift in Sources */,
 				E200000000000000000000B3 /* MacDesktopLiveView.swift in Sources */,
 				E200000000000000000000B4 /* MacDesktopViewer.swift in Sources */,
+				E200000000000000000000B5 /* MacDesktopCard.swift in Sources */,
+				E200000000000000000000B6 /* MacDesktopStreamMath.swift in Sources */,
+				E200000000000000000000B7 /* MacDesktopLiveMount.swift in Sources */,
 				E10000000000000000000030 /* WorkMarkdownViews.swift in Sources */,
 				E10000000000000000000031 /* WorkModels.swift in Sources */,
 				E10000000000000000000601 /* WorkDraftPersistence.swift in Sources */,

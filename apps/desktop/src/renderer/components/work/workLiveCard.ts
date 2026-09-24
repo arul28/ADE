@@ -782,18 +782,8 @@ export function workLiveCardSize(args: {
   return { width: Math.round(width), height: Math.round(height) };
 }
 
-/**
- * Every tool contains its picture; nothing is cropped.
- *
- * Kept as a named function (rather than inlined) so the one treatment is stated
- * once and cannot drift back into a per-tool `cover`.
- */
+/** Every tool contains its picture; nothing is cropped. */
 export const WORK_LIVE_CARD_OBJECT_FIT = "contain" as const;
-
-export function workLiveCardObjectFit(_tool: WorkLiveScreenTool | null): "contain" {
-  void _tool;
-  return WORK_LIVE_CARD_OBJECT_FIT;
-}
 
 /**
  * The frame width to ask the source for: the card's own width in DEVICE

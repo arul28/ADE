@@ -6,9 +6,7 @@ import {
   WORK_LIVE_CARD_MAX_HEIGHT,
   WORK_LIVE_CARD_MIN_WIDTH,
   WORK_LIVE_SCRUB_BUFFER_SIZE,
-  WORK_LIVE_CARD_OBJECT_FIT,
   workLiveCardAspect,
-  workLiveCardObjectFit,
   workLiveCardSize,
   workLiveCardWidthBounds,
   commitWorkLiveScrubFrame,
@@ -633,7 +631,7 @@ describe("workLiveCardSize", () => {
   });
 });
 
-describe("workLiveCardAspect / objectFit", () => {
+describe("workLiveCardAspect", () => {
   it("prefers the source aspect and falls back per tool", () => {
     expect(workLiveCardAspect("browser", 2)).toBe(2);
     expect(workLiveCardAspect("browser")).toBeCloseTo(1.6, 5);
@@ -641,13 +639,6 @@ describe("workLiveCardAspect / objectFit", () => {
     expect(workLiveCardAspect(null)).toBeCloseTo(1.6, 5);
   });
 
-  it("contains every tool's picture — nothing is cropped", () => {
-    for (const tool of ["browser", "app-control", "ios", "mac-desktop"] as const) {
-      expect(workLiveCardObjectFit(tool)).toBe("contain");
-    }
-    expect(WORK_LIVE_CARD_OBJECT_FIT).toBe("contain");
-    expect(workLiveCardObjectFit(null)).toBe("contain");
-  });
 });
 
 describe("workLiveMacDesktopSessionKey", () => {

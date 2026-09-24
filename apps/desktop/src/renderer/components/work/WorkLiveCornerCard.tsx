@@ -54,7 +54,7 @@ import {
   workLiveBottomReserve,
   workLiveCardDragConstraints,
   workLiveCardFits,
-  workLiveCardObjectFit,
+  WORK_LIVE_CARD_OBJECT_FIT,
   workLiveCardPositionFromRect,
   workLiveCardRect,
   workLiveCardSize,
@@ -584,7 +584,7 @@ export function WorkLiveCornerCard({
     host: hostSize,
     bottomReserve,
   });
-  const objectFit = workLiveCardObjectFit(tool);
+  const objectFit = WORK_LIVE_CARD_OBJECT_FIT;
 
   const fits = workLiveCardFits(hostSize, bottomReserve, baseCardSize);
   const visible = active && tool != null && fits;

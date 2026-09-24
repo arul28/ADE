@@ -21,6 +21,12 @@ const SOURCE = fs.readFileSync(path.join(HERE, "cli.ts"), "utf8");
  * this source feeds the CLI-wide scan alone.
  */
 const LAUNCH_ARGS_SOURCE = fs.readFileSync(path.join(HERE, "launchArgs.ts"), "utf8");
+/**
+ * `buildMacDesktopPlan` and its `readFlag` calls moved here. The CLI-wide
+ * boolean scan below has to see them, or a mac-desktop boolean could be
+ * claimed as a value carrier with the guard still green.
+ */
+const MAC_DESKTOP_SOURCE = fs.readFileSync(path.join(HERE, "cliMacDesktop.ts"), "utf8");
 
 /**
  * The scans below used to run on a hand-rolled lexer: a previous-character
@@ -37,6 +43,7 @@ function parseSource(name: string, text: string): ts.SourceFile {
 
 const FILE = parseSource("cli.ts", SOURCE);
 const LAUNCH_ARGS_FILE = parseSource("launchArgs.ts", LAUNCH_ARGS_SOURCE);
+const MAC_DESKTOP_FILE = parseSource("cliMacDesktop.ts", MAC_DESKTOP_SOURCE);
 
 function walk(node: ts.Node, visit: (child: ts.Node) => void): void {
   visit(node);
@@ -624,8 +631,13 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * 113 since `buildMacDesktopPlan`: every `ade mac-desktop` subcommand reads its
  * argv through that one plan builder. Its flags are `MAC_DESKTOP_VALUE_FLAGS`,
  * not browser flags.
+ *
+ * 112 again since `buildMacDesktopPlan` moved to `cliMacDesktop.ts`: this scan only
+ * sees cli.ts. The builder is still the one argv reader for that family; it
+ * just no longer lives in this file. Its flags stay `MAC_DESKTOP_VALUE_FLAGS`,
+ * not browser flags.
  */
-const ARGV_READER_COUNT = 113;
+const ARGV_READER_COUNT = 112;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which
@@ -926,7 +938,7 @@ describe("browser value flags", () => {
   // whole CLI and the launch-arg readers are no longer in cli.ts: a cli.ts-only
   // scan stopped seeing `--no-parent` when that block moved out.
   const ALL_BOOLEAN_FLAGS = new Set(
-    collect([FILE, LAUNCH_ARGS_FILE], ts.isCallExpression)
+    collect([FILE, LAUNCH_ARGS_FILE, MAC_DESKTOP_FILE], ts.isCallExpression)
       .filter((call) => calleeName(call) === "readFlag" && call.arguments.length >= 2)
       .flatMap((call) =>
         collect([call.arguments[1]!], ts.isStringLiteralLike)

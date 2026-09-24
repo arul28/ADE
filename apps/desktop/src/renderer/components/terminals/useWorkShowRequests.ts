@@ -28,6 +28,24 @@ const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "floating-mac-desktop",
 ];
 
+function showPaneTool({
+  chatSessionId,
+  tool,
+  scopeKey,
+  activeLaneId,
+  setWorkSidebarTool,
+}: {
+  chatSessionId: string;
+  tool: "ios" | "mac-desktop";
+  scopeKey: string;
+  activeLaneId: string | null;
+  setWorkSidebarTool: (tool: WorkSidebarTab) => void;
+}): Promise<WorkToolShowOutcome> {
+  setWorkLivePreviewEnabledForChat(chatSessionId, tool, true);
+  setWorkSidebarTool(tool);
+  return showOutcomeWhenOnScreen(workSurfaceKey(tool, scopeKey, activeLaneId));
+}
+
 /**
  * The Work page's side of `ade ui show`, and what the floating device checks
  * before it shows itself.
@@ -101,17 +119,25 @@ export function useWorkShowRequests({
     }
     if (request.surface === "apple") {
       // An explicit ask undoes an earlier × for this chat's floating device.
-      setWorkLivePreviewEnabledForChat(request.chatSessionId, "ios", true);
       // Mounting the Apple tool takes the device back from a floating player.
-      setWorkSidebarTool("ios");
-      return showOutcomeWhenOnScreen(workSurfaceKey("ios", scopeKey, activeLaneId));
+      return showPaneTool({
+        chatSessionId: request.chatSessionId,
+        tool: "ios",
+        scopeKey,
+        activeLaneId,
+        setWorkSidebarTool,
+      });
     }
     if (request.surface === "mac-desktop") {
-      setWorkLivePreviewEnabledForChat(request.chatSessionId, "mac-desktop", true);
       // The pane outranks the card for the lane's one decoder
       // (`macDesktopLiveViewLease`), so mounting it takes the picture back.
-      setWorkSidebarTool("mac-desktop");
-      return showOutcomeWhenOnScreen(workSurfaceKey("mac-desktop", scopeKey, activeLaneId));
+      return showPaneTool({
+        chatSessionId: request.chatSessionId,
+        tool: "mac-desktop",
+        scopeKey,
+        activeLaneId,
+        setWorkSidebarTool,
+      });
     }
     if (request.surface === "floating-mac-desktop") {
       // Like the floating device: only over a chat of the card's own lane.

@@ -24,7 +24,6 @@ import {
   macDesktopDisplayName,
   type MacDesktopInputResult,
   type MacDesktopMoveArgs,
-  type DesktopSeatProvider,
   type MacDesktopAppLeftOpen,
   type MacDesktopClaimArgs,
   type MacDesktopClickArgs,
@@ -75,8 +74,6 @@ import type {
 } from "../../../shared/types/computerUseArtifacts";
 import { resolveAdeSigningState, resolveMacDesktopDriverBinary } from "../native/nativeHelperPaths";
 import {
-  createMacDesktopDriverClient,
-  MAC_DESKTOP_DRIVER_OPS,
   MacDesktopDriverError,
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
@@ -88,16 +85,15 @@ import {
 } from "./macDesktopOwnership";
 import { createMacDesktopObservations, MacDesktopObservationError } from "./macDesktopObservations";
 import { createMacDesktopInput } from "./macDesktopInput";
+import { createMacDesktopDriverLifecycle, type MacDesktopDriverLifecycle } from "./macDesktopDriverLifecycle";
 import { createMacDesktopRecording, readCaptureBytes } from "./macDesktopRecording";
 import {
   asAppsLeftOpen,
-  asDisplayLaneIds,
   asNullableString,
   asNumber,
   asRecord,
   asStringList,
   asWindows,
-  createMacVirtualDisplayProvider,
 } from "./macDesktopSeatProvider";
 import { createMacDesktopStreaming } from "./macDesktopStreaming";
 import { createMacDesktopWindows } from "./macDesktopWindows";
@@ -108,16 +104,7 @@ export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
 /** How often the idle sweep runs. Cheap: it reads maps, never the driver. */
 const IDLE_SWEEP_INTERVAL_MS = 30_000;
 
-/**
- * The most a status read waits on the driver for the lane's window list, and
- * for the permission-watch toggle that rides along with it.
- *
- * `getStatus` is what every surface opens with — the pane sits on "Checking
- * Mac Desktop…" until it answers — and with the helper busy those two driver
- * calls used to wait out the client's 20-second timeout each. A status read
- * that says "0 windows" a few seconds late is better than one that never
- * arrives before the caller gives up.
- */
+/** A status read returns before a busy helper's longer request timeout. */
 const STATUS_DRIVER_READ_TIMEOUT_MS = 4_000;
 
 type MacDesktopDisplayDestroyedReason = Extract<MacDesktopEventPayload, { type: "display-destroyed" }>["reason"];
@@ -313,31 +300,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   });
 
   let disposed = false;
-  let permissions: MacDesktopPermissions = { screenRecording: "unknown", accessibility: "unknown" };
-  let displayMode: MacDesktopDisplayMode = isDarwin ? "virtual" : "unavailable";
-  /**
-   * The driver process and the seat provider that wraps it.
-   *
-   * One handle rather than two nullables: they are minted together and cleared
-   * together, and every reader wanted both. Two fields meant every use site
-   * asserted one of them non-null off the other's check.
-   */
-  let backend: { client: MacDesktopDriverClient; provider: DesktopSeatProvider } | null = null;
-  let driverEventUnsubscribe: (() => void) | null = null;
-  /**
-   * How many status subscribers are watching, and what the helper was last
-   * told about it.
-   *
-   * The probe has to run while a pane is open even with no display: that is
-   * exactly the stuck first-run state, where a grant made in System Settings
-   * never reaches the already-running helper. The driver refcounts this with
-   * "a display exists"; off with neither is what keeps an idle helper idle.
-   * The initial value matches a freshly spawned helper, so the first
-   * `getStatus` does not send a redundant `watch:false`.
-   */
-  let permissionWatchers = 0;
-  let permissionWatchSent = false;
-  let reconciled = false;
+  let driverLifecycle: MacDesktopDriverLifecycle;
   const startLocks = new Map<string, Promise<MacDesktopStatus>>();
   /**
    * Lanes this process is tearing down right now.
@@ -496,13 +459,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   };
 
   const assertPermission = (which: "screenRecording" | "accessibility"): void => {
-    if (permissions[which] !== "denied") return;
-    throw new MacDesktopError(
-      "MAC_DESKTOP_PERMISSION_REQUIRED",
-      which === "screenRecording"
-        ? "ADE needs Screen Recording permission to capture this display. Grant it in System Settings › Privacy & Security › Screen Recording, then try again."
-        : "ADE needs Accessibility permission to drive windows on this display. Grant it in System Settings › Privacy & Security › Accessibility, then try again.",
-    );
+    driverLifecycle.assertPermission(which);
   };
 
   const requireDisplay = (laneId: string): MacDesktopDisplay => {
@@ -524,49 +481,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     return error instanceof Error ? error : new Error(String(error));
   };
 
-  /**
-   * The backend, started if it is not already.
-   *
-   * Everything the helper can do is reached through the provider; the client
-   * itself is only used for what is not an operation on a seat — starting,
-   * health, and the event stream.
-   */
-  const ensureProvider = async (): Promise<DesktopSeatProvider> => (await ensureDriver()).provider;
-
-  /** The backend only when it is already running: teardown must not start one. */
-  const activeProvider = (): DesktopSeatProvider | null =>
-    (backend && backend.client.isRunning() ? backend.provider : null);
-
-  /**
-   * Tells the helper whether to keep probing for a permission transition.
-   *
-   * Fire and forget: the probe is an optimization, and a helper that refuses
-   * the op still answers the one-shot probe on `getStatus`. Nothing is sent
-   * while no helper is up; the first `ensureDriver` re-runs this, which is why
-   * `permissionWatchSent` is only updated once a request is actually sent.
-   */
-  const syncPermissionWatch = async (): Promise<void> => {
-    const desired = permissionWatchers > 0;
-    if (desired === permissionWatchSent) return;
-    const client = backend?.client;
-    if (!client || !client.isRunning()) return;
-    try {
-      await client.request(
-        MAC_DESKTOP_DRIVER_OPS.watchPermissions,
-        { watch: desired },
-        { timeoutMs: STATUS_DRIVER_READ_TIMEOUT_MS },
-      );
-      permissionWatchSent = desired;
-    } catch (error) {
-      // Leave the recorded state disagreeing with the ask so the next sync
-      // retries it; the helper is still serving one-shot probes meanwhile.
-      permissionWatchSent = !desired;
-      deps.logger.debug("mac_desktop.permission_watch_failed", {
-        watch: desired,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
+  const ensureProvider = async () => driverLifecycle.ensureProvider();
+  const activeProvider = () => driverLifecycle.activeProvider();
 
   const streamingDeps: Parameters<typeof createMacDesktopStreaming>[0] = {
     logger: deps.logger,
@@ -686,7 +602,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       case "permissions-changed":
       case "permission-changed": {
         const next = asRecord(event.permissions) as unknown as MacDesktopPermissions;
-        applyPermissions(next);
+        driverLifecycle.applyPermissions(next);
         return;
       }
       case "stream-error": {
@@ -727,22 +643,6 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       default:
         deps.logger.debug("mac_desktop.driver_event", { event: event.event, laneId });
     }
-  };
-
-  const applyPermissions = (next: Partial<MacDesktopPermissions> | null | undefined): void => {
-    if (!next) return;
-    const merged: MacDesktopPermissions = {
-      screenRecording: next.screenRecording ?? permissions.screenRecording,
-      accessibility: next.accessibility ?? permissions.accessibility,
-    };
-    if (merged.screenRecording === permissions.screenRecording && merged.accessibility === permissions.accessibility) {
-      return;
-    }
-    permissions = merged;
-    emit({ type: "permission-changed", permissions: merged });
-    // A revoked grant is a health transition too: the card that says "grant
-    // permission" is the only actionable thing left on this host.
-    if (backend) emit({ type: "driver-health", health: backend.client.getHealth() });
   };
 
   /**
@@ -799,96 +699,29 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     ownership.clear();
     recording.clear();
     streaming.clear();
-    reconciled = false;
   };
 
-  /**
-   * Drops every lane the service holds a display for that the helper does not.
-   *
-   * Runs on each health read, so it covers every way the two can disagree: a
-   * helper restarted behind the service's back, a display the window server
-   * ended while its event was lost, a helper replaced by a new one. `before`
-   * is the service's view from before the `ping` was sent. A lane is only
-   * dropped if it was already there then and has not been replaced since,
-   * because a display whose `create` was answered after the `ping` was taken
-   * is simply not in that `ping`'s list yet.
-   */
-  const reconcileWithDriver = (driverLaneIds: Set<string>, before: Map<string, MacDesktopDisplay>): void => {
-    for (const [laneId, earlier] of before) {
-      if (driverLaneIds.has(laneId)) continue;
-      if (destroyingLanes.has(laneId)) continue;
-      const current = ownership.getDisplay(laneId);
-      if (!current || current.createdAt !== earlier.createdAt || current.displayId !== earlier.displayId) continue;
-      deps.logger.warn("mac_desktop.display_missing_from_driver", { laneId, displayId: current.displayId });
-      forgetDisplay(laneId, "driver_lost");
-    }
-  };
-
-  const ensureDriver = async (): Promise<{ client: MacDesktopDriverClient; provider: DesktopSeatProvider }> => {
-    assertSupported();
-    if (disposed) throw new MacDesktopError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The Mac Desktop service is disposed.");
-    if (!backend) {
-      const client = deps.createDriverClient
-        ? deps.createDriverClient({
-          logger: deps.logger,
-          platform,
-          onHealthChanged: (health) => emit({ type: "driver-health", health }),
-          onDriverLost,
-        })
-        : createMacDesktopDriverClient({
-          logger: deps.logger,
-          platform,
-          resolveExecutablePath: () => resolveMacDesktopDriverBinary({ platform, logger: deps.logger }),
-          onHealthChanged: (health) => emit({ type: "driver-health", health }),
-          onDriverLost,
-        });
-      backend = { client, provider: createMacVirtualDisplayProvider(client) };
-      driverEventUnsubscribe = client.onEvent((event) => handleDriverEvent(event));
-    }
-    await backend.client.ensureStarted();
-    // A fresh child knows nothing about the last one's watch state: it starts
-    // with the probe off, whatever this process last told the old helper.
-    permissionWatchSent = false;
-    await syncPermissionWatch();
-    await refreshDriverHealth(backend.client, backend.provider);
-    return backend;
-  };
-
-  const refreshDriverHealth = async (client: MacDesktopDriverClient, seat: DesktopSeatProvider): Promise<void> => {
-    const before = new Map(ownership.listDisplays().map((display) => [display.laneId, display]));
-    try {
-      const reply = await seat.health();
-      const driverLaneIds = asDisplayLaneIds(reply.displays);
-      if (driverLaneIds) reconcileWithDriver(driverLaneIds, before);
-      client.setVersion(asNullableString(reply.version));
-      applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
-      const mode = asNullableString(reply.displayMode);
-      if (mode === "virtual" || mode === "offscreen-region" || mode === "unavailable") displayMode = mode;
-    } catch (error) {
-      deps.logger.debug("mac_desktop.driver_health_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-
-  /**
-   * Destroys every ADE display no live lane claims.
-   *
-   * Runs once per driver start. A crashed run leaves its virtual displays
-   * behind otherwise, and nothing else would ever notice them — only displays
-   * ADE created, tracked by the exact id it received, are ever destroyed.
-   */
-  const reconcileDisplays = async (seat: DesktopSeatProvider): Promise<void> => {
-    if (reconciled) return;
-    reconciled = true;
-    try {
-      await seat.reconcile({ liveLaneIds: ownership.laneIds() });
-    } catch (error) {
-      deps.logger.warn("mac_desktop.reconcile_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
+  driverLifecycle = createMacDesktopDriverLifecycle({
+    logger: deps.logger,
+    platform,
+    createDriverClient: deps.createDriverClient,
+    assertSupported,
+    serviceError: (code, message) => new MacDesktopError(code, message),
+    permissionError: (which) => new MacDesktopError(
+      "MAC_DESKTOP_PERMISSION_REQUIRED",
+      which === "screenRecording"
+        ? "ADE needs Screen Recording permission to capture this display. Grant it in System Settings › Privacy & Security › Screen Recording, then try again."
+        : "ADE needs Accessibility permission to drive windows on this display. Grant it in System Settings › Privacy & Security › Accessibility, then try again.",
+    ),
+    emit,
+    handleDriverEvent,
+    onDriverLost,
+    listDisplays: () => ownership.listDisplays(),
+    laneIds: () => ownership.laneIds(),
+    forgetDisplay: (laneId, reason) => forgetDisplay(laneId, reason),
+    isDestroyingLane: (laneId) => destroyingLanes.has(laneId),
+    hostIsLocal: () => (deps.hostIsLocal ? deps.hostIsLocal() : true),
+  });
 
   // -------------------------------------------------------------------------
   // Status
@@ -896,7 +729,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   const buildStatus = async (args: MacDesktopGetStatusArgs = {}): Promise<MacDesktopStatus> => {
     const laneId = args.laneId?.trim() || null;
-    const driverHealth = backend?.client.getHealth() ?? {
+    const driverHealth = driverLifecycle.driverHealth() ?? {
       state: isDarwin ? "starting" as const : "unsupported" as const,
       title: isDarwin ? "Mac Desktop is starting" : "Mac Desktop needs macOS",
       message: isDarwin ? "ADE is preparing the native desktop driver." : MAC_DESKTOP_MACOS_ONLY_MESSAGE,
@@ -918,8 +751,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         ? null
         : (isDarwin ? driverHealth.message : MAC_DESKTOP_MACOS_ONLY_MESSAGE),
       driver: driverHealth,
-      permissions,
-      displayMode: isDarwin ? displayMode : "unavailable",
+      permissions: driverLifecycle.permissions,
+      displayMode: isDarwin ? driverLifecycle.displayMode : "unavailable",
       display,
       windows,
       lease: laneId ? leases.get(laneId) : null,
@@ -964,7 +797,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     // any display the helper no longer has. Checking `existing` before it made
     // `start` answer "already running" for a screen that was gone, and every
     // command after it fail with "no display".
-    await ensureProvider();
+    await driverLifecycle.ensureProvider();
     const existing = ownership.getDisplay(laneId);
     if (existing) {
       const wanted = requested ? MAC_DESKTOP_RESOLUTION_PRESETS[requested] : null;
@@ -982,8 +815,8 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // re-opens what it still needs.
       await destroyDisplay(laneId, "stopped");
     }
-    const seat = await ensureProvider();
-    await reconcileDisplays(seat);
+    const seat = await driverLifecycle.ensureProvider();
+    await driverLifecycle.reconcileDisplays(seat);
     assertPermission("screenRecording");
     const laneName = args.laneName?.trim()
       || (await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))
@@ -1004,7 +837,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // treat 0 as "none" — 0 is a valid display id on macOS.
       displayId: asNullableDisplayId(reply.displayId),
       name: asNullableString(reply.name) ?? macDesktopDisplayName(laneName),
-      mode: (reply.mode as MacDesktopDisplayMode) ?? displayMode,
+      mode: (reply.mode as MacDesktopDisplayMode) ?? driverLifecycle.displayMode,
       width: asNumber(reply.width, size.width),
       height: asNumber(reply.height, size.height),
       scale: asNumber(reply.scale, 2),
@@ -1016,7 +849,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       windowCount: 0,
       lastActivityAt: new Date(now()).toISOString(),
     };
-    displayMode = display.mode;
+    driverLifecycle.setDisplayMode(display.mode);
     const stored = ownership.setDisplay(display, laneName);
     emit({ type: "display-created", display: stored });
     ensureSweepTimer();
@@ -1142,51 +975,27 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // probe, or throw: a Windows desktop reads this to learn the tab is not
       // available here, and a read that throws cannot say so.
       if (!isDarwin) return await buildStatus(args);
-      if (!backend) {
+      if (!driverLifecycle.hasDriver()) {
         // Bring the helper up on the first read so the health card is real
         // rather than a permanent "starting". A failure to start is health,
         // not an exception.
-        await ensureDriver().catch((error) => {
+        await driverLifecycle.ensureDriver().catch((error) => {
           deps.logger.warn("mac_desktop.status_driver_start_failed", {
             error: error instanceof Error ? error.message : String(error),
           });
         });
-      } else if (backend.client.isRunning()) {
-        await refreshDriverHealth(backend.client, backend.provider);
+      } else if (driverLifecycle.isDriverRunning()) {
+        await driverLifecycle.refreshDriverHealth();
       }
       return await buildStatus(args);
     },
 
     async recheckPermissions(args: MacDesktopRecheckPermissionsArgs = {}): Promise<MacDesktopPermissions> {
-      assertSupported();
-      const { client, provider } = await ensureDriver();
-      if (args.restartDriver !== false) {
-        await client.restart();
-        // The helper died with every display it owned. Nothing is parked on a
-        // display that no longer exists, so a lane map that still claimed one
-        // would report a screen that is gone.
-        if (ownership.laneIds().length > 0) onDriverLost("restarted");
-      }
-      permissionWatchSent = false;
-      await syncPermissionWatch();
-      await refreshDriverHealth(client, provider);
-      return permissions;
+      return await driverLifecycle.recheckPermissions(args);
     },
 
     async requestPermission(args: MacDesktopRequestPermissionArgs): Promise<MacDesktopPermissions> {
-      assertSupported();
-      // The one place `allowPrompt` is decided. It is true only when the
-      // ADE window asking is on this Mac; an agent cannot reach this method
-      // (it is CTO-only) and the helper ignores the ask when it arrives false.
-      const allowPrompt = deps.hostIsLocal ? deps.hostIsLocal() : true;
-      const { client, provider } = await ensureDriver();
-      const reply = await provider.requestPermission({
-        which: args.which === "accessibility" ? "accessibility" : "screenRecording",
-        allowPrompt,
-      });
-      applyPermissions(asRecord(reply.permissions) as Partial<MacDesktopPermissions>);
-      await refreshDriverHealth(client, provider);
-      return permissions;
+      return await driverLifecycle.requestPermission(args);
     },
 
     async start(args: MacDesktopStartArgs): Promise<MacDesktopStatus> {
@@ -1222,7 +1031,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
     async listWindows(args: { laneId?: string | null } = {}): Promise<MacDesktopWindow[]> {
       assertSupported();
-      await ensureDriver();
+      await driverLifecycle.ensureDriver();
       return await windowLifecycle.listInternal(args.laneId ?? null);
     },
 
@@ -1452,16 +1261,14 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       // because the second unsubscribe finds nothing to delete.
       if (!listeners.has(listener)) {
         listeners.add(listener);
-        permissionWatchers += 1;
-        void syncPermissionWatch();
+        driverLifecycle.addPermissionWatcher();
       }
       let active = true;
       return () => {
         if (!active) return;
         active = false;
         if (!listeners.delete(listener)) return;
-        permissionWatchers = Math.max(0, permissionWatchers - 1);
-        void syncPermissionWatch();
+        driverLifecycle.removePermissionWatcher();
       };
     },
 
@@ -1473,10 +1280,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         sweepTimer = null;
       }
       streaming.dispose();
-      driverEventUnsubscribe?.();
-      driverEventUnsubscribe = null;
-      backend?.client.dispose();
-      backend = null;
+      driverLifecycle.dispose();
       ownership.clear();
       startLocks.clear();
       recording.clear();

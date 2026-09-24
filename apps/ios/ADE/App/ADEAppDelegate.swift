@@ -4,9 +4,10 @@ import UserNotifications
 import WidgetKit
 
 /// Minimal `UIApplicationDelegate` bridged into the SwiftUI lifecycle via
-/// `@UIApplicationDelegateAdaptor`. It exists only to receive the APNs token
-/// callbacks and route incoming notifications — all policy lives in
-/// `PushNotificationService` and `DeepLinkRouter`.
+/// `@UIApplicationDelegateAdaptor`. It receives the APNs token callbacks,
+/// routes incoming notifications, and answers
+/// `supportedInterfaceOrientationsFor` from `ADEOrientationLock`.
+/// Push policy lives in `PushNotificationService` and `DeepLinkRouter`.
 final class ADEAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
