@@ -208,6 +208,7 @@ function PRsPageInner({ active }: { active: boolean }) {
   }, [handleRefresh, setActiveTab, setSelectedPrId, setSelectedPrTarget]);
 
   React.useEffect(() => {
+    if (!active || location.pathname !== "/prs") return;
     const syncFromLocation = () => {
       try {
         const locationKey = `${location.pathname}${location.search}${window.location.hash}`;
@@ -284,9 +285,10 @@ function PRsPageInner({ active }: { active: boolean }) {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [location.hash, location.pathname, location.search, loading, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
+  }, [active, location.hash, location.pathname, location.search, loading, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
+    if (!active || location.pathname !== "/prs") return;
     const current = parsePrsRouteState({ search: location.search, hash: location.hash });
     const localSelectedPr = selectedPrId ? prs.find((pr) => pr.id === selectedPrId) ?? null : null;
     const target = selectedPrTarget ?? (localSelectedPr ? {
@@ -337,6 +339,7 @@ function PRsPageInner({ active }: { active: boolean }) {
     if (location.search === nextSearch) return;
     void navigate({ pathname: location.pathname, search: nextSearch }, { replace: true });
   }, [
+    active,
     activeTab,
     prs,
     selectedPrId,

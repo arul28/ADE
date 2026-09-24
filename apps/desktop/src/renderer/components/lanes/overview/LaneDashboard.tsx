@@ -40,6 +40,7 @@ import {
   useLaneOperations,
   useLaneOverviewPrs,
   useLanePrDetail,
+  PRIMARY_COMMIT_PAGE,
   useLaneSessions,
   useLaneUpstream,
 } from "./useLaneOverviewData";
@@ -48,8 +49,6 @@ import {
 const OVERVIEW_MAX_WIDTH = 828;
 /** Activity rows shown before "Show all activity". */
 export const RECENT_ACTIVITY_COUNT = 8;
-/** Commits the primary lane reads per page; its history is the whole repo. */
-const PRIMARY_COMMIT_PAGE = 100;
 const EMPTY_AGENTS: LaneAgent[] = [];
 const EMPTY_SECTION_IDS: string[] = [];
 

@@ -1,5 +1,3 @@
-import React from "react";
-import { createPortal } from "react-dom";
 import {
   Archive,
   ArrowsClockwise,
@@ -9,10 +7,10 @@ import {
   type Icon,
 } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
-import { useClampedFixedPosition } from "../../../hooks/useClampedFixedPosition";
 import { LaneMenuGroups } from "../LaneContextMenu";
 import type { LaneMenuEntry } from "../laneContextMenuItems";
 import { COLORS } from "../laneDesignTokens";
+import { PointMenu } from "./PointMenu";
 import {
   laneGroupBulkActions,
   type LaneGroupBulkAction,
@@ -164,27 +162,6 @@ export function LaneSidebarGroupMenu({
   onClose: () => void;
   onAction: (action: LaneGroupBulkAction, laneIds: string[]) => void;
 }) {
-  const { ref: menuRef, position } = useClampedFixedPosition({ x: menu.x, y: menu.y }, `${menu.groupId}:${menu.x}:${menu.y}`);
-
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    };
-    const onPointerDown = () => onClose();
-    document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("pointerdown", onPointerDown);
-    };
-  }, [onClose]);
-
-  React.useEffect(() => {
-    menuRef.current?.focus();
-  }, [menuRef]);
-
   const count = menu.laneIds.length;
   const entries: LaneMenuEntry[] = laneGroupBulkActions(menu.groupId).map((action) => ({
     kind: "action",
@@ -197,32 +174,18 @@ export function LaneSidebarGroupMenu({
     },
   }));
 
-  // Portaled to the body: the sidebar host can be a containing block for
-  // fixed elements, which would offset the menu from the pointer.
-  return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      tabIndex={-1}
-      data-testid="lane-sidebar-group-menu"
-      className="ade-liquid-glass-menu"
-      style={{
-        position: "fixed",
-        zIndex: 40,
-        minWidth: 180,
-        border: `1px solid ${COLORS.outlineBorder}`,
-        padding: "4px 0",
-        left: position?.left ?? menu.x,
-        top: position?.top ?? menu.y,
-        visibility: position ? "visible" : "hidden",
-      }}
-      onPointerDown={(event) => event.stopPropagation()}
+  return (
+    <PointMenu
+      point={{ x: menu.x, y: menu.y }}
+      remeasureKey={`${menu.groupId}:${menu.x}:${menu.y}`}
+      testId="lane-sidebar-group-menu"
+      minWidth={180}
+      onClose={onClose}
     >
       <LaneMenuGroups
         groups={[{ key: "bulk", label: LANE_STATE_GROUP_META[menu.groupId].label, entries }]}
         onClose={onClose}
       />
-    </div>,
-    document.body,
+    </PointMenu>
   );
 }

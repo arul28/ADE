@@ -371,8 +371,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
-  const routeProps = { active: active && !overlayOpen } as { active?: boolean };
-  const overlayProps = { active } as { active?: boolean };
+  const pageActive = active && !overlayOpen;
   const shouldRenderWork = workMounted || isWorkRoute || heldWork;
   const shouldRenderLanes = active && (isLanesRoute || heldLanes);
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
@@ -516,22 +515,22 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
                   <Route path="/onboarding" element={<Navigate to="/work" replace />} />
                   <Route path="/files" element={
                     <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}>{React.createElement(FilesTab as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+                      <React.Suspense fallback={LazyFallback}><FilesTab active={pageActive} /></React.Suspense>
                     </PageErrorBoundary>
                   } />
                   <Route path="/prs" element={
                     <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}>{React.createElement(PRsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+                      <React.Suspense fallback={LazyFallback}><PRsPage active={pageActive} /></React.Suspense>
                     </PageErrorBoundary>
                   } />
                   <Route path="/automations/*" element={
                     <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}>{React.createElement(AutomationsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+                      <React.Suspense fallback={LazyFallback}><AutomationsPage active={pageActive} /></React.Suspense>
                     </PageErrorBoundary>
                   } />
                   <Route path="/settings" element={
                     <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}>{React.createElement(SettingsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+                      <React.Suspense fallback={LazyFallback}><SettingsPage active={pageActive} /></React.Suspense>
                     </PageErrorBoundary>
                   } />
                   <Route path="*" element={<Navigate to="/work" replace />} />
@@ -544,12 +543,12 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
               <Routes location={route}>
                 <Route path="/cto" element={
                   <PageErrorBoundary>
-                    <React.Suspense fallback={LazyFallback}>{React.createElement(CtoPage as React.ComponentType<{ active?: boolean }>, overlayProps)}</React.Suspense>
+                    <React.Suspense fallback={LazyFallback}><CtoPage active={active} /></React.Suspense>
                   </PageErrorBoundary>
                 } />
                 <Route path="/history" element={
                   <PageErrorBoundary>
-                    <React.Suspense fallback={LazyFallback}>{React.createElement(HistoryPage as React.ComponentType<{ active?: boolean }>, overlayProps)}</React.Suspense>
+                    <React.Suspense fallback={LazyFallback}><HistoryPage active={active} /></React.Suspense>
                   </PageErrorBoundary>
                 } />
                 <Route path="*" element={<Navigate to="/work" replace />} />
@@ -856,8 +855,10 @@ function ProjectTabHost() {
   const projectSurfaceOnScreen = Boolean(activeProject) && !showWelcome && mountedProjects.length > 0;
   const accountOpensInSettings = location.pathname === "/account" && projectSurfaceOnScreen;
   React.useEffect(() => {
-    if (accountOpensInSettings) navigate(ACCOUNT_SETTINGS_ROUTE, { replace: true });
-  }, [accountOpensInSettings, navigate]);
+    if (accountOpensInSettings) {
+      navigate(ACCOUNT_SETTINGS_ROUTE, { replace: true, state: location.state });
+    }
+  }, [accountOpensInSettings, location.state, navigate]);
 
   for (const entry of mountedProjects) {
     if (!storesRef.current.has(entry.surfaceKey)) {

@@ -1,12 +1,9 @@
-import React from "react";
-import { createPortal } from "react-dom";
 import type { LaneSummary } from "../../../../shared/types";
 import { resolveOpenInTarget } from "../../../../shared/editorTargets";
-import { useClampedFixedPosition } from "../../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../../state/appStore";
 import { LaneMenuGroups } from "../LaneContextMenu";
 import { buildLaneMenuGroups, type LaneMenuArgs } from "../laneContextMenuItems";
-import { COLORS } from "../laneDesignTokens";
+import { PointMenu } from "./PointMenu";
 
 const noop = () => {};
 
@@ -40,30 +37,6 @@ export function LaneSidebarContextMenu({
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const projectBinding = useAppStore((s) => s.projectBinding);
   const lane = lanesById.get(menu.laneId) ?? null;
-  const { ref: menuRef, position } = useClampedFixedPosition(
-    { x: menu.x, y: menu.y },
-    `${menu.laneId}:${lane?.id ?? ""}`,
-  );
-
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    };
-    const onPointerDown = () => onClose();
-    document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("pointerdown", onPointerDown);
-    };
-  }, [onClose]);
-
-  React.useEffect(() => {
-    menuRef.current?.focus();
-  }, [menuRef]);
-
   const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: projectBinding });
   const args: LaneMenuArgs = {
     laneId: menu.laneId,
@@ -84,31 +57,16 @@ export function LaneSidebarContextMenu({
     ...(openIn ? { openIn } : {}),
   };
 
-  // Portaled to the body so no scrolling or transformed parent can clip or
-  // offset the menu.
-  return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      tabIndex={-1}
-      data-testid="lane-sidebar-context-menu"
-      className="ade-liquid-glass-menu"
-      style={{
-        position: "fixed",
-        zIndex: 40,
-        minWidth: 200,
-        maxHeight: "calc(100vh - 20px)",
-        overflowY: "auto",
-        border: `1px solid ${COLORS.outlineBorder}`,
-        padding: "4px 0",
-        left: position?.left ?? menu.x,
-        top: position?.top ?? menu.y,
-        visibility: position ? "visible" : "hidden",
-      }}
-      onPointerDown={(event) => event.stopPropagation()}
+  return (
+    <PointMenu
+      point={{ x: menu.x, y: menu.y }}
+      remeasureKey={`${menu.laneId}:${lane?.id ?? ""}`}
+      testId="lane-sidebar-context-menu"
+      minWidth={200}
+      maxHeight="calc(100vh - 20px)"
+      onClose={onClose}
     >
       <LaneMenuGroups groups={buildLaneMenuGroups(args)} onClose={onClose} />
-    </div>,
-    document.body,
+    </PointMenu>
   );
 }

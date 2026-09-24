@@ -6,8 +6,19 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../../state/appStore";
 import { ProjectSidebar } from "./ProjectSidebar";
+import {
+  ProjectSidebarHold,
+  ProjectSidebarSlot,
+  ProjectSidebarSlotProvider,
+  useProjectSidebarSlotTarget,
+} from "./ProjectSidebarSlot";
 import { setProjectSidebarHidden } from "./projectSidebarPrefs";
-import { resetSettingsReturnRoutesForTest } from "./settingsReturnRoute";
+import {
+  lastSettingsRoute,
+  rememberProjectRoute,
+  resetSettingsReturnRoutesForTest,
+  settingsReturnRoute,
+} from "./settingsReturnRoute";
 
 const ROOT = "/Users/arul/ADE";
 
@@ -99,5 +110,56 @@ describe("ProjectSidebar footer", () => {
   it("shows no Back chip when nothing is held", () => {
     renderSidebar("/cto");
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  });
+});
+
+function SlotHost({ children }: { children: React.ReactNode }) {
+  const setTarget = useProjectSidebarSlotTarget();
+  return <div ref={setTarget}>{children}</div>;
+}
+
+describe("settings return routes", () => {
+  afterEach(() => {
+    resetSettingsReturnRoutesForTest();
+  });
+
+  it("remembers the page you left and the settings section you opened", () => {
+    rememberProjectRoute("local:/repo", "/prs?pr=12");
+    rememberProjectRoute("local:/repo", "/settings?tab=account");
+    rememberProjectRoute("local:/other", "/files");
+
+    expect(settingsReturnRoute("local:/repo")).toBe("/prs?pr=12");
+    expect(lastSettingsRoute("local:/repo")).toBe("/settings?tab=account");
+    expect(settingsReturnRoute("local:/other")).toBe("/files");
+    expect(settingsReturnRoute(null)).toBe("/work");
+    expect(lastSettingsRoute("local:/missing")).toBeNull();
+  });
+});
+
+describe("ProjectSidebarSlot hold", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("hides the held list while another slot is active", () => {
+    render(
+      <ProjectSidebarSlotProvider>
+        <SlotHost>
+          <ProjectSidebarHold held>
+            <ProjectSidebarSlot active={false}>
+              <div>Held list</div>
+            </ProjectSidebarSlot>
+          </ProjectSidebarHold>
+          <ProjectSidebarSlot active>
+            <div>Settings sections</div>
+          </ProjectSidebarSlot>
+        </SlotHost>
+      </ProjectSidebarSlotProvider>,
+    );
+
+    const held = screen.getByText("Held list").parentElement;
+    const settings = screen.getByText("Settings sections").parentElement;
+    expect(held?.hidden).toBe(true);
+    expect(settings?.hidden).toBe(false);
   });
 });

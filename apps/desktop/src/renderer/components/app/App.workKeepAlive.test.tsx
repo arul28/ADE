@@ -862,6 +862,19 @@ describe("App Work route keep-alive", () => {
     expect(appStoreModule.retainProjectAppStoreState).not.toHaveBeenCalled();
   });
 
+  it("opens /account inside a project on the Settings account tab and keeps returnTo", async () => {
+    window.history.replaceState({ usr: { returnTo: "/files" }, key: "acct", idx: 0 }, "", "/account");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/settings");
+      expect(window.location.search).toBe("?tab=account");
+    });
+    expect(window.history.state?.usr?.returnTo).toBe("/files");
+  });
+
   it("converts legacy hash app routes into BrowserRouter paths", async () => {
     window.history.replaceState({}, "", "/work#/lanes");
     const { App } = await import("./App");

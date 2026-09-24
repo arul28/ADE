@@ -1544,6 +1544,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // ?laneIds= re-tries as `availableLaneIds` changes.
 
   useEffect(() => {
+    if (!active) return;
     if (urlLaneDeeplinks.action !== "create") return;
     openCreateDialog();
     const next = new URLSearchParams(location.search);
@@ -1556,12 +1557,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     navigate,
     openCreateDialog,
     urlLaneDeeplinks.action,
+    active,
   ]);
 
   // ?action=manage&laneId=X opens ManageLaneDialog for that lane. Used by other
   // pages (PR cleanup, Work-tab lane right-click) to reach the canonical delete
   // surface.
   useEffect(() => {
+    if (!active) return;
     if (urlLaneDeeplinks.action !== "manage") return;
     const targetId = urlLaneDeeplinks.laneId;
     if (!targetId) return;
@@ -1575,7 +1578,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setPulsingLaneId(targetId);
     navigate(`${location.pathname}${buildLaneActionClearedSearch(location.search)}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById, deletingLaneIds]);
+  }, [active, urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById, deletingLaneIds]);
 
   // Clear the pulse marker shortly after it is set so the animation can replay.
   useEffect(() => {
@@ -1587,6 +1590,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // Work-tab lane menu actions that route here. The split/tab actions are gone
   // with the lane columns; opening one now just selects the lane.
   useEffect(() => {
+    if (!active) return;
     const action = urlLaneDeeplinks.action;
     if (!action || action === "create" || action === "manage") return;
     const laneId = urlLaneDeeplinks.laneId;
@@ -1615,9 +1619,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.laneIdsRaw,
     lanesById,
     deletingLaneIds,
+    active,
   ]);
 
   useEffect(() => {
+    if (!active) return;
     if (!shouldApplyLaneIdsDeepLink({
       action: urlLaneDeeplinks.action,
       laneIdsRaw: urlLaneDeeplinks.laneIdsRaw,
@@ -1637,6 +1643,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       }
     }
   }, [
+    active,
     availableLaneIds,
     selectLane,
     setLaneInspectorTab,
@@ -1646,6 +1653,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   ]);
 
   useEffect(() => {
+    if (!active) return;
     if (urlLaneDeeplinks.action) return;
     if (urlLaneDeeplinks.laneIdsRaw) return;
     consumedLaneIdsDeepLinkSignatureRef.current = null;
@@ -1657,6 +1665,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setLaneInspectorTab(laneId, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
     }
   }, [
+    active,
     urlLaneDeeplinks.action,
     urlLaneDeeplinks.laneIdsRaw,
     urlLaneDeeplinks.laneId,

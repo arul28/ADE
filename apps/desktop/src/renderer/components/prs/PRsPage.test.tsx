@@ -166,4 +166,18 @@ describe("PRsPage error gating", () => {
       expect(githubTabProps.current?.selectedPrTarget).toBeNull();
     });
   });
+
+  it("does not write PR state onto CTO or History while the page is held inactive", () => {
+    locationMock.pathname = "/cto";
+    locationMock.search = "";
+    usePrsMock.mockReturnValue(baseValue({
+      prs: [makePr()],
+      selectedPrId: "pr-1",
+      activeTab: "normal",
+    }));
+
+    render(<PRsPage active={false} />);
+
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
 });

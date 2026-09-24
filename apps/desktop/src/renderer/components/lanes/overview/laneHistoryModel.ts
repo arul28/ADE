@@ -481,10 +481,18 @@ export function buildLaneHistory(args: {
 
 export function filterLaneHistory(entries: LaneHistoryEntry[], filter: LaneHistoryFilter): LaneHistoryEntry[] {
   switch (filter) {
-    case "commits": return entries.filter((e) => e.category === "commit" || e.category === "git");
-    case "prs": return entries.filter((e) => e.category === "pr");
-    case "agents": return entries.filter((e) => e.category === "agent" || (e.category === "commit" && e.actor.kind === "agent"));
-    default: return entries;
+    case "all":
+      return entries;
+    case "commits":
+      return entries.filter((e) => e.category === "commit" || e.category === "git");
+    case "prs":
+      return entries.filter((e) => e.category === "pr");
+    case "agents":
+      return entries.filter((e) => e.category === "agent" || (e.category === "commit" && e.actor.kind === "agent"));
+    default: {
+      const _exhaustive: never = filter;
+      return _exhaustive;
+    }
   }
 }
 

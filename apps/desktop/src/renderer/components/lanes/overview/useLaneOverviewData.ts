@@ -133,7 +133,7 @@ export function useLaneOverviewPrs(lane: LaneSummary | null): { current: LaneHis
 
 /* ───────────────────────── Commits ───────────────────────── */
 
-const PRIMARY_COMMIT_PAGE = 100;
+export const PRIMARY_COMMIT_PAGE = 100;
 const MAX_LANE_COMMITS = 300;
 /** How many of the newest commits get their message read for trailers. */
 const TRAILER_LOOKUPS = 20;

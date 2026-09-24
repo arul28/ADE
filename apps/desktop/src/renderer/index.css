@@ -1714,14 +1714,16 @@ body.ade-project-sidebar-resizing {
    tools pane meet edge to edge, so their headers form one line. The hit area
    overlays both edges, and the line shows only on hover, focus or drag. The
    tools pane's own left border is the resting divider. */
-.ade-work-surface .ade-tool-gutter.vertical {
+.ade-work-surface .ade-tool-gutter.vertical,
+.ade-lanes-split .ade-tool-gutter.vertical {
   width: 0;
   margin: 0;
   z-index: 20;
   background: transparent !important;
 }
 
-.ade-work-surface .ade-tool-gutter.vertical::after {
+.ade-work-surface .ade-tool-gutter.vertical::after,
+.ade-lanes-split .ade-tool-gutter.vertical::after {
   inset: 0 -4px;
 }
 
@@ -1748,17 +1750,6 @@ body.ade-project-sidebar-resizing {
 
 /* The Lanes dashboard / Git pane split uses the same zero-width splitter: the
    Git column's left border is the resting line, the hairline shows on hover. */
-.ade-lanes-split .ade-tool-gutter.vertical {
-  width: 0;
-  margin: 0;
-  z-index: 20;
-  background: transparent !important;
-}
-
-.ade-lanes-split .ade-tool-gutter.vertical::after {
-  inset: 0 -4px;
-}
-
 .ade-lanes-split .ade-tool-gutter.vertical:hover::before,
 .ade-lanes-split .ade-tool-gutter.vertical:focus-visible::before,
 .ade-lanes-split .ade-tool-gutter.vertical[data-resize-handle-active]::before {
