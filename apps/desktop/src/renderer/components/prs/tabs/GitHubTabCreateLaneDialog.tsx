@@ -213,6 +213,15 @@ export function CreateLaneFromPrBranchDialog({
     setLaneName(preflightTargetLaneName(preflight, item));
   }, [item, loading, preflight, requestKey]);
 
+  // The field is disabled while the preflight runs, so Radix's open-time focus
+  // attempt on `initialFocusRef` is a no-op and never re-runs. Put focus in the
+  // field as soon as it becomes editable, so keyboard and screen-reader users
+  // land on the one control that takes input.
+  useEffect(() => {
+    if (loading || busy) return;
+    nameInputRef.current?.focus();
+  }, [loading, busy]);
+
   const blockingConflict = preflightBlockingConflict(preflight);
   const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy && laneName.trim().length > 0;
   const sourceBranch = preflightRemoteBranch(preflight, item);
@@ -238,7 +247,6 @@ export function CreateLaneFromPrBranchDialog({
       description="Check this pull request's branch out into a local lane. Give the lane a name you'll recognize in the Lanes tab."
       size="md"
       dismissible={!busy}
-      onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
       initialFocusRef={nameInputRef}
       testId="create-lane-from-pr-dialog"
       actions={[
@@ -306,8 +314,8 @@ export function CreateLaneFromPrBranchDialog({
             gap: 10,
             padding: "10px 12px",
             borderRadius: 9,
-            background: "rgba(239,68,68,0.08)",
-            border: "1px solid rgba(239,68,68,0.18)",
+            background: `color-mix(in srgb, ${COLORS.danger} 8%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${COLORS.danger} 18%, transparent)`,
             color: COLORS.danger,
             fontFamily: SANS_FONT,
             fontSize: 12,

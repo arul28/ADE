@@ -735,8 +735,15 @@ export function GitHubTab({
       // rewrites its own route when its selection changes (a replace to
       // `/prs?...`), so navigating earlier in this flow would be overwritten and
       // strand the user on the PRs tab. The flow ends on the Lanes tab with the
-      // new lane open, where its new-chat button and git pane are.
-      if (createdLaneId) navigate(openLaneInLanesTabPath(createdLaneId));
+      // new lane open, where its new-chat button and git pane are. Skip it when
+      // the active project changed during creation: the lane belongs to the
+      // original project, and its id would resolve to nothing in the new one.
+      if (createdLaneId) {
+        const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
+        if (!createProjectRoot || currentProjectRoot === createProjectRoot) {
+          navigate(openLaneInLanesTabPath(createdLaneId));
+        }
+      }
     } catch (err) {
       setCreateLaneError(formatActionError(err));
     } finally {

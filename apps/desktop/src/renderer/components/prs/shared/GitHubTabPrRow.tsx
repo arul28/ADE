@@ -4,6 +4,7 @@ import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosph
 import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 import { LaneIcon } from "../../ui/vcsIcons";
+import { LaneChip } from "../../terminals/LaneChip";
 import { useAppStore } from "../../../state/appStore";
 import { isTerminalPrState } from "../../../lib/prState";
 import { formatTimeAgoCompact } from "./prFormatters";
@@ -180,30 +181,16 @@ function PrRowLaneChip({
   linkedLaneColor: string | null;
 }) {
   if (item.linkedLaneName) {
-    // The lane's name is a label, not a badge: the branch glyph in the lane's
-    // own color, then the name, with no chip box around it. This matches the
-    // lane rows in the Lanes/Work sidebars, so a lane reads the same everywhere.
+    // The lane's name is a label, not a badge: the shared lane chip draws the
+    // branch glyph in the lane's own color, then the name, with no box around
+    // it — the same lane identity the Lanes and Work sidebars use.
     return (
-      <span
+      <LaneChip
+        laneName={item.linkedLaneName}
+        laneColor={linkedLaneColor}
+        maxWidth="100%"
         data-testid="pr-row-lane"
-        title={item.linkedLaneName}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 4,
-          minWidth: 0,
-          maxWidth: "100%",
-          fontFamily: SANS_FONT,
-          fontSize: 10,
-          fontWeight: 500,
-          color: linkedLaneColor ?? COLORS.textSecondary,
-        }}
-      >
-        <LaneIcon size={11} />
-        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {item.linkedLaneName}
-        </span>
-      </span>
+      />
     );
   }
 
