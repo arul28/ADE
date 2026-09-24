@@ -50,9 +50,6 @@ export function patchPermissionConfig(
   if (!rawMode) {
     delete providers[meta.key];
     if (meta.key === "codex") delete providers.codexSandbox;
-    if (meta.key === "cursor" && (providers.opencode === "full-auto" || providers.opencode === "plan")) {
-      delete providers.opencode;
-    }
     return { ...(permissionConfig ?? {}), providers: providers as AutomationPermissionConfig["providers"] };
   }
   const mode = rawMode as AgentChatPermissionMode;

@@ -322,10 +322,14 @@ function isShellCommandKey(key: string): boolean {
 
 function shellWords(command: string): string[] {
   const words: string[] = [];
-  const pattern = /"((?:\\.|[^"\\])*)"|'([^']*)'|`([^`]*)`|&&|\|\||[;&|]|([^\s;&|()<>]+)/g;
+  const pattern = /"((?:\\.|[^"\\])*)"|'([^']*)'|`([^`]*)`|&&|\|\||[;&|]|\n+|([^\s;&|()<>]+)/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(command)) !== null) {
-    const word = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[0] ?? "";
+    if (match[4] == null && (match[0] === "\n" || /^\n+$/.test(match[0]) || match[0] === "&&" || match[0] === "||" || /^[;&|]$/.test(match[0]))) {
+      words.push(/^\n+$/.test(match[0]) ? "\n" : match[0]);
+      continue;
+    }
+    const word = match[1] ?? match[2] ?? match[3] ?? match[4] ?? "";
     const trimmed = word.trim();
     if (trimmed.length > 0) words.push(trimmed);
   }
@@ -382,7 +386,7 @@ function isWindowsAbsolutePath(candidate: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(candidate.trim());
 }
 
-const SHELL_OPERATOR = /^(?:&&|\|\||[;&|])$/;
+const SHELL_OPERATOR = /^(?:&&|\|\||[;&|]|\n)$/;
 
 /** A skill token such as `/ship` or `/ship review 1308`, not a filesystem path. */
 function isAdeSlashCommandPrompt(token: string): boolean {
@@ -394,8 +398,10 @@ function isAdeSlashCommandPrompt(token: string): boolean {
 }
 
 function isAdeCommandBoundary(words: string[], index: number): boolean {
-  if (index === 0) return true;
-  return SHELL_OPERATOR.test(words[index - 1] ?? "");
+  let cursor = index - 1;
+  while (cursor >= 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[cursor] ?? "")) cursor -= 1;
+  if (cursor < 0) return true;
+  return SHELL_OPERATOR.test(words[cursor] ?? "");
 }
 
 /**
