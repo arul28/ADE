@@ -9817,7 +9817,7 @@ export function AgentChatPane({
       !text.length
       && !visualContextPrefix.length
       && !contextAttachmentsSnapshot.length
-      && !(isWorkCliLaunchDraft && attachments.length)
+      && !((isWorkCliLaunchDraft || devinCloudMode) && attachments.length)
     ) {
       return null;
     }
@@ -9856,6 +9856,7 @@ export function AgentChatPane({
     fastMode,
     contextAttachments,
     currentNativeControls,
+    devinCloudMode,
     draft,
     executionMode,
     interactionMode,
@@ -14976,6 +14977,7 @@ export function AgentChatPane({
             cursorCloudHasEligibleModels={devinCloudMode ? true : cursorCloudModelIds.length > 0}
             cursorCloudModeActive={cursorCloudSessionActive || devinCloudSessionActive}
             cloudTargetLabel={devinCloudSessionActive ? "Devin Cloud" : "Cursor Cloud"}
+            cloudFileAttachmentsDelivered={devinCloudSessionActive}
             cursorCloudPanelAvailable={cursorCloudPanelAvailable}
             cursorCloudPaneOpen={cursorCloudPaneOpen}
             onToggleCursorCloudPanel={() => {
@@ -15531,13 +15533,15 @@ export function AgentChatPane({
                         ) : null}
                       </div>
                     ) : null}
-                    {cloudHydrateFailed && !chatHasMessages && !cloudConversationPending && selectedSession?.cursorCloudAgentId ? (
+                    {cloudHydrateFailed && !chatHasMessages && !cloudConversationPending && (selectedSession?.cursorCloudAgentId || selectedSession?.devinSessionId) ? (
                       <div
-                        data-testid="cursor-cloud-hydrate-failed"
+                        data-testid={selectedSession?.cursorCloudAgentId ? "cursor-cloud-hydrate-failed" : "devin-cloud-hydrate-failed"}
                         className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center"
                       >
                         <p className="font-sans text-[12px] text-violet-100/80">
-                          Couldn’t load the Cursor Cloud conversation into this chat.
+                          {selectedSession?.devinSessionId
+                            ? "Couldn’t load the Devin Cloud conversation into this chat."
+                            : "Couldn’t load the Cursor Cloud conversation into this chat."}
                         </p>
                         <div className="flex items-center gap-3">
                           <button
@@ -15546,6 +15550,7 @@ export function AgentChatPane({
                             onClick={() => {
                               if (selectedSession?.sessionId) {
                                 cursorCloudBackfillAttemptedRef.current.delete(selectedSession.sessionId);
+                                devinCloudBackfillAttemptedRef.current.delete(selectedSession.sessionId);
                               }
                               setCloudHydrateFailed(false);
                               setCloudBackfillNonce((current) => current + 1);

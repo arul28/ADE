@@ -1764,6 +1764,7 @@ export function AgentChatComposer({
   cursorCloudModeActive = false,
   onSubmitToCloud,
   cloudTargetLabel = "Cursor Cloud",
+  cloudFileAttachmentsDelivered = false,
   cursorCloudPanelAvailable = false,
   cursorCloudPaneOpen = false,
   onToggleCursorCloudPanel,
@@ -2038,6 +2039,10 @@ export function AgentChatComposer({
    * The composer uses it for the send button's label and tooltip text.
    */
   cloudTargetLabel?: string;
+  /** True when the cloud provider behind this composer accepts file
+   *  attachments with a send (Devin uploads them; Cursor does not). Lets
+   *  attachment-only drafts enable Send only for providers that deliver them. */
+  cloudFileAttachmentsDelivered?: boolean;
   /** Whether the Cursor Cloud all-agents panel can be opened for this lane. */
   cursorCloudPanelAvailable?: boolean;
   cursorCloudPaneOpen?: boolean;
@@ -4136,7 +4141,7 @@ export function AgentChatComposer({
      with no remote binding is running on this Mac. */
   const composerMachineName = sessionId
     ? cursorRuntime === "cloud"
-      ? "Cursor Cloud"
+      ? cloudTargetLabel
       : composerMachineBinding?.kind === "remote"
         ? composerMachineBinding.runtimeName
         : THIS_MACHINE_NAME
@@ -5233,7 +5238,8 @@ export function AgentChatComposer({
       const block = cursorCloudSendBlock({
         hasEligibleModels: cursorCloudHasEligibleModels,
         modelReady: cursorCloudModelReady,
-        hasContent: trimmed.length > 0 || contextAttachmentCount > 0,
+        hasContent: trimmed.length > 0 || contextAttachmentCount > 0
+          || (cloudFileAttachmentsDelivered && attachments.length > 0),
       });
       if (block) {
         if (block.notify) onSubmitBlocked?.(block.reason);
@@ -5254,7 +5260,7 @@ export function AgentChatComposer({
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5334,7 +5340,8 @@ export function AgentChatComposer({
     ? cursorCloudSendBlock({
       hasEligibleModels: cursorCloudHasEligibleModels,
       modelReady: cursorCloudModelReady,
-      hasContent: draft.trim().length > 0 || contextAttachmentCount > 0,
+      hasContent: draft.trim().length > 0 || contextAttachmentCount > 0
+        || (cloudFileAttachmentsDelivered && attachments.length > 0),
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;

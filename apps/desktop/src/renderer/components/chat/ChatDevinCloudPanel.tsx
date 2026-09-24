@@ -121,13 +121,16 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
     return () => window.clearInterval(interval);
   }, []);
 
-  /** Sessions touching this lane's repo — the fleet already covers the org. */
+  /** Sessions touching this lane's repo — the fleet already covers the org.
+   *  The chat's own linked session always stays: v1 listings carry no repo
+   *  binding at all, so a repo filter alone would hide it. */
   const repoEntries = useMemo(() => {
     if (!repoKey) return entries;
     return entries.filter((entry) =>
-      entry.session.repos.some((repo) => devinCloudRepoMatchKey(repo) === repoKey),
+      entry.session.sessionId === devinSessionId
+      || entry.session.repos.some((repo) => devinCloudRepoMatchKey(repo) === repoKey),
     );
-  }, [entries, repoKey]);
+  }, [devinSessionId, entries, repoKey]);
 
   const sessionEntry = useMemo(() => {
     if (!devinSessionId) return null;

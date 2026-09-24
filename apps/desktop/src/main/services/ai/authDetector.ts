@@ -171,12 +171,21 @@ async function inspectAcpCliCredentials(
   if (cli === "devin") {
     // Devin reads WINDSURF_API_KEY first, then the login `devin auth login`
     // leaves in `credentials.toml` under the XDG data dir — the same list
-    // the ACP account reader checks.
+    // the ACP account reader checks. A Windsurf key saved on the Devin
+    // provider page counts too: the ACP spawn exports it to the CLI.
     if (env.WINDSURF_API_KEY?.trim()) return { authenticated: true, verified: false };
     for (const file of devinCredentialFiles({ env, homeDir: home })) {
       if (await fileExists(file)) {
         return { authenticated: true, verified: false };
       }
+    }
+    try {
+      const { getApiCredentialKey } = await import("./apiKeyStore");
+      if (getApiCredentialKey("devin-cli")?.trim()) {
+        return { authenticated: true, verified: false };
+      }
+    } catch {
+      // The store is Electron-main scoped; probes elsewhere keep disk auth.
     }
     return { authenticated: false, verified: false };
   }

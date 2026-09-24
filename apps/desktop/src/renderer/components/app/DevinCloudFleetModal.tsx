@@ -52,7 +52,9 @@ function provenanceMatches(entry: DevinCloudFleetEntry, provenance: ProvenanceFi
     case "ade":
       return entry.createdViaAde;
     case "mine":
-      return entry.createdViaAde || entry.isMine;
+      // Ownership only: a teammate's ADE-launched session in this org also
+      // carries the ade tags, so createdViaAde cannot stand in for isMine.
+      return entry.isMine;
     default:
       return true;
   }

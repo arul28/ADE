@@ -6418,9 +6418,33 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     for (const [name, value] of [["sessionId", sessionId], ["title", title], ["projectId", projectId], ["platform", platform]] as const) {
       if (value && value.length > 256) throw new Error(`ai.createDevinCloudSession ${name} is too long.`);
     }
+    const laneId = requireString(payload.laneId, "ai.createDevinCloudSession requires laneId.");
     const attachments = parseAgentChatFileRefs(payload.attachments);
+    // Remote callers cannot pick files on this host, so a file attachment here
+    // can only reference something already on disk — without a bound, naming
+    // /etc/passwd would upload it to Devin. Remote-supplied files must resolve
+    // inside the target lane's worktree; image-url refs read no disk at all.
+    const fileAttachments = (attachments ?? []).filter(
+      (attachment) => attachment.type !== "image-url" && typeof attachment.path === "string" && attachment.path.trim().length > 0,
+    );
+    if (fileAttachments.length) {
+      const worktree = args.laneService.getLaneBaseAndBranch(laneId)?.worktreePath?.trim();
+      const root = worktree ? fs.realpathSync(worktree) : null;
+      for (const attachment of fileAttachments) {
+        const resolved = (() => {
+          try {
+            return root ? fs.realpathSync(attachment.path!) : null;
+          } catch {
+            return null;
+          }
+        })();
+        if (!root || !resolved || (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))) {
+          throw new Error("ai.createDevinCloudSession file attachments must resolve inside the target lane.");
+        }
+      }
+    }
     const result = await requireService(args.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
-      laneId: requireString(payload.laneId, "ai.createDevinCloudSession requires laneId."),
+      laneId,
       prompt,
       ...(sessionId ? { sessionId } : {}),
       ...(title ? { title } : {}),

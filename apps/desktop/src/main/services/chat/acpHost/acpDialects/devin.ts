@@ -37,13 +37,31 @@ import {
   withOptionalEnv,
 } from "./shared";
 import { readDevinAccount } from "./acpAccounts";
+import { getApiCredentialKey } from "../../../ai/apiKeyStore";
+
+/**
+ * A Windsurf API key saved on the Devin provider page files under the
+ * `devin-cli` credential id — the spawn has to export it or the key a user
+ * saved never reaches the CLI. An explicit env var wins over the store.
+ */
+function storedDevinCliApiKey(baseEnv: NodeJS.ProcessEnv): string | null {
+  if (baseEnv.WINDSURF_API_KEY?.trim()) return null;
+  try {
+    return getApiCredentialKey("devin-cli")?.trim() || null;
+  } catch {
+    // The store is Electron-main scoped; spawns elsewhere keep env-only auth.
+    return null;
+  }
+}
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   return {
     command: context.binaryPath,
     args: ["acp"],
     cwd: context.cwd,
-    env: withOptionalEnv(context.baseEnv, {}),
+    env: withOptionalEnv(context.baseEnv, {
+      WINDSURF_API_KEY: storedDevinCliApiKey(context.baseEnv),
+    }),
   };
 }
 

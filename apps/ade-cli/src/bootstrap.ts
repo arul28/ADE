@@ -2163,6 +2163,10 @@ export async function createAdeRuntime(args: {
       listDevinCloudSessions: (args) => aiIntegrationService.listDevinCloudSessions(args),
       getDevinCloudSession: (devinSessionId) => aiIntegrationService.getDevinCloudSession(devinSessionId),
       getDevinCloudCallerUserId: () => aiIntegrationService.getDevinCloudCallerUserId(),
+      // A v1 personal-key listing is already owner-scoped: every row is the
+      // caller's session, so isMine holds without a /v3/self principal (which
+      // headless v1 hosts cannot produce).
+      callerIsListingOwner: () => aiIntegrationService.devinCloudListingIsPersonalScope(),
       laneService: {
         list: (args) => laneService.list(args),
         importBranch: (args) => laneService.importBranch(args),

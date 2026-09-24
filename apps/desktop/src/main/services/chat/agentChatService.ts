@@ -48018,12 +48018,40 @@ export function createAgentChatService(args: {
     if (!trimmedId) throw new Error("Devin cloud session id is required.");
     if (!message) throw new Error("Message is required.");
 
-    const matched = (() => {
+    let matched = (() => {
       for (const [, managed] of managedSessions) {
         if (managed.session.devinSessionId === trimmedId) return managed;
       }
       return null;
     })();
+    if (!matched) {
+      // A linked chat that has not been opened since this process started is
+      // invisible to managedSessions; restore it through the same persisted
+      // scan openDevinCloudChat uses, or a remote follow-up can never reach it.
+      try {
+        const rows = sessionService.list({
+          limit: null,
+          toolTypes: CHAT_SESSION_TOOL_TYPES,
+        });
+        for (const row of rows) {
+          if (!isChatToolType(row.toolType)) continue;
+          const persisted = readPersistedState(row.id);
+          if (normalizeDevinSessionId(persisted?.devinSessionId ?? "") !== trimmedId) continue;
+          const opened = await openDevinCloudChat({
+            devinSessionId: trimmedId,
+            laneId: row.laneId,
+            sessionId: row.id,
+          });
+          matched = managedSessions.get(opened.sessionId) ?? null;
+          break;
+        }
+      } catch (error) {
+        logger.warn("agent_chat.devin_cloud_follow_up_link_lookup_failed", {
+          devinSessionId: trimmedId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     if (!matched) {
       throw new Error(
         `No active chat session is associated with Devin session '${trimmedId}'. Open the session before sending a follow-up.`,
@@ -48054,7 +48082,10 @@ export function createAgentChatService(args: {
     attachments?: AgentChatFileRef[];
   }): Promise<{ sessionId: string; session: AgentChatSession; devinSessionId: string }> => {
     const trimmedLane = args.laneId.trim();
-    const prompt = args.prompt.trim();
+    // An attachment-only launch needs a real prompt — Devin's create rejects an
+    // empty one — so substitute a minimal instruction; the files carry the ask.
+    const prompt = args.prompt.trim()
+      || (args.attachments?.length ? "See the attached file(s)." : "");
     if (!trimmedLane) throw new Error("Lane id is required.");
     if (!prompt) throw new Error("Prompt is required.");
 
