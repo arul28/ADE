@@ -2538,8 +2538,8 @@ describe("automationService integration", () => {
       modelConfig: { modelId: "cursor/grok-4.7", thinkingLevel: "high" },
       permissionConfig: {
         providers: {
-          claude: "full-auto" as const,
-          codex: "full-auto" as const,
+          claude: "edit" as const,
+          codex: "plan" as const,
           opencode: "full-auto" as const,
           codexSandbox: "danger-full-access" as const,
         },

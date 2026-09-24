@@ -322,10 +322,10 @@ function isShellCommandKey(key: string): boolean {
 
 function shellWords(command: string): string[] {
   const words: string[] = [];
-  const pattern = /"((?:\\.|[^"\\])*)"|'([^']*)'|`([^`]*)`|&&|\|\||[;&|]|\n+|([^\s;&|()<>]+)/g;
+  const pattern = /"((?:\\.|[^"\\])*)"|'([^']*)'|`([^`]*)`|&&|\|\||>>|<<|>&|&>|[;&|><]|\n+|([^\s;&|()<>]+)/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(command)) !== null) {
-    if (match[4] == null && (match[0] === "\n" || /^\n+$/.test(match[0]) || match[0] === "&&" || match[0] === "||" || /^[;&|]$/.test(match[0]))) {
+    if (match[4] == null && (match[0] === "\n" || /^\n+$/.test(match[0]) || match[0] === "&&" || match[0] === "||" || /^(?:>>|<<|>&|&>|[;&|><])$/.test(match[0]))) {
       words.push(/^\n+$/.test(match[0]) ? "\n" : match[0]);
       continue;
     }
@@ -387,6 +387,11 @@ function isWindowsAbsolutePath(candidate: string): boolean {
 }
 
 const SHELL_OPERATOR = /^(?:&&|\|\||[;&|]|\n)$/;
+const REDIRECT_OPERATOR = /^(?:>>|<<|>&|&>|[><])$/;
+
+function stopsNotePromptScan(word: string): boolean {
+  return SHELL_OPERATOR.test(word) || REDIRECT_OPERATOR.test(word);
+}
 
 /** A skill token such as `/ship` or `/ship review 1308`, not a filesystem path. */
 function isAdeSlashCommandPrompt(token: string): boolean {
@@ -419,17 +424,26 @@ function adeSlashCommandPromptIndexes(words: string[]): Set<number> {
     if (sub === "note") {
       for (let cursor = index + 3; cursor < words.length; cursor += 1) {
         const word = words[cursor] ?? "";
+        if (stopsNotePromptScan(word)) break;
         if (word === "--") {
           const message = words[cursor + 1];
-          if (message && !SHELL_OPERATOR.test(message) && isAdeSlashCommandPrompt(trimShellToken(message))) ignored.add(cursor + 1);
+          if (message && !stopsNotePromptScan(message) && isAdeSlashCommandPrompt(trimShellToken(message))) ignored.add(cursor + 1);
           break;
         }
         if (word.startsWith("-")) {
           if (!word.includes("=") && word === "--text") {
             const message = words[cursor + 1];
-            if (message && isAdeSlashCommandPrompt(trimShellToken(message))) ignored.add(cursor + 1);
+            if (message && !stopsNotePromptScan(message) && isAdeSlashCommandPrompt(trimShellToken(message))) {
+              ignored.add(cursor + 1);
+              cursor += 1;
+            }
+            continue;
           }
-          if (!word.includes("=") && (word === "--session" || word === "--text")) cursor += 1;
+          if (!word.includes("=") && word === "--session") {
+            const next = words[cursor + 1];
+            if (next && !stopsNotePromptScan(next)) cursor += 1;
+            continue;
+          }
           continue;
         }
         if (isAdeSlashCommandPrompt(trimShellToken(word))) ignored.add(cursor);
