@@ -4,11 +4,11 @@ import type {
   AgentChatSessionSummary,
   AgentChatSubagentSnapshot,
 } from "../../../desktop/src/shared/types/chat";
-import { isBackgroundShellCommand, latestPlan } from "../../../desktop/src/shared/chatSubagents";
+import { isBackgroundShellCommand } from "../../../desktop/src/shared/chatSubagents";
+import { deriveChatTaskList, isPlanProposalEvent } from "../../../desktop/src/shared/chatTaskList";
 import { deriveBackgroundItems, mergeManagedScheduledWorkSnapshots } from "../../../desktop/src/shared/chatScheduledWork";
 import { resolveSubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
 import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
-import { deriveTodoItems } from "../../../desktop/src/renderer/components/chat/chatExecutionSummary";
 import type {
   AdeCodeProvider,
   ChatInfoSnapshot,
@@ -152,7 +152,6 @@ export function deriveChatInfoSnapshot(args: {
 }): ChatInfoSnapshot {
   const provider = (args.activeSession?.provider ?? args.provider) as AdeCodeProvider;
   const planEvent = latestPlanEvent(args.events);
-  const planEventRecord = planEvent as (Record<string, unknown> | null);
   return {
     provider,
     modelLabel: args.modelLabel,
@@ -167,10 +166,8 @@ export function deriveChatInfoSnapshot(args: {
     contextPercent: args.tokenStats?.percent ?? null,
     tokenSummary: tokenStatsSummary(args.tokenStats),
     goal: args.goal,
-    plan: latestPlan(args.events),
-    planExplanation: trimmedOrNull(planEventRecord?.explanation),
-    planStreamingText: trimmedOrNull(planEventRecord?.streamingText),
-    todos: deriveTodoItems(args.events),
+    taskList: deriveChatTaskList(args.events),
+    planStreamingText: planEvent && isPlanProposalEvent(planEvent) ? trimmedOrNull(planEvent.streamingText) : null,
     // Schedule kinds only — background command tasks render in their own block.
     scheduledWork: mergeManagedScheduledWorkSnapshots(args.events, args.activeSession?.scheduledWork)
       .filter((item) => item.kind !== "background_task"),

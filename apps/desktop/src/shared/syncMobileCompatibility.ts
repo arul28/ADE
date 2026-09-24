@@ -97,6 +97,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "chat.listPromptStashes",
   "chat.createPromptStash",
   "chat.deletePromptStash",
+  // Sources favicons improve the compact phone Sources list; older hosts keep
+  // working with the domain-initial fallback.
+  "chat.resolveSourceFavicons",
   // Read-only Work tools pane (active tool, browser tabs, App Control, latest
   // frame). Optional because the phone simply shows no lane tool chips when
   // the brain does not advertise it — an older brain must not be flipped to

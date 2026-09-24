@@ -17,11 +17,12 @@ import {
   USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_BG_CLASS,
   USAGE_TEXT,
+  usageHeadroomColor,
+  usageHeadroomTone,
 } from "./usageDesign";
 import { formatUpdatedAge } from "./usageWindowFormat";
 import { useAppStore } from "../../state/appStore";
 import { usageProviderLogo } from "../terminals/ToolLogos";
-import { providerColor } from "./providerColors";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -139,9 +140,10 @@ const USAGE_RING_LOGO = 16;
  * One provider mark, drawn tight around the logo.
  *
  * The pale arc is what has been used. It starts at 12 o'clock and grows
- * clockwise as usage goes up. What is left stays the saturated brand colour.
- * The pale tint is opaque and much lighter than the brand, so a small change
- * in the week is visible. A provider with no week uses its month.
+ * clockwise as usage goes up. What is left is drawn in the headroom colour
+ * (`usageHeadroomColor`: green, then yellow, then red as it runs out), the same
+ * for every provider. The pale tint is opaque and much lighter, so a small
+ * change in the week is visible. A provider with no week uses its month.
  */
 function HeaderProviderUsageRing({
   provider,
@@ -151,14 +153,14 @@ function HeaderProviderUsageRing({
   usage: HeaderUsageWindowSummary;
 }) {
   const theme = useAppStore((state) => state.theme);
-  const color = providerColor(provider, theme);
   const left = headroomPercent(usage.planPercent);
+  const color = left == null ? "var(--color-muted-fg)" : usageHeadroomColor(left);
   const used = left == null ? null : 100 - left;
   const center = USAGE_RING_SIZE / 2;
   const radius = (USAGE_RING_SIZE - USAGE_RING_STROKE) / 2;
   const circumference = 2 * Math.PI * radius;
   const usedDash = used == null ? 0 : (used / 100) * circumference;
-  // Pale and opaque, far from the brand. On a dark header that is almost
+  // Pale and opaque, far from the headroom colour. On a dark header that is almost
   // white; on a light header a near-white arc would vanish, so the light
   // theme stays a pale tint of the page instead.
   const unshaded = theme === "light"
@@ -173,6 +175,7 @@ function HeaderProviderUsageRing({
       data-usage-provider={provider}
       data-usage-window={usage.planLabel}
       data-usage-left={left == null ? "" : String(left)}
+      data-usage-tone={left == null ? "" : usageHeadroomTone(left)}
       data-usage-unshaded={used == null ? "" : String(used)}
     >
       <svg

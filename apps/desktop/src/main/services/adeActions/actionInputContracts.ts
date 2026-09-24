@@ -419,8 +419,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string }",
       example: "ade actions run chat.continueUsageLimitOnAlternate --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
+    listCliChildSessions: {
+      description: "List tracked CLI sessions spawned with a parent chat (`ade new chat --mode cli --parent …`), with status, exit code, lane, and parent. `chat.getTurnStatus` and `chat.readTranscript` also answer for these ids.",
+      input: "object { laneId?: string, parentSessionId?: string }",
+      example: "ade actions run chat.listCliChildSessions --input-json '{\"parentSessionId\":\"chat-123\"}' --json",
+    },
     readTranscript: {
-      description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
+      description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine. For a tracked CLI session id it returns the CLI's last message and terminal tail instead.",
       input: "object { sessionId: string, limit?: number, maxChars?: number, since?: ISO timestamp }",
       example: "ade actions run chat.readTranscript --input-json '{\"sessionId\":\"chat-123\",\"limit\":20,\"maxChars\":8000}'",
     },
@@ -458,6 +463,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Resolve a safe, bounded title and favicon preview for a pasted chat URL.",
       input: "object { url: string }",
       example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
+    },
+    resolveSourceFavicons: {
+      description: "Fetch the favicons of Sources domains from the sites themselves (HTTPS, public hosts only, cached 7 days) as data URLs; null when a site has none.",
+      input: "object { domains?: string[] (max 48), domain?: string, url?: string }",
+      example: "ade actions run chat.resolveSourceFavicons --input-json '{\"domains\":[\"github.com\",\"zed.dev\"]}' --json",
     },
     recoverCodexTurn: {
       description: "Recover a stalled Codex turn by waiting, nudging it, retrying on the same thread, or restarting and resuming the thread.",

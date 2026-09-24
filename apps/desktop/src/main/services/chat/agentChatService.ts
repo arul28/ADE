@@ -176,6 +176,7 @@ import type {
 import {
   appendBufferedAssistantText,
   canAppendBufferedAssistantText,
+  canCoalesceBufferedAssistantText,
   shouldFlushBufferedAssistantTextForEvent,
   type BufferedAssistantText,
 } from "./chatTextBatching";
@@ -237,6 +238,12 @@ import {
   compactChatEventForStorage,
   compactRunningCommandOutput,
 } from "../../../shared/chatEventCompaction";
+import {
+  claudeMessageCitationSourceRefs,
+  claudeWebToolSourceRefs,
+  codexMemoryCitationSourceRefs,
+  openCodeWebToolSourceRefs,
+} from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
@@ -492,6 +499,7 @@ import type {
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatSuggestLaneNameArgs,
+  AgentChatTextPhase,
   AutoLaneIdentitySuggestion,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
@@ -664,6 +672,7 @@ import { createChatMentionService, markChatMentionsExpanded } from "./chatMentio
 import { refreshModelManifestIfStale } from "../ai/modelManifestService";
 import {
   claudeJsonlToChatEvents,
+  codexMessagePhase,
   codexTurnsToChatEvents,
   deriveImportedChatTitle,
   MAX_IMPORT_TRANSCRIPT_BYTES,
@@ -1168,6 +1177,22 @@ import {
   createStaleRunSweep,
   type StaleRunSweepChatRow,
 } from "./chatStaleRunSweep";
+import {
+  createCliChildSessionAccess,
+  cliChildLineageFromRow,
+  cliChildResultStatus,
+  cliChildRunKey,
+  composeCliChildReport,
+  lastMeaningfulTerminalLines,
+  readCliProviderFinalMessage,
+  type CliChildLineage,
+  type TrackedCliRow,
+} from "./cliChildSessions";
+import {
+  TRACKED_AGENT_CLI_TOOL_TYPES,
+  type AgentChatCliChildSessionSummary,
+  type CliSessionFacts,
+} from "../../../shared/cliChildSession";
 
 export function restartRecoveryStopAttribution(args: {
   ownerSocketPath?: string | null;
@@ -1978,6 +2003,8 @@ type CodexSubagentThreadState = {
   interruptPending: boolean;
   activeTurnId: string | null;
   itemTurnIdByItemId: Map<string, string>;
+  /** Codex `phase` per in-flight `agentMessage` item; cleared when the item or turn ends. */
+  agentMessagePhaseByItemId: Map<string, AgentChatTextPhase>;
   commandOutputByItemId: Map<string, string>;
   commandOutputStorageClosedItemIds: Set<string>;
   fileDeltaByItemId: Map<string, string>;
@@ -2060,6 +2087,12 @@ type CodexRuntime = {
   terminalTurnIds: Set<string>;
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
+  /**
+   * Codex `phase` ("commentary" | "final_answer") per `agentMessage` item,
+   * learned from `item/started` (or `item/completed`) and stamped onto that
+   * item's streamed `text` deltas. Cleared at every turn boundary.
+   */
+  agentMessagePhaseByItemId: Map<string, AgentChatTextPhase>;
   recentNotificationKeys: Set<string>;
   emittedErrorKeys: Set<string>;
   reconciledItemSignaturesByTurn: Map<string, Set<string>>;
@@ -7119,10 +7152,14 @@ function normalizeClaudeTodoItems(
     }
 
     const explicitId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    // TodoWrite's `activeForm` ("Running tests") is what Claude shows while the
+    // item runs; the task list does the same.
+    const activeForm = typeof record.activeForm === "string" ? record.activeForm.trim() : "";
     return [{
       id: explicitId ?? `todo-${index}`,
       description,
       status,
+      ...(activeForm && activeForm !== description ? { activeForm } : {}),
     }];
   });
 
@@ -7235,10 +7272,12 @@ function updateClaudeTaskTodosFromToolInput(
     const id = firstNonEmptyString(record.taskId, record.id, record.metadata && typeof record.metadata === "object"
       ? (record.metadata as Record<string, unknown>).taskId
       : null) ?? fallbackId;
+    const activeForm = firstNonEmptyString(record.activeForm);
     tasksById.set(id, {
       id,
       description,
       status: normalizeClaudeTaskTodoStatus(record.status),
+      ...(activeForm && activeForm !== description ? { activeForm } : {}),
     });
   } else if (normalizedToolName === "TaskUpdate") {
     const id = firstNonEmptyString(record.taskId, record.id);
@@ -7262,10 +7301,12 @@ function updateClaudeTaskTodosFromToolInput(
       // Never fabricate a row from a bare id — an update for a task this
       // tracker cannot resolve or describe changes nothing user-visible.
       if (!description) return null;
+      const activeForm = firstNonEmptyString(record.activeForm, existing?.activeForm);
       tasksById.set(id, {
         id,
         description,
         status: normalizeClaudeTaskTodoStatus(record.status ?? existing?.status),
+        ...(activeForm && activeForm !== description ? { activeForm } : {}),
       });
     }
   } else {
@@ -7893,9 +7934,13 @@ function normalizeOpenCodePermissionMode(mode: string | undefined): AgentChatOpe
   return undefined;
 }
 
+// App-server `TurnPlanStepStatus` is camelCase (`inProgress`); the `update_plan`
+// tool arguments and the Cursor `ade_update_plan` fence use snake_case
+// (`in_progress`). Both spellings mean the same step state.
 const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "completed" | "failed"> = {
   completed: "completed",
   inProgress: "in_progress",
+  in_progress: "in_progress",
   failed: "failed",
 };
 
@@ -9254,10 +9299,11 @@ export function createAgentChatService(args: {
       ReturnType<typeof createPtyService>,
       "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "getRuntimeState"
     >
-    // Optional so narrow test doubles keep compiling; used only by composer
-    // @-mention suggestions/expansion, which degrade to "no terminals" when
-    // the runtime supplies a reduced pty surface.
-    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal">>
+    // Optional so narrow test doubles keep compiling. `listTerminals` /
+    // `previewTerminal` serve composer @-mentions (and a CLI child's report
+    // tail); `onExit` lets a tracked CLI child close its parent's card. Each
+    // degrades to "nothing" when the runtime supplies a reduced pty surface.
+    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill">>
   ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
   /**
@@ -11195,6 +11241,9 @@ export function createAgentChatService(args: {
         taskId: event.taskId,
         agentId: event.agentId ?? previous?.agentId,
         parentAgentId: event.parentAgentId ?? previous?.parentAgentId ?? null,
+        ...(event.provider ?? previous?.provider
+          ? { provider: event.provider ?? previous?.provider }
+          : {}),
         agentType: event.agentType ?? previous?.agentType,
         label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -11222,6 +11271,7 @@ export function createAgentChatService(args: {
         taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
         agentId: event.agentId ?? previous?.agentId,
         parentAgentId: event.parentAgentId ?? previous?.parentAgentId ?? null,
+        ...(previous?.provider ? { provider: previous.provider } : {}),
         agentType: event.agentType ?? previous?.agentType,
         label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -11256,6 +11306,7 @@ export function createAgentChatService(args: {
       taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
       agentId: event.agentId ?? previous?.agentId,
       parentAgentId: event.parentAgentId ?? previous?.parentAgentId ?? null,
+      ...(previous?.provider ? { provider: previous.provider } : {}),
       agentType: event.agentType ?? previous?.agentType,
       label: event.label?.trim() || previous?.label,
       parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -11705,10 +11756,21 @@ export function createAgentChatService(args: {
     entries: AgentChatTranscriptEntry[];
     truncated: boolean;
     totalEntries: number;
+    /** Set when the id names a tracked CLI terminal: the entry is its report, not a chat transcript. */
+    cliSession?: CliSessionFacts;
   }> => {
-    const managed = ensureManagedSession(sessionId);
     const normalizedLimit = Math.max(1, Math.min(MAX_TRANSCRIPT_READ_LIMIT, Math.floor(limit)));
     const normalizedMaxChars = Math.max(200, Math.min(MAX_TRANSCRIPT_READ_CHARS, Math.floor(maxChars)));
+    if (!managedSessions.has(sessionId.trim())) {
+      const cliTranscript = await readCliTranscript(sessionId);
+      if (cliTranscript) {
+        return {
+          ...cliTranscript,
+          entries: cliTranscript.entries.map((entry) => boundTranscriptEntry(entry, normalizedMaxChars)),
+        };
+      }
+    }
+    const managed = ensureManagedSession(sessionId);
     // Flush any pending buffered text so the transcript includes all content
     flushBufferedText(managed);
     const transcriptEntries = await readTranscriptEntries(managed, signal);
@@ -11774,6 +11836,12 @@ export function createAgentChatService(args: {
     nextCursor: number | null;
     cursorKind: "byte";
   }> => {
+    if (!managedSessions.has(sessionId.trim()) && readTrackedCliRow(sessionId)) {
+      throw new Error(
+        `Session '${sessionId.trim()}' is a CLI terminal session and has no paged chat transcript. `
+          + `Read it with \`ade chat read ${sessionId.trim()}\` (latest report) or \`ade terminal read ${sessionId.trim()}\` (full output).`,
+      );
+    }
     const managed = ensureManagedSession(sessionId);
     flushBufferedText(managed);
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
@@ -18384,6 +18452,7 @@ export function createAgentChatService(args: {
       ...(buffered.originTimestamp ? { originTimestamp: buffered.originTimestamp } : {}),
       ...(buffered.turnId ? { turnId: buffered.turnId } : {}),
       ...(buffered.itemId ? { itemId: buffered.itemId } : {}),
+      ...(buffered.phase ? { phase: buffered.phase } : {}),
     });
   };
 
@@ -18402,7 +18471,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "text" }>,
   ): void => {
-    if (canAppendBufferedAssistantText(managed.bufferedText, event)) {
+    if (canCoalesceBufferedAssistantText(managed.bufferedText, event)) {
       noteChatTextDelta(managed.session.id);
       managed.bufferedText = {
         ...appendBufferedAssistantText(managed.bufferedText, event),
@@ -19294,6 +19363,8 @@ export function createAgentChatService(args: {
     if (!toolMeta) return false;
     openToolUses.delete(payload.toolUseId);
     const structured = record.tool_use_result;
+    // `structured` never reaches clients, so WebSearch/WebFetch hits travel as `sources`.
+    const webSources = claudeWebToolSourceRefs(toolMeta.toolName, structured);
     emitChatEvent(managed, {
       type: "tool_result",
       tool: toolMeta.toolName,
@@ -19301,6 +19372,7 @@ export function createAgentChatService(args: {
       structured,
       ...(record.tool_result_meta !== undefined ? { toolResultMeta: record.tool_result_meta } : {}),
       ...claudeStructuredToolResultFields(toolMeta.toolName, structured),
+      ...(webSources.length ? { sources: webSources } : {}),
       itemId: payload.toolUseId,
       ...(turnId ? { turnId } : {}),
       status: "completed",
@@ -24448,6 +24520,16 @@ export function createAgentChatService(args: {
       const turnId = startClaudeIdleTurn(managed, runtime, state);
       emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
       const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
+      // Text-block citations the answer makes (web_search_result_location, …).
+      const citationSources = claudeMessageCitationSourceRefs(content);
+      if (citationSources.length) {
+        emitChatEvent(managed, {
+          type: "sources",
+          sources: citationSources,
+          ...(assistantMessageId ? { itemId: assistantMessageId } : {}),
+          turnId,
+        });
+      }
       for (const [index, rawBlock] of content.entries()) {
         const block = asRecord(rawBlock);
         if (!block) continue;
@@ -24603,7 +24685,13 @@ export function createAgentChatService(args: {
                 `${state.streamedTextByContentIndex.get(contentIndex) ?? ""}${text}`,
               );
             }
-            const providerMessageId = state.currentStreamMessageId ?? compactString(streamMsg.uuid);
+            // `streamMsg.uuid` names this one SDK frame, not the message, so it
+            // is latched: when the reader missed the `message_start` (it went to
+            // the foreground turn that just ended), every delta of the message
+            // still shares one id and draws as one text row instead of one row
+            // per delta. The next `message_start` replaces it.
+            if (!state.currentStreamMessageId) state.currentStreamMessageId = compactString(streamMsg.uuid) ?? null;
+            const providerMessageId = state.currentStreamMessageId;
             if (providerMessageId && contentIndex != null) {
               const record = claudeEmittedTextRecord(runtime, providerMessageId);
               record.set(contentIndex, `${record.get(contentIndex) ?? ""}${text}`);
@@ -25145,6 +25233,8 @@ export function createAgentChatService(args: {
     // accumulated stream text by index and match the snapshot by TEXT.
     const streamedClaudeThinkingTextByContentIndex = new Map<number, string>();
     let currentClaudeStreamMessageId: string | null = null;
+    /** Stand-in message id for deltas whose `message_start` never arrived. */
+    let claudeStreamFallbackMessageId: string | null = null;
     let pendingWorkerShutdownReason: string | null = null;
     let recentClaudeTextDeltaBuffer = "";
     let onBackendDispatched = args.onBackendDispatched;
@@ -26593,6 +26683,16 @@ export function createAgentChatService(args: {
           }
           reportedAssistantModel = normalizeReportedModelName(betaMessage?.model) ?? reportedAssistantModel;
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
+            // Text-block citations the answer makes (web_search_result_location, …).
+            const citationSources = claudeMessageCitationSourceRefs(betaMessage.content);
+            if (citationSources.length) {
+              emitChatEvent(managed, {
+                type: "sources",
+                sources: citationSources,
+                ...(assistantMessageId ? { itemId: assistantMessageId } : {}),
+                turnId,
+              });
+            }
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               for (const structuredEvent of mapClaudeStructuredActivityBlock({
                 block,
@@ -26756,7 +26856,12 @@ export function createAgentChatService(args: {
                   if (textKey) streamedClaudeTextContentKeys.add(textKey);
                   recentClaudeTextDeltaBuffer += text;
                   assistantText += text;
-                  const streamProviderMessageId = currentClaudeStreamMessageId ?? compactString(streamMsg.uuid);
+                  // `streamMsg.uuid` names one SDK frame, so the fallback is latched
+                  // until the next `message_start`: one message, one text row.
+                  if (!currentClaudeStreamMessageId && !claudeStreamFallbackMessageId) {
+                    claudeStreamFallbackMessageId = compactString(streamMsg.uuid) ?? null;
+                  }
+                  const streamProviderMessageId = currentClaudeStreamMessageId ?? claudeStreamFallbackMessageId;
                   if (streamProviderMessageId && contentIndex != null) {
                     const record = claudeEmittedTextRecord(runtime, streamProviderMessageId);
                     record.set(contentIndex, `${record.get(contentIndex) ?? ""}${text}`);
@@ -26935,6 +27040,7 @@ export function createAgentChatService(args: {
             }
           } else if (event.type === "message_start") {
             currentClaudeStreamMessageId = typeof event.message?.id === "string" ? event.message.id : null;
+            claudeStreamFallbackMessageId = null;
             recentClaudeTextDeltaBuffer = "";
             streamedClaudeThinkingTextByContentIndex.clear();
             const msgUsage = event.message?.usage;
@@ -29669,6 +29775,12 @@ export function createAgentChatService(args: {
                 if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
                 else emitOpenCodeImageAttachment(attachment);
               }
+              const webSources = openCodeWebToolSourceRefs(
+                part.tool,
+                part.state.input,
+                part.state.output,
+                part.state.title,
+              );
               emitChatEvent(managed, {
                 type: "tool_result",
                 tool: part.tool,
@@ -29678,6 +29790,7 @@ export function createAgentChatService(args: {
                   metadata: part.state.metadata ?? part.metadata ?? {},
                   attachments: part.state.attachments,
                 },
+                ...(webSources.length ? { sources: webSources } : {}),
                 itemId,
                 logicalItemId: part.id,
                 turnId,
@@ -29927,11 +30040,15 @@ export function createAgentChatService(args: {
                 // todo mapper above already derives a stable id.
                 id: openCodeTodoId(todo, index),
                 description: todo.content,
-                status: todo.status === "completed"
+                // `cancelled` (the SDK's fourth status) is settled: the wire
+                // keeps `completed` for clients that know no cancelled state,
+                // and the flag lets the task list draw it as skipped.
+                status: todo.status === "completed" || todo.status === "cancelled"
                   ? "completed"
                   : todo.status === "in_progress"
                     ? "in_progress"
                     : "pending",
+                ...(todo.status === "cancelled" ? { cancelled: true as const } : {}),
               })),
             turnId,
           });
@@ -30714,7 +30831,9 @@ export function createAgentChatService(args: {
         const rawStatus = typeof entry.status === "string" ? entry.status : "pending";
         return {
           text: normalizedText,
-          status: PLAN_STEP_STATUS_MAP[rawStatus] ?? "pending",
+          // `Object.hasOwn`: the status is model-controlled, and "constructor"
+          // would otherwise read an inherited value.
+          status: Object.hasOwn(PLAN_STEP_STATUS_MAP, rawStatus) ? PLAN_STEP_STATUS_MAP[rawStatus]! : "pending",
         };
       })
       .filter((entry): entry is { text: string; status: "pending" | "in_progress" | "completed" | "failed" } => entry != null);
@@ -31057,6 +31176,7 @@ export function createAgentChatService(args: {
     runtime.webSearchActionsByItemId.clear();
     runtime.agentMessageScopeByTurn.clear();
     runtime.agentMessageTextByTurn.clear();
+    runtime.agentMessagePhaseByItemId.clear();
     runtime.recentNotificationKeys.clear();
     runtime.reconciledItemSignaturesByTurn.clear();
     settleCodexPendingInputs(managed, runtime);
@@ -31802,6 +31922,7 @@ export function createAgentChatService(args: {
       interruptPending: false,
       activeTurnId: null,
       itemTurnIdByItemId: new Map<string, string>(),
+      agentMessagePhaseByItemId: new Map<string, AgentChatTextPhase>(),
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       commandOutputStorageClosedItemIds: new Set<string>(),
@@ -31951,6 +32072,7 @@ export function createAgentChatService(args: {
   ): void {
     const wasRunning = state.status === "running" || runtime.activeSubagents.has(state.threadId);
     state.activeTurnId = null;
+    state.agentMessagePhaseByItemId.clear();
     state.status = status;
     state.interruptPending = false;
     runtime.activeSubagents.delete(state.threadId);
@@ -32251,6 +32373,7 @@ export function createAgentChatService(args: {
       const messageId = itemId
         ? `codex-subagent:${threadId}:${turnId ?? "no-turn"}:${itemId}:text`
         : `codex-subagent:${threadId}:${turnId ?? "no-turn"}:text`;
+      const phase = itemId ? state.agentMessagePhaseByItemId.get(itemId) : undefined;
       recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
         transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
           type: "text",
@@ -32258,6 +32381,7 @@ export function createAgentChatService(args: {
           messageId,
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
+          ...(phase ? { phase } : {}),
         }, "assistant", delta), codexSubagentMetadataForThread(runtime, threadId)),
       ]);
       return true;
@@ -32355,6 +32479,11 @@ export function createAgentChatService(args: {
       const itemId = stringOrNull(item.id);
       const itemType = stringOrNull(item.type);
       if (itemId && turnIdFromParams) state.itemTurnIdByItemId.set(itemId, turnIdFromParams);
+      const agentMessagePhase = itemType === "agentMessage" ? codexMessagePhase(item) : undefined;
+      if (itemId && agentMessagePhase) {
+        state.agentMessagePhaseByItemId.set(itemId, agentMessagePhase);
+        evictOldestEntries(state.agentMessagePhaseByItemId, MAX_SESSION_MAP_ENTRIES);
+      }
       if (itemId && itemType === "fileChange") {
         const changes = Array.isArray(item.changes) ? item.changes : [];
         state.fileChangesByItemId.set(itemId, changes
@@ -32384,6 +32513,7 @@ export function createAgentChatService(args: {
         state.commandOutputByItemId.delete(itemId);
         state.commandOutputStorageClosedItemIds.delete(itemId);
       }
+      if (itemId) state.agentMessagePhaseByItemId.delete(itemId);
       recordCodexSubagentItem(managed, runtime, state, item, "completed", turnIdFromParams);
       return true;
     }
@@ -33117,6 +33247,16 @@ export function createAgentChatService(args: {
       const kind = stringOrNull(item.kind)?.toLowerCase() ?? "";
       const label = agentPath ?? assignCodexAgentLabel(runtime, turnId, agentThreadId);
       const existing = runtime.activeSubagents.get(agentThreadId);
+      // Codex delivers every `subAgentActivity` item twice — item/started, then
+      // item/completed with the same `kind` — and the second delivery can land
+      // after the child's own turn/completed settled it. Only the first
+      // delivery is news. Treating the echo as fresh activity used to re-mark a
+      // finished child "running" (and emit "Agent active" after its result),
+      // which a later restart sweep then closed as "stopped · the ADE brain
+      // restarted".
+      const knownThread = runtime.codexSubagentThreads.get(agentThreadId);
+      const wasRunning = knownThread?.status === "running" || existing != null;
+      const firstDelivery = eventKind === "started" || knownThread == null;
       const threadState = registerCodexSubagentThread(managed, runtime, {
         threadId: agentThreadId,
         parentToolUseId: existing?.parentToolUseId ?? itemId,
@@ -33124,12 +33264,19 @@ export function createAgentChatService(args: {
         prompt: existing?.description ?? label,
         background: existing?.background ?? false,
         label,
-        status: kind === "interrupted" ? "stopped" : "running",
+        // Only a first-delivery start (re)opens the thread; an interrupt closes
+        // it. Every other kind leaves the settled/running state alone.
+        status: kind === "started" && firstDelivery
+          ? "running"
+          : kind === "interrupted" && (wasRunning || knownThread == null)
+            ? "stopped"
+            : undefined,
         model: stringOrNull(item.model),
         reasoningEffort: stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
       });
       refreshCodexSubagentThreadMetadata(managed, runtime, threadState.threadId);
       if (kind === "started") {
+        if (!firstDelivery) return;
         runtime.activeSubagents.set(agentThreadId, {
           taskId: agentThreadId,
           description: label,
@@ -33157,6 +33304,9 @@ export function createAgentChatService(args: {
         return;
       }
       if (kind === "interrupted") {
+        // The second delivery (or an interrupt for a child that already
+        // settled) has nothing left to stop.
+        if (!wasRunning) return;
         threadState.status = "stopped";
         runtime.activeSubagents.delete(agentThreadId);
         emitChatEvent(managed, {
@@ -33173,6 +33323,9 @@ export function createAgentChatService(args: {
         });
         return;
       }
+      // Activity for a child that is not running (settled, or never announced
+      // to this runtime) is an echo, never a reason to reopen its row.
+      if (eventKind !== "started" || knownThread?.status !== "running") return;
       emitChatEvent(managed, {
         type: "subagent_progress",
         taskId: agentThreadId,
@@ -33579,6 +33732,34 @@ export function createAgentChatService(args: {
     }
 
     if (itemType === "agentMessage") {
+      // Codex labels an assistant message as commentary or final answer on the
+      // item, not on its deltas. Remember it so the deltas carry it. A phase
+      // first seen at completion can still label text that has not left the
+      // 100ms buffer; text already flushed stays unlabeled (no extra event is
+      // emitted, because every client drops empty text events).
+      const phase = codexMessagePhase(item);
+      if (eventKind === "started") {
+        // Consecutive messages in a turn can share a message id, which would
+        // let the buffer run the previous message into this one under one
+        // itemId and one label. Close it first; clients still merge by id.
+        if (managed.bufferedText && managed.bufferedText.itemId !== itemId) {
+          flushBufferedText(managed, "identityBreak");
+        }
+        if (phase) {
+          runtime.agentMessagePhaseByItemId.set(itemId, phase);
+          evictOldestEntries(runtime.agentMessagePhaseByItemId, MAX_SESSION_MAP_ENTRIES);
+        }
+      } else {
+        runtime.agentMessagePhaseByItemId.delete(itemId);
+        if (phase && managed.bufferedText?.itemId === itemId) {
+          managed.bufferedText.phase = phase;
+        }
+        // v2 `memoryCitation.entries` are the memory files this answer cites.
+        const citationSources = codexMemoryCitationSourceRefs(item.memoryCitation);
+        if (citationSources.length) {
+          emitChatEvent(managed, { type: "sources", sources: citationSources, itemId, turnId });
+        }
+      }
       // Prose `agentMessage` text reaches the transcript through the streamed
       // delta handler; the only shape this branch owns is the async question,
       // and emitting it as assistant text instead would turn a control the user
@@ -33712,12 +33893,18 @@ export function createAgentChatService(args: {
         delta: text,
       });
       if (!normalizedText) return false;
+      const phase = codexMessagePhase(item);
       emitChatEvent(managed, {
         type: "text",
         text: normalizedText,
         itemId,
         turnId,
+        ...(phase ? { phase } : {}),
       });
+      const citationSources = codexMemoryCitationSourceRefs(item.memoryCitation);
+      if (citationSources.length) {
+        emitChatEvent(managed, { type: "sources", sources: citationSources, itemId, turnId });
+      }
       rememberReconciledItemSignature(runtime, turnId, signature);
       return true;
     }
@@ -34008,6 +34195,7 @@ export function createAgentChatService(args: {
     runtime.agentMessageScopeByTurn.clear();
     runtime.codexAgentIndexByTurn.delete(turnId);
     runtime.agentMessageTextByTurn.clear();
+    runtime.agentMessagePhaseByItemId.clear();
     runtime.recentNotificationKeys.clear();
     runtime.reconciledItemSignaturesByTurn.delete(turnId);
     const usage = normalizeUsagePayload(turn.usage ?? turn.totalUsage);
@@ -34504,6 +34692,7 @@ export function createAgentChatService(args: {
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
+      runtime.agentMessagePhaseByItemId.clear();
       runtime.recentNotificationKeys.clear();
       runtime.reconciledItemSignaturesByTurn.clear();
       setSessionActive(managed);
@@ -34576,6 +34765,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.codexAgentIndexByTurn.delete(turnId);
       runtime.agentMessageTextByTurn.clear();
+      runtime.agentMessagePhaseByItemId.clear();
       runtime.recentNotificationKeys.clear();
       runtime.reconciledItemSignaturesByTurn.delete(turnId);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
@@ -34666,11 +34856,13 @@ export function createAgentChatService(args: {
       if (!normalizedDelta?.length) {
         return;
       }
+      const phase = itemId ? runtime.agentMessagePhaseByItemId.get(itemId) : undefined;
       emitChatEvent(managed, {
         type: "text",
         text: normalizedDelta,
         ...(emitTurnId ? { turnId: emitTurnId } : {}),
         ...(itemId ? { itemId } : {}),
+        ...(phase ? { phase } : {}),
       });
       return;
     }
@@ -34862,6 +35054,7 @@ export function createAgentChatService(args: {
       runtime.webSearchActionsByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
+      runtime.agentMessagePhaseByItemId.clear();
       runtime.recentNotificationKeys.clear();
       runtime.reconciledItemSignaturesByTurn.clear();
       settleCodexPendingInputs(managed, runtime);
@@ -35326,6 +35519,7 @@ export function createAgentChatService(args: {
       terminalTurnIds: new Set<string>(managed.codexTerminalTurnIds),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
+      agentMessagePhaseByItemId: new Map<string, AgentChatTextPhase>(),
       recentNotificationKeys: new Set<string>(),
       emittedErrorKeys: new Set<string>(),
       reconciledItemSignaturesByTurn: new Map<string, Set<string>>(),
@@ -37965,6 +38159,57 @@ export function createAgentChatService(args: {
    */
   const spawnCompletionDeliveriesInFlight = new Set<string>();
 
+  /**
+   * The two parent-side rows every spawned child gets: the spawn chip notice
+   * and the `chat:<childId>` subagent card. Chat children and tracked CLI
+   * children both land here, so a CLI child renders in the parent's card grid
+   * exactly like a chat child (provider logo from `agentType`, click opens the
+   * child session by id).
+   */
+  const emitSpawnIntoParent = (parent: ManagedChatSession, child: {
+    sessionId: string;
+    laneId: string | null;
+    label: string;
+    spawnKind: "subagent" | "peer";
+    provider: string;
+    model: string | null | undefined;
+    resumed?: boolean;
+  }): void => {
+    if (!child.resumed) {
+      emitChatEvent(parent, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "subagent_spawned",
+        message: `Subagent spawned: ${child.label}`,
+        detail: {
+          spawnedSession: {
+            sessionId: child.sessionId,
+            laneId: child.laneId,
+            title: child.label,
+          },
+          spawnKind: child.spawnKind,
+          // A spawn always emits an inline `subagent_started` card below, so the
+          // renderer suppresses the quiet deep-link pill.
+          hasInlineCard: true,
+        },
+      });
+    }
+    emitChatEvent(parent, {
+      type: "subagent_started",
+      taskId: `chat:${child.sessionId}`,
+      agentId: child.sessionId,
+      provider: child.provider,
+      ...(child.resumed ? { resumed: true } : {}),
+      agentType: child.provider,
+      parentToolUseId: null,
+      description: child.label,
+      background: false,
+      taskType: "subagent",
+      spawnKind: child.spawnKind,
+      ...optionalSubagentModelFields(child.model),
+    });
+  };
+
   const notifyParentSessionOfSpawn = (child: ManagedChatSession, label: string): void => {
     const parentSessionId = child.session.orchestrationParentSessionId?.trim();
     if (!parentSessionId || parentSessionId === child.session.id) return;
@@ -37972,34 +38217,13 @@ export function createAgentChatService(args: {
     if (spawnKind !== "subagent" && spawnKind !== "peer") return;
     const parent = managedSessions.get(parentSessionId);
     if (!parent || parent.deleted || parent.closed) return;
-    emitChatEvent(parent, {
-      type: "system_notice",
-      noticeKind: "info",
-      status: "subagent_spawned",
-      message: `Subagent spawned: ${label}`,
-      detail: {
-        spawnedSession: {
-          sessionId: child.session.id,
-          laneId: child.session.laneId ?? null,
-          title: label,
-        },
-        spawnKind,
-        // A spawn always emits an inline `subagent_started` card below, so the
-        // renderer suppresses the quiet deep-link pill.
-        hasInlineCard: true,
-      },
-    });
-    emitChatEvent(parent, {
-      type: "subagent_started",
-      taskId: `chat:${child.session.id}`,
-      agentId: child.session.id,
-      agentType: child.session.provider,
-      parentToolUseId: null,
-      description: label,
-      background: false,
-      taskType: "subagent",
+    emitSpawnIntoParent(parent, {
+      sessionId: child.session.id,
+      laneId: child.session.laneId ?? null,
+      label,
       spawnKind,
-      ...optionalSubagentModelFields(child.session.model),
+      provider: child.session.provider,
+      model: child.session.model,
     });
   };
 
@@ -38168,6 +38392,190 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
+  type ChildCompletionDelivery = {
+    parentSessionId: string;
+    childSessionId: string;
+    childTitle: string;
+    /** Provider id the parent's card and CTO line name the child by. */
+    childProvider: string;
+    spawnKind: "subagent" | "peer";
+    resultStatus: AgentChatSpawnCompletion["status"];
+    summary: string;
+    /** Carries `childTurnId`, the durable dedupe anchor in the parent transcript. */
+    spawnCompletion: AgentChatSpawnCompletion;
+    ctoPrNumber: number | null;
+    /** CLI children need their existing inline spawn card closed in CTO threads. */
+    emitCtoSubagentResult?: boolean;
+    /** What the woken parent agent reads (subagents only). */
+    wakeText: string;
+    /**
+     * Close the card and leave a quiet note instead of waking the parent. A
+     * restart reconcile uses it: like the stale-run sweep, recovering a
+     * child's end after the fact never starts a parent turn by itself.
+     */
+    routeQuietly?: boolean;
+    onParentGone: (reason: string) => void;
+    onDeliveryFailed: (lastError: unknown) => void;
+  };
+
+  /**
+   * Route one child completion into its parent: the `subagent_result` that
+   * closes the parent's card, then a wake (subagent) or a quiet notice (peer),
+   * or the one-line CTO report. Shared by chat children (per finished turn) and
+   * tracked CLI children (per PTY exit), so both close the same card the same
+   * way. Deduped in flight by key and durably by `spawnCompletion.childTurnId`
+   * in the parent transcript.
+   */
+  const deliverChildCompletionToParent = (delivery: ChildCompletionDelivery): void => {
+    const {
+      parentSessionId,
+      childSessionId,
+      childTitle,
+      spawnKind,
+      resultStatus,
+      summary,
+      spawnCompletion,
+    } = delivery;
+    const childTurnId = spawnCompletion.childTurnId ?? "";
+    const deliveryKey = `${parentSessionId}:${childSessionId}:${childTurnId}`;
+    if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
+    const parentShouldWake = spawnKind === "subagent" && delivery.routeQuietly !== true;
+
+    const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
+      mergeEnvelopeStreams(
+        readTranscriptEnvelopes(parent),
+        eventHistoryBySession.get(parent.session.id) ?? [],
+      ).some((envelope) => {
+        const event = envelope.event;
+        const completion = event.type === "user_message"
+          ? event.metadata?.spawnCompletion
+          : event.type === "system_notice"
+            ? (event.detail as { spawnCompletion?: AgentChatSpawnCompletion } | undefined)?.spawnCompletion
+            : undefined;
+        return completion?.childSessionId === childSessionId
+          && completion.childTurnId === childTurnId;
+      });
+
+    spawnCompletionDeliveriesInFlight.add(deliveryKey);
+    void (async () => {
+      let lastError: unknown = null;
+      let inlineEventEmitted = false;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          const parent = ensureManagedSession(parentSessionId);
+          if (parent.deleted) throw new Error("Parent session was deleted.");
+          if (parentAlreadyHasCompletion(parent)) return;
+          // The CTO thread takes one line per child turn and nothing else. The
+          // subagent_result card and the wake divider each restate the child's
+          // closing summary, which is the transcript dump a coordinator thread
+          // cannot afford; the notice below carries the same `spawnCompletion`
+          // so the delivery dedupe still anchors on it.
+          const parentIsCto = parent.session.identityKey === "cto";
+          const ctoReportLine = parentIsCto
+            ? formatCtoChildReportLine({
+                childTitle,
+                provider: delivery.childProvider as AgentChatProvider,
+                status: resultStatus,
+                prNumber: delivery.ctoPrNumber,
+              })
+            : null;
+          if (!inlineEventEmitted && (!parentIsCto || delivery.emitCtoSubagentResult === true)) {
+            emitChatEvent(parent, {
+              type: "subagent_result",
+              taskId: `chat:${childSessionId}`,
+              agentId: childSessionId,
+              provider: delivery.childProvider,
+              agentType: delivery.childProvider,
+              parentToolUseId: null,
+              status: resultStatus,
+              summary,
+              finalSummary: summary,
+              taskType: "subagent",
+            });
+            inlineEventEmitted = true;
+          }
+          if (ctoReportLine) {
+            emitChatEvent(parent, {
+              type: "system_notice",
+              noticeKind: resultStatus === "failed" ? "warning" : "info",
+              status: "spawn_completed",
+              message: ctoReportLine,
+              detail: { spawnCompletion: { ...spawnCompletion, summary: ctoReportLine } },
+            });
+            if (parentShouldWake) {
+              // A child report is the natural moment to drain the worker
+              // discovery log: the CTO is being woken anyway, and the findings
+              // are usually about the work that just finished. They ride the
+              // wake text, never the notice — the notice is a one-line channel
+              // by contract.
+              const discoveries = ctoMemoryService?.readNewDiscoveries() ?? null;
+              const wakeText = discoveries?.text.length
+                ? `${ctoReportLine}\n\nNew worker discoveries (unreviewed — save what is durable):\n${discoveries.text}`
+                : ctoReportLine;
+              // No `spawnCompletion` on the wake: the notice above already owns
+              // the completion row, and a second copy would draw the wake
+              // divider's header over the top of it.
+              await messageSession({
+                sessionId: parentSessionId,
+                kind: "wake",
+                text: wakeText,
+              }, { trustedSpawnCompletion: true });
+            }
+          } else if (parentShouldWake) {
+            await messageSession({
+              sessionId: parentSessionId,
+              kind: "wake",
+              text: delivery.wakeText,
+              metadata: { spawnCompletion },
+            }, { trustedSpawnCompletion: true });
+          } else {
+            emitChatEvent(parent, {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "spawn_completed",
+              message: spawnCompletedNoticeMessage(childTitle),
+              detail: { spawnCompletion },
+            });
+          }
+          // One line per child turn completion, written after the delivery
+          // succeeded so it records the outcome rather than the intent — a
+          // retried attempt must not read as a second wake. A parent that was
+          // never woken is otherwise indistinguishable from a child that never
+          // finished, which is how the original incident went unnoticed.
+          logger.info("agent_chat.spawn_completion_routed", {
+            childSessionId,
+            parentSessionId,
+            childTurnId,
+            spawnKind,
+            status: resultStatus,
+            routedTo: parentShouldWake ? "wake" : "quiet_notice",
+          });
+          return;
+        } catch (error) {
+          lastError = error;
+          if (isMissingParentError(error, parentSessionId) || !parentChatStillExists(parentSessionId)) {
+            delivery.onParentGone("parent_missing_during_delivery");
+            return;
+          }
+          logger.warn("agent_chat.spawn_completion_delivery_failed", {
+            childSessionId,
+            childTurnId,
+            parentSessionId,
+            spawnKind,
+            attempt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (attempt < 3) {
+            await new Promise<void>((resolve) => setTimeout(resolve, attempt * 250));
+          }
+        }
+      }
+      delivery.onDeliveryFailed(lastError);
+    })().finally(() => {
+      spawnCompletionDeliveriesInFlight.delete(deliveryKey);
+    });
+  };
+
   const reportChildSpawnEnded = (
     childSessionId: string,
     status: "completed" | "interrupted" | "failed",
@@ -38239,135 +38647,20 @@ export function createAgentChatService(args: {
       ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
     };
 
-    const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
-      mergeEnvelopeStreams(
-        readTranscriptEnvelopes(parent),
-        eventHistoryBySession.get(parent.session.id) ?? [],
-      ).some((envelope) => {
-        const event = envelope.event;
-        const completion = event.type === "user_message"
-          ? event.metadata?.spawnCompletion
-          : event.type === "system_notice"
-            ? (event.detail as { spawnCompletion?: AgentChatSpawnCompletion } | undefined)?.spawnCompletion
-            : undefined;
-        return completion?.childSessionId === childSessionId
-          && completion.childTurnId === resolvedTurnId;
-      });
-
-    spawnCompletionDeliveriesInFlight.add(deliveryKey);
-    void (async () => {
-      let lastError: unknown = null;
-      let inlineEventEmitted = false;
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        try {
-          const parent = ensureManagedSession(parentSessionId);
-          if (parent.deleted) throw new Error("Parent session was deleted.");
-          if (parentAlreadyHasCompletion(parent)) return;
-          // The CTO thread takes one line per child turn and nothing else. The
-          // subagent_result card and the wake divider each restate the child's
-          // closing summary, which is the transcript dump a coordinator thread
-          // cannot afford; the notice below carries the same `spawnCompletion`
-          // so the delivery dedupe still anchors on it.
-          const parentIsCto = parent.session.identityKey === "cto";
-          const ctoReportLine = parentIsCto
-            ? formatCtoChildReportLine({
-                childTitle,
-                provider: child.session.provider,
-                status: resultStatus,
-                prNumber: readChildPullRequestNumber(child.session.completion, summary),
-              })
-            : null;
-          if (!inlineEventEmitted && !parentIsCto) {
-            emitChatEvent(parent, {
-              type: "subagent_result",
-              taskId: `chat:${childSessionId}`,
-              agentId: childSessionId,
-              agentType: child.session.provider,
-              parentToolUseId: null,
-              status: resultStatus,
-              summary,
-              finalSummary: summary,
-              taskType: "subagent",
-            });
-            inlineEventEmitted = true;
-          }
-          if (ctoReportLine) {
-            emitChatEvent(parent, {
-              type: "system_notice",
-              noticeKind: resultStatus === "failed" ? "warning" : "info",
-              status: "spawn_completed",
-              message: ctoReportLine,
-              detail: { spawnCompletion: { ...spawnCompletion, summary: ctoReportLine } },
-            });
-            if (parentShouldWake) {
-              // A child report is the natural moment to drain the worker
-              // discovery log: the CTO is being woken anyway, and the findings
-              // are usually about the work that just finished. They ride the
-              // wake text, never the notice — the notice is a one-line channel
-              // by contract.
-              const discoveries = ctoMemoryService?.readNewDiscoveries() ?? null;
-              const wakeText = discoveries?.text.length
-                ? `${ctoReportLine}\n\nNew worker discoveries (unreviewed — save what is durable):\n${discoveries.text}`
-                : ctoReportLine;
-              // No `spawnCompletion` on the wake: the notice above already owns
-              // the completion row, and a second copy would draw the wake
-              // divider's header over the top of it.
-              await messageSession({
-                sessionId: parentSessionId,
-                kind: "wake",
-                text: wakeText,
-              }, { trustedSpawnCompletion: true });
-            }
-          } else if (parentShouldWake) {
-            await messageSession({
-              sessionId: parentSessionId,
-              kind: "wake",
-              text: `Your subagent "${childTitle}" finished a turn — ${summary}`,
-              metadata: { spawnCompletion },
-            }, { trustedSpawnCompletion: true });
-          } else {
-            emitChatEvent(parent, {
-              type: "system_notice",
-              noticeKind: "info",
-              status: "spawn_completed",
-              message: spawnCompletedNoticeMessage(childTitle),
-              detail: { spawnCompletion },
-            });
-          }
-          // One line per child turn completion, written after the delivery
-          // succeeded so it records the outcome rather than the intent — a
-          // retried attempt must not read as a second wake. A parent that was
-          // never woken is otherwise indistinguishable from a child that never
-          // finished, which is how the original incident went unnoticed.
-          logger.info("agent_chat.spawn_completion_routed", {
-            childSessionId,
-            parentSessionId,
-            childTurnId: resolvedTurnId,
-            spawnKind,
-            status: resultStatus,
-            routedTo: parentShouldWake ? "wake" : "quiet_notice",
-          });
-          return;
-        } catch (error) {
-          lastError = error;
-          if (isMissingParentError(error, parentSessionId) || !parentChatStillExists(parentSessionId)) {
-            noteUnreachableParent(child, parentSessionId, "parent_missing_during_delivery");
-            return;
-          }
-          logger.warn("agent_chat.spawn_completion_delivery_failed", {
-            childSessionId,
-            childTurnId: resolvedTurnId,
-            parentSessionId,
-            spawnKind,
-            attempt,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          if (attempt < 3) {
-            await new Promise<void>((resolve) => setTimeout(resolve, attempt * 250));
-          }
-        }
-      }
-      if (!child.deleted && !childHasNoticeStatus(child, "spawn_completion_delivery_failed")) {
+    deliverChildCompletionToParent({
+      parentSessionId,
+      childSessionId,
+      childTitle,
+      childProvider: child.session.provider,
+      spawnKind,
+      resultStatus,
+      summary,
+      spawnCompletion,
+      ctoPrNumber: readChildPullRequestNumber(child.session.completion, summary),
+      wakeText: `Your subagent "${childTitle}" finished a turn — ${summary}`,
+      onParentGone: (reason) => noteUnreachableParent(child, parentSessionId, reason),
+      onDeliveryFailed: (lastError) => {
+        if (child.deleted || childHasNoticeStatus(child, "spawn_completion_delivery_failed")) return;
         emitChatEvent(child, {
           type: "system_notice",
           noticeKind: "warning",
@@ -38381,10 +38674,207 @@ export function createAgentChatService(args: {
             },
           },
         });
-      }
-    })().finally(() => {
-      spawnCompletionDeliveriesInFlight.delete(deliveryKey);
+      },
     });
+  };
+
+  // --- Tracked CLI children -------------------------------------------------
+  //
+  // `ade new chat --mode cli --parent … --type …` starts a tracked PTY session,
+  // not a chat, so nothing in the chat lifecycle reaches the parent on its own.
+  // These close that gap: the spawn lands the same chip + card a chat child
+  // gets, the PTY exit (or, after a brain restart, the stale-run sweep) closes
+  // the card with the CLI's own report, and status/read answer for the child.
+
+  const readCliTerminalTail = async (terminalId: string): Promise<string | null> => {
+    const preview = ptyService?.previewTerminal;
+    if (!preview) return null;
+    try {
+      const result = await preview.call(ptyService, { terminalId });
+      const screen = result.snapshot?.visibleRows?.map((row) => row.text).join("\n") ?? "";
+      return lastMeaningfulTerminalLines(screen) ?? lastMeaningfulTerminalLines(result.transcript);
+    } catch {
+      return null;
+    }
+  };
+
+  const readCliProviderMessage = async (row: TrackedCliRow, provider: string): Promise<string | null> => {
+    let cwd: string | null = null;
+    try {
+      cwd = laneService.getLaneBaseAndBranch(row.laneId).worktreePath ?? null;
+    } catch {
+      cwd = null;
+    }
+    return await readCliProviderFinalMessage({ provider, targetId: row.resumeMetadata?.targetId ?? null, cwd });
+  };
+
+  const {
+    readTrackedCliRow,
+    getCliTurnStatus,
+    readCliTranscript,
+    listCliChildSessions,
+  } = createCliChildSessionAccess({
+    getSession: (sessionId) => sessionService.get(sessionId),
+    listSessions: (query) => sessionService.list(query),
+    enrichSessions: (rows) => ptyService?.enrichSessions(rows) ?? rows,
+    isChatToolType,
+    readTerminalTail: readCliTerminalTail,
+    readProviderMessage: readCliProviderMessage,
+  });
+
+  const cliChildLabel = (row: TrackedCliRow, provider: string): string =>
+    row.title?.trim() || row.goal?.trim() || `${provider} CLI`;
+
+  const resolveLiveOrPersistedParent = (parentSessionId: string): ManagedChatSession | null => {
+    const live = managedSessions.get(parentSessionId);
+    if (live) return live.deleted || live.closed ? null : live;
+    if (!parentChatStillExists(parentSessionId)) return null;
+    try {
+      const managed = ensureManagedSession(parentSessionId);
+      return managed.deleted ? null : managed;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Land the spawn chip and the running subagent card in the parent of a CLI
+   * child that was just started. Returns whether anything was emitted (false
+   * for an unparented CLI, a plain shell, or a parent that is gone).
+   */
+  const notifyParentOfCliChildSpawn = (
+    terminalSessionId: string,
+    options?: { resumed?: boolean },
+  ): boolean => {
+    const tracked = readTrackedCliRow(terminalSessionId);
+    const lineage = tracked?.lineage;
+    if (!tracked || !lineage) return false;
+    const parent = resolveLiveOrPersistedParent(lineage.parentSessionId);
+    if (!parent) {
+      logger.info("agent_chat.cli_child_spawn_parent_gone", {
+        childSessionId: tracked.row.id,
+        parentSessionId: lineage.parentSessionId,
+      });
+      return false;
+    }
+    emitSpawnIntoParent(parent, {
+      sessionId: tracked.row.id,
+      laneId: tracked.row.laneId ?? null,
+      label: cliChildLabel(tracked.row, lineage.provider),
+      spawnKind: lineage.spawnKind,
+      provider: lineage.provider,
+      model: lineage.model,
+      ...(options?.resumed ? { resumed: true } : {}),
+    });
+    logger.info("agent_chat.cli_child_spawn_routed", {
+      childSessionId: tracked.row.id,
+      parentSessionId: lineage.parentSessionId,
+      spawnKind: lineage.spawnKind,
+      provider: lineage.provider,
+    });
+    return true;
+  };
+
+  /**
+   * Close the parent's card for a CLI child whose PTY has ended, with the CLI's
+   * own closing message (or its last terminal lines) as the report. A no-op
+   * while the child still runs, for a CLI without a parent, and for a run the
+   * parent already has — the run key is the persisted end time, so the live
+   * exit and a post-restart reconcile of the same exit resolve to one delivery.
+   */
+  const reportCliChildEnded = async (terminalSessionId: string, trigger: "exit" | "reconcile"): Promise<void> => {
+    if (cliChildReportsClosed) return;
+    const tracked = readTrackedCliRow(terminalSessionId);
+    const lineage = tracked?.lineage;
+    if (!tracked || !lineage) return;
+    const { row } = tracked;
+    const endStatus = cliChildResultStatus(row);
+    if (!endStatus) return;
+    if (!parentChatStillExists(lineage.parentSessionId)) {
+      logger.info("agent_chat.cli_child_completion_parent_gone", {
+        childSessionId: row.id,
+        parentSessionId: lineage.parentSessionId,
+        trigger,
+      });
+      return;
+    }
+    await ptyService?.waitForResumeTargetBackfill?.(row.id);
+    const refreshed = readTrackedCliRow(row.id);
+    const latestRow = refreshed?.lineage ? refreshed.row : row;
+    const providerMessage = await readCliProviderMessage(latestRow, lineage.provider);
+    const terminalTail = await readCliTerminalTail(row.id);
+    // The host may have started tearing down while the tail was read (a
+    // project close disposes its PTYs first); that is not the child's end.
+    if (cliChildReportsClosed) return;
+    // A terminal closed by hand (or cut off by a restart) after the CLI already
+    // wrote its answer is a finished delegate, not a casualty — the same rule
+    // the stale-run sweep applies to an ended chat that left a report. Without
+    // a closing message it stays stopped. A non-zero exit is always failed.
+    const resultStatus = endStatus === "stopped" && providerMessage ? "completed" : endStatus;
+    const summary = composeCliChildReport({
+      status: resultStatus,
+      exitCode: row.exitCode ?? null,
+      providerMessage,
+      terminalTail,
+    });
+    const childTitle = cliChildLabel(row, lineage.provider);
+    const spawnCompletion: AgentChatSpawnCompletion = {
+      childSessionId: row.id,
+      childTitle,
+      spawnKind: lineage.spawnKind,
+      childTurnId: cliChildRunKey(row),
+      status: resultStatus,
+      summary,
+    };
+    const outcome = resultStatus === "completed" ? "finished" : resultStatus === "failed" ? "failed" : "was stopped";
+    deliverChildCompletionToParent({
+      parentSessionId: lineage.parentSessionId,
+      childSessionId: row.id,
+      childTitle,
+      childProvider: lineage.provider,
+      spawnKind: lineage.spawnKind,
+      resultStatus,
+      summary,
+      spawnCompletion,
+      ctoPrNumber: readChildPullRequestNumber(null, summary),
+      emitCtoSubagentResult: true,
+      routeQuietly: trigger === "reconcile",
+      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
+      onParentGone: (reason) => {
+        logger.info("agent_chat.cli_child_completion_parent_gone", {
+          childSessionId: row.id,
+          parentSessionId: lineage.parentSessionId,
+          reason,
+        });
+      },
+      onDeliveryFailed: (lastError) => {
+        logger.warn("agent_chat.cli_child_completion_delivery_failed", {
+          childSessionId: row.id,
+          parentSessionId: lineage.parentSessionId,
+          error: lastError instanceof Error ? lastError.message : String(lastError),
+        });
+      },
+    });
+  };
+
+  /**
+   * Stale-run sweep hook: a `chat:<id>` card whose id is a tracked CLI child is
+   * closed by the CLI path, never by the sweep's chat verdict (which would read
+   * a terminal row as "the subagent chat is gone" and stamp a false stop). An
+   * ended child is reported here; a running one is left to its PTY exit.
+   */
+  const deferCliChildTerminal = (childSessionId: string): boolean => {
+    const tracked = readTrackedCliRow(childSessionId);
+    if (!tracked?.lineage) return false;
+    if (cliChildResultStatus(tracked.row)) {
+      void reportCliChildEnded(tracked.row.id, "reconcile").catch((error) => {
+        logger.warn("agent_chat.cli_child_reconcile_failed", {
+          childSessionId: tracked.row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    return true;
   };
 
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
@@ -42436,6 +42926,7 @@ export function createAgentChatService(args: {
       managed.runtime.webSearchActionsByItemId.clear();
       managed.runtime.agentMessageScopeByTurn.clear();
       managed.runtime.agentMessageTextByTurn.clear();
+      managed.runtime.agentMessagePhaseByItemId.clear();
       managed.runtime.recentNotificationKeys.clear();
       managed.runtime.reconciledItemSignaturesByTurn.clear();
       if (isCodexRequestTimeoutError(error)) {
@@ -51639,7 +52130,9 @@ export function createAgentChatService(args: {
 
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
     const summary = await getSessionSummary(sessionId);
-    if (!summary) return null;
+    // Not a chat: a tracked CLI terminal (e.g. a `--mode cli` child) still
+    // answers, so a parent agent can poll its CLI children.
+    if (!summary) return getCliTurnStatus(sessionId);
     const trimmed = sessionId.trim();
     const managed = managedSessions.get(trimmed) ?? null;
     const pending = managed ? collectPendingInputRequests(managed)[0] : undefined;
@@ -54738,6 +55231,10 @@ export function createAgentChatService(args: {
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     staleRunSweep.dispose();
+    // Before the host tears its PTYs down: a brain shutting down must not read
+    // its own terminal disposal as every CLI child stopping.
+    cliChildReportsClosed = true;
+    unsubscribeCliChildExit?.();
     clearCursorCloudMirrorWatches();
     clearAllCursorCloudHydrationState();
     scheduledWorkScheduler?.dispose();
@@ -54870,6 +55367,7 @@ export function createAgentChatService(args: {
       if (!row || !isChatToolType(row.toolType)) return null;
       return row satisfies StaleRunSweepChatRow;
     },
+    deferChildTerminal: (childSessionId) => deferCliChildTerminal(childSessionId),
     chatRuntimeOwnerLive: (sessionId) => {
       const owner = readPersistedState(sessionId)?.runtimeOwner ?? null;
       if (!owner) return false;
@@ -54898,6 +55396,19 @@ export function createAgentChatService(args: {
   // through an unrelated suite would inject reconciliation events into that
   // test's stream. Tests drive `reconcileStaleRuns()` directly instead.
   if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") staleRunSweep.start();
+
+  // A tracked CLI child's end closes its parent's card. Every PTY exit path
+  // (natural exit, close, orphan dispose) reaches this listener after the row
+  // is ended; unparented terminals are a single row read and a no-op.
+  let cliChildReportsClosed = false;
+  const unsubscribeCliChildExit = ptyService?.onExit?.((event) => {
+    void reportCliChildEnded(event.sessionId, "exit").catch((error) => {
+      logger.warn("agent_chat.cli_child_exit_report_failed", {
+        childSessionId: event.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }) ?? null;
 
   // --- Warm-runtime budget participation ---
   /**
@@ -56214,7 +56725,8 @@ export function createAgentChatService(args: {
       case "agentMessage": {
         const text = typeof item.text === "string" ? item.text : "";
         if (!text.trim()) return [];
-        return [baseMessage({ type: "text", text, itemId, ...(turnId ? { turnId } : {}) }, "assistant", { text })];
+        const phase = codexMessagePhase(item);
+        return [baseMessage({ type: "text", text, itemId, ...(turnId ? { turnId } : {}), ...(phase ? { phase } : {}) }, "assistant", { text })];
       }
       case "userMessage": {
         const content = Array.isArray(item.content) ? item.content : [];
@@ -56312,8 +56824,11 @@ export function createAgentChatService(args: {
       case "webSearch": {
         const query = typeof item.query === "string" ? item.query : "";
         if (!query.trim()) return [];
-        const actionRecord = (item.action ?? null) as { kind?: unknown } | null;
-        const action = actionRecord && typeof actionRecord.kind === "string" ? actionRecord.kind : undefined;
+        // Codex's WebSearchAction is tagged by `type` (search/openPage/findInPage);
+        // `kind` never existed on it, so the action was always dropped.
+        const actions = normalizeCodexWebSearchActions(item.action, item.actions);
+        const action = actions[0]?.type;
+        const normalizedResults = normalizeCodexWebSearchResults(item.results);
         return [
           baseMessage(
             {
@@ -56322,6 +56837,11 @@ export function createAgentChatService(args: {
               itemId,
               status: "completed",
               ...(action ? { action } : {}),
+              ...(actions.length ? { actions } : {}),
+              ...(normalizedResults ? {
+                results: normalizedResults.results,
+                resultsTotal: normalizedResults.total,
+              } : {}),
               ...(turnId ? { turnId } : {}),
             },
             "system",
@@ -58167,10 +58687,24 @@ export function createAgentChatService(args: {
           return { retry: true };
         }
         try {
-          await ptyService.sendToSession({
+          const sent = await ptyService.sendToSession({
             sessionId: schedule.sessionId,
             text: schedule.prompt,
           });
+          // sendToSession relaunches an ended CLI. The parent card closed when
+          // that process exited, so a resume has to reopen it the same way the
+          // RPC, sync, and desktop send paths do.
+          if (sent.resumed) {
+            try {
+              notifyParentOfCliChildSpawn(sent.sessionId, { resumed: true });
+            } catch (notifyError) {
+              logger.warn("agent_chat.scheduled_cli_resume_parent_notify_failed", {
+                sessionId: sent.sessionId,
+                scheduleId: schedule.id,
+                error: notifyError instanceof Error ? notifyError.message : String(notifyError),
+              });
+            }
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (isPtySendPreDeliveryError(error)) {
@@ -58410,6 +58944,8 @@ export function createAgentChatService(args: {
     recoverContinuity,
     resumeSession,
     listSessions,
+    listCliChildSessions,
+    notifyParentOfCliChildSpawn,
     getSessionSummary,
     /** The current turn's start, or the latest one's. Null when none ran in this process. */
     getTurnStartedAt: (sessionId: string): string | null => {

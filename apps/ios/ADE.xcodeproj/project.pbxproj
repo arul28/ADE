@@ -154,6 +154,10 @@
 		E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0B /* WorkUsageLimitResume.swift */; };
 		E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */; };
 		E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000035 /* WorkTimelineHelpers.swift */; };
+		E7C001000000000000000001 /* WorkChatTaskListHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */; };
+		E7C001000000000000000002 /* WorkChatSourceHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000002 /* WorkChatSourceHelpers.swift */; };
+		E7C001000000000000000003 /* WorkChatTaskListViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000003 /* WorkChatTaskListViews.swift */; };
+		E7C001000000000000000004 /* WorkChatSourceRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C001000000000000000004 /* WorkChatSourceRowView.swift */; };
 		E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */; };
 		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
 		E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */; };
@@ -513,6 +517,10 @@
 		D10000000000000000000F0B /* WorkUsageLimitResume.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResume.swift; path = ADE/Views/Work/WorkUsageLimitResume.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitResumeViews.swift; path = ADE/Views/Work/WorkUsageLimitResumeViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000035 /* WorkTimelineHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTimelineHelpers.swift; path = ADE/Views/Work/WorkTimelineHelpers.swift; sourceTree = "<group>"; };
+		D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTaskListHelpers.swift; path = ADE/Views/Work/WorkChatTaskListHelpers.swift; sourceTree = "<group>"; };
+		D7C001000000000000000002 /* WorkChatSourceHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatSourceHelpers.swift; path = ADE/Views/Work/WorkChatSourceHelpers.swift; sourceTree = "<group>"; };
+		D7C001000000000000000003 /* WorkChatTaskListViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTaskListViews.swift; path = ADE/Views/Work/WorkChatTaskListViews.swift; sourceTree = "<group>"; };
+		D7C001000000000000000004 /* WorkChatSourceRowView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatSourceRowView.swift; path = ADE/Views/Work/WorkChatSourceRowView.swift; sourceTree = "<group>"; };
 		D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkErrorAndMessageHelpers.swift; path = ADE/Views/Work/WorkErrorAndMessageHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
 		D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkStatusAndFormattingHelpers.swift; path = ADE/Views/Work/WorkStatusAndFormattingHelpers.swift; sourceTree = "<group>"; };
@@ -1087,6 +1095,10 @@
 				D10000000000000000000F0B /* WorkUsageLimitResume.swift */,
 				D10000000000000000000F0C /* WorkUsageLimitResumeViews.swift */,
 				D10000000000000000000035 /* WorkTimelineHelpers.swift */,
+				D7C001000000000000000001 /* WorkChatTaskListHelpers.swift */,
+				D7C001000000000000000002 /* WorkChatSourceHelpers.swift */,
+				D7C001000000000000000003 /* WorkChatTaskListViews.swift */,
+				D7C001000000000000000004 /* WorkChatSourceRowView.swift */,
 				D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */,
 				D10000000000000000000037 /* WorkEventMapping.swift */,
 				D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */,
@@ -1911,6 +1923,10 @@
 				E10000000000000000000F0B /* WorkUsageLimitResume.swift in Sources */,
 				E10000000000000000000F0C /* WorkUsageLimitResumeViews.swift in Sources */,
 				E10000000000000000000035 /* WorkTimelineHelpers.swift in Sources */,
+				E7C001000000000000000001 /* WorkChatTaskListHelpers.swift in Sources */,
+				E7C001000000000000000002 /* WorkChatSourceHelpers.swift in Sources */,
+				E7C001000000000000000003 /* WorkChatTaskListViews.swift in Sources */,
+				E7C001000000000000000004 /* WorkChatSourceRowView.swift in Sources */,
 				E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */,
 				E10000000000000000000037 /* WorkEventMapping.swift in Sources */,
 				E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */,

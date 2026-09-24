@@ -407,6 +407,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let parentItemId = eventDict["parentItemId"] as? String
       let subagentTaskType = optionalString(eventDict["taskType"])
         ?? optionalString(eventDict["task_type"])
+      let subagentProvider = optionalString(eventDict["provider"])
       let subagentCommand = optionalString(eventDict["command"])
       let subagentSpawnKind = optionalString(eventDict["spawnKind"])
         .map(AgentChatSpawnKind.init(wireValue:))
@@ -499,18 +500,34 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           ),
           parentItemId: parentItemId,
           turnId: turnId,
-          status: toolStatus(from: stringValue(eventDict["status"]))
+          status: toolStatus(from: stringValue(eventDict["status"])),
+          sources: workChatSourceRefs(from: eventDict["sources"]),
+          sourceRefsOmittedForMobile: eventDict["sourceRefsOmittedForMobile"] as? Int
+        )
+      case "sources":
+        event = .sources(
+          refs: workChatSourceRefs(from: eventDict["sources"]) ?? [],
+          turnId: turnId,
+          omittedForMobile: eventDict["sourceRefsOmittedForMobile"] as? Int
         )
       case "activity":
         event = .activity(kind: stringValue(eventDict["activity"]), detail: optionalString(eventDict["detail"]), turnId: turnId)
       case "plan":
         let steps = (eventDict["steps"] as? [[String: Any]] ?? []).map { step in
           WorkPlanStep(
-            text: stringValue(step["description"]),
-            status: stringValue(step["status"])
+            text: optionalString(step["text"]) ?? stringValue(step["description"]),
+            status: stringValue(step["status"]),
+            priority: optionalString(step["priority"]),
+            cancelled: step["cancelled"] as? Bool ?? false
           )
         }
-        event = .plan(steps: steps, explanation: optionalString(eventDict["explanation"]), turnId: turnId)
+        let proposalText = optionalString(eventDict["streamingText"])
+        let state = optionalString(eventDict["state"])
+        if steps.isEmpty && (proposalText != nil || state == "delta" || state == "complete") {
+          event = .planProposal(text: proposalText ?? optionalString(eventDict["explanation"]) ?? "", turnId: turnId)
+        } else {
+          event = .plan(steps: steps, explanation: optionalString(eventDict["explanation"]), turnId: turnId)
+        }
       case "subagent_started":
         event = .subagentStarted(
           taskId: stringValue(eventDict["taskId"]),
@@ -688,12 +705,18 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId
         )
       case "todo_update":
-        let items = (eventDict["items"] as? [[String: Any]] ?? []).map { item in
-          let status = stringValue(item["status"]).replacingOccurrences(of: "_", with: " ").capitalized
+        let items = (eventDict["items"] as? [[String: Any]] ?? []).enumerated().compactMap { index, item -> AgentChatTodoItem? in
           let description = stringValue(item["description"])
-          return description.isEmpty ? status : "\(status): \(description)"
+          guard !description.isEmpty else { return nil }
+          return AgentChatTodoItem(
+            id: stringValue(item["id"]).isEmpty ? "todo-\(index)" : stringValue(item["id"]),
+            description: description,
+            status: AgentChatTodoStatus(rawValue: stringValue(item["status"])) ?? .pending,
+            activeForm: optionalString(item["activeForm"]),
+            cancelled: item["cancelled"] as? Bool
+          )
         }
-        event = .todoUpdate(items: items, turnId: turnId)
+        event = .taskListUpdate(items: items, turnId: turnId)
       case "system_notice":
         event = workSpawnCompletionEvent(
           from: eventDict["detail"],
@@ -1136,7 +1159,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         timestamp: timestamp,
         sequence: sequence,
         event: event,
+        textPhase: type == "text" ? optionalString(eventDict["phase"]) : nil,
         subagentTaskType: subagentTaskType,
+        subagentProvider: subagentProvider,
         subagentCommand: subagentCommand,
         subagentSpawnKind: subagentSpawnKind,
         subagentParentAgentId: subagentParentAgentId,

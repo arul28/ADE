@@ -1670,8 +1670,9 @@ export type SyncChatSubscribeSnapshotPayload = {
   events: AgentChatEventEnvelope[];
   /**
    * True when the host honored `sinceSeq` and replayed buffered events
-   * instead of producing a snapshot. `events` is empty in that case — the
-   * replayed history arrives as ordinary `chat_event` envelopes. Clients must
+   * instead of producing a snapshot. Replayed history arrives as ordinary
+   * `chat_event` envelopes; a capable mobile peer may also receive a small set
+   * of unsequenced subagent progress state repairs in `events`. Clients must
    * reset any stored seq watermark when this is absent/false because the host
    * is providing an authoritative snapshot rather than proving a gap-free
    * replay. Current hosts keep seq monotonic across host rehydration; resetting
@@ -2003,6 +2004,7 @@ export type SyncRemoteCommandAction =
   | "work.stopRuntime"
   | "chat.getSlashCommands"
   | "chat.resolveSmartLinkPreview"
+  | "chat.resolveSourceFavicons"
   | "chat.getParallelLaunchState"
   | "chat.setParallelLaunchState"
   | "chat.handoff"

@@ -22,6 +22,10 @@ enum WidgetReloadBridge {
 private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
 private let syncChatLog = Logger(subsystem: "com.ade.ios", category: "WorkChatSync")
 
+private struct SourceFaviconsRemoteResult: Decodable {
+  let icons: [String: String?]
+}
+
 /// Build the host request payload for file quick-open. The composer-only
 /// prefix fallback is intentionally omitted for generic Files searches so a
 /// multiword query keeps its normal exact-search semantics everywhere else.
@@ -13791,6 +13795,16 @@ final class SyncService: ObservableObject {
     return (args, trimmedModel)
   }
 
+  func resolveSourceFavicons(domains: [String]) async throws -> [String: String] {
+    try requireInvokableRemoteAction("chat.resolveSourceFavicons")
+    let result = try await sendDecodableCommand(
+      action: "chat.resolveSourceFavicons",
+      args: ["domains": Array(domains.prefix(48))],
+      as: SourceFaviconsRemoteResult.self
+    )
+    return result.icons.compactMapValues { $0 }
+  }
+
   func fetchChatSummary(sessionId: String) async throws -> AgentChatSessionSummary {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(
@@ -14073,6 +14087,7 @@ final class SyncService: ObservableObject {
   struct AgentChatSubagentSnapshot: Codable, Equatable {
     var taskId: String
     var agentId: String?
+    var provider: String? = nil
     var agentType: String?
     var parentToolUseId: String?
     var description: String
@@ -21497,7 +21512,7 @@ final class SyncService: ObservableObject {
 
   private func chatEventContentDedupeKey(_ envelope: AgentChatEventEnvelope) -> String? {
     switch envelope.event {
-    case .text(let text, let messageId, let turnId, let itemId):
+    case .text(let text, let messageId, let turnId, let itemId, let phase):
       let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
       guard normalizedText.count >= 24 else { return nil }
       let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -21510,6 +21525,7 @@ final class SyncService: ObservableObject {
         "text",
         normalizedTurnId,
         stableMessageId,
+        phase?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
         normalizedText
       ].joined(separator: "|")
     case .userMessage(let text, _, let turnId, let steerId, let deliveryState, let processed):

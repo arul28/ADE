@@ -528,3 +528,97 @@ describe("mapDroidSdkMessageToChatEvents — Droid telemetry", () => {
     }).account).toEqual({ provider: "droid", kind: "subscription" });
   });
 });
+
+// Input shapes follow `@factory/droid-sdk` 0.9.1: `TodoWriteToolInputSchema`
+// declares `{ todos: string }`, and the SDK's own `parseTodos` also takes a JSON
+// array of `{ id?, content, status, priority? }` (the `SessionTodoItem` shape).
+describe("mapDroidSdkMessageToChatEvents — TodoWrite", () => {
+  it("keeps the tool row and adds a todo_update from the text checklist", () => {
+    const events = map({
+      type: "tool_call",
+      toolUseId: "todo-1",
+      name: "TodoWrite",
+      input: {
+        todos: "1. [completed] Read the schema\n2. [in_progress] Write the migration\n3. [ ] Run tests\n- [x] Lint",
+      },
+    });
+    expect(events).toEqual([
+      expect.objectContaining({ type: "tool_call", tool: "TodoWrite", itemId: "todo-1", turnId: "turn-1" }),
+      {
+        type: "todo_update",
+        turnId: "turn-1",
+        items: [
+          { id: "1", description: "Read the schema", status: "completed" },
+          { id: "2", description: "Write the migration", status: "in_progress" },
+          { id: "3", description: "Run tests", status: "pending" },
+          { id: "4", description: "Lint", status: "completed" },
+        ],
+      },
+    ]);
+  });
+
+  it("reads a JSON array of todo objects and drops entries with an unknown status", () => {
+    const events = map({
+      type: "tool_call",
+      toolUseId: "todo-2",
+      name: "TodoWrite",
+      input: {
+        todos: JSON.stringify([
+          { id: "a", content: "Plan", status: "completed", priority: "high" },
+          { content: "Build", status: "in_progress", priority: "medium" },
+          { content: "Bogus", status: "wat" },
+        ]),
+      },
+    });
+    expect(events[1]).toEqual({
+      type: "todo_update",
+      turnId: "turn-1",
+      items: [
+        { id: "a", description: "Plan", status: "completed" },
+        { id: "2", description: "Build", status: "in_progress" },
+      ],
+    });
+  });
+
+  it("emits only the tool row when the list is empty", () => {
+    const events = map({ type: "tool_call", toolUseId: "todo-3", name: "TodoWrite", input: { todos: "   " } });
+    expect(events.map((event) => event.type)).toEqual(["tool_call"]);
+  });
+});
+
+describe("mapDroidSdkMessageToChatEvents — web tools", () => {
+  it("reads the FetchUrl input when its result lands and attaches the page as a source", () => {
+    const state = createDroidSdkEventMapperState();
+    const meta = { turnId: "turn-1", cwd: "/work", state };
+    mapDroidSdkMessageToChatEvents({ type: "tool_call", toolUseId: "f1", name: "FetchUrl", input: { url: "https://f.dev/a" } }, meta);
+    const events = mapDroidSdkMessageToChatEvents({ type: "tool_result", toolUseId: "f1", content: "page body" }, meta);
+    expect(events).toEqual([expect.objectContaining({
+      type: "tool_result",
+      tool: "FetchUrl",
+      sources: [{ kind: "fetched_url", url: "https://f.dev/a" }],
+    })]);
+    expect(state.webToolInputsByUseId?.has("f1")).toBe(false);
+  });
+
+  it("does not attach sources to failed or non-web tools", () => {
+    const state = createDroidSdkEventMapperState();
+    const meta = { turnId: "turn-1", cwd: "/work", state };
+    mapDroidSdkMessageToChatEvents({ type: "tool_call", toolUseId: "f2", name: "FetchUrl", input: { url: "https://f.dev" } }, meta);
+    const failed = mapDroidSdkMessageToChatEvents({ type: "tool_result", toolUseId: "f2", content: "403", isError: true }, meta);
+    mapDroidSdkMessageToChatEvents({ type: "tool_call", toolUseId: "g", name: "Grep", input: { pattern: "https://f.dev" } }, meta);
+    const grep = mapDroidSdkMessageToChatEvents({ type: "tool_result", toolUseId: "g", content: "[{\"url\":\"https://f.dev\"}]" }, meta);
+    expect(failed[0]).not.toHaveProperty("sources");
+    expect(grep[0]).not.toHaveProperty("sources");
+  });
+});
+
+describe("mapDroidSdkRunResultToDoneEvent", () => {
+  it("clears unmatched web tool inputs at the end of a turn", () => {
+    const state = createDroidSdkEventMapperState();
+    state.webToolInputsByUseId?.set("never-returned", { url: "https://example.dev" });
+
+    expect(mapDroidSdkRunResultToDoneEvent({ success: true }, { turnId: "turn-1", model: "droid", state }))
+      .toMatchObject({ type: "done", turnId: "turn-1" });
+    expect(state.webToolInputsByUseId?.size).toBe(0);
+  });
+});

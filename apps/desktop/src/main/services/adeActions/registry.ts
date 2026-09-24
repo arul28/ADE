@@ -161,6 +161,7 @@ import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithin
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
@@ -580,6 +581,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   const launches = () => requireService(runtime.chatLaunchService, "Chat launch service not available.");
   const service: OpaqueService = {
     ...base,
+    // Machine-level and stateless per chat: the Sources list asks for the
+    // icons of domains it already shows. Same resolver as the sync command.
+    resolveSourceFavicons: (args?: unknown) =>
+      getSourceFaviconService().resolve(asActionRecord(args) as ResolveSourceFaviconsArgs),
     ensureCtoSession: async (args?: { modelId?: string | null; reasoningEffort?: string | null }) => {
       const laneId = await resolvePrimaryLaneId(runtime);
       return agentChatService.ensureIdentitySession({

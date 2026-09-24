@@ -16,6 +16,7 @@ export type SubagentSnapshot = {
   summary: string;
   parentToolUseId?: string | null;
   parentAgentId?: string | null;
+  provider?: string | null;
   turnId?: string | null;
   label?: string | null;
   model?: string | null;
@@ -43,6 +44,14 @@ const SUBAGENT_TASK_TYPES = new Set<NonNullable<SubagentSnapshot["taskType"]>>([
   "other",
 ]);
 
+/** True for the quiet spawn notice whose inline card already carries its announcement. */
+export function isInlineCardSpawnNotice(
+  event: unknown,
+): boolean {
+  if (!isRecord(event) || event.type !== "system_notice" || event.status !== "subagent_spawned") return false;
+  return isRecord(event.detail) && event.detail.hasInlineCard === true;
+}
+
 function normalizeSubagentTaskType(value: unknown): SubagentSnapshot["taskType"] | undefined {
   return typeof value === "string" && SUBAGENT_TASK_TYPES.has(value as NonNullable<SubagentSnapshot["taskType"]>)
     ? value as SubagentSnapshot["taskType"]
@@ -54,21 +63,12 @@ export type ChatInfoPlanStep = {
   status: "pending" | "in_progress" | "completed" | "failed";
 };
 
-export type ChatInfoPlan = {
-  current: number;
-  total: number;
-  steps: ChatInfoPlanStep[];
-  live: boolean;
-} | null;
-
 // iOS mirrors these caps, the pane storage-key/empty-state shapes, and the
 // section-hint format in WorkChatRichCardViews.swift (WorkChatInfoDetailsSheet)
 // — keep the twins in sync when changing any of them.
 export const SUBAGENTS_ACTIVE_CAP = 12;
 export const BACKGROUND_ACTIVE_CAP = 8;
 export const SCHEDULE_ACTIVE_CAP = 10;
-export const PROGRESS_CAP = 14;
-export const TASKS_CAP = 12;
 export const SUBAGENT_PANE_ROSTER_CAPACITY = 5;
 
 const MAX_WORKFLOW_AGENT_ENTRIES = 300;
@@ -312,7 +312,20 @@ export function collapseLegacySubagentEndEvents<T>(
   });
 }
 
-export const SUBAGENT_PLACEHOLDER_SUMMARY = /^(status:\s|task updated$)/i;
+/**
+ * Filler a runtime writes where no report exists: Claude's "Status: …" /
+ * "Task updated" ticks and Codex's `subAgentActivity` lines ("Agent active",
+ * "Agent received input") plus its fallback terminal words ("Agent completed").
+ * None of these is ever a report — never shown or stored as one.
+ */
+export const SUBAGENT_PLACEHOLDER_SUMMARY =
+  /^(status:\s|task updated$|agent (active|received input|started|running|completed|finished|stopped|failed|interrupted)[.!]*$)/i;
+
+/** True when `value` is empty or runtime filler rather than something the agent wrote. */
+export function isSubagentPlaceholderSummary(value: string | null | undefined): boolean {
+  const text = value?.trim();
+  return !text || SUBAGENT_PLACEHOLDER_SUMMARY.test(text);
+}
 
 export function preferSubagentSummary(
   existing: string | null | undefined,
@@ -330,6 +343,86 @@ export function preferSubagentSummary(
   }
   if (currentIsPlaceholder) return next;
   return next.length >= current.length ? next : current;
+}
+
+const TERMINAL_PUNCTUATION = /[.!?:;,…]$/;
+
+/** Inline markdown → its visible text: links, images, code spans, emphasis. */
+function plainInlineMarkdown(line: string): string {
+  // Code spans keep their text verbatim (`__init__.py` is not emphasis), so
+  // they are set aside before the emphasis passes and put back after.
+  const codeSpans: string[] = [];
+  const withoutCode = line.replace(/(`+)([^`]*?)\1/g, (_match, _ticks: string, code: string) => {
+    codeSpans.push(code.trim());
+    return `\u0000${codeSpans.length - 1}\u0000`;
+  });
+  return withoutCode
+    // ![alt](src) → alt; [text](href) and [text][ref] → text.
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
+    // <https://…> autolinks keep the URL; other simple tags drop.
+    .replace(/<((?:https?|mailto):[^>\s]+)>/gi, "$1")
+    .replace(/<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>/gi, "")
+    .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "$1")
+    .replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?!\w)/g, "$1$2")
+    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "$1")
+    .replace(/(^|[^\w*])\*(?=\S)([^*]*?\S)\*(?![\w*])/g, "$1$2")
+    .replace(/(^|[^\w_])_(?=\S)([^_]*?\S)_(?![\w_])/g, "$1$2")
+    // A preview clipped mid-span leaves an unmatched marker behind.
+    .replace(/\*\*|~~|`/g, "")
+    .replace(/\\([\\`*_{}[\]()#+\-.!|>~])/g, "$1")
+    .replace(/\u0000(\d+)\u0000/g, (_match, index: string) => codeSpans[Number(index)] ?? "");
+}
+
+/**
+ * A subagent's report reduced to one plain-text paragraph for a clamped card
+ * or pane line. Reports are markdown (`## Summary`, `**ADE** is…`, bullets,
+ * fences, links); a three-line preview has no room for block layout, and
+ * raw markers read as noise. Headings, list and quote markers, rules, and
+ * fence lines drop; emphasis and code spans keep their text; a link keeps
+ * its text. Lines join with a space, a heading or list item that ends
+ * without punctuation gets `:` / `;` so the run still reads as prose.
+ * Returns null for empty input. Presentation only; the report is unchanged.
+ */
+export function subagentSummaryPlainText(value: string | null | undefined): string | null {
+  const source = value?.replace(/\r\n?/g, "\n").trim();
+  if (!source) return null;
+  const parts: string[] = [];
+  let pendingSeparator: string | null = null;
+  for (const rawLine of source.split("\n")) {
+    let line = rawLine.trim();
+    // Fence lines, horizontal rules, and table separator rows carry no text.
+    if (/^(`{3,}|~{3,})/.test(line)) continue;
+    if (/^([-*_])(\s*\1){2,}$/.test(line)) continue;
+    if (/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(line)) continue;
+    let kind: "heading" | "item" | "text" = "text";
+    const heading = /^#{1,6}(?:\s+(.*?))?(?:\s+#+)?$/.exec(line);
+    if (heading) {
+      line = heading[1] ?? "";
+      kind = "heading";
+    }
+    line = line.replace(/^(>\s?)+/, "");
+    const item = /^(?:[-*+]|\d{1,9}[.)])\s+(?:\[[ xX]\]\s+)?(.*)$/.exec(line);
+    if (item) {
+      line = item[1]!;
+      kind = "item";
+    }
+    if (line.startsWith("|") || line.endsWith("|")) {
+      // A table row reads as its cells; rows separate like list items.
+      line = line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim()).filter(Boolean).join(" · ");
+      kind = "item";
+    }
+    line = plainInlineMarkdown(line).replace(/\s+/g, " ").trim();
+    if (!line) continue;
+    if (parts.length) parts.push(pendingSeparator ?? " ");
+    parts.push(line);
+    pendingSeparator = kind !== "text" && !TERMINAL_PUNCTUATION.test(line)
+      ? (kind === "heading" ? ": " : "; ")
+      : null;
+  }
+  const text = parts.join("").trim();
+  return text || null;
 }
 
 type SubagentClassificationInput = {
@@ -454,6 +547,144 @@ export function preferredSubagentAgentType(
   if (!incoming) return existing;
   if (!existing || (existing === "background" && incoming !== "background")) return incoming;
   return existing;
+}
+
+export type AgentIdentityLabel = {
+  /** Human role, sentence case — "Ship poller". */
+  label: string;
+  /** Trailing issue/PR number lifted out of the path, e.g. "#927". */
+  ref: string | null;
+  /** The raw value, kept for the `title` tooltip. */
+  raw: string;
+};
+
+/**
+ * Words an agent id spells in lower case that read wrong in sentence case:
+ * `ios_shared_scan` is "iOS shared scan", not "Ios shared scan". Mirrored on
+ * iOS in `WorkStatusAndFormattingHelpers.swift`.
+ */
+const AGENT_IDENTITY_ACRONYMS: ReadonlyMap<string, string> = new Map(
+  ["iOS", "CLI", "TUI", "UI", "UX", "API", "IPC", "PR", "CI", "SDK", "MCP", "DB", "JSON", "URL", "HTTP", "SQL", "CSS", "HTML", "AI", "ID"]
+    .map((word) => [word.toLowerCase(), word] as const),
+);
+
+/**
+ * Turn a runtime's internal agent path into a role.
+ *
+ * Codex hands us `/ROOT/SHIP_POLL_927` — an id, not an identity. Identity
+ * should read as role + intent, so the last segment becomes sentence case
+ * ("Ship poll") and a trailing issue/PR number is lifted into `ref`.
+ * Runtimes that never set an agent type (OpenCode, Droid) get `null`.
+ */
+export function humanizeAgentIdentity(value: string | null | undefined): AgentIdentityLabel | null {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  // `background` is a flag the spawn card renders as its own chip.
+  if (raw.toLowerCase() === "background") return null;
+  const segments = raw.split(/[/\\]+/).filter((segment) => segment.length > 0);
+  let tail = segments.length ? segments[segments.length - 1]! : raw;
+  // A bare "/root" (or an all-separator value) carries no role at all.
+  if (segments.length === 1 && /^root$/i.test(tail)) return null;
+  let ref: string | null = null;
+  const numberMatch = tail.match(/[_\-\s](\d{2,})$/);
+  if (numberMatch) {
+    ref = `#${numberMatch[1]}`;
+    tail = tail.slice(0, numberMatch.index);
+  }
+  const words = tail.split(/[_\-\s]+/).filter((word) => word.length > 0);
+  if (!words.length) return ref ? { label: raw, ref, raw } : null;
+  const label = words
+    .map((word, index) => {
+      const acronym = AGENT_IDENTITY_ACRONYMS.get(word.toLowerCase());
+      if (acronym) return acronym;
+      const lower = word.toLowerCase();
+      return index === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
+    })
+    .join(" ");
+  return { label, ref, raw };
+}
+
+/**
+ * Values runtimes stamp where no real name exists: placeholder agent types
+ * (legacy OpenCode, the bare word "subagent") and the collapse pass's own
+ * fallbacks for a spawn with no description.
+ */
+const GENERIC_SUBAGENT_NAMES: ReadonlySet<string> = new Set([
+  "agent",
+  "background",
+  "background work",
+  "delegated task",
+  "opencode-subagent",
+  "subagent",
+  "subagent task",
+  "task",
+]);
+
+/** True for a placeholder a runtime stamps where no real name exists. */
+export function isGenericSubagentName(value: string | null | undefined): boolean {
+  const raw = value?.trim();
+  return !raw || GENERIC_SUBAGENT_NAMES.has(raw.toLowerCase());
+}
+
+/**
+ * An internal id rather than words: a path (`/root/desktop_scan`) or a single
+ * snake_case token (`desktop_scan`). Anything with a space is prose and is
+ * shown as written.
+ */
+function isAgentIdentifierLike(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  return /[/\\]/.test(value) || value.includes("_");
+}
+
+/**
+ * OpenCode titles a child session with the agent it runs appended:
+ * `Explore renderer UI (@explore subagent)`. The card already says it is a
+ * subagent, and the suffix is what truncates, so it is dropped: a trailing
+ * `(@<agent> subagent)` or `(@<agent>)`.
+ */
+const AGENT_MENTION_SUFFIX = /\s*\(@[^()\s]+(?:\s+subagent)?\)\s*$/i;
+
+function stripAgentMentionSuffix(value: string): string {
+  return value.replace(AGENT_MENTION_SUFFIX, "").trim();
+}
+
+function subagentNameCandidate(value: string | null | undefined): string | null {
+  const raw = value ? stripAgentMentionSuffix(value.trim()) : null;
+  if (!raw || isGenericSubagentName(raw)) return null;
+  if (!isAgentIdentifierLike(raw)) return raw;
+  const identity = humanizeAgentIdentity(raw);
+  if (!identity) return null;
+  return identity.ref ? `${identity.label} ${identity.ref}` : identity.label;
+}
+
+export type SubagentCardNameInput = {
+  description?: string | null;
+  label?: string | null;
+  agentType?: string | null;
+};
+
+/**
+ * The human name an inline subagent card is titled with. Same rule for every
+ * provider; the first candidate that yields a name wins:
+ *
+ * 1. `description` — Claude's Task description, OpenCode's session title,
+ *    Cursor's and Droid's task description, and for Codex the agent path the
+ *    parent chose (`/root/desktop_scan`).
+ * 2. `label` — the explicit display name when the description is missing or a
+ *    placeholder: Claude's Task `name`, a Codex nickname, Cursor's label.
+ * 3. `agentType` — Claude's `subagent_type` (`Explore`), a Codex path.
+ *
+ * A path or snake_case id is humanized from its last segment
+ * (`/root/desktop_scan` -> `Desktop scan`, `/ROOT/SHIP_POLL_927` ->
+ * `Ship poll #927`), so a raw `/root/...` path is never the title. A trailing
+ * OpenCode agent mention (`(@explore subagent)`, `(@explore)`) is dropped.
+ * Generic placeholders are skipped. Nothing usable reads "Subagent".
+ */
+export function deriveSubagentCardName(input: SubagentCardNameInput): string {
+  return subagentNameCandidate(input.description)
+    ?? subagentNameCandidate(input.label)
+    ?? subagentNameCandidate(input.agentType)
+    ?? "Subagent";
 }
 
 function removeTimelineRow(rows: SubagentTimelineRow[], row: SubagentTimelineRow | null): void {
@@ -741,6 +972,7 @@ export function normalizeSubagentLifecycleEvent(event: AgentChatEvent): Normaliz
       type: "subagent_started",
       taskId: agentId,
       agentId,
+      provider: event.provider,
       parentToolUseId: textField(event.parentToolUseId),
       agentType: event.agentType,
       model: textField(event.model),
@@ -759,6 +991,7 @@ export function normalizeSubagentLifecycleEvent(event: AgentChatEvent): Normaliz
       type: "subagent_progress",
       taskId: agentId,
       agentId,
+      provider: event.provider,
       parentToolUseId: textField(event.parentToolUseId),
       agentType: event.agentType,
       model: textField(event.model),
@@ -778,6 +1011,7 @@ export function normalizeSubagentLifecycleEvent(event: AgentChatEvent): Normaliz
       type: "subagent_result",
       taskId: agentId,
       agentId,
+      provider: event.provider,
       parentToolUseId: textField(event.parentToolUseId),
       agentType: event.agentType,
       model: textField(event.model),
@@ -805,26 +1039,6 @@ export function workEventParentItemId(event: AgentChatEvent): string | null {
     return null;
   }
   return textField((event as { parentItemId?: unknown }).parentItemId);
-}
-
-export function planFromEvent(event: Extract<AgentChatEvent, { type: "plan" }>): ChatInfoPlan {
-  const completed = event.steps.filter((step) => step.status === "completed").length;
-  const inProgress = event.steps.findIndex((step) => step.status === "in_progress");
-  const current = inProgress >= 0 ? inProgress + 1 : completed;
-  return {
-    current,
-    total: event.steps.length,
-    steps: event.steps.map((step) => ({ text: step.text, status: step.status })),
-    live: event.steps.some((step) => step.status === "in_progress"),
-  };
-}
-
-export function latestPlan(events: AgentChatEventEnvelope[]): ChatInfoPlan {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]?.event;
-    if (event?.type === "plan") return planFromEvent(event);
-  }
-  return null;
 }
 
 function buildResolvedSubagentIdsByParent(events: AgentChatEventEnvelope[]): Map<string, Set<string>> {
@@ -942,8 +1156,21 @@ export function subagentSnapshotsFromEvents(rawEvents: AgentChatEventEnvelope[])
     const agentType = typeof event.agentType === "string" ? event.agentType : "subagent";
     const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : {};
     const parentToolUseId = incomingParentToolUseId ?? existing?.parentToolUseId ?? null;
+    const isTerminalEvent = type === "subagent_result" || type === "subagent.completed";
+    // A progress tick after the agent's terminal result is a late echo (Codex
+    // re-announces the child's `subAgentActivity` item on item/completed), not
+    // a resumption: it must not reopen the row, move its end, or overwrite the
+    // report. Only a fresh `subagent_started` reopens a settled agent.
+    const settled = existing != null && existing.status !== "running";
+    if (settled && !isTerminalEvent && !type.includes("started")) {
+      // The alias/placeholder entries above are already gone; keep the row
+      // under its canonical id unchanged.
+      snapshots.set(id, existing);
+      continue;
+    }
+    const reopened = settled && !isTerminalEvent;
     const startedAt = existing?.startedAt ?? envelope.timestamp;
-    const endedAt = type === "subagent_result" || type === "subagent.completed" ? envelope.timestamp : existing?.endedAt;
+    const endedAt = isTerminalEvent ? envelope.timestamp : reopened ? undefined : existing?.endedAt;
     const parsedDurationMs = endedAt && startedAt ? Date.parse(endedAt) - Date.parse(startedAt) : Number.NaN;
     const fallbackDurationMs = Number.isFinite(parsedDurationMs) ? Math.max(0, parsedDurationMs) : existing?.durationMs;
     const summaryFromEvent = [event.summary, event.finalSummary, event.text, event.description]
@@ -969,6 +1196,9 @@ export function subagentSnapshotsFromEvents(rawEvents: AgentChatEventEnvelope[])
       summary,
       parentToolUseId,
       parentAgentId: incomingParentAgentId ?? existing?.parentAgentId ?? null,
+      ...(textField(event.provider) ?? existing?.provider
+        ? { provider: textField(event.provider) ?? existing?.provider }
+        : {}),
       turnId: typeof event.turnId === "string" ? event.turnId : existing?.turnId ?? null,
       label: typeof event.label === "string" ? event.label : existing?.label ?? null,
       model: typeof event.model === "string" ? event.model : existing?.model ?? null,
@@ -1040,8 +1270,16 @@ export function subagentActivitySummaryFromEvents(rawEvents: AgentChatEventEnvel
     const agentId = typeof event.agentId === "string" && event.agentId.trim() ? event.agentId.trim() : null;
     const id = agentId ?? taskId;
     if (!id) continue;
+    const existing = snapshots.get(id) ?? (taskId ? snapshots.get(taskId) : undefined);
     if (taskId && id !== taskId) snapshots.delete(taskId);
-    const status = type === "subagent_result" || type === "subagent.completed"
+    const isTerminalEvent = type === "subagent_result" || type === "subagent.completed";
+    // Same rule as `subagentSnapshotsFromEvents`: a late progress tick never
+    // reopens a settled agent; only a fresh start does.
+    if (existing && existing.status !== "running" && !isTerminalEvent && !type.includes("started")) {
+      snapshots.set(id, existing);
+      continue;
+    }
+    const status = isTerminalEvent
       ? event.status === "failed" || event.status === "stopped" || event.status === "completed"
         ? event.status
         : "completed"

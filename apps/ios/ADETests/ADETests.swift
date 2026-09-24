@@ -5198,7 +5198,7 @@ final class ADETests: XCTestCase {
     let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
 
     XCTAssertEqual(snapshot.events.count, 3)
-    guard case .text(let text, _, _, _) = snapshot.events[0].event else {
+    guard case .text(let text, _, _, _, _) = snapshot.events[0].event else {
       return XCTFail("Expected the known text event before the unknown event to survive.")
     }
     XCTAssertEqual(text, "Before")
@@ -5362,7 +5362,7 @@ final class ADETests: XCTestCase {
 
     let toolItemIds = transcript.compactMap { envelope -> String? in
       if case .toolCall(_, _, let itemId, _, _) = envelope.event { return itemId }
-      if case .toolResult(_, _, let itemId, _, _, _) = envelope.event { return itemId }
+      if case .toolResult(_, _, let itemId, _, _, _, _, _) = envelope.event { return itemId }
       return nil
     }
     XCTAssertFalse(toolItemIds.contains("child-tool-1"))
@@ -6652,7 +6652,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(history.count, 2, "A sub-24-char text chunk must not be swallowed by a reused sequence")
     XCTAssertTrue(
       history.contains(where: { envelope in
-        if case .text(let text, _, _, _) = envelope.event { return text == "No problem — re-as" }
+        if case .text(let text, _, _, _, _) = envelope.event { return text == "No problem — re-as" }
         return false
       }),
       "The short text chunk must survive"
@@ -6818,7 +6818,7 @@ final class ADETests: XCTestCase {
     let delayedInsert = AgentChatEventEnvelope(
       sessionId: "session-1",
       timestamp: "2026-03-17T00:00:01.500Z",
-      event: .toolResult(tool: "fs_read", result: .string("ok"), itemId: "tool-1", logicalItemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: "completed"),
+      event: .toolResult(tool: "fs_read", result: .string("ok"), itemId: "tool-1", logicalItemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: "completed", sources: nil, sourceRefsOmittedForMobile: nil),
       sequence: 3,
       provenance: nil
     )
@@ -20441,7 +20441,7 @@ final class ADETests: XCTestCase {
       "result": "https://example.com/icon.png",
       "status": "completed",
     ])
-    guard case .toolResult(let tool, let result, let itemId, _, let turnId, let status) = makeWorkChatEvent(from: decoded) else {
+    guard case .toolResult(let tool, let result, let itemId, _, let turnId, let status, _, _) = makeWorkChatEvent(from: decoded) else {
       return XCTFail("Expected decoded image generation to map to a compact tool result.")
     }
     XCTAssertEqual(tool, "image_generation")
@@ -20900,7 +20900,7 @@ final class ADETests: XCTestCase {
 
     guard transcript.count == 2,
           case .toolCall(let callTool, _, let callItemId, _, _) = transcript[0].event,
-          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status) = transcript[1].event else {
+          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status, _, _) = transcript[1].event else {
       return XCTFail("Expected malformed MCP metadata to preserve the raw tool call and result.")
     }
     XCTAssertEqual(callTool, "google_drive:search_files")
@@ -22101,8 +22101,8 @@ final class ADETests: XCTestCase {
 
     guard case .toolCall(_, _, let callId, _, _) = first[0].event,
           case .toolCall(_, _, let secondCallId, _, _) = second[0].event,
-          case .toolResult(_, _, let resultId, _, _, _) = first[1].event,
-          case .toolResult(_, _, let secondResultId, _, _, _) = second[1].event,
+          case .toolResult(_, _, let resultId, _, _, _, _, _) = first[1].event,
+          case .toolResult(_, _, let secondResultId, _, _, _, _, _) = second[1].event,
           case .structuredQuestion(_, _, let questionId, _) = first[2].event,
           case .structuredQuestion(_, _, let secondQuestionId, _) = second[2].event
     else {
@@ -26299,7 +26299,9 @@ final class ADETests: XCTestCase {
       logicalItemId: "tool-logical-1",
       parentItemId: nil,
       turnId: "turn-1",
-      status: "completed"
+      status: "completed",
+      sources: nil,
+      sourceRefsOmittedForMobile: nil
     ))
 
     let transcript = [
@@ -26391,7 +26393,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:02.000Z",
         sequence: 2,
-        event: .toolResult(tool: "functions.Read", resultText: "{\"content\":\"ADE\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: .completed)
+        event: .toolResult(tool: "functions.Read", resultText: "{\"content\":\"ADE\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",

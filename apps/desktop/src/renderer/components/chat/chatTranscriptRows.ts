@@ -6,7 +6,9 @@ import {
 } from "../../../shared/chatActivityPhase";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatScheduledWorkStatus, AgentChatSpawnKind, AgentChatStopSource, CodexWebSearchResult } from "../../../shared/types";
 import {
+  deriveSubagentCardName,
   isBackgroundShellCommand,
+  isGenericSubagentName,
   isRealSubagent,
   longerSubagentText,
   normalizeSubagentLifecycleEvent,
@@ -14,12 +16,12 @@ import {
   preferredSubagentAgentType,
   subagentAgentKey,
   SUBAGENT_PLACEHOLDER_SUMMARY,
+  isSubagentPlaceholderSummary,
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
-import { isUsageLimitFailureText } from "../../../shared/usageLimitResumePresentation";
 import {
   contextCompactMergeKey,
   isContextCompactionChatEvent,
@@ -34,7 +36,22 @@ import {
   type HostSleepNoticeShape,
 } from "../../../shared/hostSleepNotice";
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
-import { foldTodoItemsIntoPlanSteps, todoItemsCoveredByPlanSteps } from "../../../shared/todoPlanFold";
+import { groupStoppedSubagentResultCards, subagentResultKey, subagentSpawnKey } from "./chatSubagentCardGrid";
+import { groupedEnvelopeTurnId } from "./chatTranscriptTurnFolds";
+import {
+  isChatTaskListEvent,
+  reduceChatTaskList,
+  type ChatTaskListSnapshot,
+} from "../../../shared/chatTaskList";
+import {
+  classifyTurnFoldEvent,
+  inferTurnEndTurnId,
+  isForeignTurnEnd,
+  snapshotTurnEnd,
+  type TurnFold,
+  type TurnEndSnapshot,
+  type TurnEndStatus,
+} from "../../../shared/chatTurnFold";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
@@ -97,14 +114,33 @@ type HiddenTranscriptEvent =
   | Extract<AgentChatEvent, { type: "tokens" }>
   | Extract<AgentChatEvent, { type: "api_retry" }>
   | Extract<AgentChatEvent, { type: "codex_moderation_metadata" }>
+  // Answer citations feed Sources, the turn chip, and the fold count only.
+  | Extract<AgentChatEvent, { type: "sources" }>
   // Token usage drives the chat-column-bottom token footer; inline transcript
   // rows would be duplicate noise.
   | Extract<AgentChatEvent, { type: "codex_token_usage" }>;
 
 type ChatTranscriptVisibleEvent = Exclude<AgentChatEvent, HiddenTranscriptEvent>;
 
-type RenderReasoningEvent = Extract<AgentChatEvent, { type: "reasoning" }> & {
+export type RenderReasoningEvent = Extract<AgentChatEvent, { type: "reasoning" }> & {
+  /** First fragment's timestamp; the row's own timestamp is the latest one. */
   startTimestamp?: string;
+  /**
+   * Set only on an activity-phase merge (thought → tool → thought): when the
+   * LAST merged thinking run started. The live timer counts from here, and a
+   * finished row shows no duration because its span also covers tool work.
+   */
+  latestStartTimestamp?: string;
+  /**
+   * Set only by `mergeAdjacentThoughtRows` (chatThoughtRuns.ts): the drawn
+   * Thought row stands for these rows, the first of which lends its key.
+   */
+  thoughtMemberKeys?: string[];
+  /**
+   * The merged row's duration: every member's measured duration summed, or
+   * null when any member has none. Read only when `thoughtMemberKeys` is set.
+   */
+  thoughtRunDurationSeconds?: number | null;
 };
 
 type WorkLogRenderEvent = {
@@ -124,11 +160,7 @@ export type ChatWorkLogGroupEvent = {
 export type ChatActivityBundleItem = {
   key: string;
   timestamp: string;
-  event: Extract<AgentChatEvent, {
-    type:
-      | "todo_update"
-      | "scheduled_work_update";
-  }>;
+  event: Extract<AgentChatEvent, { type: "scheduled_work_update" }>;
 };
 
 export type ChatActivityBundleEvent = {
@@ -142,8 +174,9 @@ type SubagentCardTerminalStatus = Exclude<SubagentCardStatus, "running">;
 
 /**
  * Anchor row for a real subagent, pushed once where the agent started and then
- * mutated IN PLACE (new object, same key) as progress arrives. Dropped when the
- * result card is appended so the thread keeps one card per agent.
+ * mutated IN PLACE (new object, same key) as progress arrives. When the agent
+ * ends, this same row becomes its {@link SubagentResultCardRenderEvent}: same
+ * position, same key. The thread keeps one card per agent.
  * Row key: `subagent-spawn:${agentKey}`.
  */
 export type SubagentSpawnAnchorRenderEvent = {
@@ -151,14 +184,21 @@ export type SubagentSpawnAnchorRenderEvent = {
   agentKey: string;
   description: string;
   agentType: string | null;
+  /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
+  provider: string | null;
+  /**
+   * Explicit display name from the lifecycle events (Claude Task `name`, Codex
+   * nickname, Cursor label). The card title comes from
+   * `deriveSubagentCardName` over description, label, and agentType.
+   */
+  label?: string | null;
   background: boolean;
-  status: SubagentCardStatus;
+  status: "running";
   /** Last meaningful progress summary (placeholder summaries never displace a real one). */
   statusLine: string | null;
   lastToolName: string | null;
   toolCount: number | null;
   startedAt: string;
-  endedAt: string | null;
   /**
    * Spawned-ADE-chat navigation. Set only when the source lifecycle event carried
    * a `chat:<id>` taskId (a spawned peer/subagent chat, not a runtime-native
@@ -169,22 +209,30 @@ export type SubagentSpawnAnchorRenderEvent = {
   taskId: string | null;
   /** Cosmetic relationship + completion-report policy; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
-  /** Final result summary, surfaced on the card once the agent settles. */
-  resultSummary: string | null;
   /** Best-effort parent label (parent's description/agentType); null/absent if unknown. */
   parentLabel?: string | null;
 };
 
 /**
- * Result card row, pushed at the chronological position where the agent ended
- * and mutated in place if a richer summary arrives later.
- * Row key: `subagent-result:${agentKey}`.
+ * A settled agent's card. Normally the agent's spawn row converted IN PLACE,
+ * so it keeps the spawn's position and its `subagent-spawn:${agentKey}` key.
+ * Only when the window holds no spawn row for the agent (its start sits in an
+ * unloaded older page) is the card appended where the result arrives, under
+ * `subagent-result:${agentKey}`. Either way it is mutated in place if a richer
+ * summary arrives later. Jumps that name `subagent-result:${agentKey}` resolve
+ * to whichever key the card holds (`subagentCardRowKeyCandidates`).
  */
 export type SubagentResultCardRenderEvent = {
   type: "subagent_result_card";
   agentKey: string;
   /** Task title, carried so the stopped-group card can label each folded agent. */
   description: string | null;
+  /** Agent type and explicit label, carried for the card name (`deriveSubagentCardName`). */
+  agentType?: string | null;
+  /** Explicit provider for spawned ADE chats; absent for runtime-native tasks. */
+  provider?: string | null;
+  background?: boolean;
+  label?: string | null;
   status: SubagentCardTerminalStatus;
   summaryPreview: string | null;
   error: string | null;
@@ -205,7 +253,7 @@ export type SubagentResultCardRenderEvent = {
   /** True when a real report had already landed before the stop. */
   resultLanded: boolean;
   /**
-   * Spawned-ADE-chat navigation. Copied from the dropped spawn card so a
+   * Spawned-ADE-chat navigation, carried over from the running card so a
    * settled child chat stays openable. Null for runtime-native subagents.
    */
   childSessionId: string | null;
@@ -235,9 +283,10 @@ export type SubagentStoppedGroupItem = {
 export type SubagentStoppedGroupCause = "interrupt" | "usage_limit";
 
 /**
- * A run of 2+ consecutive subagent result cards that all ended for the same
- * reason, folded into one calm card so a mass stop (a dozen — or fifty —
- * agents) renders as a single line instead of a wall of identical cards.
+ * A run of more than `SUBAGENT_CARD_GRID_MAX_COLUMNS` consecutive subagent
+ * result cards that all ended for the same reason with no report, folded into
+ * one calm card so a mass stop (a dozen — or fifty — agents) renders as a
+ * single line instead of a wall of identical cards.
  * Produced by the second-layer grouping pass; never emitted by the first-layer
  * collapse. Row key: `subagent-stopped-group:${cause}:${firstAgentKey}`.
  */
@@ -254,6 +303,13 @@ export type SubagentStoppedGroupEvent = {
   stopReason: string | null;
   count: number;
   items: SubagentStoppedGroupItem[];
+  /**
+   * Row keys of the folded result cards (`subagent-spawn:<agentKey>` for a card
+   * that settled in place, `subagent-result:<agentKey>` for one appended without
+   * its spawn). A jump or event anchor that names one of them lands on this
+   * group row.
+   */
+  memberKeys: string[];
 };
 
 /**
@@ -300,40 +356,37 @@ export type BackgroundJobLineRenderEvent = {
     }
 );
 
+/** One job inside a {@link BackgroundJobGroupRenderEvent}: the line row it stands for. */
+export type BackgroundJobGroupMember = {
+  key: string;
+  timestamp: string;
+  event: BackgroundJobLineRenderEvent;
+};
+
 /**
- * A run of 2+ consecutive background job lines that share a label AND a status,
- * folded into ONE line — `Background · wait for desktop agents ×8 · 4m [open ›]`.
+ * A run of 2+ consecutive background job lines, whatever their labels and
+ * statuses, drawn as ONE compact row (`$ 5 background jobs · 1 running · 3 done
+ * · 1 failed ›`) that expands inline to one line per job. Five separate job
+ * lines in a row filled a viewport with rules; the chat actions pane already
+ * lists each job, so the thread only needs the fact that they ran.
  *
- * Row identity upstream is already correct (`upsertBackgroundJobLine` guarantees
- * one row per task and never a duplicate), so eight rows genuinely means eight
- * distinct shells. They are still eight near-identical centered rules in a row,
- * which is what made a real transcript unreadable — a fan-out of identical
- * waiters is one fact, not eight.
- *
- * Nothing is lost by folding: the `open ›` affordance is not per-job (it opens
- * the agents tab with a null taskId), so the group carries the identical one.
- *
- * Produced by the second-layer grouping pass; never emitted by the first-layer
- * collapse. Row key: `background-job-group:${firstRowKey}`.
+ * Produced by `groupBackgroundJobRuns` (`chatBackgroundJobRuns.ts`) on the
+ * drawn rows, after the presentation filter and before the turn fold, so rows
+ * the timeline never draws cannot split a run and the fold sees one row. The
+ * row key is the FIRST member's own row key (like `subagent_card_grid`), so a
+ * lone job line that gains a neighbour stays mounted and keeps its measured
+ * height. Never emitted by the collapse pass.
  */
 export type BackgroundJobGroupRenderEvent = {
   type: "background_job_group";
-  count: number;
-  label: string;
-  /** Every folded job, first to last — the group's row keys stay recoverable. */
-  agentKeys: string[];
-  /** Earliest start in the run, so a running group tickers from the oldest job. */
-  startedAt: string | null;
-} & (
-  | { status: "running" }
-  | {
-      status: SubagentCardTerminalStatus;
-      /** Only when every folded job reported the SAME exit code; null otherwise. */
-      exitCode: number | null;
-      /** Longest run in the group — the wall-clock the fan-out actually took. */
-      durationMs: number | null;
-    }
-);
+  members: BackgroundJobGroupMember[];
+  /**
+   * Every member's row key, first to last. A job's row key is fixed at first
+   * sighting, so the turn fold's turn-end snapshot, jumps, and scroll memory
+   * resolve a member through these.
+   */
+  memberKeys: string[];
+};
 
 export type ScheduledWakeDividerRenderEvent = {
   type: "scheduled_wake_divider";
@@ -361,6 +414,32 @@ export type SpawnWakeDividerRenderEvent = {
   turnId?: string;
 };
 
+/** One member of a {@link SubagentCardGridEvent}: the card row as the collapse built it. */
+export type SubagentCardGridMember = {
+  key: string;
+  timestamp: string;
+  event: SubagentSpawnAnchorRenderEvent | SubagentResultCardRenderEvent;
+};
+
+/**
+ * A run of 2+ consecutive subagent cards of ANY state (running, finished,
+ * failed, stopped), drawn side by side as one grid row. Cards settle in place,
+ * so a grid keeps its cards and their order while agents finish one by one.
+ * Produced by {@link groupSubagentCardGrids} on the presented rows, before the
+ * turn fold.
+ *
+ * Row key: the FIRST member's own row key. A lone card renders through the
+ * same grid component, so a second card joining keeps the first mounted, and
+ * the row keeps its measured height (a side-by-side row is about as tall as
+ * one card).
+ */
+export type SubagentCardGridEvent = {
+  type: "subagent_card_grid";
+  members: SubagentCardGridMember[];
+  /** Member row keys, first to last (`members[0].key` is the row key). */
+  memberKeys: string[];
+};
+
 /**
  * One CTO voice call, folded into a single row. Produced by the grouping pass
  * only — nothing persists it and no emitter produces it. Deliberately NOT part
@@ -383,6 +462,96 @@ export type VoiceCallGroupRenderEvent = {
   rows: ChatTranscriptGroupedEnvelope[];
 };
 
+/**
+ * The one row a finished turn's intermediate work folds into
+ * (`Worked for 4m 12s · 18 tools`). Presentation only and produced last, by
+ * {@link applyChatTranscriptTurnFolds}: nothing persists it, no emitter produces
+ * it, and no grouping pass sees it. Row key: `turn-fold:${turnId}`.
+ */
+export type TurnFoldRenderEvent = {
+  type: "turn_fold";
+  foldId: string;
+  turnId: string;
+  /** Row key of the turn's `done` row (duration, tools, and files are keyed by it). */
+  turnEndKey: string;
+  status: TurnEndStatus;
+  /** Rows hidden while the fold is closed. */
+  hiddenCount: number;
+  subagentCount: number;
+  /** Background jobs in the span, and how many failed (`· 5 jobs (1 failed)`). */
+  jobCount?: number;
+  failedJobCount?: number;
+};
+
+export type TurnDiagnosticsEvent = Extract<AgentChatEvent, { type: "turn_diagnostics" }>;
+export type TurnRecoveryReceiptEvent = Extract<AgentChatEvent, { type: "turn_recovery" | "codex_turn_recovery" }>;
+
+/**
+ * ONE "Turn details" row per turn: every `turn_diagnostics` snapshot and the
+ * recovery receipt (`turn_recovery` / legacy `codex_turn_recovery`) of that
+ * turn. Produced by the collapse pass only. Codex emits diagnostics under two
+ * keys — its session-startup key (MCP startup, before the turn has an id) and
+ * the turn id — so the id-less snapshot joins the details row of the window it
+ * arrived in (see {@link upsertTurnDetailsRow}); keying by the emitter's key
+ * drew two "Turn details" rows for one turn.
+ *
+ * Row key: `turn-details:<turnId>`, or the first event's own row key when the
+ * first contribution had no turn id. Both are identity-based, so a replay
+ * assigns the same key.
+ */
+export type TurnDetailsRenderEvent = {
+  type: "turn_details";
+  /** The turn these details belong to, once any contribution named it. */
+  turnId?: string;
+  /** Latest cumulative diagnostics snapshot per emitter key, first-seen order. */
+  diagnostics: ReadonlyArray<{ source: string; event: TurnDiagnosticsEvent }>;
+  /** The turn's latest recovery receipt; the provider-neutral shape wins over the Codex alias. */
+  recovery: TurnRecoveryReceiptEvent | null;
+};
+
+/**
+ * The chat's ONE task list (see `shared/chatTaskList.ts`). Every `plan` and
+ * `todo_update` that writes the list moves this single row to where that event
+ * landed — the row is removed from its old position and appended, keeping its
+ * key — so the thread shows exactly one task list, at the turn of its latest
+ * update. A list that is cleared removes the row.
+ *
+ * Row key: `task-list:<sessionId>` ({@link taskListRowKey}).
+ */
+export type TaskListRenderEvent = {
+  type: "task_list";
+  list: ChatTaskListSnapshot;
+  /** Turn of the event that last moved the row, for fold-window membership. */
+  turnId?: string;
+};
+
+export const TASK_LIST_ROW_KEY_PREFIX = "task-list:";
+
+export function taskListRowKey(sessionId: string): string {
+  return `${TASK_LIST_ROW_KEY_PREFIX}${sessionId}`;
+}
+
+export function isTaskListRowKey(key: string): boolean {
+  return key.startsWith(TASK_LIST_ROW_KEY_PREFIX);
+}
+
+/** What a Turn details row adds up to: summed checks, integrations deduped by name. */
+export function summarizeTurnDetails(event: TurnDetailsRenderEvent): {
+  moderationChecks: number;
+  integrations: Array<{ integration: string; message?: string | null }>;
+} {
+  let moderationChecks = 0;
+  const integrations = new Map<string, { integration: string; message?: string | null }>();
+  for (const { event: diagnostics } of event.diagnostics) {
+    moderationChecks += Math.max(0, diagnostics.moderationChecks ?? 0);
+    for (const failure of diagnostics.optionalIntegrationFailures ?? []) {
+      const previous = integrations.get(failure.integration);
+      integrations.set(failure.integration, failure.message ? failure : previous ?? failure);
+    }
+  }
+  return { moderationChecks, integrations: [...integrations.values()] };
+}
+
 export type ChatTranscriptRenderEvent =
   | ChatTranscriptVisibleEvent
   | RenderReasoningEvent
@@ -391,7 +560,9 @@ export type ChatTranscriptRenderEvent =
   | SubagentResultCardRenderEvent
   | BackgroundJobLineRenderEvent
   | ScheduledWakeDividerRenderEvent
-  | SpawnWakeDividerRenderEvent;
+  | SpawnWakeDividerRenderEvent
+  | TurnDetailsRenderEvent
+  | TaskListRenderEvent;
 
 export type ChatTranscriptRenderEnvelope = {
   key: string;
@@ -435,8 +606,10 @@ export type ChatTranscriptGroupedEnvelope = {
     | ChatWorkLogGroupEvent
     | ChatActivityBundleEvent
     | SubagentStoppedGroupEvent
+    | SubagentCardGridEvent
     | BackgroundJobGroupRenderEvent
-    | VoiceCallGroupRenderEvent;
+    | VoiceCallGroupRenderEvent
+    | TurnFoldRenderEvent;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `voiceCallId`. */
@@ -447,6 +620,7 @@ export type ChatTranscriptGroupedEnvelope = {
 
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
 type TodoUpdateTranscriptEvent = Extract<AgentChatEvent, { type: "todo_update" }>;
+type TaskListSourceEvent = PlanTranscriptEvent | TodoUpdateTranscriptEvent;
 
 /**
  * Live per-subagent state threaded through the collapse pass. `rowIndex` lets an
@@ -465,10 +639,18 @@ type SubagentAnchorState = {
    * agentId, but the render keys stay put.
    */
   renderKeyBase: string;
-  /** Index of the spawn-anchor row (null for background-shell commands). */
+  /**
+   * Index of the agent's ONE card row: the spawn anchor, which the terminal
+   * event converts in place into the result card (null for background-shell
+   * commands, and until the first card lands).
+   */
   rowIndex: number | null;
-  /** Index of the result-card row once the agent ends (null until then). */
-  resultRowIndex: number | null;
+  /**
+   * Key of that card row: `subagent-spawn:` when the spawn was in the window,
+   * `subagent-result:` when the result arrived without it. Fixed once set, so
+   * the card keeps its measured height across the running -> settled change.
+   */
+  cardKey: string | null;
   /** Index of the background finish-chip row (null unless a background shell). */
   /**
    * Latched once this task has opened a background-job line. Classification is
@@ -478,8 +660,18 @@ type SubagentAnchorState = {
    * Once the line exists, the task stays a background job.
    */
   backgroundLineOpened: boolean;
+  /**
+   * Longest description any lifecycle event carried. Drives classification and
+   * the job-line label, NOT the card title: Claude's `task_progress` frames put
+   * the current activity ("Running …", "Reading <path>") in `description`.
+   */
   description: string | null;
+  /** The card title: the description the FIRST `subagent_started` carried. */
+  title: string | null;
+  /** First explicit display name (Claude Task `name`, Codex nickname, Cursor label). */
+  label: string | null;
   agentType: string | null;
+  provider: string | null;
   taskType: string | null;
   command: string | null;
   background: boolean;
@@ -523,10 +715,14 @@ type CollapseTranscriptContext = {
     string,
     Extract<AgentChatEvent, { type: "user_message_resolution" }>
   >;
-  /** Latest cumulative diagnostic snapshot keyed by turn id. */
-  diagnosticsRowIndexByTurn: Map<string, number>;
-  /** Latest recovery receipt keyed by turn id. */
-  recoveryRowIndexByTurn: Map<string, number>;
+  /** The one `turn_details` row of each turn, keyed by turn id. */
+  turnDetailsRowIndexByTurn: Map<string, number>;
+  /**
+   * The `turn_details` row of the current window (since the last user message
+   * or own turn end), which an id-less diagnostics snapshot joins. Null when
+   * the window has none yet.
+   */
+  turnDetailsWindowRowIndex: number | null;
   /** Actionable stalled-turn card keyed by turn id. */
   stalledRowIndexByTurn: Map<string, number>;
   /**
@@ -552,6 +748,28 @@ type CollapseTranscriptContext = {
    * kind, different text, different detail, or a later turn all still render.
    */
   systemNoticeSignatures: Set<string>;
+  /** Approval / question item ids that already received `pending_input_resolved`. */
+  resolvedInputItemIds: Set<string>;
+  /**
+   * What was live when each turn's `done` arrived, keyed by turn id. Taken once
+   * (the first `done` for a turn wins) while events replay in order, so the
+   * turn fold's keep-visible decision is sticky and a reload reproduces it.
+   */
+  turnEndSnapshots: Map<string, TurnEndSnapshot>;
+  /**
+   * How many events so far share each row-key base (see
+   * `allocateTranscriptEventRowKey`). Carried so an incremental append numbers
+   * a repeated base exactly as a full replay does.
+   */
+  eventRowKeyOrdinals: Map<string, number>;
+  /**
+   * Row keys of `done` rows that ended someone else's window (a subagent's
+   * turn inside the parent's; see `isForeignTurnEnd`). The parent's snapshot
+   * walks back over them instead of stopping, whichever order the two arrive.
+   */
+  foreignTurnEndKeys: Set<string>;
+  /** Position of the one `task_list` row, or null while the chat has none. */
+  taskListRowIndex: number | null;
 };
 
 export function createCollapseTranscriptContext(): CollapseTranscriptContext {
@@ -561,13 +779,85 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     errorKeysByTurn: new Set(),
     userMessageRowIndexBySteer: new Map(),
     unmatchedUserMessageResolutionsBySteer: new Map(),
-    diagnosticsRowIndexByTurn: new Map(),
-    recoveryRowIndexByTurn: new Map(),
+    turnDetailsRowIndexByTurn: new Map(),
+    turnDetailsWindowRowIndex: null,
     stalledRowIndexByTurn: new Map(),
     adeCardRowIndexById: new Map(),
     backgroundJobRowIndexByKey: new Map(),
     systemNoticeSignatures: new Set(),
+    resolvedInputItemIds: new Set(),
+    turnEndSnapshots: new Map(),
+    eventRowKeyOrdinals: new Map(),
+    foreignTurnEndKeys: new Set(),
+    taskListRowIndex: null,
   };
+}
+
+/** Turn-end snapshots recorded by a collapse pass; empty without a context. */
+export function readTurnEndSnapshots(
+  context: CollapseTranscriptContext | null | undefined,
+): ReadonlyMap<string, TurnEndSnapshot> {
+  return context?.turnEndSnapshots ?? EMPTY_TURN_END_SNAPSHOTS;
+}
+
+const EMPTY_TURN_END_SNAPSHOTS: ReadonlyMap<string, TurnEndSnapshot> = new Map();
+
+function renderEventTurnId(event: ChatTranscriptRenderEvent): string | null {
+  const value = (event as { turnId?: unknown }).turnId;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+/**
+ * Record what was live when this turn ended. The window is every row after the
+ * turn's user message (or the previous turn end that owned its window), in its
+ * state right now — keyed rows mutate in place later, which is exactly why this
+ * is taken here. The window rules match `deriveTurnFolds`: a subagent's `done`
+ * inside the window is stepped over (and recorded as foreign, so no snapshot
+ * is taken for it), and an id-less `done` is filed under the inferred turn id.
+ */
+function recordTurnEndSnapshot(
+  rows: ChatTranscriptRenderEnvelope[],
+  event: Extract<AgentChatEvent, { type: "done" }>,
+  rowKey: string,
+  context: CollapseTranscriptContext,
+): void {
+  let start = rows.length;
+  let boundaryTurnId: string | null = null;
+  const windowTurnIds = new Set<string>();
+  while (start > 0) {
+    const row = rows[start - 1]!;
+    if (row.event.type === "done") {
+      if (!context.foreignTurnEndKeys.has(row.key)) break;
+    } else if (classifyTurnFoldEvent(row.event) === "boundary") {
+      boundaryTurnId = renderEventTurnId(row.event);
+      if (boundaryTurnId) windowTurnIds.add(boundaryTurnId);
+      break;
+    } else {
+      const rowTurnId = renderEventTurnId(row.event);
+      if (rowTurnId) windowTurnIds.add(rowTurnId);
+    }
+    start -= 1;
+  }
+  const ownTurnId = event.turnId?.trim() || null;
+  if (isForeignTurnEnd(ownTurnId, windowTurnIds)) {
+    context.foreignTurnEndKeys.add(rowKey);
+    return;
+  }
+  const windowRows = rows.slice(start);
+  const turnId = ownTurnId ?? inferTurnEndTurnId(
+    boundaryTurnId,
+    windowRows.map((row) => ({ role: classifyTurnFoldEvent(row.event), turnId: renderEventTurnId(row.event) })),
+  );
+  if (!turnId || context.turnEndSnapshots.has(turnId)) return;
+  context.turnEndSnapshots.set(turnId, snapshotTurnEnd(windowRows, {
+    isInputResolved: (itemId) => context.resolvedInputItemIds.has(itemId),
+    isTodoListUnfinished: (todoTurnId) => (
+      context.latestTodoItemsByTurn.get(todoSnapshotKey(todoTurnId))
+        ?.some((item) => item.status !== "completed") ?? false
+    ),
+  }));
 }
 
 /**
@@ -585,63 +875,131 @@ function systemNoticeSignature(
   ]);
 }
 
+/**
+ * Where a turn-details contribution lands: the row already holding this turn
+ * id, else the current window's row when the two cannot disagree (either side
+ * has no turn id yet, or both name the same turn). Without a carried context,
+ * the same answer comes from a reverse scan of the window.
+ */
+function findTurnDetailsRowIndex(
+  rows: readonly ChatTranscriptRenderEnvelope[],
+  context: CollapseTranscriptContext | undefined,
+  turnId: string | null,
+): number | null {
+  const joinsWindowRow = (index: number | null | undefined): index is number => {
+    if (index == null) return false;
+    const event = rows[index]?.event;
+    return event?.type === "turn_details" && (!turnId || !event.turnId || event.turnId === turnId);
+  };
+  if (context) {
+    const byTurn = turnId ? context.turnDetailsRowIndexByTurn.get(turnId) : undefined;
+    if (byTurn != null && rows[byTurn]?.event.type === "turn_details") return byTurn;
+    return joinsWindowRow(context.turnDetailsWindowRowIndex) ? context.turnDetailsWindowRowIndex : null;
+  }
+  let windowRow: number | null = null;
+  let inWindow = true;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const event = rows[index]!.event;
+    if (event.type === "done" || classifyTurnFoldEvent(event) === "boundary") {
+      if (!turnId) break;
+      inWindow = false;
+      continue;
+    }
+    if (event.type !== "turn_details") continue;
+    if (turnId && event.turnId === turnId) return index;
+    if (inWindow && windowRow === null && joinsWindowRow(index)) windowRow = index;
+  }
+  return windowRow;
+}
+
+/**
+ * Merge one diagnostics snapshot or recovery receipt into its turn's single
+ * `turn_details` row, creating the row (at this position) when the turn has
+ * none. The row keeps its key and position on every update, so its measured
+ * height and its place inside the turn fold's span survive.
+ */
+function upsertTurnDetailsRow(
+  rows: ChatTranscriptRenderEnvelope[],
+  envelope: AgentChatEventEnvelope,
+  rowKey: string,
+  context: CollapseTranscriptContext | undefined,
+  turnId: string | null,
+  apply: (details: TurnDetailsRenderEvent) => TurnDetailsRenderEvent,
+): void {
+  const index = findTurnDetailsRowIndex(rows, context, turnId);
+  const existing = index != null ? rows[index] : undefined;
+  if (index != null && existing?.event.type === "turn_details") {
+    const next = apply(existing.event);
+    rows[index] = {
+      ...existing,
+      timestamp: envelope.timestamp,
+      event: turnId && !next.turnId ? { ...next, turnId } : next,
+    };
+    if (turnId) context?.turnDetailsRowIndexByTurn.set(turnId, index);
+    return;
+  }
+  const rowIndex = rows.length;
+  rows.push({
+    key: turnId ? `turn-details:${turnId}` : `turn-details:${rowKey}`,
+    timestamp: envelope.timestamp,
+    event: apply({ type: "turn_details", ...(turnId ? { turnId } : {}), diagnostics: [], recovery: null }),
+  });
+  if (context) {
+    if (turnId) context.turnDetailsRowIndexByTurn.set(turnId, rowIndex);
+    context.turnDetailsWindowRowIndex = rowIndex;
+  }
+}
+
 function todoSnapshotKey(turnId: string | null): string {
   return turnId ?? "__global__";
 }
 
-function changedTodoItems(
-  previous: TodoUpdateTranscriptEvent["items"] | undefined,
-  next: TodoUpdateTranscriptEvent["items"],
-): TodoUpdateTranscriptEvent["items"] {
-  if (!previous) return next;
-  const previousById = new Map(previous.map((item) => [item.id, item]));
-  return next.filter((item) => {
-    const before = previousById.get(item.id);
-    return !before
-      || before.description !== item.description
-      || before.status !== item.status;
-  });
-}
-
-/** A later todo write updates the plan already on screen instead of adding a second card. */
-function foldTodoUpdateIntoExistingPlan(
-  rows: ChatTranscriptRenderEnvelope[],
-  turnId: string,
-  items: TodoUpdateTranscriptEvent["items"],
-): boolean {
-  const matchIndex = [...rows].reverse().findIndex((candidate) =>
-    candidate.event.type === "plan" && (candidate.event.turnId ?? null) === turnId,
-  );
-  if (matchIndex < 0) return false;
-  const actualIndex = rows.length - 1 - matchIndex;
-  const current = rows[actualIndex];
-  if (!current || current.event.type !== "plan") return false;
-  const steps = foldTodoItemsIntoPlanSteps(current.event.steps, items);
-  rows[actualIndex] = {
-    ...current,
-    event: { ...current.event, steps },
-  };
-  return true;
+/**
+ * Row position of the one `task_list` row. The carried index is the fast path;
+ * the reverse scan keeps a context-free append (and the parity with a full
+ * replay) correct.
+ */
+function findTaskListRowIndex(
+  rows: readonly ChatTranscriptRenderEnvelope[],
+  context: CollapseTranscriptContext | undefined,
+): number | null {
+  const stored = context?.taskListRowIndex;
+  if (stored != null && rows[stored]?.event.type === "task_list") return stored;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]!.event.type === "task_list") return index;
+  }
+  return null;
 }
 
 /**
- * Cursor emits a todo_update and a plan for the same list. The plan card is
- * the one that stays; the todo row would only repeat it.
+ * Apply a list event to the chat's one task list and move its row to the end
+ * (where this event lands). The row keeps its key through every move, so its
+ * open state and measured height follow it; the list anchor keeps a reader who
+ * is scrolled up where they are when the row leaves the rows above them.
  */
-function dropTodoRowsCoveredByPlan(
+function upsertTaskListRow(
   rows: ChatTranscriptRenderEnvelope[],
-  turnId: string | null,
-  steps: readonly { text: string }[],
-  context?: CollapseTranscriptContext,
+  envelope: AgentChatEventEnvelope,
+  event: TaskListSourceEvent,
+  context: CollapseTranscriptContext | undefined,
 ): void {
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const event = rows[index]?.event;
-    if (!event || event.type !== "todo_update") continue;
-    if ((event.turnId ?? null) !== turnId) continue;
-    if (!todoItemsCoveredByPlanSteps(event.items, steps)) continue;
+  const index = findTaskListRowIndex(rows, context);
+  const existing = index != null ? rows[index] : undefined;
+  const current = existing?.event.type === "task_list" ? existing.event.list : null;
+  const next = reduceChatTaskList(current, event);
+  if (next === current) return;
+  if (index != null) {
     rows.splice(index, 1);
     if (context) repairIndexedTranscriptRowsAfterSplice(context, index);
   }
+  if (!next) return;
+  const turnId = event.turnId?.trim() || null;
+  rows.push(stampSceneScopeKey({
+    key: existing?.key ?? taskListRowKey(envelope.sessionId),
+    timestamp: envelope.timestamp,
+    event: { type: "task_list", list: next, ...(turnId ? { turnId } : {}) },
+  }));
+  if (context) context.taskListRowIndex = rows.length - 1;
 }
 
 function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanTranscriptEvent): PlanTranscriptEvent {
@@ -703,6 +1061,58 @@ export function countRowsAppendedSince(rowKeys: readonly string[], anchorKey: st
   const anchorIndex = rowKeys.indexOf(anchorKey);
   if (anchorIndex < 0) return 0;
   return rowKeys.length - anchorIndex - 1;
+}
+
+/**
+ * {@link countRowsAppendedSince} for a timeline with turn folds applied. The
+ * anchor is placed on the LOGICAL (unfolded) row order, so a turn that folds
+ * the anchor row away does not reset the count to 0; only rows the timeline
+ * draws are counted, so rows hidden in a closed fold are never counted and the
+ * fold row counts once, and only when its span starts after the anchor.
+ *
+ * `visibleKeys` are the drawn rows (folds applied), `logicalKeys` the unfolded
+ * rows the folds were derived from; drawn rows other than fold rows are a
+ * subsequence of `logicalKeys`. Walks back from the tail, so the cost is the
+ * rows after the anchor plus one `indexOf`.
+ */
+export function countVisibleRowsAppendedSince({
+  visibleKeys,
+  logicalKeys,
+  folds,
+  anchorKey,
+}: {
+  visibleKeys: readonly string[];
+  logicalKeys: readonly string[];
+  folds: readonly Pick<TurnFold, "foldId" | "spanStartIndex">[];
+  anchorKey: string | null;
+}): number {
+  if (anchorKey === null) return 0;
+  if (!folds.length) return countRowsAppendedSince(visibleKeys, anchorKey);
+  const spanStartByFoldId = new Map(folds.map((fold) => [fold.foldId, fold.spanStartIndex]));
+  // A fold row sits just before its span's first row.
+  const anchorFoldStart = spanStartByFoldId.get(anchorKey);
+  const anchorLogicalIndex = logicalKeys.indexOf(anchorKey);
+  const anchorPosition = anchorLogicalIndex >= 0
+    ? anchorLogicalIndex
+    : anchorFoldStart !== undefined ? anchorFoldStart - 0.5 : null;
+  if (anchorPosition === null) return 0;
+  let count = 0;
+  let cursor = logicalKeys.length - 1;
+  for (let index = visibleKeys.length - 1; index >= 0; index -= 1) {
+    const key = visibleKeys[index]!;
+    const foldStart = spanStartByFoldId.get(key);
+    let position: number;
+    if (foldStart !== undefined) {
+      position = foldStart - 0.5;
+    } else {
+      while (cursor >= 0 && logicalKeys[cursor] !== key) cursor -= 1;
+      if (cursor < 0) break;
+      position = cursor;
+    }
+    if (position <= anchorPosition) break;
+    count += 1;
+  }
+  return count;
 }
 
 function isLowValueHookNotice(event: Extract<AgentChatEvent, { type: "system_notice" }>): boolean {
@@ -874,16 +1284,70 @@ export function formatStructuredValue(value: unknown): string {
   }
 }
 
-export function buildRenderKey(envelope: AgentChatEventEnvelope, sequence: number): string {
-  return `${envelope.sessionId}:${sequence}:${envelope.timestamp}`;
+function readIdentityField(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
 }
 
-export function buildTextRenderKey(event: Extract<AgentChatEvent, { type: "text" }>, envelope: AgentChatEventEnvelope, sequence: number): string {
-  const messageId = event.messageId?.trim();
+/**
+ * What names an event independently of where it sits in the loaded window.
+ *
+ * Precedence matches `sceneRowIdentity`: the provider's `messageId` (plus the
+ * text `phase`, which splits a Codex commentary from its answer under one id),
+ * then `turnId` + `logicalItemId`/`itemId`, then the event's own timestamp.
+ * The event type is part of every base, so a tool call and its approval that
+ * share an item id never compete for one key.
+ */
+function transcriptEventIdentityBase(envelope: AgentChatEventEnvelope): string {
+  const event = envelope.event as {
+    type: string;
+    messageId?: unknown;
+    phase?: unknown;
+    turnId?: unknown;
+    itemId?: unknown;
+    logicalItemId?: unknown;
+  };
+  const messageId = readIdentityField(event.messageId);
   if (messageId) {
-    return `${envelope.sessionId}:text:${messageId}:${sequence}`;
+    const phase = event.type === "text" ? readIdentityField(event.phase) : null;
+    return phase ? `${event.type}:m:${messageId}:${phase}` : `${event.type}:m:${messageId}`;
   }
-  return buildRenderKey(envelope, sequence);
+  const turnId = readIdentityField(event.turnId);
+  const itemId = readIdentityField(event.logicalItemId) ?? readIdentityField(event.itemId);
+  if (turnId && itemId) return `${event.type}:i:${turnId}:${itemId}`;
+  return `${event.type}@${envelope.timestamp}`;
+}
+
+/**
+ * The row key for the row an event opens (if it opens one).
+ *
+ * Built from the event's own identity, never its index in the loaded list: a
+ * prepended older page, a front trim of a background chat, a snapshot merge, or
+ * a late mid-list insert must leave every other row's key alone, because the
+ * virtualizer's measured heights, React's row identity, scroll memory, and the
+ * turn fold all hang off it. `n` counts earlier events in the window with the
+ * same base (`#n`, omitted for the first), which only moves when events with
+ * that exact base are added before it — two same-type events in the same
+ * millisecond split by a page boundary, not ordinary paging.
+ *
+ * Allocated once per event, eagerly, whether or not the event opens a row, so
+ * `buildTranscriptEventRowKeys` can replay it without a collapse pass.
+ */
+export function allocateTranscriptEventRowKey(
+  envelope: AgentChatEventEnvelope,
+  ordinals: Map<string, number>,
+): string {
+  const base = `${envelope.sessionId}:${transcriptEventIdentityBase(envelope)}`;
+  const ordinal = ordinals.get(base) ?? 0;
+  ordinals.set(base, ordinal + 1);
+  return ordinal === 0 ? base : `${base}#${ordinal}`;
+}
+
+/** Every event's candidate row key, exactly as a collapse pass over `events` assigns them. */
+export function buildTranscriptEventRowKeys(events: readonly AgentChatEventEnvelope[]): string[] {
+  const ordinals = new Map<string, number>();
+  return events.map((envelope) => allocateTranscriptEventRowKey(envelope, ordinals));
 }
 
 function getTextIdentity(event: Extract<AgentChatEvent, { type: "text" }>): string | null {
@@ -907,6 +1371,12 @@ function shouldMergeTextRows(
   previous: Extract<AgentChatEvent, { type: "text" }>,
   next: Extract<AgentChatEvent, { type: "text" }>,
 ): boolean {
+  // Codex labels narration (`commentary`) and the answer (`final_answer`), and
+  // ADE reuses one messageId across consecutive assistant text until a tool
+  // call flushes it — so the two can share an id. Keep them as separate rows
+  // when both are labelled and the labels differ; the turn fold picks the
+  // answer by that label. Unlabelled text (every other provider) is unchanged.
+  if (previous.phase && next.phase && previous.phase !== next.phase) return false;
   const previousIdentity = getTextIdentity(previous);
   const nextIdentity = getTextIdentity(next);
 
@@ -946,6 +1416,22 @@ function deriveTone(status: ChatWorkLogStatus, normalTone: ChatWorkLogEntryTone)
   return status === "failed" ? "error" : normalTone;
 }
 
+function toolResultWebResults(
+  event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>,
+): Pick<ChatWorkLogEntry, "results" | "resultsTotal"> {
+  if (event.type !== "tool_result" || !event.sources?.length) return {};
+  const web = event.sources.filter((source) => source.url);
+  if (!web.length) return {};
+  return {
+    results: web.slice(0, 8).map((source) => ({
+      url: source.url,
+      ...(source.title ? { title: source.title } : {}),
+      ...(source.snippet ? { snippet: source.snippet } : {}),
+    })),
+    resultsTotal: web.length,
+  };
+}
+
 function buildToolWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>,
   timestamp: string,
@@ -973,6 +1459,9 @@ function buildToolWorkLogEvent(
         : titleFallback && titleFallback !== resolvedToolName ? { detail: titleFallback } : {}),
       ...(event.type === "tool_call" ? { args: event.args } : {}),
       ...(event.type === "tool_result" ? { result: event.result } : {}),
+      // Provider web tools (Cursor, OpenCode, Claude WebSearch, …) carry their
+      // hits as `sources`; the row lists them like a native web search.
+      ...toolResultWebResults(event),
       ...(event.itemId ? { itemId: event.itemId } : {}),
       ...(event.turnId ? { turnId: event.turnId } : {}),
       ...(event.parentItemId ? { parentItemId: event.parentItemId } : {}),
@@ -1098,14 +1587,14 @@ function buildWebSearchWorkLogEvent(
 function buildHookErrorWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "system_notice" }>,
   timestamp: string,
-  sequence: number,
+  rowKey: string,
   summary: string,
 ): WorkLogRenderEvent {
   const detail = eventHasPayload(event.detail) ? formatStructuredValue(event.detail) : undefined;
   return {
     type: "work_log_entry",
     entry: withLocalhostUrls({
-      id: ["hook-error", event.turnId ?? "no-turn", sequence, summary].join("::"),
+      id: ["hook-error", event.turnId ?? "no-turn", rowKey, summary].join("::"),
       createdAt: timestamp,
       label: "Hook",
       detail: summary,
@@ -1200,7 +1689,7 @@ function findMatchingWorkLogEntryIndex(
 function appendWorkLogRow(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
-  sequence: number,
+  rowKey: string,
   nextEvent: WorkLogRenderEvent,
 ): void {
   const matchIndex = findMatchingWorkLogEntryIndex(rows, nextEvent.collapseKey);
@@ -1220,18 +1709,20 @@ function appendWorkLogRow(
   }
 
   rows.push({
-    key: buildRenderKey(envelope, sequence),
+    key: rowKey,
     timestamp: envelope.timestamp,
     event: nextEvent,
   });
 }
 
 // ── Subagent lifecycle rows ────────────────────────────────────────────────
-// A real subagent renders as exactly TWO rows: a spawn anchor (mutated in place
-// as progress arrives) and a result card at the settle position. Background
-// shell commands render NO cards — only a single compact finish chip. Keys are
-// identity-derived and stable so the virtualizer's measuredHeights survive
-// mutation and rebind (load-bearing for sticky-bottom).
+// A real subagent renders as exactly ONE row: a spawn anchor (mutated in place
+// as progress arrives) that the terminal event converts IN PLACE into the
+// result card, keeping its position and key. Only a result whose spawn is not
+// in the window appends a card where it arrives. Background shell commands
+// render NO cards — only a single compact job line. Keys are identity-derived
+// and stable so the virtualizer's measuredHeights survive mutation and rebind
+// (load-bearing for sticky-bottom).
 
 function subagentText(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -1241,36 +1732,51 @@ function meaningfulProgressSummary(summary: string | null): string | null {
   return summary && !SUBAGENT_PLACEHOLDER_SUMMARY.test(summary) ? summary : null;
 }
 
-function subagentSpawnKey(agentKey: string): string {
-  return `subagent-spawn:${agentKey}`;
-}
-
-function subagentResultKey(agentKey: string): string {
-  return `subagent-result:${agentKey}`;
+/**
+ * Key of the card a subagent lifecycle event lands on, or null for any other
+ * event (or an agent with no card, e.g. a background shell). A progress tick or
+ * a result updates a card that sits earlier in the rows, so the last row is not
+ * the event's row; event anchors use this to land on the card. The card's
+ * `agentKey` is the first id the agent was seen under, so both ids are tried.
+ */
+export function subagentCardKeyForLifecycleEvent(
+  rows: readonly ChatTranscriptRenderEnvelope[],
+  event: AgentChatEvent,
+): string | null {
+  if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") {
+    return null;
+  }
+  const ids = new Set([subagentText(event.agentId), subagentText(event.taskId)].filter(Boolean));
+  if (!ids.size) return null;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (row.event.type !== "subagent_spawn_anchor" && row.event.type !== "subagent_result_card") continue;
+    if (ids.has(row.event.agentKey)) return row.key;
+  }
+  return null;
 }
 
 function backgroundChipKey(agentKey: string): string {
   return `background-chip:${agentKey}`;
 }
 
-type SubagentRowPosition = "rowIndex" | "resultRowIndex";
-
-function resolveSubagentRowPosition(
+/** Position of the agent's card row, verified by its key; repairs a stale index. */
+function resolveSubagentCardRowIndex(
   rows: ChatTranscriptRenderEnvelope[],
   state: SubagentAnchorState,
-  position: SubagentRowPosition,
-  expectedKey: string,
 ): number | null {
-  const storedIndex = state[position];
+  const expectedKey = state.cardKey;
+  if (!expectedKey) return null;
+  const storedIndex = state.rowIndex;
   if (storedIndex != null && rows[storedIndex]?.key === expectedKey) return storedIndex;
 
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     if (rows[index]?.key !== expectedKey) continue;
-    state[position] = index;
+    state.rowIndex = index;
     return index;
   }
 
-  state[position] = null;
+  state.rowIndex = null;
   return null;
 }
 
@@ -1299,11 +1805,9 @@ function repairSubagentRowPositionsAfterSplice(
   removedIndex: number,
 ): void {
   for (const state of new Set(context.subagentAnchors.values())) {
-    for (const position of ["rowIndex", "resultRowIndex"] as const) {
-      const storedIndex = state[position];
-      if (storedIndex === removedIndex) state[position] = null;
-      else if (storedIndex != null && storedIndex > removedIndex) state[position] = storedIndex - 1;
-    }
+    const storedIndex = state.rowIndex;
+    if (storedIndex === removedIndex) state.rowIndex = null;
+    else if (storedIndex != null && storedIndex > removedIndex) state.rowIndex = storedIndex - 1;
   }
 }
 
@@ -1312,10 +1816,17 @@ function repairIndexedTranscriptRowsAfterSplice(
   removedIndex: number,
 ): void {
   repairSubagentRowPositionsAfterSplice(context, removedIndex);
+  const windowDetailsIndex = context.turnDetailsWindowRowIndex;
+  if (windowDetailsIndex === removedIndex) context.turnDetailsWindowRowIndex = null;
+  else if (windowDetailsIndex != null && windowDetailsIndex > removedIndex) {
+    context.turnDetailsWindowRowIndex = windowDetailsIndex - 1;
+  }
+  const taskListIndex = context.taskListRowIndex;
+  if (taskListIndex === removedIndex) context.taskListRowIndex = null;
+  else if (taskListIndex != null && taskListIndex > removedIndex) context.taskListRowIndex = taskListIndex - 1;
   for (const rowIndexes of [
     context.userMessageRowIndexBySteer,
-    context.diagnosticsRowIndexByTurn,
-    context.recoveryRowIndexByTurn,
+    context.turnDetailsRowIndexByTurn,
     context.stalledRowIndexByTurn,
     context.adeCardRowIndexById,
     context.backgroundJobRowIndexByKey,
@@ -1548,16 +2059,33 @@ function backgroundJobStatusFromScheduledWork(
   }
 }
 
-// Best-effort parent label from the anchors map — the parent's description or
-// agentType. Null when the parent isn't (yet) in the map; renders nothing.
+// Best-effort parent label from the anchors map — the parent's card name
+// (`deriveSubagentCardName`). Null when the parent isn't (yet) in the map.
 function resolveParentLabel(
   state: SubagentAnchorState,
   anchors: Map<string, SubagentAnchorState>,
 ): string | null {
   if (!state.parentAgentId) return null;
   const parent = anchors.get(state.parentAgentId);
-  const label = parent?.description?.trim() || parent?.agentType?.trim() || null;
-  return label;
+  if (!parent) return null;
+  return deriveSubagentCardName({
+    description: subagentTitleDescription(parent),
+    label: parent.label,
+    agentType: parent.agentType,
+  });
+}
+
+/**
+ * The description a card is titled from. The spawn's own description when the
+ * window holds the `subagent_started`; otherwise (its start sits in an older,
+ * unloaded page) a label or agent type names the agent better than a progress
+ * description, which on Claude is an activity line. Only with neither does the
+ * longest description stand in.
+ */
+function subagentTitleDescription(state: SubagentAnchorState): string | null {
+  if (state.title) return state.title;
+  if (state.label || state.agentType) return null;
+  return state.description;
 }
 
 function spawnAnchorEvent(
@@ -1565,23 +2093,23 @@ function spawnAnchorEvent(
   anchors?: Map<string, SubagentAnchorState>,
 ): SubagentSpawnAnchorRenderEvent {
   // agentKey mirrors the stable renderKeyBase so the jump affordances derive the
-  // same row keys the collapse pass assigned (see subagentSpawnKey/subagentResultKey).
+  // same row keys the collapse pass assigned (see subagentCardRowKeyCandidates).
   return {
     type: "subagent_spawn_anchor",
     agentKey: state.renderKeyBase,
-    description: state.description ?? "Subagent task",
+    description: subagentTitleDescription(state) ?? "Subagent task",
     agentType: state.agentType,
+    provider: state.provider,
+    label: state.label,
     background: state.background,
-    status: state.status,
+    status: "running",
     statusLine: state.statusLine,
     lastToolName: state.lastToolName,
     toolCount: state.toolCount,
     startedAt: state.startedAt,
-    endedAt: state.endedAt,
     childSessionId: state.childSessionId,
     taskId: state.taskId,
     spawnKind: state.spawnKind,
-    resultSummary: state.resultSummary,
     parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
   };
 }
@@ -1604,9 +2132,13 @@ function enrichSubagentStateFromEvent(
     description?: unknown;
     command?: unknown;
     spawnKind?: unknown;
+    provider?: unknown;
   };
   state.description = longerSubagentText(state.description, subagentText(record.description));
+  if (event.type === "subagent_started") state.title = nextSubagentTitle(state.title, subagentText(record.description));
+  if (!state.label) state.label = subagentText(event.label);
   state.agentType = preferredSubagentAgentType(state.agentType, subagentText(event.agentType));
+  state.provider = subagentText(record.provider) ?? state.provider;
   state.taskType = subagentText(event.taskType) ?? state.taskType;
   state.command = longerSubagentText(state.command, subagentText(record.command));
   if (record.background === true) state.background = true;
@@ -1626,6 +2158,21 @@ function enrichSubagentStateFromEvent(
   if (parentAgentId) state.parentAgentId = parentAgentId;
 }
 
+/**
+ * The card title comes from `subagent_started` only, never a progress frame:
+ * Claude's progress `description` is the current activity ("Running …",
+ * "Reading <path>"), which the longest-description rule used to promote to the
+ * title. A repeated start (a late enriched snapshot) replaces the title only
+ * when it names the same task more fully ("Find" -> "Find update modal
+ * component") or the current title is a placeholder ("Background work"); a
+ * re-emitted start that carries an activity line is ignored.
+ */
+function nextSubagentTitle(current: string | null, incoming: string | null): string | null {
+  if (!incoming) return current;
+  if (!current || isGenericSubagentName(current)) return incoming;
+  return incoming.length > current.length && incoming.startsWith(current) ? incoming : current;
+}
+
 function classificationInput(state: SubagentAnchorState) {
   return {
     taskType: state.taskType,
@@ -1640,10 +2187,10 @@ function classificationInput(state: SubagentAnchorState) {
  * was consumed (caller should stop). Mutates rows and context in place.
  *
  * INVARIANT: splices go through `repairIndexedTranscriptRowsAfterSplice`.
- * The stale background-job-line drop is one; dropping a spawn card once the
- * result card exists is the other. Remaining card rows are pushed at the tail
- * or replaced by their stored index, and every replacement verifies the stable
- * key and repairs a stale position before mutating.
+ * The stale background-job-line drop is the only splice here: an agent's card
+ * is pushed once at the tail and every later event (progress, the result, a
+ * richer re-emitted result) replaces it by its stored index, after verifying
+ * the stable key and repairing a stale position.
  */
 function handleSubagentLifecycleEvent(
   rows: ChatTranscriptRenderEnvelope[],
@@ -1677,10 +2224,13 @@ function handleSubagentLifecycleEvent(
       agentKey,
       renderKeyBase: agentKey,
       rowIndex: null,
-      resultRowIndex: null,
+      cardKey: null,
       backgroundLineOpened: false,
       description: null,
+      title: null,
+      label: null,
       agentType: null,
+      provider: null,
       taskType: null,
       command: null,
       background: false,
@@ -1753,18 +2303,38 @@ function handleSubagentLifecycleEvent(
       }
       return true;
     }
+    if (event.type === "subagent_started" && event.resumed === true) {
+      // A tracked CLI child can be resumed after its earlier result settled
+      // the card. Reuse the same anchor and row key, but clear run-specific
+      // state so the new invocation reads as running on every client.
+      state.status = "running";
+      state.startedAt = timestamp;
+      state.endedAt = null;
+      state.progressSummary = null;
+      state.statusLine = null;
+      state.lastToolName = null;
+      state.toolCount = null;
+      state.resultSummary = null;
+      state.error = null;
+      state.totalTokens = null;
+      state.toolUseCount = null;
+      state.worktreeBranch = null;
+      state.worktreePath = null;
+    }
     // A settled agent keeps its result card only. A late progress tick must not
-    // mint a second spawn row after the start card was dropped.
+    // turn the settled card back into a running one, nor mint a second card.
     if (state.status !== "running" || state.endedAt != null) {
       return true;
     }
-    if (state.rowIndex == null) {
+    if (state.cardKey == null) {
       // First lifecycle → push the spawn anchor and record its index.
       state.status = "running";
       state.statusLine = computeStatusLine(state);
+      const cardKey = subagentSpawnKey(state.renderKeyBase);
+      state.cardKey = cardKey;
       state.rowIndex = rows.length;
       rows.push({
-        key: subagentSpawnKey(state.renderKeyBase),
+        key: cardKey,
         timestamp,
         event: spawnAnchorEvent(state, anchors),
       });
@@ -1780,16 +2350,13 @@ function handleSubagentLifecycleEvent(
     state.statusLine = computeStatusLine(state);
 
     // Mutate the anchor row IN PLACE — a NEW object with the SAME key.
-    if (state.rowIndex != null) {
-      const expectedKey = subagentSpawnKey(state.renderKeyBase);
-      const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
-      if (rowIndex != null) {
-        replaceRowPreservingVoiceCall(rows, rowIndex, {
-          key: expectedKey,
-          timestamp,
-          event: spawnAnchorEvent(state, anchors),
-        });
-      }
+    const rowIndex = resolveSubagentCardRowIndex(rows, state);
+    if (rowIndex != null) {
+      replaceRowPreservingVoiceCall(rows, rowIndex, {
+        key: state.cardKey!,
+        timestamp,
+        event: spawnAnchorEvent(state, anchors),
+      });
     }
     return true;
   }
@@ -1814,7 +2381,17 @@ function handleSubagentLifecycleEvent(
     return true;
   }
 
-  // Real subagent terminal: drop the spawn card and keep one result card.
+  // A restart or takeover sweep ("system" / "foreign-brain") only ever closes
+  // rows it believes are still open. When the agent already settled — its
+  // completed, failed, or stopped card is in the stream — that stop is a stale
+  // verdict: it must not turn a finished card into "stopped · the ADE brain
+  // restarted", nor stretch the card's duration to the sweep's clock.
+  const sweepStop = terminalStatus === "stopped"
+    && event.type === "subagent_result"
+    && (event.stopSource === "system" || event.stopSource === "foreign-brain");
+  if (sweepStop && state.endedAt != null && state.status !== "running") return true;
+
+  // Real subagent terminal: the agent's card settles in place.
   state.status = terminalStatus;
   if (event.type === "subagent_result") {
     if (typeof event.totalTokens === "number") state.totalTokens = event.totalTokens;
@@ -1827,36 +2404,20 @@ function handleSubagentLifecycleEvent(
   state.endedAt = timestamp;
   // Read BEFORE the merge: once the stop summary lands, "had a report already"
   // and "only has the stop sentence" are indistinguishable.
-  const resultLandedBeforeStop = Boolean(subagentText(state.resultSummary));
+  const resultLandedBeforeStop = !isSubagentPlaceholderSummary(state.resultSummary);
   state.resultSummary = preferSubagentSummary(state.resultSummary, incomingSummary);
   if (terminalStatus === "failed") {
     state.error = state.resultSummary ?? state.error;
   }
 
-  // The spawn row is dropped once the result card exists, and a remove-plus-push
-  // nets to zero rows — so `appendCollapsedEventWithVoiceStamp`, which only
-  // stamps rows the event APPENDED, sees no new row and stamps nothing. The
-  // result row therefore has to claim its voice call here: the one the dropped
-  // spawn row carried, or failing that the one this terminal event itself was
-  // spoken under (a subagent started before the call and settling inside it).
-  // Leaving it unstamped would strand an untagged row inside a tagged run and
-  // split one call into two `voice-call:${callId}` cards with the same key.
-  let droppedSpawnVoiceCallId: string | undefined;
-  if (state.rowIndex != null) {
-    const expectedKey = subagentSpawnKey(state.renderKeyBase);
-    const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
-    if (rowIndex != null) {
-      droppedSpawnVoiceCallId = rows[rowIndex]?.voiceCallId;
-      removeCollapsedTranscriptRow(rows, context, rowIndex);
-    }
-    state.rowIndex = null;
-  }
-  const resultVoiceCallId = droppedSpawnVoiceCallId ?? eventVoiceCallId;
-
   const resultEvent: SubagentResultCardRenderEvent = {
     type: "subagent_result_card",
     agentKey: state.renderKeyBase,
-    description: state.description,
+    description: subagentTitleDescription(state),
+    agentType: state.agentType,
+    provider: state.provider,
+    background: state.background,
+    label: state.label,
     status: terminalStatus,
     summaryPreview: state.resultSummary,
     error: terminalStatus === "failed" ? state.error : null,
@@ -1880,23 +2441,33 @@ function handleSubagentLifecycleEvent(
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
   };
-  if (state.resultRowIndex == null) {
-    state.resultRowIndex = rows.length;
-    rows.push(resultVoiceCallId
-      ? { key: subagentResultKey(state.renderKeyBase), timestamp, event: resultEvent, voiceCallId: resultVoiceCallId }
-      : { key: subagentResultKey(state.renderKeyBase), timestamp, event: resultEvent });
-  } else {
-    const expectedKey = subagentResultKey(state.renderKeyBase);
-    const rowIndex = resolveSubagentRowPosition(rows, state, "resultRowIndex", expectedKey);
-    if (rowIndex != null) replaceRowPreservingVoiceCall(rows, rowIndex, { key: expectedKey, timestamp, event: resultEvent });
+  // Settle IN PLACE: the card row keeps its position and key (and the voice
+  // call it was stamped with), so a grid keeps its cards in order and React
+  // keeps the row mounted with its measured height. Late results — after the
+  // parent's `done`, even during a later turn — land here the same way.
+  const rowIndex = resolveSubagentCardRowIndex(rows, state);
+  if (rowIndex != null) {
+    replaceRowPreservingVoiceCall(rows, rowIndex, { key: state.cardKey!, timestamp, event: resultEvent });
+    return true;
   }
+  // No card in the window: the spawn sits in an unloaded older page (or the
+  // result is the agent's only lifecycle event). Append the card where the
+  // result arrives. The row claims the call this terminal event was spoken
+  // under: a splice above (a dropped job line) can net the append to zero new
+  // rows, and `appendCollapsedEventWithVoiceStamp` stamps only appended rows.
+  const cardKey = subagentResultKey(state.renderKeyBase);
+  state.cardKey = cardKey;
+  state.rowIndex = rows.length;
+  rows.push(eventVoiceCallId
+    ? { key: cardKey, timestamp, event: resultEvent, voiceCallId: eventVoiceCallId }
+    : { key: cardKey, timestamp, event: resultEvent });
   return true;
 }
 
 export function appendCollapsedChatTranscriptEvent(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
-  sequence: number,
+  rowKey: string,
   context?: CollapseTranscriptContext,
 ): void {
   const { event } = envelope;
@@ -1956,7 +2527,7 @@ export function appendCollapsedChatTranscriptEvent(
       && typeof wake.firedAt === "string"
     ) {
       rows.push({
-        key: `scheduled-wake:${wake.scheduleId}:${event.turnId ?? sequence}`,
+        key: `scheduled-wake:${wake.scheduleId}:${event.turnId ?? rowKey}`,
         timestamp: envelope.timestamp,
         event: {
           type: "scheduled_wake_divider",
@@ -1984,7 +2555,7 @@ export function appendCollapsedChatTranscriptEvent(
         : null;
       if (childSessionId && spawnKind && status) {
         rows.push({
-          key: `spawn-wake:${childSessionId}:${event.turnId ?? sequence}`,
+          key: `spawn-wake:${childSessionId}:${event.turnId ?? rowKey}`,
           timestamp: envelope.timestamp,
           event: {
             type: "spawn_wake_divider",
@@ -2027,7 +2598,12 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved") {
+  if (event.type === "pending_input_resolved") {
+    context?.resolvedInputItemIds.add(event.itemId);
+    return;
+  }
+
+  if (event.type === "step_boundary" || event.type === "activity") {
     return;
   }
 
@@ -2039,32 +2615,24 @@ export function appendCollapsedChatTranscriptEvent(
     event.type === "tokens"
     || event.type === "codex_token_usage"
     || event.type === "codex_moderation_metadata"
+    // Data-only citations: Sources derives from them; they draw no row.
+    || event.type === "sources"
   ) {
     return;
   }
 
   if (event.type === "turn_diagnostics") {
-    const turnKey = event.turnId?.trim() || "__session_startup__";
-    const existingIndex = context?.diagnosticsRowIndexByTurn.get(turnKey);
-    if (existingIndex != null && rows[existingIndex]?.event.type === "turn_diagnostics") {
-      rows[existingIndex] = {
-        ...rows[existingIndex]!,
-        timestamp: envelope.timestamp,
-        event,
-      };
-      return;
-    }
-    const rowIndex = rows.length;
-    rows.push({
-      key: `turn-diagnostics:${turnKey}`,
-      timestamp: envelope.timestamp,
-      event,
+    upsertTurnDetailsRow(rows, envelope, rowKey, context, event.turnId?.trim() || null, (details) => {
+      const source = event.turnId?.trim() || "__session_startup__";
+      const diagnostics = details.diagnostics.some((entry) => entry.source === source)
+        ? details.diagnostics.map((entry) => (entry.source === source ? { source, event } : entry))
+        : [...details.diagnostics, { source, event }];
+      return { ...details, diagnostics };
     });
-    context?.diagnosticsRowIndexByTurn.set(turnKey, rowIndex);
     return;
   }
 
-  if (event.type === "turn_recovery") {
+  if (event.type === "turn_recovery" || event.type === "codex_turn_recovery") {
     const turnKey = event.turnId.trim();
     if (event.state === "recovered" && context) {
       const stalledIndex = context.stalledRowIndexByTurn.get(turnKey);
@@ -2072,70 +2640,20 @@ export function appendCollapsedChatTranscriptEvent(
         removeCollapsedTranscriptRow(rows, context, stalledIndex);
       }
     }
-    const existingIndex = context?.recoveryRowIndexByTurn.get(turnKey);
-    if (
-      existingIndex != null
-      && (
-        rows[existingIndex]?.event.type === "turn_recovery"
-        || rows[existingIndex]?.event.type === "codex_turn_recovery"
-      )
-    ) {
-      rows[existingIndex] = {
-        ...rows[existingIndex]!,
-        timestamp: envelope.timestamp,
-        event,
-      };
-      return;
-    }
-    const rowIndex = rows.length;
-    rows.push({
-      key: `turn-recovery:${turnKey}`,
-      timestamp: envelope.timestamp,
-      event,
-    });
-    context?.recoveryRowIndexByTurn.set(turnKey, rowIndex);
-    return;
-  }
-
-  if (event.type === "codex_turn_recovery") {
-    const turnKey = event.turnId.trim();
-    if (event.state === "recovered" && context) {
-      const stalledIndex = context.stalledRowIndexByTurn.get(turnKey);
-      if (stalledIndex != null && rows[stalledIndex]?.event.type === "codex_turn_stalled") {
-        removeCollapsedTranscriptRow(rows, context, stalledIndex);
-      }
-    }
-    const existingIndex = context?.recoveryRowIndexByTurn.get(turnKey);
-    if (existingIndex != null && rows[existingIndex]?.event.type === "turn_recovery") {
+    upsertTurnDetailsRow(rows, envelope, rowKey, context, turnKey || null, (details) => (
       // Provider-neutral receipts are canonical when a legacy alias arrives too.
-      return;
-    }
-    if (existingIndex != null && rows[existingIndex]?.event.type === "codex_turn_recovery") {
-      rows[existingIndex] = {
-        ...rows[existingIndex]!,
-        timestamp: envelope.timestamp,
-        event,
-      };
-      return;
-    }
-    const rowIndex = rows.length;
-    rows.push({
-      key: `codex-turn-recovery:${turnKey}`,
-      timestamp: envelope.timestamp,
-      event,
-    });
-    context?.recoveryRowIndexByTurn.set(turnKey, rowIndex);
+      event.type === "codex_turn_recovery" && details.recovery?.type === "turn_recovery"
+        ? details
+        : { ...details, recovery: event }
+    ));
     return;
   }
 
   if (event.type === "codex_turn_stalled") {
     const turnKey = event.turnId.trim();
-    const recoveryIndex = context?.recoveryRowIndexByTurn.get(turnKey);
-    const recoveryEvent = recoveryIndex != null ? rows[recoveryIndex]?.event : null;
-    if (
-      (recoveryEvent?.type === "codex_turn_recovery" || recoveryEvent?.type === "turn_recovery")
-      && recoveryEvent.state === "recovered"
-    ) {
+    const detailsIndex = context?.turnDetailsRowIndexByTurn.get(turnKey);
+    const detailsEvent = detailsIndex != null ? rows[detailsIndex]?.event : null;
+    if (detailsEvent?.type === "turn_details" && detailsEvent.recovery?.state === "recovered") {
       return;
     }
     const existingIndex = context?.stalledRowIndexByTurn.get(turnKey);
@@ -2187,7 +2705,7 @@ export function appendCollapsedChatTranscriptEvent(
     appendCollapsedChatTranscriptEvent(
       rows,
       { ...envelope, event: legacyStall },
-      sequence,
+      rowKey,
       context,
     );
     return;
@@ -2243,8 +2761,8 @@ export function appendCollapsedChatTranscriptEvent(
       appendWorkLogRow(
         rows,
         envelope,
-        sequence,
-        buildHookErrorWorkLogEvent(event, envelope.timestamp, sequence, preToolUseHookError),
+        rowKey,
+        buildHookErrorWorkLogEvent(event, envelope.timestamp, rowKey, preToolUseHookError),
       );
       return;
     }
@@ -2324,6 +2842,9 @@ export function appendCollapsedChatTranscriptEvent(
           ...(nextTurn && !previous.event.turnId ? { turnId: nextTurn } : {}),
           ...(nextItem && !previous.event.itemId ? { itemId: nextItem } : {}),
           ...(event.messageId && !previous.event.messageId ? { messageId: event.messageId } : {}),
+          // The phase label may ride only on a later fragment; the merged row
+          // is the answer (or narration) as a whole.
+          ...(event.phase && !previous.event.phase ? { phase: event.phase } : {}),
         },
       };
       return;
@@ -2353,18 +2874,14 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
-  if (event.type === "todo_update") {
-    const nextTurn = event.turnId ?? null;
-    const snapshotKey = todoSnapshotKey(nextTurn);
-    const displayItems = changedTodoItems(context?.latestTodoItemsByTurn.get(snapshotKey), event.items);
-    context?.latestTodoItemsByTurn.set(snapshotKey, event.items);
-    if (nextTurn !== null && foldTodoUpdateIntoExistingPlan(rows, nextTurn, event.items)) return;
-    if (!displayItems.length) return;
-    rows.push({
-      key: buildRenderKey(envelope, sequence),
-      timestamp: envelope.timestamp,
-      event: displayItems.length === event.items.length ? event : { ...event, items: displayItems },
-    });
+  // Every plan/todo update feeds the chat's one task-list row; none renders a
+  // row of its own. Only Codex plan-mode proposals (no steps, streamed text)
+  // fall through to the plan card below.
+  if ((event.type === "todo_update" || event.type === "plan") && isChatTaskListEvent(event)) {
+    if (event.type === "todo_update") {
+      context?.latestTodoItemsByTurn.set(todoSnapshotKey(event.turnId ?? null), event.items);
+    }
+    upsertTaskListRow(rows, envelope, event, context);
     return;
   }
 
@@ -2385,10 +2902,8 @@ export function appendCollapsedChatTranscriptEvent(
           timestamp: envelope.timestamp,
           event: merged,
         };
-        dropTodoRowsCoveredByPlan(rows, nextTurn, merged.steps, context);
         return;
       }
-      dropTodoRowsCoveredByPlan(rows, nextTurn, event.steps, context);
     }
   }
 
@@ -2541,22 +3056,22 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "tool_call" || event.type === "tool_result") {
-    appendWorkLogRow(rows, envelope, sequence, buildToolWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildToolWorkLogEvent(event, envelope.timestamp));
     return;
   }
 
   if (event.type === "command") {
-    appendWorkLogRow(rows, envelope, sequence, buildCommandWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildCommandWorkLogEvent(event, envelope.timestamp));
     return;
   }
 
   if (event.type === "file_change") {
-    appendWorkLogRow(rows, envelope, sequence, buildFileWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildFileWorkLogEvent(event, envelope.timestamp));
     return;
   }
 
   if (event.type === "web_search") {
-    appendWorkLogRow(rows, envelope, sequence, buildWebSearchWorkLogEvent(event, envelope.timestamp));
+    appendWorkLogRow(rows, envelope, rowKey, buildWebSearchWorkLogEvent(event, envelope.timestamp));
     return;
   }
 
@@ -2587,7 +3102,7 @@ export function appendCollapsedChatTranscriptEvent(
       }
     }
     rows.push({
-      key: `context-compact:${mergeKey}:${sequence}`,
+      key: `context-compact:${mergeKey}:${rowKey}`,
       timestamp: envelope.timestamp,
       event: toContextCompactChatEvent(incoming),
     });
@@ -2651,6 +3166,10 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
+  if (event.type === "done" && context) {
+    recordTurnEndSnapshot(rows, event, rowKey, context);
+  }
+
   const pendingResolution = event.type === "user_message" && event.steerId?.trim()
     ? context?.unmatchedUserMessageResolutionsBySteer.get(event.steerId.trim())
     : undefined;
@@ -2672,7 +3191,7 @@ export function appendCollapsedChatTranscriptEvent(
     : event as ChatTranscriptVisibleEvent;
   const rowIndex = rows.length;
   rows.push({
-    key: event.type === "text" ? buildTextRenderKey(event, envelope, sequence) : buildRenderKey(envelope, sequence),
+    key: rowKey,
     timestamp: envelope.timestamp,
     event: renderEvent,
   });
@@ -2682,6 +3201,18 @@ export function appendCollapsedChatTranscriptEvent(
     if (pendingResolution) {
       context?.unmatchedUserMessageResolutionsBySteer.delete(steerId);
     }
+  }
+  // A new window starts at a user message or at this turn's own end (a
+  // subagent's `done` inside the turn does not end it): later id-less
+  // diagnostics must not join the previous turn's details row.
+  if (
+    context
+    && (
+      (event.type === "user_message" && classifyTurnFoldEvent(event) === "boundary")
+      || (event.type === "done" && !context.foreignTurnEndKeys.has(rowKey))
+    )
+  ) {
+    context.turnDetailsWindowRowIndex = null;
   }
 }
 
@@ -2704,12 +3235,12 @@ export type CollapseTranscriptResult = {
 function appendCollapsedEventWithVoiceStamp(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
-  sequence: number,
-  context: CollapseTranscriptContext | undefined,
+  context: CollapseTranscriptContext,
 ): void {
   const callId = envelope.provenance?.voiceCallId?.trim() || null;
   const before = rows.length;
-  appendCollapsedChatTranscriptEvent(rows, envelope, sequence, context);
+  const rowKey = allocateTranscriptEventRowKey(envelope, context.eventRowKeyOrdinals);
+  appendCollapsedChatTranscriptEvent(rows, envelope, rowKey, context);
   for (let index = before; index < rows.length; index += 1) {
     const row = rows[index]!;
     rows[index] = stampSceneScopeKey(callId ? { ...row, voiceCallId: callId } : row);
@@ -2721,8 +3252,8 @@ export function collapseChatTranscriptEventsWithContext(
 ): CollapseTranscriptResult {
   const rows: ChatTranscriptRenderEnvelope[] = [];
   const context = createCollapseTranscriptContext();
-  for (let index = 0; index < events.length; index += 1) {
-    appendCollapsedEventWithVoiceStamp(rows, events[index]!, index, context);
+  for (const envelope of events) {
+    appendCollapsedEventWithVoiceStamp(rows, envelope, context);
   }
   return { rows, context };
 }
@@ -2735,8 +3266,8 @@ export function collapseChatTranscriptEvents(events: AgentChatEventEnvelope[]): 
  * Incremental collapse that carries its {@link CollapseTranscriptContext} so
  * appended progress/result events index back into `previousRows.slice()` and
  * mutate the subagent anchor row by its stored `rowIndex`. Falls back to a fresh
- * full recompute on divergence/shrink/todo (those rebuild the context). Retraction
- * splices repair the carried positions. The full-recompute path MUST produce identical output
+ * full recompute on divergence/shrink (those rebuild the context). Retraction
+ * splices and task-list moves repair the carried positions. The full-recompute path MUST produce identical output
  * to the incremental path (guarded by a parity test).
  */
 export function collapseChatTranscriptEventsIncrementalWithContext(
@@ -2756,13 +3287,9 @@ export function collapseChatTranscriptEventsIncrementalWithContext(
     return collapseChatTranscriptEventsWithContext(events);
   }
 
-  if (events.slice(previousEvents.length).some((envelope) => envelope.event.type === "todo_update")) {
-    return collapseChatTranscriptEventsWithContext(events);
-  }
-
   const rows = previousRows.slice();
   for (let index = previousEvents.length; index < events.length; index += 1) {
-    appendCollapsedEventWithVoiceStamp(rows, events[index]!, index, previousContext ?? undefined);
+    appendCollapsedEventWithVoiceStamp(rows, events[index]!, previousContext);
   }
   return { rows, context: previousContext };
 }
@@ -2976,8 +3503,7 @@ function isActivityBundleSourceEvent(event: ChatTranscriptRenderEvent): event is
   // and never reach here. `background_task` scheduled work is consumed by the
   // collapse pass into a `background_job_line`; other scheduled kinds keep
   // bundling.
-  return event.type === "todo_update"
-    || (event.type === "scheduled_work_update" && event.kind !== "background_task");
+  return event.type === "scheduled_work_update" && event.kind !== "background_task";
 }
 
 function activityBundleTurnId(event: ChatActivityBundleItem["event"]): string | null {
@@ -3022,6 +3548,7 @@ function mergeActivityPhaseRows(
         ...(first.event as RenderReasoningEvent),
         text: mergedText,
         startTimestamp: (first.event as RenderReasoningEvent).startTimestamp ?? first.timestamp,
+        latestStartTimestamp: (last.event as RenderReasoningEvent).startTimestamp ?? last.timestamp,
       },
     });
   };
@@ -3075,10 +3602,10 @@ export function collapseGroupedActivityPhaseRows(
 
 /**
  * Rejoin activity bundles that became adjacent after presentation-only rows
- * were removed. The common case is `todo_update → tool call → todo_update`:
- * tool-only work logs stay available to the turn-finished activity disclosure,
- * but are hidden as permanent transcript rows. Grouping before that visibility
- * filter used to leave two task-list cards separated by an invisible row.
+ * were removed. The common case is `scheduled work → tool call → scheduled
+ * work`: tool-only work logs stay available to the turn-finished activity
+ * disclosure, but are hidden as permanent transcript rows. Grouping before that
+ * visibility filter used to leave two bundles separated by an invisible row.
  *
  * Identity stays anchored to the first bundle so the virtualizer does not
  * remount the card as later task updates arrive. Missing/different turn ids are
@@ -3114,11 +3641,13 @@ export function mergeAdjacentActivityBundleRows(
 
 function groupChatTranscriptRowsCore(
   rows: ChatTranscriptRenderEnvelope[],
+  previousRows: readonly ChatTranscriptGroupedEnvelope[] = [],
 ): ChatTranscriptGroupedEnvelope[] {
-  return groupBackgroundJobLines(
-    groupStoppedSubagentResultCards(
-      collapseGroupedActivityPhaseRows(groupConsecutiveWorkLogRows(rows)),
-    ),
+  // Background job lines are grouped later, on the drawn rows
+  // (`groupBackgroundJobRuns`), so rows the timeline filters out cannot split a run.
+  return groupStoppedSubagentResultCards(
+    collapseGroupedActivityPhaseRows(groupConsecutiveWorkLogRows(rows)),
+    previousRows,
   );
 }
 
@@ -3203,209 +3732,106 @@ function foldVoiceCallRun(
   };
 }
 
+export {
+  applyChatTranscriptTurnFolds,
+  deriveChatTranscriptTurnFolds,
+  describeTurnFoldRow,
+  sameTurnFolds,
+} from "./chatTranscriptTurnFolds";
+
+export {
+  groupSubagentCardGrids,
+  meaningfulStoppedSummary,
+  subagentCardGridColumns,
+  subagentCardGridKeyByMemberKey,
+  subagentCardGridSpan,
+  subagentCardRowKeyCandidates,
+} from "./chatSubagentCardGrid";
+
 export function groupChatTranscriptRows(
   rows: ChatTranscriptRenderEnvelope[],
+  previousRows: readonly ChatTranscriptGroupedEnvelope[] = [],
 ): ChatTranscriptGroupedEnvelope[] {
-  return groupVoiceCallRows(rows, groupChatTranscriptRowsCore);
+  return groupVoiceCallRows(rows, (run) => groupChatTranscriptRowsCore(run, previousRows));
 }
 
 /**
- * Two background job lines fold together only when they are the same fact: the
- * same (already-normalized) label AND the same status. A finished job next to a
- * running one, or `npm install` next to `wait for desktop agents`, stays split.
+ * Rows that never mount a visible transcript item are dropped before grouping.
+ * Anchor lookup must use the same filter so stable row keys agree with the
+ * rendered transcript.
  */
-function backgroundJobGroupKey(event: BackgroundJobLineRenderEvent): string {
-  return `${event.status}|${event.label}`;
+export function filterVisibleTranscriptRows(
+  rows: readonly ChatTranscriptRenderEnvelope[],
+): ChatTranscriptRenderEnvelope[] {
+  return rows.filter(({ event }) => {
+    if (event.type === "context_usage" && event.origin !== undefined && event.origin !== "command") return false;
+    if (event.type === "model_handoff" && event.fromProvider === event.toProvider) return false;
+    return true;
+  });
 }
 
-// Fold a run of 2+ consecutive same-(label,status) `background_job_line` rows
-// into one `background_job_group` line carrying the count. Runs on the FINAL
-// array, after the collapse pass has mutated every job row into its last known
-// state, so a job that finished out of order has already left the run by the
-// time grouping sees it. The pre-group array is untouched, which keeps
-// `backgroundJobRowIndexByKey` valid for the next incremental append.
-function groupBackgroundJobLines(
-  rows: ChatTranscriptGroupedEnvelope[],
-): ChatTranscriptGroupedEnvelope[] {
-  const result: ChatTranscriptGroupedEnvelope[] = [];
-  let index = 0;
-  while (index < rows.length) {
-    const row = rows[index]!;
-    const event = row.event;
-    if (event.type !== "background_job_line") {
-      result.push(row);
-      index += 1;
-      continue;
+type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;
+
+
+/**
+ * Which `done` in a cancellation cluster is the parent turn's. The subagents'
+ * `done` events can arrive before or after it and can carry more tokens, so
+ * neither order nor usage decides. In order of evidence:
+ *   1. the id on the turn's user message;
+ *   2. the first id that the turn's own rows (after that user message) carry —
+ *      the parent's reasoning/text/tool rows come before any subagent's;
+ *   3. the id on a `status` row inside the cluster;
+ *   4. a `done` with no turn id (subagent terminals always carry theirs), whose
+ *      id is then inferred from the window;
+ *   5. the `done` with the most tokens (the old rule), when nothing else says.
+ */
+function resolveTerminusParent(
+  previousRows: readonly ChatTranscriptGroupedEnvelope[],
+  cluster: readonly ChatTranscriptGroupedEnvelope[],
+  doneEvents: readonly TerminusDoneEvent[],
+): { done: TerminusDoneEvent; turnId: string | null } {
+  const doneTurnId = (done: TerminusDoneEvent): string | null => done.turnId?.trim() || null;
+  const byTurnId = (turnId: string | null) => (
+    turnId ? doneEvents.find((done) => doneTurnId(done) === turnId) ?? null : null
+  );
+
+  // The turn's window: back to its user message or the previous turn end.
+  let start = previousRows.length;
+  let boundaryTurnId: string | null = null;
+  while (start > 0) {
+    const row = previousRows[start - 1]!;
+    if (row.event.type === "done") break;
+    if (classifyTurnFoldEvent(row.event) === "boundary") {
+      boundaryTurnId = groupedEnvelopeTurnId(row);
+      break;
     }
-
-    const groupKey = backgroundJobGroupKey(event);
-    let end = index;
-    while (end < rows.length) {
-      const candidate = rows[end]!.event;
-      if (candidate.type !== "background_job_line") break;
-      if (backgroundJobGroupKey(candidate) !== groupKey) break;
-      end += 1;
-    }
-    const run = rows.slice(index, end);
-    index = end;
-
-    if (run.length < 2) {
-      // A lone background job keeps its own line (no group of one).
-      result.push(run[0]!);
-      continue;
-    }
-
-    const events = run.map((entry) => entry.event as BackgroundJobLineRenderEvent);
-    const startedAts = events
-      .map((entry) => entry.startedAt)
-      .filter((value): value is string => Boolean(value))
-      .sort();
-    const lastInRun = run[run.length - 1]!;
-    const shared = {
-      count: run.length,
-      label: event.label,
-      agentKeys: events.map((entry) => entry.agentKey),
-      startedAt: startedAts[0] ?? null,
-    } as const;
-
-    let grouped: BackgroundJobGroupRenderEvent;
-    if (event.status === "running") {
-      grouped = { type: "background_job_group", ...shared, status: "running" };
-    } else {
-      const terminal = events as Array<Extract<BackgroundJobLineRenderEvent, { status: SubagentCardTerminalStatus }>>;
-      const exitCodes = terminal.map((entry) => entry.exitCode);
-      const uniformExitCode = exitCodes.every((code) => code === exitCodes[0]) ? exitCodes[0]! : null;
-      const durations = terminal
-        .map((entry) => entry.durationMs)
-        .filter((value): value is number => typeof value === "number");
-      grouped = {
-        type: "background_job_group",
-        ...shared,
-        status: event.status,
-        exitCode: uniformExitCode,
-        durationMs: durations.length ? Math.max(...durations) : null,
-      };
-    }
-
-    result.push({
-      key: `background-job-group:${run[0]!.key}`,
-      timestamp: lastInRun.timestamp,
-      event: grouped,
-    });
+    start -= 1;
   }
-  return result;
-}
+  const windowRows = previousRows.slice(start).map((row) => ({
+    role: classifyTurnFoldEvent(row.event),
+    turnId: groupedEnvelopeTurnId(row),
+  }));
 
-// Why a settled subagent card can be folded away, or null when it carries a
-// result the user has to read for itself.
-//
-// - `interrupt`: a `stopped` terminal status is only ever emitted when the user
-//   interrupts a turn (see stopActiveClaudeSubagents — it settles every live
-//   subagent with status "stopped" + summary "Interrupted"), so it is always an
-//   interrupt casualty carrying no individual summary.
-// - `usage_limit`: a `failed` card whose reason is the provider's limit. When
-//   the limit lands, EVERY live agent fails within the same second with the
-//   same sentence; N identical cards say nothing the count does not.
-//
-// Every other failure keeps its own card — a real error is exactly the thing
-// that must not be summarized into a number.
-function stoppedGroupCauseOf(
-  event: ChatTranscriptGroupedEnvelope["event"],
-): SubagentStoppedGroupCause | null {
-  if (event.type !== "subagent_result_card") return null;
-  if (event.status === "stopped") return "interrupt";
-  if (event.status !== "failed") return null;
-  const reason = event.error?.trim() || event.summaryPreview?.trim() || null;
-  // A failed subagent carries only the string its runtime handed back, so the
-  // usage-limit verdict has to come from the text — this is the surface
-  // `isUsageLimitFailureText` exists for. One field is enough: the card's
-  // `error` is either null or the same string as `summaryPreview` (see the
-  // builder above — `state.error = state.resultSummary ?? state.error`, and
-  // nothing else ever writes it), so the two can never disagree here.
-  return isUsageLimitFailureText(reason) ? "usage_limit" : null;
-}
-
-// The attribution a folded run inherits. A `failed` usage-limit casualty was
-// never anybody's interrupt, so it reports the provider rather than "unknown".
-function stoppedGroupStopSourceOf(
-  event: ChatTranscriptGroupedEnvelope["event"],
-): AgentChatStopSource {
-  if (event.type !== "subagent_result_card") return "unknown";
-  if (event.status === "failed") return "provider";
-  return event.stopSource ?? "unknown";
-}
-
-function stoppedGroupStopReasonOf(
-  event: ChatTranscriptGroupedEnvelope["event"],
-): string | null {
-  if (event.type !== "subagent_result_card") return null;
-  return event.stopReason?.trim() || null;
-}
-
-// Fold a run of 2+ consecutive same-cause result cards into one compact
-// `subagent_stopped_group` card. Cards with real summaries and a lone stopped
-// card stay individual, and a run that changes cause splits at the boundary.
-// The group key is derived from the first agent so it stays stable across the
-// virtualizer's re-renders.
-function groupStoppedSubagentResultCards(
-  rows: ChatTranscriptGroupedEnvelope[],
-): ChatTranscriptGroupedEnvelope[] {
-  const result: ChatTranscriptGroupedEnvelope[] = [];
-  let index = 0;
-  while (index < rows.length) {
-    const row = rows[index]!;
-    const cause = stoppedGroupCauseOf(row.event);
-    if (!cause) {
-      result.push(row);
-      index += 1;
-      continue;
-    }
-
-    // The attribution is part of the run identity, not just the cause: an
-    // ADE-restart casualty and a user interrupt must never share one headline.
-    const stopSource = stoppedGroupStopSourceOf(row.event);
-    const stopReason = stoppedGroupStopReasonOf(row.event);
-    let end = index;
-    while (
-      end < rows.length
-      && stoppedGroupCauseOf(rows[end]!.event) === cause
-      && stoppedGroupStopSourceOf(rows[end]!.event) === stopSource
-      && stoppedGroupStopReasonOf(rows[end]!.event) === stopReason
-    ) end += 1;
-    const run = rows.slice(index, end);
-    index = end;
-
-    if (run.length < 2) {
-      // A single lone casualty stays a normal result card (no group of one).
-      result.push(run[0]!);
-      continue;
-    }
-
-    const firstAgentKey = (run[0]!.event as SubagentResultCardRenderEvent).agentKey;
-    const lastInRun = run[run.length - 1]!;
-    const groupKey = `subagent-stopped-group:${cause}:${stopSource}:${stopReason ?? "unknown"}:${firstAgentKey}`;
-    const items: SubagentStoppedGroupItem[] = run.map((entry) => {
-      const event = entry.event as SubagentResultCardRenderEvent;
-      return {
-        agentKey: event.agentKey,
-        title: event.description?.trim() || "Subagent task",
-        lastActivity: event.lastActivity?.trim() || null,
-        resultLanded: event.resultLanded === true,
-      };
-    });
-    // Every row in the run shares the source (that is what closed the run), so
-    // the first row's reason is the run's reason.
-    result.push({
-      // The cause is part of the identity: an interrupt group and a usage-limit
-      // group can both start at the same agent (a stop that lands on the same
-      // run a limit already claimed), and sharing a key would make React reuse
-      // one card's state for the other.
-      key: groupKey,
-      timestamp: lastInRun.timestamp,
-      event: { type: "subagent_stopped_group", cause, stopSource, stopReason, count: run.length, items },
-    });
+  const fromBoundary = byTurnId(boundaryTurnId);
+  if (fromBoundary) return { done: fromBoundary, turnId: boundaryTurnId };
+  for (const row of windowRows) {
+    const match = byTurnId(row.turnId);
+    if (match) return { done: match, turnId: row.turnId };
   }
-  return result;
+  for (let index = cluster.length - 1; index >= 0; index -= 1) {
+    const event = cluster[index]!.event;
+    if (event.type !== "status") continue;
+    const match = byTurnId(event.turnId?.trim() || null);
+    if (match) return { done: match, turnId: doneTurnId(match) };
+  }
+  const idless = doneEvents.find((done) => !doneTurnId(done));
+  if (idless) return { done: idless, turnId: inferTurnEndTurnId(boundaryTurnId, windowRows) };
+  const heaviest = doneEvents.reduce((best, candidate) => {
+    const bestTokens = (best.usage?.inputTokens ?? 0) + (best.usage?.outputTokens ?? 0);
+    const candidateTokens = (candidate.usage?.inputTokens ?? 0) + (candidate.usage?.outputTokens ?? 0);
+    return candidateTokens > bestTokens ? candidate : best;
+  }, doneEvents[0]!);
+  return { done: heaviest, turnId: doneTurnId(heaviest) };
 }
 
 // Collapse consecutive interrupted/failed status + done rows (parent turn + N subagents)
@@ -3464,11 +3890,8 @@ function consolidateInterruptedTerminus(
       return any ? total : undefined;
     };
 
-    const base = doneEvents.reduce((best, candidate) => {
-      const bestTokens = (best.usage?.inputTokens ?? 0) + (best.usage?.outputTokens ?? 0);
-      const candidateTokens = (candidate.usage?.inputTokens ?? 0) + (candidate.usage?.outputTokens ?? 0);
-      return candidateTokens > bestTokens ? candidate : best;
-    }, doneEvents[0]!);
+    const parent = resolveTerminusParent(result, cluster, doneEvents);
+    const base = parent.done;
 
     const inputTokens = sumOptional(...doneEvents.map((event) => event.usage?.inputTokens ?? null));
     const outputTokens = sumOptional(...doneEvents.map((event) => event.usage?.outputTokens ?? null));
@@ -3484,6 +3907,9 @@ function consolidateInterruptedTerminus(
       timestamp: lastInCluster.timestamp,
       event: {
         ...base,
+        // The row is the PARENT turn's end: its id keys the turn fold, the
+        // usage-limit footer, proof, and the checkpoint diff.
+        turnId: parent.turnId ?? base.turnId,
         status,
         usage: {
           inputTokens,
@@ -3609,3 +4035,7 @@ export function formatDoneTurnTokenLine(usage: TurnTokenUsage | null | undefined
   if (reasoningLabel) segments.push(`reasoning ${reasoningLabel}`);
   return segments.length > 0 ? segments.join(" · ") : null;
 }
+
+// ── Turn fold ───────────────────────────────────────────────────────────────
+// The rules live in `shared/chatTurnFold.ts`; this is the desktop adapter that
+// describes grouped rows in the fold's vocabulary and splices the fold rows in.

@@ -320,7 +320,7 @@ describe("isAllowedAdeAction", () => {
       "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
       "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
-      "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
+      "resolveSmartLinkPreview", "resolveSourceFavicons", "resolveUnprocessedMessage", "respondToInput",
       "restoreCancelledQueue", "rewindFiles", "saveTempAttachment", "sendMessage",
       "setClaudeOutputStyle", "setCodexGoal", "setCodexGoalStatus", "setParallelLaunchState",
       "setScheduledWorkPaused", "steer", "stopTask", "suggestLaneNameFromPrompt",

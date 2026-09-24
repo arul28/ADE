@@ -827,13 +827,17 @@ struct WorkChatSessionView: View {
       timeline,
       provider: summaryProvider.isEmpty ? session.providerFallback : summaryProvider
     )
+    let expandedTurnIds = Set(cardExpansion.expandedIds.compactMap { id -> String? in
+      id.hasPrefix("turn-fold:") ? String(id.dropFirst("turn-fold:".count)) : nil
+    })
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: presentedTimeline,
       visibleCount: visibleTimelineCount,
       chatSummary: chatSummaryContext,
       transcript: transcript,
       assistantPreviewCache: assistantPreviewCache,
-      streamingAssistantMessageId: streamingAssistantMessageId
+      streamingAssistantMessageId: streamingAssistantMessageId,
+      expandedTurnIds: expandedTurnIds
     )
     let timelineDelta = nextPresentation.timelineCount - timelinePresentation.timelineCount
     let prependedHistory = (
@@ -854,7 +858,8 @@ struct WorkChatSessionView: View {
         chatSummary: chatSummaryContext,
         transcript: transcript,
         assistantPreviewCache: assistantPreviewCache,
-        streamingAssistantMessageId: streamingAssistantMessageId
+        streamingAssistantMessageId: streamingAssistantMessageId,
+        expandedTurnIds: expandedTurnIds
       )
     }
     guard nextPresentation != timelinePresentation else { return }
@@ -1689,6 +1694,7 @@ struct WorkChatSessionView: View {
         // A card finished opening or closing. The latch re-reads where the
         // reader ended up; it never moves them on its own.
         .onChange(of: cardExpansionRenderSignature) { _, _ in
+          refreshTimelinePresentation()
           transcriptScroller.noteDisclosureSettled()
         }
   }
@@ -2192,9 +2198,11 @@ private func makeWorkTimelinePresentation(
   chatSummary: WorkChatSummaryRenderContext,
   transcript: [WorkChatEnvelope],
   assistantPreviewCache: WorkAssistantPreviewCache,
-  streamingAssistantMessageId: String?
+  streamingAssistantMessageId: String?,
+  expandedTurnIds: Set<String>
 ) -> WorkTimelinePresentation {
-  let rawVisibleEntries = visibleWorkTimelineEntries(from: timeline, visibleCount: visibleCount)
+  let foldedTimeline = workApplyingTurnFolds(timeline, expandedTurnIds: expandedTurnIds)
+  let rawVisibleEntries = visibleWorkTimelineEntries(from: foldedTimeline, visibleCount: visibleCount)
   let visibleEntriesWithSeparators = injectWorkTurnSeparators(
     into: rawVisibleEntries,
     provider: chatSummary.provider,
@@ -2209,20 +2217,20 @@ private func makeWorkTimelinePresentation(
   let renderEntries = workTimelineRenderEntries(
     from: visibleEntries,
     streamingAssistantMessageId: streamingAssistantMessageId,
-    splitAssistantMessageId: workLatestAssistantMessageId(in: timeline)
+    splitAssistantMessageId: workLatestAssistantMessageId(in: foldedTimeline)
   )
-  let hiddenCount = max(timeline.count - rawVisibleEntries.count, 0)
+  let hiddenCount = max(foldedTimeline.count - rawVisibleEntries.count, 0)
   return WorkTimelinePresentation(
     visibleEntries: visibleEntries,
     renderEntries: renderEntries,
-    timelineCount: timeline.count,
-    timelineFirstId: timeline.first?.id,
-    timelineLastId: timeline.last?.id,
+    timelineCount: foldedTimeline.count,
+    timelineFirstId: foldedTimeline.first?.id,
+    timelineLastId: foldedTimeline.last?.id,
     hiddenCount: hiddenCount,
     signature: workTimelinePresentationSignature(
-      timelineCount: timeline.count,
-      timelineFirstId: timeline.first?.id,
-      timelineLastId: timeline.last?.id,
+      timelineCount: foldedTimeline.count,
+      timelineFirstId: foldedTimeline.first?.id,
+      timelineLastId: foldedTimeline.last?.id,
       visibleEntries: visibleEntries,
       renderEntries: renderEntries,
       hiddenCount: hiddenCount
@@ -2372,7 +2380,8 @@ private func workTimelineEntriesWithAssistantPreviews(
       id: entry.id,
       timestamp: entry.timestamp,
       rank: entry.rank,
-      payload: .message(message)
+      payload: .message(message),
+      turnId: entry.turnId
     )
   }
   cache.prune(keeping: visibleAssistantMessageIds)

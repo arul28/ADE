@@ -13,7 +13,7 @@ import {
   USAGE_BAR_TRACK_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
-  usagePressureColor,
+  usageHeadroomColor,
 } from "./usageDesign";
 import {
   type PaceVisual,
@@ -58,20 +58,18 @@ export function PacePill({ pace }: { pace: PaceVisual }) {
 
 export function UsagePaceBar({
   window: quotaWindow,
-  providerColor,
   nowMs,
   reducedMotion,
   showTrend = false,
 }: {
   window: UsageWindow;
-  providerColor: string;
   nowMs: number;
   reducedMotion: boolean;
   /** Adds the "trending to X% by reset" line beneath. Weekly/monthly only. */
   showTrend?: boolean;
 }) {
   const percent = displayPercent(quotaWindow, nowMs);
-  const fill = usagePressureColor(percent, providerColor);
+  const fill = usageHeadroomColor(100 - percent);
   const pace = paceVisual(quotaWindow.pacing);
   const expected = quotaWindow.pacing?.expectedPercent;
   const showTick = typeof expected === "number" && expected > 1 && expected < 99;

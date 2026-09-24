@@ -110,7 +110,7 @@ function findFailureHint(lines: string[]): string | null {
   return null;
 }
 
-function isTerminalChromeLine(raw: string): boolean {
+export function isTerminalChromeLine(raw: string): boolean {
   const line = raw.trim();
   if (!line) return true;
   if (/^[╭╮╯╰─│┌┐└┘├┤┬┴┼▌▐▛▜▘▝▄▀█▒░\s]+$/u.test(line)) return true;

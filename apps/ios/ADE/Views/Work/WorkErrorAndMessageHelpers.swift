@@ -121,6 +121,7 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
         ))
       }
     case .assistantText(let text, let turnId, let itemId):
+      let textPhase = envelope.textPhase
       let text = workStreamingTextByCollapsingRepeatedTailReplay(text)
       let metadata = turnId
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -130,9 +131,11 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
       if let itemIndex = assistantFragmentIndexByItemId(
         in: messages,
         turnId: turnId,
-        itemId: itemId
+        itemId: itemId,
+        textPhase: textPhase
       ) {
         messages[itemIndex].markdown = mergeWorkStreamingText(messages[itemIndex].markdown, text)
+        messages[itemIndex].textPhase = messages[itemIndex].textPhase ?? textPhase
         messages[itemIndex].assistantPreview = nil
         if messages[itemIndex].turnProvider == nil {
           messages[itemIndex].turnProvider = metadata?.provider
@@ -144,12 +147,15 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].role == "assistant",
          messages[lastIndex].turnId == turnId,
          messages[lastIndex].itemId == itemId,
+         assistantTextPhasesAllowMerge(messages[lastIndex].textPhase, textPhase),
          canMergeWithPreviousAssistant {
         messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
+        messages[lastIndex].textPhase = messages[lastIndex].textPhase ?? textPhase
         messages[lastIndex].assistantPreview = nil
       } else if let duplicateIndex = duplicateAssistantFragmentIndex(
         in: messages,
         turnId: turnId,
+        textPhase: textPhase,
         incoming: text
       ), let merged = mergedDuplicateAssistantText(
         existing: messages[duplicateIndex].markdown,
@@ -164,6 +170,7 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
           timestamp: envelope.timestamp,
           turnId: turnId,
           itemId: itemId,
+          textPhase: textPhase,
           turnProvider: metadata?.provider,
           turnModelId: metadata?.modelId
         ))
@@ -209,17 +216,25 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
 private func assistantFragmentIndexByItemId(
   in messages: [WorkChatMessage],
   turnId: String?,
-  itemId: String?
+  itemId: String?,
+  textPhase: String?
 ) -> Int? {
   let normalizedItemId = normalizedAssistantItemId(itemId)
   guard !normalizedItemId.isEmpty else { return nil }
   return messages.indices.reversed().first { index in
     let message = messages[index]
     guard message.role == "assistant",
-          normalizedAssistantItemId(message.itemId) == normalizedItemId
+          normalizedAssistantItemId(message.itemId) == normalizedItemId,
+          assistantTextPhasesAllowMerge(message.textPhase, textPhase)
     else { return false }
     return assistantTurnIdsAllowStableItemMerge(message.turnId, turnId)
   }
+}
+
+private func assistantTextPhasesAllowMerge(_ lhs: String?, _ rhs: String?) -> Bool {
+  let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return left.isEmpty || right.isEmpty || left == right
 }
 
 private func normalizedAssistantItemId(_ itemId: String?) -> String {
@@ -278,11 +293,13 @@ private func mergeWorkUserMessageMetadata(
 private func duplicateAssistantFragmentIndex(
   in messages: [WorkChatMessage],
   turnId: String?,
+  textPhase: String?,
   incoming: String
 ) -> Int? {
   messages.indices.reversed().first { index in
     let message = messages[index]
     guard message.role == "assistant" else { return false }
+    guard assistantTextPhasesAllowMerge(message.textPhase, textPhase) else { return false }
     guard assistantTurnIdsAreCompatible(message.turnId, turnId) else { return false }
     return mergedDuplicateAssistantText(existing: message.markdown, incoming: incoming) != nil
   }
@@ -836,7 +853,8 @@ func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], sessionId:
           turnId: entry.turnId,
           itemId: workAssistantMessageStableId(messageId: entry.messageId, itemId: entry.itemId)
         )
-        : .userMessage(text: entry.text, attachments: nil, turnId: entry.turnId, steerId: nil, deliveryState: nil, processed: nil)
+        : .userMessage(text: entry.text, attachments: nil, turnId: entry.turnId, steerId: nil, deliveryState: nil, processed: nil),
+      textPhase: nil
     )
   }
 }
@@ -866,12 +884,15 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       timestamp: entry.timestamp,
       sequence: entry.sequence,
       event: makeWorkChatEvent(from: entry.event),
+      textPhase: agentChatEventTextPhase(entry.event),
       subagentTaskType: entry.subagentTaskType,
+      subagentProvider: entry.subagentProvider,
       subagentCommand: entry.subagentCommand,
       subagentSpawnKind: entry.subagentSpawnKind,
       subagentParentAgentId: entry.subagentParentAgentId,
       subagentSpawnDepth: entry.subagentSpawnDepth,
       subagentResourceLinks: entry.subagentResourceLinks ?? [],
+      subagentResumed: entry.subagentResumed,
       apiErrorStatus: entry.apiErrorStatus,
       isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame,
       stopSource: entry.stopSource,
@@ -889,6 +910,11 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)
+}
+
+private func agentChatEventTextPhase(_ event: AgentChatEvent) -> String? {
+  guard case .text(_, _, _, _, let phase) = event else { return nil }
+  return phase
 }
 
 private func isSubagentTranscriptEnvelope(_ entry: AgentChatEventEnvelope) -> Bool {
@@ -922,7 +948,7 @@ private func workSubagentParentItemIds(from entries: [AgentChatEventEnvelope]) -
 private func workEventItemAndParentIds(_ event: AgentChatEvent) -> (itemId: String?, parentItemId: String?) {
   switch event {
   case .toolCall(_, _, let itemId, _, let parentItemId, _),
-       .toolResult(_, _, let itemId, _, let parentItemId, _, _):
+       .toolResult(_, _, let itemId, _, let parentItemId, _, _, _, _):
     return (normalizedWorkEventId(itemId), normalizedWorkEventId(parentItemId))
   case .command(_, _, _, let itemId, _, _, _, _, _),
        .fileChange(_, _, _, let itemId, _, _, _),
@@ -1503,6 +1529,7 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
     .assistantText(let existingText, let existingTurnId, let existingItemId),
     .assistantText(let incomingText, let incomingTurnId, let incomingItemId)
   ):
+    guard assistantTextPhasesAllowMerge(existing.textPhase, incoming.textPhase) else { return incoming }
     // Keep the earlier envelope's ordering key so a stable-key assistant message
     // doesn't jump to the latest fragment position when the transcript is sorted,
     // which would reorder the visible timeline around tool/status events.
@@ -1515,7 +1542,8 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
         text: mergeWorkStreamingText(existingText, incomingText),
         turnId: incomingTurnId ?? existingTurnId,
         itemId: incomingItemId ?? existingItemId
-      )
+      ),
+      textPhase: incoming.textPhase ?? existing.textPhase
     )
   default:
     return incoming
@@ -2328,7 +2356,7 @@ func workPendingInputSweepState(from transcript: [WorkChatEnvelope]) -> WorkPend
       approvals.removeValue(forKey: itemId)
       questions.removeValue(forKey: itemId)
       swept.remove(itemId)
-    case .toolResult(_, _, let itemId, _, _, _),
+    case .toolResult(_, _, let itemId, _, _, _, _, _),
          .command(_, _, _, _, let itemId, _, _, _),
          .fileChange(_, _, _, _, let itemId, _):
       // A provider approval shares its tool call's itemId, so the tool resolving
@@ -2437,13 +2465,21 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["text", turnId ?? "", text].joined(separator: "|")
   case .toolCall(let tool, let argsText, let itemId, let parentItemId, let turnId):
     return ["tool_call", turnId ?? "", itemId, parentItemId ?? "", tool, argsText].joined(separator: "|")
-  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status):
+  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status, _, _):
     return ["tool_result", turnId ?? "", itemId, parentItemId ?? "", tool, status.rawValue, resultText].joined(separator: "|")
+  case .sources(let refs, let turnId, let omitted):
+    let refsKey = refs.map { "\($0.kind):\($0.url ?? $0.path ?? "")" }.joined(separator: ",")
+    return ["sources", turnId ?? "", refsKey, String(omitted ?? 0)].joined(separator: "|")
   case .activity(let kind, let detail, let turnId):
     return ["activity", turnId ?? "", kind, detail ?? ""].joined(separator: "|")
   case .plan(let steps, let explanation, let turnId):
     let stepDigest = steps.map { "\($0.status):\($0.text)" }.joined(separator: "\n")
     return ["plan", turnId ?? "", explanation ?? "", stepDigest].joined(separator: "|")
+  case .planProposal(let text, let turnId):
+    return ["plan_proposal", turnId ?? "", text].joined(separator: "|")
+  case .taskListUpdate(let items, let turnId):
+    let digest = items.map { "\($0.id):\($0.status.rawValue):\($0.description):\($0.activeForm ?? ""):\($0.cancelled == true)" }.joined(separator: "\n")
+    return ["todo_update", turnId ?? "", digest].joined(separator: "|")
   case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
     return ["subagent_started", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description, background ? "1" : "0", label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
   case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
