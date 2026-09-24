@@ -216,8 +216,12 @@ func workHumanizedAgentType(_ value: String?) -> String? {
     "mcp": "MCP", "db": "DB", "json": "JSON", "url": "URL", "http": "HTTP",
     "sql": "SQL", "css": "CSS", "html": "HTML", "ai": "AI", "id": "ID",
   ]
-  return words.map { acronyms[$0.lowercased()] ?? ($0.prefix(1).uppercased() + $0.dropFirst().lowercased()) }
-    .joined(separator: " ")
+  return words.enumerated().map { index, word in
+    if let acronym = acronyms[word.lowercased()] { return acronym }
+    let lower = word.lowercased()
+    guard index == 0 else { return lower }
+    return lower.prefix(1).uppercased() + lower.dropFirst()
+  }.joined(separator: " ")
 }
 
 private func workCleanSubagentName(_ value: String) -> String {

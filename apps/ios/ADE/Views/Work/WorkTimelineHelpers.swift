@@ -2366,7 +2366,8 @@ func workApplyingTurnFolds(
         break
       }
     }
-    guard !foldable.isEmpty else { continue }
+    let hasVisibleWork = jobCount > 0 || toolCount > 0 || fileCount > 0 || !subagentIds.isEmpty
+    guard !foldable.isEmpty || hasVisibleWork else { continue }
 
     let answer = (entries[answerIndex].payload.asAssistantMessage)?.markdown
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2894,19 +2895,36 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
   result.reserveCapacity(entries.count)
   var cluster: [WorkTimelineEntry] = []
   var clusterTurnId: String?
+  // A subagent row is its own timeline boundary. It must not be swallowed into
+  // the activity bundle, and it must not split same-turn activity that the
+  // transcript interleaved around the spawn.
+  var heldBoundaries: [WorkTimelineEntry] = []
+
+  func isSubagentBoundary(_ entry: WorkTimelineEntry) -> Bool {
+    switch entry.payload {
+    case .subagent, .subagentStoppedGroup:
+      return true
+    default:
+      return false
+    }
+  }
 
   func flushCluster() {
     defer {
       cluster.removeAll(keepingCapacity: true)
       clusterTurnId = nil
+      heldBoundaries.removeAll(keepingCapacity: true)
     }
+    let boundaries = heldBoundaries
     guard cluster.count > 1 else {
       result.append(contentsOf: cluster)
+      result.append(contentsOf: boundaries)
       return
     }
     let cards = cluster.compactMap(workActivityCard(from:))
     guard cards.count == cluster.count, let anchor = cluster.first, let latest = cards.last else {
       result.append(contentsOf: cluster)
+      result.append(contentsOf: boundaries)
       return
     }
     let summaries = cards.map(workActivityCardSummary).filter { !$0.isEmpty }
@@ -2923,6 +2941,7 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
       bullets: Array(summaries.prefix(6)),
       metadata: []
     )
+    result.append(contentsOf: boundaries)
     result.append(WorkTimelineEntry(
       id: "activity-bundle:\(anchor.id)",
       timestamp: anchor.timestamp,
@@ -2942,6 +2961,8 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
         clusterTurnId = turnId
       }
       cluster.append(entry)
+    } else if isSubagentBoundary(entry) {
+      heldBoundaries.append(entry)
     } else {
       flushCluster()
       result.append(entry)
@@ -3323,7 +3344,7 @@ func buildWorkEventCards(
       title: taskList.label,
       icon: "checklist",
       tint: .accent,
-      timestamp: taskList.timestamp,
+      timestamp: transcript.map(\.timestamp).max() ?? taskList.timestamp,
       turnId: taskList.turnId,
       body: active?.activeLabel ?? active?.label,
       bullets: taskList.items.map(\.label),

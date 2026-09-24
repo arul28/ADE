@@ -1985,13 +1985,15 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     case .assistantText(_, let turnId, let itemId):
       let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       if !normalizedItemId.isEmpty {
-        return [
+        var parts = [
           sessionId,
           "assistant-text",
           turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
           normalizedItemId,
-          textPhase?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-        ].joined(separator: ":")
+        ]
+        let phase = textPhase?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !phase.isEmpty { parts.append(phase) }
+        return parts.joined(separator: ":")
       }
     default:
       break

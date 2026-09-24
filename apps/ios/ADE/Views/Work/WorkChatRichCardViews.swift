@@ -4314,9 +4314,12 @@ func workSubagentGridCellColumnSpan(
   trackCount: Int
 ) -> Int {
   guard rowCount > 0, columnsPerRow > 0, trackCount > 0 else { return 1 }
+  let cellSpan = max(1, trackCount / columnsPerRow)
   let remainder = rowCount % columnsPerRow
-  guard remainder > 0, index >= rowCount - remainder else { return 2 }
-  return trackCount / remainder
+  // A grid that is only a short row keeps one cell wide. A short final row
+  // after a full row stretches across the track.
+  guard remainder > 0, rowCount > columnsPerRow, index >= rowCount - remainder else { return cellSpan }
+  return max(1, trackCount / remainder)
 }
 
 private func workTrimmedSubagentProvider(_ value: String?) -> String? {

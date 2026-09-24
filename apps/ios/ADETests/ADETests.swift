@@ -16080,9 +16080,9 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
-    // The two activity updates are consecutive so they cluster into one bundle;
-    // the real subagent's spawn row is a hard timeline boundary that sits
-    // separately and is never folded into that bundle.
+    // A todo update is the chat's one task list, not an activity row. The cron
+    // stays its own activity card, and the subagent stays a spawn row — never
+    // folded into that activity.
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"Review mobile activity rows","status":"in_progress"}]}}
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"CI follow-up","turnId":"turn-1"}}
@@ -16095,30 +16095,23 @@ final class ADETests: XCTestCase {
       artifacts: [],
       localEchoMessages: []
     )
-    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
-      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+    let eventCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload else { return nil }
       return card
     }
+    let activityCards = eventCards.filter { $0.kind == "activity" || $0.kind == "activityBundle" }
     let subagentRows = snapshot.timeline.compactMap { entry -> WorkSubagentTimelineRow? in
       guard case .subagent(let row) = entry.payload else { return nil }
       return row
     }
 
-    XCTAssertEqual(activityBundles.count, 1)
     XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
     XCTAssertEqual(snapshot.subagentSnapshots.first?.description, "Inspect iOS transcript")
-    XCTAssertEqual(activityBundles.first?.title, "Activity")
-    XCTAssertTrue(activityBundles.first?.body?.contains("2 activity updates") == true)
-    XCTAssertTrue(activityBundles.first?.body?.contains("CI follow-up") == true)
-    // The subagent now lives in its own timeline row, NOT folded into the
-    // activity bundle body or its bullets.
-    XCTAssertFalse(activityBundles.first?.body?.contains("Inspect iOS transcript") == true)
-    XCTAssertEqual(Array(activityBundles.first?.bullets.prefix(2) ?? []), [
-      "Tasks · 0/1 complete",
-      "Cron scheduled",
-    ])
-    // A real subagent that started (but never sent progress/result) surfaces as
-    // exactly one dedicated spawn row — a hard timeline boundary, not swallowed.
+    XCTAssertEqual(snapshot.taskList?.items.map(\.label), ["Review mobile activity rows"])
+    XCTAssertEqual(eventCards.filter { $0.kind == "activityBundle" }.count, 0)
+    XCTAssertEqual(activityCards.count, 1)
+    XCTAssertTrue(activityCards.first?.body?.contains("CI follow-up") == true)
+    XCTAssertFalse(activityCards.contains { $0.body?.contains("Inspect iOS transcript") == true })
     XCTAssertEqual(subagentRows.count, 1)
     XCTAssertEqual(subagentRows.first?.kind, .spawn)
     XCTAssertEqual(subagentRows.first?.snapshot.description, "Inspect iOS transcript")
@@ -16139,16 +16132,18 @@ final class ADETests: XCTestCase {
       artifacts: [],
       localEchoMessages: []
     )
-    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
-      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+    let activityCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload, card.kind == "activity" || card.kind == "activityBundle" else { return nil }
       return card
     }
 
-    XCTAssertEqual(activityBundles.count, 2)
+    XCTAssertEqual(activityCards.count, 2)
     XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
-    XCTAssertTrue(activityBundles[0].body?.contains("First turn cron") == true)
-    XCTAssertFalse(activityBundles[0].body?.contains("First turn agent") == true)
-    XCTAssertTrue(activityBundles[1].body?.contains("Second turn cron") == true)
+    XCTAssertEqual(snapshot.taskList?.items.map(\.label), ["Second turn task"])
+    XCTAssertTrue(activityCards[0].body?.contains("First turn cron") == true)
+    XCTAssertFalse(activityCards[0].body?.contains("First turn agent") == true)
+    XCTAssertTrue(activityCards[1].body?.contains("Second turn cron") == true)
+    XCTAssertEqual(activityCards.map(\.turnId), ["turn-1", "turn-2"])
   }
 
   func testWorkTimelineOmitsPromptSuggestionsForClaudeButPreservesOtherProviders() {
@@ -16172,7 +16167,7 @@ final class ADETests: XCTestCase {
     let claudePresented = workPresentedTimelineEntries(snapshot.timeline, provider: "claude")
     let codexPresented = workPresentedTimelineEntries(snapshot.timeline, provider: "codex")
 
-    XCTAssertTrue(rawCards.contains { $0.kind == "activityBundle" })
+    XCTAssertTrue(rawCards.contains { $0.kind == "activity" })
     XCTAssertTrue(rawCards.contains { $0.kind == "promptSuggestion" })
     XCTAssertTrue(claudePresented.contains { entry in
       guard case .message(let message) = entry.payload else { return false }
@@ -23698,7 +23693,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(markers[0].turnId.hasPrefix("fallback-"))
     XCTAssertEqual(markers[0].workedDurationLabel, "2s")
     XCTAssertEqual(markers[1].turnId, "turn-without-start")
-    XCTAssertEqual(markers[1].workedDurationLabel, "0s")
+    XCTAssertEqual(markers[1].workedDurationLabel, "<1s")
   }
 
   func testWorkEventCardsHideLowSignalLifecycleNoise() {

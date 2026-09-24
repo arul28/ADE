@@ -23,7 +23,7 @@ private let workSourceLocaleMirrorPrefix = try! NSRegularExpression(
   options: [.caseInsensitive]
 )
 private let workSourceProseUrl = try! NSRegularExpression(
-  pattern: #"https?://(?:[^\s<>()[\]{}"'`|\\^]|\([^\s()<>]*\))+"#,
+  pattern: "https?://[^\\s<>\"'`]+",
   options: [.caseInsensitive]
 )
 
@@ -125,6 +125,9 @@ private func workLinkedSourceUrls(in prose: String) -> Set<String> {
     guard let swiftRange = Range(match.range, in: prose) else { continue }
     var candidate = String(prose[swiftRange])
     while let last = candidate.last, ".,;:!?*_~".contains(last) { candidate.removeLast() }
+    let openParens = candidate.filter { $0 == "(" }.count
+    let closeParens = candidate.filter { $0 == ")" }.count
+    if closeParens > openParens, candidate.hasSuffix(")") { candidate.removeLast() }
     if let normalized = workNormalizeSourceUrl(candidate) { result.insert(normalized) }
   }
   return result
@@ -208,8 +211,8 @@ func buildWorkChatSourceList(from transcript: [WorkChatEnvelope]) -> WorkChatSou
     }
   }
 
-  for (turnId, prose) in proseByMessage {
-    guard let sourceKeys = sourceKeysByTurn[turnId] else { continue }
+  for (_, prose) in proseByMessage {
+    guard let turnId = prose.turnId, let sourceKeys = sourceKeysByTurn[turnId] else { continue }
     for linkedKey in workLinkedSourceUrls(in: prose.text) where sourceKeys.contains(linkedKey) {
       guard let index = indexByKey[linkedKey] else { continue }
       refs[index].cited = true
