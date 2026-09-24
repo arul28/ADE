@@ -318,6 +318,20 @@ self-resume signal. Either:
 - Stop the turn cleanly, write the state file with `status: running`, and tell
   the user exactly when to re-ping `/ship` for the next iteration.
 
+**No native wake in this harness:** Claude Code has `ScheduleWakeup`. Codex in
+a terminal can `sleep`. Any other ADE Work chat has no scheduler of its own
+that starts a later turn. Before ending the turn while CI or review is still
+in flight, arm ADE's scheduler:
+
+```
+ade chat scheduled-work create --in 12m --prompt "/ship"
+```
+
+Use `--in 4m` just after a push, `--in 12m` while CI or review is running, and
+`--in 30m` when only a person is left. Pass the same `/ship` arguments this
+run was given. Ending the turn without that command, or without an in-turn
+sleep, leaves the lane idle.
+
 ---
 
 ## The loop (summary — full detail in the playbook)

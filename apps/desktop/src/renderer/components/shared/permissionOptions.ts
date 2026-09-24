@@ -486,6 +486,9 @@ export type PermissionFamilyKey = "claude" | "codex" | "cursor" | "droid" | "acp
  * provider permission config.
  *
  * Only CLI-wrapped anthropic → "claude" and CLI-wrapped openai → "codex".
+ * Cursor is "cursor" whether or not the model is CLI-wrapped. Cursor SDK
+ * models are not CLI-wrapped, and filing their picker value under "opencode"
+ * made a Full Auto automation launch in Agent mode.
  * The four ACP families collapse to one "acp" key: they share a host, a
  * permission round-trip, and an abstract posture, so a per-vendor key would
  * duplicate the same setting four times.
@@ -495,10 +498,10 @@ export function familyToPermissionKey(
   family: string,
   isCliWrapped: boolean,
 ): PermissionFamilyKey {
+  if (family === "cursor") return "cursor";
   if (isCliWrapped) {
     if (family === "anthropic") return "claude";
     if (family === "openai") return "codex";
-    if (family === "cursor") return "cursor";
     if (family === "factory") return "droid";
     if (ACP_PERMISSION_FAMILIES.has(family)) return "acp";
   }

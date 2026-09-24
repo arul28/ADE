@@ -1,3 +1,4 @@
+import { cursorPermissionFromMisfiledOpenCode } from "../../../shared/cursorModes";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import type { AgentChatPermissionMode, AutomationRuleDraft } from "../../../shared/types";
 import { familyToPermissionKey, getPermissionOptions } from "../shared/permissionOptions";
@@ -21,6 +22,20 @@ function codexSandboxForMode(mode: AgentChatPermissionMode) {
   if (mode === "full-auto") return "danger-full-access";
   if (mode === "plan") return "read-only";
   return "workspace-write";
+}
+
+/** The mode the picker should show. Cursor SDK saves used to land on `opencode`. */
+export function selectedPermissionMode(
+  permissionConfig: { providers?: Record<string, string | undefined> } | undefined,
+  modelId: string,
+): string {
+  const meta = permissionControlsForModel(modelId);
+  if (!meta) return "";
+  const providers = permissionConfig?.providers;
+  const direct = providers?.[meta.key];
+  if (direct) return direct;
+  if (meta.key !== "cursor") return "";
+  return cursorPermissionFromMisfiledOpenCode(providers?.opencode) ?? "";
 }
 
 export function patchPermissionConfig(

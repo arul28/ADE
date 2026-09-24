@@ -255,28 +255,41 @@ export function comparePrTags(a: PrTagComparable, b: PrTagComparable): number {
   return b.githubPrNumber - a.githubPrNumber;
 }
 
+type LanePrMatchLane = Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef"> & {
+  branchDrift?: LaneSummary["branchDrift"];
+};
+
+/** Branch a PR is compared to. Drift means the checkout moved and the record did not. */
+export function effectiveLanePrBranchRef(
+  lane: Pick<LaneSummary, "branchRef"> & { branchDrift?: LaneSummary["branchDrift"] },
+): string {
+  const live = lane.branchDrift?.headBranchRef?.trim();
+  if (live) return live;
+  return lane.branchRef;
+}
+
 export function lanePrMatchesCurrentBranch(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  lane: LanePrMatchLane,
   pr: Pick<PrSummary, "laneId" | "headBranch">,
 ): boolean {
   if (pr.laneId !== lane.id) return false;
-  const laneBranch = normalizeLanePrBranch(lane.branchRef);
+  const laneBranch = normalizeLanePrBranch(effectiveLanePrBranchRef(lane));
   const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
   if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
   return !laneIsOnBaseBranch(lane);
 }
 
 export function lanePrRole(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  lane: LanePrMatchLane,
   pr: Pick<PrSummary, "laneId" | "headBranch">,
 ): "active" | "previous" | null {
   if (pr.laneId !== lane.id) return null;
-  if (!normalizeLanePrBranch(lane.branchRef) || !normalizeLanePrBranch(pr.headBranch)) return null;
+  if (!normalizeLanePrBranch(effectiveLanePrBranchRef(lane)) || !normalizeLanePrBranch(pr.headBranch)) return null;
   return lanePrMatchesCurrentBranch(lane, pr) ? "active" : "previous";
 }
 
 export function selectLanePrs(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  lane: LanePrMatchLane,
   prs: PrSummary[],
 ): PrSummary[] {
   // This is the renderer-facing selector used by lane tags, counters, hover
@@ -312,7 +325,7 @@ export function selectLanePrs(
  * otherwise be written to the database and then filtered out of every view.
  */
 export function selectChatPrs(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  lane: LanePrMatchLane,
   prs: PrSummary[],
   sessionId?: string | null,
 ): PrSummary[] {
@@ -330,17 +343,17 @@ export function selectChatPrs(
 }
 
 export function selectLanePrTag(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  lane: LanePrMatchLane,
   prs: PrSummary[],
 ): PrSummary | null {
   return selectLanePrs(lane, prs)[0] ?? null;
 }
 
 export function githubPrMatchesCurrentBranch(
-  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
+  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef"> & { branchDrift?: LaneSummary["branchDrift"] },
   pr: Pick<GitHubPrListItem, "headBranch" | "repoOwner" | "repoName" | "headRepoOwner" | "headRepoName">,
 ): boolean {
-  const laneBranch = normalizeLanePrBranch(lane.branchRef);
+  const laneBranch = normalizeLanePrBranch(effectiveLanePrBranchRef(lane));
   const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
   if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
   const headRepoOwner = pr.headRepoOwner?.trim();
@@ -353,14 +366,14 @@ export function githubPrMatchesCurrentBranch(
 }
 
 export function selectGithubLanePrTag(
-  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
+  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef"> & { branchDrift?: LaneSummary["branchDrift"] },
   prs: GitHubPrListItem[],
 ): GitHubPrListItem | null {
   return selectGithubLanePrTags(lane, prs)[0] ?? null;
 }
 
 export function selectGithubLanePrTags(
-  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
+  lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef"> & { branchDrift?: LaneSummary["branchDrift"] },
   prs: GitHubPrListItem[],
 ): GitHubPrListItem[] {
   return prs

@@ -64,6 +64,7 @@ import { buildClaudeReadOnlyWorkerAllowedTools } from "../ai/tools/workerSandbox
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { cursorPermissionFromMisfiledOpenCode } from "../../../shared/cursorModes";
 import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
 import {
   normalizeAutomationAgentLimits,
@@ -1937,7 +1938,9 @@ export function createAutomationService({
       providers: {
         claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
         codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
-        cursor: rule.verification.mode === "dry-run" ? "plan" : (providers.cursor ?? "edit"),
+        cursor: rule.verification.mode === "dry-run"
+          ? "plan"
+          : (providers.cursor ?? cursorPermissionFromMisfiledOpenCode(providers.opencode) ?? "edit"),
         opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
         codexSandbox: providers.codexSandbox ?? "workspace-write",
         ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
