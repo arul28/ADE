@@ -6521,7 +6521,18 @@ export function createLaneService({
       invalidateLaneListCache();
 
       try {
-        await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        // A lane that already contains the new parent's tip (it merged that
+        // parent in) needs only the record change. `git rebase` would still
+        // refuse on a dirty worktree, and it could rewrite merge commits.
+        const alreadyContainsParent = preHeadSha
+          ? (await runGit(["merge-base", "--is-ancestor", newParentHead, preHeadSha], {
+              cwd: lane.worktree_path,
+              timeoutMs: 15_000,
+            })).exitCode === 0
+          : false;
+        if (!alreadyContainsParent) {
+          await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        }
       } catch (error) {
         try {
           await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 20_000 });

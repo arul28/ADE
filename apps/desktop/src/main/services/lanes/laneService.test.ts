@@ -4234,6 +4234,9 @@ describe("laneService reparent", () => {
       if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
         return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
       }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
 
@@ -4290,6 +4293,9 @@ describe("laneService reparent", () => {
       if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/develop") {
         return { exitCode: 0, stdout: "sha-origin-develop\n", stderr: "" };
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        return { exitCode: 1, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -4350,6 +4356,9 @@ describe("laneService reparent", () => {
       if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
         return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
       }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
       if (args[0] === "rebase" && args[1] === "--abort") {
         return { exitCode: 0, stdout: "", stderr: "" } as any;
       }
@@ -4408,6 +4417,53 @@ describe("laneService reparent", () => {
     await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-parent" });
 
     expect(runGitOrThrow).not.toHaveBeenCalled();
+  });
+
+  it("updates only the record when the lane already contains the new parent's tip", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-contains-parent-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-reparent-contains-parent", repoRoot });
+
+    vi.mocked(getHeadSha).mockResolvedValue("sha-child-merged-main");
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        expect(args.slice(2)).toEqual(["sha-origin-main", "sha-child-merged-main"]);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-reparent-contains-parent",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-main" });
+
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "rebase")).toBe(false);
+    expect(result.postHeadSha).toBe("sha-child-merged-main");
+    expect(
+      db.get<{ base_ref: string; parent_lane_id: string | null }>(
+        "select base_ref, parent_lane_id from lanes where id = ?",
+        ["lane-child"],
+      ),
+    ).toEqual({ base_ref: "main", parent_lane_id: null });
   });
 });
 
