@@ -250,13 +250,11 @@ final class DriverRuntime: NSObject {
         // Recordings first: `CaptureEngine.dispose` is what finalises each
         // AVAssetWriter, and everything below it only releases handles.
         capture.dispose()
-        // The apps the lanes opened go with their displays. Asked, not waited
-        // for: the process is exiting, and an app that stays to ask about
-        // unsaved work is moved to a real screen by macOS when its display
-        // goes away below.
-        for app in windows.launchedApps.all {
-            _ = windows.quitLaunchedApps(laneId: app.laneId, wait: 0)
-        }
+        // The apps the lanes opened go with their displays, the same as on a
+        // `stop`: quitting ADE is a deliberate stop of every lane. One grace
+        // period for all lanes, then a force quit, so a save dialog cannot
+        // keep a lane's copy alive on the user's screen after ADE is gone.
+        _ = windows.quitAllLaunchedApps()
         windows.dispose()
         displays.destroyAll()
         exit(0)
@@ -548,8 +546,9 @@ final class DriverRuntime: NSObject {
         capture.stopStream(laneId: laneId)
         _ = try? capture.stopRecording(laneId: laneId)
         // Before the windows are released and while the display still exists:
-        // an app that asks to save shows its sheet on a window that is then
-        // moved to the user's screen.
+        // the apps the lane opened quit (force-quit after a grace period), and
+        // what is left — the windows the user claimed — goes back to the
+        // user's screen.
         let quit = windows.quitLaunchedApps(laneId: laneId)
         let released = windows.releaseLane(laneId)
         let destroyed = displays.destroy(laneId: laneId)
@@ -626,12 +625,20 @@ final class DriverRuntime: NSObject {
         return parked.asJSON()
     }
 
+    /// `window.unpark`: the Release button and `mac-desktop release`. A
+    /// window of an app the lane launched hands the whole instance to the
+    /// user; `releasedWindowIds` names every window that left the lane, and
+    /// `handedOverPid` the instance the lane no longer watches or quits.
     private func unparkWindow(_ request: DriverRequest) throws -> [String: JSONValue] {
         let windowId = CGWindowID(try request.requireInt("windowId"))
-        guard let window = windows.unpark(windowId: windowId) else {
-            return ["window": .null]
+        guard let result = windows.release(windowId: windowId) else {
+            return ["window": .null, "releasedWindowIds": .array([])]
         }
-        return ["window": .object(window.asJSON())]
+        return [
+            "window": result.window.map { .object($0.asJSON()) } ?? .null,
+            "releasedWindowIds": .array(result.releasedWindowIds.map { .int(Int($0)) }),
+            "handedOverPid": result.handedOverPid.map { .int(Int($0)) } ?? .null,
+        ]
     }
 
     private func launch(_ request: DriverRequest) throws -> [String: JSONValue] {

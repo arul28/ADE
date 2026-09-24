@@ -1,5 +1,7 @@
 /// The pid watcher: new windows of a watched app get parked, escaped windows get
 /// dragged back, and a window that keeps leaving is released rather than fought.
+/// Only watched pids and held windows are read: nothing here lists the other
+/// apps on the Mac.
 ///
 /// An `AXObserver` per watched pid is the fast path; the 1-second poll is the
 /// belt to its braces, because an observer misses windows created before it was
@@ -99,7 +101,12 @@ extension WindowControl {
             }
             let current = listWindows(pid: pid)
             let unowned = Set(current.filter { $0.laneId == nil }.map(\.id))
-            let candidates = newWindows.candidates(pid: pid, current: current.map(\.id), unowned: unowned)
+            let candidates = newWindows.candidates(
+                pid: pid,
+                current: current.map(\.id),
+                unowned: unowned,
+                minimized: Set(current.filter(\.minimized).map(\.id))
+            )
             let origin = newWindows.originForNewWindow(pid: pid)
             for windowId in candidates {
                 // The display can go away inside this loop: a park pumps the
@@ -167,16 +174,31 @@ extension WindowControl {
             return
         }
 
-        for record in ownership.all {
+        // One listing for every held window, scoped to their ids: a lookup
+        // per window was an unscoped listing per window, and each one read
+        // every app on the Mac with an off-screen window through
+        // Accessibility.
+        let held = ownership.all
+        let live = Dictionary(
+            listWindows(windowIds: Set(held.map { CGWindowID($0.windowId) })).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for record in held {
             let windowId = CGWindowID(record.windowId)
+            // A release earlier in this loop can hand over a whole app, so
+            // its other windows are no longer the lane's to drag back.
+            guard ownership.owner(ofWindow: record.windowId) == record.laneId else { continue }
             guard let placement = placement(forLane: record.laneId) else { continue }
-            guard let window = window(withId: windowId) else {
+            guard let window = live[windowId] else {
                 // The window is gone; so is its ownership.
                 ownership.unpark(windowId: record.windowId)
                 touchedLanes.insert(record.laneId)
                 continue
             }
-            guard Geometry.isFullyOutside(window.frame, of: placement.frame) else {
+            // A minimized window is on no screen, and a move cannot bring it
+            // back. Counting it as an escape "released" windows the user
+            // had only minimized.
+            guard !window.minimized, Geometry.isFullyOutside(window.frame, of: placement.frame) else {
                 lock.lock()
                 reparkAttempts[windowId] = 0
                 lock.unlock()
@@ -198,7 +220,9 @@ extension WindowControl {
                         ]
                     )
                 )
-                _ = unpark(windowId: windowId)
+                // The same release as the Release button: an app the lane
+                // launched is handed over whole and never parked again.
+                _ = release(windowId: windowId)
                 touchedLanes.insert(record.laneId)
                 continue
             }

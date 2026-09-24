@@ -161,7 +161,7 @@ function MacDesktopStopConfirmDialog() {
             Stop Mac Desktop?
           </h2>
           <p id="mac-desktop-stop-confirm-body" className="mt-2 text-[12px] leading-5 text-muted-fg">
-            Apps this lane opened quit, and windows you moved here go back to your main screen. Keep it running if the agent still needs it.
+            Apps this lane opened quit, even with unsaved work. Windows you moved here go back to your main screen. Keep it running if the agent still needs it.
           </p>
         </div>
         <footer className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3.5">

@@ -146,11 +146,23 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       : ownership.listWindowRecords(laneId).map((record) => record.windowId);
     let released = 0;
     let lastError: string | null = null;
+    const alreadyReleased = new Set<number>();
     for (const windowId of targets) {
+      // Releasing one window of an app the lane launched releases every
+      // window of that app, so a later target may already be the user's.
+      if (alreadyReleased.has(windowId)) continue;
       try {
-        await seat.unpark({ windowId });
-        ownership.releaseWindow(windowId);
-        released += 1;
+        const reply = await seat.unpark({ windowId });
+        const releasedIds = reply.releasedWindowIds.includes(windowId)
+          ? reply.releasedWindowIds
+          : [windowId, ...reply.releasedWindowIds];
+        for (const id of releasedIds) {
+          if (alreadyReleased.has(id)) continue;
+          alreadyReleased.add(id);
+          if (ownership.releaseWindow(id) || id === windowId) released += 1;
+        }
+        // The user owns that instance now: stop never quits it.
+        if (reply.handedOverPid != null) ownership.unwatchLaunch(reply.handedOverPid);
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         deps.logger.debug("mac_desktop.release_window_failed", { laneId, windowId, error: lastError });

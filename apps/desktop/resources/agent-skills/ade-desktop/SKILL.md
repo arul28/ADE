@@ -73,6 +73,10 @@ ade mac-desktop claim --window <id> --text
 ade mac-desktop release --window <id> --text
 ```
 
+`release` gives the window to the user. For an app the lane opened, the user
+gets the whole app: all its windows move to the user's screen, the lane stops
+watching it, and `stop` no longer quits it. A claimed window goes back alone.
+
 Window ids die with their process. Re-run `windows` rather than caching one.
 
 `open` answers before the app has a window (`watching: yes`, no windows yet).
@@ -146,9 +150,11 @@ a native menu, a control with no `AXPress`.
   the lane itself opened with `open`; for any other app it refuses. Do not
   "reset" an app the user has open to get a clean start — open a new window
   for your task instead.
-- **`stop` quits the apps the lane opened.** Windows you claimed go back to the
-  user's screen; they are never quit. An app that asks to save does not quit:
-  it moves to the user's screen, and `stop` names it. Tell the user.
+- **`stop` quits the apps the lane opened, unsaved work included.** An app
+  that shows a save or confirm dialog is force-quit after about three seconds.
+  Save anything that matters before you stop. Windows you claimed go back to
+  the user's screen; they are never quit. An app the user took with `release`
+  is theirs and is not quit.
 - **`ade: Unknown command 'mac-desktop'` means your shell found an older
   `ade`,** not that the lane has no screen: a login shell can rebuild PATH and
   put an installed CLI ahead of the one this ADE launched. Run the same command
@@ -164,7 +170,8 @@ a native menu, a control with no `AXPress`.
   Simulator.app cannot be split. A second lane is refused with
   `MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE`, and the message names the holder.
 - **Do not fight a window that keeps leaving the display.** It is released and
-  reported on purpose. Report it too.
+  reported on purpose, the same as `release`: for an app the lane opened, the
+  whole app goes to the user. Report it too.
 
 ## Capture and proof
 

@@ -2381,7 +2381,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop start --text                     Create this lane's display
     $ ade mac-desktop display --text                   Show the resolution
     $ ade mac-desktop display 1440p --text             Set it (1080p, 1440p, 4k)
-    $ ade mac-desktop stop --text                      Quit the apps it opened, return your windows
+    $ ade mac-desktop stop --text                      Quit the apps it opened (forced), return your windows
     $ ade mac-desktop show --text                      Show it to the user in the tools pane
     $ ade mac-desktop show --floating --text           ...or as the floating card over the chat
 
@@ -2390,7 +2390,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop open Xcode -- --args here        Everything after -- is the app's argv
     $ ade mac-desktop windows --text                   List windows
     $ ade mac-desktop claim --window <id> --text       Move an existing window here
-    $ ade mac-desktop release --window <id> --text     Put it back
+    $ ade mac-desktop release --window <id> --text     Give it to you (a lane app goes whole)
 
   Observe, then act by handle:
     $ ade mac-desktop observe --text                   Screenshot + numbered elements

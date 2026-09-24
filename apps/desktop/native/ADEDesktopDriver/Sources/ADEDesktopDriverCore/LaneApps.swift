@@ -11,6 +11,8 @@
 /// * `LaunchedAppRegistry`: which app instances a lane started. Only those are
 ///   quit when the lane's display goes away; an instance the user started is
 ///   never quit, even when the lane borrowed one of its windows.
+/// * `WindowRelease`: a release of a launched app's window gives the user the
+///   whole instance, and the lane forgets it.
 
 import Foundation
 
@@ -203,7 +205,19 @@ public final class NewWindowTracker: @unchecked Sendable {
     ///
     /// `current` is every window the app has; `unowned` is the subset that no
     /// lane holds. Windows that have ended are forgotten here too.
-    public func candidates(pid: Int32, current: [UInt32], unowned: Set<UInt32>) -> [UInt32] {
+    ///
+    /// `minimized` is the subset that is not on any screen: minimized, or off
+    /// screen in an app that did not answer Accessibility. Such a window is no
+    /// new window to park. A park cannot move it, so the escape check then
+    /// "released" it as a window that kept leaving, and the lane listed it with
+    /// a minimized badge. It is skipped but not settled: once it is back on a
+    /// screen, it is a candidate again.
+    public func candidates(
+        pid: Int32,
+        current: [UInt32],
+        unowned: Set<UInt32>,
+        minimized: Set<UInt32> = []
+    ) -> [UInt32] {
         lock.lock()
         defer { lock.unlock() }
         guard var watch = watches[pid] else { return [] }
@@ -211,7 +225,9 @@ public final class NewWindowTracker: @unchecked Sendable {
         watch.settled.formIntersection(live)
         watch.notReady = watch.notReady.filter { live.contains($0.key) }
         watches[pid] = watch
-        return current.filter { unowned.contains($0) && !watch.settled.contains($0) }
+        return current.filter {
+            unowned.contains($0) && !watch.settled.contains($0) && !minimized.contains($0)
+        }
     }
 
     /// A window was parked (by the sweep, the launch or a claim).
@@ -339,6 +355,37 @@ public final class LaunchedAppRegistry: @unchecked Sendable {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Release
+// ---------------------------------------------------------------------------
+
+/// What releasing one window of a lane gives back to the user.
+///
+/// Releasing a window of an app the lane launched used to drop the lane's
+/// hold on that one window only. The pid stayed watched as the lane's app, so
+/// the sweep parked the next window the app showed, and `stop` still quit the
+/// app the user now had on their screen. A release now gives the user the
+/// whole instance, and the driver does not touch that instance again.
+public enum WindowRelease {
+    public enum Plan: Equatable, Sendable {
+        /// The lane launched the app: every window of the instance goes to
+        /// the main screen, and the pid leaves the launched set and the watch.
+        case handOverApp
+        /// A window the user claimed: only it goes back. `stopWatching` is
+        /// true when the lane holds no other window of that app, so a later
+        /// window of the user's app is never parked.
+        case returnWindow(stopWatching: Bool)
+    }
+
+    /// `launchedByLane` is whether the lane that holds the window launched
+    /// its app. `otherWindowsHeld` counts the other windows of the same pid
+    /// that the lane still holds.
+    public static func plan(launchedByLane: Bool, otherWindowsHeld: Int) -> Plan {
+        if launchedByLane { return .handOverApp }
+        return .returnWindow(stopWatching: otherWindowsHeld == 0)
+    }
+}
+
 /// What quitting a lane's apps did, for the `display.destroy` reply and the
 /// `display-destroyed` event.
 public struct LaneQuitReport: Equatable, Sendable {
@@ -351,9 +398,10 @@ public struct LaneQuitReport: Equatable, Sendable {
             self.appName = appName
         }
 
-        /// The sentence the pane and the CLI show.
+        /// The sentence the pane and the CLI show. `stop` force-quits an app
+        /// that stays open, so this is an app that survived even that.
         public var message: String {
-            "\(appName) did not quit, probably because it has unsaved work. It moved to your screen."
+            "\(appName) did not quit, even when forced. It moved to your screen."
         }
 
         public func asJSON() -> [String: JSONValue] {

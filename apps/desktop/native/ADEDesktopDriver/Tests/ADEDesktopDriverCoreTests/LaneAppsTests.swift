@@ -108,6 +108,54 @@ final class LaneAppsTests: XCTestCase {
         XCTAssertEqual(tracker.noteNotReady(pid: 99, windowId: 1), .giveUp)
     }
 
+    func testAMinimizedWindowIsNotACandidateUntilItIsBackOnScreen() {
+        // The released Safari came back minimized: its off-screen windows were
+        // listed as minimized, the sweep parked one, a move could not bring it
+        // onto the lane, and the escape check "released" it again.
+        let tracker = NewWindowTracker()
+        tracker.watch(pid: 10, laneId: "lane", launched: true, existing: [])
+        XCTAssertEqual(tracker.candidates(pid: 10, current: [1, 2], unowned: [1, 2], minimized: [2]), [1])
+        // Skipped, not settled: back on a screen, it is a candidate again.
+        XCTAssertEqual(tracker.candidates(pid: 10, current: [1, 2], unowned: [1, 2]), [1, 2])
+    }
+
+    // -----------------------------------------------------------------------
+    // Release
+    // -----------------------------------------------------------------------
+
+    func testReleasingAWindowOfALaunchedAppHandsOverTheWholeInstance() {
+        XCTAssertEqual(WindowRelease.plan(launchedByLane: true, otherWindowsHeld: 2), .handOverApp)
+        XCTAssertEqual(WindowRelease.plan(launchedByLane: true, otherWindowsHeld: 0), .handOverApp)
+
+        // What the driver does for `.handOverApp`: the pid leaves the watch
+        // and the launched set. After that no window of the instance is ever
+        // a candidate again, and `stop` does not quit it.
+        let tracker = NewWindowTracker()
+        let registry = LaunchedAppRegistry()
+        registry.record(pid: 73002, laneId: "lane", appName: "Safari", bundleId: "com.apple.Safari", wasRunningBefore: false)
+        tracker.watch(pid: 73002, laneId: "lane", launched: true, existing: [])
+        tracker.noteParked(pid: 73002, windowId: 62912)
+
+        tracker.unwatch(pid: 73002)
+        registry.forget(pid: 73002)
+
+        XCTAssertFalse(tracker.isWatching(pid: 73002))
+        XCTAssertEqual(tracker.candidates(pid: 73002, current: [62878, 62912], unowned: [62878, 62912]), [])
+        XCTAssertFalse(registry.isLaunched(pid: 73002, byLane: "lane"))
+        XCTAssertTrue(registry.forgetLane("lane").isEmpty)
+    }
+
+    func testReleasingAClaimedWindowStopsWatchingItsAppOnlyWithTheLastWindow() {
+        XCTAssertEqual(
+            WindowRelease.plan(launchedByLane: false, otherWindowsHeld: 0),
+            .returnWindow(stopWatching: true)
+        )
+        XCTAssertEqual(
+            WindowRelease.plan(launchedByLane: false, otherWindowsHeld: 1),
+            .returnWindow(stopWatching: false)
+        )
+    }
+
     // -----------------------------------------------------------------------
     // LaunchedAppRegistry and the quit report
     // -----------------------------------------------------------------------
@@ -136,7 +184,7 @@ final class LaneAppsTests: XCTestCase {
         XCTAssertEqual(report.leftOpen.map(\.appName), ["TextEdit"])
         XCTAssertEqual(
             report.leftOpen.first?.message,
-            "TextEdit did not quit, probably because it has unsaved work. It moved to your screen."
+            "TextEdit did not quit, even when forced. It moved to your screen."
         )
         XCTAssertEqual(report.jsonFields["quitApps"], .array([.string("Safari")]))
     }

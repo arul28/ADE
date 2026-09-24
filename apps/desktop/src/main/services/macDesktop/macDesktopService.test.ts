@@ -1516,7 +1516,7 @@ describe("macDesktopService teardown", () => {
     const driver = createFakeDriver();
     const { service, events } = makeService({ driver });
     await service.start({ laneId: "lane-1" });
-    const message = "TextEdit did not quit, probably because it has unsaved work. It moved to your screen.";
+    const message = "TextEdit did not quit, even when forced. It moved to your screen.";
     driver.overrides[MAC_DESKTOP_DRIVER_OPS.destroyDisplay] = () => ({
       destroyed: true,
       releasedWindows: 1,

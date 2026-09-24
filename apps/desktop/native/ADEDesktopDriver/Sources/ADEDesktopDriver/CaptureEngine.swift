@@ -34,6 +34,19 @@ enum CaptureError: Error {
 // Frame source
 // ---------------------------------------------------------------------------
 
+/// The frame that arrives before a stream's state exists.
+///
+/// `startCaptureStream` pumps the run loop until ScreenCaptureKit confirms the
+/// start, and the first frame often arrives inside that pump — before
+/// `streams[laneId]` is assigned. A still, new display sends no second frame,
+/// so dropping that one left `lastBuffer` nil for good: the keyframe on reader
+/// attach and the 1 s keep-alive had nothing to re-encode, and every viewer got
+/// the config record and no picture. Guarded by `CaptureEngine.lock`.
+final class EarlyFrameBox {
+    var buffer: CVPixelBuffer?
+    var presentationTime: CMTime = .zero
+}
+
 @available(macOS 12.3, *)
 final class CaptureFrameSink: NSObject, SCStreamOutput, SCStreamDelegate {
     private let onFrame: (CMSampleBuffer) -> Void
@@ -680,14 +693,20 @@ final class CaptureEngine {
             self?.refreshKeyframe(laneId: laneId)
         }
 
+        let early = EarlyFrameBox()
         let sink = CaptureFrameSink(
             onFrame: { [weak self] sampleBuffer in
                 guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
                 let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 if let self {
                     self.lock.lock()
-                    self.streams[laneId]?.lastBuffer = buffer
-                    if CMTIME_IS_NUMERIC(time) { self.streams[laneId]?.lastPresentationTime = time }
+                    if self.streams[laneId] != nil {
+                        self.streams[laneId]?.lastBuffer = buffer
+                        if CMTIME_IS_NUMERIC(time) { self.streams[laneId]?.lastPresentationTime = time }
+                    } else {
+                        early.buffer = buffer
+                        if CMTIME_IS_NUMERIC(time) { early.presentationTime = time }
+                    }
                     self.lock.unlock()
                 }
                 encoder.encode(pixelBuffer: buffer, presentationTime: time)
@@ -731,12 +750,14 @@ final class CaptureEngine {
             height: configuration.height,
             codec: nil,
             startedAt: Date(),
-            lastBuffer: nil,
-            lastPresentationTime: .zero,
+            // A frame that landed during the start is kept, not lost.
+            lastBuffer: early.buffer,
+            lastPresentationTime: early.presentationTime,
             lastEncodedAt: Date(),
             keepAlive: nil,
             showsCursor: cursorVisible
         )
+        early.buffer = nil
         lock.unlock()
         startKeepAlive(laneId: laneId, server: server)
         log("stream for lane \(laneId) on 127.0.0.1:\(port) at \(configuration.width)x\(configuration.height)@\(fps)")

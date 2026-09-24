@@ -192,11 +192,27 @@ final class WindowControl {
     // Enumeration
     // -----------------------------------------------------------------------
 
-    func listWindows(laneId: String? = nil, pid: pid_t? = nil) -> [DesktopWindow] {
+    /// The windows in scope, as `MacDesktopWindow` rows.
+    ///
+    /// Every filter is applied to the window server's entry before the one
+    /// Accessibility read a listing can make (see `WindowListScope`). Only
+    /// the claim picker lists with no filter at all: the watcher and every
+    /// lookup by id pass one, so a sweep never asks an unrelated app for its
+    /// windows.
+    func listWindows(
+        laneId: String? = nil,
+        pid: pid_t? = nil,
+        windowIds: Set<CGWindowID>? = nil
+    ) -> [DesktopWindow] {
         let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
+        let scope = WindowListScope(laneId: laneId, pid: pid, windowIds: windowIds)
+        lock.lock()
+        let laneDisplay = laneId.flatMap { displayIds[$0] }
+        let origins = windowOrigins
+        lock.unlock()
         var windows: [DesktopWindow] = []
         // One AX read per app, at most, and only for apps that have an entry the
         // window server says is not on screen. See `axWindowMinimizedState`.
@@ -210,6 +226,7 @@ final class WindowControl {
             guard let ownerPid = entry[kCGWindowOwnerPID as String] as? Int32 else { continue }
             if let pid, ownerPid != pid { continue }
             let windowId = CGWindowID(windowNumber)
+            if let windowIds, !windowIds.contains(windowId) { continue }
             let ownedBy = ownership.owner(ofWindow: Int(windowId))
             // A lane's list is what is ON its display, owned or not: a window
             // the user dragged there by hand is an app on that desktop too,
@@ -217,10 +234,14 @@ final class WindowControl {
             // Ownership still decides what the driver may move or release.
             let boundsDict = entry[kCGWindowBounds as String] as? [String: Any]
             let frame = boundsDict.flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } ?? .zero
-            if let laneId, ownedBy != laneId {
-                guard let laneDisplay = displayIds[laneId],
-                      displayId(containing: frame) == laneDisplay else { continue }
-            }
+            let needsDisplay = laneId != nil && ownedBy != laneId
+            guard scope.admits(
+                windowId: windowId,
+                ownerPid: ownerPid,
+                ownedBy: ownedBy,
+                displayId: needsDisplay ? displayId(containing: frame) : nil,
+                laneDisplayId: laneDisplay
+            ) else { continue }
             let application = NSRunningApplication(processIdentifier: ownerPid)
             let bundleId = application?.bundleIdentifier
             let appName = (entry[kCGWindowOwnerName as String] as? String)
@@ -294,7 +315,7 @@ final class WindowControl {
                     title: title,
                     frame: frame,
                     laneId: ownedBy,
-                    origin: windowOrigins[windowId] ?? "adopted",
+                    origin: origins[windowId] ?? "adopted",
                     onDisplayId: displayId(containing: frame),
                     minimized: minimized,
                     singleInstance: Self.isSingleInstance(bundleId: bundleId, application: application),
@@ -407,8 +428,10 @@ final class WindowControl {
         return application?.activationPolicy == .regular
     }
 
+    /// One window by id. Scoped to that id, so the lookup reads only its
+    /// own app through Accessibility, and only when it is off screen.
     func window(withId windowId: CGWindowID) -> DesktopWindow? {
-        listWindows().first { $0.id == windowId }
+        listWindows(windowIds: [windowId]).first
     }
 
     private func displayId(containing frame: CGRect) -> CGDirectDisplayID? {
@@ -619,93 +642,193 @@ final class WindowControl {
         return parked
     }
 
-    @discardableResult
-    func unpark(windowId: CGWindowID) -> DesktopWindow? {
-        guard let ownershipRecord = ownership.unpark(windowId: Int(windowId)) else { return nil }
-        lock.lock()
-        let original = originalFrames.removeValue(forKey: windowId)
-        reparkAttempts.removeValue(forKey: windowId)
-        windowOrigins.removeValue(forKey: windowId)
-        lock.unlock()
-
-        guard var window = window(withId: windowId) else { return nil }
-        if let element = axWindow(for: window) {
-            // Release means "put it back on my screen", so a frame that is
-            // still on the lane's display is no destination at all.
-            //
-            // `originalFrames` records where a window was when it was PARKED,
-            // and an app that ADE opened for the lane was already on the
-            // lane's display at that moment. Restoring that frame moved the
-            // window from where it was to exactly where it was, which is why
-            // the button looked dead. A window genuinely claimed from a real
-            // screen still has that screen's frame, and still goes home to it.
-            let laneDisplay = displayIds[ownershipRecord.laneId]
-            let cameFromARealScreen = original.map { frame in
-                let host = displayId(containing: frame)
-                return host != nil && host != laneDisplay
-            } ?? false
-            let target: CGRect
-            if cameFromARealScreen, let original {
-                target = original
-            } else {
-                let mainBounds = CGDisplayBounds(CGMainDisplayID())
-                target = Geometry.cascadeFrame(
-                    index: 0,
-                    size: CGSize(
-                        width: min(window.frame.width, mainBounds.width),
-                        height: min(window.frame.height, mainBounds.height)
-                    ),
-                    display: DisplayPlacement(
-                        origin: mainBounds.origin,
-                        width: mainBounds.width,
-                        height: mainBounds.height,
-                        scale: 1
-                    )
-                )
-            }
-            _ = Self.setFrame(element, target)
-            window.frame = Self.frame(of: element) ?? target
-        }
-        window.laneId = nil
-        window.onDisplayId = displayId(containing: window.frame)
-        emitWindowsChanged(laneId: ownershipRecord.laneId)
-        return window
+    /// What `release` gave back to the user.
+    struct ReleaseResult {
+        /// The window that was asked for, where it is now, or nil when it
+        /// had already ended.
+        var window: DesktopWindow?
+        /// Every window that left the lane: the one asked for, and for a
+        /// launched app every other window of that instance.
+        var releasedWindowIds: [CGWindowID]
+        /// The launched app instance the user now owns, if the release handed
+        /// one over. The lane no longer watches it and `stop` never quits it.
+        var handedOverPid: pid_t?
     }
 
+    /// Releases one window of a lane: the `window.unpark` request, the pane's
+    /// Release button, and a window that keeps leaving the lane's display.
+    ///
+    /// A window of an app the lane launched hands the whole instance to the
+    /// user (see `WindowRelease`). The pid leaves the watch and the launched
+    /// set BEFORE its windows move, because the move fires the app's
+    /// `AXObserver`, and a sweep in between would park them again. A window
+    /// the user claimed goes back alone, and its app stops being watched when
+    /// the lane holds none of its other windows. Nil when no lane holds the
+    /// window.
+    @discardableResult
+    func release(windowId: CGWindowID) -> ReleaseResult? {
+        guard let record = ownership.ownership(ofWindow: Int(windowId)) else { return nil }
+        let laneId = record.laneId
+        guard let window = window(withId: windowId) else {
+            // The window ended; only the hold on it is left to drop.
+            forgetParked(windowId: windowId)
+            emitWindowsChanged(laneId: laneId)
+            return ReleaseResult(window: nil, releasedWindowIds: [windowId], handedOverPid: nil)
+        }
+        let pid = window.pid
+        let otherWindowsHeld = listWindows(pid: pid)
+            .filter { $0.id != windowId && $0.laneId == laneId }
+            .count
+        let plan = WindowRelease.plan(
+            launchedByLane: launchedApps.isLaunched(pid: pid, byLane: laneId),
+            otherWindowsHeld: otherWindowsHeld
+        )
+        switch plan {
+        case .handOverApp:
+            stopWatching(pid: pid)
+            launchedApps.forget(pid: pid)
+            var released = moveWindowsToMainScreen(pid: pid, laneId: laneId)
+            if !released.contains(windowId) {
+                // Not in the pid's listing any more (it ended between the two
+                // reads): the hold still goes.
+                forgetParked(windowId: windowId)
+                released.insert(windowId, at: 0)
+            }
+            log("released \(window.appName) (pid \(pid)) to the user with \(released.count) window(s); lane \(laneId) no longer watches or quits it")
+            emitWindowsChanged(laneId: laneId)
+            var now = self.window(withId: windowId) ?? window
+            now.laneId = nil
+            return ReleaseResult(window: now, releasedWindowIds: released, handedOverPid: pid)
+        case .returnWindow(let stopWatchingApp):
+            let original = forgetParked(windowId: windowId)
+            var returned = window
+            if let element = axWindow(for: window) {
+                let target = homeFrame(for: window, original: original, laneId: laneId)
+                Self.unminimize(element, if: window.minimized)
+                _ = Self.setFrame(element, target)
+                returned.frame = Self.frame(of: element) ?? target
+            }
+            if stopWatchingApp, newWindows.laneId(forPid: pid) == laneId {
+                stopWatching(pid: pid)
+            }
+            returned.laneId = nil
+            returned.minimized = false
+            returned.onDisplayId = displayId(containing: returned.frame)
+            emitWindowsChanged(laneId: laneId)
+            return ReleaseResult(window: returned, releasedWindowIds: [windowId], handedOverPid: nil)
+        }
+    }
+
+    /// Drops the lane's hold on a window and the driver's notes about it.
+    /// Returns the frame the window had when it was parked, if known.
+    @discardableResult
+    private func forgetParked(windowId: CGWindowID) -> CGRect? {
+        ownership.unpark(windowId: Int(windowId))
+        lock.lock()
+        defer { lock.unlock() }
+        reparkAttempts.removeValue(forKey: windowId)
+        windowOrigins.removeValue(forKey: windowId)
+        return originalFrames.removeValue(forKey: windowId)
+    }
+
+    /// Where a released window goes: back to the real screen it was claimed
+    /// from, or else the top left of the main screen.
+    ///
+    /// Release means "put it back on my screen", so a frame that is still on
+    /// the lane's display is no destination at all. `originalFrames` records
+    /// where a window was when it was PARKED, and an app that ADE opened for
+    /// the lane was already on the lane's display at that moment. Restoring
+    /// that frame moved the window from where it was to exactly where it was,
+    /// which is why the button looked dead.
+    private func homeFrame(for window: DesktopWindow, original: CGRect?, laneId: String) -> CGRect {
+        lock.lock()
+        let laneDisplay = displayIds[laneId]
+        lock.unlock()
+        if let original {
+            let host = displayId(containing: original)
+            if host != nil, host != laneDisplay { return original }
+        }
+        let main = Self.mainScreenPlacement()
+        return Geometry.cascadeFrame(
+            index: 0,
+            size: CGSize(width: min(window.frame.width, main.width), height: min(window.frame.height, main.height)),
+            display: main
+        )
+    }
+
+    static func mainScreenPlacement() -> DisplayPlacement {
+        let bounds = CGDisplayBounds(CGMainDisplayID())
+        return DisplayPlacement(origin: bounds.origin, width: bounds.width, height: bounds.height, scale: 1)
+    }
+
+    /// A released window comes back where the user can see it. A minimized
+    /// window cannot be moved at all: its frame stays where it was, and it
+    /// came back as a Dock tile rather than a window.
+    static func unminimize(_ element: AXUIElement, if minimized: Bool) {
+        guard minimized else { return }
+        AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+    }
+
+    /// Returns every window a lane still holds to the user's screen. Runs
+    /// when the lane's display goes away, after its launched apps quit, so
+    /// what is left is windows the user claimed and the windows of any app
+    /// that could not be quit.
     @discardableResult
     func releaseLane(_ laneId: String) -> Int {
         let held = ownership.windows(forLane: laneId)
+        let live = Dictionary(
+            listWindows(windowIds: Set(held.map { CGWindowID($0.windowId) })).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         for record in held {
-            ownership.unpark(windowId: record.windowId)
             let windowId = CGWindowID(record.windowId)
-            lock.lock()
-            let original = originalFrames.removeValue(forKey: windowId)
-            reparkAttempts.removeValue(forKey: windowId)
-            windowOrigins.removeValue(forKey: windowId)
-            lock.unlock()
-            if let original, let window = window(withId: windowId), let element = axWindow(for: window) {
-                _ = Self.setFrame(element, original)
-            }
+            let original = forgetParked(windowId: windowId)
+            guard let window = live[windowId], let element = axWindow(for: window) else { continue }
+            Self.unminimize(element, if: window.minimized)
+            _ = Self.setFrame(element, homeFrame(for: window, original: original, laneId: laneId))
         }
         clearPlacement(laneId: laneId)
         return held.count
     }
 
-    /// How long `stop` waits for the lane's apps to quit before it moves the
-    /// ones still running to the user's screen. A healthy app quits in well
-    /// under a second; one that asks to save never quits on its own.
-    static let quitWait: TimeInterval = 4
+    /// How long `stop` lets the lane's apps quit on their own before it
+    /// force-quits the rest. A healthy app quits in well under a second; one
+    /// that shows a save or confirm dialog never quits on its own.
+    static let quitGrace: TimeInterval = 3
 
-    /// Quits every app instance the lane launched, and moves the windows of
-    /// any that do not quit in time to the user's main screen.
+    /// How long a force quit gets to take effect before the app is reported
+    /// as one that would not quit.
+    static let forceQuitWait: TimeInterval = 1
+
+    /// The grace period when the driver exits. Shorter than `quitGrace`: a
+    /// client that restarts the driver sends SIGKILL two seconds after its
+    /// SIGTERM (`RESTART_TERM_GRACE_MS`), and a kill in the middle of the
+    /// wait would leave the lane's apps asked to quit but never forced.
+    static let exitQuitGrace: TimeInterval = 1.5
+
+    /// Quits every app instance the lane launched, and force-quits any that
+    /// is still running after `quitGrace`.
     ///
-    /// Runs before the lane's display goes away, so a save sheet the quit
-    /// brings up is attached to a window that is then moved where the user
-    /// can see it. Only instances in `launchedApps` are asked: an instance the
-    /// user started is never quit, even when the lane claimed one of its
-    /// windows. `wait` 0 asks and does not wait, for a driver that is exiting.
-    func quitLaunchedApps(laneId: String, wait: TimeInterval = WindowControl.quitWait) -> LaneQuitReport {
-        let apps = launchedApps.forgetLane(laneId)
+    /// The rule for an intentional stop, and for the display going away for
+    /// any other reason: everything the lane opened goes with it, unsaved
+    /// work included. Every app the lane opens is a blank copy that holds only
+    /// what was done on the lane, and a copy left on the user's screen after
+    /// its lane is gone is an app nobody owns. Only instances in
+    /// `launchedApps` are quit. An instance the user started is never quit,
+    /// even when the lane claimed one of its windows, and an instance the user
+    /// took with Release has left `launchedApps`.
+    func quitLaunchedApps(laneId: String) -> LaneQuitReport {
+        quit(apps: launchedApps.forgetLane(laneId), grace: Self.quitGrace)
+    }
+
+    /// Every lane's apps at once, for a driver that is exiting because ADE
+    /// quit: one grace period for all of them, not one per lane.
+    func quitAllLaunchedApps() -> LaneQuitReport {
+        let lanes = Set(launchedApps.all.map(\.laneId))
+        return quit(apps: lanes.sorted().flatMap { launchedApps.forgetLane($0) }, grace: Self.exitQuitGrace)
+    }
+
+    private func quit(apps: [LaunchedAppRegistry.App], grace: TimeInterval) -> LaneQuitReport {
         guard !apps.isEmpty else { return .empty }
         var asked: [pid_t: NSRunningApplication] = [:]
         for app in apps {
@@ -719,60 +842,64 @@ final class WindowControl {
                 log("\(app.appName) (pid \(app.pid)) refused the request to quit")
             }
         }
-        guard wait > 0 else { return LaneQuitReport(quit: apps.map(\.appName), leftOpen: []) }
-        RunLoopPump.wait(until: { asked.values.allSatisfy(\.isTerminated) }, timeout: wait)
-        let stillRunning = Set(asked.filter { !$0.value.isTerminated }.map(\.key))
+        let isGone: (pid_t) -> Bool = { pid in
+            (asked[pid]?.isTerminated ?? true) || kill(pid, 0) != 0
+        }
+        RunLoopPump.wait(until: { asked.keys.allSatisfy(isGone) }, timeout: grace)
+        let stayed = apps.filter { asked[$0.pid] != nil && !isGone($0.pid) }
+        for app in stayed {
+            log("\(app.appName) (pid \(app.pid)) did not quit within \(grace)s; force-quitting it")
+            if asked[app.pid]?.forceTerminate() != true {
+                kill(app.pid, SIGKILL)
+            }
+        }
+        if !stayed.isEmpty {
+            RunLoopPump.wait(until: { stayed.allSatisfy { isGone($0.pid) } }, timeout: Self.forceQuitWait)
+        }
+        let stillRunning = Set(asked.keys.filter { !isGone($0) })
         let report = LaneQuitReport.settle(
             apps: apps.filter { asked[$0.pid] != nil },
             stillRunning: stillRunning
         )
-        for app in report.leftOpen {
-            let moved = moveWindowsToMainScreen(pid: app.pid, laneId: laneId)
-            log("\(app.appName) did not quit within \(Int(wait))s; moved \(moved) window(s) to the main screen")
+        // Not expected: a force quit ends any app this user may signal. An
+        // app that survives it must not vanish with the display.
+        for app in apps where stillRunning.contains(app.pid) {
+            let moved = moveWindowsToMainScreen(pid: app.pid, laneId: app.laneId)
+            log("\(app.appName) (pid \(app.pid)) survived a force quit; moved \(moved.count) window(s) to the main screen")
         }
         if !report.quit.isEmpty {
-            log("quit \(report.quit.joined(separator: ", ")) for lane \(laneId)")
+            log("quit \(report.quit.joined(separator: ", "))")
         }
         return report
     }
 
     /// Moves every window of `pid` that the lane holds or that sits on the
     /// lane's display to the user's main screen, and drops the lane's hold on
-    /// them. Returns how many moved.
+    /// them. Returns the windows that left the lane.
     @discardableResult
-    func moveWindowsToMainScreen(pid: pid_t, laneId: String) -> Int {
-        let mainBounds = CGDisplayBounds(CGMainDisplayID())
-        let main = DisplayPlacement(
-            origin: mainBounds.origin,
-            width: mainBounds.width,
-            height: mainBounds.height,
-            scale: 1
-        )
+    func moveWindowsToMainScreen(pid: pid_t, laneId: String) -> [CGWindowID] {
+        let main = Self.mainScreenPlacement()
         lock.lock()
         let laneDisplay = displayIds[laneId]
         lock.unlock()
+        var left: [CGWindowID] = []
         var moved = 0
         for window in listWindows(pid: pid) {
             let owned = ownership.owner(ofWindow: Int(window.id)) == laneId
             guard owned || (laneDisplay != nil && window.onDisplayId == laneDisplay) else { continue }
-            if owned {
-                ownership.unpark(windowId: Int(window.id))
-                lock.lock()
-                originalFrames.removeValue(forKey: window.id)
-                reparkAttempts.removeValue(forKey: window.id)
-                windowOrigins.removeValue(forKey: window.id)
-                lock.unlock()
-            }
+            if owned { forgetParked(windowId: window.id) }
+            left.append(window.id)
             guard let element = axWindow(for: window) else { continue }
             let size = CGSize(
                 width: min(window.frame.width, main.width),
                 height: min(window.frame.height, main.height)
             )
+            Self.unminimize(element, if: window.minimized)
             if Self.setFrame(element, Geometry.cascadeFrame(index: moved, size: size, display: main)) {
                 moved += 1
             }
         }
-        return moved
+        return left
     }
 
     /// `present`: bring the lane's windows to the user's main display, or send

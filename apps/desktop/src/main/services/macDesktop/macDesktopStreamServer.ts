@@ -230,7 +230,9 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
 
   const dropClient = (lane: LaneStream, client: LaneClient, reason: string): void => {
     if (!lane.clients.delete(client)) return;
-    deps.logger.debug("mac_desktop.stream_client_dropped", {
+    // Info, not debug: a reader coming and going is rare, and it is the one
+    // fact that tells a stream nobody read from a stream whose reader left.
+    deps.logger.info("mac_desktop.stream_client_dropped", {
       laneId: lane.laneId,
       reason,
       clients: lane.clients.size,
@@ -355,6 +357,11 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
 
     const client: LaneClient = { response, upstream, backlogBytes: 0 };
     lane.clients.add(client);
+    deps.logger.info("mac_desktop.stream_client_attached", {
+      laneId: lane.laneId,
+      clients: lane.clients.size,
+      afterMs: now() - lane.startedAtMs,
+    });
     if (lane.graceTimer) {
       clearTimeout(lane.graceTimer);
       lane.graceTimer = null;

@@ -338,6 +338,21 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
 
   async function stopStream(laneId: string, reason: string): Promise<MacDesktopStreamStatus> {
     const wasStreaming = streamServer.isStreaming(laneId);
+    if (wasStreaming) {
+      // `stream_stopped` carries no reason. Without this line a stop by the
+      // last viewer leaving and a stop by the last reader dropping look the
+      // same in a log (the owner's 2026-09-24 floating-player report).
+      const metrics = streamServer.metrics(laneId);
+      deps.logger.info("mac_desktop.stream_stop_reason", {
+        laneId,
+        reason,
+        clients: metrics?.clients ?? 0,
+        viewers: viewerChatSessionIds(laneId).length,
+        subscriptions: streamSubscriptions.get(laneId)?.size ?? 0,
+        sentBytes: metrics?.lastBytesAtMs != null,
+        ageMs: metrics ? deps.now() - metrics.startedAtMs : null,
+      });
+    }
     streamServer.stop(laneId);
     streamOwners.delete(laneId);
     streamSubscriptions.delete(laneId);

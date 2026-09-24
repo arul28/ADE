@@ -59,6 +59,30 @@ describe("macDesktopStreamServer", () => {
     while (cleanups.length) cleanups.pop()?.();
   });
 
+  it("logs each reader that attaches and leaves, so a stop by the last reader is visible", async () => {
+    // The owner's 2026-09-24 log could not tell a stream nobody read from a
+    // stream whose reader left: both lines were debug-only.
+    const upstream = await startUpstream(Buffer.from([]));
+    cleanups.push(upstream.close);
+    const info = vi.fn();
+    const server = createMacDesktopStreamServer({ logger: { ...logger, info } });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+
+    const abort = new AbortController();
+    const response = await fetch(transport.url, { signal: abort.signal });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(info).toHaveBeenCalledWith(
+      "mac_desktop.stream_client_attached",
+      expect.objectContaining({ laneId: "lane-1", clients: 1 }),
+    ));
+    abort.abort();
+    await vi.waitFor(() => expect(info).toHaveBeenCalledWith(
+      "mac_desktop.stream_client_dropped",
+      expect.objectContaining({ laneId: "lane-1", clients: 0 }),
+    ));
+  });
+
   it("refuses a request with no token, a wrong token, and an unknown lane", async () => {
     const upstream = await startUpstream(Buffer.from([1, 2, 3]));
     cleanups.push(upstream.close);

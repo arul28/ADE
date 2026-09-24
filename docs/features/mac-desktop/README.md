@@ -227,9 +227,23 @@ A window joins the lane's display in one of two ways.
    window onto the lane's display. `ade mac-desktop release --window <id>` puts it
    back where it came from.
 
+Release gives the window to the user. For a window of an app the lane launched,
+the user gets the whole app instance: all its windows move to the main screen,
+and the driver drops the pid from the lane's launched set and from the watch.
+The lane then never parks, moves or quits that instance again. A claimed window
+goes back alone, and its app stops being watched when the lane holds none of its
+other windows. The driver's `window.unpark` reply lists `releasedWindowIds` and
+`handedOverPid` so the service drops the same records.
+
+The watcher reads only the lanes' own apps. Every listing is filtered by lane,
+pid or window id on the window server's entries (`WindowListScope`) before its
+one Accessibility read, so a sweep never asks an unrelated app for its windows.
+Only the claim picker lists every window on the Mac.
+
 A window that moves itself off the display is re-parked once per move, with a
-bounded retry. A window that keeps leaving is released and reported, rather than
-fought. "Reported" is a `window-not-parked` event, and it is shown: the desktop
+bounded retry. A minimized window is not an escape, and a minimized window is
+never parked as a new window. A window that keeps leaving is released (the same
+release as above) and reported, rather than fought. "Reported" is a `window-not-parked` event, and it is shown: the desktop
 panel prints one line under the parked-windows footer ("Window 42 stayed on your
 screen (window_not_ready)") with a dismiss, and the same newest line appears in
 the Work tools mirror on the phone and the web client via
@@ -285,12 +299,21 @@ names the holding lane.
    sweep. The next open recreates it. The display size comes from the
    `macDesktop.resolution` KV setting, defaulting to
    `MAC_DESKTOP_DEFAULT_RESOLUTION`.
-4. **Teardown.** Lane delete and lane archive destroy the display through the
+4. **Stop.** Stop (the pane, the tab's Stop confirm, `ade mac-desktop stop`),
+   lane removal, quitting ADE, idle release and a lost display all apply one
+   rule: every app instance the lane launched quits. The driver asks each one
+   to quit, waits `WindowControl.quitGrace` (3 s), then force-quits the rest, so
+   a save or confirm dialog cannot keep one alive. Unsaved work in a lane's copy
+   is lost; the copy is blank and holds only what was done on the lane.
+   Windows the user claimed from their own apps are never quit: they go back to
+   the main screen. `appsLeftOpen` now lists only an app that survived the
+   force quit.
+5. **Teardown.** Lane delete and lane archive destroy the display through the
    lane teardown step, next to the file watchers — a `destroy_mac_desktop` step
    that runs on every platform and reports "no display" off macOS. A chat that
    ends releases its lease through `releaseIfOwnedBy`, bound in `bootstrap.ts`
    through the same chat-session-ended listener the simulator uses.
-5. **Reconciliation.** On service start, every ADE-created virtual display that
+6. **Reconciliation.** On service start, every ADE-created virtual display that
    no live lane claims is destroyed. A crashed run never leaks a display.
 
 ## The input lease

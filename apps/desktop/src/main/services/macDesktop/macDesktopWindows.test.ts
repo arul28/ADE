@@ -8,11 +8,18 @@ const silentLogger = {
   error: vi.fn(),
 } as unknown as MacDesktopWindowsDeps["logger"];
 
-function harness(options: { unpark?: () => Promise<void>; owned?: number[] } = {}) {
+type UnparkReply = { releasedWindowIds: number[]; handedOverPid: number | null };
+
+function harness(options: {
+  unpark?: (windowId: number) => Promise<UnparkReply | void>;
+  owned?: number[];
+} = {}) {
   const owned = options.owned ?? [11, 12];
   const released: number[] = [];
-  const unpark = vi.fn(async () => {
-    if (options.unpark) await options.unpark();
+  const unwatched: number[] = [];
+  const unpark = vi.fn(async ({ windowId }: { windowId: number }): Promise<UnparkReply> => {
+    const reply = options.unpark ? await options.unpark(windowId) : undefined;
+    return reply ?? { releasedWindowIds: [windowId], handedOverPid: null };
   });
   const windows = createMacDesktopWindows({
     logger: silentLogger,
@@ -27,11 +34,16 @@ function harness(options: { unpark?: () => Promise<void>; owned?: number[] } = {
     assertPermission: vi.fn(),
     ownership: {
       listWindowRecords: () => owned.map((windowId) => ({ windowId, laneId: "lane-a" })),
-      releaseWindow: (windowId: number) => { released.push(windowId); },
+      releaseWindow: (windowId: number) => {
+        if (!owned.includes(windowId)) return null;
+        released.push(windowId);
+        return { windowId, laneId: "lane-a" };
+      },
+      unwatchLaunch: (pid: number) => { unwatched.push(pid); return true; },
       touchDisplay: vi.fn(),
     } as unknown as MacDesktopWindowsDeps["ownership"],
   });
-  return { windows, unpark, released };
+  return { windows, unpark, released, unwatched };
 }
 
 describe("releaseWindow", () => {
@@ -59,5 +71,21 @@ describe("releaseWindow", () => {
     });
     await expect(windows.releaseWindow({ laneId: "lane-a" })).resolves.toEqual({ released: 1 });
     expect(released).toEqual([12]);
+  });
+
+  it("hands a launched app over whole: every window it had leaves the lane, and stop never quits it", async () => {
+    // Releasing one Safari window used to drop only that window. The lane kept
+    // watching the app, parked its next window, and stop still quit it.
+    const { windows, unpark, released, unwatched } = harness({
+      owned: [11, 12, 13],
+      unpark: async (windowId) => (windowId === 11
+        ? { releasedWindowIds: [11, 12], handedOverPid: 73002 }
+        : { releasedWindowIds: [windowId], handedOverPid: null }),
+    });
+    await expect(windows.releaseWindow({ laneId: "lane-a" })).resolves.toEqual({ released: 3 });
+    // 12 went with 11, so the driver is not asked for it again.
+    expect(unpark.mock.calls.map(([args]) => args.windowId)).toEqual([11, 13]);
+    expect(released).toEqual([11, 12, 13]);
+    expect(unwatched).toEqual([73002]);
   });
 });

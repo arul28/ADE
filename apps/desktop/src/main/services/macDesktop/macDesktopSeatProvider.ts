@@ -64,7 +64,7 @@ export const asStringList = (value: unknown): string[] =>
 
 /**
  * The driver's `appsLeftOpen`: the apps a stopped lane opened that did not
- * quit, usually because they asked to save. Malformed rows are dropped.
+ * quit even when forced. Malformed rows are dropped.
  */
 export const asAppsLeftOpen = (value: unknown): MacDesktopAppLeftOpen[] =>
   (Array.isArray(value) ? value : []).flatMap((entry) => {
@@ -141,7 +141,13 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
     },
 
     async unpark(args) {
-      await request(MAC_DESKTOP_DRIVER_OPS.unparkWindow, { windowId: args.windowId });
+      const reply = await request(MAC_DESKTOP_DRIVER_OPS.unparkWindow, { windowId: args.windowId });
+      // An older helper released only the one window and did not say so.
+      const releasedWindowIds = Array.isArray(reply.releasedWindowIds)
+        ? reply.releasedWindowIds.filter((id): id is number => typeof id === "number")
+        : [args.windowId];
+      const handedOverPid = typeof reply.handedOverPid === "number" ? reply.handedOverPid : null;
+      return { releasedWindowIds, handedOverPid };
     },
 
     launch: (args) => request(MAC_DESKTOP_DRIVER_OPS.launch, {

@@ -871,14 +871,15 @@ export type MacDesktopStopArgs = {
 };
 
 /**
- * An app the lane opened that did not quit when its display was stopped —
- * usually because it asked to save — and whose windows moved to the user's
- * main screen instead.
+ * An app the lane opened that did not quit when its display was stopped, even
+ * after the force quit that follows a short grace period, and whose windows
+ * moved to the user's main screen instead. A driver that force-quits never
+ * expects one; an older driver reported apps that asked to save.
  */
 export type MacDesktopAppLeftOpen = {
   pid: number;
   appName: string;
-  /** "TextEdit did not quit, probably because it has unsaved work. It moved to your screen." */
+  /** "TextEdit did not quit, even when forced. It moved to your screen." */
   message: string;
 };
 
@@ -1137,7 +1138,13 @@ export type DesktopSeatProvider = {
   }): Promise<DesktopSeatReply>;
   listWindows(args: { laneId?: string | null }): Promise<MacDesktopWindow[]>;
   park(args: { laneId: string; windowId: number }): Promise<MacDesktopWindow>;
-  unpark(args: { windowId: number }): Promise<void>;
+  /**
+   * Releases one window. A window of an app the lane launched hands the whole
+   * app instance to the user: `releasedWindowIds` names every window that left
+   * the lane, and `handedOverPid` the instance the lane no longer watches or
+   * quits on stop.
+   */
+  unpark(args: { windowId: number }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null }>;
   launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
   present(args: { laneId: string; destination: "main" | "display" }): Promise<DesktopSeatReply>;
   observe(args: {
