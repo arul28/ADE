@@ -1819,6 +1819,27 @@ describe("createAgentChatService", () => {
         expect(steerRowStates(events, "Offered, then stopped.").at(-1)).toBe("failed");
         expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(false);
       });
+
+      it("reports a promoted row dropped, and fails it, when the user cancels it after a recycle mid-offer", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Offered, recycled, cancelled." });
+        await pumpUntil("staged row", () => steerRowStates(events, "Offered, recycled, cancelled.").includes("queued"));
+
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const releaseSteer = parkCursorSteer();
+        const dispatching = service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "inline" });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        // The recycle carries the row onto the replacement runtime, where the
+        // user cancels it while the old runtime's offer is still awaiting.
+        await tripCursorSdkSilenceWatchAndRecycle();
+        await service.cancelSteer({ sessionId: session.id, steerId: staged.steerId });
+        releaseSteer();
+        const result = await dispatching;
+
+        expect(result).toEqual({ dispatchedAt: null, reason: "dropped" });
+        expect(steerRowStates(events, "Offered, recycled, cancelled.").at(-1)).toBe("failed");
+      });
     });
 
     it("cancels a carried Cursor steer with recycle copy when the re-send cannot start", async () => {

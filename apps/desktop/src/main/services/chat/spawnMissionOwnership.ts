@@ -166,6 +166,12 @@ export const spawnDeliveryFailedChildTurnId = (event: AgentChatEvent): string | 
  * streamed text has no turn id there. The lifecycle events (`status` /
  * `done`) do.
  *
+ * A done event without an id (`source: "done"`) is itself the report, so it
+ * never skips: it takes the latest own turn that started and has no done yet,
+ * or `fallbackId` (the caller passes this done event's own sequence) when
+ * there is none. Picking an earlier finished turn would dedupe the new
+ * completion away. The rules below are for a delete (`source: "delete"`).
+ *
  * - Idle, and the latest turn has a done event: that done path already
  *   reported it, so skip. The parent's transcript cannot be the only guard —
  *   compaction, the transcript cap, or a restart can lose the earlier report,
@@ -185,8 +191,10 @@ export const resolveSpawnEndedTurnId = (args: {
   liveTurnId: string | null | undefined;
   recentEntryTurnId: string | null | undefined;
   fallbackId: string;
+  source: "done" | "delete";
 }): string | null => {
   let latestLifecycleTurnId: string | null = null;
+  const startedTurnIds: string[] = [];
   const doneTurnIds = new Set<string>();
   const deliveryFailedTurnIds = new Set<string>();
   for (const envelope of args.history) {
@@ -203,6 +211,15 @@ export const resolveSpawnEndedTurnId = (args: {
     if (!lifecycleTurnId) continue;
     latestLifecycleTurnId = lifecycleTurnId;
     if (event.type === "done") doneTurnIds.add(lifecycleTurnId);
+    else if (event.turnStatus === "started") startedTurnIds.push(lifecycleTurnId);
+  }
+  // A done with no id ends the newest turn only. An older turn that still looks
+  // open may have ended through an idless done that was already reported.
+  if (args.source === "done") {
+    const newestTurnId = startedTurnIds.at(-1);
+    return newestTurnId && newestTurnId === latestLifecycleTurnId && !doneTurnIds.has(newestTurnId)
+      ? newestTurnId
+      : args.fallbackId;
   }
   const liveTurnId = args.liveTurnId?.trim();
   if (!latestLifecycleTurnId || !doneTurnIds.has(latestLifecycleTurnId)) {

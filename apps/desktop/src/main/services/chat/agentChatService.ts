@@ -18830,7 +18830,7 @@ export function createAgentChatService(args: {
       // turns wake the parent; human-dispatched turns and peers leave a quiet
       // completion notice. Causality and dedupe are derived from persisted
       // transcript metadata, so process restarts do not sever the channel.
-      reportChildSpawnEnded(managed.session.id, normalizedEvent.status, normalizedEvent.turnId);
+      reportChildSpawnEnded(managed.session.id, normalizedEvent.status, "done", normalizedEvent.turnId);
       if (normalizedEvent.status === "failed") {
         sessionService.markLastTurnFailed(managed.session.id);
       } else if (normalizedEvent.status === "completed") {
@@ -38956,6 +38956,7 @@ export function createAgentChatService(args: {
   const reportChildSpawnEnded = (
     childSessionId: string,
     status: "completed" | "interrupted" | "failed",
+    source: "done" | "delete",
     turnId?: string,
   ): void => {
     const child = managedSessions.get(childSessionId);
@@ -38989,7 +38990,9 @@ export function createAgentChatService(args: {
       childMidTurn: child.session.status === "active" || runtimeMidTurn(child),
       liveTurnId: activeTurnIdForManaged(child),
       recentEntryTurnId: [...child.recentConversationEntries].reverse().find((entry) => entry.turnId?.trim())?.turnId,
+      // On the done path this is the sequence the done event is about to take.
       fallbackId: `event-${child.eventSequence + 1}`,
+      source,
     });
     if (!resolvedTurnId) return;
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
@@ -45403,9 +45406,11 @@ export function createAgentChatService(args: {
    * moves to `failed` rather than staying "Steering…", and the dispatch that
    * offered it is told the message was dropped. A row that already reads
    * `queued` is cancelled like a user cancel: the notice resolves it. A plain
-   * queued steer has no entry and is left to the notice.
+   * queued steer has no entry and is left to the notice. A user cancel after a
+   * Cursor recycle settles the same way: the old runtime's inline offer may
+   * still be awaiting, and only this marks the row for it.
    */
-  const settleCancelledSteerRow = (managed: ManagedChatSession, steer: QueuedSteer): void => {
+  const settleCancelledSteerRow = (managed: ManagedChatSession, steer: SteerUserRowFields): void => {
     const row = takeAcceptedSteerRow(managed, steer.steerId);
     if (row?.shown !== "accepted") return;
     (managed.cancelledInFlightSteerIds ??= new Set()).add(steer.steerId);
@@ -50222,11 +50227,12 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     steerId: string,
     turnId?: string | null,
-    options: { tombstonePersistedSteer?: boolean } = {},
+    options: { tombstonePersistedSteer?: boolean; removedSteer?: SteerUserRowFields } = {},
   ): void => {
     if (options.tombstonePersistedSteer) forgetPersistedSteer(managed, steerId);
     claimSteerSettlement(managed, steerId);
-    takeAcceptedSteerRow(managed, steerId);
+    if (options.removedSteer) settleCancelledSteerRow(managed, options.removedSteer);
+    else takeAcceptedSteerRow(managed, steerId);
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
@@ -50245,6 +50251,9 @@ export function createAgentChatService(args: {
   const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
+    // The row taken off a local queue, so a carried steer whose old inline
+    // offer is still awaiting settles instead of reading "Steering..." forever.
+    let removedSteer: QueuedSteer | undefined;
     if (runtime?.kind === "codex") {
       const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
         ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
@@ -50293,8 +50302,8 @@ export function createAgentChatService(args: {
       }
       const idx = queue.findIndex((s) => s.steerId === steerId);
       if (idx !== -1) {
-        const [removed] = queue.splice(idx, 1);
-        if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
+        [removedSteer] = queue.splice(idx, 1);
+        if (runtime.kind === "claude" && removedSteer) runtime.knownQueuedMessages.delete(removedSteer.uuid);
       } else if (requireQueued) {
         throw new Error("This message is no longer queued.");
       }
@@ -50305,6 +50314,7 @@ export function createAgentChatService(args: {
     // the client display clears the staged chip on the delete-button path.
     finalizeCancelledSteer(managed, steerId, runtime?.activeTurnId, {
       tombstonePersistedSteer: runtime == null && !managed.runtimeInvalidated,
+      removedSteer,
     });
   };
 
@@ -50357,7 +50367,8 @@ export function createAgentChatService(args: {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
       if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
       claimSteerSettlement(managed, steerId);
-      takeAcceptedSteerRow(managed, steerId);
+      if (removed) settleCancelledSteerRow(managed, removed);
+      else takeAcceptedSteerRow(managed, steerId);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -55690,7 +55701,7 @@ export function createAgentChatService(args: {
     // ignores deleted sessions so late provider events cannot recreate lineage
     // after deletion.
     const tombstoned = managedSessions.get(trimmedSessionId);
-    reportChildSpawnEnded(trimmedSessionId, "interrupted");
+    reportChildSpawnEnded(trimmedSessionId, "interrupted", "delete");
 
     // Tombstone the session before any other async work so in-flight
     // persistence (auto-title, summary, chat state writes) bails instead of

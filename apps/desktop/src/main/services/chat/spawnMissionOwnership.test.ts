@@ -194,13 +194,32 @@ describe("resolveSpawnEndedTurnId", () => {
       ],
       expected: "t1",
     },
-  ])("$label", ({ history, childMidTurn, liveTurnId, recentEntryTurnId, expected }) => {
+    {
+      label: "reports an idless done after a reported turn under this done's own id",
+      history: () => [lifecycle("status", "t1"), lifecycle("done", "t1")],
+      source: "done" as const,
+      expected: "fallback",
+    },
+    {
+      label: "files an idless done under the open turn it ends",
+      history: () => [lifecycle("status", "t1"), lifecycle("done", "t1"), lifecycle("status", "t2")],
+      source: "done" as const,
+      expected: "t2",
+    },
+    {
+      label: "does not file an idless done under an older turn that still looks open",
+      history: () => [lifecycle("status", "t1"), lifecycle("status", "t2"), lifecycle("done", "t2")],
+      source: "done" as const,
+      expected: "fallback",
+    },
+  ])("$label", ({ history, childMidTurn, liveTurnId, recentEntryTurnId, source, expected }) => {
     expect(resolveSpawnEndedTurnId({
       history: history(),
       childMidTurn: childMidTurn ?? false,
       liveTurnId: liveTurnId ?? null,
       recentEntryTurnId: recentEntryTurnId ?? null,
       fallbackId: "fallback",
+      source: source ?? "delete",
     })).toBe(expected);
   });
 });
