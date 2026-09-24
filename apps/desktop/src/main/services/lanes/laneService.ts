@@ -3825,8 +3825,66 @@ export function createLaneService({
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
-  /** External folders left behind after a successful lane delete, keyed by the removed lane id. */
-  const leftoverWorktreeByLaneId = new Map<string, LaneDeleteLeftoverWorktree>();
+  /**
+   * External folders left behind after a successful lane delete, keyed by the
+   * removed lane id. `dev` and `ino` are the directory itself at delete time,
+   * so a later Delete folder cannot remove a different directory that reused
+   * the path. The file keeps the record across a runtime restart.
+   */
+  type StoredLeftoverWorktree = LaneDeleteLeftoverWorktree & {
+    dev: number | null;
+    ino: number | null;
+  };
+  const leftoverWorktreeByLaneId = new Map<string, StoredLeftoverWorktree>();
+  const leftoverWorktreeFile = path.join(projectRoot, ".ade", "leftover-worktrees.json");
+  const persistLeftoverWorktrees = () => {
+    const payload: Record<string, StoredLeftoverWorktree> = {};
+    for (const [laneId, leftover] of leftoverWorktreeByLaneId) payload[laneId] = leftover;
+    fs.mkdirSync(path.dirname(leftoverWorktreeFile), { recursive: true });
+    const temporary = `${leftoverWorktreeFile}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(payload));
+    fs.renameSync(temporary, leftoverWorktreeFile);
+  };
+  const loadLeftoverWorktrees = () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(leftoverWorktreeFile, "utf8"));
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== "object") return;
+    for (const [laneId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const row = value as Partial<StoredLeftoverWorktree>;
+      if (typeof row.path !== "string" || typeof row.laneName !== "string") continue;
+      leftoverWorktreeByLaneId.set(laneId, {
+        path: row.path,
+        canDelete: row.canDelete === true,
+        laneName: row.laneName,
+        dev: typeof row.dev === "number" ? row.dev : null,
+        ino: typeof row.ino === "number" ? row.ino : null,
+      });
+    }
+  };
+  loadLeftoverWorktrees();
+  const rememberLeftoverWorktree = async (laneId: string, leftover: LaneDeleteLeftoverWorktree) => {
+    let stored: StoredLeftoverWorktree = { ...leftover, dev: null, ino: null };
+    if (leftover.canDelete) {
+      try {
+        const stat = await fs.promises.lstat(leftover.path);
+        if (stat.isSymbolicLink()) {
+          stored = { ...leftover, canDelete: false, dev: null, ino: null };
+        } else {
+          stored = { ...leftover, dev: stat.dev, ino: stat.ino };
+        }
+      } catch {
+        stored = { ...leftover, canDelete: false, dev: null, ino: null };
+      }
+    }
+    leftoverWorktreeByLaneId.set(laneId, stored);
+    persistLeftoverWorktrees();
+    return stored;
+  };
   const laneReclaimInFlight = new Set<string>();
   const laneStorageWorktreeLocks = createLaneWorktreeLockService({ db, logger });
   let gitWorktreeMutationQueue: Promise<void> = Promise.resolve();
@@ -7764,11 +7822,14 @@ export function createLaneService({
                   return { detail: row.worktree_path };
                 }
                 if (!managedWorktreePath) {
-                  // Git unregistered it but left files behind. They are the
-                  // user's, outside ADE's storage — say so instead of deleting.
-                  const message = `git removed the worktree but files remain at ${row.worktree_path}`;
-                  recordNonFatalFailure("git_worktree_remove", message);
-                  return { detail: `${row.worktree_path}; warning: ${message}` };
+                  // Git unregistered the checkout and left the directory. The
+                  // lane row can go; the dialog asks before anything is removed.
+                  progress.leftoverWorktree = {
+                    path: normAbs(row.worktree_path),
+                    canDelete: true,
+                    laneName: row.name,
+                  };
+                  return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
                 }
                 return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
               }
@@ -7893,7 +7954,14 @@ export function createLaneService({
 
         invalidateLanePathCaches();
         const leftover = progress.leftoverWorktree ?? null;
-        if (leftover) leftoverWorktreeByLaneId.set(laneId, leftover);
+        if (leftover) {
+          const stored = await rememberLeftoverWorktree(laneId, leftover);
+          progress.leftoverWorktree = {
+            path: stored.path,
+            canDelete: stored.canDelete,
+            laneName: stored.laneName,
+          };
+        }
         finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
         broadcastLifecycleEvent({
           type: "lane-deleted",
@@ -7918,7 +7986,7 @@ export function createLaneService({
             durationMs: totalMs
           });
         }
-        return { leftoverWorktree: leftover };
+        return { leftoverWorktree: progress.leftoverWorktree ?? null };
       } catch (error) {
         progress.leftoverWorktree = null;
         finalize("failed");
@@ -7990,7 +8058,8 @@ export function createLaneService({
 
     getLeftoverWorktree(laneId: string): LaneDeleteLeftoverWorktree | null {
       const leftover = leftoverWorktreeByLaneId.get(laneId);
-      return leftover ? { ...leftover } : null;
+      if (!leftover) return null;
+      return { path: leftover.path, canDelete: leftover.canDelete, laneName: leftover.laneName };
     },
 
     /**
@@ -8025,10 +8094,18 @@ export function createLaneService({
       }
       if (!fs.existsSync(targetPath)) {
         leftoverWorktreeByLaneId.delete(laneId);
+        persistLeftoverWorktrees();
         return { removed: false };
+      }
+      if (leftover.dev !== null && leftover.ino !== null) {
+        const stat = await fs.promises.lstat(targetPath);
+        if (stat.dev !== leftover.dev || stat.ino !== leftover.ino) {
+          throw new Error("That folder was replaced after the lane was deleted.");
+        }
       }
       await fs.promises.rm(targetPath, { recursive: true, force: false });
       leftoverWorktreeByLaneId.delete(laneId);
+      persistLeftoverWorktrees();
       return { removed: true };
     },
 

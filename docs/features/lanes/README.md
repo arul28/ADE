@@ -753,10 +753,13 @@ restart:
 
 Deleting any lane removes its ADE row. An ADE-created checkout under
 `.ade/worktrees` is removed from disk. A checkout the user made elsewhere is
-removed only while Git still recognizes that directory as the worktree root.
-When Git has already forgotten it, the lane row is still deleted and the
-folder stays on disk. The desktop then asks whether to reveal that folder or
-delete it. Close leaves the folder. A symbolic link is never followed.
+removed only while Git still recognizes that directory as the worktree root
+and `git worktree remove` takes the directory with it. When Git has already
+forgotten it, or Git unregisters it and leaves the directory, the lane row is
+still deleted and the folder stays on disk. The desktop then asks whether to
+reveal that folder or delete it. Close leaves the folder. A symbolic link is
+never followed. Delete folder refuses the path if a different directory has
+replaced it, and the offer survives a runtime restart.
 
 Rails checked before `git worktree remove`, for every lane:
 
