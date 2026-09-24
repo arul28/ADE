@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import type { NoticeTone } from "../notice/noticeTones";
 import { Dialog } from "./Dialog";
 
@@ -51,15 +51,24 @@ export type PromptDialogOptions = {
   validate?: (value: string) => string | null | undefined;
 };
 
+type PromptRequest = {
+  id: number;
+  kind: "prompt";
+  options: PromptDialogOptions;
+  resolve: (value: string | null) => void;
+  draft: { value: string; touched: boolean };
+};
+
 type Request =
   | { id: number; kind: "confirm"; options: ConfirmDialogOptions; resolve: (value: boolean) => void }
-  | { id: number; kind: "prompt"; options: PromptDialogOptions; resolve: (value: string | null) => void };
+  | PromptRequest;
 
 let nextId = 1;
 let requests: Request[] = [];
 const listeners = new Set<() => void>();
-const hosts: symbol[] = [];
-let fallbackMounted = false;
+const hosts: Array<{ token: symbol; fallback: boolean }> = [];
+let fallbackRoot: Root | null = null;
+let fallbackContainer: HTMLElement | null = null;
 
 function emit() {
   for (const listener of listeners) listener();
@@ -79,16 +88,34 @@ function remove(id: number): boolean {
   if (!requests.some((entry) => entry.id === id)) return false;
   requests = requests.filter((entry) => entry.id !== id);
   emit();
+  if (requests.length === 0) removeFallbackHostWhenIdle();
   return true;
 }
 
+function removeFallbackHost() {
+  const root = fallbackRoot;
+  const container = fallbackContainer;
+  fallbackRoot = null;
+  fallbackContainer = null;
+  root?.unmount();
+  container?.remove();
+}
+
+function removeFallbackHostWhenIdle() {
+  queueMicrotask(() => {
+    if (requests.length === 0 && hosts.some((host) => !host.fallback)) removeFallbackHost();
+  });
+}
+
 function ensureHost() {
-  if (hosts.length > 0 || fallbackMounted || typeof document === "undefined") return;
-  fallbackMounted = true;
+  if (hosts.length > 0 || fallbackRoot || typeof document === "undefined") return;
   const container = document.createElement("div");
   container.setAttribute("data-ade-dialog-host", "");
   document.body.appendChild(container);
-  createRoot(container).render(<DialogHost />);
+  fallbackContainer = container;
+  const root = createRoot(container);
+  fallbackRoot = root;
+  root.render(<RegisteredDialogHost fallback />);
 }
 
 export function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
@@ -115,7 +142,16 @@ export function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
 
 export function promptDialog(options: PromptDialogOptions): Promise<string | null> {
   return new Promise<string | null>((resolve) => {
-    requests = [...requests, { id: nextId++, kind: "prompt", options, resolve }];
+    requests = [
+      ...requests,
+      {
+        id: nextId++,
+        kind: "prompt",
+        options,
+        resolve,
+        draft: { value: options.defaultValue ?? "", touched: false },
+      },
+    ];
     ensureHost();
     emit();
   });
@@ -130,28 +166,48 @@ export function __resetDialogRequestsForTests() {
     if (request.kind === "confirm") request.resolve(false);
     else request.resolve(null);
   }
+  removeFallbackHost();
 }
 
 /**
  * Renders pending confirm/prompt requests. Mount once at the app root. If more
  * than one is mounted, only the first renders.
  */
-export function DialogHost(): JSX.Element | null {
+export function DialogHost(): JSX.Element {
+  return <RegisteredDialogHost fallback={false} />;
+}
+
+function RegisteredDialogHost({ fallback }: { fallback: boolean }): JSX.Element | null {
   const [token] = useState(() => Symbol("dialog-host"));
   const [isPrimary, setIsPrimary] = useState(false);
   useEffect(() => {
-    hosts.push(token);
-    const update = () => setIsPrimary(hosts[0] === token);
+    const registration = { token, fallback };
+    if (fallback) {
+      hosts.push(registration);
+    } else {
+      const firstFallback = hosts.findIndex((host) => host.fallback);
+      // Keep an active dialog on its current React root so focus and local
+      // state stay intact. The app host takes over when the request settles.
+      const insertAt = firstFallback >= 0 && requests.length === 0 ? firstFallback : hosts.length;
+      hosts.splice(insertAt, 0, registration);
+    }
+    const update = () => setIsPrimary(hosts[0]?.token === token);
     update();
     const unsubscribe = subscribe(update);
     emit();
+    if (!fallback && requests.length === 0) removeFallbackHostWhenIdle();
     return () => {
-      const index = hosts.indexOf(token);
+      const index = hosts.findIndex((host) => host.token === token);
       if (index >= 0) hosts.splice(index, 1);
       unsubscribe();
       emit();
+      if (!fallback) {
+        queueMicrotask(() => {
+          if (requests.length > 0 && !hosts.some((host) => !host.fallback)) ensureHost();
+        });
+      }
     };
-  }, [token]);
+  }, [fallback, token]);
   const pending = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   if (!isPrimary) return null;
   return (
@@ -168,7 +224,7 @@ export function DialogHost(): JSX.Element | null {
         ) : (
           <PromptDialogView
             key={request.id}
-            options={request.options}
+            request={request}
             onResult={(value) => {
               if (remove(request.id)) request.resolve(value);
             }}
@@ -210,14 +266,15 @@ function ConfirmDialogView({
 }
 
 function PromptDialogView({
-  options,
+  request,
   onResult,
 }: {
-  options: PromptDialogOptions;
+  request: PromptRequest;
   onResult: (value: string | null) => void;
 }): JSX.Element {
-  const [value, setValue] = useState(options.defaultValue ?? "");
-  const [touched, setTouched] = useState(false);
+  const { options, draft } = request;
+  const [value, setValue] = useState(draft.value);
+  const [touched, setTouched] = useState(draft.touched);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const errorId = useId();
   const error = options.validate ? options.validate(value) ?? null : null;
@@ -226,6 +283,7 @@ function PromptDialogView({
   const tone = options.tone ?? "accent";
 
   const submit = () => {
+    draft.touched = true;
     setTouched(true);
     if (blocked) return;
     onResult(value);
@@ -259,6 +317,8 @@ function PromptDialogView({
         aria-describedby={touched && error ? errorId : undefined}
         onFocus={(event) => event.currentTarget.select()}
         onChange={(event) => {
+          draft.value = event.target.value;
+          draft.touched = true;
           setValue(event.target.value);
           setTouched(true);
         }}

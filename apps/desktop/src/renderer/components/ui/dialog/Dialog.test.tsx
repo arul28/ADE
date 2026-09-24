@@ -226,6 +226,24 @@ describe("confirmDialog", () => {
     await expect(confirmDialog({ title: "Too late", signal: abort.signal })).resolves.toBe(false);
   });
 
+  it("keeps an early request on the fallback until it settles", async () => {
+    const user = userEvent.setup();
+    const { result } = await open(() => confirmDialog({ title: "Startup confirmation?" }));
+
+    const fallbackContainer = document.querySelector<HTMLElement>("[data-ade-dialog-host]");
+    expect(fallbackContainer).not.toBeNull();
+    expect(screen.getByRole("alertdialog", { name: "Startup confirmation?" })).toBeTruthy();
+
+    const appHost = render(<DialogHost />);
+    expect(fallbackContainer?.isConnected).toBe(true);
+    expect(screen.getByRole("alertdialog", { name: "Startup confirmation?" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    await expect(result).resolves.toBe(true);
+    await waitFor(() => expect(fallbackContainer?.isConnected).toBe(false));
+    appHost.unmount();
+  });
+
   it("stacks above an open dialog and returns focus to it", async () => {
     const user = userEvent.setup();
     function Outer() {
@@ -275,6 +293,33 @@ describe("promptDialog", () => {
     const { result: cancelled } = await open(() => promptDialog({ title: "Lane name" }));
     await user.keyboard("{Escape}");
     await expect(cancelled).resolves.toBeNull();
+  });
+
+  it("preserves a prompt draft when the app host unmounts during a request", async () => {
+    const user = userEvent.setup();
+    const appHost = render(<DialogHost />);
+    const { result } = await open(() => promptDialog({ title: "Branch name", defaultValue: "old" }));
+    const input = screen.getByRole("textbox", { name: "Branch name" }) as HTMLInputElement;
+    await user.clear(input);
+    await user.type(input, "new branch");
+
+    await act(async () => {
+      appHost.unmount();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+    });
+    const fallbackContainer = document.querySelector<HTMLElement>("[data-ade-dialog-host]");
+    expect(fallbackContainer).not.toBeNull();
+    const restoredInput = screen.getByRole("textbox", { name: "Branch name" }) as HTMLInputElement;
+    expect(restoredInput.value).toBe("new branch");
+
+    render(<DialogHost />);
+    expect(fallbackContainer?.isConnected).toBe(true);
+    const stillRestoredInput = screen.getByRole("textbox", { name: "Branch name" }) as HTMLInputElement;
+    expect(stillRestoredInput.value).toBe("new branch");
+
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    await expect(result).resolves.toBe("new branch");
+    await waitFor(() => expect(fallbackContainer?.isConnected).toBe(false));
   });
 
   it("blocks submit while empty or invalid", async () => {
