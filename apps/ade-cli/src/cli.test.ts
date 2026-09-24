@@ -52,6 +52,7 @@ import {
   startHeadlessRpcSocketServer,
   startHeadlessRpcTcpServer,
   shouldAutoRegisterProjectForPlan,
+  shouldInstallBrainRefreshBroker,
   formatBrainStatus,
   formatGithubAppUserAuth,
   readProjectHostReadiness,
@@ -16496,6 +16497,23 @@ describe("ADE CLI", () => {
     expect((summarized as any).visual).toContain(
       "\\- child (id: child) [feature]",
     );
+  });
+});
+
+describe("cli refresh broker installation", () => {
+  // A brain pointed at its own socket for refreshes would deadlock, so the
+  // plans that host the brain, and headless runs, keep their own credentials.
+  it.each([
+    [["serve"], false],
+    [["runtime", "status"], false],
+    [["brain", "status"], false],
+    [["--headless", "lanes", "list"], false],
+    [["lanes", "list"], true],
+    [["chat", "list"], true],
+  ])("argv %j installs the broker: %s", (argv, expected) => {
+    const parsed = parseCliArgs(argv);
+    const plan = buildCliPlan(parsed.command, parsed.options);
+    expect(shouldInstallBrainRefreshBroker(plan, parsed.options)).toBe(expected);
   });
 });
 

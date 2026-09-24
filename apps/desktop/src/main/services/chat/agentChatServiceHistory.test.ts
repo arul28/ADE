@@ -14,18 +14,24 @@ import {
   parseAgentChatTranscript,
   path,
   readPersistedChatState,
+  runGit,
   startOpenCodeSession,
   streamText,
   tmpHomeRoot,
   tmpRoot,
+  turnDiffMockState,
   waitFor,
   waitForEvent,
   writePersistedChatState,
   writeTestTranscriptEnvelopes,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
+  // --------------------------------------------------------------------------
+  // emitAdeCard
+  // --------------------------------------------------------------------------
+
   describe("emitAdeCard", () => {
     const proofCard = (over: Record<string, unknown> = {}) => ({
       cardId: "run-42",
@@ -2002,9 +2008,8 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
-  // Session creation edge cases
+  // Resume and error recovery
   // --------------------------------------------------------------------------
-
 
   describe("resumeSession", () => {
     it("resumes a disposed session back to idle", async () => {
@@ -2782,8 +2787,61 @@ describe("createAgentChatService", () => {
       }
     });
   });
+});
 
-  // --------------------------------------------------------------------------
-  // Interrupt
-  // --------------------------------------------------------------------------
+
+describe("turn diff capture", () => {
+  it("awaits the per-turn fingerprint before emitting a fast completion summary", async () => {
+    let releaseBeforeTree!: (tree: Map<string, string>) => void;
+    const beforeTree = new Promise<Map<string, string>>((resolve) => {
+      releaseBeforeTree = resolve;
+    });
+    const expectedTree = new Map([["pre-existing.ts", "1:1"]]);
+    const collectSummary = vi.fn(async (args: { beforeTree?: Map<string, string> | null }) => (
+      args.beforeTree
+        ? {
+            files: [{ path: "turn.ts", additions: 1, deletions: 0, status: "A" as const }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+          }
+        : null
+    ));
+    turnDiffMockState.beforeTreeGates = [Promise.resolve(new Map()), beforeTree];
+    turnDiffMockState.collectSummary = collectSummary;
+    vi.mocked(runGit).mockResolvedValue({ stdout: "head-sha\n", stderr: "", exitCode: 0 });
+
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Make a quick change.",
+    }, { awaitDispatch: true });
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed" } },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(collectSummary).not.toHaveBeenCalled();
+
+    releaseBeforeTree(expectedTree);
+    await vi.waitFor(() => {
+      expect(collectSummary).toHaveBeenCalledTimes(1);
+    });
+    expect(collectSummary.mock.calls[0]?.[0].beforeTree).toEqual(expectedTree);
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.event.type === "turn_diff_summary")).toBe(true);
+    });
+  });
 });

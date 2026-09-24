@@ -274,29 +274,6 @@ function parkCursorSend(): () => void {
   return release;
 }
 
-function parkCursorSteer(): () => void {
-  let resolveGate = () => {};
-  mockState.cursorSteerGate = new Promise<void>((resolve) => {
-    resolveGate = resolve;
-  });
-  const release = () => {
-    resolveGate();
-    if (mockState.cursorSteerGate) mockState.cursorSteerGate = null;
-    const idx = mockState.cursorSteerParks.indexOf(release);
-    if (idx >= 0) mockState.cursorSteerParks.splice(idx, 1);
-  };
-  mockState.cursorSteerParks.push(release);
-  mockState.releaseCursorSteer = () => {
-    const parks = mockState.cursorSteerParks.splice(0);
-    for (const park of parks) park();
-  };
-  return release;
-}
-
-// ---------------------------------------------------------------------------
-// vi.mock — external dependencies
-// ---------------------------------------------------------------------------
-
 vi.mock("node:crypto", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
@@ -1226,7 +1203,7 @@ vi.mock("../ai/piInstallation", async (importOriginal) => {
   };
 });
 
-// Pass-through: a test can wrap the ACP runtime it opens (see the Stop-race test).
+// Pass-through: a test can wrap the ACP runtime it opens (see the cancelled-turn test in agentChatServiceAcpRuntime.test.ts).
 vi.mock("./acpHost", async (importOriginal) => {
   const actual = await importOriginal<typeof AcpHostModule>();
   return { ...actual, createAcpRuntime: vi.fn(actual.createAcpRuntime) };
@@ -2061,167 +2038,9 @@ function createService(overrides: Record<string, unknown> = {}) {
 async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
-    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-}
-
-function installAutoTitleAuth(): void {
-  // Auto-titling is skipped outright when no model is reachable.
-  vi.mocked(detectAllAuth).mockResolvedValue([
-    { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
-    { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
-  ] as never);
-}
-
-function installAutoTitleClaudeStream(): void {
-  let streamCall = 0;
-  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-    send: vi.fn().mockResolvedValue(undefined),
-    stream: vi.fn(() => (async function* () {
-      streamCall += 1;
-      if (streamCall === 1) {
-        yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
-        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-        return;
-      }
-      yield {
-        type: "assistant",
-        message: { content: [{ type: "text", text: "Done" }], usage: { input_tokens: 1, output_tokens: 1 } },
-      };
-      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-    })()),
-    close: vi.fn(),
-    sessionId: "sdk-session-1",
-    setPermissionMode: vi.fn().mockResolvedValue(undefined),
-  } as any);
-}
-
-const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
-const HANDOFF_BEHIND_SHA = "0123456789abcdef0123456789abcdef01234567";
-const HANDOFF_DIVERGED_SHA = "fedcba9876543210fedcba9876543210fedcba98";
-
-function installCleanCrossMachineGitFixture(
-  branchRef = "feature/primary",
-  porcelain = "",
-  originUrl = "git@github.com:example/ade.git",
-) {
-  vi.mocked(runGit).mockImplementation(async (args) => {
-    const command = args.join(" ");
-    if (command === "status --porcelain=v1") return { stdout: porcelain, stderr: "", exitCode: 0 };
-    if (command === "rev-parse HEAD") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
-    if (command === "rev-parse @{upstream}") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
-    if (command === "remote get-url origin") return { stdout: `${originUrl}\n`, stderr: "", exitCode: 0 };
-    if (args[0] === "ls-remote") return { stdout: `${HANDOFF_TEST_SHA}\trefs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
-    if (args[0] === "check-ref-format") return { stdout: `${branchRef}\n`, stderr: "", exitCode: 0 };
-    if (args[0] === "fetch") return { stdout: "", stderr: "", exitCode: 0 };
-    if (command === `rev-parse refs/remotes/origin/${branchRef}`) return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
-    if (command === `rev-parse --verify refs/heads/${branchRef}`) return { stdout: "", stderr: "", exitCode: 1 };
-    return { stdout: "", stderr: "", exitCode: 0 };
-  });
-}
-
-function installCrossMachineDestinationLaneGitFixture(options: {
-  branchRef?: string;
-  laneHead?: string;
-  remoteHead?: string;
-  dirtyPorcelain?: string;
-  ancestorExitCode?: number;
-  behindBy?: number;
-  expectedReachable?: boolean;
-  mergeExitCode?: number;
-} = {}) {
-  const branchRef = options.branchRef ?? "feature/primary";
-  const laneHead = options.laneHead ?? HANDOFF_BEHIND_SHA;
-  const remoteHead = options.remoteHead ?? HANDOFF_TEST_SHA;
-  let merged = false;
-  vi.mocked(runGit).mockImplementation(async (args) => {
-    const command = args.join(" ");
-    if (command === "status --porcelain=v1") {
-      return { stdout: options.dirtyPorcelain ?? "", stderr: "", exitCode: 0 };
-    }
-    if (command === "rev-parse HEAD") {
-      return { stdout: `${merged ? HANDOFF_TEST_SHA : laneHead}\n`, stderr: "", exitCode: 0 };
-    }
-    if (command === `rev-parse refs/remotes/origin/${branchRef}`) {
-      return { stdout: `${remoteHead}\n`, stderr: "", exitCode: 0 };
-    }
-    if (command === `rev-parse --verify refs/heads/${branchRef}`) {
-      return { stdout: "", stderr: "", exitCode: 1 };
-    }
-    if (command === `cat-file -e ${HANDOFF_TEST_SHA}^{commit}`) {
-      return {
-        stdout: "",
-        stderr: options.expectedReachable === false ? "missing commit" : "",
-        exitCode: options.expectedReachable === false ? 1 : 0,
-      };
-    }
-    if (command === `merge-base --is-ancestor ${laneHead} ${HANDOFF_TEST_SHA}`) {
-      return { stdout: "", stderr: "", exitCode: options.ancestorExitCode ?? 0 };
-    }
-    if (command === `rev-list --count ${laneHead}..${HANDOFF_TEST_SHA}`) {
-      return { stdout: `${options.behindBy ?? 3}\n`, stderr: "", exitCode: 0 };
-    }
-    if (command === `merge --ff-only ${HANDOFF_TEST_SHA}`) {
-      const exitCode = options.mergeExitCode ?? 0;
-      if (exitCode === 0) merged = true;
-      return {
-        stdout: exitCode === 0 ? "Fast-forward\n" : "",
-        stderr: exitCode === 0 ? "" : "not possible to fast-forward",
-        exitCode,
-      };
-    }
-    if (args[0] === "ls-remote") {
-      return { stdout: `${HANDOFF_TEST_SHA}\trefs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
-    }
-    if (args[0] === "check-ref-format") return { stdout: `${branchRef}\n`, stderr: "", exitCode: 0 };
-    if (args[0] === "fetch") return { stdout: "", stderr: "", exitCode: 0 };
-    return { stdout: "", stderr: "", exitCode: 0 };
-  });
-}
-
-function gzipForkContent(content: Buffer | string) {
-  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
-  return {
-    contentBase64Gzip: zlib.gzipSync(buffer).toString("base64"),
-    uncompressedBytes: buffer.length,
-  };
-}
-
-function makeForkCapsule(overrides: Partial<AgentChatCrossMachineHandoffCapsule> = {}): AgentChatCrossMachineHandoffCapsule {
-  const mainContent = Buffer.from('{"type":"session_meta"}\n', "utf8");
-  return {
-    version: 1,
-    handoffId: "handoff-fork-test-1",
-    createdAt: "2026-07-10T12:00:00.000Z",
-    source: {
-      machineName: "Source Mac",
-      sessionId: "source-session",
-      provider: "claude",
-      model: "claude-sonnet-5",
-      title: "Fork handoff",
-      laneName: "Feature lane",
-      branchRef: "feature/handoff-fork",
-      headSha: HANDOFF_TEST_SHA,
-      originUrl: "https://github.com/example/ade.git",
-    },
-    target: { targetModelId: "anthropic/claude-sonnet-5" },
-    brief: "Fork handoff — full conversation history transported.",
-    artifacts: { fileChanges: [], commands: [], errors: [] },
-    linearIssues: [],
-    continuationPrompt: "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.",
-    mode: "fork",
-    forkTransport: {
-      provider: "claude",
-      nativeSessionId: "claude-source-session",
-      kind: "claude-jsonl",
-      mainFile: {
-        name: "claude-source-session.jsonl",
-        ...gzipForkContent(mainContent),
-      },
-    },
-    ...overrides,
-  };
 }
 
 function installRealTranscriptParser(): void {
@@ -2249,26 +2068,6 @@ function writeTestTranscriptEnvelopes(sessionId: string, envelopes: AgentChatEve
   fs.writeFileSync(durablePath, raw, "utf8");
 }
 
-function installCliCaptureMock(
-  responseForArgs: (args: string[]) => { stdout: string | Buffer; stderr?: string; exitCode?: number },
-): void {
-  vi.mocked(spawn).mockImplementation(((_bin: string, args: string[]) => {
-    const proc = new EventEmitter() as any;
-    proc.stdin = { end: vi.fn(), write: vi.fn(), writable: true };
-    proc.stdout = new EventEmitter();
-    proc.stderr = new EventEmitter();
-    proc.kill = vi.fn();
-    proc.pid = 99_999;
-    queueMicrotask(() => {
-      const response = responseForArgs(args);
-      if (response.stdout) proc.stdout.emit("data", response.stdout);
-      if (response.stderr) proc.stderr.emit("data", response.stderr);
-      proc.emit("close", response.exitCode ?? 0);
-    });
-    return proc;
-  }) as any);
-}
-
 function readPersistedChatState(sessionId: string): Record<string, any> {
   return JSON.parse(
     fs.readFileSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`), "utf8"),
@@ -2281,42 +2080,6 @@ function writePersistedChatState(sessionId: string, nextState: Record<string, un
     JSON.stringify(nextState, null, 2),
     "utf8",
   );
-}
-
-/**
- * The setup every Claude approval test shares: one session whose stream never
- * yields, so the only state writes are the host's own. Returning `canUseTool`
- * (rather than raising a card here) lets each test drive its own asks.
- */
-async function openClaudeApprovalHarness(sdkSessionId: string) {
-  const events: AgentChatEventEnvelope[] = [];
-  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-    send: vi.fn().mockResolvedValue(undefined),
-    stream: vi.fn(async function* () { return; }),
-    close: vi.fn(),
-    sessionId: sdkSessionId,
-    setPermissionMode: vi.fn().mockResolvedValue(undefined),
-  } as any);
-
-  const { service } = createService({
-    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-  });
-  const session = await service.createSession({
-    laneId: "lane-1",
-    provider: "claude",
-    model: "sonnet",
-  });
-  await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
-
-  const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-    canUseTool?: (
-      tool: string,
-      input: Record<string, unknown>,
-      options: Record<string, unknown>,
-    ) => Promise<Record<string, unknown>>;
-  } | undefined;
-
-  return { service, session, events, opts };
 }
 
 async function waitForEvent<T extends AgentChatEventEnvelope>(
@@ -2356,17 +2119,6 @@ async function waitForFakeTimerCondition(
   }
   if (predicate()) return;
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ${description}.`);
-}
-
-async function waitForFakeTimerPromise<T>(
-  promise: Promise<T>,
-  description: string,
-): Promise<T> {
-  let settled = false;
-  const trackedPromise = promise.finally(() => { settled = true; });
-  void trackedPromise.catch(() => undefined);
-  await waitForFakeTimerCondition(() => settled, description);
-  return trackedPromise;
 }
 
 async function createClaudeStreamFixture(args: {
@@ -2446,68 +2198,6 @@ function createMemoryTurnUsageLedger() {
   return { ledger: createTurnUsageLedger({ store }), rows };
 }
 
-/**
- * Claude fixture that withholds the provider's answer to `/compact` until ADE
- * has actually sent it. Yielding both results up front lets the turn's own
- * post-result drain swallow the second one, which is not how the SDK behaves.
- */
-async function createClaudeCompactionFixture(args: {
-  sdkSessionId: string;
-  first: Array<Record<string, unknown>>;
-  afterCompact: Array<Record<string, unknown>>;
-}) {
-  const events: AgentChatEventEnvelope[] = [];
-  const setPermissionMode = vi.fn().mockResolvedValue(undefined);
-  let resolveCompactSent: () => void = () => {};
-  const compactSent = new Promise<void>((resolve) => { resolveCompactSent = resolve; });
-  const send = vi.fn(async (message: unknown) => {
-    if (claudeInputText(message) === "/compact") resolveCompactSent();
-  });
-  let streamCall = 0;
-
-  const stream = vi.fn(() => (async function* () {
-    streamCall += 1;
-    if (streamCall === 1) {
-      yield {
-        type: "system",
-        subtype: "init",
-        session_id: args.sdkSessionId,
-        slash_commands: [],
-      };
-      return;
-    }
-    for (const message of args.first) yield message;
-    await compactSent;
-    for (const message of args.afterCompact) yield message;
-  })());
-
-  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-    send,
-    stream,
-    close: vi.fn(),
-    sessionId: args.sdkSessionId,
-    setPermissionMode,
-  } as any);
-
-  const harness = createService({
-    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-  });
-  const { service } = harness;
-  const session = await service.createSession({
-    laneId: "lane-1",
-    provider: "claude",
-    model: "claude-sonnet-5",
-    modelId: "anthropic/claude-sonnet-5",
-  });
-
-  await service.runSessionTurn({
-    sessionId: session.id,
-    text: "Exercise Claude streaming text.",
-  });
-
-  return { ...harness, events, session, send };
-}
-
 function claudeNoticeMessages(events: AgentChatEventEnvelope[]): string[] {
   return events.flatMap((entry) => entry.event.type === "system_notice"
     ? [entry.event.message]
@@ -2533,14 +2223,6 @@ function claudeInputText(message: unknown): string {
         ? String((block as { text: string }).text)
         : "")
     .join("");
-}
-
-async function settleDirectiveBookkeeping(): Promise<void> {
-  // `runSessionTurn`'s collector resolves on the turn's `done` event, which is
-  // emitted inside the provider run; the directive keys are marked when that run
-  // returns. A macrotask yield lets the run's promise chain finish so the next
-  // send sees the marked key. Not a wall-clock wait — nothing is being timed.
-  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 async function waitForSessionTitle(sessionService: ReturnType<typeof createMockSessionService>, sessionId: string, title: string): Promise<void> {
@@ -2582,7 +2264,7 @@ function makeLaneLinearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLine
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Per-test reset
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
@@ -2717,8 +2399,8 @@ afterEach(async () => {
   mockState.cursorSteerOutcome = "complete_delivered";
   mockState.releaseCursorSendPrompt?.();
   mockState.releaseCursorSteer?.();
-  await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
-  await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
+  await new Promise<void>((resolve) => { realSetImmediate(resolve); });
+  await new Promise<void>((resolve) => { realSetImmediate(resolve); });
   await Promise.resolve();
   mockState.onCursorSendPrompt = null;
   mockState.onCursorCancel = null;
@@ -2745,6 +2427,7 @@ afterEach(async () => {
 });
 
 
+/** Just past the real watchdog budget, derived rather than mirrored. */
 const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
 
 /**
@@ -2758,71 +2441,6 @@ const flushCursorSdkSilenceRecycle = async (): Promise<void> => {
   await Promise.resolve();
 };
 
-const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
-  await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
-  await flushCursorSdkSilenceRecycle();
-};
-
-/**
- * Real wall clock and a real event-loop yield, captured before any test can
- * install fake timers. `vi.useFakeTimers()` replaces the global `Date` and
- * `setImmediate`, so a faked test that measures elapsed time or waits for the
- * poll phase has to hold the originals.
- */
-const pumpRealNow = Date.now.bind(Date);
-const pumpRealSetImmediate = globalThis.setImmediate;
-
-/**
- * How long `pumpUntil` waits in REAL time. The work it waits on is genuinely
- * async — fs reads for the injected Cursor system prompt, sqlite persistence —
- * so the budget has to be wall-clock. An iteration count is not a budget: with
- * no fake timer pending, one iteration costs microseconds, so a loaded runner
- * burns the whole thing while the very first read is still queued behind the
- * libuv pool. Locally the slowest wait in this file converges in 11 iterations.
- */
-const PUMP_REAL_BUDGET_MS = 5_000;
-/**
- * Fake-clock advancing stays capped by iteration so 1ms-per-tick pumping can
- * never drift the virtual clock into the 90s silence watchdog by itself.
- */
-const PUMP_FAKE_TICK_BUDGET = 800;
-/** Real stall time before `pumpUntil` starts tripping the silence watchdog. */
-const PUMP_WATCHDOG_STALL_MS = 1_000;
-
-/**
- * Real async setup work still needs event-loop turns while the clock is faked,
- * so pump the fake clock instead of assuming a fixed number of ticks.
- *
- * Do not trip the silence watchdog while flushing that setup. On a slow
- * runner, jumping 90s during `first cursor send` recycled the turn before
- * the test queued its steer, and the later recovery wait timed out.
- */
-const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => {
-  const startedAt = pumpRealNow();
-  // A silence-watchdog recycle can arm the next attempt's timer after the first
-  // 90s jump, so extra trips stay available — but keyed off real stall time
-  // rather than a tick index. Tripping on a tick index recycles the runtime
-  // whose recovery this is waiting for whenever the loop spins faster than the
-  // pending I/O completes, which is exactly what a loaded runner does.
-  let nextWatchdogTripAt = startedAt + PUMP_WATCHDOG_STALL_MS;
-  let fakeTicksLeft = PUMP_FAKE_TICK_BUDGET;
-  while (!ready() && pumpRealNow() - startedAt < PUMP_REAL_BUDGET_MS) {
-    if (pumpRealNow() >= nextWatchdogTripAt) {
-      nextWatchdogTripAt = pumpRealNow() + PUMP_WATCHDOG_STALL_MS;
-      await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
-      await flushCursorSdkSilenceRecycle();
-    } else if (fakeTicksLeft > 0) {
-      fakeTicksLeft -= 1;
-      await vi.advanceTimersByTimeAsync(1);
-    } else {
-      // Fake budget spent: keep handing the real event loop turns so pending
-      // fs/sqlite callbacks can still land, without moving the virtual clock.
-      await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
-    }
-    await Promise.resolve();
-  }
-  if (!ready()) throw new Error(`pumpUntil timed out waiting for: ${label}`);
-};
 
 
 export {
@@ -2830,28 +2448,15 @@ export {
   CLAUDE_READ_ONLY_TOOLS,
   CODEX_REPLAY_MAX_CHARS,
   CROSS_PROVIDER_REPLAY_HEADER,
-  CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
-  CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
   CURSOR_SILENCE_WATCHDOG_TRIP_MS,
   EventEmitter,
-  HANDOFF_BEHIND_SHA,
-  HANDOFF_DIVERGED_SHA,
-  HANDOFF_TEST_SHA,
   HOST_TOOL_APPROVAL_NAMES,
-  ORIGINAL_CLAUDE_CONFIG_DIR,
-  ORIGINAL_CODEX_HOME,
-  ORIGINAL_CURSOR_API_KEY,
   PTY_SEND_PRE_DELIVERY_ERROR_CODE,
-  PUMP_FAKE_TICK_BUDGET,
-  PUMP_REAL_BUDGET_MS,
-  PUMP_WATCHDOG_STALL_MS,
   SCHEDULED_WORK_STATE_KEY,
   SCHEDULE_TEST_START,
   SESSION_STALE_AFTER_MS,
   SessionTurnAbandonedError,
   acquireCursorSdkConnection,
-  acquireDroidSdkConnection,
-  beginClaudeStartupWarmup,
   beginIdentityConfirmHold,
   bridgeClaudeSessionToQuery,
   buildCodingAgentSystemPrompt,
@@ -2874,7 +2479,6 @@ export {
   createAcpSessionPool,
   createAgentChatService,
   createChatRuntimeBudget,
-  createClaudeCompactionFixture,
   createClaudeStreamFixture,
   createCtoMemoryService,
   createCtoStateService,
@@ -2885,8 +2489,6 @@ export {
   createLogger,
   createMemoryTurnUsageLedger,
   createMockAcpAgent,
-  createMockLaneService,
-  createMockProjectConfigService,
   createMockSessionService,
   createScheduledWorkDb,
   createSdkMcpServer,
@@ -2907,17 +2509,10 @@ export {
   getSessionMessages,
   getSubagentMessages,
   gunzipFromBase64,
-  gzipForkContent,
   gzipSync,
   injectFsFault,
-  installAutoTitleAuth,
-  installAutoTitleClaudeStream,
   installClaudeResponseFixture,
-  installClaudeSdkCompatMocks,
   installClaudeWakeupFixture,
-  installCleanCrossMachineGitFixture,
-  installCliCaptureMock,
-  installCrossMachineDestinationLaneGitFixture,
   installRealTranscriptParser,
   isOpenCodeExternalDirectoryInsideAdeRoot,
   isQuestionShapedPendingInput,
@@ -2925,27 +2520,21 @@ export {
   loadExternalSessionEvents,
   loadQwenUserSettings,
   makeDefaultClaudeSession,
-  makeForkCapsule,
   makeLaneLinearIssue,
   makeLinearIssueContextAttachment,
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
-  openClaudeApprovalHarness,
   openCodeEventStream,
   openKvDb,
   os,
   parkCursorSend,
-  parkCursorSteer,
   parseAgentChatTranscript,
   parseCodexServerVersion,
   path,
   peekOpenCodeInventoryCache,
   probeCursorSdkModelDiscovery,
   probeOpenCodeProviderInventory,
-  pumpRealNow,
-  pumpRealSetImmediate,
-  pumpUntil,
   query,
   readPendingInputRecord,
   readPersistedChatState,
@@ -2956,14 +2545,11 @@ export {
   replaceDynamicOpenCodeModelDescriptors,
   replaceDynamicPiModelDescriptors,
   resolveBuiltInBrowserActorCapability,
-  resolveClaudeCodeExecutable,
   resolveLaneAppleDeviceDirective,
-  resolveOpenCodeExecutablePath,
   respondWithSession,
   restartRecoveryStopAttribution,
   runClaudeStreamFixture,
   runGit,
-  settleDirectiveBookkeeping,
   spawn,
   stableStringify,
   startOpenCodeSession,
@@ -2973,14 +2559,11 @@ export {
   tagSession,
   tmpHomeRoot,
   tmpRoot,
-  tripCursorSdkSilenceWatchAndRecycle,
   turnDiffMockState,
-  usingFakeTimers,
   waitFor,
   waitForCondition,
   waitForEvent,
   waitForFakeTimerCondition,
-  waitForFakeTimerPromise,
   waitForFakeTimers,
   waitForSessionTitle,
   writePersistedChatState,
@@ -2992,7 +2575,6 @@ export type {
   AcpHostModule,
   AcpSession,
   AcpSessionUpdate,
-  AdeTurnUsageRecord,
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCrossMachineHandoffCapsule,
@@ -3001,11 +2583,6 @@ export type {
   ChatScheduledWorkRecord,
   ChatScheduledWorkState,
   ComputerUseBackendStatus,
-  LaneLinearIssue,
   MockAcpAgent,
   PendingInputRequest,
-  PiInstallationModule,
-  PiSdkPoolModule,
-  TurnUsageLedgerStore,
-  TurnUsageReconcilersModule,
 };

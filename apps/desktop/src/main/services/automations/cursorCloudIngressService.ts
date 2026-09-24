@@ -178,6 +178,9 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   const pollIntervalMs = Math.max(1_000, deps.pollIntervalMs ?? DEFAULT_CURSOR_CLOUD_RELAY_POLL_INTERVAL_MS);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let pollInFlight: Promise<void> | null = null;
+  // A poll already running when the service stops can finish after the
+  // database is closed. Its failure is then expected and must not be written.
+  let stopped = false;
 
   const setLastError = (message: string | null): void => {
     deps.db.setJson(CURSOR_CLOUD_RELAY_LAST_ERROR_REF, message);
@@ -375,6 +378,7 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
     if (pollInFlight) return pollInFlight;
     pollInFlight = poll()
       .catch((error: unknown) => {
+        if (stopped) return;
         const message = errorMessage(error);
         setLastError(message);
         deps.logger.warn("automations.cursor_cloud_relay_poll_failed", { error: message });
@@ -387,12 +391,14 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
 
   const start = (): void => {
     if (pollTimer) return;
+    stopped = false;
     void pollNow();
     pollTimer = setInterval(() => void pollNow(), pollIntervalMs);
     pollTimer.unref?.();
   };
 
   const stop = (): void => {
+    stopped = true;
     if (!pollTimer) return;
     clearInterval(pollTimer);
     pollTimer = null;

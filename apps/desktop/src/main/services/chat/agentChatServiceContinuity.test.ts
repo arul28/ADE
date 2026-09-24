@@ -2,7 +2,6 @@ import {
   AgentChatEventEnvelope,
   claudeSdkCreateSessionCompat,
   claudeSdkResumeSessionCompat,
-  codexComputerUseClientCandidates,
   createScheduledWorkDb,
   createService,
   detectAllAuth,
@@ -17,11 +16,11 @@ import {
   readThreadPointerLedger,
   startup,
   storedWakeup,
-  tmpHomeRoot,
   tmpRoot,
   waitFor,
+  waitForEvent,
   writePersistedChatState,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
 
 describe("suggestLaneNameFromPrompt", () => {
@@ -594,6 +593,7 @@ describe("suggestLaneNameFromPrompt", () => {
   });
 });
 
+
 // These tests poll the real filesystem for a write the service performs
 // asynchronously with no completion receipt to await. vitest's default
 // `vi.waitFor` budget is one second, which is simply too tight for that I/O
@@ -780,6 +780,7 @@ describe("durable chat metadata and transcript continuity", () => {
     );
   });
 });
+
 
 describe("explicit provider-thread continuity recovery", () => {
   const metadataPath = (sessionId: string) => path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${sessionId}.json`);
@@ -1241,376 +1242,184 @@ describe("explicit provider-thread continuity recovery", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Caller MCP isolation (strictMcpConfig)
-//
-// A user-configured MCP server (filesystem, shell, git, …) is exactly what an
-// embedder asking for strict mode wants withheld. Each test pins the MCP
-// configuration ADE actually sends when strict mode is on.
-// ---------------------------------------------------------------------------
+describe("Claude resume_return dialog", () => {
+  type ClaudeOptionsWithDialogs = {
+    onUserDialog?: (
+      request: { dialogKind: string; payload: Record<string, unknown>; toolUseID?: string },
+      options: { signal: AbortSignal; requestId: string },
+    ) => Promise<{ behavior: "completed"; result: unknown } | { behavior: "cancelled" } | null>;
+    supportedDialogKinds?: string[];
+  };
 
-describe("caller MCP isolation", () => {
-  // Same overlay, different caller: the ADE SDK injects servers into an
-  // ordinary chat. Codex has no "replace the config" mode, so both the caller's
-  // servers and strict mode's per-server disables ride the same table.
-  it("Codex: merges caller-injected MCP servers into the thread config overlay", async () => {
-    const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
+  const capturedClaudeOptions = (): ClaudeOptionsWithDialogs | undefined =>
+    vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as ClaudeOptionsWithDialogs | undefined;
+
+  const startClaudeChat = async (
+    events: AgentChatEventEnvelope[],
+    overrides: Record<string, unknown> = {},
+    sessionArgs: Record<string, unknown> = {},
+  ) => {
     const { service } = createService({
-      resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
-      resolveCodexConfiguredMcpServerNames: () => ["filesystem"],
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      ...overrides,
     });
-
-    const chat = await service.createSession({
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.4",
-      mcpServers: {
-        embedderHttp: { type: "http", url: "https://example.test/mcp", headers: { "x-key": "v" } },
-        embedderStdio: { type: "stdio", command: "node", args: ["server.js"] },
-      },
-    });
-    await service.sendMessage({ sessionId: chat.id, text: "Do the work." });
-    await vi.waitFor(() => {
-      expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-    });
-
-    const start = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-    // Without strict mode, `filesystem` is untouched: the user's own Codex
-    // config keeps loading exactly as it did before this feature.
-    expect(start?.params?.config?.mcp_servers).toEqual({
-      computer_use: { command: signedClient, args: ["mcp"], enabled: true },
-      embedderHttp: { url: "https://example.test/mcp", http_headers: { "x-key": "v" }, enabled: true },
-      embedderStdio: { command: "node", args: ["server.js"], enabled: true },
-    });
-  });
-
-  it("Codex: strict mode disables the user's configured servers but not the caller's", async () => {
-    const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
-    const { service } = createService({
-      resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
-      resolveCodexConfiguredMcpServerNames: () => ["filesystem", "embedder"],
-    });
-
-    const chat = await service.createSession({
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.4",
-      mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
-      strictMcpConfig: true,
-    });
-    await service.sendMessage({ sessionId: chat.id, text: "Do the work." });
-    await vi.waitFor(() => {
-      expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-    });
-
-    const start = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-    // `embedder` is in BOTH lists — the user configured a server by that name
-    // and the caller injected one. The caller's definition has to win, or
-    // strict mode would disable the very server it was asked to add.
-    expect(start?.params?.config?.mcp_servers).toEqual({
-      computer_use: { command: signedClient, args: ["mcp"], enabled: true },
-      filesystem: { enabled: false },
-      embedder: { url: "https://example.test/mcp", enabled: true },
-    });
-  });
-
-  // `computer_use` is BOTH an ADE-managed server and a name that appears in the
-  // user's config.toml mcp_servers table. That made it the one name where merge
-  // order mattered, and the order was wrong: strict mode disabled ADE's own
-  // Computer Use, because the strict overrides were spread after it.
-  it("Codex: ADE's computer_use survives strict mode and a colliding caller name", async () => {
-    const signedClient = codexComputerUseClientCandidates(path.join(tmpHomeRoot, ".codex"))[0]!;
-    const { service } = createService({
-      resolveCodexComputerUseMcp: async () => ({ command: signedClient, args: ["mcp"], enabled: true }),
-      // The user's config.toml declares computer_use, so strict mode would
-      // otherwise emit `computer_use: { enabled: false }`.
-      resolveCodexConfiguredMcpServerNames: () => ["filesystem", "computer_use"],
-    });
-
-    const chat = await service.createSession({
-      laneId: "lane-1",
-      provider: "codex",
-      model: "gpt-5.4",
-      mcpServers: { embedder: { type: "http", url: "https://example.test/mcp" } },
-      strictMcpConfig: true,
-    });
-    await service.sendMessage({ sessionId: chat.id, text: "Do the work." });
-    await vi.waitFor(() => {
-      expect(mockState.codexRequestPayloads.some((p) => p.method === "thread/start")).toBe(true);
-    });
-
-    const start = mockState.codexRequestPayloads.find((p) => p.method === "thread/start") as any;
-    const servers = start?.params?.config?.mcp_servers;
-    // ADE's own server wins over both the strict override and any caller entry.
-    expect(servers.computer_use).toEqual({ command: signedClient, args: ["mcp"], enabled: true });
-    // The user's other servers are still disabled — strict mode still works.
-    expect(servers.filesystem).toEqual({ enabled: false });
-    expect(servers.embedder).toMatchObject({ enabled: true });
-  });
-
-});
-
-// ---------------------------------------------------------------------------
-// Host sleep
-//
-// The incident: a MacBook slept mid-turn, the in-flight API call died, and the
-// transcript reported `Claude API retry 1/10: unknown` — while ADE already knew
-// the machine was suspending. These cover the three things that must now hold:
-// one chip per sleep that resolves itself, retries held rather than burned, and
-// a genuine API failure left completely alone.
-// ---------------------------------------------------------------------------
-describe("host sleep narration", () => {
-  /** A power source the test drives by hand, standing in for Electron's. */
-  function fakeHostPowerSource() {
-    const listeners = new Set<(event: any) => void>();
-    let sleepState: "awake" | "asleep" = "awake";
-    // Stamped from the same clock the tracker reads, exactly as a real monitor
-    // does: `asleep` is age-bounded against this, and a stamp frozen at a fake
-    // epoch would read as a stuck, long-stale announcement.
-    let sleepStateAt = Date.now();
-    return {
-      source: {
-        getPower: () => null,
-        getSleepState: () => sleepState,
-        getSleepStateAt: () => sleepStateAt,
-        getSuspendGapMs: () => null,
-        subscribe: (listener: (event: any) => void) => {
-          listeners.add(listener);
-          return () => {
-            listeners.delete(listener);
-          };
-        },
-      } as any,
-      suspend(at = 1_000, stateAt = Date.now()) {
-        sleepState = "asleep";
-        sleepStateAt = stateAt;
-        for (const listener of [...listeners]) listener({ kind: "suspend", at, announced: true });
-      },
-      resume(at = 241_000, gapMs: number | null = 240_000, stateAt = Date.now()) {
-        sleepState = "awake";
-        sleepStateAt = stateAt;
-        for (const listener of [...listeners]) listener({ kind: "resume", at, gapMs, announced: true });
-      },
-    };
-  }
-
-  /**
-   * A Claude stream that parks mid-turn so the test can suspend the host at a
-   * moment when a turn is genuinely in flight, then parks again so it can wake
-   * it before the turn finishes.
-   */
-  function installParkedClaudeStream(retry: Record<string, unknown>) {
-    let releaseBeforeRetry = (): void => {};
-    let releaseBeforeResult = (): void => {};
-    const beforeRetry = new Promise<void>((resolve) => {
-      releaseBeforeRetry = resolve;
-    });
-    const beforeResult = new Promise<void>((resolve) => {
-      releaseBeforeResult = resolve;
-    });
-    const reached = { retry: false, result: false };
-
-    const send = vi.fn().mockResolvedValue(undefined);
-    const close = vi.fn();
-    let streamCall = 0;
-    const stream = vi.fn(() => (async function* () {
-      streamCall += 1;
-      if (streamCall === 1) {
-        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-        return;
-      }
-      yield {
-        type: "assistant",
-        message: {
-          content: [{ type: "text", text: "Running tests…" }],
-          usage: { input_tokens: 1, output_tokens: 1 },
-        },
-      };
-      await beforeRetry;
-      yield { type: "system", subtype: "api_retry", session_id: "sdk-session-sleep", ...retry };
-      reached.retry = true;
-      await beforeResult;
-      reached.result = true;
-      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-    })());
-
-    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-      send,
-      stream,
-      close,
-      sessionId: "sdk-session-sleep",
-    } as any);
-    vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
-      send,
-      stream,
-      close,
-      sessionId: "sdk-session-sleep",
-    } as any);
-
-    return { releaseBeforeRetry, releaseBeforeResult, reached };
-  }
-
-  const noticesOf = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
-    .map((call) => call[0])
-    .filter((envelope: any) => envelope?.event?.type === "system_notice")
-    .map((envelope: any) => envelope.event);
-
-  const turnStarted = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
-    .some((call) => {
-      const event = (call[0] as any)?.event;
-      return event?.type === "status" && event.turnStatus === "started";
-    });
-
-  it("shows one chip that resolves in place, and holds the retry the sleep caused", async () => {
-    const power = fakeHostPowerSource();
-    const parked = installParkedClaudeStream({
-      error: "unknown",
-      attempt: 1,
-      max_retries: 10,
-    });
-
-    const onEvent = vi.fn();
-    const { service, logger } = createService({ onEvent, hostPowerSource: power.source });
-    try {
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      const turn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "run the tests",
-        timeoutMs: 15_000,
-      });
-      await waitFor(() => turnStarted(onEvent));
-
-      power.suspend();
-      const paused = noticesOf(onEvent).filter((event: any) => event.status === "host_asleep");
-      expect(paused).toHaveLength(1);
-      expect(paused[0].message).toBe("Paused — computer asleep");
-
-      // Let the suspend-caused retry arrive while the machine is down.
-      parked.releaseBeforeRetry();
-      await waitFor(() => parked.reached.retry);
-
-      expect(noticesOf(onEvent).filter((event: any) =>
-        typeof event.message === "string" && event.message.startsWith("Claude API retry"),
-      )).toHaveLength(0);
-      expect(onEvent.mock.calls.filter((call) => (call[0] as any)?.event?.type === "api_retry"))
-        .toHaveLength(0);
-      // The retry really did arrive and really was held — without this the
-      // two assertions above would also pass on a stream that never retried.
-      expect(logger.info).toHaveBeenCalledWith(
-        "agent_chat.api_retry_held_for_host_suspend",
-        expect.objectContaining({ providerCause: "unknown", sleepState: "asleep" }),
-      );
-      // Still ONE chip — the held retry must not add a second artifact.
-      expect(noticesOf(onEvent).filter((event: any) => event.status === "host_asleep")).toHaveLength(1);
-
-      power.resume();
-      parked.releaseBeforeResult();
-      await turn;
-
-      const asleep = noticesOf(onEvent).filter((event: any) => event.status === "host_asleep");
-      const awake = noticesOf(onEvent).filter((event: any) => event.status === "host_awake");
-      expect(asleep).toHaveLength(1);
-      expect(awake).toHaveLength(1);
-      expect(awake[0].message).toBe("Resumed · paused 4m");
-      // Same identity is what folds the two halves onto one transcript row.
-      expect(awake[0].detail.hostSleep.sleepId).toBe(asleep[0].detail.hostSleep.sleepId);
-      // And the turn itself still finished after the wake.
-      expect(onEvent.mock.calls.some((call) => (call[0] as any)?.event?.type === "done")).toBe(true);
-    } finally {
-      await service.disposeAll();
-    }
-  });
-
-  it("leaves a genuine API failure retrying and reporting its real cause", async () => {
-    const power = fakeHostPowerSource();
-    const parked = installParkedClaudeStream({
-      error: "overloaded",
-      error_status: 529,
-      attempt: 1,
-      max_retries: 10,
-      retry_delay_ms: 2_000,
-    });
-
-    const onEvent = vi.fn();
-    const { service } = createService({ onEvent, hostPowerSource: power.source });
-    try {
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-      const turn = service.runSessionTurn({
-        sessionId: session.id,
-        text: "run the tests",
-        timeoutMs: 15_000,
-      });
-      await waitFor(() => turnStarted(onEvent));
-
-      // Even with the host asleep, an error the API itself named is the truth.
-      power.suspend();
-      parked.releaseBeforeRetry();
-      await waitFor(() => parked.reached.retry);
-      parked.releaseBeforeResult();
-      await turn;
-
-      expect(onEvent.mock.calls.some((call) => {
-        const event = (call[0] as any)?.event;
-        return event?.type === "activity"
-          && event.activity === "working"
-          && event.detail === "Retrying Claude · attempt 1 of 10 · retrying in 2s";
-      })).toBe(true);
-      expect(onEvent.mock.calls.filter((call) => (call[0] as any)?.event?.type === "api_retry"))
-        .toHaveLength(1);
-    } finally {
-      await service.disposeAll();
-    }
-  });
-
-  it("leaves an idle chat alone when the machine sleeps", async () => {
-    const power = fakeHostPowerSource();
-    const onEvent = vi.fn();
-    const { service } = createService({ onEvent, hostPowerSource: power.source });
-    try {
-      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-      power.suspend();
-      power.resume();
-      expect(noticesOf(onEvent).filter((event: any) =>
-        event.status === "host_asleep" || event.status === "host_awake",
-      )).toHaveLength(0);
-    } finally {
-      await service.disposeAll();
-    }
-  });
-});
-
-describe("claude output style listing", () => {
-  it("does not persist an output style just because the list was shown", async () => {
-    // Listing styles used to write the resolved name onto the session and
-    // persist it. Every later option build then treated that cache as a real
-    // selection, so ADE sent outputStyle at flag tier and suppressed Claude's
-    // own resolution — the override this branch exists to stop.
-    const { service } = createService();
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-5",
+      model: "sonnet",
+      ...sessionArgs,
     });
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    return { service, session };
+  };
 
-    await service.sendMessage({ sessionId: session.id, text: "/output-style" });
+  it("declares only resume_return", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const opts = capturedClaudeOptions();
+    expect(typeof opts?.onUserDialog).toBe("function");
+    // `refusal_fallback_prompt` is deliberately withheld — declaring a kind ADE
+    // cannot draw parks a dialog nobody can answer.
+    expect(opts?.supportedDialogKinds).toEqual(["resume_return"]);
+  });
 
-    expect(readPersistedChatState(session.id).claudeOutputStyle ?? null).toBeNull();
-    expect((await service.getSessionSummary(session.id))?.claudeOutputStyle ?? null).toBeNull();
+  it("maps each answer to the SDK result", async () => {
+    for (const [label, expected] of [
+      ["Compact and continue", "compact"],
+      ["Keep full history", "continue"],
+    ] as const) {
+      vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startClaudeChat(events);
+      const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+      expect(onUserDialog).toBeTruthy();
+
+      const controller = new AbortController();
+      const answered = onUserDialog!(
+        {
+          dialogKind: "resume_return",
+          payload: { sessionAgeMinutes: 145, estimatedTokens: 275_123 },
+          toolUseID: `tool-${expected}`,
+        },
+        { signal: controller.signal, requestId: `req-${expected}` },
+      );
+
+      const card = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && String(event.event.itemId).startsWith("claude-resume-return:"),
+      );
+      const itemId = String(card.event.itemId);
+      expect((card.event as { detail?: { request?: any } }).detail?.request.description)
+        .toBe("This session is 2h 25m old and uses 275,123 tokens. Compact it before continuing?");
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId,
+        decision: "accept",
+        answers: { resume_decision: label },
+      });
+      await expect(answered).resolves.toEqual({ behavior: "completed", result: expected });
+    }
+  });
+
+  it("cancels an unrecognized dialog kind without drawing a card", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    await expect(onUserDialog!(
+      { dialogKind: "refusal_fallback_prompt", payload: {} },
+      { signal: controller.signal, requestId: "req-unknown" },
+    )).resolves.toEqual({ behavior: "cancelled" });
+    expect(events.some((entry) => entry.event.type === "approval_request")).toBe(false);
+  });
+
+  it("cancels and writes a receipt when the dialog is aborted", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events);
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    const answered = onUserDialog!(
+      { dialogKind: "resume_return", payload: { sessionAgeMinutes: 10, estimatedTokens: 100 }, toolUseID: "tool-abort" },
+      { signal: controller.signal, requestId: "req-abort" },
+    );
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && String(event.event.itemId).startsWith("claude-resume-return:"),
+    );
+    const cardItemId = card.event.itemId;
+    controller.abort();
+    await expect(answered).resolves.toEqual({ behavior: "cancelled" });
+    // The card had no answer, so nothing else wrote a receipt — and without one
+    // it would be redrawn with no waiter behind it.
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === cardItemId,
+    );
+  });
+
+  it("remembers Don't ask again and stops declaring the kind", async () => {
+    let dismissed = false;
+    const preference = {
+      isDismissed: () => dismissed,
+      markDismissed: () => { dismissed = true; },
+    };
+    const events: AgentChatEventEnvelope[] = [];
+    const { service, session } = await startClaudeChat(events, {
+      claudeResumeDialogPreference: preference,
+    });
+    const onUserDialog = capturedClaudeOptions()?.onUserDialog;
+    const controller = new AbortController();
+    const answered = onUserDialog!(
+      { dialogKind: "resume_return", payload: { sessionAgeMinutes: 10, estimatedTokens: 100 }, toolUseID: "tool-never" },
+      { signal: controller.signal, requestId: "req-never" },
+    );
+    const card = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } =>
+        event.event.type === "approval_request"
+        && String(event.event.itemId).startsWith("claude-resume-return:"),
+    );
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: String(card.event.itemId),
+      decision: "accept",
+      answers: { resume_decision: "Don't ask again" },
+    });
+    await expect(answered).resolves.toEqual({ behavior: "completed", result: "never" });
+    expect(dismissed).toBe(true);
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+    const { service: nextService } = createService({ claudeResumeDialogPreference: preference });
+    await nextService.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+    await vi.waitFor(() => {
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+    });
+    // The callback stays wired; only the declaration is withheld, which is what
+    // makes the CLI stop emitting the dialog.
+    expect(capturedClaudeOptions()?.supportedDialogKinds).toBeUndefined();
+    expect(typeof capturedClaudeOptions()?.onUserDialog).toBe("function");
+  });
+
+  it("declares no dialog kinds for a lightweight session", async () => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+    const events: AgentChatEventEnvelope[] = [];
+    await startClaudeChat(events, {}, { sessionProfile: "light" });
+    const opts = capturedClaudeOptions();
+    expect(opts?.supportedDialogKinds).toBeUndefined();
+    expect(opts?.onUserDialog).toBeUndefined();
   });
 });
-
-// ---------------------------------------------------------------------------
-// ACP providers (qwen, kimi, grok, copilot)
-// ---------------------------------------------------------------------------
-//
-// These drive the real ACP host: the scripted agent is a fake child process, so
-// the framing, the request correlation and the permission round-trip under test
-// are the production ones. Only the operating system process is replaced.

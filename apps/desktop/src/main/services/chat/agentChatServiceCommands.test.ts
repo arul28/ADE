@@ -6,8 +6,6 @@ import {
   createService,
   detectAllAuth,
   fs,
-  installAutoTitleAuth,
-  installAutoTitleClaudeStream,
   makeDefaultClaudeSession,
   mockState,
   path,
@@ -20,10 +18,47 @@ import {
   waitFor,
   waitForEvent,
   waitForSessionTitle,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
+function installAutoTitleAuth(): void {
+  // Auto-titling is skipped outright when no model is reachable.
+  vi.mocked(detectAllAuth).mockResolvedValue([
+    { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+  ] as never);
+}
+
+
+function installAutoTitleClaudeStream(): void {
+  let streamCall = 0;
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send: vi.fn().mockResolvedValue(undefined),
+    stream: vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        return;
+      }
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Done" }], usage: { input_tokens: 1, output_tokens: 1 } },
+      };
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })()),
+    close: vi.fn(),
+    sessionId: "sdk-session-1",
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  } as any);
+}
+
+
 describe("createAgentChatService", () => {
+  // --------------------------------------------------------------------------
+  // getSlashCommands
+  // --------------------------------------------------------------------------
+
   describe("getSlashCommands", () => {
     it("returns empty array for unknown session", async () => {
       const { service } = createService();
@@ -2005,11 +2040,11 @@ describe("createAgentChatService", () => {
       await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "done");
       await waitFor(() => Boolean(renameDuringNaming));
       await renameDuringNaming;
-      // Wait for the clobber itself rather than a fixed delay: pre-fix code
-      // writes the model title as soon as the naming call resolves, so this
-      // returns immediately when the regression is present and costs a bounded
-      // wait when it is not.
-      await waitFor(() => sessionService.get(session.id)?.title === "Model Picked That", 1_000);
+      // Wait for the clobber itself rather than a fixed delay: a clobber lands as
+      // soon as the naming call resolves. It must not happen, so the timeout is
+      // the passing path here.
+      await waitFor(() => sessionService.get(session.id)?.title === "Model Picked That", 1_000)
+        .catch(() => undefined);
 
       expect(renameDuringNaming, "auto-title never ran, so the race was not exercised").not.toBeNull();
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
@@ -2210,8 +2245,23 @@ describe("createAgentChatService", () => {
       expect(laneService.rename).toHaveBeenCalledWith({ laneId: "lane-2", name: freshMetadata.laneName });
     });
   });
+});
 
-  // --------------------------------------------------------------------------
-  // dispose and disposeAll
-  // --------------------------------------------------------------------------
+
+describe("claude output style listing", () => {
+  it("does not persist an output style just because the list was shown", async () => {
+    // A persisted style reads as the user's selection, and ADE then sends it
+    // at flag tier over Claude's own resolution. Listing must not create one.
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+    });
+
+    await service.sendMessage({ sessionId: session.id, text: "/output-style" });
+
+    expect(readPersistedChatState(session.id).claudeOutputStyle ?? null).toBeNull();
+    expect((await service.getSessionSummary(session.id))?.claudeOutputStyle ?? null).toBeNull();
+  });
 });

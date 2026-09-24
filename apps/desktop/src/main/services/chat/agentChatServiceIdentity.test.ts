@@ -28,7 +28,7 @@ import {
   waitFor,
   waitForCondition,
   writePersistedChatState,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { beforeEach, describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {

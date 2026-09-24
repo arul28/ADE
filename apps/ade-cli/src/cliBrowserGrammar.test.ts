@@ -125,3 +125,17 @@ describe("launch-lineage flags", () => {
     },
   );
 });
+
+describe("browser help and the value-flag table", () => {
+  // A value flag missing from the table is read as a subcommand when it comes
+  // first (`browser --x v sub` dispatches on `v`). The help text is where each
+  // value flag is documented, so every flag it shows with a value placeholder
+  // must be in the table.
+  it("carries a value for every flag the browser help documents with one", () => {
+    const plan = buildCliPlan(["browser", "--help"]);
+    if (plan.kind !== "help") throw new Error(`Expected help plan, got ${plan.kind}`);
+    const documented = [...new Set([...plan.text.matchAll(/(--[a-z][a-z0-9-]*) <[^>]+>/g)].map((m) => m[1]))];
+    expect(documented.length).toBeGreaterThan(10);
+    expect(documented.filter((flag) => !BROWSER_VALUE_FLAGS.includes(flag))).toEqual([]);
+  });
+});

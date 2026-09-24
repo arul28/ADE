@@ -37,7 +37,6 @@ import {
   replaceDynamicOpenCodeModelDescriptors,
   replaceDynamicPiModelDescriptors,
   runClaudeStreamFixture,
-  settleDirectiveBookkeeping,
   spawn,
   startOpenCodeSession,
   startup,
@@ -48,8 +47,17 @@ import {
   waitFor,
   waitForEvent,
   writePersistedChatState,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+
+async function settleDirectiveBookkeeping(): Promise<void> {
+  // `runSessionTurn`'s collector resolves on the turn's `done` event, which is
+  // emitted inside the provider run; the directive keys are marked when that run
+  // returns. A macrotask yield lets the run's promise chain finish so the next
+  // send sees the marked key. Not a wall-clock wait — nothing is being timed.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 
 describe("createAgentChatService", () => {
   it("uses the injected GitHub service to enrich smart-link previews", async () => {
@@ -258,7 +266,7 @@ describe("createAgentChatService", () => {
       await service.runSessionTurn({ sessionId: session.id, text: "Complete the task." });
 
       expect(observe).toHaveBeenCalled();
-      // `node:readline` is mocked for the Codex app-server in this file; the
+      // The harness mocks `node:readline` for the Codex app-server; the
       // ledger reads its month file line by line, so it gets a real reader.
       const readline = await import("node:readline");
       const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
@@ -3480,7 +3488,6 @@ describe("createAgentChatService", () => {
     });
   });
 
-
   describe("launchHeadless", () => {
     it("creates a session and fires the kickoff turn fire-and-forget without a mounted pane", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
@@ -3769,6 +3776,9 @@ describe("createAgentChatService", () => {
     });
   });
 
+  // --------------------------------------------------------------------------
+  // getSessionSummary
+  // --------------------------------------------------------------------------
 
   describe("getSessionSummary", () => {
     it("returns null for unknown session id", async () => {
@@ -3852,7 +3862,6 @@ describe("createAgentChatService", () => {
   // getSessionCapabilities
   // --------------------------------------------------------------------------
 
-
   describe("getSessionCapabilities", () => {
     it("returns default capabilities for unknown session", () => {
       const { service } = createService();
@@ -3919,6 +3928,9 @@ describe("createAgentChatService", () => {
     });
   });
 
+  // --------------------------------------------------------------------------
+  // setComputerUseArtifactBrokerService
+  // --------------------------------------------------------------------------
 
   describe("setComputerUseArtifactBrokerService", () => {
     it("accepts a broker service without throwing", () => {
@@ -3935,7 +3947,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
   // warmupModel
   // --------------------------------------------------------------------------
-
 
   describe("warmupModel", () => {
     it("does nothing for unknown session id", async () => {
@@ -3983,7 +3994,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
   // getAvailableModels
   // --------------------------------------------------------------------------
-
 
   describe("getAvailableModels", () => {
     it("keeps OpenCode model discovery passive on a cache miss", async () => {
@@ -4255,9 +4265,8 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
-  // emitAdeCard
+  // Session creation edge cases
   // --------------------------------------------------------------------------
-
 
   describe("session creation edge cases", () => {
     /**
@@ -5558,7 +5567,6 @@ describe("createAgentChatService", () => {
   // Session status transitions
   // --------------------------------------------------------------------------
 
-
   describe("session status transitions", () => {
     it("session starts with idle status", async () => {
       const { service } = createService();
@@ -5610,8 +5618,4 @@ describe("createAgentChatService", () => {
       }));
     });
   });
-
-  // --------------------------------------------------------------------------
-  // Interaction mode handling
-  // --------------------------------------------------------------------------
 });

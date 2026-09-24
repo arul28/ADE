@@ -23,10 +23,14 @@ import {
   waitForCondition,
   waitForEvent,
   writePersistedChatState,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
+  // --------------------------------------------------------------------------
+  // Interrupt
+  // --------------------------------------------------------------------------
+
   describe("interrupt", () => {
     it("does not cancel staged Claude messages for stop_only", async () => {
       const events: AgentChatEventEnvelope[] = [];
@@ -1087,7 +1091,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
   // steer
   // --------------------------------------------------------------------------
-
 
   describe("steer", () => {
     it("routes a send during an active Claude turn through the queued steer path", async () => {
@@ -3467,8 +3470,4 @@ describe("createAgentChatService", () => {
       expect(payloadText).not.toContain("large-tail-marker");
     });
   });
-
-  // --------------------------------------------------------------------------
-  // approveToolUse
-  // --------------------------------------------------------------------------
 });

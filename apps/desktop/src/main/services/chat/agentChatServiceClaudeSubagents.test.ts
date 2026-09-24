@@ -13,7 +13,6 @@ import {
   getSessionMessages,
   gzipSync,
   mockState,
-  openClaudeApprovalHarness,
   parkCursorSend,
   parseAgentChatTranscript,
   path,
@@ -29,8 +28,45 @@ import {
   waitForEvent,
   waitForSessionTitle,
   writePersistedChatState,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+
+/**
+ * The setup every Claude approval test shares: one session whose stream never
+ * yields, so the only state writes are the host's own. Returning `canUseTool`
+ * (rather than raising a card here) lets each test drive its own asks.
+ */
+async function openClaudeApprovalHarness(sdkSessionId: string) {
+  const events: AgentChatEventEnvelope[] = [];
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send: vi.fn().mockResolvedValue(undefined),
+    stream: vi.fn(async function* () { return; }),
+    close: vi.fn(),
+    sessionId: sdkSessionId,
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  } as any);
+
+  const { service } = createService({
+    onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+  });
+  const session = await service.createSession({
+    laneId: "lane-1",
+    provider: "claude",
+    model: "sonnet",
+  });
+  await vi.waitFor(() => { expect(claudeSdkCreateSessionCompat).toHaveBeenCalled(); });
+
+  const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+    canUseTool?: (
+      tool: string,
+      input: Record<string, unknown>,
+      options: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>;
+  } | undefined;
+
+  return { service, session, events, opts };
+}
+
 
 describe("createAgentChatService", () => {
   describe("Claude SessionStore reads", () => {
@@ -4432,7 +4468,305 @@ describe("createAgentChatService", () => {
     });
   });
 
-  // --------------------------------------------------------------------------
-  // getSlashCommands
-  // --------------------------------------------------------------------------
+  describe("Claude task tracking", () => {
+    it("emits todo_update events for Claude TodoWrite tool uses", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "todo-call-1",
+              name: "TodoWrite",
+              input: {
+                todos: [
+                  {
+                    content: "Inspect Claude task rendering",
+                    activeForm: "Inspecting Claude task rendering",
+                    status: "completed",
+                  },
+                  {
+                    content: "Render ADE task list UI",
+                    activeForm: "Rendering ADE task list UI",
+                    status: "in_progress",
+                  },
+                ],
+              },
+            }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the current task list.",
+      });
+
+      const todoEvent = events.find((event) => event.event.type === "todo_update");
+      expect(todoEvent).toBeTruthy();
+      expect(todoEvent?.event).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "todo-0",
+            description: "Inspect Claude task rendering",
+            status: "completed",
+          },
+          {
+            id: "todo-1",
+            description: "Render ADE task list UI",
+            status: "in_progress",
+          },
+        ],
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TodoWrite",
+            itemId: "todo-call-1",
+          }),
+        }),
+      ]));
+    });
+
+    it("emits todo_update events for Claude TaskCreate and TaskUpdate tool uses", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-create-1",
+                name: "TaskCreate",
+                input: {
+                  subject: "Inspect SDK changes",
+                  description: "Inspect the latest Claude Agent SDK changes",
+                  activeForm: "Inspecting SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "task-create-1",
+          description: "Inspect SDK changes",
+          task_type: "other",
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-update-1",
+                name: "TaskUpdate",
+                input: {
+                  taskId: "task-1",
+                  status: "in_progress",
+                  activeForm: "Applying SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the SDK task list.",
+      });
+
+      const todoEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+      expect(todoEvents.length).toBeGreaterThanOrEqual(3);
+      expect(todoEvents.at(-1)).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "task-1",
+            description: "Applying SDK changes",
+            status: "in_progress",
+          },
+        ],
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TaskCreate",
+            itemId: "task-create-1",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TaskUpdate",
+            itemId: "task-update-1",
+          }),
+        }),
+      ]));
+    });
+
+    it("applies Claude task_started updates when the SDK task id matches the tool use id", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-1",
+          slash_commands: [],
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-1",
+                name: "TaskCreate",
+                input: {
+                  subject: "Inspect SDK changes",
+                  activeForm: "Inspecting SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "task-1",
+          description: "Inspect SDK changes",
+          task_type: "other",
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the SDK task list.",
+      });
+
+      const todoEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+
+      expect(todoEvents.at(-1)).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "task-1",
+            description: "Inspect SDK changes",
+            status: "in_progress",
+          },
+        ],
+      });
+    });
+  });
 });

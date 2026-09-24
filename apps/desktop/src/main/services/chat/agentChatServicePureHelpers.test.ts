@@ -12,7 +12,7 @@ import {
   restartRecoveryStopAttribution,
   startup,
   writeSessionLinearIssueContextFile,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { beforeEach, describe, expect, it } from "vitest";
 
 describe("Codex server version gating", () => {
@@ -342,5 +342,3 @@ describe("restartRecoveryStopAttribution", () => {
     }
   });
 });
-
-/** Just past the real watchdog budget, derived rather than mirrored. */

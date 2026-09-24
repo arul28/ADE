@@ -1868,47 +1868,50 @@ describe("automationService integration", () => {
     // Saturday noon, local time: the weekday 09:00 rule next fires on Monday.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 8, 26, 12, 0, 0));
-    const { db } = createInMemoryAdeDb();
-    const logger = createLogger();
-    const projectId = "proj";
-    const projectRoot = "/tmp";
+    try {
+      const { db } = createInMemoryAdeDb();
+      const logger = createLogger();
+      const projectId = "proj";
+      const projectRoot = "/tmp";
 
-    const rule = {
-      id: "daily",
-      name: "Daily summary",
-      triggers: [{ type: "schedule" as const, cron: "0 9 * * 1-5" }],
-      trigger: { type: "schedule" as const, cron: "0 9 * * 1-5" },
-      actions: [],
-      enabled: true,
-    };
+      const rule = {
+        id: "daily",
+        name: "Daily summary",
+        triggers: [{ type: "schedule" as const, cron: "0 9 * * 1-5" }],
+        trigger: { type: "schedule" as const, cron: "0 9 * * 1-5" },
+        actions: [],
+        enabled: true,
+      };
 
-    const projectConfigService = {
-      get: () => ({
-        trust: { sharedHash: "", localHash: "" },
-        shared: {},
-        local: { automations: [rule] },
-        effective: { automations: [rule], providerMode: "guest" }
-      })
-    } as any;
+      const projectConfigService = {
+        get: () => ({
+          trust: { sharedHash: "", localHash: "" },
+          shared: {},
+          local: { automations: [rule] },
+          effective: { automations: [rule], providerMode: "guest" }
+        })
+      } as any;
 
-    const laneService = {
-      list: async () => [],
-      getLaneWorktreePath: () => projectRoot,
-      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
-    } as any;
+      const laneService = {
+        list: async () => [],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+      } as any;
 
-    const service = createAutomationService({
-      db: db as any,
-      logger,
-      projectId,
-      projectRoot,
-      laneService,
-      projectConfigService
-    });
+      const service = createAutomationService({
+        db: db as any,
+        logger,
+        projectId,
+        projectRoot,
+        laneService,
+        projectConfigService
+      });
 
-    const listed = service.list();
-    expect(Date.parse(listed[0]?.nextRunAt ?? "")).toBe(new Date(2026, 8, 28, 9, 0, 0).getTime());
-    vi.useRealTimers();
+      const listed = service.list();
+      expect(Date.parse(listed[0]?.nextRunAt ?? "")).toBe(new Date(2026, 8, 28, 9, 0, 0).getTime());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("dispatches git.pr_merged automations on merge transitions", async () => {

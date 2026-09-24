@@ -66,18 +66,6 @@ describe("createAdeRuntime dispose", () => {
       .map(([kind, count]) => `${kind} x${count - (baseline.get(kind) ?? 0)}`);
   }
 
-  /** Live resources once a disposed runtime's timers have drained (two equal polls in a row). */
-  async function settledResources(): Promise<Map<string, number>> {
-    let last: Map<string, number> | null = null;
-    await vi.waitFor(() => {
-      const now = liveResources();
-      const same = last !== null && now.size === last.size && [...now].every(([kind, count]) => last?.get(kind) === count);
-      last = now;
-      if (!same) throw new Error("resources still draining");
-    }, { timeout: 10_000, interval: 500 });
-    return last ?? liveResources();
-  }
-
   async function buildRuntime(runtimeProfile: "embedded" | "chat" | "full") {
     const projectRoot = makeTempRoot();
     return await createAdeRuntime({
@@ -95,19 +83,24 @@ describe("createAdeRuntime dispose", () => {
     async (runtimeProfile) => {
       vi.stubEnv("ADE_HOME", makeTempRoot());
       // The first runtime in a process also creates process-wide state (module
-      // caches and their timers) that later runtimes share, so measure the second.
+      // caches and their timers) that later runtimes share, so measure the
+      // second, once the first one's processes, pipes and sockets are gone.
+      const beforeWarmUp = liveResources();
       (await buildRuntime(runtimeProfile)).dispose();
-      const before = await settledResources();
+      // Sampled inside vi.waitFor, like the final check, so both see its own timers.
+      const before = await vi.waitFor(() => {
+        expect(leakedSince(beforeWarmUp).filter((kind) => !kind.startsWith("Timeout"))).toEqual([]);
+        return liveResources();
+      }, { timeout: 15_000 });
 
       const runtime = await buildRuntime(runtimeProfile);
       expect(leakedSince(before)).not.toEqual([]);
       runtime.dispose();
 
       expect(() => runtime.db.getJson("probe")).toThrow(/not open/);
-      await settledResources();
-      expect(leakedSince(before)).toEqual([]);
+      await vi.waitFor(() => expect(leakedSince(before)).toEqual([]), { timeout: 15_000 });
     },
-    30_000,
+    60_000,
   );
 });
 

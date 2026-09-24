@@ -18,7 +18,7 @@ import {
   waitForEvent,
   waitForSessionTitle,
   writePersistedChatState,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {

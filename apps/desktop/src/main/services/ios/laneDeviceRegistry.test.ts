@@ -221,22 +221,24 @@ describe("laneDeviceRegistry device lifecycle", () => {
     ]);
   });
 
-  it.each(["cloned", "attached"] as const)(
+  type Registry = ReturnType<typeof registryWith>["registry"];
+  it.each([
+    ["cloned", (registry: Registry) => registry.deviceCreate({ laneId: "lane-1" })],
+    ["attached", (registry: Registry) => registry.deviceAttach({ laneId: "lane-1", simulator: "iPhone 17 Pro" })],
+  ] as const)(
     "ignores a stale device ID when deleting a lane's %s device",
-    async (currentDevice) => {
+    async (_label, giveLaneADevice) => {
       const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
       const { registry, store } = registryWith(run);
-      if (currentDevice === "cloned") {
-        await registry.deviceCreate({ laneId: "lane-1" });
-      } else {
-        await registry.deviceAttach({ laneId: "lane-1", simulator: "iPhone 17 Pro" });
-      }
+      await giveLaneADevice(registry);
+      const before = store.rows["lane-1"] ? { ...store.rows["lane-1"] } : undefined;
       run.mockClear();
 
       await registry.deviceDelete({ laneId: "lane-1", udid: "some-older-clone" });
 
       expect(run).not.toHaveBeenCalled();
-      expect(store.rows["lane-1"]).toBeDefined();
+      expect(store.rows["lane-1"]).toEqual(before);
+      expect(before).toBeTruthy();
     },
   );
 

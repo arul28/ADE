@@ -406,7 +406,7 @@ describe("ProvidersSection", () => {
 
     expect((await screen.findAllByText("Connected")).length).toBeGreaterThan(0);
     expect(screen.getByText(/Claude Pro\/Max subscription or ANTHROPIC_API_KEY/)).toBeTruthy();
-    expect(screen.getAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/claude-agent-sdk-darwin-arm64\/claude/).length).toBeGreaterThan(0);
   });
 
   it("shows Not installed when the Claude SDK native binary is unavailable", async () => {

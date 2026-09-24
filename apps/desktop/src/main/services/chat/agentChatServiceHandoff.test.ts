@@ -2,8 +2,7 @@ import {
   AgentChatCrossMachineHandoffCapsule,
   AgentChatEventEnvelope,
   CODEX_REPLAY_MAX_CHARS,
-  HANDOFF_DIVERGED_SHA,
-  HANDOFF_TEST_SHA,
+  EventEmitter,
   claudeInputText,
   claudeNoticeMessages,
   claudeSdkCreateSessionCompat,
@@ -15,20 +14,16 @@ import {
   enforceCrossMachineForkEncodedBudget,
   fs,
   gunzipFromBase64,
-  gzipForkContent,
   gzipSync,
   installClaudeResponseFixture,
-  installCleanCrossMachineGitFixture,
-  installCliCaptureMock,
-  installCrossMachineDestinationLaneGitFixture,
   installRealTranscriptParser,
-  makeForkCapsule,
   makeLaneLinearIssue,
   mockState,
   parseAgentChatTranscript,
   path,
   readPersistedChatState,
   runGit,
+  spawn,
   stableStringify,
   streamText,
   tmpHomeRoot,
@@ -36,8 +31,163 @@ import {
   waitFor,
   writeTestTranscriptEnvelopes,
   zlib,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+
+const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
+
+const HANDOFF_BEHIND_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+const HANDOFF_DIVERGED_SHA = "fedcba9876543210fedcba9876543210fedcba98";
+
+
+function installCleanCrossMachineGitFixture(
+  branchRef = "feature/primary",
+  porcelain = "",
+  originUrl = "git@github.com:example/ade.git",
+) {
+  vi.mocked(runGit).mockImplementation(async (args) => {
+    const command = args.join(" ");
+    if (command === "status --porcelain=v1") return { stdout: porcelain, stderr: "", exitCode: 0 };
+    if (command === "rev-parse HEAD") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
+    if (command === "rev-parse @{upstream}") return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
+    if (command === "remote get-url origin") return { stdout: `${originUrl}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "ls-remote") return { stdout: `${HANDOFF_TEST_SHA}\trefs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "check-ref-format") return { stdout: `${branchRef}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "fetch") return { stdout: "", stderr: "", exitCode: 0 };
+    if (command === `rev-parse refs/remotes/origin/${branchRef}`) return { stdout: `${HANDOFF_TEST_SHA}\n`, stderr: "", exitCode: 0 };
+    if (command === `rev-parse --verify refs/heads/${branchRef}`) return { stdout: "", stderr: "", exitCode: 1 };
+    return { stdout: "", stderr: "", exitCode: 0 };
+  });
+}
+
+
+function installCrossMachineDestinationLaneGitFixture(options: {
+  branchRef?: string;
+  laneHead?: string;
+  remoteHead?: string;
+  dirtyPorcelain?: string;
+  ancestorExitCode?: number;
+  behindBy?: number;
+  expectedReachable?: boolean;
+  mergeExitCode?: number;
+} = {}) {
+  const branchRef = options.branchRef ?? "feature/primary";
+  const laneHead = options.laneHead ?? HANDOFF_BEHIND_SHA;
+  const remoteHead = options.remoteHead ?? HANDOFF_TEST_SHA;
+  let merged = false;
+  vi.mocked(runGit).mockImplementation(async (args) => {
+    const command = args.join(" ");
+    if (command === "status --porcelain=v1") {
+      return { stdout: options.dirtyPorcelain ?? "", stderr: "", exitCode: 0 };
+    }
+    if (command === "rev-parse HEAD") {
+      return { stdout: `${merged ? HANDOFF_TEST_SHA : laneHead}\n`, stderr: "", exitCode: 0 };
+    }
+    if (command === `rev-parse refs/remotes/origin/${branchRef}`) {
+      return { stdout: `${remoteHead}\n`, stderr: "", exitCode: 0 };
+    }
+    if (command === `rev-parse --verify refs/heads/${branchRef}`) {
+      return { stdout: "", stderr: "", exitCode: 1 };
+    }
+    if (command === `cat-file -e ${HANDOFF_TEST_SHA}^{commit}`) {
+      return {
+        stdout: "",
+        stderr: options.expectedReachable === false ? "missing commit" : "",
+        exitCode: options.expectedReachable === false ? 1 : 0,
+      };
+    }
+    if (command === `merge-base --is-ancestor ${laneHead} ${HANDOFF_TEST_SHA}`) {
+      return { stdout: "", stderr: "", exitCode: options.ancestorExitCode ?? 0 };
+    }
+    if (command === `rev-list --count ${laneHead}..${HANDOFF_TEST_SHA}`) {
+      return { stdout: `${options.behindBy ?? 3}\n`, stderr: "", exitCode: 0 };
+    }
+    if (command === `merge --ff-only ${HANDOFF_TEST_SHA}`) {
+      const exitCode = options.mergeExitCode ?? 0;
+      if (exitCode === 0) merged = true;
+      return {
+        stdout: exitCode === 0 ? "Fast-forward\n" : "",
+        stderr: exitCode === 0 ? "" : "not possible to fast-forward",
+        exitCode,
+      };
+    }
+    if (args[0] === "ls-remote") {
+      return { stdout: `${HANDOFF_TEST_SHA}\trefs/heads/${branchRef}\n`, stderr: "", exitCode: 0 };
+    }
+    if (args[0] === "check-ref-format") return { stdout: `${branchRef}\n`, stderr: "", exitCode: 0 };
+    if (args[0] === "fetch") return { stdout: "", stderr: "", exitCode: 0 };
+    return { stdout: "", stderr: "", exitCode: 0 };
+  });
+}
+
+
+function gzipForkContent(content: Buffer | string) {
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+  return {
+    contentBase64Gzip: zlib.gzipSync(buffer).toString("base64"),
+    uncompressedBytes: buffer.length,
+  };
+}
+
+
+function makeForkCapsule(overrides: Partial<AgentChatCrossMachineHandoffCapsule> = {}): AgentChatCrossMachineHandoffCapsule {
+  const mainContent = Buffer.from('{"type":"session_meta"}\n', "utf8");
+  return {
+    version: 1,
+    handoffId: "handoff-fork-test-1",
+    createdAt: "2026-07-10T12:00:00.000Z",
+    source: {
+      machineName: "Source Mac",
+      sessionId: "source-session",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      title: "Fork handoff",
+      laneName: "Feature lane",
+      branchRef: "feature/handoff-fork",
+      headSha: HANDOFF_TEST_SHA,
+      originUrl: "https://github.com/example/ade.git",
+    },
+    target: { targetModelId: "anthropic/claude-sonnet-5" },
+    brief: "Fork handoff — full conversation history transported.",
+    artifacts: { fileChanges: [], commands: [], errors: [] },
+    linearIssues: [],
+    continuationPrompt: "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.",
+    mode: "fork",
+    forkTransport: {
+      provider: "claude",
+      nativeSessionId: "claude-source-session",
+      kind: "claude-jsonl",
+      mainFile: {
+        name: "claude-source-session.jsonl",
+        ...gzipForkContent(mainContent),
+      },
+    },
+    ...overrides,
+  };
+}
+
+
+function installCliCaptureMock(
+  responseForArgs: (args: string[]) => { stdout: string | Buffer; stderr?: string; exitCode?: number },
+): void {
+  vi.mocked(spawn).mockImplementation(((_bin: string, args: string[]) => {
+    const proc = new EventEmitter() as any;
+    proc.stdin = { end: vi.fn(), write: vi.fn(), writable: true };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = vi.fn();
+    proc.pid = 99_999;
+    queueMicrotask(() => {
+      const response = responseForArgs(args);
+      if (response.stdout) proc.stdout.emit("data", response.stdout);
+      if (response.stderr) proc.stderr.emit("data", response.stderr);
+      proc.emit("close", response.exitCode ?? 0);
+    });
+    return proc;
+  }) as any);
+}
+
 
 describe("createAgentChatService", () => {
   describe("handoffSession", () => {
@@ -2283,7 +2433,6 @@ describe("createAgentChatService", () => {
       }));
     });
   });
-
 
   describe("cross-machine handoff", () => {
     const fakeGitHubToken = ["ghp", "1234567890".repeat(3)].join("_");

@@ -19,7 +19,7 @@ import {
   waitForEvent,
   writePersistedChatState,
   writeTestTranscriptEnvelopes,
-} from "./agentChatServiceTestFixture";
+} from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
@@ -3343,8 +3343,4 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(true);
     });
   });
-
-  // --------------------------------------------------------------------------
-  // getSessionSummary
-  // --------------------------------------------------------------------------
 });
