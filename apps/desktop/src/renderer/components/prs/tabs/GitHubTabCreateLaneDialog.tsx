@@ -247,7 +247,11 @@ export function CreateLaneFromPrBranchDialog({
       description="Check this pull request's branch out into a local lane. Give the lane a name you'll recognize in the Lanes tab."
       size="md"
       dismissible={!busy}
-      initialFocusRef={nameInputRef}
+      // Only point the primitive's open-time autofocus at the field once it is
+      // enabled. While the preflight runs the field is disabled, so a focus
+      // call on it is a no-op that would leave focus behind the modal; the
+      // effect above owns focus and lands it the moment the field enables.
+      initialFocusRef={loading || busy ? undefined : nameInputRef}
       testId="create-lane-from-pr-dialog"
       actions={[
         { label: "Cancel", variant: "secondary", onClick: onCancel, disabled: busy },
