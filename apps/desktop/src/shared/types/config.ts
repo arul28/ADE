@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ProviderMode, ModelId } from "./core";
-import type { AgentChatModelInfo, AgentChatPermissionMode, AgentChatSession } from "./chat";
+import type { AgentChatFileRef, AgentChatModelInfo, AgentChatPermissionMode, AgentChatSession } from "./chat";
 import type { LaneType } from "./lanes";
 import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
@@ -1635,6 +1635,12 @@ export type DevinCloudCreateSessionForLaneRequest = {
   bypassApproval?: boolean;
   /** VM platform label (v3 only); unset uses the org default. */
   platform?: string | null;
+  /**
+   * Composer attachments to deliver with the first prompt. Local files are
+   * uploaded to Devin's attachment store and referenced in the prompt by URL;
+   * image URLs ride along as hints.
+   */
+  attachments?: AgentChatFileRef[];
 };
 
 export type DevinCloudCreateSessionForLaneResult = {

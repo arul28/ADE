@@ -47549,6 +47549,12 @@ export function createAgentChatService(args: {
     }
     if (!managed) throw new Error("Could not open a Devin Cloud chat session.");
 
+    // A chat already linked elsewhere keeps its transcript — relinking would
+    // silently retarget its replies to the new Devin session.
+    if (managed.session.devinSessionId && managed.session.devinSessionId !== trimmedDevin) {
+      throw new Error("This chat is already linked to a different Devin session.");
+    }
+
     managed.session.devinSessionId = trimmedDevin;
     managed.session.devinRuntime = "cloud";
     if (args.devinMode !== undefined) {
@@ -47766,6 +47772,7 @@ export function createAgentChatService(args: {
     projectId?: string | null;
     bypassApproval?: boolean;
     platform?: string | null;
+    attachments?: AgentChatFileRef[];
   }): Promise<{ sessionId: string; session: AgentChatSession; devinSessionId: string }> => {
     const trimmedLane = args.laneId.trim();
     const prompt = args.prompt.trim();
@@ -47836,8 +47843,34 @@ export function createAgentChatService(args: {
     const cloudPrompt = laneBranch && branchOnRemote
       ? `Repo: ${repoUrl} (branch: ${laneBranch})\nCheck out the existing '${laneBranch}' branch first — it has been pushed to the remote and carries this lane's commits.\n\n${prompt}`
       : prompt;
+    // Session create takes no attachment field, so files ride the prompt the
+    // way v1 messages carry them: upload to Devin's attachment store, then
+    // reference each URL in the text (`Image URL:` hints for hosted images,
+    // `ATTACHMENT:"<url>"` lines for files) — the same convention the mirror's
+    // send path produces and the transcript echoes back.
+    const attachmentRefs: string[] = [];
+    for (const attachment of args.attachments ?? []) {
+      if (attachment.type === "image-url") {
+        const url = attachment.url?.trim();
+        if (url) attachmentRefs.push(`Image URL: ${url}`);
+        continue;
+      }
+      const filePath = attachment.path;
+      if (!filePath || !fs.existsSync(filePath)) {
+        throw new Error(`Attachment '${attachment.path}' is no longer on disk — re-attach it and send again.`);
+      }
+      const bytes = fs.readFileSync(filePath);
+      if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
+        throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
+      }
+      attachmentRefs.push(`ATTACHMENT:"${await aiIntegrationService.uploadDevinCloudAttachment({
+        name: path.basename(filePath),
+        bytes,
+        contentType: inferAttachmentMediaType(attachment) ?? undefined,
+      })}"`);
+    }
     const created = await aiIntegrationService.createDevinCloudSession({
-      prompt: cloudPrompt,
+      prompt: attachmentRefs.length ? `${cloudPrompt}\n${attachmentRefs.join("\n")}` : cloudPrompt,
       repoUrls: [repoUrl],
       tags,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),

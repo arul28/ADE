@@ -116,6 +116,7 @@ import type {
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
   DevinCloudMode,
+  AgentChatFileRef,
   CtoStartFreshSessionResult,
   CtoThreadHealth,
   CtoLinearQuickView,
@@ -2371,6 +2372,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       projectId?: string | null;
       platform?: string | null;
       bypassApproval?: boolean;
+      attachments?: AgentChatFileRef[];
     }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
         laneId: requireNonEmptyString(args?.laneId, "laneId"),
@@ -2381,6 +2383,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(args?.projectId ? { projectId: args.projectId } : {}),
         ...(args?.platform !== undefined ? { platform: args.platform } : {}),
         ...(args?.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
+        ...(args?.attachments?.length ? { attachments: args.attachments } : {}),
       }).then((result) => {
         runtime.devinCloudFleetService?.invalidateCache();
         return result;

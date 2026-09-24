@@ -6061,6 +6061,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     for (const [name, value] of [["sessionId", sessionId], ["title", title], ["projectId", projectId], ["platform", platform]] as const) {
       if (value && value.length > 256) throw new Error(`ai.createDevinCloudSession ${name} is too long.`);
     }
+    const attachments = parseAgentChatFileRefs(payload.attachments);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
       laneId: requireString(payload.laneId, "ai.createDevinCloudSession requires laneId."),
       prompt,
@@ -6069,6 +6070,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       ...(devinMode !== undefined ? { devinMode } : {}),
       ...(projectId ? { projectId } : {}),
       ...(platform ? { platform } : {}),
+      ...(attachments?.length ? { attachments } : {}),
       ...(typeof payload.bypassApproval === "boolean" ? { bypassApproval: payload.bypassApproval } : {}),
     });
     args.devinCloudFleetService?.invalidateCache();

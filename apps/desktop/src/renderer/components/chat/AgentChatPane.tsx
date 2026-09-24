@@ -11285,6 +11285,11 @@ export function AgentChatPane({
     devinCloudLaunchInFlightRef.current = true;
     setError(null);
 
+    // Title from what is actually sent: a hand-off passes a synthesized
+    // prompt that may coexist with an unrelated composer draft.
+    const jobTitle = buildDraftLaunchJobTitle("chat", promptText.trim().length
+      ? { ...snapshot, text: promptText, draft: promptText }
+      : snapshot);
     const jobId = createDraftLaunchJobId();
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       {
@@ -11293,7 +11298,7 @@ export function AgentChatPane({
         draftKind: "chat" as const,
         target: "devin-cloud" as const,
         status: "creating-lane" as const,
-        title: buildDraftLaunchJobTitle("chat", snapshot),
+        title: jobTitle,
         laneId: null,
         laneName: null,
         sessionId: null,
@@ -11351,10 +11356,11 @@ export function AgentChatPane({
         laneId: targetLaneId,
         prompt,
         sessionId,
-        title: buildDraftLaunchJobTitle("chat", snapshot),
+        title: jobTitle,
         devinMode: devinCloudModeSel,
         bypassApproval: devinBypassApproval,
         platform: devinCloudPlatformSel.trim() || null,
+        ...(snapshot.attachments.length ? { attachments: snapshot.attachments } : {}),
       });
       createdDevinSessionId = created.devinSessionId;
       // The Devin session exists; leave the draft pane immediately. The mirror

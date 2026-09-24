@@ -1660,7 +1660,9 @@ export function createAiIntegrationService(args: {
     return {
       configured: true,
       authMode: detectDevinAuthMode(apiKey),
-      orgId: devinCloudClientCache?.orgId ?? readDevinCloudOrgId(),
+      // The cached client's org belongs to the key that built it — a key
+      // swapped in through another path must not inherit that org label.
+      orgId: (devinCloudClientCache?.apiKey === apiKey ? devinCloudClientCache.orgId : null) ?? readDevinCloudOrgId(),
       orgName: null,
       error: null,
     };
