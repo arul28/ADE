@@ -425,6 +425,10 @@ function adeSlashCommandPromptIndexes(words: string[]): Set<number> {
           break;
         }
         if (word.startsWith("-")) {
+          if (!word.includes("=") && word === "--text") {
+            const message = words[cursor + 1];
+            if (message && isAdeSlashCommandPrompt(trimShellToken(message))) ignored.add(cursor + 1);
+          }
           if (!word.includes("=") && (word === "--session" || word === "--text")) cursor += 1;
           continue;
         }

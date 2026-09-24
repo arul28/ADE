@@ -147,6 +147,7 @@ describe("Cursor SDK policy", () => {
 
   it.each([
     'ade chat note "/ship"',
+    "ade chat note --text /ship",
     "ade chat note --session abc /quality",
     'ade chat scheduled-work create --in 12m --prompt "/ship" --reason "ci"',
     'ade chat scheduled-work create --prompt "/ship review 1308"',

@@ -437,14 +437,17 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const laneType = scope.lane?.laneType ?? "worktree";
   const laneBranchRef = scope.lane?.branchRef ?? null;
   const laneBaseRef = scope.lane?.baseRef ?? null;
-  const laneBranchDrift = scope.lane?.branchDrift ?? null;
+  const laneHeadBranchRef = scope.lane?.branchDrift?.headBranchRef ?? "";
+  const laneExpectedBranchRef = scope.lane?.branchDrift?.expectedBranchRef ?? "";
   const laneForPr = useMemo(() => ({
     id: laneId,
     laneType,
     branchRef: laneBranchRef ?? branchName ?? "",
     baseRef: laneBaseRef ?? "",
-    branchDrift: laneBranchDrift,
-  }), [branchName, laneBaseRef, laneBranchDrift, laneBranchRef, laneId, laneType]);
+    branchDrift: laneHeadBranchRef
+      ? { expectedBranchRef: laneExpectedBranchRef, headBranchRef: laneHeadBranchRef }
+      : null,
+  }), [branchName, laneBaseRef, laneBranchRef, laneExpectedBranchRef, laneHeadBranchRef, laneId, laneType]);
   // See `ChatGitToolbar`: a local pin is a fresh object on every cross-machine
   // merge, so effects key on the stable pin key and read the object via a ref.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
