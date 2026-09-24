@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { createPortal } from "react-dom";
 import { X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createMonacoModelRegistry } from "../files/monacoModelRegistry";
@@ -12,6 +11,7 @@ import {
   resolveAttachmentWorkspaceTarget,
   type AttachmentViewerTarget,
 } from "./attachmentViewerTarget";
+import { Dialog } from "../ui/dialog";
 
 type ResolveState =
   | { status: "loading" }
@@ -90,21 +90,6 @@ export function ChatAttachmentPreviewModal({
     };
   }, [files, attachmentPath]);
 
-  // Return focus where it came from, pull it into the dialog, and lock body
-  // scroll — same contract as the image lightbox this replaces.
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeButtonRef.current?.focus();
-    const previousBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      if (previouslyFocused && typeof previouslyFocused.focus === "function") {
-        previouslyFocused.focus();
-      }
-    };
-  }, []);
-
   const registry = registryRef.current;
   // The popup owns its Monaco models; nothing else shares this registry, so
   // closing it must free them or every preview leaks one model per file.
@@ -126,54 +111,47 @@ export function ChatAttachmentPreviewModal({
     };
   }, [state, title]);
 
+  // Escape closes — but a viewer that answers Escape itself (Monaco's find
+  // widget) stops it at its own node, so the close listens where the viewer
+  // can stop it: on the way back up through this dialog's React tree. The
+  // shared Dialog's document-level Escape only closes when the key did not
+  // start inside the viewer area.
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const root = containerRef.current;
-    if (!root) return;
-    const focusables = Array.from(
-      root.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ),
-    ).filter((element) => element.tabIndex >= 0);
-    if (focusables.length === 0) {
-      event.preventDefault();
-      closeButtonRef.current?.focus();
-      return;
-    }
-    const first = focusables[0]!;
-    const last = focusables[focusables.length - 1]!;
-    const active = document.activeElement as HTMLElement | null;
-    if (event.shiftKey) {
-      if (active === first || !active || !root.contains(active)) {
-        event.preventDefault();
-        last.focus();
-      }
-    } else if (active === last || !active || !root.contains(active)) {
-      event.preventDefault();
-      first.focus();
-    }
+    if (event.key !== "Escape") return;
+    event.stopPropagation();
+    onClose();
   };
 
-  return createPortal(
-    <div
-      ref={containerRef}
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-8"
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      data-testid="chat-attachment-preview"
-      onClick={onClose}
-      onKeyDown={handleKeyDown}
+  // Scroll lock, focus trap and focus return are the Dialog's.
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={title}
+      hideHeader
+      testId="chat-attachment-preview"
+      // Mounted inside the attachment chip: clicks in the viewer never reach it.
+      stopClickPropagation
+      width="min(92vw, 1200px)"
+      height="min(85vh, 900px)"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      // Viewers render for this dark surface in every theme.
+      panelStyle={{ background: "var(--surface-1, #111)", borderRadius: 6 }}
+      initialFocusRef={closeButtonRef}
+      onEscapeKeyDown={(event) => {
+        if (containerRef.current?.contains(event.target as Node)) {
+          // Let it reach the viewer first; `handleKeyDown` closes after.
+          event.preventDefault();
+          return;
+        }
+        event.stopPropagation();
+      }}
     >
-      <div
-        className="relative flex h-[min(85vh,900px)] w-[min(92vw,1200px)] flex-col overflow-hidden rounded-md border border-white/10 bg-[color:var(--surface-1,#111)]"
-        onClick={(event) => event.stopPropagation()}
-      >
+      <div ref={containerRef} className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
         <div className="flex shrink-0 items-center gap-2 border-b border-white/8 px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-[11px] text-fg/80" title={attachmentPath}>
             {title}
@@ -216,8 +194,7 @@ export function ChatAttachmentPreviewModal({
           ) : null}
         </div>
       </div>
-    </div>,
-    document.body,
+    </Dialog>
   );
 }
 

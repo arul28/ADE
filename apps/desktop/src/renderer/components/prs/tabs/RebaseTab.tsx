@@ -3,6 +3,7 @@ import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle, GitCo
 import type { AutoRebaseLaneStatus, GitCommitSummary, LaneSummary, PrAgentPermissionMode, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
+import { Banner } from "../../ui/notice";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
@@ -72,24 +73,7 @@ const S = {
 } as const;
 
 function ErrorBanner({ message }: { message: string }) {
-  return (
-    <div
-      style={{
-        backgroundColor: "#EF44440A",
-        border: `1px solid #EF444430`,
-        padding: "10px 14px",
-        fontSize: 11,
-        color: "#FCA5A5",
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 8,
-      }}
-      className="font-mono"
-    >
-      <XCircle size={14} weight="fill" style={{ color: S.error, flexShrink: 0, marginTop: 1 }} />
-      {message}
-    </div>
-  );
+  return <Banner layout="inline" model={{ id: "rebase-error", tone: "error", title: message }} />;
 }
 
 function attentionStateVisuals(state: string): { label: string; color: string } {

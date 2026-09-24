@@ -13,6 +13,7 @@ import {
   useEditorGroupsStore,
 } from "./editorGroupsStore";
 import { FilesWorkbench } from "./FilesWorkbench";
+import { confirmDialog } from "../../ui/dialog/confirm";
 import {
   filesProjectCacheKey,
   filesTreeCacheKey,
@@ -55,6 +56,11 @@ const testState = vi.hoisted(() => ({
       { id: "lane-b", color: "#00ff00" },
     ],
   },
+}));
+
+vi.mock("../../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => true),
 }));
 
 vi.mock("../../../state/appStore", () => ({
@@ -225,7 +231,7 @@ describe("FilesWorkbench", () => {
     testState.appState.project = { rootPath: "/repo" };
     testState.appState.selectedLaneId = "lane-a";
     useEditorGroupsStore.setState({ sessions: {} });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockClear().mockResolvedValue(true);
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -306,7 +312,7 @@ describe("FilesWorkbench", () => {
 
     fireEvent.click(screen.getByTestId("switch-workspace"));
 
-    expect(window.confirm).not.toHaveBeenCalled();
+    expect(confirmDialog).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId("dirty-count").textContent).toBe("1"));
   });
 

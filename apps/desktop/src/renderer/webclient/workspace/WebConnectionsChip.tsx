@@ -8,6 +8,9 @@ import {
 } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../components/lanes/laneDesignTokens";
 import { accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
+import { confirmDialog } from "../../components/ui/dialog/confirm";
+import { ViewportOverlayHost } from "../../components/ui/ViewportOverlayHost";
+import { Banner } from "../../components/ui/notice/Banner";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -159,16 +162,24 @@ export function WebConnectionsChip() {
 
   useEffect(() => {
     if (!open) return;
+    // A confirm raised from the machine menu renders in its own body portal:
+    // clicks and keys inside it belong to that dialog, not "outside" the menu.
+    // (The popover is itself a role="dialog"; Escape inside it still closes it.)
+    const inDialog = (target: EventTarget | null) =>
+      target instanceof Element
+      && !popoverRef.current?.contains(target)
+      && target.closest('[role="dialog"],[role="alertdialog"],.ade-dialog-scrim') !== null;
     const onPointerDown = (event: PointerEvent) => {
       // The popover lives in a body portal, so it is outside rootRef's subtree
       // and needs its own containment check or every click inside it closes it.
       if (rootRef.current?.contains(event.target as Node)) return;
       if (popoverRef.current?.contains(event.target as Node)) return;
+      if (inDialog(event.target)) return;
       setOpen(false);
       setMenuKey(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || inDialog(event.target)) return;
       setOpen(false);
       setMenuKey(null);
     };
@@ -246,14 +257,20 @@ export function WebConnectionsChip() {
       </button>
 
       {open && anchor ? createPortal(
-        <div
-          ref={popoverRef}
-          role="dialog"
-          aria-label="Machines"
-          data-ade-web-connections
-          className="fixed z-[70] w-[300px] overflow-hidden"
-          style={{ ...POPOVER_SURFACE, top: anchor.top, right: anchor.right }}
-        >
+        <ViewportOverlayHost layer="popover">
+          <div
+            ref={popoverRef}
+            role="dialog"
+            aria-label="Machines"
+            data-ade-web-connections
+            className="absolute w-[300px] overflow-hidden"
+            style={{
+              ...POPOVER_SURFACE,
+              top: anchor.top,
+              right: anchor.right,
+              pointerEvents: "auto",
+            }}
+          >
           <div className="max-h-[320px] overflow-auto p-2">
             {machines.length === 0 ? (
               <div
@@ -281,18 +298,11 @@ export function WebConnectionsChip() {
           </div>
 
           {error ? (
-            <div
-              role="alert"
-              className="px-3 py-2 text-[10.5px] leading-4"
-              style={{
-                borderTop: `1px solid ${COLORS.borderMuted}`,
-                background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-                color: COLORS.danger,
-                fontFamily: SANS_FONT,
-              }}
-            >
-              {error}
-            </div>
+            <Banner
+              layout="inline"
+              style={{ margin: "8px 12px" }}
+              model={{ id: "web-connections-error", tone: "error", title: error }}
+            />
           ) : null}
           <div
             className="px-3 py-2.5 text-[10px] leading-4"
@@ -312,7 +322,8 @@ export function WebConnectionsChip() {
             ) : null}
             <div className="mt-1">To add a machine: sign in to ADE on it.</div>
           </div>
-        </div>,
+          </div>
+        </ViewportOverlayHost>,
         document.body,
       ) : null}
     </div>
@@ -496,7 +507,7 @@ function WebMachineRow({
             <MenuRow
               label="Remove from account"
               destructive
-              onSelect={() => {
+              onSelect={async () => {
                 const accountMachine = machine.accountMachine;
                 const machineKey = accountMachine?.machineKey;
                 if (!accountMachine || !machineKey) return;
@@ -504,7 +515,13 @@ function WebMachineRow({
                 // Same words as the desktop sheet, including the warning for a
                 // machine that reported in minutes ago.
                 const label = webMachineRowLabel(machine);
-                if (!window.confirm(`Remove ${label} from your ADE account?\n\n${accountMachineRemovalConfirmBody(accountMachine)}`)) return;
+                const confirmed = await confirmDialog({
+                  title: `Remove ${label} from your ADE account?`,
+                  message: accountMachineRemovalConfirmBody(accountMachine),
+                  confirmLabel: "Remove",
+                  destructive: true,
+                });
+                if (!confirmed) return;
                 void run(machine, async () => {
                   await workspace.removeAccountMachine(machineKey);
                 });
@@ -515,11 +532,11 @@ function WebMachineRow({
             <MenuRow
               label="Forget on this browser"
               destructive
-              onSelect={() => {
+              onSelect={async () => {
                 const envId = machine.environment?.envId;
                 if (!envId) return;
                 setMenuKey(null);
-                if (!window.confirm(`Forget ${machine.name} on this browser?`)) return;
+                if (!(await confirmDialog({ title: `Forget ${machine.name} on this browser?`, confirmLabel: "Forget", destructive: true }))) return;
                 void run(machine, () => workspace.forgetEnvironment(envId));
               }}
             />

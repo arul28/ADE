@@ -567,7 +567,7 @@ Shared types and IPC:
 - `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` —
   the optional `SessionSnoozeChip` for a chat surface header, mounted by
   `WorkSurfaceHeader` through its `snoozeSessionId` prop. Settled state is shown
-  once by the compact `ChatLifecycleBanner` pill floating above the composer,
+  once by the compact `ChatLifecyclePill` pill floating above the composer,
   rather than repeated in the header. Both surfaces read the same local
   per-project session cache, with a root cross-machine snapshot fallback for a
   foreign chat, and the same canonical helpers as the Work sidebar; the snooze

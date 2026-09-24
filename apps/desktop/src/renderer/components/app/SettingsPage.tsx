@@ -42,7 +42,8 @@ import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
-import { WebSettingsSection } from "../settings/WebScopeBanner";
+import { WebSettingsSection } from "../settings/WebScopePill";
+import { Banner } from "../ui/notice";
 import {
   SETTINGS_ENTRIES,
   availableSettingsTabs,
@@ -115,24 +116,16 @@ function tabHasMachineSettings(tab: SettingsTabId): boolean {
  */
 function WebNoMachineNotice() {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 14px",
-        marginBottom: 20,
-        borderRadius: 8,
-        background: COLORS.recessedBg,
-        border: `1px solid ${COLORS.borderMuted}`,
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-        color: COLORS.textSecondary,
+    <Banner
+      layout="inline"
+      style={{ marginBottom: 20 }}
+      model={{
+        id: "settings-web-no-machine",
+        tone: "neutral",
+        icon: <HardDrives size={13} weight="regular" />,
+        title: "Connect to a project to edit machine settings.",
       }}
-    >
-      <HardDrives size={16} weight="regular" style={{ flexShrink: 0, color: COLORS.textDim }} />
-      <span>Connect to a project to edit machine settings.</span>
-    </div>
+    />
   );
 }
 

@@ -10,6 +10,11 @@ import { __resetLaneGitActionRuntimeForTests, formatLaneGitError, LaneGitActions
 
 const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
 
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => true),
+}));
+
 vi.mock("./CommitTimeline", () => ({
   CommitTimeline: (props: Record<string, unknown>) => commitTimelineMock(props),
 }));
@@ -118,7 +123,6 @@ function buildStash(
 
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
-  const originalConfirm = globalThis.window.confirm;
   let mockChangesByLaneId: Record<string, DiffChanges>;
   let mockStashesByLaneId: Record<string, GitStashSummary[]>;
   let mockConflictState: GitConflictState;
@@ -126,7 +130,6 @@ describe("LaneGitActionsPane rescue action", () => {
   let failDiffRefresh: boolean;
 
   beforeEach(() => {
-    globalThis.window.confirm = vi.fn(() => true);
     mockStoreState = {
       lanes: [
         buildLane(),
@@ -229,7 +232,6 @@ describe("LaneGitActionsPane rescue action", () => {
   afterEach(() => {
     cleanup();
     __resetLaneGitActionRuntimeForTests();
-    globalThis.window.confirm = originalConfirm;
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -571,7 +573,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await user.click(await screen.findByRole("button", { name: "SAVE CHANGES" }));
     await user.type(await screen.findByPlaceholderText("Optional note"), "stash untracked audit");
-    await user.click(screen.getByRole("button", { name: "SAVE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Save stash" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashPush).toHaveBeenCalledWith({
@@ -689,7 +691,7 @@ describe("LaneGitActionsPane rescue action", () => {
     });
 
     const rebaseTabButton = await screen.findByRole("button", { name: /open rebase\/merge tab/i });
-    screen.getByText("AUTO-REBASE FAILED");
+    screen.getByText("Auto-rebase failed");
     screen.getByText(/auto-rebase failed\. files need follow-up before this lane can be pushed\./i);
 
     await user.click(rebaseTabButton);
@@ -719,7 +721,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
-    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashDrop).toHaveBeenCalledWith({
@@ -830,7 +832,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByText("2 saved");
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
-    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -857,7 +859,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByText("2 saved");
     await user.click(screen.getByRole("button", { name: "CLEAR STASHES" }));
     await user.type(await screen.findByPlaceholderText("Type 2 to confirm"), "2");
-    await user.click(screen.getByRole("button", { name: "DELETE ALL" }));
+    await user.click(screen.getByRole("button", { name: "Delete all" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashClear).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
@@ -880,7 +882,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByText("2 saved");
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
-    await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
+    await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
     await waitFor(() => {
       expect(screen.getByText("ERROR: drop failed")).toBeTruthy();

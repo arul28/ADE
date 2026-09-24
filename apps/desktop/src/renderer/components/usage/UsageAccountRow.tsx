@@ -23,6 +23,7 @@
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type React from "react";
 import { ArrowClockwise, ArrowSquareOut } from "@phosphor-icons/react";
 import type { UsageProvider } from "../../../shared/types";
@@ -531,33 +532,32 @@ function WindowPopover({
     .map(([model, percent]) => `${model} ${Math.round(percent)}%`)
     .join(" · ");
   return createPortal(
-    <div
-      ref={panelRef}
-      id={id}
-      role="dialog"
-      aria-label={`${card.label} details`}
-      style={{
-        position: "fixed",
-        top: position?.top ?? 0,
-        left: position?.left ?? 0,
-        width: POPOVER_WIDTH,
-        // Measured before it is placed: showing it at 0,0 for one frame would
-        // be a visible jump in the corner of the screen.
-        visibility: position ? "visible" : "hidden",
-      }}
-      className={cn(
-        // `bg-surface-raised` is translucent on the light theme, and this panel
-        // floats over the rows beneath it — they read straight through. The
-        // overlay token is the one every other floating usage readout uses.
-        // Above the header usage scrim (`z-[80]`). At `z-[60]` the panel was
-        // painted under that scrim, so the pointer never entered it and the
-        // meter’s mouseleave closed it on the way to the link.
-        "z-[90] p-3",
-        USAGE_OVERLAY_CLASS,
-      )}
-      onMouseEnter={onPointerEnter}
-      onMouseLeave={onPointerLeave}
-    >
+    <ViewportOverlayHost layer="tooltip">
+      <div
+        ref={panelRef}
+        id={id}
+        role="dialog"
+        aria-label={`${card.label} details`}
+        style={{
+          position: "absolute",
+          top: position?.top ?? 0,
+          left: position?.left ?? 0,
+          width: POPOVER_WIDTH,
+          pointerEvents: "auto",
+          // Measured before it is placed: showing it at 0,0 for one frame would
+          // be a visible jump in the corner of the screen.
+          visibility: position ? "visible" : "hidden",
+        }}
+        className={cn(
+          // `bg-surface-raised` is translucent on the light theme, and this panel
+          // floats over the rows beneath it — they read straight through. The
+          // overlay token is the one every other floating usage readout uses.
+          "p-3",
+          USAGE_OVERLAY_CLASS,
+        )}
+        onMouseEnter={onPointerEnter}
+        onMouseLeave={onPointerLeave}
+      >
       {/* The window's own colour runs down the header, so a panel that has
           floated away from its bar still says which bar it came from. */}
       <div
@@ -623,7 +623,8 @@ function WindowPopover({
           Open limits
         </button>
       ) : null}
-    </div>,
+      </div>
+    </ViewportOverlayHost>,
     document.body,
   );
 }

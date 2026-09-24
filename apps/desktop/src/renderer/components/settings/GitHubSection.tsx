@@ -36,6 +36,7 @@ import {
   SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
 import { SettingsTextField } from "./primitives";
+import { Banner } from "../ui/notice";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -327,26 +328,6 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     gap: 16,
   };
 
-  const noticeStyle: CSSProperties = {
-    background: "color-mix(in srgb, var(--color-success) 12%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)",
-    padding: "8px 12px",
-    fontSize: 11,
-    fontFamily: MONO_FONT,
-    color: COLORS.success,
-    borderRadius: 0,
-  };
-
-  const errorStyle: CSSProperties = {
-    background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-    padding: "8px 12px",
-    fontSize: 11,
-    fontFamily: MONO_FONT,
-    color: COLORS.danger,
-    borderRadius: 0,
-  };
-
   const scopeRowStyle = (present: boolean): CSSProperties => ({
     display: "flex",
     alignItems: "center",
@@ -396,8 +377,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div style={sectionGap}>
-      {saveNotice ? <div style={noticeStyle}>{saveNotice}</div> : null}
-      {actionError ? <div style={errorStyle}>{actionError}</div> : null}
+      {saveNotice ? (
+        <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
+      ) : null}
+      {actionError ? (
+        <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />
+      ) : null}
 
       <SettingsManagerPage
         anchor="github-connection"
@@ -445,47 +430,53 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           </SettingsManagerTable>
 
           {credentialStoreUnreadable ? (
-            <div style={{
-              ...infoBoxStyle,
-              borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
-              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-              color: COLORS.textPrimary,
-            }}>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}
-              </div>
-              <div>{GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}</div>
-              <button
-                type="button"
-                style={{ ...linkButtonStyle, marginTop: 10 }}
-                onClick={() => openConnectionsPanel("machines")}
-              >
-                {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action}
-              </button>
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-credential-store-unreadable",
+                tone: "warning",
+                title: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title,
+                detail: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail,
+                actions: [
+                  {
+                    label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action,
+                    onClick: () => openConnectionsPanel("machines"),
+                  },
+                ],
+              }}
+            />
           ) : null}
 
           {credentialFallback ? (
-            <div style={{
-              ...infoBoxStyle,
-              borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
-              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-              color: COLORS.textPrimary,
-            }}>
-              <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
-              <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
-              {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-credential-fallback",
+                tone: "warning",
+                title: (
+                  <span style={{ fontWeight: 500 }}>
+                    <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
+                    <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
+                    {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
+                  </span>
+                ),
+              }}
+            />
           ) : null}
 
           {!credentialFallback && backgroundPausedUntil && authFailure?.kind !== "rate_limited" ? (
-            <div style={{
-              ...infoBoxStyle,
-              borderColor: "color-mix(in srgb, var(--color-warning) 30%, transparent)",
-              background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
-            }}>
-              Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-background-paused",
+                tone: "warning",
+                title: (
+                  <span style={{ fontWeight: 500 }}>
+                    Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
+                  </span>
+                ),
+              }}
+            />
           ) : null}
 
           {credentialStates.length > 0 ? (
@@ -528,33 +519,26 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               {credentialPresentation.permissionHeading}
             </div>
             {permissionMode === "auth-failure" ? (
-              <div style={{
-                ...infoBoxStyle,
-                // Neutral during an outage: a warning tint implies the user has
-                // something to fix, and they don't.
-                borderColor: outage
-                  ? COLORS.border
-                  : "color-mix(in srgb, var(--color-warning) 35%, transparent)",
-                background: outage
-                  ? COLORS.recessedBg
-                  : "color-mix(in srgb, var(--color-warning) 10%, transparent)",
-                color: COLORS.textPrimary,
-              }}>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                  {authFailurePresentation?.title}
-                </div>
-                <div>{authFailurePresentation?.settingsDetail}</div>
-                {outage ? (
-                  <button
-                    type="button"
-                    style={outlineButton({ marginTop: 10 })}
-                    onClick={() => openExternal(outage.actionUrl)}
-                  >
-                    <ArrowSquareOut size={13} />
-                    GitHub status
-                  </button>
-                ) : null}
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "github-auth-failure",
+                  // Neutral during an outage: a warning tone implies the user has
+                  // something to fix, and they don't.
+                  tone: outage ? "neutral" : "warning",
+                  title: authFailurePresentation?.title ?? "",
+                  detail: authFailurePresentation?.settingsDetail,
+                  actions: outage
+                    ? [
+                        {
+                          label: "GitHub status",
+                          icon: <ArrowSquareOut size={12} />,
+                          onClick: () => openExternal(outage.actionUrl),
+                        },
+                      ]
+                    : undefined,
+                }}
+              />
             ) : permissionMode === "app" ? (
               <div style={{ display: "grid", gap: 6 }}>
                 <div style={scopeRowStyle(githubStatus?.repoAccessOk === true)}>
@@ -614,44 +598,56 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           </div>
 
           {hasMissingScopes ? (
-            <div style={errorStyle}>
-              Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-missing-scopes",
+                tone: "error",
+                title: (
+                  <>
+                    Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
+                  </>
+                ),
+              }}
+            />
           ) : null}
 
           {repoProbeFailed ? (
-            <div style={errorStyle}>
-              Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
-              <strong>{githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "this repo"}</strong>
-              {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
-              {isFineGrainedToken ? (
-                <> Add this repository to the fine-grained token and grant Contents, Pull requests, Metadata, Actions, and Workflows permissions.</>
-              ) : (
-                <> Make sure the token has access to this repository.</>
-              )}
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-repo-probe",
+                tone: "error",
+                title: (
+                  <span style={{ fontWeight: 500 }}>
+                    Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
+                    <strong>{githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "this repo"}</strong>
+                    {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
+                    {isFineGrainedToken ? (
+                      <> Add this repository to the fine-grained token and grant Contents, Pull requests, Metadata, Actions, and Workflows permissions.</>
+                    ) : (
+                      <> Make sure the token has access to this repository.</>
+                    )}
+                  </span>
+                ),
+              }}
+            />
           ) : null}
 
           {shouldShowGhAuthInstructions ? (
-            <div style={{
-              padding: 14,
-              border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
-              background: COLORS.recessedBg,
-              borderRadius: 0,
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <TerminalWindow size={16} weight="duotone" style={{ color: COLORS.warning }} />
-                <span style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  GitHub CLI auth
-                </span>
-              </div>
-              <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
-                {githubStatus?.ghAuthError
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-cli-auth-instructions",
+                tone: "warning",
+                icon: <TerminalWindow size={15} weight="duotone" />,
+                title: "GitHub CLI auth",
+                detail: githubStatus?.ghAuthError
                   ? githubStatus.ghAuthError
-                  : "Run this command in Terminal, then refresh this panel."}
-                <code style={commandStyle}>{ghCommand}</code>
-              </div>
-            </div>
+                  : "Run this command in Terminal, then refresh this panel.",
+                extra: <code style={commandStyle}>{ghCommand}</code>,
+              }}
+            />
           ) : null}
         </div>
       </SettingsManagerPage>

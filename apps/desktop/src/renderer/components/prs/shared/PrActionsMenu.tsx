@@ -31,7 +31,7 @@ import { COLORS } from "../../lanes/laneDesignTokens";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { formatError } from "./prFormatters";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../../ui/paneMenuTokens";
-import { ConfirmDialog, useConfirmDialog } from "../../shared/InlineDialogs";
+import { confirmDialog } from "../../ui/dialog";
 import {
   buildPrChatPrompt,
   chatLabel,
@@ -120,7 +120,6 @@ export function usePrActionsMenu(context: PrActionsContext) {
     pr, status, findings, failingChecks, mergeMethod, onRefresh, refreshing, onChanged, onError, onManageLane,
     laneChats: providedChats,
   } = context;
-  const confirm = useConfirmDialog();
   const [fetchedChats, setFetchedChats] = React.useState<AgentChatSessionSummary[] | null>(null);
   const laneChats = providedChats ?? fetchedChats;
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -305,11 +304,11 @@ export function usePrActionsMenu(context: PrActionsContext) {
           id: "close", label: "Close pull request", icon: <XCircle size={14} weight="duotone" />, danger: true, tone: TONE.danger,
           disabled: busy === "close",
           onSelect: () => {
-            void confirm.confirmAsync({
+            void confirmDialog({
               title: `Close PR #${pr.githubPrNumber}?`,
               message: `${pr.title}\n\nThe branch stays. You can reopen the PR later.`,
               confirmLabel: "Close pull request",
-              danger: true,
+              destructive: true,
             }).then((ok) => {
               if (ok) {
                 void run("close", async () => {
@@ -335,10 +334,9 @@ export function usePrActionsMenu(context: PrActionsContext) {
       });
     }
     return out;
-  }, [busy, confirm, failingChecks, findings, laneChats, mergeMethod, onManageLane, onRefresh, pr, prs, refreshing, run, status]);
+  }, [busy, failingChecks, findings, laneChats, mergeMethod, onManageLane, onRefresh, pr, prs, refreshing, run, status]);
 
-  const dialog = <ConfirmDialog state={confirm.state} onClose={confirm.close} />;
-  return { sections, ensureChats, dialog, busy };
+  return { sections, ensureChats, busy };
 }
 
 type MenuParts = typeof DropdownMenu | typeof ContextMenu;
@@ -399,48 +397,42 @@ function renderItem(Parts: MenuParts, item: PrMenuItem): React.ReactNode {
 
 /** The header's `⋯` button. */
 export function PrActionsDropdown(props: PrActionsContext & { triggerClassName?: string }) {
-  const { sections, ensureChats, dialog, busy } = usePrActionsMenu(props);
+  const { sections, ensureChats, busy } = usePrActionsMenu(props);
   return (
-    <>
-      <DropdownMenu.Root onOpenChange={(open) => { if (open) ensureChats(); }}>
-        <DropdownMenu.Trigger asChild>
-          <button
-            type="button"
-            aria-label="More pull request actions"
-            data-testid="pr-actions-trigger"
-            className={cn(
-              "inline-flex h-7 w-7 items-center justify-center rounded-md text-fg/80 transition-colors hover:bg-white/[0.07] hover:text-fg",
-              props.triggerClassName,
-            )}
-          >
-            {busy ? <CircleNotch size={15} className="animate-spin" /> : <DotsThree size={18} weight="bold" />}
-          </button>
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content align="end" sideOffset={6} className={cn(MENU_CONTENT_CLASS, "min-w-[260px]")}>
-            {renderItems(DropdownMenu, sections)}
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
-      {dialog}
-    </>
+    <DropdownMenu.Root onOpenChange={(open) => { if (open) ensureChats(); }}>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label="More pull request actions"
+          data-testid="pr-actions-trigger"
+          className={cn(
+            "inline-flex h-7 w-7 items-center justify-center rounded-md text-fg/80 transition-colors hover:bg-white/[0.07] hover:text-fg",
+            props.triggerClassName,
+          )}
+        >
+          {busy ? <CircleNotch size={15} className="animate-spin" /> : <DotsThree size={18} weight="bold" />}
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content align="end" sideOffset={6} className={cn(MENU_CONTENT_CLASS, "min-w-[260px]")}>
+          {renderItems(DropdownMenu, sections)}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
 /** Wraps a sidebar PR row so a right-click opens the same menu. */
 export function PrActionsContextMenu({ children, ...props }: PrActionsContext & { children: React.ReactNode }) {
-  const { sections, ensureChats, dialog } = usePrActionsMenu(props);
+  const { sections, ensureChats } = usePrActionsMenu(props);
   return (
-    <>
-      <ContextMenu.Root onOpenChange={(open) => { if (open) ensureChats(); }}>
-        <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
-        <ContextMenu.Portal>
-          <ContextMenu.Content className={cn(MENU_CONTENT_CLASS, "min-w-[260px]")}>
-            {renderItems(ContextMenu, sections)}
-          </ContextMenu.Content>
-        </ContextMenu.Portal>
-      </ContextMenu.Root>
-      {dialog}
-    </>
+    <ContextMenu.Root onOpenChange={(open) => { if (open) ensureChats(); }}>
+      <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content className={cn(MENU_CONTENT_CLASS, "min-w-[260px]")}>
+          {renderItems(ContextMenu, sections)}
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   );
 }

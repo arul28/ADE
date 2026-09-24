@@ -10,6 +10,7 @@ import type {
 } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
 import { inputCls } from "../designTokens";
 import { IngressStatusStrip } from "../settings/IngressStatusStrip";
 import { AutomationsEmptyState, AutomationsFilterEmptyState } from "./AutomationsEmptyState";
@@ -185,7 +186,11 @@ export function RuleList({
       <IngressStatusStrip ingressStatus={ingressStatus} />
 
       {error ? (
-        <div className="shrink-0 border-b border-red-500/20 bg-red-500/10 px-4 py-2.5 text-[11px] text-red-200">{error}</div>
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 12px", flexShrink: 0 }}
+          model={{ id: "automations-rule-list-error", tone: "error", title: error }}
+        />
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">

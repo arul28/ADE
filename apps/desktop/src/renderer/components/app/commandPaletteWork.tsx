@@ -27,6 +27,7 @@ import {
 } from "../terminals/workTools";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
+import { promptDialog } from "../ui/dialog/confirm";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -423,7 +424,7 @@ export function useWorkSessionActions({
       }
 
       if (action === "rename") {
-        const nextTitle = window.prompt("Rename session", session.title ?? "")?.trim();
+        const nextTitle = (await promptDialog({ title: "Rename session", defaultValue: session.title ?? "", confirmLabel: "Rename" }))?.trim();
         if (!nextTitle) return;
         try {
           await renameSession(session, nextTitle, binding);

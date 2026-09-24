@@ -22,7 +22,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import * as Dialog from "@radix-ui/react-dialog";
+import { Dialog as AppDialog } from "../ui/dialog/Dialog";
 
 import { useAppStore } from "../../state/appStore";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
@@ -43,6 +43,7 @@ import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice/Banner";
 import {
   readStoredProjectRoute,
   removeStoredProjectRoute,
@@ -56,6 +57,8 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac, modifierKeyLabel } from "../../lib/platform";
 import type {
   ProjectIcon,
@@ -70,7 +73,7 @@ import type {
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { ChannelBadge } from "./ChannelBadge";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
-import { useDialogFocusTrap } from "./HeaderSheet";
+import { HeaderSheet } from "./HeaderSheet";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
@@ -80,7 +83,6 @@ import {
   subscribeOpenConnectionsPanel,
   type ConnectionsPanelTab,
 } from "../../lib/connectionsPanel";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
@@ -399,6 +401,7 @@ function ShellConnectionChip({
   );
 }
 
+
 function HeaderStatusMenu({
   remoteConnected,
   syncConnected,
@@ -436,29 +439,6 @@ function HeaderStatusMenu({
     if (!compact) close();
   }, [close, compact]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (menuRef.current?.contains(target)) return;
-      if (buttonRef.current?.contains(target)) return;
-      close();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [close, open]);
-
   const anyConnected = remoteConnected || (showSyncControl && syncConnected);
 
   if (!compact) return null;
@@ -474,7 +454,7 @@ function HeaderStatusMenu({
         )}
         data-variant="ghost"
         aria-label="Connections and usage"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title="Connections and usage"
         onClick={() => (open ? close() : openMenu())}
@@ -489,23 +469,26 @@ function HeaderStatusMenu({
           aria-hidden
         />
       </button>
-      {open && menuPos
-        ? createPortal(
-            <div
-              ref={menuRef}
-              role="menu"
-              aria-label="Connections and usage"
-              className={cn(
-                "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-                "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
-              )}
-              style={{ top: menuPos.top, right: menuPos.right }}
-            >
-              {children(close)}
-            </div>,
-            document.body,
-          )
-        : null}
+      <HeaderSheet
+        open={open && menuPos !== null}
+        panelRef={menuRef}
+        title="Connections and usage"
+        bare
+        width="w-max min-w-[220px] max-w-[calc(100vw-16px)]"
+        panelStyle={menuPos ? {
+          top: menuPos.top,
+          right: menuPos.right,
+          left: "auto",
+          maxHeight: "calc(100vh - 80px)",
+          overflowY: "auto",
+        } : undefined}
+        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        onClose={close}
+      >
+        <div role="menu" aria-label="Connections and usage">
+          {children(close)}
+        </div>
+      </HeaderSheet>
     </>
   );
 }
@@ -565,62 +548,62 @@ function MachineSwitcherMenu({
   }, [onClose]);
 
   return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={`Machines for ${group.displayName}`}
-      className={cn(
-        "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-        "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
-      )}
-      style={
-        {
-          left: anchor.left,
-          top: anchor.top,
-          WebkitAppRegion: "no-drag",
-        } as React.CSSProperties
-      }
-    >
-      {group.machines.map((machine) => {
-        const isActive = machine.bindingKey === group.activeBindingKey;
-        const status = machineStatus(machine);
-        return (
-          <button
-            key={machine.bindingKey}
-            type="button"
-            role="menuitemradio"
-            aria-checked={isActive}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
-              "hover:bg-white/8",
-              isActive && "bg-white/6 font-semibold",
-            )}
-            onClick={() => {
-              onClose();
-              onSelect(machine);
-            }}
-          >
-            <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
-            {status ? (
-              <span className="shrink-0 text-[10px] opacity-60">{status}</span>
-            ) : null}
-          </button>
-        );
-      })}
-      <div className="my-1 h-px bg-white/8" />
-      <button
-        type="button"
-        role="menuitem"
-        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
-        onClick={() => {
-          onClose();
-          onConnectAnother();
-        }}
+    <ViewportOverlayHost layer="tabMenu">
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label={`Machines for ${group.displayName}`}
+        className="absolute min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        style={
+          {
+            left: anchor.left,
+            top: anchor.top,
+            pointerEvents: "auto",
+            WebkitAppRegion: "no-drag",
+          } as React.CSSProperties
+        }
       >
-        <Plus size={11} weight="regular" className="shrink-0" />
-        <span className="truncate">Connect another machine…</span>
-      </button>
-    </div>,
+        {group.machines.map((machine) => {
+          const isActive = machine.bindingKey === group.activeBindingKey;
+          const status = machineStatus(machine);
+          return (
+            <button
+              key={machine.bindingKey}
+              type="button"
+              role="menuitemradio"
+              aria-checked={isActive}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
+                "hover:bg-white/8",
+                isActive && "bg-white/6 font-semibold",
+              )}
+              onClick={() => {
+                onClose();
+                onSelect(machine);
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
+              {status ? (
+                <span className="shrink-0 text-[10px] opacity-60">{status}</span>
+              ) : null}
+            </button>
+          );
+        })}
+        <div className="my-1 h-px bg-white/8" />
+        <button
+          type="button"
+          role="menuitem"
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
+          onClick={() => {
+            onClose();
+            onConnectAnother();
+          }}
+        >
+          <Plus size={11} weight="regular" className="shrink-0" />
+          <span className="truncate">Connect another machine…</span>
+        </button>
+      </div>
+    </ViewportOverlayHost>,
     document.body,
   );
 }
@@ -638,11 +621,13 @@ function fallbackProjectName(rootPath: string): string {
   return rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
 }
 
-function confirmProjectTabRemoval(projectName: string): boolean {
+function confirmProjectTabRemoval(projectName: string): Promise<boolean> {
   const label = projectName.trim() || "this project";
-  return window.confirm(
-    `Close "${label}" project tab?\n\nThis does not remove it from Recent Projects or delete any files on disk.`,
-  );
+  return confirmDialog({
+    title: `Close "${label}" project tab?`,
+    message: "This does not remove it from Recent Projects or delete any files on disk.",
+    confirmLabel: "Close",
+  });
 }
 
 function ProjectTabIcon({
@@ -843,123 +828,84 @@ function ProjectTabIcon({
   }
 
   return (
-    <Dialog.Root
-      open={iconDialogOpen}
-      onOpenChange={(open) => {
-        setIconDialogOpen(open);
-        if (!open) setIconError(null);
-      }}
-    >
-      <Dialog.Trigger asChild>
-        <button
-          type="button"
-          aria-label="Project icon"
-          title="Project icon"
-          className={cn(
-            "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
-            "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
-          )}
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          {choosing || removing ? (
-            <CircleNotch
-              size={15}
-              weight="bold"
-              className="animate-spin opacity-80"
+    <>
+      <button
+        type="button"
+        aria-label="Project icon"
+        title="Project icon"
+        aria-haspopup="dialog"
+        aria-expanded={iconDialogOpen}
+        className={cn(
+          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
+          "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          setIconDialogOpen(true);
+        }}
+        onKeyDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        {choosing || removing ? (
+          <CircleNotch
+            size={15}
+            weight="bold"
+            className="animate-spin opacity-80"
+          />
+        ) : (
+          iconNode
+        )}
+      </button>
+      <AppDialog
+        open={iconDialogOpen}
+        onOpenChange={(open) => {
+          setIconDialogOpen(open);
+          if (!open) setIconError(null);
+        }}
+        title="Project icon"
+        size="sm"
+        width={320}
+        tone="accent"
+        stopClickPropagation
+        actions={[
+          {
+            label: "Remove",
+            variant: "secondary",
+            busy: removing,
+            disabled: choosing || removing,
+            onClick: () => void handleRemoveIcon(),
+          },
+          {
+            label: "Replace",
+            variant: "solid",
+            busy: choosing,
+            disabled: choosing || removing,
+            onClick: () => void handleChooseIcon(),
+          },
+        ]}
+      >
+        <div className="flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
+          {icon?.dataUrl && !failed ? (
+            <img
+              src={icon.dataUrl}
+              alt=""
+              className="h-20 w-20 rounded-md object-contain"
+              draggable={false}
             />
           ) : (
-            iconNode
+            <Folder size={52} className="text-muted-fg" />
           )}
-        </button>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[120] bg-black/45 backdrop-blur-sm" />
-        <Dialog.Content
-          className={cn(
-            "fixed left-1/2 top-1/2 z-[121] w-[min(320px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2",
-            "rounded-lg border border-border bg-surface p-4 text-fg shadow-2xl",
-          )}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <Dialog.Title className="text-sm font-semibold">
-                Project icon
-              </Dialog.Title>
-              <Dialog.Description className="sr-only">
-                Preview and manage this project's shared icon.
-              </Dialog.Description>
-            </div>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/10 hover:text-fg"
-                aria-label="Close"
-              >
-                <X size={15} />
-              </button>
-            </Dialog.Close>
-          </div>
+        </div>
 
-          <div className="mt-4 flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
-            {icon?.dataUrl && !failed ? (
-              <img
-                src={icon.dataUrl}
-                alt=""
-                className="h-20 w-20 rounded-md object-contain"
-                draggable={false}
-              />
-            ) : (
-              <Folder size={52} className="text-muted-fg" />
-            )}
-          </div>
-
-          {iconError ? (
-            <div
-              role="alert"
-              className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200"
-            >
-              {iconError}
-            </div>
-          ) : null}
-
-          <div className="mt-4 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-muted-fg transition-colors hover:bg-white/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={choosing || removing}
-              onClick={handleRemoveIcon}
-            >
-              {removing ? (
-                <CircleNotch
-                  size={13}
-                  weight="bold"
-                  className="mr-1.5 animate-spin"
-                />
-              ) : null}
-              Remove
-            </button>
-            <button
-              type="button"
-              className="inline-flex h-8 items-center justify-center rounded-md bg-accent px-3 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={choosing || removing}
-              onClick={handleChooseIcon}
-            >
-              {choosing ? (
-                <CircleNotch
-                  size={13}
-                  weight="bold"
-                  className="mr-1.5 animate-spin"
-                />
-              ) : null}
-              Replace
-            </button>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        {iconError ? (
+          <Banner
+            model={{ id: "project-icon-error", tone: "error", title: iconError }}
+            layout="inline"
+            style={{ marginTop: 12 }}
+          />
+        ) : null}
+      </AppDialog>
+    </>
   );
 }
 
@@ -1013,11 +959,6 @@ export function TopBar({
   );
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [connectionsTab, setConnectionsTab] = useState<ConnectionsPanelTab>("machines");
-  const {
-    state: remoteDisconnectConfirmState,
-    confirmAsync: confirmRemoteDisconnect,
-    close: closeRemoteDisconnectConfirm,
-  } = useConfirmDialog();
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -1064,11 +1005,6 @@ export function TopBar({
     setConnectionsTab(tab);
     setConnectionsOpen(true);
   }, [webMode]);
-  const handleConnectionsPanelKeyDown = useDialogFocusTrap(
-    connectionsPanelRef,
-    closeConnections,
-    connectionsOpen,
-  );
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
@@ -1633,14 +1569,18 @@ export function TopBar({
         if (warnings.length === 0) return true;
 
         const message = [
-          "You are about to close this project.",
           "The following active work items will be terminated:",
           ...warnings.map((line) => `- ${line}`),
           "",
           "Do you want to continue?",
         ].join("\n");
 
-        return window.confirm(message);
+        return await confirmDialog({
+          title: "You are about to close this project.",
+          message,
+          confirmLabel: "Continue",
+          destructive: true,
+        });
       } catch {
         return true;
       }
@@ -1802,7 +1742,7 @@ export function TopBar({
       void (async () => {
         const target = projectTabs.find((entry) => entry.rootPath === rootPath);
         const fallbackName = fallbackProjectName(rootPath);
-        const confirmed = confirmProjectTabRemoval(
+        const confirmed = await confirmProjectTabRemoval(
           target?.displayName ?? fallbackName,
         );
         if (!confirmed) return;
@@ -1937,13 +1877,13 @@ export function TopBar({
             ? "Removing this machine will delete its saved SSH details."
             : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
 
-      const confirmed = await confirmRemoteDisconnect({
+      const confirmed = await confirmDialog({
         title: action === "remove"
           ? `Remove ${targetName}?`
           : `Disconnect ${targetName}?`,
         message,
         confirmLabel: action === "remove" ? "REMOVE" : "DISCONNECT",
-        danger: true,
+        destructive: true,
       });
       if (!confirmed) return false;
       if (affectedTabs.length === 0) return true;
@@ -2018,7 +1958,7 @@ export function TopBar({
       finishAffectedTabClose();
       return true;
     },
-    [confirmRemoteDisconnect],
+    [],
   );
 
   const handleRemoteTargetDisconnectRequested = useCallback(
@@ -2980,46 +2920,21 @@ export function TopBar({
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
-      {typeof document !== "undefined"
-        ? createPortal(
-            <ConfirmDialog
-              state={remoteDisconnectConfirmState}
-              onClose={closeRemoteDisconnectConfirm}
-            />,
-            document.body,
-          )
-        : null}
-      {typeof document !== "undefined" && !webMode && connectionsOpen
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[120]"
-              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-              onClick={closeConnections}
-            >
-              <div
-                ref={connectionsPanelRef}
-                className={cn(
-                  "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(560px,calc(100vw-24px))]",
-                  "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
-                )}
-                role="dialog"
-                aria-modal="true"
-                aria-label="Connections"
-                tabIndex={-1}
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={handleConnectionsPanelKeyDown}
-              >
-                <ConnectionsPanel
-                  initialTab={connectionsTab}
-                  onClose={closeConnections}
-                  onDisconnectRequested={handleRemoteTargetDisconnectRequested}
-                  onRemoveRequested={handleRemoteTargetRemoveRequested}
-                />
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
+      <HeaderSheet
+        open={connectionsOpen && !webMode}
+        bare
+        panelRef={connectionsPanelRef}
+        title="Connections"
+        width="w-[min(560px,calc(100vw-24px))]"
+        onClose={closeConnections}
+      >
+        <ConnectionsPanel
+          initialTab={connectionsTab}
+          onClose={closeConnections}
+          onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+          onRemoveRequested={handleRemoteTargetRemoveRequested}
+        />
+      </HeaderSheet>
 
       <FeedbackReporterModal
         open={feedbackOpen}

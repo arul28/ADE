@@ -108,12 +108,7 @@
 /* ---- popover ---------------------------------------------------------- */
 
 .activity-hdr-panel {
-  position: absolute;
-  right: 12px;
-  top: 40px;
   display: flex;
-  width: min(420px, calc(100vw - 24px));
-  max-height: min(600px, calc(100vh - 72px));
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--activity-hdr-hairline);

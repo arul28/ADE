@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { CaretRight } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CloudSlash, GithubLogo, Robot } from "@phosphor-icons/react";
 import type { NavigateFunction } from "react-router-dom";
 import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
   GitHubStatus,
   PrEventPayload,
-  ProviderMode,
   SyncRouteHealth,
 } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -23,32 +22,32 @@ import {
 } from "../../lib/githubIntegrationStatus";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
-import { openExternalUrl } from "../../lib/openExternal";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { Banner, type BannerAction, type BannerModel, type BannerSeverity } from "../shared/Banner";
+import {
+  APP_BANNER_PRIORITY,
+  useAppBanners,
+  type AppBannerOptions,
+  type BannerModel,
+  type NoticeAction,
+} from "../ui/notice";
 
 /**
- * The single host that computes and renders ADE's connection/health banners.
+ * Computes ADE's connection/health banners and registers them with the app
+ * banner host (`AppBannerHost`), which owns order, cap and dismissal.
  *
- * This replaces the hand-ordered `? :` banner conditionals that used to live
- * inline in AppShell (each with its own colors and dismiss mechanism). It owns
- * one ordered, severity-ranked, capped list rendered through the shared `Banner`
- * primitive, so the whole family finally reads as one system.
- *
- * The GitHub App signals (account authorization + per-repo installation) are the
- * NEW inputs fetched here directly; the gh-CLI/token, missing-AI-provider, and
- * mock-provider banners are migrated from AppShell.
+ * Renders nothing itself. It owns the data: the GitHub App signals (account
+ * authorization + per-repo installation) fetched here directly, the gh-CLI/token
+ * and missing-AI-provider state passed down from AppShell, and the relay leg of
+ * this machine's sync health. It stays mounted only inside an open project, so
+ * every banner it raises is project scoped and leaves with the project.
  */
 
 export type RelayRouteHealth = SyncRouteHealth["relay"];
 
-export type IntegrationBannerHostProps = {
+export type IntegrationBannersProps = {
   currentProjectRoot: string | null;
   githubStatus: GitHubStatus | null;
   hasAnyAiProvider: boolean;
   aiStatusLoaded: boolean;
-  providerMode: ProviderMode;
-  aiMockProvider: boolean;
   /**
    * Relay leg of this machine's sync route health, pushed down from AppShell's
    * `sync-status` subscription. `null` until the first snapshot lands — the
@@ -62,8 +61,10 @@ export type IntegrationBannerHostProps = {
 // on the card that actually owns the setting, wherever the manifest has moved it.
 const GITHUB_CONNECTION_SETTINGS_ROUTE = settingsRouteFor("integrations.github");
 const AI_SETTINGS_ROUTE = settingsRouteFor("agents.providers");
-const MAX_VISIBLE_BANNERS = 2;
-const SEVERITY_RANK: Record<BannerSeverity, number> = { error: 0, warning: 1, info: 2 };
+
+const GITHUB_ICON = <GithubLogo size={13} weight="fill" />;
+const RELAY_ICON = <CloudSlash size={13} weight="fill" />;
+const AI_ICON = <Robot size={13} weight="fill" />;
 
 /**
  * How long the relay control has to stay down before we say anything. Relay
@@ -118,18 +119,15 @@ export function relayGraceRemainingMs(
   return remaining > 0 ? remaining : null;
 }
 
-export function IntegrationBannerHost({
+export function IntegrationBanners({
   currentProjectRoot,
   githubStatus,
   hasAnyAiProvider,
   aiStatusLoaded,
-  providerMode,
-  aiMockProvider,
   relayHealth,
   navigate,
-}: IntegrationBannerHostProps): JSX.Element | null {
+}: IntegrationBannersProps): null {
   const dismissals = useBannerDismissals();
-  const [expanded, setExpanded] = useState(false);
 
   const [appInstall, setAppInstall] = useState<GitHubAppInstallationStatus | null>(null);
   const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(null);
@@ -262,9 +260,6 @@ export function IntegrationBannerHost({
       clearDismissal(`github-cli:${currentProjectRoot}`);
     }
     if (hasAnyAiProvider) clearDismissal(`ai-provider:${currentProjectRoot}`);
-    if (!(providerMode === "subscription" && aiMockProvider)) {
-      clearDismissal(`mock-provider:${currentProjectRoot}`);
-    }
     if (relayOutage == null) clearDismissal("relay-offline");
     if (!describeGithubOutage(githubStatus)) clearDismissal("github-outage");
   }, [
@@ -275,8 +270,6 @@ export function IntegrationBannerHost({
     appInstall,
     githubStatus,
     hasAnyAiProvider,
-    providerMode,
-    aiMockProvider,
     clearDismissal,
     loadedRoot,
   ]);
@@ -296,14 +289,15 @@ export function IntegrationBannerHost({
         id: "github-outage",
         // Informational: nothing here is the user's to fix, and it clears on
         // its own. An error/warning tone would imply an action they don't have.
-        severity: "info",
+        tone: "info",
+        icon: GITHUB_ICON,
         title: outage.title,
         detail: outage.detail,
         actions: [
           {
             label: outage.action,
             variant: "primary",
-            onClick: () => openExternalUrl(outage.actionUrl),
+            href: outage.actionUrl,
           },
         ],
         // Outages are machine-wide, not per-project. Fingerprinted on the
@@ -341,7 +335,8 @@ export function IntegrationBannerHost({
         const copy = githubAccountIssueCopy(block.account);
         list.push({
           id: "github-app-account",
-          severity: "warning",
+          tone: "warning",
+          icon: GITHUB_ICON,
           title: copy.title,
           detail: copy.detail,
           actions: [
@@ -359,7 +354,7 @@ export function IntegrationBannerHost({
       } else if (block?.kind === "repo") {
         const repoLabel = appInstall?.repo ? `${appInstall.repo.owner}/${appInstall.repo.name}` : null;
         const copy = githubRepoIssueCopy(block.repo, repoLabel);
-        const actions: BannerAction[] = [];
+        const actions: NoticeAction[] = [];
         if (block.repo === "access_pending") {
           // Matches the Settings panel: access is still propagating from GitHub,
           // so the action is to re-check status, not Install/Manage.
@@ -369,23 +364,24 @@ export function IntegrationBannerHost({
           // Manage (to reconnect the webhook) and let them Recheck afterward.
           const manageUrl = appInstall?.manageUrl;
           if (manageUrl) {
-            actions.push({ label: "Manage", variant: "primary", onClick: () => openExternalUrl(manageUrl) });
+            actions.push({ label: "Manage", variant: "primary", href: manageUrl });
           }
           actions.push({ label: "Recheck", variant: "secondary", onClick: () => void loadAppStatus(true) });
         } else {
           const installUrl = appInstall?.installUrl;
           const manageUrl = appInstall?.manageUrl;
           if (installUrl) {
-            actions.push({ label: "Install", variant: "primary", onClick: () => openExternalUrl(installUrl) });
+            actions.push({ label: "Install", variant: "primary", href: installUrl });
           }
           if (manageUrl) {
-            actions.push({ label: "Manage", variant: "secondary", onClick: () => openExternalUrl(manageUrl) });
+            actions.push({ label: "Manage", variant: "secondary", href: manageUrl });
           }
         }
         const repoKey = repoLabel ?? currentProjectRoot;
         list.push({
           id: "github-app-repo",
-          severity: "warning",
+          tone: "warning",
+          icon: GITHUB_ICON,
           title: copy.title,
           detail: copy.detail,
           actions,
@@ -409,7 +405,8 @@ export function IntegrationBannerHost({
       const cli = describeGithubCliBanner(githubStatus);
       list.push({
         id: "github-cli",
-        severity: "warning",
+        tone: "warning",
+        icon: GITHUB_ICON,
         title: cli.title,
         detail: cli.detail,
         actions: [
@@ -433,7 +430,8 @@ export function IntegrationBannerHost({
     if (currentProjectRoot && aiStatusLoaded && !hasAnyAiProvider) {
       list.push({
         id: "ai-provider",
-        severity: "warning",
+        tone: "warning",
+        icon: AI_ICON,
         title: "No AI provider configured",
         detail: "Set up an AI provider so ADE can run agents in this project.",
         actions: [{ label: "Set up AI", variant: "primary", onClick: () => navigate(AI_SETTINGS_ROUTE) }],
@@ -441,21 +439,7 @@ export function IntegrationBannerHost({
       });
     }
 
-    // 4) Mock LLM provider (MIGRATED). Guarded on currentProjectRoot like the
-    // sibling banners — the host only mounts under a project, so this is always
-    // truthy here and the dismiss key is unconditionally project-scoped.
-    if (currentProjectRoot && providerMode === "subscription" && aiMockProvider) {
-      list.push({
-        id: "mock-provider",
-        severity: "warning",
-        title: "Using a mock LLM provider",
-        detail: "AI responses are placeholder content. Switch to a real provider in AI settings.",
-        actions: [{ label: "Open AI settings", variant: "primary", onClick: () => navigate(AI_SETTINGS_ROUTE) }],
-        dismiss: { key: `mock-provider:${currentProjectRoot}`, fingerprint: "mock" },
-      });
-    }
-
-    // 5) ADE Relay control is down (NEW). Total relay failure used to be visible
+    // 4) ADE Relay control is down (NEW). Total relay failure used to be visible
     // only to `ade doctor`: phones and remote clients silently lost their
     // off-LAN path while the UI looked fine. Relay identity is machine-wide, so
     // the dismiss key is global (like github-app-account) rather than
@@ -470,7 +454,8 @@ export function IntegrationBannerHost({
       const suppressed = relayOutage === "suppressed";
       list.push({
         id: "relay-offline",
-        severity: "warning",
+        tone: "warning",
+        icon: RELAY_ICON,
         title: suppressed
           ? "Another ADE process owns this machine's relay connection"
           : "ADE Relay is not connected",
@@ -500,84 +485,32 @@ export function IntegrationBannerHost({
     githubStatus,
     aiStatusLoaded,
     hasAnyAiProvider,
-    providerMode,
-    aiMockProvider,
     navigate,
     loadAppStatus,
     loadedRoot,
   ]);
 
-  const active = useMemo(() => {
-    return models
-      .map((model, index) => ({ model, index }))
-      .filter(({ model }) => !(model.dismiss && dismissals.isDismissed(model.dismiss.key, model.dismiss.fingerprint)))
-      .sort((a, b) => {
-        // The outage notice is deliberately `info` (nothing here is the user's
-        // to fix), but severity ordering would then rank it last and the
-        // MAX_VISIBLE_BANNERS slice could push it into overflow — while it is
-        // still suppressing the GitHub banners. The GitHub complaints would
-        // vanish with their explanation hidden behind a toggle. Pin it first.
-        const pinned = Number(b.model.id === "github-outage") - Number(a.model.id === "github-outage");
-        if (pinned !== 0) return pinned;
-        return SEVERITY_RANK[a.model.severity] - SEVERITY_RANK[b.model.severity] || a.index - b.index;
-      })
-      .map(({ model }) => model);
-  }, [models, dismissals]);
-
-  const handleDismiss = useCallback(
-    (d: { key: string; fingerprint: string }) => {
-      dismissals.dismiss(d.key, d.fingerprint);
-    },
-    [dismissals],
+  // The outage notice is deliberately `info` (nothing here is the user's to
+  // fix), so tone ordering alone would rank it last and the host's two-slot cap
+  // could push it into overflow — while it is still suppressing the GitHub
+  // banners, whose complaints would vanish with their explanation hidden behind
+  // a toggle. The outage band sorts it ahead of every integration banner. The
+  // rest keep the order they are built in: a hair of priority per position
+  // stays inside the integration band.
+  const registrations = useMemo(
+    () =>
+      models.map((model, index): { model: BannerModel; options: AppBannerOptions } => ({
+        model,
+        options: {
+          placement: "docked",
+          priority: model.id === "github-outage"
+            ? APP_BANNER_PRIORITY.outage
+            : APP_BANNER_PRIORITY.integration + index / 100,
+        },
+      })),
+    [models],
   );
+  useAppBanners(registrations);
 
-  if (active.length === 0) return null;
-
-  const visible = active.slice(0, MAX_VISIBLE_BANNERS);
-  const overflow = active.slice(MAX_VISIBLE_BANNERS);
-
-  return (
-    <div className="shrink-0 mx-2 mt-1 flex flex-col gap-1.5">
-      {visible.map((model) => (
-        <Banner key={model.id} model={model} onDismiss={handleDismiss} />
-      ))}
-      {overflow.length > 0 ? (
-        <>
-          <button
-            type="button"
-            style={moreToggleStyle}
-            onClick={() => setExpanded((prev) => !prev)}
-            aria-expanded={expanded}
-          >
-            <CaretRight
-              size={11}
-              weight="bold"
-              style={{ transition: "transform 120ms ease", transform: expanded ? "rotate(90deg)" : "none" }}
-            />
-            {expanded
-              ? "Hide extra integration issues"
-              : `${overflow.length} more integration issue${overflow.length === 1 ? "" : "s"}`}
-          </button>
-          {expanded
-            ? overflow.map((model) => <Banner key={model.id} model={model} onDismiss={handleDismiss} />)
-            : null}
-        </>
-      ) : null}
-    </div>
-  );
+  return null;
 }
-
-const moreToggleStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 5,
-  alignSelf: "flex-start",
-  padding: "2px 4px",
-  border: "none",
-  background: "transparent",
-  color: COLORS.textMuted,
-  fontFamily: SANS_FONT,
-  fontSize: 11.5,
-  fontWeight: 500,
-  cursor: "pointer",
-};

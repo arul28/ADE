@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -12,10 +12,12 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
+import { Banner, type NoticeTone } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { BranchIcon } from "../ui/vcsIcons";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
+import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 import {
   WORK_TOOL_CHROME_CHIP,
   WORK_TOOL_CHROME_CHIP_WRAP,
@@ -48,16 +50,6 @@ import type {
   LaneSummary,
   OpenProjectBinding
 } from "../../../shared/types";
-
-type LaneTextPromptState = {
-  title: string;
-  message?: string;
-  placeholder?: string;
-  value: string;
-  confirmLabel: string;
-  validate?: (value: string) => string | null;
-  resolve: (value: string | null) => void;
-};
 
 type NextActionHint = {
   action: GitRecommendedAction | "rebase_push" | "resolve_conflicts";
@@ -329,6 +321,15 @@ export function __resetLaneGitActionRuntimeForTests(): void {
   emitLaneGitActionRuntimeChange();
 }
 
+function confirmForcePushWithLease(): Promise<boolean> {
+  return confirmDialog({
+    title: "Force push with lease?",
+    message: "This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
+    confirmLabel: "Force push",
+    destructive: true,
+  });
+}
+
 function formatRelativeTime(ts: string | null): string {
   if (!ts) return "unknown time";
   const date = new Date(ts);
@@ -448,29 +449,29 @@ function getCommitHelperText(commitMessage: string): string {
 }
 
 function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
-  color: string;
+  tone: NoticeTone;
   label: string;
   fallbackMessage: string;
 } {
   if (state === "autoRebased") {
     return {
-      color: COLORS.success,
-      label: "AUTO REBASED",
+      tone: "success",
+      label: "Auto rebased",
       fallbackMessage: "Lane was rebased and pushed automatically."
     };
   }
   if (state === "rebaseConflict" || state === "rebaseFailed") {
     return {
-      color: COLORS.danger,
-      label: "AUTO-REBASE FAILED",
+      tone: "error",
+      label: "Auto-rebase failed",
       fallbackMessage: state === "rebaseConflict"
         ? "ADE predicted conflicts for this lane and stopped before rewriting or pushing it."
         : "ADE tried to auto-rebase this lane, restored the previous state, and stopped before pushing changes."
     };
   }
   return {
-    color: COLORS.warning,
-    label: "AUTO-REBASE PENDING",
+    tone: "warning",
+    label: "Auto-rebase pending",
     fallbackMessage: "ADE will auto-rebase and auto-push this lane when its parent advances."
   };
 }
@@ -819,8 +820,6 @@ export function LaneGitActionsPane({
   const [stashes, setStashes] = useState<GitStashSummary[]>(initialCachedGitState?.stashes ?? []);
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
   const [forcePushSuggested, setForcePushSuggested] = useState(initialCachedGitState?.forcePushSuggested ?? false);
-  const [textPrompt, setTextPrompt] = useState<LaneTextPromptState | null>(null);
-  const [textPromptError, setTextPromptError] = useState<string | null>(null);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -886,45 +885,20 @@ export function LaneGitActionsPane({
       defaultValue?: string;
       confirmLabel?: string;
       validate?: (value: string) => string | null;
-    }): Promise<string | null> => {
-      return new Promise((resolve) => {
-        setTextPromptError(null);
-        setTextPrompt({
-          title: args.title,
-          message: args.message,
-          placeholder: args.placeholder,
-          value: args.defaultValue ?? "",
-          confirmLabel: args.confirmLabel ?? "Confirm",
-          validate: args.validate,
-          resolve
-        });
-      });
-    },
+    }): Promise<string | null> =>
+      promptDialog({
+        title: args.title,
+        message: args.message,
+        placeholder: args.placeholder,
+        defaultValue: args.defaultValue,
+        confirmLabel: args.confirmLabel ?? "Confirm",
+        // Empty is a valid answer (an optional stash note); a caller that needs
+        // text says so in `validate`.
+        allowEmpty: true,
+        validate: (value) => args.validate?.(value.trim()) ?? null,
+      }).then((value) => value?.trim() ?? null),
     []
   );
-
-  const cancelTextPrompt = useCallback(() => {
-    setTextPrompt((prev) => {
-      if (prev) prev.resolve(null);
-      return null;
-    });
-    setTextPromptError(null);
-  }, []);
-
-  const submitTextPrompt = useCallback(() => {
-    setTextPrompt((prev) => {
-      if (!prev) return prev;
-      const value = prev.value.trim();
-      const validationError = prev.validate?.(value) ?? null;
-      if (validationError) {
-        setTextPromptError(validationError);
-        return prev;
-      }
-      setTextPromptError(null);
-      prev.resolve(value);
-      return null;
-    });
-  }, []);
 
   const refreshChanges = async (targetLaneId: string | null = laneId) => {
     if (!targetLaneId) return;
@@ -1340,30 +1314,45 @@ export function LaneGitActionsPane({
     await refreshChanges();
   };
 
-  const discardFile = (path: string) => {
+  const discardFile = async (path: string) => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard all changes to ${path}? This cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard all changes to ${path}?`,
+      message: "This cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard file", async () => {
       await window.ade.git.discardFile({ laneId, path }, pin);
     });
   };
 
-  const discardStagedFile = (path: string) => {
+  const discardStagedFile = async (path: string) => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard staged and unstaged changes to ${path}? This cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard staged and unstaged changes to ${path}?`,
+      message: "This cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard staged file", async () => {
       await window.ade.git.restoreStagedFile({ laneId, path }, pin);
     });
   };
 
-  const discardAll = () => {
+  const discardAll = async () => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})? This cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})?`,
+      message: "This cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard all", async () => {
       for (const file of changes.unstaged) {
@@ -1372,10 +1361,15 @@ export function LaneGitActionsPane({
     });
   };
 
-  const discardAllStaged = () => {
+  const discardAllStaged = async () => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard ALL staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})? This also discards any unstaged edits to the same files and cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard ALL staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})?`,
+      message: "This also discards any unstaged edits to the same files and cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard staged files", async () => {
       for (const file of changes.staged) {
@@ -1589,10 +1583,17 @@ export function LaneGitActionsPane({
       if (!latestSyncStatus.hasUpstream) {
         const missingRemote = latestSyncStatus.upstreamState === "missing";
         if (confirmPublish) {
-          const ok = window.confirm(
+          const ok = await confirmDialog(
             missingRemote
-              ? `The remote branch for lane '${lane?.name ?? laneId}' is missing. Recreate origin/${lane?.branchRef ?? "current branch"}?`
-              : `Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`
+              ? {
+                title: `The remote branch for lane '${lane?.name ?? laneId}' is missing.`,
+                message: `Recreate origin/${lane?.branchRef ?? "current branch"}?`,
+                confirmLabel: "Recreate",
+              }
+              : {
+                title: `Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`,
+                confirmLabel: "Publish",
+              },
           );
           if (!ok) throw new Error("__ade_cancelled__");
         }
@@ -1602,9 +1603,12 @@ export function LaneGitActionsPane({
 
       if (latestSyncStatus.diverged && latestSyncStatus.ahead > 0) {
         if (confirmPublish) {
-          const ok = window.confirm(
-            `Lane '${lane?.name ?? laneId}' diverged from remote (${latestSyncStatus.ahead} local ahead, ${latestSyncStatus.behind} remote ahead). Force push with lease now?`
-          );
+          const ok = await confirmDialog({
+            title: `Lane '${lane?.name ?? laneId}' diverged from remote (${latestSyncStatus.ahead} local ahead, ${latestSyncStatus.behind} remote ahead).`,
+            message: "Force push with lease now?",
+            confirmLabel: "Force push",
+            destructive: true,
+          });
           if (!ok) throw new Error("__ade_cancelled__");
         }
         await window.ade.git.push({ laneId, forceWithLease: true }, pin);
@@ -1613,9 +1617,10 @@ export function LaneGitActionsPane({
 
       if (latestSyncStatus.ahead > 0) {
         if (confirmPublish) {
-          const ok = window.confirm(
-            `Push ${latestSyncStatus.ahead} commit${latestSyncStatus.ahead === 1 ? "" : "s"} for lane '${lane?.name ?? laneId}' now?`
-          );
+          const ok = await confirmDialog({
+            title: `Push ${latestSyncStatus.ahead} commit${latestSyncStatus.ahead === 1 ? "" : "s"} for lane '${lane?.name ?? laneId}' now?`,
+            confirmLabel: "Push",
+          });
           if (!ok) throw new Error("__ade_cancelled__");
         }
         await window.ade.git.push({ laneId }, pin);
@@ -2038,11 +2043,9 @@ export function LaneGitActionsPane({
               : nextActionHint?.action === "force_push_lease"
                 ? "Force push (lease)"
                 : "Push"}
-          onClick={() => {
+          onClick={async () => {
             if (nextActionHint?.action === "force_push_lease") {
-              const ok = window.confirm(
-                "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
-              );
+              const ok = await confirmForcePushWithLease();
               if (!ok) return;
               runPush(true);
               return;
@@ -2200,147 +2203,85 @@ export function LaneGitActionsPane({
       )}
 
       {stuckRebase ? (
-        <div
-          className="shrink-0"
-          style={{
-            padding: "10px 16px",
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px", flexShrink: 0 }}
+          model={{
+            id: `lane-stuck-rebase:${laneId ?? ""}`,
+            tone: "error",
+            title: "Rebase in progress",
+            detail: stuckRebase.conflictedFiles.length > 0
+              ? `${stuckRebase.conflictedFiles.length} conflicted file${stuckRebase.conflictedFiles.length === 1 ? "" : "s"}. Commits and pushes are blocked until you resolve them.`
+              : "An interrupted rebase is blocking commits and pushes. Abort or continue to unlock the lane.",
+            actions: [
+              ...(stuckRebase.canAbort ? [{
+                label: "Abort rebase",
+                title: "Cancel the rebase and return to the state before it started. Command: git rebase --abort. Undo the rebase and restore the previous branch state. Warning: Any resolved conflicts will be lost.",
+                variant: "secondary" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("abort rebase", async () => {
+                    await window.ade.git.rebaseAbort(laneId, pin);
+                  });
+                },
+              }] : []),
+              ...(stuckRebase.canContinue ? [{
+                label: "Continue rebase",
+                title: "Continue the rebase after resolving conflicts. The next commit in the rebase sequence will be applied. Command: git rebase --continue. Apply resolved conflicts and continue rebasing.",
+                variant: "solid" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("continue rebase", async () => {
+                    await window.ade.git.rebaseContinue(laneId, pin);
+                  });
+                },
+              }] : []),
+            ],
           }}
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <Warning size={16} weight="bold" color={COLORS.danger} style={{ flexShrink: 0 }} />
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "0.8px", textTransform: "uppercase", color: COLORS.danger }}>
-                Rebase in progress
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2, letterSpacing: "0.3px" }}>
-                {stuckRebase.conflictedFiles.length > 0
-                  ? `${stuckRebase.conflictedFiles.length} conflicted file${stuckRebase.conflictedFiles.length === 1 ? "" : "s"}. Commits and pushes are blocked until you resolve them.`
-                  : "An interrupted rebase is blocking commits and pushes. Abort or continue to unlock the lane."}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {stuckRebase.canAbort ? (
-                <SmartTooltip content={{
-                  label: "Abort Rebase",
-                  description: "Cancel the rebase and return to the state before it started. All rebase progress is discarded.",
-                  gitCommand: "git rebase --abort",
-                  effect: "Undo the rebase and restore the previous branch state",
-                  warning: "Any resolved conflicts will be lost",
-                }}>
-                  <button
-                    type="button"
-                    style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("abort rebase", async () => {
-                        await window.ade.git.rebaseAbort(laneId, pin);
-                      });
-                    }}
-                  >
-                    ABORT REBASE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-              {stuckRebase.canContinue ? (
-                <SmartTooltip content={{
-                  label: "Continue Rebase",
-                  description: "Continue the rebase after resolving conflicts. The next commit in the rebase sequence will be applied.",
-                  gitCommand: "git rebase --continue",
-                  effect: "Apply resolved conflicts and continue rebasing",
-                }}>
-                  <button
-                    type="button"
-                    style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("continue rebase", async () => {
-                        await window.ade.git.rebaseContinue(laneId, pin);
-                      });
-                    }}
-                  >
-                    CONTINUE REBASE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        />
       ) : null}
 
       {mergeConflictState ? (
-        <div
-          className="shrink-0"
-          style={{
-            padding: "10px 16px",
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            borderBottom: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px", flexShrink: 0 }}
+          model={{
+            id: `lane-merge-conflict:${laneId ?? ""}`,
+            tone: "error",
+            title: "Merge in progress",
+            detail: mergeConflictState.conflictedFiles.length > 0
+              ? `${mergeConflictState.conflictedFiles.length} conflicted file${mergeConflictState.conflictedFiles.length === 1 ? "" : "s"}. Resolve them before continuing or aborting the merge.`
+              : "An interrupted merge is blocking pull and push actions. Continue or abort to unlock the lane.",
+            actions: [
+              ...(mergeConflictState.canAbort ? [{
+                label: "Abort merge",
+                title: "Cancel the merge and return to the state before it started. Command: git merge --abort. Undo the merge and restore the previous branch state. Warning: Any resolved conflicts will be lost.",
+                variant: "secondary" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("abort merge", async () => {
+                    await window.ade.git.mergeAbort(laneId, pin);
+                  });
+                },
+              }] : []),
+              ...(mergeConflictState.canContinue ? [{
+                label: "Continue merge",
+                title: "Finish the merge after resolving all conflicts. A merge commit will be created. Command: git merge --continue. Create the merge commit with resolved conflicts.",
+                variant: "solid" as const,
+                disabled: busyAction != null,
+                onClick: () => {
+                  if (!laneId) return;
+                  void runAction("continue merge", async () => {
+                    await window.ade.git.mergeContinue(laneId, pin);
+                  });
+                },
+              }] : []),
+            ],
           }}
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <Warning size={16} weight="bold" color={COLORS.danger} style={{ flexShrink: 0 }} />
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "0.8px", textTransform: "uppercase", color: COLORS.danger }}>
-                Merge in progress
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2, letterSpacing: "0.3px" }}>
-                {mergeConflictState.conflictedFiles.length > 0
-                  ? `${mergeConflictState.conflictedFiles.length} conflicted file${mergeConflictState.conflictedFiles.length === 1 ? "" : "s"}. Resolve them before continuing or aborting the merge.`
-                  : "An interrupted merge is blocking pull and push actions. Continue or abort to unlock the lane."}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {mergeConflictState.canAbort ? (
-                <SmartTooltip content={{
-                  label: "Abort Merge",
-                  description: "Cancel the merge and return to the state before it started.",
-                  gitCommand: "git merge --abort",
-                  effect: "Undo the merge and restore the previous branch state",
-                  warning: "Any resolved conflicts will be lost",
-                }}>
-                  <button
-                    type="button"
-                    style={dangerButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("abort merge", async () => {
-                        await window.ade.git.mergeAbort(laneId, pin);
-                      });
-                    }}
-                  >
-                    ABORT MERGE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-              {mergeConflictState.canContinue ? (
-                <SmartTooltip content={{
-                  label: "Continue Merge",
-                  description: "Finish the merge after resolving all conflicts. A merge commit will be created.",
-                  gitCommand: "git merge --continue",
-                  effect: "Create the merge commit with resolved conflicts",
-                }}>
-                  <button
-                    type="button"
-                    style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })}
-                    disabled={busyAction != null}
-                    onClick={() => {
-                      if (!laneId) return;
-                      void runAction("continue merge", async () => {
-                        await window.ade.git.mergeContinue(laneId, pin);
-                      });
-                    }}
-                  >
-                    CONTINUE MERGE
-                  </button>
-                </SmartTooltip>
-              ) : null}
-            </div>
-          </div>
-        </div>
+        />
       ) : null}
 
       {autoRebaseStatus ? (() => {
@@ -2362,58 +2303,32 @@ export function LaneGitActionsPane({
           navigate(`/prs?${search.toString()}`);
         };
         return (
-          <div
-            className="shrink-0 flex flex-wrap items-center gap-3"
-            style={{
-              padding: "8px 16px",
-              fontSize: 10,
-              fontFamily: MONO_FONT,
-              borderBottom: `1px solid ${COLORS.border}`,
-              background: `${bannerConfig.color}08`,
-              color: bannerConfig.color
+          <Banner
+            layout="inline"
+            style={{ margin: "6px 8px", flexShrink: 0 }}
+            model={{
+              id: `lane-auto-rebase:${laneId ?? ""}`,
+              tone: bannerConfig.tone,
+              icon: <GitBranch size={13} weight="bold" />,
+              title: bannerConfig.label,
+              detail: bannerMessage,
+              actions: autoRebaseStatus.state === "autoRebased"
+                ? undefined
+                : isAutoRebaseFailure
+                  ? [{
+                      label: "Open Rebase/Merge tab",
+                      title: "View detailed rebase information and resolve issues.",
+                      disabled: !laneId || busyAction != null,
+                      onClick: openRebaseTab,
+                    }]
+                  : [{
+                      label: "Rebase and push",
+                      title: "Rebase this lane onto its parent, then push the rewritten branch to remote.",
+                      disabled: !laneId || busyAction != null,
+                      onClick: () => runRebaseAndPushFlow(true),
+                    }],
             }}
-          >
-            <span style={{ ...LABEL_STYLE, color: "inherit" }}>
-              {bannerConfig.label}
-            </span>
-            <span className="truncate" style={{ color: COLORS.textMuted, letterSpacing: "0.5px", flex: 1, minWidth: 220 }}>
-              {bannerMessage}
-            </span>
-            {autoRebaseStatus.state !== "autoRebased" ? (
-              isAutoRebaseFailure ? (
-                <SmartTooltip content={{
-                  label: "Open Rebase/Merge Tab",
-                  description: "View detailed rebase information and resolve issues.",
-                  effect: "Navigate to the rebase details view",
-                }}>
-                  <button
-                    type="button"
-                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
-                    disabled={!laneId || busyAction != null}
-                    onClick={openRebaseTab}
-                  >
-                    OPEN REBASE/MERGE TAB
-                  </button>
-                </SmartTooltip>
-              ) : (
-                <SmartTooltip content={{
-                  label: "Rebase and Push",
-                  description: "Rebase this lane onto its parent, then push the rewritten branch to remote.",
-                  gitCommand: "git rebase <parent> && git push",
-                  effect: "Rebase from parent and push to remote",
-                }}>
-                  <button
-                    type="button"
-                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
-                    disabled={!laneId || busyAction != null}
-                    onClick={() => runRebaseAndPushFlow(true)}
-                  >
-                    REBASE AND PUSH
-                  </button>
-                </SmartTooltip>
-              )
-            ) : null}
-          </div>
+          />
         );
       })() : null}
 
@@ -2640,11 +2555,9 @@ export function LaneGitActionsPane({
                     ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
                   }}
                   disabled={!laneId || busyAction != null}
-                  onClick={() => {
+                  onClick={async () => {
                     if (nextActionHint?.action === "force_push_lease") {
-                      const ok = window.confirm(
-                        "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
-                      );
+                      const ok = await confirmForcePushWithLease();
                       if (!ok) return;
                       runPush(true);
                     } else {
@@ -3413,22 +3326,20 @@ export function LaneGitActionsPane({
       </div>
 
       {(notice || error || busyAction) ? (
-        <div
-          className="shrink-0 flex items-center justify-between"
-          style={{
-            padding: "4px 16px",
-            fontSize: 10,
-            fontFamily: MONO_FONT,
-            letterSpacing: "0.5px",
-            borderTop: `1px solid ${COLORS.border}`,
-            background: error ? "color-mix(in srgb, var(--color-error) 15%, transparent)" : "color-mix(in srgb, var(--color-accent) 12%, transparent)",
-            color: error ? COLORS.danger : COLORS.accent,
+        <Banner
+          layout="inline"
+          style={{ margin: "4px 8px", flexShrink: 0 }}
+          model={{
+            id: `lane-git-action-status:${laneId ?? ""}`,
+            tone: error ? "error" : notice ? "success" : "accent",
+            title: error
+              ? `ERROR: ${error}`
+              : notice
+                ? notice.toUpperCase()
+                : `RUNNING ${busyAction?.toUpperCase() ?? ""}...`,
+            busy: Boolean(busyAction),
           }}
-        >
-          <span>
-            {error ? `ERROR: ${error}` : notice ? notice.toUpperCase() : busyAction ? `RUNNING ${busyAction.toUpperCase()}...` : ""}
-          </span>
-        </div>
+        />
       ) : null}
 
       <PushDivergenceDialog
@@ -3436,66 +3347,6 @@ export function LaneGitActionsPane({
         onCancel={cancelPendingPush}
         onConfirm={confirmPendingPush}
       />
-
-      {textPrompt ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(460px, 100%)", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 20 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "1px", textTransform: "uppercase", color: COLORS.textPrimary }}>
-              {textPrompt.title}
-            </div>
-            {textPrompt.message ? (
-              <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                {textPrompt.message}
-              </div>
-            ) : null}
-            <input
-              autoFocus
-              value={textPrompt.value}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setTextPrompt((prev) => (prev ? { ...prev, value: nextValue } : prev));
-                if (textPromptError) setTextPromptError(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelTextPrompt();
-                } else if (event.key === "Enter") {
-                  event.preventDefault();
-                  submitTextPrompt();
-                }
-              }}
-              placeholder={textPrompt.placeholder}
-              style={{
-                marginTop: 12,
-                height: 36,
-                width: "100%",
-                padding: "0 12px",
-                fontSize: 11,
-                fontFamily: MONO_FONT,
-                letterSpacing: "0.5px",
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                color: COLORS.textSecondary,
-                outline: "none",
-              }}
-            />
-            {textPromptError ? (
-              <div style={{ marginTop: 8, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger }}>
-                {textPromptError}
-              </div>
-            ) : null}
-            <div className="flex justify-end gap-2" style={{ marginTop: 16 }}>
-              <button type="button" style={outlineButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={cancelTextPrompt}>
-                CANCEL
-              </button>
-              <button type="button" style={primaryButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={submitTextPrompt}>
-                {textPrompt.confirmLabel.toUpperCase()}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -1,8 +1,9 @@
 /** Small shared pieces every provider tile, detail page, and body draws from. */
 import React from "react";
-import { CheckCircle, Copy, X, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, Copy } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
+import { Banner } from "../../ui/notice";
 import type { ApiKeySource } from "../OpenCodeProviderDetailModal";
 import type { ProviderStatusState } from "./types";
 
@@ -98,46 +99,16 @@ export function AlertBanner({
   message: string;
   onDismiss: () => void;
 }) {
-  const color = tone === "success" ? COLORS.success : tone === "warning" ? COLORS.warning : COLORS.danger;
-  const token = tone === "success" ? "success" : tone === "warning" ? "warning" : "error";
   return (
-    <div
-      role={tone === "error" ? "alert" : "status"}
-      style={{
-        padding: "8px 10px 8px 12px",
-        fontSize: 11,
-        fontFamily: SANS_FONT,
-        lineHeight: 1.5,
-        color,
-        background: `color-mix(in srgb, var(--color-${token}) 12%, transparent)`,
-        border: `1px solid color-mix(in srgb, var(--color-${token}) 30%, transparent)`,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
+    <Banner
+      layout="inline"
+      model={{
+        id: `provider-alert:${tone}`,
+        tone,
+        title: message,
+        dismiss: { onDismiss, label: `Dismiss ${tone} message` },
       }}
-    >
-      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{message}</span>
-      <button
-        type="button"
-        aria-label={`Dismiss ${tone} message`}
-        onClick={onDismiss}
-        style={{
-          border: `1px solid color-mix(in srgb, ${color} 32%, transparent)`,
-          background: "transparent",
-          color,
-          width: 22,
-          height: 22,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 0,
-          cursor: "pointer",
-        }}
-      >
-        <X size={12} weight="bold" />
-      </button>
-    </div>
+    />
   );
 }
 
@@ -297,25 +268,5 @@ export function SubsectionTitle({ children }: { children: React.ReactNode }) {
 
 /** The one-line error a failed enumerate renders as. */
 export function ProviderErrorRow({ message }: { message: string }) {
-  return (
-    <div
-      role="alert"
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 6,
-        padding: "6px 8px",
-        fontSize: 11,
-        fontFamily: SANS_FONT,
-        lineHeight: 1.5,
-        color: COLORS.danger,
-        background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-error) 26%, transparent)",
-        overflowWrap: "anywhere",
-      }}
-    >
-      <XCircle size={12} weight="fill" style={{ flexShrink: 0, marginTop: 2 }} />
-      <span>{message}</span>
-    </div>
-  );
+  return <Banner layout="inline" model={{ id: "provider-error", tone: "error", title: message }} />;
 }

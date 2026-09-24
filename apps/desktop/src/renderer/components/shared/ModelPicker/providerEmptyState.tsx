@@ -1,8 +1,9 @@
-import { Gear, ArrowSquareOut, Terminal } from "@phosphor-icons/react";
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { PROVIDER_REMEDIATION } from "../../../../shared/providerRemediation";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
+import { ProviderLogo } from "../ProviderLogos";
 
 export type ProviderEmptyStateAction =
   | { kind: "open-settings" }
@@ -223,28 +224,26 @@ export function ProviderSetupBanner({ family, onOpenSignIn }: ProviderSetupBanne
   if (!onOpenSignIn) return null;
   const label = PROVIDER_DISPLAY_LABELS[family] ?? family;
   const claude = family === "anthropic";
+  // The whole row is the click target (the picker's sticky "set up" row), so
+  // the Banner sits inside one bare button rather than carrying its own action.
   return (
     <button
       type="button"
       data-model-picker-setup-banner="true"
       data-provider-family={family}
       onClick={() => onOpenSignIn(family)}
-      className={cn(
-        "group sticky top-0 z-[6] mx-0.5 mb-1 flex items-center justify-between gap-2 rounded-md px-2 py-1.5",
-        "border border-white/[0.06] bg-white/[0.025] backdrop-blur",
-        "text-[10px] font-medium text-muted-fg/65 transition-colors",
-        "hover:border-violet-400/25 hover:bg-violet-500/[0.06] hover:text-fg/85",
-      )}
+      className="sticky top-0 z-[6] mb-1 block w-full rounded-[10px] text-left backdrop-blur"
     >
-      <span className="inline-flex items-center gap-1.5">
-        {claude ? (
-          <Terminal size={11} weight="bold" className="opacity-70 group-hover:opacity-100" />
-        ) : (
-          <Gear size={11} weight="bold" className="opacity-70 group-hover:opacity-100" />
-        )}
-        <span>{claude ? "Login to Claude" : `Set up ${label}`}</span>
-      </span>
-      <ArrowSquareOut size={10} weight="bold" className="opacity-60 group-hover:opacity-100" />
+      <Banner
+        layout="inline"
+        model={{
+          id: `model-picker-setup:${family}`,
+          tone: "info",
+          icon: <ProviderLogo family={family} size={13} />,
+          title: claude ? "Login to Claude" : `Set up ${label}`,
+        }}
+        style={{ margin: "0 2px" }}
+      />
     </button>
   );
 }

@@ -153,7 +153,8 @@ describe("CreateLaneDialog", () => {
     expect(await screen.findByRole("dialog", { name: "Connect Linear issue" })).toBeTruthy();
     expect(screen.queryByText("Lane name")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Connect Linear issue backdrop" }));
+    // A press on the shared Dialog's scrim dismisses the pane.
+    fireEvent.pointerDown(document.body.querySelector(".ade-dialog-scrim")!);
     expect(await screen.findByText("Lane name")).toBeTruthy();
   });
 

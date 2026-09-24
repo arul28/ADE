@@ -1,6 +1,7 @@
 import { CircleNotch, LockSimple } from "@phosphor-icons/react";
 import type { ImportPlan, ImportPlanAction, ImportSurface } from "../../../../shared/externalSessionPolicy";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
@@ -251,11 +252,23 @@ export function ImportActionBar({
         </p>
       ) : null}
       {plan.note ? (
-        <p className={cn("mt-2 text-[11px]", noteTone === "warning" ? "text-amber-200/80" : "text-muted-fg/55")}>
-          {plan.note}
-        </p>
+        noteTone === "warning" ? (
+          <Banner
+            layout="inline"
+            style={{ marginTop: 8 }}
+            model={{ id: "import-session-action-warning", tone: "warning", title: plan.note }}
+          />
+        ) : (
+          <p className="mt-2 text-[11px] text-muted-fg/55">{plan.note}</p>
+        )
       ) : null}
-      {error ? <p role="alert" className="mt-1.5 text-[11px] text-red-300/90">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          model={{ id: "import-session-action-error", tone: "error", title: error }}
+        />
+      ) : null}
     </footer>
   );
 }

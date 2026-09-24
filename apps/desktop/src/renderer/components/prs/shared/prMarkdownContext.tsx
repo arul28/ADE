@@ -3,6 +3,7 @@ import { GitMerge, GitPullRequest, Info, Lightbulb, Warning, WarningOctagon, XCi
 import type { PrState } from "../../../../shared/types/prs";
 import { getFileIcon } from "../../files/filePresentation";
 import { COLORS } from "../../lanes/laneDesignTokens";
+import { noticeTone, type NoticeTone } from "../../ui/notice";
 
 /**
  * What PR markdown knows about the PR it is rendered in. Provided by the PR
@@ -102,25 +103,27 @@ export function PrRefPill({ number, state, onOpen, href }: { number: number; sta
 
 export type GithubAlertKind = "note" | "tip" | "important" | "warning" | "caution";
 
-export const GITHUB_ALERT: Record<GithubAlertKind, { label: string; color: string; icon: Icon }> = {
-  note: { label: "Note", color: COLORS.info, icon: Info },
-  tip: { label: "Tip", color: COLORS.success, icon: Lightbulb },
-  important: { label: "Important", color: COLORS.accent, icon: Megaphone },
-  warning: { label: "Warning", color: COLORS.warning, icon: Warning },
-  caution: { label: "Caution", color: COLORS.danger, icon: WarningOctagon },
+export const GITHUB_ALERT: Record<GithubAlertKind, { label: string; tone: NoticeTone; icon: Icon }> = {
+  note: { label: "Note", tone: "info", icon: Info },
+  tip: { label: "Tip", tone: "success", icon: Lightbulb },
+  important: { label: "Important", tone: "accent", icon: Megaphone },
+  warning: { label: "Warning", tone: "warning", icon: Warning },
+  caution: { label: "Caution", tone: "error", icon: WarningOctagon },
 };
 
+/** A GitHub markdown alert (`> [!NOTE]`). Keeps GitHub's shape; colours come from the notice tones. */
 export function PrAlertCallout({ kind, children }: { kind: GithubAlertKind; children: React.ReactNode }) {
   const alert = GITHUB_ALERT[kind];
+  const tokens = noticeTone(alert.tone);
   const Glyph = alert.icon;
   return (
     <div
       data-testid="pr-md-alert"
       data-kind={kind}
       className="mb-3 rounded-lg py-2 pl-3 pr-3 last:mb-0"
-      style={{ borderLeft: `3px solid ${alert.color}`, background: `color-mix(in srgb, ${alert.color} 8%, transparent)` }}
+      style={{ borderLeft: `3px solid ${tokens.color}`, background: `color-mix(in srgb, ${tokens.color} 8%, transparent)` }}
     >
-      <div className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: alert.color }}>
+      <div className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: tokens.text }}>
         <Glyph size={14} weight="fill" />
         {alert.label}
       </div>

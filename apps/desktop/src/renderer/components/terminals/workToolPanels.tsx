@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
-import { Play, WarningCircle } from "@phosphor-icons/react";
+import { Play } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
   AgentChatFileRef,
@@ -33,6 +33,7 @@ import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
@@ -100,10 +101,11 @@ function useWorkToolMountScope(runtimePin: OpenProjectBinding | null): string {
 
 export function WarningBanner({ message }: { message: string }) {
   return (
-    <div className="flex shrink-0 items-start gap-2 border-b border-amber-400/15 bg-amber-500/[0.055] px-3 py-2 text-[11px] leading-4 text-amber-100/85">
-      <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-200/80" />
-      <span>{message}</span>
-    </div>
+    <Banner
+      layout="inline"
+      model={{ id: "work-tool-lane-warning", tone: "warning", title: message }}
+      style={{ margin: "6px 8px", flexShrink: 0 }}
+    />
   );
 }
 

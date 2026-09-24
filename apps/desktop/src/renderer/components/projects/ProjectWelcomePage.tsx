@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChatCircleDots, Plus } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, ChatCircleDots, Plus, Trash } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import {
   COLORS,
@@ -10,6 +10,8 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
+import { Banner } from "../ui/notice";
+import { dismissToast, showToast } from "../app/toast/toastStore";
 import {
   groupRecentProjects,
   recentProjectLocationKey,
@@ -36,6 +38,7 @@ function recentKey(rp: RecentProjectSummary): string {
 }
 // How long the "Removed — Undo" toast stays before the forget is committed.
 const FORGET_UNDO_WINDOW_MS = 5_000;
+const FORGET_TOAST_ID = "welcome-forget-recent";
 
 
 export function ProjectWelcomePage() {
@@ -383,6 +386,32 @@ export function ProjectWelcomePage() {
     });
   }, []);
 
+  // The undo offer is a shared toast; this page's own timer decides when the
+  // forget commits (and clears `forgetToast`), so the toast itself is sticky.
+  useEffect(() => {
+    if (!forgetToast) {
+      dismissToast(FORGET_TOAST_ID);
+      return;
+    }
+    showToast({
+      id: FORGET_TOAST_ID,
+      tone: "neutral",
+      icon: <Trash size={15} weight="fill" />,
+      title: `Removed ${forgetToast.name}`,
+      actions: [
+        {
+          label: "Undo",
+          variant: "primary",
+          icon: <ArrowCounterClockwise size={12} weight="bold" />,
+          onClick: handleUndoForget,
+        },
+      ],
+      dismissible: false,
+      durationMs: 0,
+    });
+  }, [forgetToast, handleUndoForget]);
+  useEffect(() => () => dismissToast(FORGET_TOAST_ID), []);
+
   const handleDropFolder = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
@@ -639,25 +668,16 @@ export function ProjectWelcomePage() {
             reports its failures here too, and that button works with zero
             recents — where a banner scoped to the list rendered nothing. */}
         {rowError ? (
-          <div
-            role="alert"
-            style={{
-              maxWidth: 440,
-              width: "100%",
-              padding: "8px 10px",
-              borderRadius: 8,
-              border:
-                "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)",
-              background:
-                "color-mix(in srgb, var(--color-error) 12%, transparent)",
-              color: COLORS.textPrimary,
-              fontFamily: MONO_FONT,
-              fontSize: 10,
-              whiteSpace: "pre-wrap",
+          <Banner
+            layout="inline"
+            style={{ maxWidth: 440, width: "100%" }}
+            model={{
+              id: "welcome-row-error",
+              tone: "error",
+              title: <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{rowError}</span>,
+              ariaLabel: rowError,
             }}
-          >
-            {rowError}
-          </div>
+          />
         ) : null}
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
       </div>
@@ -762,53 +782,6 @@ export function ProjectWelcomePage() {
       ) : (
         <div aria-hidden style={{ flex: "1 1 auto" }} />
       )}
-
-      {forgetToast ? (
-        <div
-          role="status"
-          style={{
-            position: "absolute",
-            bottom: 24,
-            left: "50%",
-            transform: "translateX(-50%)",
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "10px 14px",
-            borderRadius: 12,
-            background: "rgba(20,18,28,0.96)",
-            border: `1px solid ${COLORS.border}`,
-            boxShadow: "0 10px 32px rgba(0,0,0,0.45)",
-            color: COLORS.textPrimary,
-            fontFamily: MONO_FONT,
-            fontSize: 12,
-            zIndex: 40,
-          }}
-        >
-          <span>
-            Removed{" "}
-            <span style={{ fontWeight: 700 }}>{forgetToast.name}</span>
-          </span>
-          <button
-            type="button"
-            onClick={handleUndoForget}
-            style={{
-              fontFamily: MONO_FONT,
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              color: COLORS.accent,
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              padding: 0,
-            }}
-          >
-            Undo
-          </button>
-        </div>
-      ) : null}
 
       {mergeTarget ? (
         <MergeWorktreeProjectDialog

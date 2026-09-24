@@ -2456,7 +2456,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             title: `Moved to ${WORK_BOARD_COLUMN_LABEL[to]}`,
             message: result.message ? "The agent will be told." : undefined,
             durationMs: 5_000,
-            action: {
+            actions: [{
               label: "Undo",
               onClick: () => {
                 const undo = window.ade.sessions?.undoBoardMove;
@@ -2493,7 +2493,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                     });
                   });
               },
-            },
+            }],
           });
         })
         .catch((error: unknown) => {

@@ -1,5 +1,5 @@
 import React from "react";
-import { CircleNotch, GitMerge, GithubLogo, XCircle } from "@phosphor-icons/react";
+import { CircleNotch, GitMerge, GithubLogo } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Group, Panel } from "react-resizable-panels";
 import type {
@@ -8,12 +8,12 @@ import type {
   PrSummary,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
+import { Banner } from "../../ui/notice";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
-  cardStyle,
   outlineButton,
   primaryButton,
 } from "../../lanes/laneDesignTokens";
@@ -176,17 +176,11 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
       ) : null}
 
       {chrome.error ? (
-        <div style={{
-          padding: "10px 16px",
-          borderBottom: "1px solid rgba(239,68,68,0.2)",
-          background: "rgba(239,68,68,0.06)",
-          color: COLORS.danger,
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-          borderRadius: 0,
-        }}>
-          {chrome.error}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px", flexShrink: 0 }}
+          model={{ id: "github-tab-error", tone: "error", title: chrome.error }}
+        />
       ) : null}
 
       <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
@@ -360,12 +354,10 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
             {selectedItem && detail.paneProps ? (
               <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
                 {detail.selectedBucketMismatch ? (
-                  <div style={{ padding: "10px 12px 0", flexShrink: 0 }}>
-                    <PrBucketTransitionBanner
-                      state={selectedItem.state}
-                      onShow={() => detail.onFilterChange(bucketForState(selectedItem.state))}
-                    />
-                  </div>
+                  <PrBucketTransitionBanner
+                    state={selectedItem.state}
+                    onShow={() => detail.onFilterChange(bucketForState(selectedItem.state))}
+                  />
                 ) : null}
                 {selectedStack ? (
                   <GitHubStackInspector
@@ -417,36 +409,18 @@ function PrBucketTransitionBanner({
 }) {
   const isMerged = state === "merged";
   const label = isMerged ? "Merged" : "Closed";
-  const accent = isMerged ? COLORS.success : COLORS.danger;
   return (
-    <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `color-mix(in srgb, ${accent} 30%, transparent)` }}>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 10,
-        padding: "8px 12px",
-        background: `color-mix(in srgb, ${accent} 7%, transparent)`,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {isMerged ? (
-            <GitMerge size={14} weight="bold" style={{ color: accent, flexShrink: 0 }} />
-          ) : (
-            <XCircle size={14} weight="fill" style={{ color: accent, flexShrink: 0 }} />
-          )}
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
-            This PR is now {label}
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={onShow}
-          style={{ ...outlineButton({ height: 24, padding: "0 10px", fontSize: 11 }), color: COLORS.textMuted, flexShrink: 0 }}
-        >
-          Show in {label}
-        </button>
-      </div>
-    </div>
+    <Banner
+      layout="inline"
+      style={{ margin: "10px 12px 0", flexShrink: 0 }}
+      model={{
+        id: `pr-bucket-transition:${state}`,
+        tone: isMerged ? "success" : "error",
+        icon: isMerged ? <GitMerge size={13} weight="bold" /> : undefined,
+        title: `This PR is now ${label}`,
+        actions: [{ label: `Show in ${label}`, variant: "secondary", onClick: onShow }],
+      }}
+    />
   );
 }
 

@@ -3,6 +3,7 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Z_LAYERS } from "../ui/zLayers";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -488,10 +489,10 @@ describe("usage components", () => {
      * The panel used to be `position: absolute` inside the row. The header
      * usage popup is a ~400px scroll container, and a 320px panel hanging off
      * a meter near its top was simply cut off — "Open limits" was unreachable
-     * by mouse. It is portalled to the body and placed in viewport
-     * coordinates now, so no ancestor's clipping can eat it.
+     * by mouse. Its fixed viewport host is portalled to the body, so no
+     * scrolling ancestor's clipping can eat it.
      */
-    it("escapes any scrolling ancestor by portalling the details panel to the body", async () => {
+    it("escapes scrolling ancestors through a fixed viewport host on the body", async () => {
       const snapshot = makeQuotaPanelSnapshot();
       snapshot.accounts = [
         {
@@ -514,10 +515,13 @@ describe("usage components", () => {
       fireEvent.focus(meter);
 
       const popover = screen.getByRole("dialog", { name: "Weekly details" });
+      const overlayHost = popover.parentElement;
       expect(container.contains(popover)).toBe(false);
       expect(document.body.contains(popover)).toBe(true);
-      expect(popover.style.position).toBe("fixed");
-      expect(popover.className).not.toContain("absolute");
+      expect(overlayHost?.style.position).toBe("fixed");
+      expect(overlayHost?.style.inset).toBe("0");
+      expect(Number(overlayHost?.style.zIndex)).toBe(Z_LAYERS.tooltip);
+      expect(popover.style.position).toBe("absolute");
     });
 
     /**
@@ -754,7 +758,8 @@ describe("usage components", () => {
       const meter = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
       fireEvent.mouseEnter(meter.parentElement!);
       const popover = screen.getByRole("dialog", { name: "Weekly details" });
-      expect(popover.className).toContain("z-[90]");
+      // Above the header usage sheet it opens from (Z_LAYERS.sheet).
+      expect(Number(popover.parentElement?.style.zIndex)).toBeGreaterThan(Z_LAYERS.sheet);
 
       fireEvent.mouseLeave(meter.parentElement!, { relatedTarget: document.body });
       expect(screen.getByRole("dialog", { name: "Weekly details" })).toBeTruthy();

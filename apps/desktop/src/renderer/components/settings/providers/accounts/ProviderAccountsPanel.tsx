@@ -27,7 +27,8 @@ import {
   outlineButton,
 } from "../../../lanes/laneDesignTokens";
 import { ProviderPanel } from "../../providerSectionPrimitives";
-import { ConfirmDialog, useConfirmDialog } from "../../../shared/InlineDialogs";
+import { confirmDialog } from "../../../ui/dialog";
+import { Banner } from "../../../ui/notice/Banner";
 import { providerColor } from "../../../usage/providerColors";
 import { useAppStore } from "../../../../state/appStore";
 import { useClickOutside } from "../../../../hooks/useClickOutside";
@@ -403,7 +404,6 @@ export function ProviderAccountsPanel({
   const { instances, settings, loading, bridgeMissing, error, reload, saveSettings } =
     useProviderInstances(provider);
   const { snapshot } = useUsageSnapshot();
-  const confirm = useConfirmDialog();
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -456,18 +456,16 @@ export function ProviderAccountsPanel({
         void run(() => api.setDefault({ id: instance.id }));
         return;
       }
-      void confirm
-        .confirmAsync({
-          title: "Remove account",
-          message: `Remove ${instance.label} from ${providerLabel}? Its sign-in stays on disk — only ADE forgets the account.`,
-          confirmLabel: "REMOVE",
-          danger: true,
-        })
-        .then((ok) => {
-          if (ok) void run(() => api.remove({ id: instance.id }));
-        });
+      void confirmDialog({
+        title: "Remove account",
+        message: `Remove ${instance.label} from ${providerLabel}? Its sign-in stays on disk — only ADE forgets the account.`,
+        confirmLabel: "REMOVE",
+        destructive: true,
+      }).then((ok) => {
+        if (ok) void run(() => api.remove({ id: instance.id }));
+      });
     },
-    [confirm, providerLabel, run],
+    [providerLabel, run],
   );
 
   const onCommitRename = useCallback(
@@ -542,21 +540,11 @@ export function ProviderAccountsPanel({
       }
     >
       {shownError ? (
-        <div
-          role="alert"
-          ref={errorRef}
-          style={{
-            padding: "6px 8px",
-            fontSize: 11,
-            fontFamily: SANS_FONT,
-            lineHeight: 1.5,
-            color: COLORS.danger,
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-            overflowWrap: "anywhere",
-          }}
-        >
-          {shownError}
+        <div ref={errorRef} tabIndex={-1}>
+          <Banner
+            layout="inline"
+            model={{ id: "provider-accounts-error", tone: "error", title: shownError }}
+          />
         </div>
       ) : null}
 
@@ -592,8 +580,6 @@ export function ProviderAccountsPanel({
           }}
         />
       ) : null}
-
-      <ConfirmDialog state={confirm.state} onClose={confirm.close} />
     </ProviderPanel>
   );
 }

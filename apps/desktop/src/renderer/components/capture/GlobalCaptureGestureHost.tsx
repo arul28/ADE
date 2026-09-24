@@ -15,6 +15,8 @@ import { supportsCaptureGesturePlatform } from "../../lib/platform";
 import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
 import { encodeUtf8Base64 } from "../../lib/base64";
+import { Banner } from "../ui/notice/Banner";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import {
   describeShot,
   isCallJoinable,
@@ -206,28 +208,34 @@ export function GlobalCaptureGestureHost() {
         />
       ) : null}
       {notice ? (
-        <div
-          role="status"
-          data-capture-gesture-notice
-          style={{
-            position: "fixed",
-            bottom: 24,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 2147483000,
-            maxWidth: 460,
-            padding: "10px 14px",
-            borderRadius: 10,
-            fontSize: 12,
-            lineHeight: 1.45,
-            background: "var(--color-card)",
-            color: "var(--color-fg)",
-            border: "1px solid var(--color-border)",
-            boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
-          }}
-        >
-          {notice}
-        </div>
+        // Bottom center and above everything: the gesture fires over any
+        // surface, including dialogs and context menus.
+        <ViewportOverlayHost layer="capture">
+          <div
+            data-capture-gesture-notice
+            style={{
+              position: "absolute",
+              left: 16,
+              right: 16,
+              bottom: 24,
+              display: "flex",
+              justifyContent: "center",
+              // The full-width strip must not swallow clicks; the banner takes its own.
+              pointerEvents: "none",
+            }}
+          >
+            <Banner
+              layout="floating"
+              style={{ maxWidth: 560, pointerEvents: "auto" }}
+              model={{
+                id: "capture-gesture-notice",
+                tone: "warning",
+                title: notice,
+                dismiss: { onDismiss: () => setNotice(null) },
+              }}
+            />
+          </div>
+        </ViewportOverlayHost>
       ) : null}
     </>
   );

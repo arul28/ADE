@@ -2350,7 +2350,6 @@ button, [role="button"] {
   .ade-streaming-shimmer,
   .ade-streaming-shimmer::after,
   .ade-tool-skeleton::after,
-  .ade-update-installed-card,
   .ade-tool-bounce,
   .ade-title-landed,
   .ade-naming-pending,
@@ -4408,19 +4407,6 @@ button, [role="button"] {
   animation: ade-fade-slide-up 0.3s ease-out both;
 }
 
-/* The card is centered by a flex layer (not fixed + translate), so its entrance
-   must stay translate-free. The [data-radix-dialog-content] prefix raises
-   specificity above the global ade-dialog-in rule (translateX(-50%)), which
-   would otherwise shift a flex-centered card left by half its width. */
-[data-radix-dialog-content].ade-update-installed-card[data-state="open"] {
-  animation: ade-update-installed-card-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-
-@keyframes ade-update-installed-card-in {
-  from { opacity: 0; transform: scale(0.97); }
-  to { opacity: 1; transform: scale(1); }
-}
-
 /*
    Welcome card (onboarding): split-hero layout.
 */
@@ -4513,14 +4499,10 @@ button, [role="button"] {
   .ade-welcome-card__poster:hover .ade-welcome-card__play { transform: translate(-50%, -50%); }
 }
 
-/* Shared toast primitive (ToastStack): slide-up + fade-in on entrance. */
-@keyframes ade-toast-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.ade-toast-enter {
-  animation: ade-toast-in 180ms cubic-bezier(0.2, 0, 0, 1);
+/* Bottom-right toast viewport (ToastViewport): cards animate through motion;
+   the viewport itself only glides when it lifts above the CTO call HUD. */
+.ade-toast-viewport {
+  transition: bottom 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* New-lane launches. A launched chat's sidebar row slides in once; the
@@ -4735,7 +4717,7 @@ button, [role="button"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-toast-enter { animation: none; }
+  .ade-toast-viewport { transition: none; }
   .ade-reasoning-effort-word,
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],

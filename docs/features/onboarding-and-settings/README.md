@@ -363,13 +363,14 @@ Renderer — onboarding:
   account-directory targets and their paired credentials are owner-tagged and
   removed with that account.
 - `apps/desktop/src/renderer/components/account/AccountSignedOutBanner.tsx` —
-  the permanent bar ADE shows while the account is not usable. It renders the
-  shared `Banner` primitive with `dismiss: false`, because `bannerDismiss.ts`
-  is for banners a user may reasonably live with and this is not one of them:
-  the only way to clear it is to sign in, or to repair a store ADE could not
-  read. It mounts in `AppShell` above `AutoUpdateBanner` and outside every
-  project condition, because `IntegrationBannerHost` renders only inside an
-  open project and this bar has to reach welcome and projectless windows too.
+  the permanent bar ADE shows while the account is not usable. It registers a
+  model with `AppBannerHost`, which renders it through the shared `Banner`
+  primitive with `dismiss: false`, because `bannerDismiss.ts` is for banners a
+  user may reasonably live with and this is not one of them: the only way to
+  clear it is to sign in, or to repair a store ADE could not read. The global
+  host is mounted in `AppShell` outside every project condition, so this bar
+  reaches welcome and projectless windows too. `IntegrationBanners` registers
+  project-dependent integration states with that same host.
   It hides itself on `/account`, where its own action would lead. All four
   states' copy lives in one record in `renderer/lib/account.ts`, so a new
   state is a type error rather than a missing case. The same bar carries the
@@ -508,7 +509,7 @@ Renderer — settings:
   dictation, the CLI installer, auto-updates, storage, session lifecycle, and
   lane templates stay off the web nav: their reads would land, but their writes
   would resolve against a missing descriptor and silently vanish.
-  `sectionWebScope` resolves a section's scope, and `WebScopeBanner.tsx` prints
+  `sectionWebScope` resolves a section's scope, and `WebScopePill.tsx` prints
   it as the section's opening line — so a toggle that will not follow you to
   another browser says so before you flip it. Desktop renders sections exactly
   as before, with no banner.
@@ -693,7 +694,8 @@ Renderer — settings:
   doc's [Source file map](../automations/README.md#github-relay-and-app) and
   [How ADE stops a GitHub App refresh storm](../automations/README.md#how-ade-stops-a-github-app-refresh-storm)).
   The matching per-repo "GitHub App not connected" banner — distinct from the
-  gh-CLI banner — is rendered by the app-shell `IntegrationBannerHost` from the
+  gh-CLI banner — is registered by `IntegrationBanners` and rendered by the
+  app-shell `AppBannerHost` from the
   same `githubIntegrationStatus.ts` derivation (see
   [ARCHITECTURE §7.6](../../ARCHITECTURE.md)), so the panel and the banner never
   disagree.
@@ -704,7 +706,7 @@ Renderer — settings:
   `githubStatusHasWriteCredential` for capability-gating mutations, and the
   shared banner/Settings copy for the account, repo, and gh-CLI/token
   sub-states. Imported by `GitHubAppInstallPanel`, `GitHubSection`,
-  `IntegrationBannerHost`, and write surfaces such as `FeedbackReporterModal`;
+  `IntegrationBanners`, and write surfaces such as `FeedbackReporterModal`;
   App-only read connectivity therefore keeps PR data live while still prompting
   for GitHub CLI or a PAT before a mutation. This module only translates the
   service's `credentialState` into copy — it does not re-derive the account's
@@ -754,7 +756,7 @@ Renderer — settings:
   GitHub problem and is not fixed on the GitHub card, whereas an outage and
   every auth failure are — there the credential ADE holds is readable and it is
   the account behind it, or GitHub itself, that has the objection.
-- `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` and
+- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` and
   `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
   app shell raises a write-access banner for an otherwise connected App-only
   status, and feedback submission requires a write-capable credential rather
@@ -1502,15 +1504,23 @@ banner):
   app-shell banner, and the About panel — consumes it so they never disagree
   about what is running versus what is staged.
 - `apps/desktop/src/renderer/components/app/AutoUpdateBanner.tsx` — the
-  exceptional app-shell recovery banner plus the automatic-install countdown
-  toast, colocated so both read one snapshot subscription. Renders a `parked` state as
-  "ADE update didn't finish — Restart to retry" and a failed handoff as "ADE
-  update did not install — Restart to retry", each with a **Restart now**
-  action. A normally staged `ready` update does not render the wide banner; it
-  remains available from the top-right control. Dismissal is keyed on a stable
-  failure signature so a fresh abort or failed attempt can reappear. The toast
-  reads "ADE will update in Ns", is driven off `autoApplyPending`, and has a
-  **Cancel** action wired to `updateCancelAutoApply()`.
+  floating prompt for a normally staged `ready` update, the exceptional
+  app-shell recovery banner, and the automatic-install countdown toast,
+  colocated so they read one snapshot subscription. The ready prompt names the
+  version and offers **Restart and install**, sharing its impact confirmation
+  and install handler with the flashing top-right control. Dismissing it hides
+  that version's prompt for the current app session; the top-right control
+  remains available. The banner renders a `parked` state as "ADE update didn't
+  finish — Restart to retry" and a failed handoff as "ADE update did not
+  install — Restart to retry", each with a **Restart now** action. Recovery
+  dismissal is keyed on a stable failure signature so a fresh abort or failed
+  attempt can reappear. The toast reads "ADE will update in Ns", is driven off
+  `autoApplyPending`, and has a **Cancel** action wired to
+  `updateCancelAutoApply()`.
+- `apps/desktop/src/renderer/components/app/autoUpdateInstallAction.ts` — the
+  shared install-impact confirmation, decision capture, and
+  `updateQuitAndInstall()` action used by the top-right control and floating
+  ready prompt.
 - `apps/desktop/src/renderer/components/app/BrainRecoveryNotice.tsx` — the
   app-shell notice shown once per distinct machine-brain event-loop recovery.
   It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()` and words
@@ -2266,7 +2276,8 @@ unreadable read is a guess:
 - **Settings → Integrations → GitHub** (`GitHubSection.tsx`) shows **Can't read
   sign-in** in warning tone with the shared notice and an **Open connections**
   button, and hides the gh-CLI setup steps.
-- **The app-shell integration banner** (`IntegrationBannerHost.tsx`) points its
+- **The app-shell integration banner** (registered by `IntegrationBanners.tsx`
+  and rendered by `AppBannerHost`) points its
   action at the Connections panel rather than the GitHub settings route, since
   no GitHub-side action repairs a store ADE cannot open.
 - **The PR tab's empty state** — the message is built in the main process by

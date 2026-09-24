@@ -13,7 +13,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { Plus } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
-import { ConfirmDialog, useConfirmDialog } from "../../../shared/InlineDialogs";
+import { confirmDialog } from "../../../ui/dialog";
 import { invalidateAiDiscoveryCache } from "../../../../lib/aiDiscoveryCache";
 import { ProviderErrorRow, prettifyProviderId } from "../providerUi";
 import type { AiCustomProviderConfig } from "../../../../../shared/types/config";
@@ -50,7 +50,6 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
   const entries = useMemo(() => ctx.status?.customProviders ?? [], [ctx.status?.customProviders]);
   const [sheet, setSheet] = useState<{ existing: ApiCredentialSummary | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { state: confirmState, confirmAsync, close: closeConfirm } = useConfirmDialog();
 
   const save = useCallback(async (draft: ApiKeyDraft) => {
     const id = draft.providerId.trim();
@@ -79,11 +78,11 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
   }, [ctx.actions, entries]);
 
   const remove = useCallback(async (entry: AiCustomProviderConfig) => {
-    const ok = await confirmAsync({
+    const ok = await confirmDialog({
       title: `Delete ${entry.name || entry.id}?`,
       message: `${entry.id} and its key are removed from this machine. Its models stop appearing in every picker.`,
       confirmLabel: "Delete provider",
-      danger: true,
+      destructive: true,
     });
     if (!ok) return;
     try {
@@ -95,7 +94,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
     } catch (err) {
       setError(providerActionMessage(err, "That custom provider change did not go through."));
     }
-  }, [confirmAsync, ctx.actions, entries]);
+  }, [ctx.actions, entries]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -179,8 +178,6 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
           onClose={() => setSheet(null)}
         />
       ) : null}
-
-      <ConfirmDialog state={confirmState} onClose={closeConfirm} />
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
-import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatLifecyclePill } from "./ChatLifecyclePill";
 
 vi.mock("../app/toast/toastStore", () => ({
   showToast: vi.fn(),
@@ -64,7 +64,7 @@ function seedSessions(sessions: TerminalSessionSummary[]): void {
   });
 }
 
-describe("ChatLifecycleBanner", () => {
+describe("ChatLifecyclePill", () => {
   let sessionsApi: Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
@@ -89,14 +89,14 @@ describe("ChatLifecycleBanner", () => {
 
   it("renders nothing for a live chat, so the composer never moves", () => {
     seedSessions([makeSession()]);
-    const { container } = render(<ChatLifecycleBanner sessionId="session-1" />);
+    const { container } = render(<ChatLifecyclePill sessionId="session-1" />);
     // Not an empty placeholder box: literally no node.
     expect(container.firstChild).toBeNull();
   });
 
   it("renders the settled state as a compact floating pill", () => {
     seedSessions([makeSession(settledOverrides())]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
 
     const banner = screen.getByTestId("chat-lifecycle-banner");
     expect(banner.getAttribute("data-lifecycle-variant")).toBe("settled");
@@ -104,22 +104,20 @@ describe("ChatLifecycleBanner", () => {
     expect(banner.textContent).toContain("Sending reopens this chat");
     expect(banner.className).toContain("rounded-full");
     expect(banner.className).not.toContain("w-full");
-    // Emerald means "finished cleanly"; amber is reserved for "your move".
-    expect(banner.className).toContain("emerald");
-    expect(banner.className).not.toContain("amber");
+    // Success means "finished cleanly"; warning is reserved for "your move".
+    expect(banner.getAttribute("data-notice-tone")).toBe("success");
   });
 
   it("renders the snoozed variant naming when it comes back, in neutral chrome", () => {
     seedSessions([makeSession(snoozedOverrides())]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
 
     const banner = screen.getByTestId("chat-lifecycle-banner");
     expect(banner.getAttribute("data-lifecycle-variant")).toBe("snoozed");
     expect(banner.textContent).toContain("Snoozed");
     expect(banner.textContent).toContain("Hidden until");
-    // Snooze is a visibility overlay, so it gets neither emerald nor amber.
-    expect(banner.className).not.toContain("emerald");
-    expect(banner.className).not.toContain("amber");
+    // Snooze is a visibility overlay, so it gets the neutral tone, not a hue.
+    expect(banner.getAttribute("data-notice-tone")).toBe("neutral");
   });
 
   it("names the open-ended wake condition rather than a ~100-year date", () => {
@@ -127,7 +125,7 @@ describe("ChatLifecycleBanner", () => {
       snoozedAt: new Date(Date.now() - 60_000).toISOString(),
       snoozedUntil: new Date(Date.now() + 100 * 365 * 24 * 3_600_000).toISOString(),
     })]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
 
     expect(screen.getByTestId("chat-lifecycle-banner").textContent).toContain(
       "until when you're asked",
@@ -139,24 +137,27 @@ describe("ChatLifecycleBanner", () => {
     // read as pressable for pointer AND keyboard users — focus-visible mirrors
     // hover rather than relying on a default outline.
     seedSessions([makeSession(settledOverrides())]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
     const settledButton = screen.getByTestId("chat-lifecycle-unsettle");
-    expect(settledButton.className).toContain("hover:bg-emerald-300/[0.10]");
-    expect(settledButton.className).toContain("focus-visible:bg-emerald-300/[0.10]");
+    expect(settledButton.className).toContain("hover:bg-[var(--lifecycle-pill-hover)]");
+    expect(settledButton.className).toContain("focus-visible:bg-[var(--lifecycle-pill-hover)]");
+    expect(
+      screen.getByTestId("chat-lifecycle-banner").style.getPropertyValue("--lifecycle-pill-hover"),
+    ).toContain("--color-success");
 
     cleanup();
     seedSessions([makeSession(snoozedOverrides())]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
     const snoozedButton = screen.getByTestId("chat-lifecycle-wake");
-    expect(snoozedButton.className).toContain("hover:bg-white/[0.07]");
-    expect(snoozedButton.className).toContain("focus-visible:bg-white/[0.07]");
+    expect(snoozedButton.className).toContain("hover:bg-[var(--lifecycle-pill-hover)]");
+    expect(snoozedButton.className).toContain("focus-visible:bg-[var(--lifecycle-pill-hover)]");
   });
 
   it("lets snooze win when a chat is both snoozed and settled", () => {
     // Matches the overlay precedence in `sessionStatusPresentation`: the overlay
     // is resolved above the phase.
     seedSessions([makeSession({ ...settledOverrides(), ...snoozedOverrides() })]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
 
     expect(screen.getByTestId("chat-lifecycle-banner").getAttribute("data-lifecycle-variant"))
       .toBe("snoozed");
@@ -166,7 +167,7 @@ describe("ChatLifecycleBanner", () => {
 
   it("clears the settle through the pin-aware single-session write", async () => {
     seedSessions([makeSession(settledOverrides())]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Un-settle" }));
 
@@ -182,7 +183,7 @@ describe("ChatLifecycleBanner", () => {
     const error = new Error("runtime unavailable");
     sessionsApi.unsettle.mockRejectedValue(error);
     seedSessions([makeSession(settledOverrides())]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Un-settle" }));
 
@@ -195,7 +196,7 @@ describe("ChatLifecycleBanner", () => {
 
   it("wakes a snoozed chat with the manual reason", async () => {
     seedSessions([makeSession(snoozedOverrides())]);
-    render(<ChatLifecycleBanner sessionId="session-1" />);
+    render(<ChatLifecyclePill sessionId="session-1" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Wake now" }));
 

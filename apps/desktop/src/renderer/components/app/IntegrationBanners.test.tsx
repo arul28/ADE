@@ -7,7 +7,19 @@ import type {
   GitHubStatus,
   SyncRouteHealth,
 } from "../../../shared/types";
-import { IntegrationBannerHost, type IntegrationBannerHostProps } from "./IntegrationBannerHost";
+import { IntegrationBanners, type IntegrationBannersProps } from "./IntegrationBanners";
+import { AppBannerHost } from "../ui/notice";
+import { resetAppBannersForTests } from "../ui/notice/appBannerStore";
+
+/** The registrar plus the one host that draws what it registers. */
+function Harness(props: IntegrationBannersProps) {
+  return (
+    <>
+      <IntegrationBanners {...props} />
+      <AppBannerHost />
+    </>
+  );
+}
 import { deriveGitHubServiceHealth } from "../../../shared/githubServiceHealth";
 import { makeAppAuth } from "../../lib/githubIntegrationStatus.testFixtures";
 
@@ -97,16 +109,14 @@ function setAdeMock(github: Record<string, unknown> | undefined): void {
   });
 }
 
-function baseProps(overrides: Partial<IntegrationBannerHostProps> = {}): IntegrationBannerHostProps {
+function baseProps(overrides: Partial<IntegrationBannersProps> = {}): IntegrationBannersProps {
   return {
     currentProjectRoot: "/project/a",
     githubStatus: null,
     hasAnyAiProvider: true,
     aiStatusLoaded: true,
-    providerMode: "guest",
-    aiMockProvider: false,
     relayHealth: null,
-    navigate: vi.fn() as unknown as IntegrationBannerHostProps["navigate"],
+    navigate: vi.fn() as unknown as IntegrationBannersProps["navigate"],
     ...overrides,
   };
 }
@@ -130,7 +140,7 @@ function makeRelayHealth(
   };
 }
 
-describe("IntegrationBannerHost", () => {
+describe("IntegrationBanners", () => {
   beforeEach(() => {
     cleanup();
     window.localStorage.clear();
@@ -138,6 +148,7 @@ describe("IntegrationBannerHost", () => {
 
   afterEach(() => {
     cleanup();
+    resetAppBannersForTests();
   });
 
   it("caps at two banners and collapses the rest behind an expandable row", async () => {
@@ -149,13 +160,12 @@ describe("IntegrationBannerHost", () => {
 
     await act(async () => {
       render(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({
             githubStatus: makeGithubStatus(),
             hasAnyAiProvider: false,
             aiStatusLoaded: true,
-            providerMode: "subscription",
-            aiMockProvider: true,
+            relayHealth: makeRelayHealth({ relayControlSuppressed: true }),
           })}
         />,
       );
@@ -169,7 +179,7 @@ describe("IntegrationBannerHost", () => {
     expect(screen.getByText("GitHub CLI or token not connected")).toBeTruthy();
     expect(screen.queryByText("No AI provider configured")).toBeNull();
 
-    const toggle = screen.getByRole("button", { name: /2 more integration issues/i });
+    const toggle = screen.getByRole("button", { name: /2 more notices/i });
 
     await act(async () => {
       toggle.click();
@@ -177,7 +187,7 @@ describe("IntegrationBannerHost", () => {
 
     expect(screen.getAllByRole("status")).toHaveLength(4);
     expect(screen.getByText("No AI provider configured")).toBeTruthy();
-    expect(screen.getByText("Using a mock LLM provider")).toBeTruthy();
+    expect(screen.getByText("Another ADE process owns this machine's relay connection")).toBeTruthy();
   });
 
   it("dismisses a banner and persists the dismissal to storage", async () => {
@@ -186,7 +196,7 @@ describe("IntegrationBannerHost", () => {
 
     await act(async () => {
       render(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({ hasAnyAiProvider: false, aiStatusLoaded: true })}
         />,
       );
@@ -207,7 +217,7 @@ describe("IntegrationBannerHost", () => {
     setAdeMock(undefined);
 
     await act(async () => {
-      render(<IntegrationBannerHost {...baseProps({
+      render(<Harness {...baseProps({
         githubStatus: makeGithubStatus({
           tokenStored: true,
           authSource: "app",
@@ -237,7 +247,7 @@ describe("IntegrationBannerHost", () => {
     });
 
     await act(async () => {
-      render(<IntegrationBannerHost {...baseProps()} />);
+      render(<Harness {...baseProps()} />);
     });
     await act(async () => {});
 
@@ -255,7 +265,7 @@ describe("IntegrationBannerHost", () => {
     });
 
     await act(async () => {
-      render(<IntegrationBannerHost {...baseProps()} />);
+      render(<Harness {...baseProps()} />);
     });
     await act(async () => {});
 
@@ -277,12 +287,13 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
   afterEach(() => {
     cleanup();
+    resetAppBannersForTests();
     vi.useRealTimers();
   });
 
   async function renderWithRelay(relay: SyncRouteHealth["relay"] | null): Promise<void> {
     await act(async () => {
-      render(<IntegrationBannerHost {...baseProps({ relayHealth: relay })} />);
+      render(<Harness {...baseProps({ relayHealth: relay })} />);
     });
   }
 
@@ -358,7 +369,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
   it("keeps a dismissed outage from hiding a later process conflict", async () => {
     const { rerender } = render(
-      <IntegrationBannerHost
+      <Harness
         {...baseProps({ relayHealth: makeRelayHealth({ relayControlFailingSinceMs: NOW - 5 * 60_000 }) })}
       />,
     );
@@ -371,7 +382,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
     await act(async () => {
       rerender(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({
             relayHealth: makeRelayHealth({
               relayControlSuppressed: true,
@@ -398,7 +409,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
     await act(async () => {
       render(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }) })}
         />,
       );
@@ -434,7 +445,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
     await act(async () => {
       render(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({
             githubStatus: makeOutageStatus({
               serviceHealth: OUTAGE_HEALTH,
@@ -465,10 +476,10 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
     await act(async () => {
       render(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({
             githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }),
-            navigate: navigate as unknown as IntegrationBannerHostProps["navigate"],
+            navigate: navigate as unknown as IntegrationBannersProps["navigate"],
           })}
         />,
       );
@@ -494,12 +505,11 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
     await act(async () => {
       render(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({
             githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }),
             hasAnyAiProvider: false,
-            providerMode: "subscription",
-            aiMockProvider: true,
+            relayHealth: makeRelayHealth({ relayControlSuppressed: true }),
           })}
         />,
       );
@@ -507,7 +517,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     await act(async () => {});
 
     // Something must overflow — but not this.
-    expect(screen.getByText(/more integration issue/)).toBeTruthy();
+    expect(screen.getByText(/more notice/)).toBeTruthy();
     expect(screen.getAllByRole("status")[0]?.textContent).toContain("GitHub is down");
     // Unrelated banners are NOT suppressed by a GitHub outage.
     expect(screen.getByText("No AI provider configured")).toBeTruthy();
@@ -519,7 +529,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     setAdeMock({ onStatusChanged: vi.fn(() => () => {}) });
 
     await act(async () => {
-      render(<IntegrationBannerHost {...baseProps({ githubStatus: makeOutageStatus() })} />);
+      render(<Harness {...baseProps({ githubStatus: makeOutageStatus() })} />);
     });
     await act(async () => {});
 
@@ -541,7 +551,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     })!;
 
     const { rerender } = render(
-      <IntegrationBannerHost
+      <Harness
         {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }) })}
       />,
     );
@@ -553,7 +563,7 @@ describe("IntegrationBannerHost relay-offline banner", () => {
 
     await act(async () => {
       rerender(
-        <IntegrationBannerHost
+        <Harness
           {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: secondIncident }) })}
         />,
       );

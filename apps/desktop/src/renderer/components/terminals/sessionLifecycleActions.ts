@@ -83,7 +83,7 @@ export async function snoozeSessionForDuration(
     id: `session-snooze:${session.id}`,
     title: `Snoozed ${snoozeConfirmationLabel(key)}`,
     durationMs: UNDO_TOAST_MS,
-    action: {
+    actions: [{
       label: "Undo",
       onClick: () => {
         const wake = pin
@@ -92,7 +92,7 @@ export async function snoozeSessionForDuration(
         void wake
           .catch((error: unknown) => reportFailure("Undo snooze", session.id, error));
       },
-    },
+    }],
   });
 }
 

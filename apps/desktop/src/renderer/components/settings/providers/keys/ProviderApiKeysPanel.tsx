@@ -16,7 +16,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { Plus } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { ProviderPanel } from "../../providerSectionPrimitives";
-import { ConfirmDialog, useConfirmDialog } from "../../../shared/InlineDialogs";
+import { confirmDialog } from "../../../ui/dialog";
 import { ProviderErrorRow, SourceBadge } from "../providerUi";
 import {
   DEFAULT_API_CREDENTIAL_ID,
@@ -177,7 +177,6 @@ export function ProviderApiKeysPanel({
   const [sheet, setSheet] = useState<{ existing: ApiCredentialSummary | null } | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
   const [verify, setVerify] = useState<Record<string, { busy: boolean; message: string | null; ok: boolean | null }>>({});
-  const { state: confirmState, confirmAsync, close: closeConfirm } = useConfirmDialog();
 
   const hasDefaultStoreRow = credentials.some(
     (row) => row.source === "store"
@@ -218,11 +217,11 @@ export function ProviderApiKeysPanel({
   }, [hasDefaultStoreRow, onAfterSave, reload, sheet, spec, store]);
 
   const onDelete = useCallback(async (credential: ApiCredentialSummary) => {
-    const ok = await confirmAsync({
+    const ok = await confirmDialog({
       title: "Delete this key?",
       message: `${credential.label} is removed from this machine. Chats already using it stop working until another key is added.`,
       confirmLabel: "Delete key",
-      danger: true,
+      destructive: true,
     });
     if (!ok) return;
     try {
@@ -237,7 +236,7 @@ export function ProviderApiKeysPanel({
     } catch (err) {
       setWriteError(providerActionMessage(err, "That key change did not go through."));
     }
-  }, [confirmAsync, onAfterRemove, reload, remove, spec.legacyDefaultSlot]);
+  }, [onAfterRemove, reload, remove, spec.legacyDefaultSlot]);
 
   const onVerify = useCallback(async (credential: ApiCredentialSummary) => {
     const id = `${credential.provider}#${credential.credentialId}`;
@@ -309,8 +308,6 @@ export function ProviderApiKeysPanel({
           onClose={() => setSheet(null)}
         />
       ) : null}
-
-      <ConfirmDialog state={confirmState} onClose={closeConfirm} />
     </ProviderPanel>
   );
 }

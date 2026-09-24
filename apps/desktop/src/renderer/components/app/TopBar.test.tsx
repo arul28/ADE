@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { applyShellHeaderInset } from "../../lib/zoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
@@ -48,6 +49,11 @@ vi.mock("../settings/SyncDevicesSection", () => ({
       </details>
     </section>
   ),
+}));
+
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => false),
 }));
 
 vi.mock("./AutoUpdateControl", () => ({
@@ -1109,16 +1115,21 @@ describe("TopBar", () => {
       switchProjectToPath,
     } as any);
 
+    const confirm = vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+
     renderTopBarWithRouter();
     act(() => openConnectionsPanel("machines"));
     fireEvent.click(
       await screen.findByRole("button", { name: "Disconnect" }),
     );
-    fireEvent.click(await screen.findByRole("button", { name: "DISCONNECT" }));
 
     await waitFor(() => {
       expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
     });
+    expect(confirm).toHaveBeenLastCalledWith(expect.objectContaining({
+      confirmLabel: "DISCONNECT",
+      destructive: true,
+    }));
     expect(disconnect).not.toHaveBeenCalled();
     expect(
       useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key),
@@ -1982,7 +1993,7 @@ describe("TopBar", () => {
       expect(screen.getAllByText("Add Linear quick view").length).toBeGreaterThan(0);
     });
     const quickViewDialog = screen.getByRole("dialog", { name: /linear quick view/i });
-    expect(document.body.querySelector("[data-linear-quick-view-backdrop]")).toBeTruthy();
+    expect(document.body.querySelector(".ade-dialog-scrim")).toBeTruthy();
     expect(quickViewDialog.getAttribute("style")).toContain("rgba(123, 138, 240, 0.55)");
 
     // Single-issue flow now routes through the unified launch dock: select the
@@ -2303,20 +2314,22 @@ describe("TopBar", () => {
   });
 
   it("confirms before closing a project tab", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const confirm = vi.mocked(confirmDialog).mockResolvedValue(false);
 
     render(<TopBar />);
 
     await screen.findByText("ADE");
     fireEvent.click(screen.getByTitle("Remove project"));
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Close \"ADE\" project tab?"));
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: "Close \"ADE\" project tab?" }));
+    });
     expect(globalThis.window.ade.project.forgetRecent).not.toHaveBeenCalled();
     expect(useAppStore.getState().closeProject).not.toHaveBeenCalled();
   });
 
   it("closes the active project tab after confirmation without removing it from recents", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
 
     render(<TopBar />);
 

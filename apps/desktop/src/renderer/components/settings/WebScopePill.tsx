@@ -14,7 +14,7 @@ import { sectionWebScope, type SettingWebScope } from "./settingsManifest";
  * with a line saying which, so a toggle that will not follow you to another
  * browser says so before you flip it.
  *
- * Desktop renders sections exactly as it did before: no banner, no wrapper.
+ * Desktop renders sections exactly as it did before: no pill, no wrapper.
  */
 
 type ScopeCopy = {
@@ -41,7 +41,7 @@ const SCOPE_COPY: Record<Exclude<SettingWebScope, "hidden">, ScopeCopy> = {
   },
 };
 
-function SettingsScopeBanner({ scope }: { scope: Exclude<SettingWebScope, "hidden"> }) {
+function SettingsScopePill({ scope }: { scope: Exclude<SettingWebScope, "hidden"> }) {
   const { runtimeName } = useRemoteRuntimeContext();
   const copy = SCOPE_COPY[scope];
   const Icon = copy.icon;
@@ -87,13 +87,13 @@ export function WebSettingsSection({
   const scope = sectionWebScope(entryIds);
   if (scope === "hidden") return null;
   if (scope === null) return <>{children}</>;
-  // `data-settings-group` puts the banner under the settings search filter, so
+  // `data-settings-group` puts the pill under the settings search filter, so
   // searching cannot leave a scope line hanging over cards it just hid. The
   // filter clears `style.display` to unhide, so this element keeps the block
   // default rather than an inline flex layout it would wipe out.
   return (
     <div data-settings-group="web-scope">
-      <SettingsScopeBanner scope={scope} />
+      <SettingsScopePill scope={scope} />
       {children}
     </div>
   );

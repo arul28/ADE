@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { getFocusableElements } from "../ui/dialogFocus";
+import { Dialog } from "../ui/dialog";
 import { laneDeviceBooted } from "./appleDeviceState";
 
 /**
@@ -117,14 +116,13 @@ export function AppleShutdownConfirmHost() {
 }
 
 function AppleShutdownConfirmDialog({ request }: { request: AppleShutdownConfirmRequest }) {
-  const panelRef = useRef<HTMLElement | null>(null);
-  const confirmRef = useRef<HTMLButtonElement | null>(null);
   const cancel = useCallback(() => settle(false), []);
   const confirm = useCallback(() => settle(true), []);
 
   // Escape cancels, Enter confirms — bound at the window, because clicking the
-  // dialog's own sentence leaves focus on <body> and a panel handler would then
-  // never see the key.
+  // dialog's own sentence leaves focus off the buttons and a panel handler
+  // would then never see the key. Capture + stopPropagation so the Work page's
+  // own Escape handlers never see the key that answered this question.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -143,71 +141,27 @@ function AppleShutdownConfirmDialog({ request }: { request: AppleShutdownConfirm
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [cancel, confirm]);
 
-  // The destructive verb takes focus, because it is the answer the user came
-  // here to give: they clicked the tab's ×.
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => confirmRef.current?.focus());
-    return () => window.cancelAnimationFrame(frame);
-  }, []);
-
-  const body = (
-    <div
-      className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 p-4"
-      role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}
-    >
-      <section
-        ref={(node) => { panelRef.current = node; }}
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="apple-shutdown-confirm-title"
-        aria-describedby="apple-shutdown-confirm-body"
-        data-testid="apple-shutdown-confirm"
-        className="w-[min(420px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-border/70 bg-surface-overlay text-fg shadow-float"
-        onKeyDown={(event) => {
-          if (event.key !== "Tab") return;
-          const nodes = getFocusableElements(event.currentTarget);
-          if (nodes.length === 0) return;
-          const first = nodes[0]!;
-          const last = nodes[nodes.length - 1]!;
-          const active = document.activeElement as HTMLElement | null;
-          if (event.shiftKey && (active === first || !panelRef.current?.contains(active))) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && active === last) {
-            event.preventDefault();
-            first.focus();
-          }
-        }}
-      >
-        <div className="px-5 pb-4 pt-5">
-          <h2 id="apple-shutdown-confirm-title" className="font-sans text-[14px] font-semibold text-fg/92">
-            Shut down {request.deviceName}?
-          </h2>
-          <p id="apple-shutdown-confirm-body" className="mt-2 text-[12px] leading-5 text-muted-fg">
-            Closing this tab powers off the simulator.
-          </p>
-        </div>
-        <footer className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3.5">
-          <button
-            type="button"
-            onClick={cancel}
-            className="inline-flex h-8 items-center rounded-md border border-border/60 px-3 text-[11px] font-semibold text-muted-fg transition-colors hover:text-fg/85"
-          >
-            Cancel
-          </button>
-          <button
-            ref={confirmRef}
-            type="button"
-            onClick={confirm}
-            className="inline-flex h-8 items-center rounded-md border border-[color:color-mix(in_srgb,var(--color-error)_40%,transparent)] bg-[color:color-mix(in_srgb,var(--color-error)_18%,transparent)] px-3 text-[11px] font-semibold text-fg transition-colors hover:bg-[color:color-mix(in_srgb,var(--color-error)_26%,transparent)]"
-          >
-            Close and shut down
-          </button>
-        </footer>
-      </section>
-    </div>
+  // The destructive verb takes focus (`autoFocus`), because it is the answer
+  // the user came here to give: they clicked the tab's ×. The nested layer
+  // keeps the question above any other dialog that happens to be open.
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) cancel();
+      }}
+      role="alertdialog"
+      layer="nestedDialog"
+      testId="apple-shutdown-confirm"
+      title={`Shut down ${request.deviceName}?`}
+      description="Closing this tab powers off the simulator."
+      tone="error"
+      hideClose
+      width={420}
+      actions={[
+        { label: "Cancel", onClick: cancel, variant: "secondary" },
+        { label: "Close and shut down", onClick: confirm, variant: "solid", autoFocus: true },
+      ]}
+    />
   );
-
-  return typeof document === "undefined" ? body : createPortal(body, document.body);
 }

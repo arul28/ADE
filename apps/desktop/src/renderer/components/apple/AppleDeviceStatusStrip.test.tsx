@@ -52,7 +52,10 @@ describe("AppleDeviceStatusStrip", () => {
     // §12.8: no string starting with "Error invoking remote method" is
     // reachable without asking for it.
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    const details = screen.getByRole("button", { name: "Details" });
+    expect(details.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(details);
+    expect(details.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText(/Error invoking remote method/)).toBeTruthy();
   });
 
@@ -133,10 +136,11 @@ describe("AppleDeviceNoticeStrip", () => {
     const { container } = render(
       <AppleDeviceStatusStrip error={new Error("APPLE_HELPER_UNAVAILABLE")} onDismiss={vi.fn()} />,
     );
-    const strip = container.querySelector("[data-apple-status-strip='error']") as HTMLElement;
-    // A `color-mix` INTO the surface, not `bg-[var(--color-error)]/8` over it.
-    expect(strip.className).toContain("var(--color-surface)");
-    expect(strip.className).not.toMatch(/bg-\[var\(--color-error\)\]\/\d/);
+    const strip = container.querySelector("[data-apple-status-strip='error'] [role='alert']") as HTMLElement;
+    // The shared inline banner: red lives in the icon tile and border, never a
+    // flooded fill over the device.
+    expect(strip.getAttribute("data-notice-tone")).toBe("error");
+    expect(strip.style.background).not.toContain("var(--color-error)");
     expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
   });
 

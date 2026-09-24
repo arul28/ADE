@@ -8,6 +8,7 @@ import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
+import { Banner } from "../ui/notice/Banner";
 import { WorkSidebar } from "./WorkSidebar";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
@@ -29,7 +30,6 @@ import {
   type SessionContextMenuState,
 } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type {
   AgentChatSession,
   LaneSummary,
@@ -58,6 +58,7 @@ import {
   setSessionMetadataGenerating,
 } from "../../state/sessionMetadataGeneratingStore";
 import type { DropEdge } from "../ui/paneTreeOps";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
@@ -213,7 +214,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-  const stopAndDeleteConfirm = useConfirmDialog();
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
@@ -567,14 +567,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteChat = useCallback(
-    (
+    async (
       session: TerminalSessionSummary,
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this chat";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
-      );
+      const confirmed = await confirmDialog({
+        title: `Delete "${label}"?`,
+        message: "This permanently removes the saved chat history from ADE.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!confirmed) return;
 
       setSessionActionError(null);
@@ -618,14 +621,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteSession = useCallback(
-    (
+    async (
       session: TerminalSessionSummary,
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this session";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
-      );
+      const confirmed = await confirmDialog({
+        title: `Delete "${label}"?`,
+        message: "This permanently removes the saved terminal session from ADE.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!confirmed) return;
 
       setSessionActionError(null);
@@ -685,11 +691,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ) => {
       void (async () => {
         const label = (session.goal ?? session.title).trim() || "this session";
-        const confirmed = await stopAndDeleteConfirm.confirmAsync({
+        const confirmed = await confirmDialog({
           title: "Stop and delete session",
           message: `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
           confirmLabel: "Stop & delete",
-          danger: true,
+          destructive: true,
         });
         if (!confirmed) return;
 
@@ -719,7 +725,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })();
     },
-    [resolveSessionRuntimePin, stopAndDeleteConfirm, work],
+    [resolveSessionRuntimePin, work],
   );
 
   const selectedSessions = useMemo(
@@ -750,12 +756,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [resolveSessionRuntimePin],
   );
 
-  const handleBulkCloseSelected = useCallback(() => {
+  const handleBulkCloseSelected = useCallback(async () => {
     const running = selectedSessions.filter(canBulkStopSession);
     if (!running.length) return;
-    const confirmed = window.confirm(
-      `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?`,
+      message: "This terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.",
+      confirmLabel: "Stop",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setSessionActionError(null);
@@ -785,7 +794,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       });
   }, [selectedSessions, work]);
 
-  const handleBulkDeleteSelected = useCallback(() => {
+  const handleBulkDeleteSelected = useCallback(async () => {
     const deletable = selectedSessions.filter(canBulkDeleteSession);
     if (!deletable.length) {
       // Never a silent no-op: the header button is only offered when something
@@ -795,9 +804,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.setTimeout(() => setSessionActionError(null), 6000);
       return;
     }
-    const confirmed = window.confirm(
-      `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?`,
+      message: "This permanently removes the selected saved session history from ADE.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setSessionActionError(null);
@@ -873,11 +885,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const targets = selectedSessions;
       if (!targets.length) return;
       const runningCount = targets.filter(canBulkStopSession).length;
-      const confirmed = await stopAndDeleteConfirm.confirmAsync({
+      const confirmed = await confirmDialog({
         title: "Stop and delete sessions",
         message: `Stop ${runningCount} running runtime${runningCount === 1 ? "" : "s"} and permanently delete ${targets.length} selected session${targets.length === 1 ? "" : "s"}?\n\nThis terminates running CLI and shell processes, then removes every selected session from ADE.`,
         confirmLabel: "Stop & delete",
-        danger: true,
+        destructive: true,
       });
       if (!confirmed) return;
 
@@ -925,7 +937,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
     })();
-  }, [deleteSelectedSession, selectedSessions, stopAndDeleteConfirm, work]);
+  }, [deleteSelectedSession, selectedSessions, work]);
 
   const finalizeCliResumeResult = useCallback(
     async (
@@ -1760,13 +1772,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)" }}>
       {sessionActionError ? (
-        <div
-          className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"
-          style={{ background: "rgba(239, 68, 68, 0.08)" }}
-          role="status"
-        >
-          {sessionActionError}
-        </div>
+        <Banner
+          model={{ id: "session-action-error", tone: "error", title: sessionActionError }}
+          layout="inline"
+          style={{ margin: "0 16px" }}
+        />
       ) : null}
       {work.workViewMode === "board" ? (
         /* BOARD MODE OWNS THE WHOLE TAB.
@@ -1925,8 +1935,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         closingPtyIds={work.closingPtyIds}
         deletingSessionId={deletingSessionId}
       />
-
-      <ConfirmDialog state={stopAndDeleteConfirm.state} onClose={stopAndDeleteConfirm.close} />
     </div>
   );
 }

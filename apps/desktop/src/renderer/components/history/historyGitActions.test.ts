@@ -6,6 +6,12 @@ import {
   runHistoryGitAction,
 } from "./historyGitActions";
 
+const dialogMocks = vi.hoisted(() => ({
+  confirmDialog: vi.fn(),
+  promptDialog: vi.fn(),
+}));
+vi.mock("../ui/dialog/confirm", () => dialogMocks);
+
 const commit: GitCommitSummary = {
   sha: "abc123456789",
   shortSha: "abc1234",
@@ -44,8 +50,10 @@ function stubWindow(promptValues: string[] = ["v1.2.3", "release tag"]) {
         : "",
     })),
   };
-  const prompt = vi.fn((_: string, fallback?: string) => promptValues.shift() ?? fallback ?? null);
-  const confirm = vi.fn(() => true);
+  const prompt = dialogMocks.promptDialog
+    .mockReset()
+    .mockImplementation(async (options: { defaultValue?: string }) => promptValues.shift() ?? options.defaultValue ?? null);
+  const confirm = dialogMocks.confirmDialog.mockReset().mockImplementation(async () => true);
 
   vi.stubGlobal("window", {
     ade: {
@@ -57,8 +65,6 @@ function stubWindow(promptValues: string[] = ["v1.2.3", "release tag"]) {
       },
       diff,
     },
-    prompt,
-    confirm,
     setTimeout: vi.fn(),
   });
 
@@ -154,8 +160,8 @@ describe("history git actions", () => {
       commit,
     });
 
-    expect(prompt).toHaveBeenNthCalledWith(1, "Create tag at abc1234");
-    expect(prompt).toHaveBeenNthCalledWith(2, "Tag message (optional)");
+    expect(prompt).toHaveBeenNthCalledWith(1, expect.objectContaining({ title: "Create tag at abc1234" }));
+    expect(prompt).toHaveBeenNthCalledWith(2, expect.objectContaining({ title: "Tag message (optional)", allowEmpty: true }));
     expect(git.createTag).toHaveBeenCalledWith({
       laneId: "lane-1",
       tagName: "v1.2.3",
@@ -177,10 +183,12 @@ describe("history git actions", () => {
 
     expect(prompt).toHaveBeenNthCalledWith(
       1,
-      "Create lane branch at abc1234",
-      "history/abc1234-update-history-actions",
+      expect.objectContaining({
+        title: "Create lane branch at abc1234",
+        defaultValue: "history/abc1234-update-history-actions",
+      }),
     );
-    expect(prompt).toHaveBeenNthCalledWith(2, "Lane name", "history/new-lane");
+    expect(prompt).toHaveBeenNthCalledWith(2, { title: "Lane name", defaultValue: "history/new-lane" });
     expect(git.getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(lanes.create).toHaveBeenCalledWith({
       name: "History lane",
@@ -202,7 +210,11 @@ describe("history git actions", () => {
     });
 
     expect(confirm).toHaveBeenCalledWith(
-      "Reset this lane to abc1234? This discards uncommitted worktree changes.",
+      expect.objectContaining({
+        title: "Reset this lane to abc1234?",
+        message: "This discards uncommitted worktree changes.",
+        destructive: true,
+      }),
     );
     expect(git.resetToCommit).toHaveBeenCalledWith({
       laneId: "lane-1",

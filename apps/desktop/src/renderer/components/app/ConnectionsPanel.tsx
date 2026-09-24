@@ -23,7 +23,7 @@ import {
   useSyncConnections,
   type RevokeConfirm,
 } from "../settings/SyncDevicesSection";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
+import { confirmDialog } from "../ui/dialog";
 import {
   accountAvatarImage,
   accountInitials,
@@ -205,6 +205,16 @@ function AccountHeader({
   );
 }
 
+const confirmRevoke: RevokeConfirm = ({ name, connected }) =>
+  confirmDialog({
+    title: "Revoke access?",
+    message: connected
+      ? `${name} will be disconnected and lose access to this computer until it connects again.`
+      : `${name} will lose access to this computer until it connects again.`,
+    confirmLabel: "Revoke",
+    destructive: true,
+  });
+
 export function ConnectionsPanel({
   initialTab = "machines",
   onClose,
@@ -220,7 +230,6 @@ export function ConnectionsPanel({
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const sync = useSyncConnections();
-  const { state: confirmState, confirmAsync, close: closeConfirm } = useConfirmDialog();
 
   useEffect(() => {
     setTab(initialTab);
@@ -302,19 +311,6 @@ export function ConnectionsPanel({
     });
   }, [location.hash, location.pathname, location.search, navigate, onClose]);
 
-  const confirmRevoke = useCallback<RevokeConfirm>(
-    ({ name, connected }) =>
-      confirmAsync({
-        title: "Revoke access?",
-        message: connected
-          ? `${name} will be disconnected and lose access to this computer until it connects again.`
-          : `${name} will lose access to this computer until it connects again.`,
-        confirmLabel: "Revoke",
-        danger: true,
-      }),
-    [confirmAsync],
-  );
-
   return (
     <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 96px)" }}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
@@ -385,8 +381,6 @@ export function ConnectionsPanel({
           />
         ) : null}
       </div>
-
-      <ConfirmDialog state={confirmState} onClose={closeConfirm} />
     </div>
   );
 }

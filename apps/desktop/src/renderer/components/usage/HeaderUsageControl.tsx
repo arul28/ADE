@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise as RefreshCw, ArrowSquareOut, Gauge, X } from "@phosphor-icons/react";
+import { ArrowClockwise as RefreshCw, ArrowSquareOut, Gauge } from "@phosphor-icons/react";
 import type {
   AiProviderConnections,
   UsageProvider,
@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
+import { HeaderSheet } from "../app/HeaderSheet";
 import { headerUsageProviders } from "./usageLimitModel";
 import { UsageLimitsBand } from "./UsageLimitsBand";
 import {
@@ -304,14 +305,6 @@ export function HeaderUsageControl({
   }), [providerConnections, snapshot?.windows, snapshot?.providerStatus]);
 
   useEffect(() => {
-    if (!open) return;
-    const frame = window.requestAnimationFrame(() => {
-      panelRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [open]);
-
-  useEffect(() => {
     if (!open || typeof window === "undefined") return undefined;
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
     return () => {
@@ -412,117 +405,76 @@ export function HeaderUsageControl({
     <>
       {trigger}
 
-      {open ? (
-        <div
-          className="fixed inset-0 z-[80]"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          onClick={() => setOpen(false)}
-        >
-          <div
-            ref={panelRef}
-            // The shell surface, the same hook every other top-bar popover
-            // reads. An earlier pass moved this to `bg-surface-overlay`, which
-            // is `rgba(255,255,255,0.92)` on the light theme — the popover read
-            // as see-through and unanchored. A popover over live content needs
-            // to be opaque; that is what this variable is for.
-            //
-            // The fallback is the theme's raised token rather than the shell's
-            // literal `#121019`, because everything inside is drawn in `text-fg`
-            // and a fixed dark plate would be dark-on-dark under the light
-            // theme. `USAGE_OVERLAY_BG_CLASS` keeps this identical to the chart
-            // and heatmap readouts.
-            className={cn(
-              "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(420px,calc(100vw-24px))] overflow-y-auto",
-              "rounded-xl border shadow-2xl shadow-black/45",
-              USAGE_HAIRLINE_CLASS,
-              USAGE_OVERLAY_BG_CLASS,
-            )}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="header-usage-title"
-            tabIndex={-1}
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setOpen(false);
-              }
-            }}
-          >
-            <div
-              className={cn(
-                "sticky top-0 z-10 flex items-center justify-between border-b px-4 py-3",
-                USAGE_DIVIDER_COLOR_CLASS,
-                USAGE_OVERLAY_BG_CLASS,
-              )}
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <Gauge size={16} weight="regular" className="shrink-0 text-muted-fg" />
-                <div id="header-usage-title" className={cn("truncate font-semibold text-fg", USAGE_TEXT.body)}>
-                  Usage
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {updatedAgo ? (
-                  <span
-                    className={cn(
-                      "flex items-center gap-1.5 text-muted-fg",
-                      USAGE_TEXT.micro,
-                      USAGE_NUMERIC_CLASS,
-                    )}
-                  >
-                    <span>{updatedAgo}</span>
-                    <span
-                      className="h-1.5 w-1.5 rounded-full"
-                      style={{
-                        background: warning.warn
-                          ? WARNING_COLOR
-                          : "var(--color-usage-ok, #34D399)",
-                      }}
-                      title={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : "Usage is up to date"}
-                      aria-label={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : undefined}
-                      aria-hidden={warning.warn ? undefined : true}
-                    />
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-                  data-variant="ghost"
-                  onClick={() => void refreshNow()}
-                  disabled={refreshing}
-                  title="Refresh usage"
-                >
-                  <RefreshCw size={13} weight="regular" className={cn(refreshing && "animate-spin")} />
-                </button>
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-                  data-variant="ghost"
-                  onClick={() => setOpen(false)}
-                  title="Close usage"
-                >
-                  <X size={13} weight="regular" />
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-col gap-3 p-3">
-              <UsageLimitsBand nowMs={nowMs} usage={usage} />
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  navigateToAppTarget({ kind: "settings", tab: "stats", anchor: "ade-usage" });
-                }}
-                className={cn(USAGE_BUTTON_CLASS, "min-h-9 justify-center", USAGE_TEXT.detail)}
+      <HeaderSheet
+        open={open}
+        panelRef={panelRef}
+        icon={<Gauge size={16} weight="regular" className="shrink-0 text-muted-fg" />}
+        title="Usage"
+        ariaLabelledBy="header-usage-title"
+        closeTitle="Close usage"
+        width="w-[min(420px,calc(100vw-24px))]"
+        // The shell surface, the same hook every other top-bar popover reads,
+        // with the theme's raised token as the fallback rather than the
+        // shell's literal `#121019`: everything inside is drawn in `text-fg`,
+        // and a fixed dark plate would be dark-on-dark under the light theme.
+        // `USAGE_OVERLAY_BG_CLASS` keeps this identical to the chart and
+        // heatmap readouts.
+        surfaceClassName={cn("rounded-xl border shadow-2xl shadow-black/45", USAGE_HAIRLINE_CLASS, USAGE_OVERLAY_BG_CLASS)}
+        headerClassName={cn(USAGE_DIVIDER_COLOR_CLASS, USAGE_OVERLAY_BG_CLASS)}
+        titleClassName={cn("font-semibold text-fg", USAGE_TEXT.body)}
+        headerActions={
+          <>
+            {updatedAgo ? (
+              <span
+                className={cn(
+                  "flex items-center gap-1.5 text-muted-fg",
+                  USAGE_TEXT.micro,
+                  USAGE_NUMERIC_CLASS,
+                )}
               >
-                Open Usage
-                <ArrowSquareOut size={12} weight="regular" />
-              </button>
-            </div>
-          </div>
+                <span>{updatedAgo}</span>
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{
+                    background: warning.warn
+                      ? WARNING_COLOR
+                      : "var(--color-usage-ok, #34D399)",
+                  }}
+                  title={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : "Usage is up to date"}
+                  aria-label={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : undefined}
+                  aria-hidden={warning.warn ? undefined : true}
+                />
+              </span>
+            ) : null}
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
+              data-variant="ghost"
+              onClick={() => void refreshNow()}
+              disabled={refreshing}
+              title="Refresh usage"
+            >
+              <RefreshCw size={13} weight="regular" className={cn(refreshing && "animate-spin")} />
+            </button>
+          </>
+        }
+        onClose={() => setOpen(false)}
+      >
+        <div className="flex flex-col gap-3 p-3">
+          <UsageLimitsBand nowMs={nowMs} usage={usage} />
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              navigateToAppTarget({ kind: "settings", tab: "stats", anchor: "ade-usage" });
+            }}
+            className={cn(USAGE_BUTTON_CLASS, "min-h-9 justify-center", USAGE_TEXT.detail)}
+          >
+            Open Usage
+            <ArrowSquareOut size={12} weight="regular" />
+          </button>
         </div>
-      ) : null}
+      </HeaderSheet>
     </>
   );
 }

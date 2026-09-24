@@ -5,6 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AutoUpdateBanner, describeStalenessBanner } from "./AutoUpdateBanner";
 import { ToastStack } from "./toast/ToastStack";
+import { AppBannerHost } from "../ui/notice";
+import {
+  APP_BANNER_PRIORITY,
+  getAppBannerEntries,
+  resetAppBannersForTests,
+} from "../ui/notice/appBannerStore";
+import { DialogHost, __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 import { getToasts, dismissToast } from "./toast/toastStore";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
@@ -25,6 +32,7 @@ function installAdeMock(initial: AutoUpdateSnapshot = snapshot({})) {
     configurable: true,
     value: {
       updateGetState: vi.fn(async () => current),
+      updateGetInstallImpact: vi.fn(async () => ({ connectedPhones: [] })),
       updateQuitAndInstall,
       updateCancelAutoApply,
       analytics: { capture },
@@ -92,6 +100,8 @@ describe("AutoUpdateBanner", () => {
 
   afterEach(() => {
     cleanup();
+    __resetDialogRequestsForTests();
+    resetAppBannersForTests();
     for (const toast of getToasts()) dismissToast(toast.id);
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -99,20 +109,64 @@ describe("AutoUpdateBanner", () => {
   });
 
   it("stays hidden in steady state", async () => {
-    render(<AutoUpdateBanner />);
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: /restart now/i })).toBeNull();
     });
   });
 
-  it("does not show a wide banner for a normally ready update", async () => {
-    const mock = installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
-    render(<AutoUpdateBanner />);
+  it("shows a floating prompt for a normally ready update", async () => {
+    installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
 
-    await waitFor(() => {
-      expect(screen.queryByRole("button", { name: /restart now/i })).toBeNull();
+    const title = await screen.findByText("Update v1.2.35 is ready to install");
+    expect(title.closest('[data-banner-layout="floating"]')).toBeTruthy();
+    expect(getAppBannerEntries().find((entry) => entry.id === "auto-update-ready")).toMatchObject({
+      placement: "floating",
+      priority: APP_BANNER_PRIORITY.updatePrompt,
     });
+    expect(screen.getByRole("button", { name: "Restart and install" })).toBeTruthy();
+    expect(screen.queryByTestId("app-banner-dock")).toBeNull();
+  });
+
+  it("reappears for a new ready version after the current prompt is dismissed", async () => {
+    const mock = installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
+
+    await screen.findByText("Update v1.2.35 is ready to install");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss update prompt" }));
+    await waitFor(() => {
+      expect(screen.queryByText("Update v1.2.35 is ready to install")).toBeNull();
+    });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      properties: expect.objectContaining({ user_action: "dismissed" }),
+    }));
+
+    mock.emit(snapshot({ status: "ready", version: "1.2.36" }));
+    expect(await screen.findByText("Update v1.2.36 is ready to install")).toBeTruthy();
+  });
+
+  it("uses the shared install confirmation and action from the floating prompt", async () => {
+    const mock = installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
+    render(<><AutoUpdateBanner /><AppBannerHost /><DialogHost /></>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restart and install" }));
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "ADE will quit and reopen automatically to install v1.2.35.",
+    });
+    expect(dialog.textContent).toContain("Open ADE Code terminals and running agent sessions");
+    expect(window.ade.updateGetInstallImpact).toHaveBeenCalledTimes(1);
     expect(mock.updateQuitAndInstall).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => {
+      expect(mock.updateQuitAndInstall).toHaveBeenCalledTimes(1);
+    });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      event: "ade_update_prompted",
+      properties: expect.objectContaining({ user_action: "accepted", to_version: "1.2.35" }),
+    }));
+    expect(screen.getByRole("button", { name: "Restarting…" })).toBeTruthy();
   });
 
   it("shows the parked retry copy", async () => {
@@ -123,7 +177,7 @@ describe("AutoUpdateBanner", () => {
         parked: { reason: "handoff_failed", at: 5 },
       }),
     );
-    render(<AutoUpdateBanner />);
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
     expect(await screen.findByText(/ADE update didn't finish — Restart to retry/)).toBeTruthy();
   });
 
@@ -133,10 +187,10 @@ describe("AutoUpdateBanner", () => {
       version: "1.2.35",
       parked: { reason: "handoff_failed", at: 5 },
     }));
-    render(<AutoUpdateBanner />);
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
 
     await screen.findByText(/ADE update didn't finish/);
-    fireEvent.click(screen.getByRole("button", { name: /dismiss update banner/i }));
+    fireEvent.click(screen.getByTitle("Dismiss until the next update"));
     await waitFor(() => {
       expect(screen.queryByText(/ADE update didn't finish/)).toBeNull();
     });
@@ -211,12 +265,15 @@ describe("AutoUpdateBanner", () => {
 
     expect(screen.getByText(/ADE will update in \d+s/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
-    expect(screen.queryByText(/ADE will update/)).toBeNull();
+    // The card plays a short exit animation, so assert on the toast store:
+    // cancelling takes the countdown out at once, and a tick must not put it back.
+    const countdownShown = () => getToasts().some((toast) => /ADE will update/.test(toast.title));
+    expect(countdownShown()).toBe(false);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    expect(screen.queryByText(/ADE will update/)).toBeNull();
+    expect(countdownShown()).toBe(false);
 
     mock.emit(snapshot({ status: "ready", version: "1.2.35" }));
     resolveCancel(true);
@@ -226,6 +283,7 @@ describe("AutoUpdateBanner", () => {
 describe("AutoUpdateBanner update transaction notice", () => {
   afterEach(() => {
     cleanup();
+    resetAppBannersForTests();
     vi.restoreAllMocks();
     Reflect.deleteProperty(window, "ade");
   });
@@ -248,7 +306,7 @@ describe("AutoUpdateBanner update transaction notice", () => {
     }));
     (window as unknown as { ade: Record<string, unknown> }).ade.app = { restartBackgroundService };
 
-    render(<AutoUpdateBanner />);
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
 
     await screen.findByText(
       "Updated the app, but the background service didn't restart — click Repair.",
@@ -267,7 +325,7 @@ describe("AutoUpdateBanner update transaction notice", () => {
       },
     }));
 
-    render(<AutoUpdateBanner />);
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
 
     await waitFor(() => {
       expect(screen.queryByText(/background service/)).toBeNull();
