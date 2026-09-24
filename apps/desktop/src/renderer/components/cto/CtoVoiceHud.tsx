@@ -15,7 +15,7 @@ import {
 import { COLORS } from "../lanes/laneDesignTokens";
 import { useReportCornerObstacle } from "../app/toast/toastViewportInsets";
 import { NOTICE_FLOAT_SURFACE, noticeTone } from "../ui/notice/noticeTones";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 /**
  * The call HUD: a pill that grows a canvas.
@@ -230,11 +230,7 @@ function FailedPill({ onDismiss }: { onDismiss: () => void }) {
   const [settled, setSettled] = useState(0);
   useReportCornerObstacle(hudRef, settled);
   return (
-    <div
-      className="pointer-events-none fixed inset-0"
-      style={{ zIndex: Z_LAYERS.hud }}
-      data-testid="cto-voice-hud-layer"
-    >
+    <ViewportOverlayHost layer="hud" testId="cto-voice-hud-layer">
       <motion.div
         ref={hudRef}
         initial={reduced ? false : { opacity: 0, y: 14, scale: 0.98 }}
@@ -262,7 +258,7 @@ function FailedPill({ onDismiss }: { onDismiss: () => void }) {
           <Phone size={14} weight="fill" style={{ transform: "rotate(135deg)" }} />
         </button>
       </motion.div>
-    </div>
+    </ViewportOverlayHost>
   );
 }
 
@@ -313,11 +309,10 @@ export function CtoVoiceHud({
   const pending = state.pendingConfirmation;
 
   return (
-    <div
-      ref={constraintsRef}
-      className="pointer-events-none fixed inset-0"
-      style={{ zIndex: Z_LAYERS.hud }}
-      data-testid="cto-voice-hud-layer"
+    <ViewportOverlayHost
+      hostRef={constraintsRef}
+      layer="hud"
+      testId="cto-voice-hud-layer"
     >
       <motion.div
         drag
@@ -512,6 +507,6 @@ export function CtoVoiceHud({
           </div>
         </div>
       </motion.div>
-    </div>
+    </ViewportOverlayHost>
   );
 }

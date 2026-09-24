@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { usePortalContainer } from "../ui/portalContainer";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 /**
  * The permission-mode pill from the chat composer, lifted into `shared/` so the
@@ -159,7 +160,6 @@ export function PermissionModePicker<Value extends string>({
   disabled,
   onSelect,
   title,
-  menuLayerClassName = "z-[100]",
 }: {
   ariaLabel: string;
   selectedValue: Value;
@@ -167,15 +167,6 @@ export function PermissionModePicker<Value extends string>({
   disabled?: boolean;
   onSelect?: (value: Value) => void;
   title?: string;
-  /**
-   * Tailwind z-index for the portalled option list. The default sits above the
-   * composer. Inside the shared `Dialog` the list portals into the dialog
-   * (`PortalContainerContext`) and needs nothing more; a caller inside a
-   * hand-rolled modal must raise it above that modal's overlay, because there
-   * the list is portalled to `document.body` and would otherwise render
-   * behind the backdrop where it cannot be clicked.
-   */
-  menuLayerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -250,16 +241,19 @@ export function PermissionModePicker<Value extends string>({
           if (!anchor) return null;
           const rect = anchor.getBoundingClientRect();
           return (
-            <div
-              role="listbox"
-              aria-label={ariaLabel}
-              data-permission-mode-picker-dropdown
-              className={cn(
-                "fixed overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
-                menuLayerClassName,
-              )}
-              style={fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH })}
-            >
+            <ViewportOverlayHost layer="popover">
+              <div
+                role="listbox"
+                aria-label={ariaLabel}
+                data-permission-mode-picker-dropdown
+                className={cn(
+                  "absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
+                )}
+                style={{
+                  ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH }),
+                  pointerEvents: "auto",
+                }}
+              >
               <ul className="py-0.5">
                 {options.map((option) => {
                   const active = option.value === selectedValue;
@@ -294,7 +288,8 @@ export function PermissionModePicker<Value extends string>({
                   );
                 })}
               </ul>
-            </div>
+              </div>
+            </ViewportOverlayHost>
           );
         })(),
         portalContainer ?? document.body,

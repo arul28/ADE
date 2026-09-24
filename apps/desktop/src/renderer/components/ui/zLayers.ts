@@ -15,8 +15,16 @@
  *   button stays clickable while a top-bar sheet's click-away layer is open.
  */
 export const Z_LAYERS = {
+  /** Draft chrome while a new chat opens, beneath the first-message handoff. */
+  chatDraftDeparture: 79,
+  /** The first-message handoff animation above the departing draft chrome. */
+  chatFirstMessageHandoff: 80,
+  /** Project-tab machine menu, below the header sheets and app popovers. */
+  tabMenu: 90,
   /** Anchored popovers and menus: the model picker, the reasoning-effort picker. */
   popover: 100,
+  /** The app sidebar and anchored popovers share their existing content layer. */
+  sidebar: 100,
   /** Top-bar dropdown sheets (Connections, usage, activity). */
   sheet: 120,
   /** The CTO voice-call HUD; above sheets so End call is always reachable. */

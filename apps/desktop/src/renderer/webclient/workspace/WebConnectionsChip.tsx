@@ -9,6 +9,7 @@ import {
 import { COLORS, MONO_FONT, SANS_FONT } from "../../components/lanes/laneDesignTokens";
 import { accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
 import { confirmDialog } from "../../components/ui/dialog/confirm";
+import { ViewportOverlayHost } from "../../components/ui/ViewportOverlayHost";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -255,14 +256,20 @@ export function WebConnectionsChip() {
       </button>
 
       {open && anchor ? createPortal(
-        <div
-          ref={popoverRef}
-          role="dialog"
-          aria-label="Machines"
-          data-ade-web-connections
-          className="fixed z-[70] w-[300px] overflow-hidden"
-          style={{ ...POPOVER_SURFACE, top: anchor.top, right: anchor.right }}
-        >
+        <ViewportOverlayHost layer="popover">
+          <div
+            ref={popoverRef}
+            role="dialog"
+            aria-label="Machines"
+            data-ade-web-connections
+            className="absolute w-[300px] overflow-hidden"
+            style={{
+              ...POPOVER_SURFACE,
+              top: anchor.top,
+              right: anchor.right,
+              pointerEvents: "auto",
+            }}
+          >
           <div className="max-h-[320px] overflow-auto p-2">
             {machines.length === 0 ? (
               <div
@@ -321,7 +328,8 @@ export function WebConnectionsChip() {
             ) : null}
             <div className="mt-1">To add a machine: sign in to ADE on it.</div>
           </div>
-        </div>,
+          </div>
+        </ViewportOverlayHost>,
         document.body,
       ) : null}
     </div>

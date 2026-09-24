@@ -1298,7 +1298,8 @@ predicates, because every caller needs the same three things together (is there
 an outage, what do we say, where does the button go). It returns null when
 nothing is corroborated, and every GitHub-blaming surface gates on it:
 
-- `IntegrationBannerHost` collapses the whole GitHub banner family into one
+- `IntegrationBanners` registers GitHub integration states with `AppBannerHost`,
+  which collapses the whole GitHub banner family into one
   neutral `info` notice linking the live incident. The other banners (AI
   provider, mock provider, relay) are untouched, and the suppression is gated
   on the same condition that renders the replacement, so the GitHub family can
@@ -1323,7 +1324,7 @@ nothing is corroborated, and every GitHub-blaming surface gates on it:
 
 `describeGithubAuthFailure` and `describeGithubCliBanner` both consult
 `describeGithubOutage` first, so a corroborated outage outranks every
-credential-shaped reading of the same failure even though `IntegrationBannerHost`
+credential-shaped reading of the same failure even though `IntegrationBanners`
 already suppresses those banners — the redundancy exists so a future refactor of
 that suppression cannot silently reintroduce the accusation. Without
 corroboration, a bare `service_unavailable` still renders its own honest copy

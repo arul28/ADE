@@ -78,6 +78,32 @@ describe("Dialog Escape", () => {
   });
 });
 
+describe("HeaderSheet placement", () => {
+  it("portals the click-away layer to the viewport root", () => {
+    const closeSheet = vi.fn();
+
+    function Sheet() {
+      const panelRef = useRef<HTMLDivElement>(null);
+      return (
+        <div style={{ position: "relative", zIndex: 20 }}>
+          <HeaderSheet open panelRef={panelRef} title="Activity" bare onClose={closeSheet}>
+            <button type="button">Open history</button>
+          </HeaderSheet>
+          <aside style={{ position: "relative", zIndex: 100 }}>Sidebar</aside>
+        </div>
+      );
+    }
+
+    render(<Sheet />);
+    const panel = screen.getByRole("dialog", { name: "Activity" });
+    const clickAwayLayer = panel.parentElement;
+
+    expect(clickAwayLayer?.parentElement).toBe(document.body);
+    fireEvent.click(clickAwayLayer!);
+    expect(closeSheet).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("Dialog outside interactions", () => {
   it("stays open when the user clicks a toast above it", async () => {
     const onOpenChange = vi.fn();

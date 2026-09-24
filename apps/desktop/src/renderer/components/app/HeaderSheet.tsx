@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { X } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
@@ -29,6 +30,8 @@ type HeaderSheetProps = {
   onClose: () => void;
   ariaLabelledBy?: string;
   width?: string;
+  panelStyle?: React.CSSProperties;
+  onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
   closeTitle?: string;
   children: React.ReactNode;
 };
@@ -47,19 +50,27 @@ export function HeaderSheet({
   onClose,
   ariaLabelledBy,
   width,
+  panelStyle,
+  onKeyDown,
   closeTitle = `Close ${title}`,
   children,
 }: HeaderSheetProps) {
   const handleKeyDown = useDialogFocusTrap(panelRef, onClose, open);
+  const handlePanelKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (event) => {
+    onKeyDown?.(event);
+    if (!event.defaultPrevented && !event.isPropagationStopped()) {
+      handleKeyDown(event);
+    }
+  };
   const panelPositionClassName = cn(
     "absolute right-3 top-10 max-h-[calc(100vh-72px)]",
     !bare && "overflow-y-auto",
     width ?? "w-[min(620px,calc(100vw-24px))]",
   );
 
-  if (!open) return null;
+  if (!open || typeof document === "undefined") return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0"
       style={{ zIndex: Z_LAYERS.sheet, WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -68,13 +79,14 @@ export function HeaderSheet({
       <div
         ref={panelRef}
         className={cn(panelPositionClassName, surfaceClassName)}
+        style={panelStyle}
         role="dialog"
         aria-modal="true"
         aria-labelledby={bare ? undefined : ariaLabelledBy}
         aria-label={bare ? title : undefined}
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
-        onKeyDown={handleKeyDown}
+        onKeyDown={handlePanelKeyDown}
       >
         {bare ? null : <div className={cn("sticky top-0 z-10 flex items-center justify-between border-b px-4 py-3", headerClassName)}>
           <div className="flex min-w-0 items-center gap-2">
@@ -108,6 +120,7 @@ export function HeaderSheet({
         </div>}
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

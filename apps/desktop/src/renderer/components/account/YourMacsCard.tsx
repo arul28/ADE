@@ -95,7 +95,7 @@ function InventoryEmpty({ children }: { children: React.ReactNode }) {
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { Dialog } from "../ui/dialog";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -1259,35 +1259,36 @@ export function YourMacsCard() {
 
       {openMenuKey && openMenuRow && menuAnchor
         ? createPortal(
-            <>
-              <div
-                onClick={closeMenu}
-                style={{ position: "fixed", inset: 0, zIndex: Z_LAYERS.contextMenu }}
-              />
-              <div
-                ref={menuRef}
-                role="menu"
-                onKeyDown={(event) => {
-                  if (event.key !== "Escape") return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  closeMenu();
-                }}
-                style={{
-                  position: "fixed",
-                  left: menuPosition?.left ?? menuAnchor.x,
-                  top: menuPosition?.top ?? menuAnchor.y,
-                  visibility: menuPosition ? "visible" : "hidden",
-                  // Same layer as the click-away above; later in the DOM, so it paints on top.
-                  zIndex: Z_LAYERS.contextMenu,
-                  width: ACCOUNT_MENU_WIDTH,
-                  padding: 4,
-                  borderRadius: RADII.md,
-                  background: COLORS.cardBgSolid,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
-                }}
-              >
+            <ViewportOverlayHost layer="contextMenu">
+              <>
+                <div
+                  aria-hidden="true"
+                  onClick={closeMenu}
+                  style={{ position: "absolute", inset: 0, pointerEvents: "auto" }}
+                />
+                <div
+                  ref={menuRef}
+                  role="menu"
+                  onKeyDown={(event) => {
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeMenu();
+                  }}
+                  style={{
+                    position: "absolute",
+                    left: menuPosition?.left ?? menuAnchor.x,
+                    top: menuPosition?.top ?? menuAnchor.y,
+                    visibility: menuPosition ? "visible" : "hidden",
+                    width: ACCOUNT_MENU_WIDTH,
+                    padding: 4,
+                    borderRadius: RADII.md,
+                    background: COLORS.cardBgSolid,
+                    border: `1px solid ${COLORS.outlineBorder}`,
+                    boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
+                    pointerEvents: "auto",
+                  }}
+                >
                 {openMenuMachine ? (
                 <button
                   ref={menuItemRef}
@@ -1414,8 +1415,9 @@ export function YourMacsCard() {
                     Forget on this browser…
                   </button>
                 ) : null}
-              </div>
-            </>,
+                </div>
+              </>
+            </ViewportOverlayHost>,
             document.body,
           )
         : null}

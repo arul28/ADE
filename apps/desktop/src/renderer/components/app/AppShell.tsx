@@ -8,6 +8,7 @@ import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
+import { Z_LAYERS } from "../ui/zLayers";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
 import type {
@@ -991,7 +992,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex min-h-0">
         <aside
-          className="ade-sidebar-clip shrink-0 z-[100] border-r"
+          className="ade-sidebar-clip shrink-0 border-r"
+          style={{ zIndex: Z_LAYERS.sidebar }}
           data-tour="app.sidebar"
           onMouseEnter={holdPanesUntilRailSettles}
           onMouseLeave={holdPanesUntilRailSettles}

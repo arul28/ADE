@@ -16,7 +16,7 @@ import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
 import { encodeUtf8Base64 } from "../../lib/base64";
 import { Banner } from "../ui/notice/Banner";
-import { Z_LAYERS } from "../ui/zLayers";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import {
   describeShot,
   isCallJoinable,
@@ -210,31 +210,32 @@ export function GlobalCaptureGestureHost() {
       {notice ? (
         // Bottom center and above everything: the gesture fires over any
         // surface, including dialogs and context menus.
-        <div
-          data-capture-gesture-notice
-          style={{
-            position: "fixed",
-            left: 16,
-            right: 16,
-            bottom: 24,
-            zIndex: Z_LAYERS.capture,
-            display: "flex",
-            justifyContent: "center",
-            // The full-width strip must not swallow clicks; the banner takes its own.
-            pointerEvents: "none",
-          }}
-        >
-          <Banner
-            layout="floating"
-            style={{ maxWidth: 560, pointerEvents: "auto" }}
-            model={{
-              id: "capture-gesture-notice",
-              tone: "warning",
-              title: notice,
-              dismiss: { onDismiss: () => setNotice(null) },
+        <ViewportOverlayHost layer="capture">
+          <div
+            data-capture-gesture-notice
+            style={{
+              position: "absolute",
+              left: 16,
+              right: 16,
+              bottom: 24,
+              display: "flex",
+              justifyContent: "center",
+              // The full-width strip must not swallow clicks; the banner takes its own.
+              pointerEvents: "none",
             }}
-          />
-        </div>
+          >
+            <Banner
+              layout="floating"
+              style={{ maxWidth: 560, pointerEvents: "auto" }}
+              model={{
+                id: "capture-gesture-notice",
+                tone: "warning",
+                title: notice,
+                dismiss: { onDismiss: () => setNotice(null) },
+              }}
+            />
+          </div>
+        </ViewportOverlayHost>
       ) : null}
     </>
   );

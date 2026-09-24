@@ -1,16 +1,6 @@
 {
   "version": 1,
   "files": {
-    "apps/desktop/src/renderer/components/account/YourMacsCard.tsx": {
-      "ade-ui/no-fixed-overlay": 2
-    },
-    "apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/app/AppShell.tsx": {
-      "ade-ui/no-raw-z-index": 1
-    },
     "apps/desktop/src/renderer/components/app/AutoUpdateErrorDialog.tsx": {
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2
@@ -26,16 +16,9 @@
     "apps/desktop/src/renderer/components/app/TabNav.tsx": {
       "ade-ui/no-fixed-overlay": 1
     },
-    "apps/desktop/src/renderer/components/app/TopBar.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/capture/CaptureFlyIn.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/capture/GlobalCaptureGestureHost.tsx": {
-      "ade-ui/no-fixed-overlay": 1
     },
     "apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx": {
       "ade-ui/no-fixed-overlay": 5,
@@ -82,9 +65,6 @@
     "apps/desktop/src/renderer/components/chat/DraftMachinePicker.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/cto/CtoVoiceHud.tsx": {
-      "ade-ui/no-fixed-overlay": 2
     },
     "apps/desktop/src/renderer/components/files/v2/ContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
@@ -163,9 +143,6 @@
     "apps/desktop/src/renderer/components/shared/ModelPicker/ModelListRow.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx": {
-      "ade-ui/no-fixed-overlay": 1
-    },
     "apps/desktop/src/renderer/components/shared/SessionLaunchModelControls.tsx": {
       "ade-ui/no-raw-z-index": 2
     },
@@ -211,19 +188,12 @@
     "apps/desktop/src/renderer/components/ui/paneMenuTokens.ts": {
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/usage/UsageAccountRow.tsx": {
-      "ade-ui/no-fixed-overlay": 1
-    },
     "apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/webclient/shell/ScreenShell.tsx": {
       "ade-ui/no-fixed-overlay": 2
-    },
-    "apps/desktop/src/renderer/webclient/workspace/WebConnectionsChip.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
     }
   }
 }

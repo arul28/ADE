@@ -368,8 +368,9 @@ Renderer — onboarding:
   is for banners a user may reasonably live with and this is not one of them:
   the only way to clear it is to sign in, or to repair a store ADE could not
   read. It mounts in `AppShell` above `AutoUpdateBanner` and outside every
-  project condition, because `IntegrationBannerHost` renders only inside an
-  open project and this bar has to reach welcome and projectless windows too.
+  project condition, because `AppBannerHost` is mounted outside project gating
+  and this bar has to reach welcome and projectless windows too. `IntegrationBanners`
+  registers project-dependent integration states with that global host.
   It hides itself on `/account`, where its own action would lead. All four
   states' copy lives in one record in `renderer/lib/account.ts`, so a new
   state is a type error rather than a missing case. The same bar carries the
@@ -693,7 +694,8 @@ Renderer — settings:
   doc's [Source file map](../automations/README.md#github-relay-and-app) and
   [How ADE stops a GitHub App refresh storm](../automations/README.md#how-ade-stops-a-github-app-refresh-storm)).
   The matching per-repo "GitHub App not connected" banner — distinct from the
-  gh-CLI banner — is rendered by the app-shell `IntegrationBannerHost` from the
+  gh-CLI banner — is registered by `IntegrationBanners` and rendered by the
+  app-shell `AppBannerHost` from the
   same `githubIntegrationStatus.ts` derivation (see
   [ARCHITECTURE §7.6](../../ARCHITECTURE.md)), so the panel and the banner never
   disagree.
@@ -704,7 +706,7 @@ Renderer — settings:
   `githubStatusHasWriteCredential` for capability-gating mutations, and the
   shared banner/Settings copy for the account, repo, and gh-CLI/token
   sub-states. Imported by `GitHubAppInstallPanel`, `GitHubSection`,
-  `IntegrationBannerHost`, and write surfaces such as `FeedbackReporterModal`;
+  `IntegrationBanners`, and write surfaces such as `FeedbackReporterModal`;
   App-only read connectivity therefore keeps PR data live while still prompting
   for GitHub CLI or a PAT before a mutation. This module only translates the
   service's `credentialState` into copy — it does not re-derive the account's
@@ -754,7 +756,7 @@ Renderer — settings:
   GitHub problem and is not fixed on the GitHub card, whereas an outage and
   every auth failure are — there the credential ADE holds is readable and it is
   the account behind it, or GitHub itself, that has the objection.
-- `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` and
+- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` and
   `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
   app shell raises a write-access banner for an otherwise connected App-only
   status, and feedback submission requires a write-capable credential rather
@@ -2274,7 +2276,8 @@ unreadable read is a guess:
 - **Settings → Integrations → GitHub** (`GitHubSection.tsx`) shows **Can't read
   sign-in** in warning tone with the shared notice and an **Open connections**
   button, and hides the gh-CLI setup steps.
-- **The app-shell integration banner** (`IntegrationBannerHost.tsx`) points its
+- **The app-shell integration banner** (registered by `IntegrationBanners.tsx`
+  and rendered by `AppBannerHost`) points its
   action at the Connections panel rather than the GitHub settings route, since
   no GitHub-side action repairs a store ADE cannot open.
 - **The PR tab's empty state** — the message is built in the main process by

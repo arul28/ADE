@@ -56,6 +56,7 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac, modifierKeyLabel } from "../../lib/platform";
 import type {
@@ -437,29 +438,6 @@ function HeaderStatusMenu({
     if (!compact) close();
   }, [close, compact]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (menuRef.current?.contains(target)) return;
-      if (buttonRef.current?.contains(target)) return;
-      close();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [close, open]);
-
   const anyConnected = remoteConnected || (showSyncControl && syncConnected);
 
   if (!compact) return null;
@@ -475,7 +453,7 @@ function HeaderStatusMenu({
         )}
         data-variant="ghost"
         aria-label="Connections and usage"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title="Connections and usage"
         onClick={() => (open ? close() : openMenu())}
@@ -490,20 +468,26 @@ function HeaderStatusMenu({
           aria-hidden
         />
       </button>
-      {open && menuPos
-        ? createPortal(
-            <div
-              ref={menuRef}
-              role="menu"
-              aria-label="Connections and usage"
-              className={"fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"}
-              style={{ top: menuPos.top, right: menuPos.right }}
-            >
-              {children(close)}
-            </div>,
-            document.body,
-          )
-        : null}
+      <HeaderSheet
+        open={open && menuPos !== null}
+        panelRef={menuRef}
+        title="Connections and usage"
+        bare
+        width="w-max min-w-[220px] max-w-[calc(100vw-16px)]"
+        panelStyle={menuPos ? {
+          top: menuPos.top,
+          right: menuPos.right,
+          left: "auto",
+          maxHeight: "calc(100vh - 80px)",
+          overflowY: "auto",
+        } : undefined}
+        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        onClose={close}
+      >
+        <div role="menu" aria-label="Connections and usage">
+          {children(close)}
+        </div>
+      </HeaderSheet>
     </>
   );
 }
@@ -563,59 +547,62 @@ function MachineSwitcherMenu({
   }, [onClose]);
 
   return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={`Machines for ${group.displayName}`}
-      className={"fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"}
-      style={
-        {
-          left: anchor.left,
-          top: anchor.top,
-          WebkitAppRegion: "no-drag",
-        } as React.CSSProperties
-      }
-    >
-      {group.machines.map((machine) => {
-        const isActive = machine.bindingKey === group.activeBindingKey;
-        const status = machineStatus(machine);
-        return (
-          <button
-            key={machine.bindingKey}
-            type="button"
-            role="menuitemradio"
-            aria-checked={isActive}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
-              "hover:bg-white/8",
-              isActive && "bg-white/6 font-semibold",
-            )}
-            onClick={() => {
-              onClose();
-              onSelect(machine);
-            }}
-          >
-            <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
-            {status ? (
-              <span className="shrink-0 text-[10px] opacity-60">{status}</span>
-            ) : null}
-          </button>
-        );
-      })}
-      <div className="my-1 h-px bg-white/8" />
-      <button
-        type="button"
-        role="menuitem"
-        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
-        onClick={() => {
-          onClose();
-          onConnectAnother();
-        }}
+    <ViewportOverlayHost layer="tabMenu">
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label={`Machines for ${group.displayName}`}
+        className="absolute min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        style={
+          {
+            left: anchor.left,
+            top: anchor.top,
+            pointerEvents: "auto",
+            WebkitAppRegion: "no-drag",
+          } as React.CSSProperties
+        }
       >
-        <Plus size={11} weight="regular" className="shrink-0" />
-        <span className="truncate">Connect another machine…</span>
-      </button>
-    </div>,
+        {group.machines.map((machine) => {
+          const isActive = machine.bindingKey === group.activeBindingKey;
+          const status = machineStatus(machine);
+          return (
+            <button
+              key={machine.bindingKey}
+              type="button"
+              role="menuitemradio"
+              aria-checked={isActive}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
+                "hover:bg-white/8",
+                isActive && "bg-white/6 font-semibold",
+              )}
+              onClick={() => {
+                onClose();
+                onSelect(machine);
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
+              {status ? (
+                <span className="shrink-0 text-[10px] opacity-60">{status}</span>
+              ) : null}
+            </button>
+          );
+        })}
+        <div className="my-1 h-px bg-white/8" />
+        <button
+          type="button"
+          role="menuitem"
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
+          onClick={() => {
+            onClose();
+            onConnectAnother();
+          }}
+        >
+          <Plus size={11} weight="regular" className="shrink-0" />
+          <span className="truncate">Connect another machine…</span>
+        </button>
+      </div>
+    </ViewportOverlayHost>,
     document.body,
   );
 }

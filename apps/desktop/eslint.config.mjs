@@ -129,6 +129,7 @@ export default [
       "src/renderer/components/ui/notice/**",
       "src/renderer/components/ui/dialog/**",
       "src/renderer/components/ui/zLayers.ts",
+      "src/renderer/components/ui/ViewportOverlayHost.tsx",
       "src/renderer/components/app/toast/ToastStack.tsx",
       "src/renderer/components/app/toast/ToastViewport.tsx",
       "src/renderer/components/app/HeaderSheet.tsx",

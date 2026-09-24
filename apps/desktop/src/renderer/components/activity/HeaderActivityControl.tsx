@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowClockwise,
   ArrowRight,
@@ -30,8 +29,8 @@ import {
   selectActivityHideDetails,
   useActivityStore,
 } from "../../state/activityStore";
-import { useDialogFocusTrap } from "../ui/dialogFocus";
 import { cn } from "../ui/cn";
+import { HeaderSheet } from "../app/HeaderSheet";
 import { ActivityAllClear } from "./ActivityAllClear";
 import { ActivityCard } from "./ActivityCard";
 import { ActivitySectionHeader } from "./ActivitySectionHeader";
@@ -237,8 +236,6 @@ export function HeaderActivityControl({
     }).catch(() => undefined);
   }, []);
 
-  const trapKeyDown = useDialogFocusTrap(panelRef, close, open);
-
   // An expired item must stop being counted even if nobody opens the popover,
   // so the clock keeps moving while closed — just far more slowly, and never
   // while the window is hidden.
@@ -321,6 +318,7 @@ export function HeaderActivityControl({
       // focus is in it, its keys are its business — otherwise Escape would
       // close both at once and an arrow key would yank focus out to a row.
       if ((event.target as HTMLElement | null)?.closest?.(".activity-settings-popover")) {
+        event.stopPropagation();
         return;
       }
       const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
@@ -341,9 +339,8 @@ export function HeaderActivityControl({
         (event.key === "Home" ? rows[0] : rows[rows.length - 1])?.focus();
         return;
       }
-      trapKeyDown(event);
     },
-    [trapKeyDown],
+    [],
   );
 
   // A signed-out window has no account stream, so it must not keep advertising
@@ -444,171 +441,167 @@ export function HeaderActivityControl({
         ) : null}
       </button>
 
-      {open && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              className="activity-hdr-scrim fixed inset-0 z-[110]"
-              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-              onClick={() => setOpen(false)}
-            >
-              <div
-                ref={panelRef}
-                className="activity-hdr-panel"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="activity-hdr-title"
-                tabIndex={-1}
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={onPanelKeyDown}
+      <HeaderSheet
+        open={open}
+        panelRef={panelRef}
+        title="Activity"
+        bare
+        width="w-[min(420px,calc(100vw-24px))]"
+        panelStyle={{
+          right: 12,
+          top: 40,
+          width: "min(420px, calc(100vw - 24px))",
+          maxHeight: "min(600px, calc(100vh - 72px))",
+          WebkitAppRegion: "no-drag",
+        } as React.CSSProperties}
+        surfaceClassName="activity-hdr-panel"
+        onClose={close}
+        onKeyDown={onPanelKeyDown}
+      >
+        <header className="activity-hdr-panel-head">
+          {/* No sub-caption. The line that used to sit here only ever
+              restated the surface's own name ("Account Activity is
+              live"), and a header that describes itself is a header
+              that has nothing to say. */}
+          <h2 id="activity-hdr-title">Activity</h2>
+          {freshness ? (
+            freshness.tone === "error" && freshness.retry ? (
+              <button
+                type="button"
+                className="activity-hdr-freshness is-error"
+                onClick={() => void refreshActivitySnapshot()}
+                title={availability?.message ?? syncError ?? "Retry Activity sync"}
               >
-                <header className="activity-hdr-panel-head">
-                  {/* No sub-caption. The line that used to sit here only ever
-                      restated the surface's own name ("Account Activity is
-                      live"), and a header that describes itself is a header
-                      that has nothing to say. */}
-                  <h2 id="activity-hdr-title">Activity</h2>
-                  {freshness ? (
-                    freshness.tone === "error" && freshness.retry ? (
-                      <button
-                        type="button"
-                        className="activity-hdr-freshness is-error"
-                        onClick={() => void refreshActivitySnapshot()}
-                        title={availability?.message ?? syncError ?? "Retry Activity sync"}
-                      >
-                        <WifiSlash size={11} />
-                        {freshness.label} · Retry
-                      </button>
-                    ) : (
-                      <span className="activity-hdr-freshness">
-                        {freshness.tone === "syncing" ? (
-                          <ArrowClockwise size={11} className="activity-hdr-spin" />
-                        ) : (
-                          <WifiHigh size={11} />
-                        )}
-                        {freshness.label}
-                      </span>
-                    )
-                  ) : null}
-                  <ActivitySettingsPopover />
-                  <button
-                    type="button"
-                    className="activity-hdr-icon-button"
-                    onClick={close}
-                    title="Close"
-                    aria-label="Close Activity"
-                  >
-                    <X size={13} />
-                  </button>
-                </header>
+                <WifiSlash size={11} />
+                {freshness.label} · Retry
+              </button>
+            ) : (
+              <span className="activity-hdr-freshness">
+                {freshness.tone === "syncing" ? (
+                  <ArrowClockwise size={11} className="activity-hdr-spin" />
+                ) : (
+                  <WifiHigh size={11} />
+                )}
+                {freshness.label}
+              </span>
+            )
+          ) : null}
+          <ActivitySettingsPopover />
+          <button
+            type="button"
+            className="activity-hdr-icon-button"
+            onClick={close}
+            title="Close"
+            aria-label="Close Activity"
+          >
+            <X size={13} />
+          </button>
+        </header>
 
-                {navigationError ? (
-                  <div className="activity-hdr-alert" role="alert">
-                    <WarningCircle size={14} weight="fill" />
-                    <span>{navigationError}</span>
-                  </div>
-                ) : null}
+        {navigationError ? (
+          <div className="activity-hdr-alert" role="alert">
+            <WarningCircle size={14} weight="fill" />
+            <span>{navigationError}</span>
+          </div>
+        ) : null}
 
-                {degraded ? (
-                  <div className="activity-hdr-note" role="status">
-                    <WifiSlash size={12} />
-                    <span>{availability.message}</span>
-                  </div>
-                ) : null}
+        {degraded ? (
+          <div className="activity-hdr-note" role="status">
+            <WifiSlash size={12} />
+            <span>{availability.message}</span>
+          </div>
+        ) : null}
 
-                {signedOut && !signedOutEmpty ? (
-                  <div className="activity-hdr-note" role="status">
-                    <BellSimpleSlash size={12} />
-                    <span>
-                      {availability?.message
-                        ?? "Showing work from this machine. Sign in to combine every ADE machine."}
-                    </span>
-                  </div>
-                ) : null}
+        {signedOut && !signedOutEmpty ? (
+          <div className="activity-hdr-note" role="status">
+            <BellSimpleSlash size={12} />
+            <span>
+              {availability?.message
+                ?? "Showing work from this machine. Sign in to combine every ADE machine."}
+            </span>
+          </div>
+        ) : null}
 
-                {notchNeedsAttention ? (
-                  <div className="activity-hdr-note activity-hdr-notch-health" role="status">
-                    <WarningCircle size={12} weight="fill" />
-                    <span>
-                      <strong>{notchHealth.title}</strong>
-                      {" "}
-                      {notchHealth.message}
-                    </span>
-                    <button type="button" onClick={() => void retryNotch()}>
-                      Check again
-                    </button>
-                  </div>
-                ) : null}
+        {notchNeedsAttention ? (
+          <div className="activity-hdr-note activity-hdr-notch-health" role="status">
+            <WarningCircle size={12} weight="fill" />
+            <span>
+              <strong>{notchHealth.title}</strong>
+              {" "}
+              {notchHealth.message}
+            </span>
+            <button type="button" onClick={() => void retryNotch()}>
+              Check again
+            </button>
+          </div>
+        ) : null}
 
-                {summary.staleMachineCount > 0 && summary.offlineMachines.length > 0 ? (
-                  <ActivityOfflineDisclosure
-                    machines={summary.offlineMachines}
-                    itemCount={summary.staleMachineCount}
-                  />
-                ) : null}
+        {summary.staleMachineCount > 0 && summary.offlineMachines.length > 0 ? (
+          <ActivityOfflineDisclosure
+            machines={summary.offlineMachines}
+            itemCount={summary.staleMachineCount}
+          />
+        ) : null}
 
-                <div className="activity-hdr-body">
-                  {allClear ? <ActivityAllClear compact /> : null}
-                  {signedOutEmpty ? (
-                    <div className="activity-hdr-empty">
-                      <BellSimpleSlash size={22} weight="duotone" />
-                      <strong>Signed out</strong>
-                      <p>
-                        Sign in to ADE to follow agents and pull requests across every
-                        machine on your account.
-                      </p>
-                    </div>
-                  ) : populatedSections.length === 0 ? (
-                    <div className="activity-hdr-empty" data-activity-empty="all-clear">
-                      <span className="activity-hdr-calm-dot" aria-hidden />
-                      <strong>All agents idle</strong>
-                      <p>
-                        {syncStatus === "error"
-                          ? syncError ?? "Activity couldn’t sync, so this may be stale."
-                          : summary.doneCount > 0
-                            ? "Nothing needs you. Finished work is in the full list."
-                            : "Nothing needs you."}
-                      </p>
-                    </div>
-                  ) : (
-                    populatedSections.map((section) => (
-                      <ActivityHeaderSection
-                        key={section.id}
-                        section={section}
-                        hideDetails={hideDetails}
-                        collapsed={collapse.isCollapsed(section.id)}
-                        onToggleCollapsed={() => collapse.toggle(section.id)}
-                        onOpenItem={(item) => void openItem(item)}
-                        onDismissItem={dismissItem}
-                        onOpenPane={openPane}
-                      />
-                    ))
-                  )}
-                  {/* Done is hidden here, so the handoff has to be explicit:
-                      the count is the promise that nothing was thrown away. */}
-                  {populatedSections.length > 0 && summary.doneCount > 0 ? (
-                    <button
-                      type="button"
-                      className="activity-hdr-done-handoff"
-                      onClick={openPane}
-                    >
-                      {summary.doneCount} done in the full list
-                      <ArrowRight size={11} weight="bold" />
-                    </button>
-                  ) : null}
-                </div>
+        <div className="activity-hdr-body">
+          {allClear ? <ActivityAllClear compact /> : null}
+          {signedOutEmpty ? (
+            <div className="activity-hdr-empty">
+              <BellSimpleSlash size={22} weight="duotone" />
+              <strong>Signed out</strong>
+              <p>
+                Sign in to ADE to follow agents and pull requests across every
+                machine on your account.
+              </p>
+            </div>
+          ) : populatedSections.length === 0 ? (
+            <div className="activity-hdr-empty" data-activity-empty="all-clear">
+              <span className="activity-hdr-calm-dot" aria-hidden />
+              <strong>All agents idle</strong>
+              <p>
+                {syncStatus === "error"
+                  ? syncError ?? "Activity couldn’t sync, so this may be stale."
+                  : summary.doneCount > 0
+                    ? "Nothing needs you. Finished work is in the full list."
+                    : "Nothing needs you."}
+              </p>
+            </div>
+          ) : (
+            populatedSections.map((section) => (
+              <ActivityHeaderSection
+                key={section.id}
+                section={section}
+                hideDetails={hideDetails}
+                collapsed={collapse.isCollapsed(section.id)}
+                onToggleCollapsed={() => collapse.toggle(section.id)}
+                onOpenItem={(item) => void openItem(item)}
+                onDismissItem={dismissItem}
+                onOpenPane={openPane}
+              />
+            ))
+          )}
+          {/* Done is hidden here, so the handoff has to be explicit:
+              the count is the promise that nothing was thrown away. */}
+          {populatedSections.length > 0 && summary.doneCount > 0 ? (
+            <button
+              type="button"
+              className="activity-hdr-done-handoff"
+              onClick={openPane}
+            >
+              {summary.doneCount} done in the full list
+              <ArrowRight size={11} weight="bold" />
+            </button>
+          ) : null}
+        </div>
 
-                <footer className="activity-hdr-panel-foot">
-                  <span>{footerLine}</span>
-                  <button type="button" className="activity-hdr-open-all" onClick={openPane}>
-                    Open all
-                    <ArrowRight size={12} weight="bold" />
-                  </button>
-                </footer>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
+        <footer className="activity-hdr-panel-foot">
+          <span>{footerLine}</span>
+          <button type="button" className="activity-hdr-open-all" onClick={openPane}>
+            Open all
+            <ArrowRight size={12} weight="bold" />
+          </button>
+        </footer>
+      </HeaderSheet>
     </>
   );
 }

@@ -25,6 +25,7 @@ import type { EventCategory } from "./eventTaxonomy";
 import { CATEGORY_META } from "./eventTaxonomy";
 import { useTimelineStore } from "./useTimelineStore";
 import type { ScopeLevel } from "./useTimelineStore";
+import { promptDialog } from "../ui/dialog/confirm";
 import {
   buildHistoryLaneActions,
   groupHistoryLaneActions,
@@ -157,24 +158,23 @@ export function TimelineToolbar({
       window.setTimeout(() => setExportNotice(null), 4000);
       return;
     }
-    const promptFn = typeof window.prompt === "function" ? window.prompt.bind(window) : null;
     let chosenLimit = 500;
-    if (promptFn) {
-      const raw = promptFn(
-        "Export how many rows? (1–10000, default 500)",
-        "500",
-      );
-      if (raw == null) return; // user cancelled
-      const trimmed = raw.trim();
-      if (trimmed.length) {
-        const parsed = Number.parseInt(trimmed, 10);
-        if (!Number.isFinite(parsed) || parsed <= 0) {
-          setExportNotice("Invalid export limit; must be a positive integer");
-          window.setTimeout(() => setExportNotice(null), 4000);
-          return;
-        }
-        chosenLimit = Math.min(10000, Math.max(1, parsed));
+    const raw = await promptDialog({
+      title: "Export how many rows? (1–10000, default 500)",
+      defaultValue: "500",
+      confirmLabel: "Export",
+      allowEmpty: true,
+    });
+    if (raw == null) return; // user cancelled
+    const trimmed = raw.trim();
+    if (trimmed.length) {
+      const parsed = Number.parseInt(trimmed, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setExportNotice("Invalid export limit; must be a positive integer");
+        window.setTimeout(() => setExportNotice(null), 4000);
+        return;
       }
+      chosenLimit = Math.min(10000, Math.max(1, parsed));
     }
     try {
       const result = await exportFn({

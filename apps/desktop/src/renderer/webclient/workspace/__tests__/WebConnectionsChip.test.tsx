@@ -261,6 +261,35 @@ describe("WebConnectionsChip", () => {
     }
   });
 
+  it("confirms forgetting a browser pairing and only forgets it after acceptance", async () => {
+    const environment = pairing("studio", "Mac Studio");
+    const forgetEnvironment = vi.fn(async () => undefined);
+    const confirm = vi.mocked(confirmDialog).mockClear().mockResolvedValue(false);
+    renderChip(
+      [machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true })],
+      { forgetEnvironment },
+      { environments: [environment] },
+    );
+
+    openPopover();
+    fireEvent.click(screen.getByLabelText("Manage Mac Studio"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Forget on this browser" }));
+
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    expect(confirm.mock.calls[0]?.[0]).toMatchObject({
+      title: "Forget Mac Studio on this browser?",
+      confirmLabel: "Forget",
+      destructive: true,
+    });
+    expect(forgetEnvironment).not.toHaveBeenCalled();
+
+    confirm.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByLabelText("Manage Mac Studio"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Forget on this browser" }));
+
+    await waitFor(() => expect(forgetEnvironment).toHaveBeenCalledWith(environment.envId));
+  });
+
   it("stays open while the user works in a confirm raised from its machine menu", async () => {
     renderChip([
       machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true }),
@@ -327,7 +356,11 @@ describe("WebConnectionsChip", () => {
 
     openPopover();
     const popover = await screen.findByRole("dialog");
-    expect(popover.parentElement).toBe(document.body);
+    const viewportHost = popover.parentElement;
+    expect(viewportHost?.parentElement).toBe(document.body);
+    expect(viewportHost?.style.position).toBe("fixed");
+    expect(viewportHost?.style.pointerEvents).toBe("none");
+    expect(viewportHost?.style.zIndex).toBe("100");
   });
 
   it("labels a leftover pairing as remembered in this browser", () => {

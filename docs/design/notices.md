@@ -12,6 +12,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | `showToast`, `updateToast`, `dismissToast` | `components/app/toast/toastStore.ts` (rendered as `ToastCard` in `ToastViewport`) |
 | `confirmDialog`, `promptDialog`, `Dialog`, `DialogHost` | `components/ui/dialog/` |
 | `HeaderSheet` | `components/app/HeaderSheet.tsx` |
+| `ViewportOverlayHost` | `components/ui/ViewportOverlayHost.tsx` |
 | `noticeTone`, `NoticeTone` | `components/ui/notice/noticeTones.ts` |
 | `Z_LAYERS` | `components/ui/zLayers.ts` |
 | Durable dismissal | `renderer/lib/bannerDismiss.ts` |
@@ -151,7 +152,11 @@ Pick a named layer and never type a z-index:
 
 | Layer | Value | For |
 |---|---|---|
+| `chatDraftDeparture` | 79 | Departing Work draft chrome during the first-message handoff |
+| `chatFirstMessageHandoff` | 80 | Composer and first-message handoff animation |
+| `tabMenu` | 90 | Project-tab machine menu below sheets and app popovers |
 | `popover` | 100 | Anchored pickers and menus (model picker, reasoning effort) |
+| `sidebar` | 100 | The app sidebar |
 | `sheet` | 120 | `HeaderSheet` top-bar dropdowns and their click-away layer |
 | `hud` | 130 | The CTO voice-call HUD; above sheets so End call stays clickable |
 | `floatingBanner` | 140 | Floating top-center banners |
@@ -167,10 +172,14 @@ which creates no stacking context, so its layer competes directly with the
 body-portaled dialogs. Keep it that way: giving `<main>` (or an ancestor) a
 z-index, transform, filter or `isolation` would trap toasts under dialogs again.
 
-The hosts (`ToastViewport`, `HeaderSheet`, `AppBannerHost`, `Dialog`) already
-use these layers. If you need a z-index at all, you are probably building an
-overlay the hosts already provide. A new layer goes in `zLayers.ts`, with a
-comment explaining why the existing layers do not work.
+`ViewportOverlayHost` owns viewport anchoring and pointer passthrough for
+transient overlays that are not banners, sheets, dialogs, or toasts, including
+the call HUD, capture notice, and chat handoff animation. The hosts
+(`ToastViewport`, `HeaderSheet`, `AppBannerHost`, `Dialog`, and
+`ViewportOverlayHost`) already use named layers. If you need a z-index at all,
+you are probably building an overlay the hosts already provide. A new layer
+goes in `zLayers.ts`, with a comment explaining why the existing layers do not
+work.
 
 ## Copy
 
@@ -196,7 +205,7 @@ a **warning**:
 |---|---|---|
 | `ade-ui/no-native-dialogs` | `window.confirm/prompt/alert`, bare `confirm()` / `alert()` / `prompt()` | `confirmDialog`, `promptDialog`, `showToast` |
 | `ade-ui/no-adhoc-notice-component` | A `*Banner` / `*Toast` / `*Notice` / `*Callout` / `*Snackbar` component in a file that imports nothing from `ui/notice` or `app/toast` | `Banner`, `useAppBanner`, `showToast` |
-| `ade-ui/no-fixed-overlay` | `position: "fixed"`, a `fixed` class in `className` / `cn()` / `clsx()` | `AppBannerHost`, `ToastViewport`, `Dialog`, `HeaderSheet` |
+| `ade-ui/no-fixed-overlay` | `position: "fixed"`, a `fixed` class in `className` / `cn()` / `clsx()` | `AppBannerHost`, `ToastViewport`, `Dialog`, `HeaderSheet`, `ViewportOverlayHost` |
 | `ade-ui/no-raw-z-index` | `zIndex` ≥ 50, `z-50`, `z-[N]` with N ≥ 50 | `Z_LAYERS` |
 | `ade-ui/no-legacy-banner-import` | `components/shared/Banner`, `sonner`, `react-hot-toast`, `@radix-ui/react-toast`, `react-toastify` | `ui/notice`, `showToast` |
 

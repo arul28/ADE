@@ -6,7 +6,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { AutoUpdateBanner, describeStalenessBanner } from "./AutoUpdateBanner";
 import { ToastStack } from "./toast/ToastStack";
 import { AppBannerHost } from "../ui/notice";
-import { resetAppBannersForTests } from "../ui/notice/appBannerStore";
+import {
+  APP_BANNER_PRIORITY,
+  getAppBannerEntries,
+  resetAppBannersForTests,
+} from "../ui/notice/appBannerStore";
 import { DialogHost, __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 import { getToasts, dismissToast } from "./toast/toastStore";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
@@ -117,6 +121,10 @@ describe("AutoUpdateBanner", () => {
 
     const title = await screen.findByText("Update v1.2.35 is ready to install");
     expect(title.closest('[data-banner-layout="floating"]')).toBeTruthy();
+    expect(getAppBannerEntries().find((entry) => entry.id === "auto-update-ready")).toMatchObject({
+      placement: "floating",
+      priority: APP_BANNER_PRIORITY.prompt,
+    });
     expect(screen.getByRole("button", { name: "Restart and install" })).toBeTruthy();
     expect(screen.queryByTestId("app-banner-dock")).toBeNull();
   });
