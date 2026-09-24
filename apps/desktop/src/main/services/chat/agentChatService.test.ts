@@ -37854,18 +37854,16 @@ describe("createAgentChatService", () => {
       expect(session.status).toBe("idle");
     });
 
-    it("persists capabilityMode when provided", async () => {
+    // The CTO surface offers its operator tools only to full-tooling sessions.
+    it.each([
+      ["opencode", "full_tooling", "", "opencode/anthropic/claude-sonnet-5"],
+      ["copilot", "fallback", "gpt-5.4", "github-copilot/gpt-5.4"],
+    ] as const)("gives a new %s session the %s capability mode", async (provider, expected, model, modelId) => {
       const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-        capabilityMode: "cto",
-      } as any);
+      const session = await service.createSession({ laneId: "lane-1", provider, model, modelId });
 
-      // capabilityMode may be resolved to a fallback if not fully supported
-      expect(session.capabilityMode).toBeDefined();
+      expect(session.capabilityMode).toBe(expected);
+      expect((await service.getSessionSummary(session.id))?.capabilityMode).toBe(expected);
     });
 
     it("uses default execution mode for new sessions", async () => {

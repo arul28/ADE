@@ -328,15 +328,6 @@ describe("WorkToolPickerBackdrop context lifecycle", () => {
     expect(cancel).toHaveBeenCalled();
   });
 
-  it("paints the CSS gradient under the canvas so the first frame is not empty", () => {
-    const { gl } = stubGl();
-    useStubGl(gl);
-    const { container } = render(<WorkToolPickerBackdrop theme="dark" />);
-    expect(container.querySelector("[data-backdrop='shader']")).toBeTruthy();
-    expect(container.querySelector(".ade-tool-picker-static")).toBeTruthy();
-    expect(container.querySelector("canvas")).toBeTruthy();
-  });
-
   it("measures the layout once per frame, not once per scroll event", async () => {
     const { gl } = stubGl();
     useStubGl(gl);

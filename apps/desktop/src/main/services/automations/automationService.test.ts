@@ -1864,6 +1864,9 @@ describe("automationService integration", () => {
   });
 
   it("computes nextRunAt for scheduled rules", async () => {
+    // Saturday noon, local time: the weekday 09:00 rule next fires on Monday.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 8, 26, 12, 0, 0));
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectId = "proj";
@@ -1903,7 +1906,8 @@ describe("automationService integration", () => {
     });
 
     const listed = service.list();
-    expect(listed[0]?.nextRunAt).toBeTruthy();
+    expect(Date.parse(listed[0]?.nextRunAt ?? "")).toBe(new Date(2026, 8, 28, 9, 0, 0).getTime());
+    vi.useRealTimers();
   });
 
   it("dispatches git.pr_merged automations on merge transitions", async () => {
@@ -2030,7 +2034,7 @@ describe("automationService integration", () => {
   // gone: an automation is personal now, so no rule reaches this service that
   // the signed-in user did not write. What matters instead is that a rule which
   // once would have been blocked simply runs.
-  it("runs a rule that the retired trust gate would have blocked", async () => {
+  it("runs a shared rule that has no trust record", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectId = "proj";
@@ -2068,7 +2072,10 @@ describe("automationService integration", () => {
       projectConfigService
     });
 
-    await expect(service.triggerManually({ id: rule.id })).resolves.toBeTruthy();
+    await expect(service.triggerManually({ id: rule.id })).resolves.toMatchObject({
+      automationId: rule.id,
+      status: "succeeded",
+    });
   });
 
 
