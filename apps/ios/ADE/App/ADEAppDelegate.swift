@@ -37,6 +37,16 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
+    /// The orientations the app allows right now. `ADEOrientationLock` holds
+    /// the answer. It is `.all` except while a view forces one, and the result
+    /// is still limited by `UISupportedInterfaceOrientations` in `Info.plist`.
+    func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        MainActor.assumeIsolated { ADEOrientationLock.mask }
+    }
+
     /// Register the approval-alert category so approval pushes carry inline
     /// Approve / Deny actions on the lock screen and in Notification Center. The
     /// brain stamps `aps.category = "ADE_APPROVAL"` on those alerts; the action
@@ -290,4 +300,16 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         }
         return nil
     }
+}
+
+// MARK: - Orientation lock
+
+/// An app-wide orientation limit that one view can set for as long as it is on
+/// screen. The macOS desktop viewer sets `.landscape` during Take control and
+/// puts `.all` back when control ends or the viewer closes. A view that sets it
+/// must also call `setNeedsUpdateOfSupportedInterfaceOrientations()` so UIKit
+/// reads the new value.
+@MainActor
+enum ADEOrientationLock {
+    static var mask: UIInterfaceOrientationMask = .all
 }

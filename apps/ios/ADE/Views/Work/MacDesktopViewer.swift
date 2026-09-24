@@ -4,10 +4,14 @@ import UIKit
 /// Full-screen view of the lane's private macOS screen.
 ///
 /// Built like `AppleDeviceViewer` — black stage, Close and Reconnect on top, one
-/// sentence underneath — with one difference: the Mac Desktop takes a finger
+/// sentence underneath — with one difference: the macOS desktop takes a finger
 /// when the host advertises takeover, so the picture here is the same
 /// `MacDesktopControlPicture` the tools sheet uses, Take control and Return
 /// included.
+///
+/// While watching, the picture zooms (pinch, pan, double-tap) and the phone
+/// can turn to landscape, with the device or with Rotate. Take control forces
+/// landscape and holds it; Return puts back the orientation from before.
 ///
 /// It runs its own live subscription under its own id. The tools sheet pauses
 /// its inline picture while this is up, and even if both were live, two ids
@@ -32,6 +36,8 @@ struct MacDesktopViewer: View {
   /// display; only that button does.
   @State private var starting = false
   @State private var startError: String?
+  @State private var orientation = MacDesktopViewerOrientation()
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
 
   init(laneId: String, initialState: WorkToolsMacDesktopState?) {
     self.laneId = laneId
@@ -42,12 +48,16 @@ struct MacDesktopViewer: View {
     ZStack {
       Color.black.ignoresSafeArea()
 
+      // One tree in both orientations. A branch per orientation would rebuild
+      // the picture on rotation and drop the control lease it holds.
       VStack(spacing: 0) {
         controls
         Spacer(minLength: 0)
         stage
         Spacer(minLength: 0)
-        footer
+        if !compactHeight {
+          footer
+        }
       }
     }
     .preferredColorScheme(.dark)
@@ -59,8 +69,15 @@ struct MacDesktopViewer: View {
         await refresh()
       }
     }
-    .onAppear { updateLifecycle() }
-    .onDisappear { stopSession() }
+    .onAppear {
+      orientation.openedIn = MacDesktopViewerRotation.currentOrientation()
+      updateLifecycle()
+    }
+    .onDisappear {
+      stopSession()
+      restoreOrientationOnClose()
+    }
+    .onChange(of: controlling) { _, next in controlOrientationChanged(next) }
     .onChange(of: scenePhase) { _, _ in updateLifecycle() }
     .onChange(of: syncService.connectionState) { _, _ in updateLifecycle() }
     .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
@@ -78,10 +95,28 @@ struct MacDesktopViewer: View {
       if let session {
         MacDesktopViewerReconnectButton(session: session) { reconnect() }
       }
+      if rotates && !controlling {
+        controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
+      }
     }
+    .overlay { title }
     .padding(.horizontal, 18)
-    .padding(.vertical, 12)
+    .padding(.vertical, compactHeight ? 6 : 12)
   }
+
+  private var title: some View {
+    Label("macOS", systemImage: "desktopcomputer")
+      .font(.footnote.weight(.semibold))
+      .foregroundStyle(.white.opacity(0.85))
+      .accessibilityAddTraits(.isHeader)
+  }
+
+  /// Landscape on a phone. The ribbon under the picture goes, so the picture
+  /// keeps the height.
+  private var compactHeight: Bool { verticalSizeClass == .compact }
+
+  /// Only a phone turns. An iPad keeps whatever its window is doing.
+  private var rotates: Bool { UIDevice.current.userInterfaceIdiom == .phone }
 
   private func controlButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
     Button {
@@ -109,6 +144,7 @@ struct MacDesktopViewer: View {
             session: session,
             placeholder: nil,
             showsPictureStatus: false,
+            zoomable: true,
             onControlChange: { controlling = $0 }
           )
           MacDesktopViewerStatusOverlay(
@@ -130,7 +166,7 @@ struct MacDesktopViewer: View {
     }
   }
 
-  /// "Mac Desktop is off." and Start, like the Apple Off card. The poll brings
+  /// "The macOS desktop is off." and Start, like the Apple Off card. The poll brings
   /// the display in once the host has made it.
   private var offCard: some View {
     VStack(spacing: 12) {
@@ -156,7 +192,7 @@ struct MacDesktopViewer: View {
         }
         .buttonStyle(.plain)
         .disabled(syncService.connectionState != .connected)
-        .accessibilityHint("Starts this lane's Mac Desktop on your Mac")
+        .accessibilityHint("Starts this lane's macOS desktop on your Mac")
       }
     }
   }
@@ -223,6 +259,31 @@ struct MacDesktopViewer: View {
       }
       starting = false
     }
+  }
+
+  // MARK: - Orientation
+
+  /// Take control turns the phone to landscape and holds it there. Return
+  /// turns it back to the orientation from before Take control.
+  private func controlOrientationChanged(_ controlling: Bool) {
+    guard rotates else { return }
+    let request = controlling
+      ? orientation.beginControl(current: MacDesktopViewerRotation.currentOrientation())
+      : orientation.endControl()
+    MacDesktopViewerRotation.apply(lockLandscape: orientation.locksLandscape, request: request)
+  }
+
+  private func rotate() {
+    let request = orientation.toggleRotation(current: MacDesktopViewerRotation.currentOrientation())
+    MacDesktopViewerRotation.apply(lockLandscape: orientation.locksLandscape, request: request)
+  }
+
+  /// The lock always goes. A turn this viewer made is undone; a turn the
+  /// person made with the device stays.
+  private func restoreOrientationOnClose() {
+    guard rotates else { return }
+    let request = orientation.close()
+    MacDesktopViewerRotation.apply(lockLandscape: false, request: request)
   }
 
   // MARK: - Live stream lifecycle
@@ -362,11 +423,13 @@ private struct MacDesktopViewerStatusOverlay: View {
 /// The Off card's one line: the start in flight, why the last one failed, or
 /// that the display is off.
 func macDesktopOffCardMessage(starting: Bool, error: String?, canStart: Bool) -> String {
-  if starting { return "Starting Mac Desktop…" }
+  if starting { return "Starting the macOS desktop…" }
   if let error = error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
     return error
   }
-  return canStart ? "Mac Desktop is off." : "Mac Desktop is off. Start it in ADE on your Mac."
+  return canStart
+    ? "The macOS desktop is off."
+    : "The macOS desktop is off. Start it in ADE on your Mac."
 }
 
 /// What the viewer's status card says, or nil while the picture is live.
@@ -433,4 +496,102 @@ func macDesktopViewerRibbon(
     parts.append(name)
   }
   return parts.joined(separator: " · ")
+}
+
+// MARK: - Orientation
+
+/// What the viewer asks of the phone's orientation, and what it gives back.
+///
+/// Pure, so the rules are testable without a window scene. Each call returns
+/// the orientations to request, or nil when nothing has to turn.
+struct MacDesktopViewerOrientation: Equatable {
+  /// The orientation when the viewer opened. A turn the viewer made itself
+  /// goes back to this on close.
+  var openedIn: UIInterfaceOrientation = .portrait
+  /// Where the phone was when Take control forced landscape. Nil while not
+  /// in control.
+  private(set) var restoreAfterControl: UIInterfaceOrientation?
+  /// True after Rotate or Take control turned the phone.
+  private(set) var turnedByViewer = false
+
+  /// Take control holds landscape until Return.
+  var locksLandscape: Bool { restoreAfterControl != nil }
+
+  /// Take control: remember the orientation, then ask for landscape. A phone
+  /// that is already in landscape stays on the side it is on.
+  mutating func beginControl(current: UIInterfaceOrientation) -> UIInterfaceOrientationMask? {
+    guard restoreAfterControl == nil else { return nil }
+    restoreAfterControl = current
+    guard !current.isLandscape else { return nil }
+    turnedByViewer = true
+    return .landscape
+  }
+
+  /// Return: the orientation from before Take control.
+  mutating func endControl() -> UIInterfaceOrientationMask? {
+    guard let previous = restoreAfterControl else { return nil }
+    restoreAfterControl = nil
+    return previous.isLandscape ? nil : macDesktopOrientationMask(previous)
+  }
+
+  /// Rotate: landscape from portrait, portrait from landscape. Nothing while
+  /// Take control holds landscape.
+  mutating func toggleRotation(current: UIInterfaceOrientation) -> UIInterfaceOrientationMask? {
+    guard restoreAfterControl == nil else { return nil }
+    turnedByViewer = true
+    return current.isLandscape ? .portrait : .landscape
+  }
+
+  /// Close: the lock goes, and a turn the viewer made goes back to the
+  /// orientation the viewer opened in.
+  mutating func close() -> UIInterfaceOrientationMask? {
+    let turned = turnedByViewer
+    restoreAfterControl = nil
+    turnedByViewer = false
+    return turned ? macDesktopOrientationMask(openedIn) : nil
+  }
+}
+
+/// The one-orientation mask for an interface orientation. An unknown
+/// orientation reads as portrait, which is how the app opens on a phone.
+func macDesktopOrientationMask(_ orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
+  switch orientation {
+  case .landscapeLeft: return .landscapeLeft
+  case .landscapeRight: return .landscapeRight
+  case .portraitUpsideDown: return .portraitUpsideDown
+  default: return .portrait
+  }
+}
+
+/// Applies `MacDesktopViewerOrientation` to the app's window scene.
+@MainActor
+enum MacDesktopViewerRotation {
+  static func currentOrientation() -> UIInterfaceOrientation {
+    activeScene()?.effectiveGeometry.interfaceOrientation ?? .portrait
+  }
+
+  /// Sets the app-wide lock first, tells every controller on screen to read
+  /// it again, then asks the scene to turn. The order matters: a scene refuses
+  /// a turn to an orientation that its controllers do not allow.
+  static func apply(lockLandscape: Bool, request mask: UIInterfaceOrientationMask?) {
+    ADEOrientationLock.mask = lockLandscape ? .landscape : .all
+    guard let scene = activeScene() else { return }
+    for window in scene.windows {
+      var controller = window.rootViewController
+      while let current = controller {
+        current.setNeedsUpdateOfSupportedInterfaceOrientations()
+        controller = current.presentedViewController
+      }
+    }
+    guard let mask else { return }
+    let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
+    scene.requestGeometryUpdate(preferences, errorHandler: { _ in
+      // A refused turn leaves the phone where it is. There is nothing to show.
+    })
+  }
+
+  private static func activeScene() -> UIWindowScene? {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+  }
 }

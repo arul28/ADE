@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import ADE
 
@@ -484,12 +485,27 @@ final class WorkToolsContractTests: XCTestCase {
       workToolChips(state: WorkToolsLaneState(laneId: "lane-1", macDesktop: Self.macDesktop()), appleDevice: nil),
       [chip])
     XCTAssertEqual(chip.id, "mac-desktop")
-    XCTAssertEqual(chip.displayLabel, "Mac Desktop")
+    XCTAssertEqual(chip.label, "macOS")
+    XCTAssertEqual(chip.displayLabel, "macOS")
     XCTAssertEqual(chip.kind.symbolName, "desktopcomputer")
     // No display yet, a host that cannot hold one, or no service at all.
     XCTAssertNil(macDesktopToolChip(Self.macDesktop(display: false)))
     XCTAssertNil(macDesktopToolChip(Self.macDesktop(supported: false)))
     XCTAssertNil(macDesktopToolChip(nil))
+  }
+
+  func testAFailedPollKeepsTheLastLaneStateSoTheChipsStay() {
+    let last = WorkToolsLaneState(laneId: "lane-1", macDesktop: Self.macDesktop())
+    let fresh = WorkToolsLaneState(laneId: "lane-1", macDesktop: Self.macDesktop(display: false))
+    // A read that timed out while the Mac was busy keeps the macOS chip.
+    let kept = workToolsStateAfterRead(fetched: nil, previous: last, supported: true)
+    XCTAssertEqual(kept, last)
+    XCTAssertEqual(workToolChips(state: kept, appleDevice: nil).map(\.id), ["mac-desktop"])
+    // A real answer always wins, including one that says the display is gone.
+    XCTAssertEqual(workToolsStateAfterRead(fetched: fresh, previous: last, supported: true), fresh)
+    // A host that does not advertise the read has no state to keep.
+    XCTAssertNil(workToolsStateAfterRead(fetched: nil, previous: last, supported: false))
+    XCTAssertNil(workToolsStateAfterRead(fetched: nil, previous: nil, supported: true))
   }
 
   func testMacDesktopChipIsLiveOnlyAtFullRateAndMarksAnAgentDriving() {
@@ -507,7 +523,7 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(kind(Self.macDesktop(leaseHolder: "user")), .macDesktop(streamLive: false, agentDriving: false))
     XCTAssertEqual(
       workToolChipAccessibilityText(WorkToolChip(kind: .macDesktop(streamLive: true, agentDriving: true))),
-      "This lane's Mac Desktop, live. An agent is driving it. Tap to watch.")
+      "This lane's macOS desktop, live. An agent is driving it. Tap to watch.")
   }
 
   func testChipsAreOrderedWithTheTwoWatchableScreensFirst() {
@@ -567,15 +583,128 @@ final class WorkToolsContractTests: XCTestCase {
   }
 
   func testOffCardSaysOffAndOnlyPointsAtTheMacWhenThePhoneCannotStart() {
-    XCTAssertEqual(macDesktopOffCardMessage(starting: false, error: nil, canStart: true), "Mac Desktop is off.")
+    XCTAssertEqual(
+      macDesktopOffCardMessage(starting: false, error: nil, canStart: true),
+      "The macOS desktop is off.")
     XCTAssertEqual(
       macDesktopOffCardMessage(starting: false, error: nil, canStart: false),
-      "Mac Desktop is off. Start it in ADE on your Mac.")
-    XCTAssertEqual(macDesktopOffCardMessage(starting: true, error: "Old", canStart: true), "Starting Mac Desktop…")
+      "The macOS desktop is off. Start it in ADE on your Mac.")
     XCTAssertEqual(
-      macDesktopOffCardMessage(starting: false, error: "Mac Desktop is taking too long to start.", canStart: true),
-      "Mac Desktop is taking too long to start.")
-    XCTAssertEqual(macDesktopOffCardMessage(starting: false, error: "  ", canStart: true), "Mac Desktop is off.")
+      macDesktopOffCardMessage(starting: true, error: "Old", canStart: true),
+      "Starting the macOS desktop…")
+    XCTAssertEqual(
+      macDesktopOffCardMessage(starting: false, error: "The macOS desktop is taking too long to start.", canStart: true),
+      "The macOS desktop is taking too long to start.")
+    XCTAssertEqual(
+      macDesktopOffCardMessage(starting: false, error: "  ", canStart: true),
+      "The macOS desktop is off.")
+  }
+
+  // MARK: - Viewer zoom
+
+  private static let zoomFrame = CGSize(width: 400, height: 250)
+
+  func testZoomScaleStaysBetweenOneAndFour() {
+    XCTAssertEqual(MacDesktopZoom.clampScale(0.5), 1)
+    XCTAssertEqual(MacDesktopZoom.clampScale(2), 2)
+    XCTAssertEqual(MacDesktopZoom.clampScale(10), 4)
+    XCTAssertEqual(MacDesktopZoom.clampScale(.infinity), 1)
+    let center = CGPoint(x: 200, y: 125)
+    let big = MacDesktopZoom.identity.magnified(by: 9, around: center, in: Self.zoomFrame)
+    XCTAssertEqual(big.scale, 4)
+    let small = big.magnified(by: 0.01, around: center, in: Self.zoomFrame)
+    XCTAssertEqual(small, .identity)
+  }
+
+  func testPinchKeepsThePointUnderTheFingers() {
+    let finger = CGPoint(x: 300, y: 100)
+    let zoom = MacDesktopZoom.identity.magnified(by: 2, around: finger, in: Self.zoomFrame)
+    // The content point under the finger maps back to the same screen point.
+    let contentX = 200 + (finger.x - 200)
+    let contentY = 125 + (finger.y - 125)
+    XCTAssertEqual(200 + (contentX - 200) * zoom.scale + zoom.offset.width, finger.x, accuracy: 0.001)
+    XCTAssertEqual(125 + (contentY - 125) * zoom.scale + zoom.offset.height, finger.y, accuracy: 0.001)
+  }
+
+  func testPanMovesOnlyAZoomedPictureAndStopsAtTheEdge() {
+    XCTAssertEqual(
+      MacDesktopZoom.identity.panned(by: CGSize(width: 50, height: 50), in: Self.zoomFrame),
+      .identity)
+    let zoomed = MacDesktopZoom(scale: 2, offset: .zero)
+    let moved = zoomed.panned(by: CGSize(width: 30, height: -20), in: Self.zoomFrame)
+    XCTAssertEqual(moved.offset, CGSize(width: 30, height: -20))
+    // At 2x the picture can move half a frame each way and no more.
+    let far = zoomed.panned(by: CGSize(width: 5_000, height: -5_000), in: Self.zoomFrame)
+    XCTAssertEqual(far.offset, CGSize(width: 200, height: -125))
+  }
+
+  func testDoubleTapTogglesBetweenOneAndTwoAndAHalfAtTheTap() {
+    let tap = CGPoint(x: 250, y: 125)
+    let zoomed = MacDesktopZoom.identity.toggled(at: tap, in: Self.zoomFrame)
+    XCTAssertEqual(zoomed.scale, 2.5)
+    XCTAssertEqual(zoomed.offset.width, -75, accuracy: 0.001)
+    XCTAssertEqual(zoomed.offset.height, 0, accuracy: 0.001)
+    XCTAssertEqual(zoomed.toggled(at: tap, in: Self.zoomFrame), .identity)
+    // A tap in a corner zooms toward it, as far as the edge allows.
+    let corner = MacDesktopZoom.identity.toggled(at: .zero, in: Self.zoomFrame)
+    XCTAssertEqual(corner.offset, CGSize(width: 300, height: 187.5))
+    // A frame that has not been measured yet does not zoom.
+    XCTAssertEqual(MacDesktopZoom.identity.toggled(at: tap, in: .zero), .identity)
+  }
+
+  // MARK: - Viewer orientation
+
+  func testTakeControlForcesLandscapeAndReturnRestoresPortrait() {
+    var orientation = MacDesktopViewerOrientation()
+    orientation.openedIn = .portrait
+    XCTAssertEqual(orientation.beginControl(current: .portrait), .landscape)
+    XCTAssertTrue(orientation.locksLandscape)
+    // A second begin (a re-render) asks for nothing new.
+    XCTAssertNil(orientation.beginControl(current: .landscapeRight))
+    // Rotate is off while control holds landscape.
+    XCTAssertNil(orientation.toggleRotation(current: .landscapeRight))
+    XCTAssertEqual(orientation.endControl(), .portrait)
+    XCTAssertFalse(orientation.locksLandscape)
+    XCTAssertNil(orientation.endControl())
+  }
+
+  func testTakeControlFromLandscapeStaysOnThatSide() {
+    var orientation = MacDesktopViewerOrientation()
+    XCTAssertNil(orientation.beginControl(current: .landscapeLeft))
+    XCTAssertTrue(orientation.locksLandscape)
+    XCTAssertNil(orientation.endControl())
+    XCTAssertFalse(orientation.locksLandscape)
+    // Nothing was turned by the viewer, so closing leaves the phone alone.
+    XCTAssertNil(orientation.close())
+  }
+
+  func testRotateTogglesAndCloseUndoesOnlyTheViewersOwnTurn() {
+    var untouched = MacDesktopViewerOrientation()
+    XCTAssertNil(untouched.close())
+
+    var orientation = MacDesktopViewerOrientation()
+    orientation.openedIn = .portrait
+    XCTAssertEqual(orientation.toggleRotation(current: .portrait), .landscape)
+    XCTAssertEqual(orientation.toggleRotation(current: .landscapeRight), .portrait)
+    XCTAssertEqual(orientation.toggleRotation(current: .portrait), .landscape)
+    XCTAssertEqual(orientation.close(), .portrait)
+    XCTAssertNil(orientation.close())
+  }
+
+  func testClosingDuringControlDropsTheLockAndTurnsBack() {
+    var orientation = MacDesktopViewerOrientation()
+    orientation.openedIn = .portrait
+    XCTAssertEqual(orientation.beginControl(current: .portrait), .landscape)
+    XCTAssertEqual(orientation.close(), .portrait)
+    XCTAssertFalse(orientation.locksLandscape)
+  }
+
+  func testOrientationMaskNamesOneOrientation() {
+    XCTAssertEqual(macDesktopOrientationMask(.portrait), .portrait)
+    XCTAssertEqual(macDesktopOrientationMask(.landscapeLeft), .landscapeLeft)
+    XCTAssertEqual(macDesktopOrientationMask(.landscapeRight), .landscapeRight)
+    XCTAssertEqual(macDesktopOrientationMask(.portraitUpsideDown), .portraitUpsideDown)
+    XCTAssertEqual(macDesktopOrientationMask(.unknown), .portrait)
   }
 
   // MARK: - Handshake gating
@@ -778,7 +907,7 @@ final class WorkToolsContractTests: XCTestCase {
       macDesktop.lastObservation?.screenshotPath,
       "/p/.ade/cache/mac-desktop-observations/lane-1/obs-1.png")
     XCTAssertEqual(macDesktopLeaseLine(macDesktop.lease), "Agent driving · Fix the header")
-    XCTAssertEqual(workToolsDisplayName("mac-desktop"), "Mac Desktop")
+    XCTAssertEqual(workToolsDisplayName("mac-desktop"), "macOS")
   }
 
   func testLaneStateWithoutMacDesktopHidesTheToolRatherThanFailingToDecode() throws {

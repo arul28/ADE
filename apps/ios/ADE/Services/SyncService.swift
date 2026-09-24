@@ -15239,7 +15239,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Start Mac Desktop in ADE on your Mac. This machine version can't start it from here.",
+          NSLocalizedDescriptionKey: "Start the macOS desktop in ADE on your Mac. This machine version can't start it from here.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -15249,7 +15249,7 @@ final class SyncService: ObservableObject {
       action: "macDesktop.start",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
-      timeoutMessage: "Mac Desktop is taking too long to start.",
+      timeoutMessage: "The macOS desktop is taking too long to start.",
       timeoutNanoseconds: Self.macDesktopStartTimeoutNanoseconds,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
@@ -15338,7 +15338,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Live Mac Desktop video is not available on this machine version.",
+          NSLocalizedDescriptionKey: "Live macOS desktop video is not available on this machine version.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -15429,7 +15429,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Controlling this Mac Desktop is not available on this machine version.",
+          NSLocalizedDescriptionKey: "Controlling this macOS desktop is not available on this machine version.",
           "ADEErrorCode": "unsupported_action",
         ]
       )

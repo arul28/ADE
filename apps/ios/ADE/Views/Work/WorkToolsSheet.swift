@@ -304,7 +304,7 @@ struct WorkToolsSheet: View {
   @ViewBuilder
   private var macDesktopCard: some View {
     if let macDesktop = state?.macDesktop, macDesktop.supported {
-      ADEGlassSection(title: "Mac Desktop", subtitle: macDesktopSubtitle(macDesktop)) {
+      ADEGlassSection(title: "macOS", subtitle: macDesktopSubtitle(macDesktop)) {
         if let display = macDesktop.display {
           VStack(alignment: .leading, spacing: 10) {
             macDesktopChips(macDesktop, display: display)
@@ -358,7 +358,7 @@ struct WorkToolsSheet: View {
     }
   }
 
-  /// "Mac Desktop is off." and Start, like the Apple Off card. The poll brings
+  /// "The macOS desktop is off." and Start, like the Apple Off card. The poll brings
   /// the display in once the host has made it.
   private var macDesktopOffRow: some View {
     let canStart = syncService.supportsMacDesktopStart
@@ -385,7 +385,7 @@ struct WorkToolsSheet: View {
         }
         .buttonStyle(.plain)
         .disabled(syncService.connectionState != .connected)
-        .accessibilityHint("Starts this lane's Mac Desktop on your Mac")
+        .accessibilityHint("Starts this lane's macOS desktop on your Mac")
       }
     }
   }
@@ -528,7 +528,7 @@ struct WorkToolsSheet: View {
     }
     .buttonStyle(.plain)
     .disabled(!canWatch)
-    .accessibilityLabel("Watch this lane's Mac Desktop")
+    .accessibilityLabel("Watch this lane's macOS desktop")
     .accessibilityHint("Opens the lane's screen full screen")
   }
 

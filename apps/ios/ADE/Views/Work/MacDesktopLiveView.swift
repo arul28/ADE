@@ -258,7 +258,7 @@ final class MacDesktopLiveSession: ObservableObject {
         return
       }
       guard let display = status.display else {
-        phase = .failed("Mac Desktop is off.")
+        phase = .failed("The macOS desktop is off.")
         return
       }
       pictureWidth = display.width
@@ -553,7 +553,7 @@ struct MacDesktopLivePicture: View {
     )
     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("This lane's Mac Desktop")
+    .accessibilityLabel("This lane's macOS desktop")
   }
 
   @ViewBuilder
@@ -622,6 +622,68 @@ enum MacDesktopGeometry {
     let y = localY - (view.height - drawnHeight) / 2
     guard x >= 0, y >= 0, x <= drawnWidth, y <= drawnHeight else { return nil }
     return MacDesktopPoint(x: display.originX + x / scale, y: display.originY + y / scale)
+  }
+}
+
+/// Watch-mode zoom on the full-screen picture.
+///
+/// The picture scales about its center, then moves by `offset`. Both are in
+/// the picture's own unscaled points, which is also the space the gestures
+/// report in. The zoomed picture always covers its frame, so a pan stops at
+/// an edge instead of showing black.
+struct MacDesktopZoom: Equatable {
+  static let minScale: CGFloat = 1
+  static let maxScale: CGFloat = 4
+  static let doubleTapScale: CGFloat = 2.5
+  static let identity = MacDesktopZoom(scale: 1, offset: .zero)
+
+  var scale: CGFloat
+  var offset: CGSize
+
+  var isZoomed: Bool { scale > Self.minScale + 0.001 }
+
+  static func clampScale(_ scale: CGFloat) -> CGFloat {
+    guard scale.isFinite else { return minScale }
+    return min(max(scale, minScale), maxScale)
+  }
+
+  /// The largest move that keeps each edge of the zoomed picture on or past
+  /// the edge of its frame.
+  static func clampOffset(_ offset: CGSize, scale: CGFloat, in size: CGSize) -> CGSize {
+    let limitX = max(0, (scale - 1) * size.width / 2)
+    let limitY = max(0, (scale - 1) * size.height / 2)
+    return CGSize(
+      width: min(max(offset.width, -limitX), limitX),
+      height: min(max(offset.height, -limitY), limitY)
+    )
+  }
+
+  /// Scales by `factor` and keeps the content under `point` where it is,
+  /// as far as the clamps allow.
+  func magnified(by factor: CGFloat, around point: CGPoint, in size: CGSize) -> MacDesktopZoom {
+    guard factor.isFinite, factor > 0, size.width > 0, size.height > 0 else { return self }
+    let next = Self.clampScale(scale * factor)
+    let ratio = next / scale
+    let dx = point.x - size.width / 2
+    let dy = point.y - size.height / 2
+    let moved = CGSize(
+      width: dx - (dx - offset.width) * ratio,
+      height: dy - (dy - offset.height) * ratio
+    )
+    return MacDesktopZoom(scale: next, offset: Self.clampOffset(moved, scale: next, in: size))
+  }
+
+  /// Moves a zoomed picture. An unzoomed picture does not move.
+  func panned(by delta: CGSize, in size: CGSize) -> MacDesktopZoom {
+    guard isZoomed else { return self }
+    let moved = CGSize(width: offset.width + delta.width, height: offset.height + delta.height)
+    return MacDesktopZoom(scale: scale, offset: Self.clampOffset(moved, scale: scale, in: size))
+  }
+
+  /// Double tap: 2.5x at the tapped point from 1x, and back to 1x from any zoom.
+  func toggled(at point: CGPoint, in size: CGSize) -> MacDesktopZoom {
+    if isZoomed { return .identity }
+    return Self.identity.magnified(by: Self.doubleTapScale, around: point, in: size)
   }
 }
 
@@ -716,6 +778,10 @@ struct MacDesktopControlPicture: View {
   var placeholder: UIImage?
   /// Passed to `MacDesktopLivePicture.showsWaitingStatus`.
   var showsPictureStatus: Bool = true
+  /// Pinch, pan and double-tap zoom while watching. The full-screen viewer
+  /// turns it on. It is off while this picture holds control, because a finger
+  /// then belongs to the Mac and the input mapping assumes an unzoomed picture.
+  var zoomable: Bool = false
   /// Told whenever this picture takes or gives back control, so a host view
   /// can say "you have control" without owning the lease itself.
   var onControlChange: ((Bool) -> Void)?
@@ -733,8 +799,15 @@ struct MacDesktopControlPicture: View {
   @State private var pressOutstanding = false
   @State private var pictureSize: CGSize = .zero
   @State private var pump = MacDesktopPointerPump()
+  @State private var zoom = MacDesktopZoom.identity
+  /// The last magnification and pan translation seen, so each gesture update
+  /// applies only its change. Pinch and pan can then run at the same time.
+  @State private var lastMagnification: CGFloat = 1
+  @State private var lastPanTranslation: CGSize = .zero
 
   private var controlling: Bool { holderId != nil }
+
+  private var zoomActive: Bool { zoomable && !controlling }
 
   private var geometry: MacDesktopDisplayGeometry? {
     guard let origin = display.origin, display.width > 0, display.height > 0 else { return nil }
@@ -758,8 +831,10 @@ struct MacDesktopControlPicture: View {
         }
         .onChange(of: controlling) { _, next in
           focused = next
+          if next { resetZoom() }
           onControlChange?(next)
         }
+        .onChange(of: pictureSize) { _, _ in resetZoom() }
       controls
     }
     .task(id: holderId) { await heartbeat() }
@@ -772,13 +847,64 @@ struct MacDesktopControlPicture: View {
     }
   }
 
-  @ViewBuilder
+  /// One view tree in every mode. The gesture masks switch the input on and
+  /// off, so taking control does not rebuild the display layer.
   private var gesturedPicture: some View {
-    if controlling {
-      measuredPicture.highPriorityGesture(drag)
-    } else {
-      measuredPicture
-    }
+    measuredPicture
+      .highPriorityGesture(drag, including: controlling ? .all : .subviews)
+      .scaleEffect(zoom.scale)
+      .offset(zoom.offset)
+      .clipped()
+      .contentShape(Rectangle())
+      .gesture(zoomGesture, including: zoomActive ? .all : .subviews)
+  }
+
+  private var zoomGesture: some Gesture {
+    magnifyGesture
+      .simultaneously(with: panGesture)
+      .simultaneously(with: doubleTapGesture)
+  }
+
+  private var magnifyGesture: some Gesture {
+    MagnifyGesture()
+      .onChanged { value in
+        guard zoomActive, lastMagnification > 0 else { return }
+        let factor = value.magnification / lastMagnification
+        lastMagnification = value.magnification
+        zoom = zoom.magnified(by: factor, around: value.startLocation, in: pictureSize)
+      }
+      .onEnded { _ in lastMagnification = 1 }
+  }
+
+  /// One finger, or the fingers of a pinch, move a zoomed picture.
+  private var panGesture: some Gesture {
+    DragGesture(minimumDistance: 8, coordinateSpace: .local)
+      .onChanged { value in
+        guard zoomActive else { return }
+        let delta = CGSize(
+          width: value.translation.width - lastPanTranslation.width,
+          height: value.translation.height - lastPanTranslation.height
+        )
+        lastPanTranslation = value.translation
+        zoom = zoom.panned(by: delta, in: pictureSize)
+      }
+      .onEnded { _ in lastPanTranslation = .zero }
+  }
+
+  private var doubleTapGesture: some Gesture {
+    SpatialTapGesture(count: 2, coordinateSpace: .local)
+      .onEnded { value in
+        guard zoomActive else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+          zoom = zoom.toggled(at: value.location, in: pictureSize)
+        }
+      }
+  }
+
+  private func resetZoom() {
+    zoom = .identity
+    lastMagnification = 1
+    lastPanTranslation = .zero
   }
 
   private var measuredPicture: some View {
@@ -805,7 +931,7 @@ struct MacDesktopControlPicture: View {
           in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityLabel("The last captured frame of this lane's Mac Desktop")
+        .accessibilityLabel("The last captured frame of this lane's macOS desktop")
     }
   }
 

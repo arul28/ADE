@@ -40,7 +40,7 @@ struct WorkToolChip: Equatable, Identifiable {
     case .simulator(let name, _): return name
     case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
     case .appControl(let appName): return appName
-    case .macDesktop: return "Mac Desktop"
+    case .macDesktop: return "macOS"
     }
   }
 
@@ -63,7 +63,7 @@ struct WorkToolChip: Equatable, Identifiable {
 }
 
 /// The lane's tool chips for the chat's floating badge row, in order:
-/// simulator, Mac Desktop, browser, App Control. The two screens the phone can
+/// simulator, macOS (the lane's Mac Desktop), browser, App Control. The two screens the phone can
 /// watch lead.
 ///
 /// - Simulator: only while the lane's own device is up (`appleDeviceRunningName`).
@@ -105,6 +105,22 @@ func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip
     streamLive: stream?.running == true && stream?.idle != true,
     agentDriving: macDesktop.lease?.holder == "agent"
   ))
+}
+
+/// The lane state the chips show after one poll.
+///
+/// A failed read (nil from a host that advertises the read) keeps the last
+/// answer. The Mac can take longer than the phone waits while an agent drives
+/// its screen, and dropping the state then hid the macOS chip for a display
+/// that was up the whole time. A host that does not advertise the read has no
+/// state at all.
+func workToolsStateAfterRead(
+  fetched: WorkToolsLaneState?,
+  previous: WorkToolsLaneState?,
+  supported: Bool
+) -> WorkToolsLaneState? {
+  guard supported else { return nil }
+  return fetched ?? previous
 }
 
 /// "Browser" with no tabs, "1 tab", "N tabs".
@@ -192,6 +208,9 @@ final class WorkLaneToolsModel: ObservableObject {
   private(set) var appleStatus: AppleDeviceStatus?
   /// Handed to `MacDesktopViewer` the same way. Not published.
   private(set) var macDesktopState: WorkToolsMacDesktopState?
+  /// The last lane state the Mac answered with. A read that fails or times
+  /// out keeps it, so one slow reply does not blank every chip.
+  private var lastTools: WorkToolsLaneState?
 
   /// True while the tools sheet or the device viewer is up. Both poll the same
   /// reads faster and are the authoritative view, so a tick here would be a
@@ -221,6 +240,7 @@ final class WorkLaneToolsModel: ObservableObject {
     chips = []
     appleStatus = nil
     macDesktopState = nil
+    lastTools = nil
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     await refresh(laneId: trimmed, syncService: syncService)
@@ -244,8 +264,10 @@ final class WorkLaneToolsModel: ObservableObject {
     async let nextApple: AppleDeviceStatus? = readApple
       ? (try? await syncService.fetchAppleDeviceStatus(laneId: laneId))
       : nil
-    let (tools, apple) = await (nextState, nextApple)
+    let (fetched, apple) = await (nextState, nextApple)
     guard !Task.isCancelled else { return }
+    let tools = workToolsStateAfterRead(fetched: fetched, previous: lastTools, supported: readTools)
+    lastTools = tools
     appleStatus = apple
     macDesktopState = tools?.macDesktop
     let next = workToolChips(state: tools, appleDevice: apple)
@@ -375,7 +397,7 @@ func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
   case .appControl:
     return "App Control on your Mac, \(chip.label). Tap for details."
   case .macDesktop(let streamLive, let agentDriving):
-    var text = "This lane's Mac Desktop"
+    var text = "This lane's macOS desktop"
     if streamLive { text += ", live" }
     if agentDriving { text += ". An agent is driving it" }
     return text + ". Tap to watch."
@@ -396,7 +418,7 @@ func workToolsDisplayName(_ toolId: String?) -> String? {
   case "ios": return "Apple"
   case "app-control": return "App Control"
   case "browser": return "Browser"
-  case "mac-desktop": return "Mac Desktop"
+  case "mac-desktop": return "macOS"
   case "pr": return "PR"
   default: return toolId
   }

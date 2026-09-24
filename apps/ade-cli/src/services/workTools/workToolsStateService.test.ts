@@ -14,6 +14,7 @@ import type {
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import {
   createWorkToolsStateService,
+  WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS,
   WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS,
 } from "./workToolsStateService";
 
@@ -866,6 +867,111 @@ describe("workToolsStateService", () => {
       const state = await service.getLaneState({ laneId: "lane-1" });
       expect(state.macDesktop).toBeNull();
       expect(warn).toHaveBeenCalledWith("work_tools.mac_desktop_status_failed", expect.anything());
+      service.dispose();
+    });
+
+    /**
+     * A reader whose `getStatus` answers at once for the first `fastReads`
+     * calls and after `slowMs` of (fake) time from then on, like a driver whose
+     * one thread is busy with an agent's observe pass or a stream start.
+     */
+    function slowMacService(args: { fastReads: number; slowMs: number; status: () => MacDesktopStatus }) {
+      const listeners = new Set<(event: MacDesktopEventPayload) => void>();
+      let reads = 0;
+      return {
+        reader: {
+          getStatus: () => {
+            reads += 1;
+            if (reads <= args.fastReads) return Promise.resolve(args.status());
+            const answer = args.status();
+            return new Promise<MacDesktopStatus>((resolve) => setTimeout(() => resolve(answer), args.slowMs));
+          },
+          subscribe(listener: (event: MacDesktopEventPayload) => void) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+        },
+        emit(event: MacDesktopEventPayload) {
+          for (const listener of [...listeners]) listener(event);
+        },
+      };
+    }
+
+    /** The phone's own wait for `workTools.getLaneState` (SyncService.swift). */
+    const PHONE_TIMEOUT_MS = 8_000;
+
+    it("answers a slow host with the lane's last status before the phone gives up", async () => {
+      // The owner's report: the lane's display was up, but the phone showed no
+      // chip for it. `getStatus` waits on the driver's health and window list,
+      // which can take longer than the phone waits for the whole state. The
+      // phone then dropped every chip.
+      vi.useFakeTimers();
+      const mac = slowMacService({ fastReads: 1, slowMs: 9_000, status: () => macStatus() });
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      expect((await service.getLaneState({ laneId: "lane-1" })).macDesktop?.display?.laneId).toBe("lane-1");
+
+      let answered: Awaited<ReturnType<typeof service.getLaneState>> | null = null;
+      void service.getLaneState({ laneId: "lane-1" }).then((state) => {
+        answered = state;
+      });
+      await vi.advanceTimersByTimeAsync(PHONE_TIMEOUT_MS - 1);
+      expect(answered).not.toBeNull();
+      expect(answered!.macDesktop?.supported).toBe(true);
+      expect(answered!.macDesktop?.display?.laneId).toBe("lane-1");
+      expect(WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS).toBeLessThan(PHONE_TIMEOUT_MS / 2);
+      service.dispose();
+    });
+
+    it("does not bring back a display that closed while the host was slow", async () => {
+      vi.useFakeTimers();
+      let display: MacDesktopStatus["display"] = macStatus().display;
+      const mac = slowMacService({ fastReads: 1, slowMs: 9_000, status: () => macStatus({ display }) });
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      await service.getLaneState({ laneId: "lane-1" });
+
+      // A read starts while the display is still up, and returns it late.
+      const stale = service.getLaneState({ laneId: "lane-1" });
+      display = null;
+      mac.emit({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
+      await vi.advanceTimersByTimeAsync(WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+      expect((await stale).macDesktop?.display).toBeNull();
+      // The late answer from before the close does not become the last status.
+      await vi.advanceTimersByTimeAsync(9_000);
+      const next = service.getLaneState({ laneId: "lane-1" });
+      await vi.advanceTimersByTimeAsync(WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+      expect((await next).macDesktop?.display).toBeNull();
+      service.dispose();
+    });
+
+    it("shows a display created while the host was slow", async () => {
+      vi.useFakeTimers();
+      const created = macStatus().display!;
+      let display: MacDesktopStatus["display"] = null;
+      const mac = slowMacService({ fastReads: 1, slowMs: 9_000, status: () => macStatus({ display }) });
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      expect((await service.getLaneState({ laneId: "lane-1" })).macDesktop?.display).toBeNull();
+
+      display = created;
+      mac.emit({ type: "display-created", display: created });
+      const next = service.getLaneState({ laneId: "lane-1" });
+      await vi.advanceTimersByTimeAsync(WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+      expect((await next).macDesktop?.display?.laneId).toBe("lane-1");
+      service.dispose();
+    });
+
+    it("waits for the host on the first read, when there is nothing to answer with", async () => {
+      vi.useFakeTimers();
+      const mac = slowMacService({ fastReads: 0, slowMs: 3_000, status: () => macStatus() });
+      const service = createWorkToolsStateService({ projectRoot, macDesktopService: mac.reader });
+      let answered = false;
+      const first = service.getLaneState({ laneId: "lane-1" }).then((state) => {
+        answered = true;
+        return state;
+      });
+      await vi.advanceTimersByTimeAsync(WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+      expect(answered).toBe(false);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect((await first).macDesktop?.display?.laneId).toBe("lane-1");
       service.dispose();
     });
 
