@@ -590,6 +590,26 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     () => selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
     [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
   );
+  /**
+   * Session ids owned by a live launch on this project — listed or not.
+   *
+   * A launch's synthetic roster row delists the moment its agent starts
+   * (`shouldListChatLaunchRow`), but the host's own row for that chat only lands
+   * on the next roster read. In that gap the open tab's id was not "valid", so
+   * the prune below dropped it and moved the active chat to an unrelated one —
+   * the random jump users saw right after auto-create-lane setup finished.
+   * Keeping these ids valid holds the tab until the host row takes over.
+   */
+  const knownLaunchSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const source of chatLaunchRowSources) {
+      if (source.bindingKey !== activeChatLaunchBindingKey && !crossMachineBindingKeys.has(source.bindingKey)) continue;
+      const { snapshot } = source;
+      if (snapshot.kind !== "chat" || snapshot.phase === "cancelled") continue;
+      ids.add(snapshot.sessionId ?? snapshot.launchId);
+    }
+    return ids;
+  }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
   const sessions = useMemo(() => {
     if (pendingChatLaunches.length === 0) return hostSessions;
     // A launch row yields to the real row wherever it appears — this roster or
@@ -1998,6 +2018,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const sessionId of pendingOptimisticSessionsRef.current.keys()) {
       validIds.add(sessionId);
     }
+    // A live launch's reserved session stays valid through the hand-off to the
+    // host's own row; dropping it here moved the active tab (see above).
+    for (const sessionId of knownLaunchSessionIds) {
+      validIds.add(sessionId);
+    }
 
     setProjectViewState((prev) => {
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
@@ -2030,7 +2055,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [projectStateKey, sessionsById, setProjectViewState]);
+  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;

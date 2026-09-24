@@ -59,6 +59,7 @@ import {
   type TerminalSessionDetail,
   type AgentChatSendArgs,
   type ChatLaunchChatArgs,
+  type ChatLaunchLaneConfig,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
@@ -283,6 +284,10 @@ import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchDriftStrip } from "../lanes/LaneBranchDrift";
+import {
+  CreateLaneDialogHost,
+  type NewLaneDraftConfig,
+} from "../lanes/CreateLaneDialogHost";
 import {
   effectiveNewLaneBaseSource,
   fetchNewLaneBaseBranches,
@@ -909,6 +914,22 @@ function autoLaneGenericSuffix(date = new Date()): string {
 function createDeterministicAutoLaneName(prompt: string, options: { genericSuffix?: string | null } = {}): string {
   return deriveDeterministicLaneTitleFromPrompt(prompt)
     || deriveDeterministicLaneNameFromPrompt(prompt, options);
+}
+
+/**
+ * Translate a composer "configure for chat" recipe into the launch's lane
+ * recipe. A root recipe needs nothing beyond the launch's own `laneName` /
+ * `baseBranch` args, so only child/import/template/color add fields.
+ */
+function chatLaunchLaneConfigFromDraft(config: NewLaneDraftConfig): ChatLaunchLaneConfig {
+  return {
+    mode: config.mode,
+    ...(config.mode === "child" && config.parentLaneId.trim() ? { parentLaneId: config.parentLaneId.trim() } : {}),
+    ...(config.mode === "import" && config.branchRef.trim() ? { branchRef: config.branchRef.trim() } : {}),
+    ...(config.templateId ? { templateId: config.templateId } : {}),
+    ...(config.color ? { color: config.color } : {}),
+    ...(config.linearIssue ? { linearIssue: config.linearIssue } : {}),
+  };
 }
 
 function createTemporaryAutoLaneBranch(): string {
@@ -3721,6 +3742,13 @@ export function AgentChatPane({
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
   const [draftLaunchTargetId, setDraftLaunchTargetId] = useState<string | null>(null);
+  /**
+   * The lane recipe configured from the composer's "+" — held, never created,
+   * until the chat is sent. When set it rides the auto-create target but swaps
+   * the lane name/base/template/child for the user's choices.
+   */
+  const [draftNewLaneConfig, setDraftNewLaneConfig] = useState<NewLaneDraftConfig | null>(null);
+  const [newLaneDialogOpen, setNewLaneDialogOpen] = useState(false);
   const isWorkCliLaunchDraft =
     !lockSessionId
     && !initialSessionId
@@ -9413,6 +9441,8 @@ export function AgentChatPane({
       setAppControlContextItems(saved.appControlContextItems);
       setBuiltInBrowserContextItems(saved.builtInBrowserContextItems);
       setDraftLaunchTargetId(saved.draftLaunchTargetId);
+      // The recipe is not persisted; a restored draft starts as plain auto-create.
+      setDraftNewLaneConfig(null);
       if (!selectedSessionId && saved.modelId) {
         draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
         draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:composer-draft`;
@@ -9441,6 +9471,7 @@ export function AgentChatPane({
     setAppControlContextItems([]);
     setBuiltInBrowserContextItems([]);
     setDraftLaunchTargetId(null);
+    setDraftNewLaneConfig(null);
     setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
   }, [
     applyLaunchConfigToComposer,
@@ -10575,6 +10606,7 @@ export function AgentChatPane({
     mode: DraftLaunchMode,
     snapshot: DraftLaunchSnapshot,
     launchBinding: OpenProjectBinding,
+    configuredLane: NewLaneDraftConfig | null,
     onUnsupported: () => void,
   ): boolean => {
     const prepared = prepareDraftLaunch(snapshot);
@@ -10604,9 +10636,16 @@ export function AgentChatPane({
 
     const launchId = crypto.randomUUID();
     const newLaneId = crypto.randomUUID();
-    const laneName = createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), {
-      genericSuffix: autoLaneGenericSuffix(),
-    });
+    // The configured name wins; otherwise derive one from the prompt.
+    const laneName = configuredLane?.name.trim()
+      || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), {
+        genericSuffix: autoLaneGenericSuffix(),
+      });
+    // root and child both accept a base override (child: branch off the parent
+    // from this ref); an import adopts a branch and ignores it.
+    const baseBranch = configuredLane && configuredLane.mode !== "import"
+      ? configuredLane.baseBranch.trim() || null
+      : null;
     const args = buildNewLaneLaunchArgs({
       kind,
       mode,
@@ -10617,13 +10656,15 @@ export function AgentChatPane({
       provider,
       cliTitle: cli?.title ?? null,
       chat,
+      ...(baseBranch ? { baseBranch } : {}),
+      ...(configuredLane ? { laneConfig: chatLaunchLaneConfigFromDraft(configuredLane) } : {}),
       originClientId: getChatLaunchOriginClientId(),
     });
     // Predict the stages the host will report so the card has its shape from
     // the first frame. Only `fetch` depends on project config; an unread
     // config assumes the default (fetch from the remote).
     const knownConfig = peekProjectConfigCached({ projectRoot, pin: launchBinding });
-    const includeFetch = effectiveNewLaneBaseSource(knownConfig) !== "local";
+    const includeFetch = !baseBranch && !configuredLane && effectiveNewLaneBaseSource(knownConfig) !== "local";
     registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
     insertOptimisticChatLaunch(
       launchBinding,
@@ -10631,6 +10672,7 @@ export function AgentChatPane({
     );
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
+    setDraftNewLaneConfig(null);
     const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
     if (opensNow) {
       stashComposerDockOrigin(launchId, findDraftComposerHandoffElement(shellRef.current), {
@@ -10765,7 +10807,7 @@ export function AgentChatPane({
     if (draftLaunchTargetIsAutoCreate) {
       // Brain-owned: returns synchronously. The short hold on the request key
       // absorbs a double-press that lands before the cleared composer renders.
-      launchDraftIntoNewLane(kind, mode, snapshot, launchBinding, () => {
+      launchDraftIntoNewLane(kind, mode, snapshot, launchBinding, draftNewLaneConfig, () => {
         draftLaunchInFlightKeysRef.current.add(requestKey);
         void runRendererOwnedLaunch();
       });
@@ -10782,6 +10824,7 @@ export function AgentChatPane({
     draftLaunchJobExists,
     draftLaunchJobsScopeKey,
     draftLaunchTargetIsAutoCreate,
+    draftNewLaneConfig,
     isWorkCliLaunchDraft,
     laneId,
     launchDraftIntoNewLane,
@@ -12913,10 +12956,40 @@ export function AgentChatPane({
   // machine-qualified option ids the combined selector needed.
   // Auto-create means the same thing on Cursor Cloud as it does here — ADE makes the lane, the
   // agent works in it — so the lane picker is identical either way. Only the machine differs.
-  const draftShelfLanes = draftLaneSelectorLanes;
+  // A configured recipe rides the auto-create target; relabel that row (and so
+  // the trigger) to the pending lane's name instead of "Auto-create lane", and
+  // mark it "New" so the list says it is not created yet.
+  const draftShelfLanes = useMemo(
+    () => (draftNewLaneConfig
+      ? draftLaneSelectorLanes.map((lane) => (
+        isAutoCreateLaneOptionId(lane.id)
+          ? { ...lane, name: draftNewLaneConfig.name, detail: "New" }
+          : lane
+      ))
+      : draftLaneSelectorLanes),
+    [draftLaneSelectorLanes, draftNewLaneConfig],
+  );
   const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
+
+  /** The composer's "+": configure a lane now, create it when the chat is sent. */
+  const handleConfigureNewLane = useCallback(() => {
+    setNewLaneDialogOpen(true);
+  }, []);
+  const handleNewLaneConfigured = useCallback((config: NewLaneDraftConfig) => {
+    setError(null);
+    setDraftNewLaneConfig(config);
+    // Ride the auto-create target: the lane is not created until send.
+    setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION.id);
+  }, [setError]);
+  const handleShelfLaneChange = useCallback((nextLaneId: string) => {
+    // Picking "Auto-create lane" keeps a configured recipe (it is the same
+    // pending-lane target); picking any real lane drops it — the user chose a
+    // concrete destination instead.
+    if (!isAutoCreateLaneOptionId(nextLaneId)) setDraftNewLaneConfig(null);
+    handleDraftLaneSelectionChange(nextLaneId);
+  }, [handleDraftLaneSelectionChange]);
   const canUseThisComputerForDraft = laneMachineOptions.some(
     (option) => option.id === THIS_MACHINE_ID,
   );
@@ -15366,7 +15439,8 @@ export function AgentChatPane({
                               <LaneCombobox
                                 lanes={draftShelfLanes}
                                 value={draftShelfLaneValue}
-                                onChange={handleDraftLaneSelectionChange}
+                                onChange={handleShelfLaneChange}
+                                onCreateLane={handleConfigureNewLane}
                                 variant="pill"
                                 // Matches the 28px control height the composer
                                 // pills directly above the shelf already use.
@@ -15514,6 +15588,14 @@ export function AgentChatPane({
         sessionId={selectedSessionId}
         onCancel={closeRewindConfirmDialog}
         onConfirm={confirmRewindDialog}
+      />
+      {/* The lane picker's "+": configure a new lane now; it is created when
+          the chat is sent, exactly like "Auto-create lane". */}
+      <CreateLaneDialogHost
+        open={newLaneDialogOpen}
+        onOpenChange={setNewLaneDialogOpen}
+        behavior="configure-for-chat"
+        onConfigured={handleNewLaneConfigured}
       />
       <ChatHandoffDialogs
         localOpen={localHandoffOpen}

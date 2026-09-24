@@ -11,6 +11,7 @@ import type {
   ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
   ChatLaunchIdArgs,
+  ChatLaunchLaneConfig,
   ChatLaunchPhase,
   ChatLaunchQueueMessageArgs,
   ChatLaunchSnapshot,
@@ -20,6 +21,7 @@ import type {
   DeleteLaneArgs,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneLinearIssue,
   LaneSummary,
 } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
@@ -51,9 +53,21 @@ import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLa
 
 type LaneServiceLike = {
   create: (
-    args: { name: string; baseBranch?: string; branchName?: string },
+    args: {
+      name: string;
+      baseBranch?: string;
+      branchName?: string;
+      /** child-mode launches branch from an existing lane instead of the base. */
+      parentLaneId?: string;
+      /** Bound to the new lane the same way a manual create binds it. */
+      linearIssue?: LaneLinearIssue | null;
+    },
     options?: LaneCreateRuntimeOptions,
   ) => Promise<LaneSummary>;
+  /** import-mode launches adopt an existing branch instead of cutting a new one. */
+  importBranch?: (args: { branchRef: string; name: string }) => Promise<LaneSummary>;
+  /** Accent color applied once the lane row exists. */
+  updateAppearance?: (args: { laneId: string; color: string | null }) => void;
   delete: (args: DeleteLaneArgs) => Promise<unknown>;
   /** Clear what an earlier, failed checkout left at the lane's reserved worktree path. */
   cleanupReservedWorktree?: (args: { laneId: string; name: string }) => Promise<void>;
@@ -92,7 +106,7 @@ export type ChatLaunchServiceDeps = {
   resolveBase: () => Promise<ChatLaunchBaseResolution>;
   /** Resolve a ref to its commit sha in the project checkout (for the stage detail). */
   resolveCommit: (ref: string) => Promise<string | null>;
-  planEnvironment: () => ChatLaunchEnvironmentPlan;
+  planEnvironment: (templateId?: string | null) => ChatLaunchEnvironmentPlan;
   /**
    * Fill an empty chat `model` with the host's first available one — the same
    * auto-pick the sync host's `chat.create` applies. Every launch path (desktop
@@ -434,26 +448,47 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     setStage(record, "checkout", "running");
     publish(record);
     let totalFiles = 0;
-    const lane = await deps.laneService.create(
-      {
+    const config = record.laneConfig;
+    let lane: LaneSummary;
+    if (config?.mode === "import") {
+      if (!config.branchRef) throw new Error("Importing a branch needs a branch ref.");
+      if (!deps.laneService.importBranch) throw new Error("This runtime cannot import an existing branch.");
+      lane = await deps.laneService.importBranch({
+        branchRef: config.branchRef,
         name: record.snapshot.laneName,
-        branchName: temporaryAutoLaneBranch(),
-        ...(baseRef ? { baseBranch: baseRef } : {}),
-      },
-      {
-        laneId: record.snapshot.laneId,
-        signal: runtime.abort.signal,
-        onCheckoutProgress: (progress) => {
-          const stage = stageOf(record, "checkout");
-          if (!stage || stage.status !== "running") return;
-          if (stage.percent === progress.percent) return;
-          stage.percent = progress.percent;
-          totalFiles = progress.total;
-          publishProgress(record);
+      });
+    } else {
+      lane = await deps.laneService.create(
+        {
+          name: record.snapshot.laneName,
+          branchName: temporaryAutoLaneBranch(),
+          ...(baseRef ? { baseBranch: baseRef } : {}),
+          ...(config?.mode === "child" && config.parentLaneId ? { parentLaneId: config.parentLaneId } : {}),
+          ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
         },
-      },
-    );
+        {
+          laneId: record.snapshot.laneId,
+          signal: runtime.abort.signal,
+          onCheckoutProgress: (progress) => {
+            const stage = stageOf(record, "checkout");
+            if (!stage || stage.status !== "running") return;
+            if (stage.percent === progress.percent) return;
+            stage.percent = progress.percent;
+            totalFiles = progress.total;
+            publishProgress(record);
+          },
+        },
+      );
+    }
     adoptLane(record, lane);
+    // Appearance is a nicety; a color collision must never fail the launch.
+    if (config?.color && deps.laneService.updateAppearance) {
+      try {
+        deps.laneService.updateAppearance({ laneId: lane.id, color: config.color });
+      } catch (error) {
+        logger.warn("chat_launch.appearance_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      }
+    }
     if (runtime.progressTimer) {
       clearTimeout(runtime.progressTimer);
       runtime.progressTimer = null;
@@ -712,12 +747,14 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       || deriveDeterministicLaneTitleFromPrompt(prompt)
       || deriveDeterministicLaneNameFromPrompt(prompt, { genericSuffix: autoLaneGenericSuffix(now()) });
     const baseBranch = args.baseBranch?.trim() || null;
-    const environment = deps.planEnvironment();
+    const laneConfig = args.laneConfig ?? null;
+    // A child/import lane is not cut from a remote base, so there is no fetch.
+    const environment = deps.planEnvironment(laneConfig?.templateId ?? null);
     const snapshot = createChatLaunchSnapshot({
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
       laneName,
-      includeFetch: !baseBranch && !deps.usesLocalLaneBase(),
+      includeFetch: !baseBranch && !laneConfig && !deps.usesLocalLaneBase(),
       includeEnvironment: environment.hasEnvironment,
       templateName: environment.templateName,
       nowIso: nowIso(),
@@ -726,6 +763,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       snapshot,
       chat,
       baseBranch,
+      laneConfig,
       provider: args.provider ?? chat?.create.provider ?? null,
       templateId: environment.templateId,
       messageSent: false,

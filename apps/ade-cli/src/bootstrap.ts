@@ -1952,9 +1952,9 @@ export async function createAdeRuntime(args: {
         },
         resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
         resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),
-        planEnvironment: () => {
+        planEnvironment: (requestedTemplateId) => {
           const effective = projectConfigService.getEffective();
-          const templateId = laneTemplateService.getDefaultTemplateId();
+          const templateId = requestedTemplateId?.trim() || laneTemplateService.getDefaultTemplateId();
           const template = templateId ? laneTemplateService.getTemplate(templateId) : null;
           return planNewLaneEnvironment({
             laneEnvInit: effective.laneEnvInit ?? null,
