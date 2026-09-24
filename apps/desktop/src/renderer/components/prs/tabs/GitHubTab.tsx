@@ -61,6 +61,7 @@ import { useGitHubTabListModel } from "./useGitHubTabListModel";
 import { useGitHubTabSelection } from "./useGitHubTabSelection";
 import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
 import { settingsRouteFor } from "../../settings/settingsManifest";
+import { openLaneInLanesTabPath } from "../../../lib/laneNavigation";
 
 export type GitHubTabProps = {
   lanes: LaneSummary[];
@@ -677,14 +678,14 @@ export function GitHubTab({
     setCreateLaneLoading(false);
   }, [createLaneBusy]);
 
-  const handleConfirmCreateLaneFromPrBranch = React.useCallback(async () => {
+  const handleConfirmCreateLaneFromPrBranch = React.useCallback(async (laneName: string) => {
     if (!createLaneItem) return;
     setCreateLaneBusy(true);
     setCreateLaneError(null);
     const createProjectRoot = projectRoot;
     try {
       const result = await createLaneFromPrBranchApi()
-        .createLaneFromPrBranch(createLaneFromPrBranchArgs(createLaneItem));
+        .createLaneFromPrBranch(createLaneFromPrBranchArgs(createLaneItem, laneName));
       const mappedPrId = createLaneMappedPrId(result);
       const mappedLaneId = createLaneMappedLaneId(result);
       if (mappedPrId) {
@@ -704,7 +705,8 @@ export function GitHubTab({
       }
       setCreateLaneItem(null);
       setCreateLanePreflight(null);
-      const syncCreatedLane = result.lane?.id
+      const createdLaneId = result.lane?.id ?? null;
+      const syncCreatedLane = createdLaneId
         ? refreshLanes({ includeStatus: false, includeSnapshots: false })
           .catch(() => {})
           .then(() => {
@@ -729,12 +731,18 @@ export function GitHubTab({
         }).catch(() => null),
         syncCreatedLane,
       ]);
+      // Navigate last, after every PRs-side refresh has settled. The PRs tab
+      // rewrites its own route when its selection changes (a replace to
+      // `/prs?...`), so navigating earlier in this flow would be overwritten and
+      // strand the user on the PRs tab. The flow ends on the Lanes tab with the
+      // new lane open, where its new-chat button and git pane are.
+      if (createdLaneId) navigate(openLaneInLanesTabPath(createdLaneId));
     } catch (err) {
       setCreateLaneError(formatActionError(err));
     } finally {
       setCreateLaneBusy(false);
     }
-  }, [appStore, createLaneItem, loadSnapshot, onRefreshAll, onSelectPr, projectRoot, refreshLanes, selectLane]);
+  }, [appStore, createLaneItem, loadSnapshot, navigate, onRefreshAll, onSelectPr, projectRoot, refreshLanes, selectLane]);
 
   // The "open as lane" offer surfaced inside PrDetailPane. This used to also
   // carry a lane picker and a Map button; mapping is no longer something the

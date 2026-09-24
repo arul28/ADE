@@ -254,6 +254,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
               laneName={lane.name}
               laneColor={lane.color}
               maxWidth={180}
+              style={{ maxWidth: "100%" }}
               onClick={onOpenLane ?? undefined}
               data-testid="pr-header-lane-chip"
               className="ade-pr-detail-header-lane"

@@ -3,7 +3,7 @@ import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosph
 
 import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
-import { LaneAccentDot } from "../../lanes/LaneAccentDot";
+import { LaneIcon } from "../../ui/vcsIcons";
 import { useAppStore } from "../../../state/appStore";
 import { isTerminalPrState } from "../../../lib/prState";
 import { formatTimeAgoCompact } from "./prFormatters";
@@ -180,21 +180,29 @@ function PrRowLaneChip({
   linkedLaneColor: string | null;
 }) {
   if (item.linkedLaneName) {
+    // The lane's name is a label, not a badge: the branch glyph in the lane's
+    // own color, then the name, with no chip box around it. This matches the
+    // lane rows in the Lanes/Work sidebars, so a lane reads the same everywhere.
     return (
       <span
+        data-testid="pr-row-lane"
+        title={item.linkedLaneName}
         style={{
-          ...inlineBadge(COLORS.textSecondary),
-          fontSize: 10,
-          padding: "2px 7px",
-          borderRadius: 5,
           display: "inline-flex",
           alignItems: "center",
           gap: 4,
-          ...(linkedLaneColor ? { color: linkedLaneColor } : {}),
+          minWidth: 0,
+          maxWidth: "100%",
+          fontFamily: SANS_FONT,
+          fontSize: 10,
+          fontWeight: 500,
+          color: linkedLaneColor ?? COLORS.textSecondary,
         }}
       >
-        {linkedLaneColor ? <LaneAccentDot lane={{ color: linkedLaneColor }} size={6} /> : null}
-        {item.linkedLaneName}
+        <LaneIcon size={11} />
+        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {item.linkedLaneName}
+        </span>
       </span>
     );
   }
@@ -264,7 +272,7 @@ function PrRowGhostLaneChip({ detached }: { detached: NonNullable<GitHubPrListIt
         // No inline `display` here: an inline style outranks the container
         // query in `index.css` that has to hide this at <=340px.
         <span className="ade-pr-row-provenance-lane">
-          {detached.laneColor ? <LaneAccentDot lane={{ color: detached.laneColor }} size={6} /> : null}
+          {detached.laneColor ? <LaneIcon size={11} style={{ color: detached.laneColor }} /> : null}
           was: {name}
         </span>
       ) : null}
