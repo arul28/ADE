@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,

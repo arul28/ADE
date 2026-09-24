@@ -8,7 +8,6 @@ import { TopBar } from "./TopBar";
 import { useProjectSidebarShortcuts } from "./projectSidebar/useProjectSidebarShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
-import { Z_LAYERS } from "../ui/zLayers";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
 import type {
