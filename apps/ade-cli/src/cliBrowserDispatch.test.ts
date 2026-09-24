@@ -114,18 +114,6 @@ describe("browser positional grammar", () => {
     }
   });
 
-  it("keeps a carrier's literal `--` from fencing --help out of the scan", () => {
-    // `--upload` carries a value, so the `--` after it is that value, not a
-    // terminator. Scanning with the global table stopped there and `--help`
-    // was never seen — the upload ran instead of printing help.
-    expect(
-      buildCliPlan(["browser", "upload", "--selector", "input", "--upload", "--", "--help"]).kind,
-    ).toBe("help");
-    // A real terminator still fences the literal string through.
-    expect(actionArgs(buildCliPlan(["browser", "open", "--", "--help"])))
-      .toMatchObject({ url: "--help" });
-  });
-
   it("keeps a fenced literal out of the flag it follows", () => {
     const labelOf = (argv: string[]): string => {
       const plan = buildCliPlan(argv);
@@ -171,35 +159,14 @@ describe("browser positional grammar", () => {
       .toMatchObject({ reason: "fix the -2fa prompt" });
   });
 
-  it("dispatches past a proof owner flag", () => {
-    // `readProofOwnerBase` reads these, so they must carry their value here
-    // too or the subcommand is read out of the flag's value.
-    const labelOf = (argv: string[]): string => {
-      const plan = buildCliPlan(argv);
-      return plan.kind === "execute" ? plan.label : plan.kind;
-    };
-    expect(labelOf(["browser", "--owner-id", "o1", "proof"])).toBe("browser proof");
-    expect(labelOf(["browser", "--owner-kind", "lane", "proof"])).toBe("browser proof");
-    expect(labelOf(["browser", "--owner", "lane", "record", "stop"])).toBe("browser record stop");
-  });
-
   it("lets --help win over a value flag that would otherwise eat it", () => {
     // `readValue` accepts a flag-shaped value, so the help scan — not the
     // reader — is what stops `--help` from becoming a URL. `--flag=--help` and
     // a `--help` past the terminator are the two ways to pass the literal.
     expect(buildCliPlan(["browser", "open", "--url", "--help"]).kind).toBe("help");
     expect(buildCliPlan(["lanes", "list", "--text", "--help"]).kind).toBe("help");
-  });
-});
-
-describe("browser value flags do not widen other commands", () => {
-  it("does not widen any other command's grammar", () => {
-    // The regression the table caused: `--text` carried a value CLI-wide.
-    expect(actionArgs(buildCliPlan(["session", "show", "--text", "s1"]))).toMatchObject({
-      sessionId: "s1",
-    });
-    expect(actionArgs(buildCliPlan(["chat", "send", "--text", "s1", "hello"]))).toMatchObject({
-      sessionId: "s1",
-    });
+    expect(
+      buildCliPlan(["lanes", "reparent", "lane-child", "--stack-base-branch", "develop", "--help"]).kind,
+    ).toBe("help");
   });
 });

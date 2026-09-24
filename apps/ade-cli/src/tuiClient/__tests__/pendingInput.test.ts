@@ -84,36 +84,44 @@ describe("pendingInput", () => {
     expect(buildPendingInputAnswers(request, "1, Manual")).toEqual({ path: ["recommended", "manual"] });
   });
 
-  // Bug 1. The TUI used to hand typed text through a separate parser
-  // and return it as the whole answer, so a note typed alongside a selection
-  // threw that selection away. Both must travel, selection first, note last —
-  // the same contract desktop and the web client answer under.
-  it("regression: a typed note accumulates onto the selection instead of replacing it", () => {
-    const state = createPendingQuestionSelectionState(questionApproval())!;
-    const selected = selectPendingQuestionDigit(baseRequest, state, "2").state;
-
-    expect(buildPendingInputAnswers(baseRequest, "only if the pin survives a restart", selected))
-      .toEqual({ path: ["manual", "only if the pin survives a restart"] });
-  });
-
-  it("regression: a typed note accumulates onto every multi-select pick", () => {
-    const request: PendingInputRequest = {
-      ...baseRequest,
-      questions: [{ ...baseRequest.questions[0]!, multiSelect: true }],
-    };
-    let state = createPendingQuestionSelectionState(questionApproval(request))!;
-    state = selectPendingQuestionOptionIndex(request, state, 0);
-    state = selectPendingQuestionOptionIndex(request, state, 1);
-
-    expect(buildPendingInputAnswers(request, "and roll back if CI is red", state))
-      .toEqual({ path: ["recommended", "manual", "and roll back if CI is red"] });
+  // A note follows every selected option, for single and multiple selections.
+  const selectedNoteCases = [
+    ["single selection", () => {
+      const state = createPendingQuestionSelectionState(questionApproval())!;
+      const selected = selectPendingQuestionDigit(baseRequest, state, "2").state;
+      return {
+        request: baseRequest,
+        selected,
+        note: "only if the pin survives a restart",
+        expected: { path: ["manual", "only if the pin survives a restart"] },
+      };
+    }],
+    ["multiple selections", () => {
+      const request: PendingInputRequest = {
+        ...baseRequest,
+        questions: [{ ...baseRequest.questions[0]!, multiSelect: true }],
+      };
+      let selected = createPendingQuestionSelectionState(questionApproval(request))!;
+      selected = selectPendingQuestionOptionIndex(request, selected, 0);
+      selected = selectPendingQuestionOptionIndex(request, selected, 1);
+      return {
+        request,
+        selected,
+        note: "and roll back if CI is red",
+        expected: { path: ["recommended", "manual", "and roll back if CI is red"] },
+      };
+    }],
+  ] as const;
+  it.each(selectedNoteCases)("appends typed notes after %s", (_label, makeCase) => {
+    const { request, selected, note, expected } = makeCase();
+    expect(buildPendingInputAnswers(request, note, selected)).toEqual(expected);
   });
 
   // The seeded cursor sits on the recommended option so the list opens with a
   // highlight somewhere. That cursor is NOT an answer — preselecting the
   // recommendation was explicitly dropped (spec section 6) — so free text typed
   // without touching the list must travel alone, exactly as it does on desktop.
-  it("regression: an untouched highlight never becomes a phantom pick", () => {
+  it("an untouched highlight never becomes a phantom pick", () => {
     const request: PendingInputRequest = {
       ...baseRequest,
       questions: [{
@@ -151,7 +159,7 @@ describe("pendingInput", () => {
 
   // `2` then more characters was never a pick, so rolling the digit back must
   // roll the touch back with it rather than leaving a phantom selection.
-  it("regression: converting a digit selection to text leaves no pick behind", () => {
+  it("converting a digit selection to text leaves no pick behind", () => {
     const state = createPendingQuestionSelectionState(questionApproval())!;
     const digit = selectPendingQuestionDigit(baseRequest, state, "2");
     const converted = convertPendingQuestionDigitSelectionToText(baseRequest, digit.state, "x");
@@ -162,7 +170,7 @@ describe("pendingInput", () => {
 
   // The old parser comma-split and kept only the first segment for a
   // single-select, silently truncating any prose containing a comma.
-  it("regression: free text with a comma survives verbatim on a single-select", () => {
+  it("free text with a comma survives verbatim on a single-select", () => {
     const state = createPendingQuestionSelectionState(questionApproval())!;
     expect(buildPendingInputAnswers(baseRequest, "neither, squash it instead", state))
       .toEqual({ path: "neither, squash it instead" });
@@ -203,7 +211,7 @@ describe("pendingInput", () => {
     expect(buildPendingInputAnswers(request, "something else", state)).toEqual({ path: "something else" });
   });
 
-  it("regression: refuses unmatched freeform when the question disallows it", () => {
+  it("refuses unmatched freeform when the question disallows it", () => {
     const request: PendingInputRequest = {
       ...baseRequest,
       questions: [{ ...baseRequest.questions[0]!, allowsFreeform: false }],
@@ -543,7 +551,7 @@ describe("pendingInput", () => {
     expect(converted ? pendingQuestionSelectionValue(request, converted.state) : null).toBe("one");
   });
 
-  it("regression: pointer-style option selection only marks and never banks an answer", () => {
+  it("pointer-style option selection only marks and never banks an answer", () => {
     const initial = createPendingQuestionSelectionState(questionApproval())!;
     const selected = selectPendingQuestionOptionIndex(baseRequest, initial, 1);
 

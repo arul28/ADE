@@ -233,7 +233,7 @@ describe("useAppleDeviceStream", () => {
    * tab switch remounted it. Whatever ended the capture, the viewer never
    * asked for it again.
    */
-  it("regression: a start that has not answered is not turned into an idle stream by the reader mounting", async () => {
+  it("a start that has not answered is not turned into an idle stream by the reader mounting", async () => {
     // The start never answers (a slow boot wait, a lost reply).
     api.startStream.mockImplementationOnce(() => new Promise(() => {}));
     const box: { current: AppleDeviceStream | null } = { current: null };
@@ -256,7 +256,7 @@ describe("useAppleDeviceStream", () => {
     await waitFor(() => expect(box.current?.url).toBeTruthy());
   });
 
-  it("regression: when the capture ends under a viewer that still wants it, the viewer asks again", async () => {
+  it("when the capture ends under a viewer that still wants it, the viewer asks again", async () => {
     const box: { current: AppleDeviceStream | null } = { current: null };
     render(<Harness onStream={(next) => { box.current = next; }} />);
     await waitFor(() => expect(box.current?.url).toBeTruthy());
@@ -323,7 +323,7 @@ describe("useAppleDeviceStream", () => {
     expect(api.startStream.mock.calls.length).toBe(calls);
   });
 
-  it("regression: a viewer arriving just after the last one left joins the capture instead of a new one", async () => {
+  it("a viewer arriving just after the last one left joins the capture instead of a new one", async () => {
     // `apple show` hides the floating player a beat before the pane mounts.
     const player = render(<Harness onStream={() => {}} />);
     await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
@@ -339,7 +339,7 @@ describe("useAppleDeviceStream", () => {
    * Regression (A2-1): `stopStream` is lane-scoped, so the grace stop armed for
    * device A used to fire after the swap and kill device B's new capture.
    */
-  it("regression: a device swap inside one viewer does not stop the new stream", async () => {
+  it("a device swap inside one viewer does not stop the new stream", async () => {
     const { rerender } = render(<Harness onStream={() => {}} />);
     await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
     rerender(<Harness onStream={() => {}} deviceUdid="UDID-2" />);

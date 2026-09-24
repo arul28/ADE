@@ -7,7 +7,6 @@ import {
   suppressStagedSection,
   providerThreadContinuityChanged,
   providerThreadRef,
-  UNOPENED_PROVIDER_THREAD_REF,
   type ThreadPointerFields,
 } from "./providerThreadContinuity";
 
@@ -96,15 +95,6 @@ const ADAPTERS: Array<{
 ];
 
 describe("providerThreadRef", () => {
-  for (const adapter of ADAPTERS) {
-    it(`reads the thread pointer for ${adapter.name}`, () => {
-      const opened = providerThreadRef(adapter.first);
-      expect(opened.provider).toBe(adapter.expectedProvider);
-      expect(opened.ref).not.toBe(UNOPENED_PROVIDER_THREAD_REF);
-      expect(providerThreadRef(adapter.unopened).ref).toBe(UNOPENED_PROVIDER_THREAD_REF);
-    });
-  }
-
   it("prefers the cursor SDK agent over the cloud agent, and falls back to it", () => {
     expect(providerThreadRef({
       provider: "cursor",
@@ -139,6 +129,7 @@ describe("a rotation re-arms both staged sections, and opening a thread does not
 
   for (const adapter of ADAPTERS) {
     it(`re-stages the tail and the static block on a ${adapter.name} rotation`, () => {
+      expect(providerThreadRef(adapter.first).provider).toBe(adapter.expectedProvider);
       const sections = { tail: newStagedSection(), staticBlock: newStagedSection() };
 
       // Turn one is prepared before the runtime exists, so the ref is `none`.

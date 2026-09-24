@@ -279,7 +279,7 @@ describe("createCtoOperatorTools", () => {
       expect(result).toMatchObject({ success: true });
     });
 
-    it("no longer exposes handoffChat", () => {
+    it("exposes the supported chat lifecycle tools", () => {
       // Handoff targeted "a different agent identity" — a subsystem that was
       // removed; AgentChatIdentityKey is now just "cto". Advertising it was
       // advertising a capability that could not exist.
@@ -625,7 +625,7 @@ describe("createCtoOperatorTools", () => {
       expect(status.lifecycle).toMatchObject({ wokeReason: "needs_you" });
     });
 
-    it("reports an expired snooze as no longer snoozed", async () => {
+    it("reports expired snoozes as inactive", async () => {
       const { deps } = lifecycleDeps({ snoozedUntil: "2000-01-01T00:00:00.000Z" });
       const tools = createCtoOperatorTools(deps);
       await expect((tools.getSessionLifecycle as any).execute({ sessionId: "chat-1" }))

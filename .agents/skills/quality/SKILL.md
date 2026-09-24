@@ -271,7 +271,9 @@ Cite the doc section in the finding.
    support, lifecycle, or automatic notifications as a claim to verify, not as
    evidence. Find the implementation path and the test that pins it. If the
    behavior is load-bearing and no test pins it, list it for `/test` as a
-   coverage gap. `/test` decides whether a test is worth adding.
+   coverage gap. Do not add the test in `/quality`. `/test` adds one only when
+   it can name the behavior, the failure that turns the test red, and why no
+   existing test already catches that.
 5. **Sweep the bug class.** When an accepted finding is a repeated pattern, scan
    the diff scope for sibling instances and fix them together — stop at touched
    surfaces and owner boundaries; no refactor beyond the class.

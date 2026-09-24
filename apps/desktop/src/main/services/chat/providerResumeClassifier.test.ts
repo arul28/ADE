@@ -26,40 +26,20 @@ afterEach(() => {
 });
 
 describe("classifyCodexResumeFailure", () => {
-  it.each(["present", "absent", "error"] as const)("classifies MCP startup failures with a %s rollout probe", (probe) => {
-    const result = classifyCodexResumeFailure(new Error("MCP server startup failed"), "thread-a", {
+  // The rollout probe decides only whether a "not found" is trusted: a thread
+  // is missing only when the provider says so AND no local rollout exists.
+  it.each([
+    [new Error("MCP server startup failed"), "present", "provider_environment", true],
+    ["socket connection timed out", "absent", "transient", false],
+    ["thread not found", "absent", "thread_missing", false],
+    ["unknown thread: not found", "present", "unknown", true],
+    ["no thread was found", "error", "unknown", null],
+    ["purple banana", "absent", "unknown", false],
+  ] as const)("classifies %s with a %s rollout as %s", (error, probe, kind, rolloutFileFound) => {
+    const result = classifyCodexResumeFailure(error, "thread-a", {
       codexHome: codexHome(probe, "thread-a"),
     });
-    expect(result.kind).toBe("provider_environment");
-    expect(result.rolloutFileFound).toBe(probe === "present" ? true : probe === "absent" ? false : null);
-  });
-
-  it.each(["present", "absent", "error"] as const)("classifies timeout failures with a %s rollout probe", (probe) => {
-    const result = classifyCodexResumeFailure("socket connection timed out", "thread-b", {
-      codexHome: codexHome(probe, "thread-b"),
-    });
-    expect(result.kind).toBe("transient");
-  });
-
-  it("classifies a missing local and provider thread as thread_missing", () => {
-    const result = classifyCodexResumeFailure("thread not found", "thread-c", {
-      codexHome: codexHome("absent", "thread-c"),
-    });
-    expect(result).toMatchObject({ kind: "thread_missing", rolloutFileFound: false });
-  });
-
-  it("does not trust provider deletion when the rollout still exists", () => {
-    const result = classifyCodexResumeFailure("unknown thread: not found", "thread-d", {
-      codexHome: codexHome("present", "thread-d"),
-    });
-    expect(result).toMatchObject({ kind: "unknown", rolloutFileFound: true });
-  });
-
-  it("keeps not-found unknown when the rollout probe is unavailable", () => {
-    const result = classifyCodexResumeFailure("no thread was found", "thread-e", {
-      codexHome: codexHome("error", "thread-e"),
-    });
-    expect(result).toMatchObject({ kind: "unknown", rolloutFileFound: null });
+    expect(result).toMatchObject({ kind, rolloutFileFound });
   });
 
   it("keeps not-found unknown when the rollout probe exhausts its entry budget", () => {
@@ -72,12 +52,5 @@ describe("classifyCodexResumeFailure", () => {
     });
 
     expect(result).toMatchObject({ kind: "unknown", rolloutFileFound: null });
-  });
-
-  it.each(["present", "absent", "error"] as const)("keeps gibberish unknown with a %s rollout probe", (probe) => {
-    const result = classifyCodexResumeFailure("purple banana", "thread-f", {
-      codexHome: codexHome(probe, "thread-f"),
-    });
-    expect(result.kind).toBe("unknown");
   });
 });

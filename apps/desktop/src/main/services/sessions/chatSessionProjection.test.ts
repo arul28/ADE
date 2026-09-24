@@ -216,7 +216,7 @@ describe("chatSessionProjection", () => {
     expect(projected.cursorRuntime).toBe("local");
   });
 
-  it("clears a parked usage-limit deadline when the chat no longer has one", () => {
+  it("clears the parked deadline when the chat has none", () => {
     const projected = projectChatOntoSession({
       ...session(),
       usageLimitParkedUntil: "2026-08-17T12:47:00.000Z",

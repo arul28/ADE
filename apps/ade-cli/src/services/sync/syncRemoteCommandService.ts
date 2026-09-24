@@ -4993,7 +4993,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.dispatchSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").dispatchSteer(parseAgentChatDispatchSteerArgs(payload));
-    return { ok: true, dispatchedAt: result.dispatchedAt };
+    return { ok: true, dispatchedAt: result.dispatchedAt, ...(result.reason ? { reason: result.reason } : {}) };
   });
   register("chat.cancelDispatchedSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(payload));
@@ -6715,12 +6715,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
     getDescriptors(): SyncRemoteCommandDescriptor[] {
       return [...registry.values()].map((entry) => entry.descriptor);
-    },
-
-    getAbortObservingActions(): SyncRemoteCommandAction[] {
-      return [...registry.values()]
-        .filter((entry) => entry.observesAbort)
-        .map((entry) => entry.descriptor.action as SyncRemoteCommandAction);
     },
 
     getPolicy(action: string): SyncRemoteCommandPolicy | null {

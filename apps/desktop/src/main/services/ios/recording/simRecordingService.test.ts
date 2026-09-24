@@ -603,7 +603,7 @@ describe("simRecordingService against the helper's per-device state", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("regression: a start whose reply was lost does not lock the device", async () => {
+  it("a start whose reply was lost does not lock the device", async () => {
     // Live on 2026-09-22: `record-stop` returned null from every lane while
     // `record-start` said "This device is already recording.", and the state
     // survived a stream restart and a power cycle. Only killing the helper
@@ -624,7 +624,7 @@ describe("simRecordingService against the helper's per-device state", () => {
     expect(finished[0]).toMatchObject({ udid, laneId: "lane-a", proof: true, durationMs: 3000 });
   });
 
-  it("regression: record-stop reaches a recording the service lost", async () => {
+  it("record-stop reaches a recording the service lost", async () => {
     helper.loseNextStartReply();
     await service.start({ laneId: "lane-a", udid, chatSessionId: null }).catch(() => null);
 
@@ -670,7 +670,7 @@ describe("simRecordingService against the helper's per-device state", () => {
     expect(helper.recording.has(udid)).toBe(false);
   });
 
-  it("regression: a helper restart drops the recordings it held, and the next agent input starts a new one", async () => {
+  it("a helper restart drops the recordings it held, and the next agent input starts a new one", async () => {
     // 2026-09-23, live: a restarted helper holds none of the old helper's
     // recordings. Kept in memory, the lane's entry looked active forever and
     // swallowed the next auto-record start.
@@ -715,7 +715,7 @@ describe("simRecordingService against the helper's per-device state", () => {
     return changes;
   };
 
-  it("regression: a helper exit tells each lane its recording stopped", async () => {
+  it("a helper exit tells each lane its recording stopped", async () => {
     // The pane re-reads its list only on this event. Without it a recording
     // the dead helper held stayed "live" on screen.
     const changes = withChanges();
@@ -737,7 +737,7 @@ describe("simRecordingService against the helper's per-device state", () => {
     expect(filed).toEqual([]);
   });
 
-  it("regression: a reclaimed orphan recording tells its lane it stopped", async () => {
+  it("a reclaimed orphan recording tells its lane it stopped", async () => {
     const changes = withChanges();
     helper.loseNextStartReply();
     await service.start({ laneId: "lane-a", udid, chatSessionId: null }).catch(() => null);

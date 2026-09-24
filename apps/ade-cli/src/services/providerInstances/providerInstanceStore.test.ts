@@ -239,7 +239,7 @@ describe("providerInstanceStore", () => {
     expect(store.get(created.instance.id)).toBeNull();
   });
 
-  it("falls back to the provider default when an instance id no longer exists", () => {
+  it("falls back to the provider default for a removed instance", () => {
     const { store } = makeStore();
     const created = store.create({ provider: "claude", label: "Work" });
 

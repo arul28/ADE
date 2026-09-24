@@ -14,7 +14,6 @@ import {
 import {
   classifyPiSessionFile,
   listPiSessionFilesForCwd,
-  piSessionRootForEnvironment,
   piSessionStoreForEnvironment,
   repositoryOverridesPiSessionDir,
   resolvePiSessionFile,
@@ -34,8 +33,23 @@ function makeSession(): { root: string; file: string; id: string; cwd: string } 
   fs.mkdirSync(path.join(sessionRoot, "encoded"), { recursive: true });
   const id = "019fd86d-f40d-76c6-a194-d5ba030cbad3";
   const file = path.join(sessionRoot, "encoded", `2026-04-01T00-00-00-000Z_${id}.jsonl`);
-  fs.writeFileSync(file, `${JSON.stringify({ type: "session", id, cwd, timestamp: new Date().toISOString() })}\n`);
+  writeSessionHeader(file, { id, cwd, timestamp: new Date().toISOString() });
   return { root, file, id, cwd };
+}
+
+function writeSessionHeader(file: string, header: Record<string, unknown>): void {
+  fs.writeFileSync(file, `${JSON.stringify({ type: "session", ...header })}\n`);
+}
+
+function writeLeaseRecord(sessionFile: string, token: string, fields: Record<string, unknown>): void {
+  fs.writeFileSync(`${sessionFile}.ade-lease`, `${JSON.stringify({
+    token,
+    owner: "sdk",
+    ownerId: "old",
+    acquiredAt: new Date().toISOString(),
+    sessionFile,
+    ...fields,
+  })}\n`);
 }
 
 async function waitForChildOutput(child: ChildProcess, marker: string): Promise<void> {
@@ -68,32 +82,19 @@ async function waitForChildExit(child: ChildProcess): Promise<void> {
 }
 
 describe("Pi native session leases", () => {
-  it("resolves and excludes concurrent SDK/CLI writers", () => {
-    const session = makeSession();
-    const canonicalFile = fs.realpathSync.native(session.file);
-    expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: session.id, sessionRoot: path.join(session.root, "sessions") })).toBe(canonicalFile);
-    expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: "", sessionFile: session.file })).toBe(canonicalFile);
-
-    const sdk = acquirePiSessionLease({ sessionFile: session.file, owner: "sdk", ownerId: "chat-1" });
-    expect(() => acquirePiSessionLease({ sessionFile: session.file, owner: "cli", ownerId: "pty-1" })).toThrow(/already owned/iu);
-
-    sdk.release();
-    const cli = acquirePiSessionLease({ sessionFile: session.file, owner: "cli", ownerId: "pty-1" });
-    expect(fs.existsSync(`${session.file}.ade-lease`)).toBe(true);
-    cli.release();
-    expect(fs.existsSync(`${session.file}.ade-lease`)).toBe(false);
-  });
-
   // Pi buffers a new session in memory and only writes the JSONL file on the
   // first assistant message, so ADE has to take ownership of a path that does
   // not exist yet. Requiring the file up front made every new Pi chat fail
   // with "Pi SDK worker returned a session outside the authorized native
   // session directory".
-  it("accepts a session Pi has named but not yet written", () => {
+  it("resolves a written session by id or file, and classifies a named but unwritten one as pending", () => {
     const session = makeSession();
     const sessionRoot = path.join(session.root, "sessions");
-    const planned = path.join(sessionRoot, "encoded", "2026-04-02T00-00-00-000Z_pending.jsonl");
+    const canonicalFile = fs.realpathSync.native(session.file);
+    expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: session.id, sessionRoot })).toBe(canonicalFile);
+    expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: "", sessionFile: session.file })).toBe(canonicalFile);
 
+    const planned = path.join(sessionRoot, "encoded", "2026-04-02T00-00-00-000Z_pending.jsonl");
     expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: "", sessionFile: planned, sessionRoot })).toBeNull();
     // Canonicalized through the deepest directory that already exists, so the
     // eventual `.ade-lease` sidecar cannot be created twice for one JSONL file
@@ -102,10 +103,36 @@ describe("Pi native session leases", () => {
       state: "pending",
       filePath: path.join(fs.realpathSync.native(path.dirname(planned)), path.basename(planned)),
     });
-    expect(classifyPiSessionFile({ filePath: session.file, cwd: session.cwd, sessionId: session.id, sessionRoot })).toEqual({
-      state: "authorized",
-      filePath: fs.realpathSync.native(session.file),
-    });
+    expect(classifyPiSessionFile({ filePath: session.file, cwd: session.cwd, sessionId: session.id, sessionRoot }))
+      .toEqual({ state: "authorized", filePath: canonicalFile });
+  });
+
+  // Pi fixes a session's file name when it creates the session, so two chats
+  // in one working directory get distinct paths and can both be owned at once.
+  // Making them share a directory-wide token until the first assistant message
+  // would stop a second Pi chat in a lane from starting at all.
+  it("excludes a second writer, owns two not-yet-written sessions independently, and removes the sidecar on release", () => {
+    const session = makeSession();
+    const sdk = acquirePiSessionLease({ sessionFile: session.file, owner: "sdk", ownerId: "chat-1" });
+    expect(() => acquirePiSessionLease({ sessionFile: session.file, owner: "cli", ownerId: "pty-1" })).toThrow(/already owned/iu);
+    sdk.release();
+    const cli = acquirePiSessionLease({ sessionFile: session.file, owner: "cli", ownerId: "pty-1" });
+    expect(fs.existsSync(`${session.file}.ade-lease`)).toBe(true);
+    cli.release();
+    expect(fs.existsSync(`${session.file}.ade-lease`)).toBe(false);
+
+    const encoded = path.dirname(session.file);
+    const first = path.join(encoded, "2026-04-02T00-00-00-000Z_a.jsonl");
+    const second = path.join(encoded, "2026-04-02T00-00-01-000Z_b.jsonl");
+    const leaseA = acquirePiSessionLease({ sessionFile: first, owner: "sdk", ownerId: "chat-a" });
+    const leaseB = acquirePiSessionLease({ sessionFile: second, owner: "sdk", ownerId: "chat-b" });
+    expect(piSessionLeaseIsHeld(first)).toBe(true);
+    expect(piSessionLeaseIsHeld(second)).toBe(true);
+    expect(piSessionLeaseIsHeld(path.join(encoded, "unleased.jsonl"))).toBe(false);
+    expect(() => acquirePiSessionLease({ sessionFile: first, owner: "cli", ownerId: "pty-1" })).toThrow(/already owned/iu);
+    leaseA.release();
+    leaseB.release();
+    expect(piSessionLeaseIsHeld(first)).toBe(false);
   });
 
   // ADE mis-assigned a days-old session to a terminal once, stored it as that
@@ -115,36 +142,17 @@ describe("Pi native session leases", () => {
   it("refuses a resume target older than the terminal that would open it", () => {
     const session = makeSession();
     const startedAt = "2026-08-10T17:44:00.000Z";
-
+    const header = (name: string, timestamp: string) => {
+      const file = path.join(path.dirname(session.file), `${name}.jsonl`);
+      writeSessionHeader(file, { id: name, cwd: session.cwd, timestamp });
+      return file;
+    };
     // Four days older than the terminal — the exact shape ADE mis-assigned.
-    const stale = path.join(path.dirname(session.file), "stale.jsonl");
-    fs.writeFileSync(stale, `${JSON.stringify({
-      type: "session",
-      id: "019fd7c4-4d85-7b4d-8adc-86766db98403",
-      cwd: session.cwd,
-      timestamp: "2026-08-06T15:49:54.181Z",
-    })}\n`);
-    expect(piSessionCouldBelongToTerminal({ sessionFile: stale, terminalStartedAt: startedAt })).toBe(false);
-
-    const own = path.join(path.dirname(session.file), "own.jsonl");
-    fs.writeFileSync(own, `${JSON.stringify({
-      type: "session",
-      id: "own-session",
-      cwd: session.cwd,
-      timestamp: "2026-08-10T17:44:03.000Z",
-    })}\n`);
+    expect(piSessionCouldBelongToTerminal({ sessionFile: header("stale", "2026-08-06T15:49:54.181Z"), terminalStartedAt: startedAt })).toBe(false);
+    const own = header("own", "2026-08-10T17:44:03.000Z");
     expect(piSessionCouldBelongToTerminal({ sessionFile: own, terminalStartedAt: startedAt })).toBe(true);
-
     // Pi can write its header a moment before ADE's row; the grace covers that.
-    const early = path.join(path.dirname(session.file), "early.jsonl");
-    fs.writeFileSync(early, `${JSON.stringify({
-      type: "session",
-      id: "early-session",
-      cwd: session.cwd,
-      timestamp: "2026-08-10T17:43:30.000Z",
-    })}\n`);
-    expect(piSessionCouldBelongToTerminal({ sessionFile: early, terminalStartedAt: startedAt })).toBe(true);
-
+    expect(piSessionCouldBelongToTerminal({ sessionFile: header("early", "2026-08-10T17:43:30.000Z"), terminalStartedAt: startedAt })).toBe(true);
     // Nothing to compare against must never block a resume.
     expect(piSessionCouldBelongToTerminal({ sessionFile: own, terminalStartedAt: null })).toBe(true);
     expect(piSessionCouldBelongToTerminal({ sessionFile: "/nope.jsonl", terminalStartedAt: startedAt })).toBe(true);
@@ -186,46 +194,14 @@ describe("Pi native session leases", () => {
     fs.mkdirSync(escape, { recursive: true });
     fs.symlinkSync(escape, path.join(sessionRoot, "linked"), "dir");
 
-    expect(classifyPiSessionFile({
-      filePath: path.join(session.root, "outside.jsonl"),
-      cwd: session.cwd,
-      sessionRoot,
-    }).state).toBe("rejected");
+    const state = (filePath: string, cwd = session.cwd) => classifyPiSessionFile({ filePath, cwd, sessionRoot }).state;
+
+    expect(state(path.join(session.root, "outside.jsonl"))).toBe("rejected");
     // Lexically inside the store, actually outside it.
-    expect(classifyPiSessionFile({
-      filePath: path.join(sessionRoot, "linked", "new.jsonl"),
-      cwd: session.cwd,
-      sessionRoot,
-    }).state).toBe("rejected");
-    expect(classifyPiSessionFile({ filePath: "relative.jsonl", cwd: session.cwd, sessionRoot }).state).toBe("rejected");
+    expect(state(path.join(sessionRoot, "linked", "new.jsonl"))).toBe("rejected");
+    expect(state("relative.jsonl")).toBe("rejected");
     // Written, but for a different working directory.
-    expect(classifyPiSessionFile({
-      filePath: session.file,
-      cwd: path.join(session.root, "other-worktree"),
-      sessionRoot,
-    }).state).toBe("rejected");
-  });
-
-  // Pi fixes a session's file name when it creates the session, so two chats
-  // in one working directory get distinct paths and can both be owned at once.
-  // Making them share a directory-wide token until the first assistant message
-  // would stop a second Pi chat in a lane from starting at all.
-  it("owns two not-yet-written sessions for one working directory independently", () => {
-    const session = makeSession();
-    const sessionRoot = path.join(session.root, "sessions");
-    const first = path.join(sessionRoot, "encoded", "2026-04-02T00-00-00-000Z_a.jsonl");
-    const second = path.join(sessionRoot, "encoded", "2026-04-02T00-00-01-000Z_b.jsonl");
-
-    const leaseA = acquirePiSessionLease({ sessionFile: first, owner: "sdk", ownerId: "chat-a" });
-    const leaseB = acquirePiSessionLease({ sessionFile: second, owner: "sdk", ownerId: "chat-b" });
-    expect(piSessionLeaseIsHeld(first)).toBe(true);
-    expect(piSessionLeaseIsHeld(second)).toBe(true);
-    expect(piSessionLeaseIsHeld(path.join(sessionRoot, "encoded", "unleased.jsonl"))).toBe(false);
-    expect(() => acquirePiSessionLease({ sessionFile: first, owner: "cli", ownerId: "pty-1" })).toThrow(/already owned/iu);
-
-    leaseA.release();
-    leaseB.release();
-    expect(piSessionLeaseIsHeld(first)).toBe(false);
+    expect(state(session.file, path.join(session.root, "other-worktree"))).toBe("rejected");
   });
 
   // The store root is shared by every project on the machine, so a single
@@ -240,12 +216,6 @@ describe("Pi native session leases", () => {
     expect(first).not.toBe(second);
     expect(path.dirname(first)).toBe(path.resolve(sessionRoot));
     expect(piSessionCreationLeaseTarget(sessionRoot, `${session.cwd}${path.sep}`)).toBe(first);
-
-    const lease = acquirePiSessionLease({ sessionFile: first, owner: "sdk", ownerId: "chat-1" });
-    const other = acquirePiSessionLease({ sessionFile: second, owner: "cli", ownerId: "pty-1" });
-    expect(() => acquirePiSessionLease({ sessionFile: first, owner: "cli", ownerId: "pty-2" })).toThrow(/already owned/iu);
-    lease.release();
-    other.release();
   });
 
   // Pi nests per cwd only when it is told nothing; an explicit directory is
@@ -263,6 +233,12 @@ describe("Pi native session leases", () => {
       root: path.resolve(sessionRoot),
       storageDir: path.resolve(sessionRoot),
     });
+    // Lookup by id honours the user-selected directory.
+    expect(resolvePiSessionFile({
+      cwd: session.cwd,
+      sessionId: session.id,
+      env: { HOME: session.root, PI_CODING_AGENT_SESSION_DIR: sessionRoot },
+    })).toBe(fs.realpathSync.native(session.file));
 
     const agentDir = path.join(session.root, "agent");
     fs.mkdirSync(agentDir, { recursive: true });
@@ -280,137 +256,55 @@ describe("Pi native session leases", () => {
     }).root).toBe(path.resolve(session.root));
   });
 
-  it("honors the user-selected native Pi session directory", () => {
-    const session = makeSession();
-    const sessionRoot = path.join(session.root, "sessions");
-    expect(piSessionRootForEnvironment({
-      HOME: session.root,
-      PI_CODING_AGENT_SESSION_DIR: sessionRoot,
-    })).toBe(path.resolve(sessionRoot));
-    expect(resolvePiSessionFile({
-      cwd: session.cwd,
-      sessionId: session.id,
-      env: { HOME: session.root, PI_CODING_AGENT_SESSION_DIR: sessionRoot },
-    })).toBe(fs.realpathSync.native(session.file));
-  });
-
-  it("cleans a dead writer sidecar but never overwrites a live one", () => {
+  it("replaces a dead or PID-reused writer sidecar but never a live one", () => {
     const session = makeSession();
     const lockPath = `${session.file}.ade-lease`;
-    fs.writeFileSync(lockPath, `${JSON.stringify({
-      version: 1,
-      token: "dead",
-      owner: "sdk",
-      ownerId: "old",
-      pid: 999_999_999,
-      acquiredAt: new Date().toISOString(),
-      sessionFile: session.file,
-    })}\n`);
+    const liveStart = "2026-08-06T00:00:00.000Z";
+    const isProcessIdentityLive = (_pid: number, startedAt: string | null | undefined) => startedAt === liveStart;
+    const takeover = (token: string, fields: Record<string, unknown>) => {
+      writeLeaseRecord(session.file, token, fields);
+      const lease = acquirePiSessionLease({ sessionFile: session.file, owner: "cli", ownerId: "new", isProcessIdentityLive });
+      expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).not.toBe(token);
+      lease.release();
+    };
 
-    const lease = acquirePiSessionLease({ sessionFile: session.file, owner: "cli", ownerId: "pty-2" });
-    expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).not.toBe("dead");
-    lease.release();
-  });
+    takeover("dead", { version: 1, pid: 999_999_999 });
+    takeover("reused-pid", { version: 2, pid: process.pid, processStartedAt: "2026-01-01T00:00:00.000Z" });
 
-  it("uses the process start identity to distinguish a reused PID", () => {
-    const session = makeSession();
-    const lockPath = `${session.file}.ade-lease`;
-    fs.writeFileSync(lockPath, `${JSON.stringify({
-      version: 2,
-      token: "reused-pid",
-      owner: "sdk",
-      ownerId: "old-runtime",
-      pid: process.pid,
-      processStartedAt: "2026-01-01T00:00:00.000Z",
-      acquiredAt: new Date().toISOString(),
-      sessionFile: session.file,
-    })}\n`);
-
-    const lease = acquirePiSessionLease({
-      sessionFile: session.file,
-      owner: "cli",
-      ownerId: "new-runtime",
-      isProcessIdentityLive: (_pid, startedAt) => startedAt === "2026-08-06T00:00:00.000Z",
-    });
-    expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).token).not.toBe("reused-pid");
-    lease.release();
-
-    fs.writeFileSync(lockPath, `${JSON.stringify({
-      version: 2,
-      token: "same-incarnation",
-      owner: "sdk",
-      ownerId: "live-runtime",
-      pid: process.pid,
-      processStartedAt: "2026-08-06T00:00:00.000Z",
-      acquiredAt: new Date().toISOString(),
-      sessionFile: session.file,
-    })}\n`);
-    expect(() => acquirePiSessionLease({
-      sessionFile: session.file,
-      owner: "cli",
-      ownerId: "blocked-runtime",
-      isProcessIdentityLive: (_pid, startedAt) => startedAt === "2026-08-06T00:00:00.000Z",
-    })).toThrow(/already owned/iu);
+    writeLeaseRecord(session.file, "same-incarnation", { version: 2, pid: process.pid, processStartedAt: liveStart });
+    expect(() => acquirePiSessionLease({ sessionFile: session.file, owner: "cli", ownerId: "blocked", isProcessIdentityLive }))
+      .toThrow(/already owned/iu);
     fs.unlinkSync(lockPath);
   });
 
   it("does not release a replacement sidecar owned by another writer", () => {
     const session = makeSession();
-    const lockPath = `${session.file}.ade-lease`;
     const lease = acquirePiSessionLease({ sessionFile: session.file, owner: "sdk", ownerId: "chat-lease" });
-    const replacement = {
-      version: 1 as const,
-      token: "replacement",
-      owner: "cli" as const,
-      ownerId: "external-cli",
-      pid: process.pid,
-      acquiredAt: new Date().toISOString(),
-      sessionFile: session.file,
-    };
-    fs.writeFileSync(lockPath, `${JSON.stringify(replacement)}\n`);
-
+    writeLeaseRecord(session.file, "replacement", { version: 1, owner: "cli", ownerId: "external-cli", pid: process.pid });
     lease.release();
+    const lockPath = `${session.file}.ade-lease`;
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toMatchObject({ token: "replacement", owner: "cli" });
     fs.unlinkSync(lockPath);
   });
 
-  it("rejects a session id whose header belongs to another cwd", () => {
+  it("resolves and lists only sessions whose header names this exact cwd", () => {
     const session = makeSession();
+    const sessionRoot = path.join(session.root, "sessions");
     const otherCwd = path.join(session.root, "other");
-    expect(resolvePiSessionFile({ cwd: otherCwd, sessionId: session.id, sessionRoot: path.join(session.root, "sessions") })).toBeNull();
-    expect(resolvePiSessionFile({ cwd: otherCwd, sessionId: "", sessionFile: session.file, sessionRoot: path.join(session.root, "sessions") })).toBeNull();
-  });
+    expect(resolvePiSessionFile({ cwd: otherCwd, sessionId: session.id, sessionRoot })).toBeNull();
+    expect(resolvePiSessionFile({ cwd: otherCwd, sessionId: "", sessionFile: session.file, sessionRoot })).toBeNull();
 
-  it("rejects native headers with a missing cwd at both explicit and id lookup boundaries", () => {
-    const session = makeSession();
     const missingCwdId = "019fd86d-f40d-76c6-a194-d5ba030cbad4";
-    const missingCwdFile = path.join(session.root, "sessions", "encoded", `${missingCwdId}.jsonl`);
-    fs.writeFileSync(missingCwdFile, `${JSON.stringify({ type: "session", id: missingCwdId })}\n`);
+    const missingCwdFile = path.join(sessionRoot, "encoded", `${missingCwdId}.jsonl`);
+    writeSessionHeader(missingCwdFile, { id: missingCwdId });
+    expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: missingCwdId, sessionFile: missingCwdFile, sessionRoot })).toBeNull();
+    expect(resolvePiSessionFile({ cwd: session.cwd, sessionId: missingCwdId, sessionRoot })).toBeNull();
 
-    expect(resolvePiSessionFile({
-      cwd: session.cwd,
-      sessionId: missingCwdId,
-      sessionFile: missingCwdFile,
-      sessionRoot: path.join(session.root, "sessions"),
-    })).toBeNull();
-    expect(resolvePiSessionFile({
-      cwd: session.cwd,
-      sessionId: missingCwdId,
-      sessionRoot: path.join(session.root, "sessions"),
-    })).toBeNull();
-  });
-
-  it("snapshots only exact-cwd native sessions for implicit PTY ownership", () => {
-    const session = makeSession();
-    const foreignCwd = path.join(session.root, "foreign");
     const foreignId = "019fd86d-f40d-76c6-a194-d5ba030cbad5";
-    const foreignFile = path.join(session.root, "sessions", "encoded", `${foreignId}.jsonl`);
-    fs.writeFileSync(foreignFile, `${JSON.stringify({ type: "session", id: foreignId, cwd: foreignCwd })}\n`);
-
-    expect(listPiSessionFilesForCwd({
-      cwd: session.cwd,
-      sessionRoot: path.join(session.root, "sessions"),
-    })).toEqual([{ filePath: fs.realpathSync.native(session.file), id: session.id }]);
+    writeSessionHeader(path.join(sessionRoot, "encoded", `${foreignId}.jsonl`), { id: foreignId, cwd: path.join(session.root, "foreign") });
+    // The implicit PTY ownership snapshot.
+    expect(listPiSessionFilesForCwd({ cwd: session.cwd, sessionRoot }))
+      .toEqual([{ filePath: fs.realpathSync.native(session.file), id: session.id }]);
   });
 
   it("rejects a live lease held by another Node process and allows handoff after release", async () => {
@@ -493,25 +387,6 @@ describe("pi session store trust boundary", () => {
     expect(store.root.startsWith(path.join(home, ".pi", "agent"))).toBe(true);
     expect(store.root).not.toContain("pi-sessions");
     expect(repositoryOverridesPiSessionDir(cwd)).toBe(true);
-  });
-
-  it("reports no override for a checkout that does not ask for one", () => {
-    const { cwd } = makeCheckout({ theme: "dark" });
-    expect(repositoryOverridesPiSessionDir(cwd)).toBe(false);
-  });
-
-  // The profile's own settings.json IS honoured — that file is the user's.
-  it("honours the session directory the user set in their own profile", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pi-profile-"));
-    tempRoots.push(home);
-    const configured = path.join(home, "elsewhere", "sessions");
-    fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
-    fs.writeFileSync(
-      path.join(home, ".pi", "agent", "settings.json"),
-      JSON.stringify({ sessionDir: configured }),
-    );
-
-    const store = piSessionStoreForEnvironment({ HOME: home, USERPROFILE: home } as NodeJS.ProcessEnv);
-    expect(store.root).toBe(path.resolve(configured));
+    expect(repositoryOverridesPiSessionDir(makeCheckout({ theme: "dark" }).cwd)).toBe(false);
   });
 });

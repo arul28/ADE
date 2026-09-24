@@ -291,7 +291,7 @@ describe("RemoteConnectionService", () => {
     );
   });
 
-  it("regression: stays off a machine another client took, until Connect", async () => {
+  it("requires explicit reconnection after another client takes the machine", async () => {
     // Two ADEs sharing this computer's pairing each reconnected the moment the
     // host closed them with "Superseded by a newer connection", and took the
     // MacBook from each other every few seconds (2026-09-23).
@@ -317,7 +317,8 @@ describe("RemoteConnectionService", () => {
 
     const status = service.snapshot().connections[0]!;
     expect(status.state).toBe("error");
-    expect(status.lastError).toBe("Another ADE on this computer is using the connection to studio. Connect to use it here.");
+    expect(status.lastError).toMatch(/another ADE on this computer is using the connection to studio/i);
+    expect(status.lastError).toMatch(/connect to use it here/i);
     await expect(service.connect(remote.id)).rejects.toThrow(/manually disconnected/);
     expect(pool.connect).toHaveBeenCalledTimes(1);
     // Nothing was written to the saved machine: the hold lives in memory only.

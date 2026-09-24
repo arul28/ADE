@@ -8288,7 +8288,7 @@ describe("prService detached PR rows", () => {
     expect(sqlRun.some((sql: string) => sql.includes("insert into pull_requests"))).toBe(false);
   });
 
-  it("keeps a detached row detached when its lane no longer exists", async () => {
+  it("preserves detached pull request history after lane deletion", async () => {
     // A background refresh must never resurrect history. The lane is gone, so nothing
     // can reclaim the row.
     const row = detachedRow();

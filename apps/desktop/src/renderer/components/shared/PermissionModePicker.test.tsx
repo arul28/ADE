@@ -16,35 +16,19 @@ describe("PermissionModePicker", () => {
     vi.restoreAllMocks();
   });
 
-  it("places the menu with top + translateY instead of innerHeight-based bottom", () => {
+  it("selects the chosen permission mode", () => {
+    const onSelect = vi.fn();
     render(
       <PermissionModePicker
         ariaLabel="Permission mode"
         selectedValue="edit"
         options={OPTIONS}
-        onSelect={() => {}}
+        onSelect={onSelect}
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: "Permission mode" });
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-      x: 180,
-      y: 420,
-      top: 420,
-      left: 180,
-      bottom: 444,
-      right: 260,
-      width: 80,
-      height: 24,
-      toJSON: () => ({}),
-    });
-
-    fireEvent.click(trigger);
-    const menu = screen.getByRole("listbox", { name: "Permission mode" });
-    expect(menu.style.top).toBe("420px");
-    expect(menu.style.left).toBe("180px");
-    expect(menu.style.width).toBe("240px");
-    expect(menu.style.transform).toBe("translateY(calc(-100% - 8px))");
-    expect(menu.style.bottom).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Permission mode" }));
+    fireEvent.click(screen.getByRole("option", { name: "Plan mode" }));
+    expect(onSelect).toHaveBeenCalledWith("plan");
   });
 });

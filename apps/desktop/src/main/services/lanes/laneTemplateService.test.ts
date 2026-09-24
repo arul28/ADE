@@ -199,7 +199,7 @@ describe("laneTemplateService", () => {
       expect(service.getDefaultTemplateId()).toBe("tpl-default");
     });
 
-    it("returns null when the configured default no longer exists", () => {
+    it("returns null for a missing configured template", () => {
       const snapshot = makeSnapshot({
         effective: { defaultLaneTemplate: "tpl-missing", laneTemplates: [makeTemplate({ id: "tpl-live" })] },
       });

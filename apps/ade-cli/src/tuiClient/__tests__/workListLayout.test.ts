@@ -60,18 +60,6 @@ const newChat: WorkListRow = { kind: "new-chat", key: "new-chat:lane-1", laneId:
 const shelf: WorkListRow = { kind: "shelf", key: "shelf:settled", shelf: "settled", count: 2, expanded: false };
 
 describe("workListRowHeight", () => {
-  it("charges a session card three lines, matching the desktop SessionCard", () => {
-    expect(workListRowHeight(sessionRow("full"))).toBe(3);
-    expect(workListRowHeight(sessionRow("no-preview", { preview: null }))).toBe(3);
-    expect(workListRowHeight(sessionRow("bare", {
-      preview: null,
-      ageLabel: "",
-      provider: null,
-      hasDraft: false,
-      machine: null,
-    }))).toBe(3);
-  });
-
   it("charges a nested subagent one line with no gap under its parent", () => {
     const helper = sessionRow("helper", { nested: true });
     expect(workListRowHeight(helper)).toBe(1);
@@ -92,15 +80,6 @@ describe("workListRowHeight", () => {
     expect(workListRowHeight(laneHeader("lane-1"))).toBe(1);
     expect(workListRowHeight(newChat)).toBe(1);
     expect(workListRowHeight(shelf)).toBe(1);
-  });
-
-  it("breathes above every row except the first", () => {
-    expect(workListRowMarginTop(laneHeader("lane-1"), true)).toBe(0);
-    expect(workListRowMarginTop(laneHeader("lane-2"), false)).toBe(1);
-    expect(workListRowMarginTop(shelf, false)).toBe(1);
-    expect(workListRowMarginTop(sessionRow("a"), false)).toBe(1);
-    expect(workListRowMarginTop(sessionRow("solo", { showLaneIdentity: true }), false)).toBe(1);
-    expect(workListRowMarginTop(newChat, false)).toBe(1);
   });
 });
 

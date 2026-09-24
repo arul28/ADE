@@ -94,6 +94,23 @@ class ExitingBeforeInitChild extends EventEmitter {
   }
 }
 
+/** Acquires one worker for `chat`, forking `child`, optionally resuming a Droid session. */
+function acquireForChat(chat: string) {
+  return async (child: FakeSdkChild, settings: { modelId: string; reasoningEffort?: "high" }, resume: string | null) => {
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-effort:${Date.now()}:${Math.random()}`;
+    const acquired = await acquireDroidSdkConnection({
+      poolKey,
+      droidPath: "/usr/local/bin/droid",
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      sessionId: chat,
+      resumeSessionId: resume,
+      settings,
+    });
+    return { poolKey, acquired };
+  };
+}
+
 afterEach(() => {
   forkMock.mockReset();
 });
@@ -149,64 +166,11 @@ describe("Droid SDK pool", () => {
     expect(child.disposeCount).toBe(1);
   });
 
-  it("sends screenshot paths over worker IPC instead of inline bytes", async () => {
-    const child = new FakeSdkChild();
-    forkMock.mockReturnValue(child);
-    const poolKey = `test-image-paths:${Date.now()}:${Math.random()}`;
-    const acquired = await acquireDroidSdkConnection({
-      poolKey,
-      droidPath: "/usr/local/bin/droid",
-      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-      sessionId: "session-1",
-      settings: {
-        modelId: "droid-model",
-        autonomyLevel: "medium",
-        interactionMode: "auto",
-      },
-    });
-
-    await acquired.pooled.sendPrompt({
-      promptText: "compare these screens",
-      images: [
-        { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
-        { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
-      ],
-      settings: { modelId: "droid-model" },
-    });
-
-    const sendReq = child.sent.find((message) => (
-      message
-      && typeof message === "object"
-      && "type" in message
-      && message.type === "send"
-    )) as { payload?: { images?: Array<{ path?: string; data?: string }> } } | undefined;
-    expect(sendReq?.payload?.images).toEqual([
-      { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
-      { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
-    ]);
-    expect(sendReq?.payload?.images?.some((image) => image.data)).toBeFalsy();
-
-    releaseDroidSdkConnection(poolKey, acquired.generation);
-  });
-
   // A model switch replaces the worker but resumes the same Droid session,
   // which still carries the effort the old worker stated. The next worker is
   // told, so an effort the chat has since cleared is reset, not inherited.
   it("tells a resuming worker which effort ADE stated to the session", async () => {
-    const chat = `chat-effort-${Math.random()}`;
-    const acquire = async (child: FakeSdkChild, settings: { modelId: string; reasoningEffort?: "high" }, resume: string | null) => {
-      forkMock.mockReturnValue(child);
-      const poolKey = `test-effort:${Date.now()}:${Math.random()}`;
-      const acquired = await acquireDroidSdkConnection({
-        poolKey,
-        droidPath: "/usr/local/bin/droid",
-        workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-        sessionId: chat,
-        resumeSessionId: resume,
-        settings,
-      });
-      return { poolKey, acquired };
-    };
+    const acquire = acquireForChat(`chat-effort-${Math.random()}`);
 
     const first = new FakeSdkChild();
     const one = await acquire(first, { modelId: "model-a" }, null);
@@ -231,20 +195,7 @@ describe("Droid SDK pool", () => {
   // not load). The effort is then still on the session, so the chat's next
   // worker must still be told to reset it.
   it("keeps a cleared effort for the next worker until a worker reports the reset landed", async () => {
-    const chat = `chat-effort-kept-${Math.random()}`;
-    const acquire = async (child: FakeSdkChild, settings: { modelId: string; reasoningEffort?: "high" }, resume: string | null) => {
-      forkMock.mockReturnValue(child);
-      const poolKey = `test-effort-kept:${Date.now()}:${Math.random()}`;
-      const acquired = await acquireDroidSdkConnection({
-        poolKey,
-        droidPath: "/usr/local/bin/droid",
-        workspacePath: path.join(os.tmpdir(), "ade-workspace"),
-        sessionId: chat,
-        resumeSessionId: resume,
-        settings,
-      });
-      return { poolKey, acquired };
-    };
+    const acquire = acquireForChat(`chat-effort-kept-${Math.random()}`);
 
     const first = new FakeSdkChild();
     const one = await acquire(first, { modelId: "model-a", reasoningEffort: "high" }, null);

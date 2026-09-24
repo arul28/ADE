@@ -84,7 +84,7 @@ import {
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
-import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { isSettledSteerDeliveryState, parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   captureAgentChatHistoryArrivalWatermark,
   mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot,
@@ -1256,7 +1256,10 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
         // clear it from the display. Without this the chip stays staged after
         // the user clicks "Send Now" or after a queued steer is delivered.
         steerMap.delete(event.steerId);
-        resolvedSteerIds.add(event.steerId);
+        // "accepted" is not final: a Cursor or OpenCode turn can refuse an
+        // inline steer it was offered, and the same steerId comes back as
+        // "queued". Resolving it here would keep that chip hidden for good.
+        if (isSettledSteerDeliveryState(event.deliveryState)) resolvedSteerIds.add(event.steerId);
       }
     } else if (event.type === "system_notice" && event.steerId) {
       // "cancelled" or "Delivering" notices resolve the steer

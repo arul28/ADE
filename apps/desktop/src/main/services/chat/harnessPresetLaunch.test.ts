@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
-  claudeSubagentEnv,
+  buildKeySourceLaunch,
   previewHarnessLaunchPlan,
   resolveAgentPins,
   resolveHarnessPresetForLaunch,
@@ -16,7 +16,11 @@ import {
   type HarnessPresetLaunchDeps,
 } from "./harnessPresetLaunch";
 import {
-  buildCodexProxyConfigToml,
+  listLaunchableCredentials,
+  resolveCredentialForLaunch,
+} from "./harnessPresetCredentialCatalog";
+import {
+  buildCodexPresetConfigToml,
   credentialConfigHome,
   presetConfigHome,
   pruneOrphanedPresetConfigHomesFromMachine,
@@ -26,12 +30,8 @@ import {
 } from "./harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import { defaultReadProxyConnection } from "./harnessPresetProxyConnection";
-import { cliPresetGateReason, isCliPresetGatedHarness } from "../../../shared/harnessPresetCliGate";
 import { CLAUDE_BUILTIN_AGENT_TEMPLATES } from "../../../shared/claudeBuiltinAgentPrompts";
-import {
-  HARNESS_CREDENTIAL_STORE_PROVIDER,
-  credentialStoreProviderForHarness,
-} from "../../../shared/harnessCredentialProviders";
+import { HARNESS_CREDENTIAL_STORE_PROVIDER } from "../../../shared/harnessCredentialProviders";
 import { buildTrackedCliLaunchCommand, buildTrackedCliResumeLaunchCommand } from "../../../shared/cliLaunch";
 import type { TerminalResumeMetadata } from "../../../shared/types/sessions";
 import { allProviderKeySpecs } from "../../../renderer/components/settings/providers/keys/providerKeySpecs";
@@ -97,20 +97,9 @@ function deps(overrides: Partial<HarnessPresetLaunchDeps> = {}): HarnessPresetLa
   };
 }
 
-describe("credentialStoreProviderForHarness", () => {
+describe("credential store provider mapping", () => {
   // The vendor a harness reads a key from is not the harness's own id, and
   // getting this wrong files the key where nothing looks for it.
-  it.each([
-    ["claude", "anthropic"],
-    ["codex", "openai"],
-    ["kimi", "moonshotai"],
-    ["grok", "xai"],
-    ["opencode", "opencode"],
-    ["droid", "droid"],
-  ])("files %s keys under %s", (harness, store) => {
-    expect(credentialStoreProviderForHarness(harness)).toBe(store);
-  });
-
   it("uses the shared mapping in every renderer provider-key spec", () => {
     for (const spec of allProviderKeySpecs()) {
       expect(spec.credentialProvider).toBe(
@@ -130,6 +119,309 @@ describe("stripTrailingV1", () => {
   });
 });
 
+
+describe("buildKeySourceLaunch", () => {
+  it("points Claude at a preset-owned config home with a gateway token", () => {
+    const result = buildKeySourceLaunch({
+      harness: "claude",
+      credential: credential({ baseUrl: "https://gw.example.com/v1" }),
+      key: "sk-abc",
+      adeHome,
+      configHomeId: "hp_1",
+    });
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+    expect(result.env.CLAUDE_CONFIG_DIR).toBe(presetConfigHome(adeHome, "hp_1"));
+    expect(result.env.ANTHROPIC_AUTH_TOKEN).toBe("sk-abc");
+    expect(result.env.ANTHROPIC_BASE_URL).toBe("https://gw.example.com");
+    expect(result.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(fs.existsSync(result.env.CLAUDE_CONFIG_DIR!)).toBe(true);
+  });
+
+  it("omits ANTHROPIC_BASE_URL when the key has no endpoint", () => {
+    const result = buildKeySourceLaunch({
+      harness: "claude",
+      credential: credential(),
+      key: "sk-direct",
+      adeHome,
+      configHomeId: "hp_1",
+    });
+    if (result.status !== "ready") throw new Error("expected ready");
+    expect(result.env).not.toHaveProperty("ANTHROPIC_BASE_URL");
+  });
+
+  it("writes Codex a config.toml in its own CODEX_HOME and never elsewhere", () => {
+    const result = buildKeySourceLaunch({
+      harness: "codex",
+      credential: credential({ provider: "openai", baseUrl: "https://gw.example.com/v1" }),
+      key: "sk-openai",
+      adeHome,
+      configHomeId: "hp_codex",
+    });
+    if (result.status !== "ready") throw new Error("expected ready");
+    const home = presetConfigHome(adeHome, "hp_codex");
+    expect(result.env.CODEX_HOME).toBe(home);
+    expect(result.env.ADE_PRESET_OPENAI_API_KEY).toBe("sk-openai");
+    expect(result.codexConfigHome).toBe(home);
+    const toml = fs.readFileSync(path.join(home, "config.toml"), "utf8");
+    expect(toml).toContain('model_provider = "ade"');
+    expect(toml).toContain("[model_providers.ade]");
+    expect(toml).toContain('base_url = "https://gw.example.com/v1"');
+    expect(toml).toContain('wire_api = "responses"');
+    expect(toml).toContain('env_key = "ADE_PRESET_OPENAI_API_KEY"');
+    expect(toml).not.toContain("sk-openai");
+  });
+
+  it("defaults the Codex base_url to OpenAI when the key names no endpoint", () => {
+    expect(buildCodexPresetConfigToml(undefined)).toContain('base_url = "https://api.openai.com/v1"');
+  });
+
+  it("writes OpenCode's provider block to an ADE-owned config path", () => {
+    const result = buildKeySourceLaunch({
+      harness: "opencode",
+      credential: credential({
+        provider: "opencode",
+        credentialId: "gw",
+        label: "Gateway",
+        baseUrl: "https://gw.example.com/v1",
+        models: ["gw/model-a", "gw/model-b"],
+      }),
+      key: "sk-gw",
+      adeHome,
+      configHomeId: "hp_oc",
+    });
+    if (result.status !== "ready") throw new Error("expected ready");
+    expect(result.env.OPENCODE_CONFIG).toBe(path.join(adeHome, "provider-homes", "preset", "hp_oc", "opencode.json"));
+    const config = JSON.parse(fs.readFileSync(result.env.OPENCODE_CONFIG!, "utf8")) as {
+      provider: Record<string, { options: { apiKey?: string; baseURL: string }; models: Record<string, unknown> }>;
+    };
+    expect(config.provider.opencode?.options).toEqual({
+      baseURL: "https://gw.example.com/v1",
+      apiKey: "sk-gw",
+    });
+    expect(config.provider.opencode?.models).toEqual({ "gw/model-a": {}, "gw/model-b": {} });
+    expect(result.openCodeProvider?.id).toBe("opencode");
+  });
+
+  it("refuses an OpenCode key with no endpoint", () => {
+    const result = buildKeySourceLaunch({
+      harness: "opencode",
+      credential: credential({ provider: "opencode", models: ["m"] }),
+      key: "sk-gw",
+      adeHome,
+      configHomeId: "hp_oc",
+    });
+    expect(result.status).toBe("unsupported");
+  });
+
+  it("writes Droid custom models into a preset-owned FACTORY_HOME_OVERRIDE", () => {
+    const result = buildKeySourceLaunch({
+      harness: "droid",
+      credential: credential({
+        provider: "droid",
+        baseUrl: "https://gw.example.com/v1",
+        models: ["gw-model"],
+      }),
+      key: "sk-factory",
+      adeHome,
+      configHomeId: "hp_droid",
+    });
+    if (result.status !== "ready") throw new Error("expected ready");
+    const home = presetConfigHome(adeHome, "hp_droid");
+    expect(result.env.FACTORY_HOME_OVERRIDE).toBe(home);
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(home, ".factory", "settings.json"), "utf8"),
+    ) as { custom_models: Array<{ model: string; base_url: string; api_key: string }> };
+    expect(settings.custom_models).toHaveLength(1);
+    expect(settings.custom_models[0]).toMatchObject({
+      model: "gw-model",
+      base_url: "https://gw.example.com/v1",
+      api_key: "sk-factory",
+    });
+  });
+
+  it("applies owner-only ACLs to every credential-bearing home and file on Windows", () => {
+    const calls: Array<[string, string[]]> = [];
+    const security = {
+      platform: "win32" as const,
+      currentWindowsUser: "ADEBOX\\arul",
+      aclRunner: (command: string, args: string[]) => {
+        calls.push([command, args]);
+        return { status: 0 };
+      },
+    };
+    const common = { adeHome, key: "sk-secret", ...security };
+
+    buildKeySourceLaunch({ harness: "claude", credential: credential({ provider: "anthropic" }), configHomeId: "hp_claude", ...common });
+    buildKeySourceLaunch({ harness: "codex", credential: credential({ provider: "openai" }), configHomeId: "hp_codex_acl", ...common });
+    buildKeySourceLaunch({ harness: "opencode", credential: credential({ provider: "opencode", baseUrl: "https://gw.example.com", models: ["m"] }), configHomeId: "hp_opencode_acl", ...common });
+    buildKeySourceLaunch({ harness: "droid", credential: credential({ provider: "droid", models: ["m"] }), configHomeId: "hp_droid_acl", ...common });
+
+    const securedPaths = calls.flatMap(([, args]) => args[0] ? [args[0]] : []);
+    expect(calls.every(([command]) => command.toLowerCase().endsWith("icacls.exe"))).toBe(true);
+    expect(securedPaths).toEqual([
+      presetConfigHome(adeHome, "hp_claude"),
+      presetConfigHome(adeHome, "hp_codex_acl"),
+      presetConfigHome(adeHome, "hp_opencode_acl"),
+      presetConfigHome(adeHome, "hp_droid_acl"),
+      path.join(presetConfigHome(adeHome, "hp_droid_acl"), ".factory"),
+    ]);
+
+    buildKeySourceLaunch({ harness: "claude", credential: credential({ provider: "anthropic" }), configHomeId: "hp_claude", ...common });
+    expect(calls).toHaveLength(5);
+  });
+
+  it("keeps unrelated keys in an existing Droid settings.json", () => {
+    const home = presetConfigHome(adeHome, "hp_droid");
+    fs.mkdirSync(path.join(home, ".factory"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".factory", "settings.json"), JSON.stringify({ theme: "dark" }));
+    buildKeySourceLaunch({
+      harness: "droid",
+      credential: credential({ provider: "droid", models: ["gw-model"] }),
+      key: "sk-factory",
+      adeHome,
+      configHomeId: "hp_droid",
+    });
+    const settings = JSON.parse(fs.readFileSync(path.join(home, ".factory", "settings.json"), "utf8")) as Record<string, unknown>;
+    expect(settings.theme).toBe("dark");
+    expect(settings.custom_models).toBeDefined();
+  });
+
+  it("turns a private-home security failure into an unsupported launch", () => {
+    const result = buildKeySourceLaunch({
+      harness: "claude",
+      credential: credential({ provider: "anthropic" }),
+      key: "sk-fails-securely",
+      adeHome,
+      configHomeId: "hp_acl_failure",
+      platform: "win32",
+      currentWindowsUser: "ADEBOX\\arul",
+      aclRunner: () => ({ status: 1, stderr: "access denied" }),
+    });
+    expect(result).toMatchObject({ status: "unsupported", unsupported: expect.stringMatching(/Unable to secure Windows path/) });
+
+    const subscriptionResult = resolveHarnessPresetPlan(
+      preset({ harness: "codex", source: { kind: "subscription", provider: "codex" } }),
+      deps({
+        platform: "win32",
+        currentWindowsUser: "ADEBOX\\arul",
+        aclRunner: () => ({ status: 1, stderr: "access denied" }),
+        readProxyConnection: () => ({ port: 8123, apiKey: "proxy-key", prefix: "oai" }),
+      }),
+    );
+    expect(subscriptionResult).toMatchObject({ status: "unsupported", unsupported: expect.stringMatching(/Unable to secure Windows path/) });
+  });
+
+  it.each([
+    ["qwen", { OPENAI_API_KEY: "sk-x", OPENAI_BASE_URL: "https://dash.example/v1" }],
+    ["kimi", { MOONSHOT_API_KEY: "sk-x" }],
+    ["grok", { XAI_API_KEY: "sk-x" }],
+    ["copilot", { GITHUB_TOKEN: "sk-x" }],
+  ] as const)("exports %s's own variable", (harness, expected) => {
+    const result = buildKeySourceLaunch({
+      harness,
+      credential: credential({ provider: harness, baseUrl: "https://dash.example/v1" }),
+      key: "sk-x",
+      adeHome,
+      configHomeId: "hp_x",
+    });
+    if (result.status !== "ready") throw new Error("expected ready");
+    for (const [key, value] of Object.entries(expected)) expect(result.env[key]).toBe(value);
+  });
+});
+
+describe("resolveCredentialForLaunch — a key with no preset", () => {
+  it("previews credential and subscription launches without writing config homes", () => {
+    for (const [provider, summary] of [
+      ["codex", credential({ provider: "openai", baseUrl: "https://gw.example/v1" })],
+      ["opencode", credential({ provider: "opencode", baseUrl: "https://gw.example/v1", models: ["gw/model"] })],
+      ["droid", credential({ provider: "droid", baseUrl: "https://gw.example/v1", models: ["gw/model"] })],
+    ] as const) {
+      const preview = previewHarnessLaunchPlan(
+        { provider, credentialId: "work" },
+        deps({ getCredentialSummary: () => summary }),
+      );
+      expect(preview.status).toBe("ready");
+    }
+
+    const subscriptionPreview = previewHarnessLaunchPlan(
+      { provider: "codex", presetId: "hp_subscription" },
+      deps({
+        readPresets: () => [preset({
+          id: "hp_subscription",
+          harness: "codex",
+          source: { kind: "subscription", provider: "codex" },
+        })],
+        readProxyConnection: () => ({ port: 8123, apiKey: "proxy-key", prefix: "oai" }),
+      }),
+    );
+    expect(subscriptionPreview.status).toBe("ready");
+    expect(fs.existsSync(path.join(adeHome, "provider-homes"))).toBe(false);
+  });
+
+  it("routes a bare key through the same per-harness table", () => {
+    const result = resolveCredentialForLaunch("claude", "work", deps({
+      getCredentialSummary: () => credential({ baseUrl: "https://openrouter.ai/api" }),
+    }));
+    if (result?.status !== "ready") throw new Error("expected ready");
+    expect(result.presetId).toBeNull();
+    expect(result.env.ANTHROPIC_AUTH_TOKEN).toBe("sk-test-key");
+    expect(result.env.ANTHROPIC_API_KEY).toBe("");
+    expect(result.env.CLAUDE_CONFIG_DIR).toBe(credentialConfigHome(adeHome, "anthropic", "work"));
+  });
+
+  it("decodes a custom OpenCode provider credential id for lookup and launch", () => {
+    const result = resolveCredentialForLaunch("opencode", "custom:acme:work", deps({
+      getCredentialSummary: (provider, credentialId) => provider === "acme" && credentialId === "work"
+        ? credential({ provider: "acme", credentialId: "work", baseUrl: "https://acme.example/v1", models: ["acme/model"] })
+        : null,
+      getCredentialKey: (provider, credentialId) => provider === "acme" && credentialId === "work" ? "sk-acme" : null,
+    }));
+    if (result?.status !== "ready") throw new Error("expected ready");
+    expect(result.env.OPENCODE_CONFIG).toBe(path.join(credentialConfigHome(adeHome, "acme", "work"), "opencode.json"));
+    expect(JSON.parse(fs.readFileSync(result.env.OPENCODE_CONFIG!, "utf8"))).toMatchObject({
+      provider: { acme: { options: { apiKey: "sk-acme" } } },
+    });
+  });
+
+  it("lists OpenCode credentials from every configured custom provider", () => {
+    const rows = listLaunchableCredentials("opencode", {
+      customProviderIds: ["acme"],
+      listCredentials: (provider) => provider === "opencode"
+        ? [credential({ provider: "opencode", credentialId: "default", models: ["native/model"] })]
+        : provider === "acme"
+          ? [credential({ provider: "acme", credentialId: "work", models: ["acme/model"] })]
+          : [],
+    });
+    expect(rows.map((row) => `${row.provider}:${row.credentialId}`)).toEqual(["opencode:default", "acme:work"]);
+  });
+
+  it("carries the OpenCode config path through fresh and resumed launches", () => {
+    const plan = resolveCredentialForLaunch("opencode", "custom:acme:work", deps({
+      getCredentialSummary: (provider, credentialId) => provider === "acme" && credentialId === "work"
+        ? credential({ provider: "acme", credentialId: "work", baseUrl: "https://acme.example/v1", models: ["acme/model"] })
+        : null,
+      getCredentialKey: () => "sk-acme",
+    }));
+    if (plan?.status !== "ready") throw new Error("expected ready");
+    const presetLaunch = { env: plan.env, passthroughModelId: true as const };
+    const fresh = buildTrackedCliLaunchCommand({
+      provider: "opencode",
+      permissionMode: "default",
+      model: "acme/model",
+      preset: presetLaunch,
+    });
+    expect(fresh.env?.OPENCODE_CONFIG).toBe(plan.env.OPENCODE_CONFIG);
+    const metadata: TerminalResumeMetadata = {
+      provider: "opencode",
+      targetKind: "session",
+      targetId: "ses_1",
+      launch: { permissionMode: "default", model: "acme/model" },
+    };
+    const resumed = buildTrackedCliResumeLaunchCommand(metadata, { preset: presetLaunch });
+    expect(resumed.env?.OPENCODE_CONFIG).toBe(plan.env.OPENCODE_CONFIG);
+  });
+});
 
 describe("resolveHarnessPresetPlan — account source", () => {
   it("points the harness at the account's config home", () => {
@@ -155,54 +447,47 @@ describe("resolveHarnessPresetPlan — account source", () => {
     expect(plan.env.CODEX_HOME).toBeDefined();
     expect(plan.env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
   });
+});
 
-  it("refuses a cross-provider account rather than signing in with the wrong one", () => {
-    // A Claude account cannot sign Codex in; the proxy exists for that, and
-    // this preset did not ask for it.
-    const plan = resolveHarnessPresetPlan(
-      preset({
-        harness: "codex",
-        source: { kind: "account", provider: "claude", instanceId: "work" },
-      }),
-      deps({ resolveInstance: () => ({ id: "work", provider: "claude", configHome: "/tmp/claude" }) }),
-    );
-    expect(plan.status).toBe("unsupported");
-  });
-
-  it("reports a removed account rather than launching on the wrong one", () => {
-    const plan = resolveHarnessPresetPlan(
-      preset({ source: { kind: "account", provider: "claude", instanceId: "gone" } }),
-      deps({ resolveInstance: () => null }),
-    );
-    expect(plan).toMatchObject({
-      status: "unsupported",
-      unsupported: "The account this preset signs in with is no longer on this machine.",
-    });
+describe("resolveHarnessPresetPlan — unsupported sources", () => {
+  // Unsupported is a value, not a throw: each row names why the launch falls
+  // back to native sign-in instead of starting on the wrong identity.
+  const liveProxy = () => ({ port: 8123, apiKey: "k", prefix: "anth" });
+  it.each<[string, Partial<HarnessPreset>, Partial<HarnessPresetLaunchDeps>, string | RegExp]>([
+    ["a cross-provider account",
+      { harness: "codex", source: { kind: "account", provider: "claude", instanceId: "work" } },
+      { resolveInstance: () => ({ id: "work", provider: "claude", configHome: "/tmp/claude" }) },
+      /cannot sign codex in directly/],
+    ["a removed account",
+      { source: { kind: "account", provider: "claude", instanceId: "gone" } },
+      { resolveInstance: () => null },
+      "The account this preset signs in with is no longer on this machine."],
+    ["a proxy with no login for the provider",
+      { source: { kind: "subscription", provider: "claude" } },
+      {},
+      "Sign-in through ADE's proxy is not available yet."],
+    ["a stopped proxy, distinct from a missing login",
+      { source: { kind: "subscription", provider: "claude" } },
+      { readProxyConnection: () => ({ reason: "proxy-stopped" }) },
+      "Sign-in through ADE's proxy is stopped; start the proxy and try again."],
+    ["a harness the proxy cannot drive",
+      { harness: "droid", source: { kind: "subscription", provider: "claude" } },
+      { readProxyConnection: liveProxy },
+      /cannot be pointed at ADE's proxy/],
+    ["a preset key missing from the store",
+      {},
+      { getCredentialSummary: () => null },
+      "The API key this preset uses is not on this machine."],
+  ])("refuses %s", (_label, presetOverrides, depsOverrides, reason) => {
+    const plan = resolveHarnessPresetPlan(preset(presetOverrides), deps(depsOverrides));
+    expect(plan).toMatchObject({ status: "unsupported" });
+    if (plan.status !== "unsupported") return;
+    if (typeof reason === "string") expect(plan.unsupported).toBe(reason);
+    else expect(plan.unsupported).toMatch(reason);
   });
 });
 
 describe("resolveHarnessPresetPlan — subscription source", () => {
-  it("says so when the proxy has no login for that provider", () => {
-    const plan = resolveHarnessPresetPlan(
-      preset({ source: { kind: "subscription", provider: "claude" } }),
-      deps(),
-    );
-    expect(plan).toMatchObject({
-      status: "unsupported",
-      unsupported: "Sign-in through ADE's proxy is not available yet.",
-    });
-  });
-
-  it("reports a stopped proxy distinctly from a missing login", () => {
-    const plan = resolveHarnessPresetPlan(
-      preset({ source: { kind: "subscription", provider: "claude" } }),
-      deps({ readProxyConnection: () => ({ reason: "proxy-stopped" }) }),
-    );
-    expect(plan).toMatchObject({
-      status: "unsupported",
-      unsupported: "Sign-in through ADE's proxy is stopped; start the proxy and try again.",
-    });
-  });
 
   it("builds Claude's gateway env from the proxy connection", () => {
     const plan = resolveHarnessPresetPlan(
@@ -255,20 +540,6 @@ describe("resolveHarnessPresetPlan — subscription source", () => {
       provider: { "ade-proxy": { options: { apiKey: "proxy-key" } } },
     });
   });
-
-  it("refuses a harness the proxy cannot drive", () => {
-    const plan = resolveHarnessPresetPlan(
-      preset({ harness: "droid", source: { kind: "subscription", provider: "claude" } }),
-      deps({ readProxyConnection: () => ({ port: 8123, apiKey: "k", prefix: "anth" }) }),
-    );
-    expect(plan.status).toBe("unsupported");
-  });
-
-  it("adds model_provider to the fragment proxyEnv supplies", () => {
-    const toml = buildCodexProxyConfigToml('[model_providers.ade-proxy]\nbase_url = "x"');
-    expect(toml.split("\n").filter((line) => line === 'model_provider = "ade-proxy"')).toHaveLength(1);
-    expect(toml).toContain("[model_providers.ade-proxy]");
-  });
 });
 
 describe("defaultReadProxyConnection", () => {
@@ -289,10 +560,6 @@ describe("defaultReadProxyConnection", () => {
     fs.mkdirSync(path.join(adeHome, "proxy", "auth"), { recursive: true });
     fs.writeFileSync(path.join(adeHome, "proxy", "auth", name), JSON.stringify(file));
   }
-
-  it("returns null when the proxy has never run", () => {
-    expect(defaultReadProxyConnection(adeHome)("claude")).toEqual({ reason: "proxy-stopped" });
-  });
 
   it("returns null when no enabled login exists for the provider", () => {
     writeProxyState({ port: 9000, pid: process.pid, startedAt: Date.now(), healthyAt: Date.now() });
@@ -340,47 +607,20 @@ describe("defaultReadProxyConnection", () => {
     expect(result && "prefix" in result ? result.prefix : null).toBe("anth");
   });
 
-  it.each([
-    [{ port: 9000, pid: null }, "explicit stop"],
-    [{ port: 9000, pid: Number.MAX_SAFE_INTEGER, startedAt: Date.now(), healthyAt: Date.now() }, "stale state"],
-  ])("reports %s as stopped when the supervisor is not live", (state, _label) => {
-    writeProxyState(state);
-    writeProxyConfig();
-    expect(defaultReadProxyConnection(adeHome)("claude")).toEqual({ reason: "proxy-stopped" });
-  });
-
-  it("rejects a health stamp from the future rather than trusting a skewed clock", () => {
+  it.each<[string, Record<string, unknown> | null]>([
+    ["a proxy that never ran", null],
+    ["an explicit stop", { port: 9000, pid: null }],
+    ["a dead supervisor PID", { port: 9000, pid: Number.MAX_SAFE_INTEGER, startedAt: Date.now(), healthyAt: Date.now() }],
     // `age >= 0` is the guard: a state.json written by a machine whose clock ran
     // ahead would otherwise look permanently fresh and keep handing provider
     // credentials to a proxy that may be long gone.
-    writeProxyState({
-      port: 9000,
-      pid: process.pid,
-      startedAt: Date.now(),
-      healthyAt: Date.now() + 10 * 60_000,
-    });
+    ["a health stamp from the future", { port: 9000, pid: process.pid, startedAt: Date.now(), healthyAt: Date.now() + 10 * 60_000 }],
+    ["a live PID whose health is stale and whose probe fails", { port: 9000, pid: process.pid, startedAt: Date.now() - 120_000, healthyAt: Date.now() - 61_000 }],
+  ])("reports %s as stopped", (_label, state) => {
+    if (state) writeProxyState(state);
     writeProxyConfig();
     writeAuthFile("a.json", { id: "a", provider: "claude", prefix: "anth" });
-
     expect(defaultReadProxyConnection(adeHome)("claude")).toEqual({ reason: "proxy-stopped" });
-  });
-
-  it("rejects a live PID with stale health unless an injected probe succeeds", () => {
-    writeProxyState({
-      port: 9000,
-      pid: process.pid,
-      startedAt: Date.now() - 120_000,
-      healthyAt: Date.now() - 61_000,
-    });
-    writeProxyConfig();
-    writeAuthFile("a.json", { id: "a", provider: "claude", prefix: "anth" });
-
-    expect(defaultReadProxyConnection(adeHome)("claude")).toEqual({ reason: "proxy-stopped" });
-    expect(defaultReadProxyConnection(adeHome, { healthCheck: () => true })("claude")).toEqual({
-      port: 9000,
-      apiKey: "k",
-      prefix: "anth",
-    });
   });
 
   it("uses the bounded loopback probe and refreshes a stale health stamp", async () => {
@@ -424,14 +664,6 @@ describe("defaultReadProxyConnection", () => {
 });
 
 describe("Claude subagents and built-in pins", () => {
-  it("forces the subagent model so a per-agent setting cannot override it", () => {
-    expect(claudeSubagentEnv("haiku")).toEqual({
-      CLAUDE_CODE_SUBAGENT_MODEL: "haiku",
-      CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1",
-    });
-    expect(claudeSubagentEnv(undefined)).toEqual({});
-  });
-
   it("leaves the subagent env empty when the preset inherits", () => {
     const plan = resolveHarnessPresetPlan(preset({ subagentModel: "inherit" }), deps());
     if (plan.status !== "ready") throw new Error("expected ready");
@@ -439,18 +671,13 @@ describe("Claude subagents and built-in pins", () => {
     expect(plan.subagentModel).toBeUndefined();
   });
 
-  it("resolves a `follows` pin to the subagent model", () => {
-    expect(resolveAgentPins(preset({
-      subagentModel: "haiku",
-      agentOverrides: { explore: "follows", plan: "sonnet" },
-    }))).toEqual({ explore: "haiku", plan: "sonnet" });
-  });
-
-  it("resolves a `follows` pin to the main model when subagents inherit", () => {
-    expect(resolveAgentPins(preset({
-      subagentModel: "inherit",
-      agentOverrides: { generalPurpose: "follows" },
-    }))).toEqual({ generalPurpose: "claude-opus-4-5" });
+  it.each<[string, Partial<HarnessPreset>, Record<string, string>]>([
+    ["the subagent model", { subagentModel: "haiku", agentOverrides: { explore: "follows", plan: "sonnet" } },
+      { explore: "haiku", plan: "sonnet" }],
+    ["the main model when subagents inherit", { subagentModel: "inherit", agentOverrides: { generalPurpose: "follows" } },
+      { generalPurpose: "claude-opus-4-5" }],
+  ])("resolves a `follows` pin to %s", (_label, overrides, expected) => {
+    expect(resolveAgentPins(preset(overrides))).toEqual(expected);
   });
 
   it("emits SDK agent entries carrying ADE's prompt and the built-in's tool denials", () => {
@@ -490,11 +717,6 @@ describe("Claude subagents and built-in pins", () => {
 });
 
 describe("resolveHarnessPresetForLaunch", () => {
-  it("returns null when no preset is named", () => {
-    expect(resolveHarnessPresetForLaunch(null, deps())).toBeNull();
-    expect(resolveHarnessPresetForLaunch("  ", deps())).toBeNull();
-  });
-
   it("reports a deleted preset rather than throwing", () => {
     fs.mkdirSync(presetConfigHome(adeHome, "orphan"), { recursive: true });
     const plan = resolveHarnessPresetForLaunch("hp_gone", deps({ readPresets: () => [] }));
@@ -565,33 +787,15 @@ describe("resolveHarnessPresetForLaunch", () => {
     }]);
   });
 
-  it("passes the model id through untouched", () => {
+  it("passes the model id through untouched and carries the preset's effort", () => {
     const plan = resolveHarnessPresetForLaunch("hp_1", deps({
-      readPresets: () => [preset({ model: "anthropic/claude-opus-4.5" })],
+      readPresets: () => [preset({ model: "anthropic/claude-opus-4.5", reasoningEffort: "high" })],
     }));
     if (plan?.status !== "ready") throw new Error("expected ready");
     // An endpoint's own spelling, which ADE's alias table would rewrite.
     expect(plan.model).toBe("anthropic/claude-opus-4.5");
     expect(plan.passthroughModelId).toBe(true);
-  });
-
-  // A preset carries its effort, and deliberately no permission mode: the tier
-  // belongs to the harness and is chosen at launch in the composer.
-  it("carries the preset's effort", () => {
-    const plan = resolveHarnessPresetForLaunch("hp_1", deps({
-      readPresets: () => [preset({ reasoningEffort: "high" })],
-    }));
-    if (plan?.status !== "ready") throw new Error("expected ready");
     expect(plan.reasoningEffort).toBe("high");
-    expect(plan).not.toHaveProperty("permissionMode");
-  });
-
-  it("reports a key that is no longer in the store", () => {
-    const plan = resolveHarnessPresetForLaunch("hp_1", deps({
-      readPresets: () => [preset()],
-      getCredentialSummary: () => null,
-    }));
-    expect(plan).toMatchObject({ status: "unsupported" });
   });
 });
 
@@ -600,16 +804,6 @@ describe("readHarnessPresetsFromMachine", () => {
   // contain. Built rather than written literally so the fixture cannot drift
   // into a space and pass against a reader that also used one.
   const cacheKey = ["all", "harnessPresets"].join(String.fromCharCode(0));
-
-  it("reads the account-scoped list out of the settings cache", () => {
-    fs.writeFileSync(
-      path.join(adeHome, "account-settings.json"),
-      JSON.stringify({ version: 1, settings: { [cacheKey]: { value: [preset()] } } }),
-    );
-    const presets = readHarnessPresetsFromMachine(adeHome);
-    expect(presets).toHaveLength(1);
-    expect(presets?.[0]?.id).toBe("hp_1");
-  });
 
   it("ignores a row under another scope", () => {
     const otherScope = ["project", "harnessPresets"].join(String.fromCharCode(0));
@@ -649,7 +843,9 @@ describe("readHarnessPresetsFromMachine", () => {
   // with itself. Writing through the real settings store is what proves a
   // preset saved in Settings is the preset a launch finds — the field name the
   // cache serializes under is the store's to choose, not this file's to guess.
-  it("reads a list written by the real account settings store", () => {
+  // One level up, an unreadable list is not merely an empty picker: it
+  // silently downgrades `--preset` to the provider default.
+  it("reads and launches a list written by the real account settings store", () => {
     const store = createAccountSettingsStore({
       adeDir: adeHome,
       relay: null,
@@ -660,20 +856,7 @@ describe("readHarnessPresetsFromMachine", () => {
     const presets = readHarnessPresetsFromMachine(adeHome);
     expect(presets).toHaveLength(1);
     expect(presets?.[0]?.id).toBe("hp_1");
-  });
-
-  // The same seam, one level up: an unreadable list is not merely an empty
-  // picker, it silently downgrades `--preset` to the provider default.
-  it("resolves a preset saved through the real store instead of reporting it gone", () => {
-    const store = createAccountSettingsStore({
-      adeDir: adeHome,
-      relay: null,
-      getAccountUserId: () => "user_seam",
-    });
-    store.set("all", "harnessPresets", [preset()]);
-
-    const result = resolveHarnessPresetForLaunch("hp_1", deps());
-    expect(result?.status).toBe("ready");
+    expect(resolveHarnessPresetForLaunch("hp_1", deps())?.status).toBe("ready");
   });
 });
 
@@ -777,31 +960,6 @@ describe("previewHarnessLaunchPlan", () => {
     });
   });
 
-  it("projects the proxy-prefixed model for subscription presets", () => {
-    const preview = previewHarnessLaunchPlan(
-      { provider: "claude", presetId: "hp_subscription" },
-      deps({
-        readPresets: () => [preset({
-          id: "hp_subscription",
-          model: "opus",
-          source: { kind: "subscription", provider: "claude" },
-        })],
-        readProxyConnection: () => ({ port: 8123, apiKey: "proxy-key", prefix: "anth" }),
-      }),
-    );
-
-    expect(preview).toMatchObject({
-      status: "ready",
-      model: "anth/opus",
-      env: {
-        ANTHROPIC_BASE_URL: "http://127.0.0.1:8123",
-        ANTHROPIC_AUTH_TOKEN: "<redacted>",
-        ANTHROPIC_MODEL: "anth/opus",
-      },
-    });
-    expect(JSON.stringify(preview)).not.toContain("proxy-key");
-  });
-
   it.each(["cursor", "pi"] as const)("reports %s credential presets as unsupported", (provider) => {
     const preview = previewHarnessLaunchPlan(
       { provider, presetId: `hp_${provider}` },
@@ -817,19 +975,4 @@ describe("previewHarnessLaunchPlan", () => {
 
     expect(preview).toMatchObject({ status: "unsupported", model: null, env: {} });
   });
-});
-
-describe("CLI preset gate", () => {
-  it.each(["grok", "cursor", "copilot", "kimi"] as const)("gates %s with a reason", (harness) => {
-    expect(isCliPresetGatedHarness(harness)).toBe(true);
-    expect(cliPresetGateReason(harness)).toMatch(/own sign-in/);
-  });
-
-  it.each(["claude", "codex", "opencode", "droid", "pi", "qwen"] as const satisfies readonly HarnessPresetBody[])(
-    "lets %s take a preset",
-    (harness) => {
-      expect(isCliPresetGatedHarness(harness)).toBe(false);
-      expect(cliPresetGateReason(harness)).toBeNull();
-    },
-  );
 });

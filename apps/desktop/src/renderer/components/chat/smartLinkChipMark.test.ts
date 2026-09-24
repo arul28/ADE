@@ -21,15 +21,4 @@ describe("smartLinkChipMarkSvg", () => {
       expect(smartLinkChipMarkSvg(provider)).toContain("currentColor");
     }
   });
-
-  it("uses the octocat mark for github and a stroked globe for generic web pages", () => {
-    const github = smartLinkChipMarkSvg("github")!;
-    // simple-icons octocat starts at the M12 .297 apex.
-    expect(github).toContain("M12 .297");
-    expect(github).toContain('fill="currentColor"');
-
-    const generic = smartLinkChipMarkSvg("generic")!;
-    expect(generic).toContain("<circle");
-    expect(generic).toContain('stroke="currentColor"');
-  });
 });

@@ -76,7 +76,7 @@ describe("ApprovalPrompt", () => {
 
   // Parity with the desktop regression: the Send label is derived from the
   // answer state, so a note typed alongside a pick reads as BOTH travelling.
-  it("regression: the send label reports the pick and the note together", () => {
+  it("the send label reports the pick and the note together", () => {
     const approval: PendingApproval = {
       itemId: "item-send-label",
       description: "Claude needs an answer.",
@@ -162,7 +162,7 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("Send");
   });
 
-  it("regression: an untouched option is only highlighted and forbidden freeform is not advertised", () => {
+  it("an untouched option is only highlighted and forbidden freeform is not advertised", () => {
     const approval: PendingApproval = {
       itemId: "item-no-freeform",
       description: "Pick one.",
@@ -202,7 +202,7 @@ describe("ApprovalPrompt", () => {
     expect(frame).not.toContain("● Recommended");
   });
 
-  it("regression: an unanswerable no-freeform question tells the user to decline", () => {
+  it("an unanswerable no-freeform question tells the user to decline", () => {
     const approval: PendingApproval = {
       itemId: "item-unanswerable",
       description: "Provider sent no valid choices.",
@@ -240,7 +240,7 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("decline");
   });
 
-  it("regression: renders the default assumption that Enter can submit", () => {
+  it("renders the default assumption that Enter can submit", () => {
     const approval: PendingApproval = {
       itemId: "item-default",
       description: "Use the provider fallback if appropriate.",

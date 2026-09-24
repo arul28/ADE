@@ -733,7 +733,7 @@ describe("machine directory", () => {
     expect(env.DB.revocations).toHaveLength(0);
   });
 
-  it("no longer lets a changed deviceId clear a revocation on its own", async () => {
+  it("keeps a machine revoked when its device ID changes", async () => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });
     await register(env, token, "machine-a");

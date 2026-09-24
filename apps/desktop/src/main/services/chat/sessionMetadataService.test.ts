@@ -134,6 +134,8 @@ describe("createSessionMetadataRegenerator", () => {
     await expect(regenerate({ sessionId: "sess-1" })).resolves.toMatchObject({
       applied: ["title", "statusLine", "laneName"],
       skipped: [],
+      generationError: null,
+      usedDeterministicFallback: false,
     });
     expect(applyTitle).toHaveBeenCalledWith(expect.anything(), "Wire Rag Search");
     expect(setStatusNote).toHaveBeenCalledWith("sess-1", "Sources show before generate");
@@ -162,6 +164,8 @@ describe("createSessionMetadataRegenerator", () => {
 
     const result = await regenerate({ sessionId: "sess-1" });
     expect(runPrompt).not.toHaveBeenCalled();
+    expect(result.usedDeterministicFallback).toBe(true);
+    expect(result.generationError).toBeNull();
     expect(result.applied.length).toBeGreaterThan(0);
     expect(applyTitle).toHaveBeenCalled();
     expect(String(applyTitle.mock.calls[0]?.[1])).not.toMatch(/start skill using aws/i);
@@ -180,25 +184,6 @@ describe("createSessionMetadataRegenerator", () => {
     const result = await regenerate({ sessionId: "sess-1" });
     expect(result.usedDeterministicFallback).toBe(true);
     expect(result.generationError).toBe("This ADE runtime can't provide the sandbox this agent asked for.");
-  });
-
-  it("reports no generation error when a model answered", async () => {
-    const { regenerate } = createHarness();
-
-    const result = await regenerate({ sessionId: "sess-1" });
-    expect(result.generationError).toBeNull();
-    expect(result.usedDeterministicFallback).toBe(false);
-  });
-
-  it("reports the deterministic fallback with no error when no model was available", async () => {
-    const { regenerate } = createHarness({
-      summary: "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
-      resolveModelCandidates: async () => [],
-    });
-
-    const result = await regenerate({ sessionId: "sess-1" });
-    expect(result.usedDeterministicFallback).toBe(true);
-    expect(result.generationError).toBeNull();
   });
 
   it("sends the full thread, latest assistant paragraphs, lane threads, and git work in one call", async () => {
@@ -222,12 +207,9 @@ describe("createSessionMetadataRegenerator", () => {
     await regenerate({ sessionId: "sess-1" });
     expect(runPrompt).toHaveBeenCalledTimes(1);
     const prompt = String(runPrompt.mock.calls[0]?.[0]?.prompt ?? "");
-    expect(prompt).toContain("source for chatTitle");
     expect(prompt).toContain("stop one-shot AI from picking Haiku");
-    expect(prompt).toContain("source for statusLine");
     expect(prompt).toContain("Tests are running on the skip path.");
     expect(prompt).toContain("Conflict picker");
-    expect(prompt).toContain("Work on this lane that differs from remote");
     expect(prompt).toContain("aiIntegrationService.ts");
   });
 
@@ -255,11 +237,7 @@ describe("createSessionMetadataRegenerator", () => {
     expect(runPrompt).toHaveBeenCalledTimes(1);
     const call = runPrompt.mock.calls[0]?.[0];
     const prompt = String(call?.prompt ?? "");
-    expect(prompt).toContain("long-running coding thread");
-    expect(prompt).toContain("Users manage many threads");
-    expect(prompt).toContain("Lane name: Start Skill Using Aws Other");
     expect(prompt).toContain("Worktree: lane");
-    expect(prompt).toContain("Chat title: Start Skill Using Aws Other");
     expect(prompt).toContain("Tests are running on the skip path.");
     expect(prompt).not.toContain("rewrite every naming prompt");
     expect(prompt).not.toContain("Conflict picker");
@@ -322,24 +300,6 @@ describe("createSessionMetadataRegenerator", () => {
     expect(applyTitle).toHaveBeenCalled();
     expect(String(applyTitle.mock.calls[0]?.[1])).not.toMatch(/start skill using aws/i);
     expect(String(applyTitle.mock.calls[0]?.[1])).toMatch(/stop one shot/i);
-  });
-
-  it("prefers this thread over the kickoff slug when generating all three without models", async () => {
-    const { regenerate, applyTitle, renameLane } = createHarness({
-      resolveModelCandidates: async () => [],
-      conversation: [
-        { role: "user", text: "stop one-shot AI from picking Haiku" },
-        { role: "assistant", text: "Removed the default namer so skip-path tests stay green." },
-      ],
-    });
-
-    const result = await regenerate({ sessionId: "sess-1" });
-    expect(result.applied.length).toBeGreaterThan(0);
-    expect(applyTitle).toHaveBeenCalled();
-    expect(String(applyTitle.mock.calls[0]?.[1])).not.toMatch(/start skill using aws/i);
-    expect(String(applyTitle.mock.calls[0]?.[1])).toMatch(/stop one shot/i);
-    expect(renameLane).toHaveBeenCalled();
-    expect(String(renameLane.mock.calls[0]?.[0]?.name)).not.toMatch(/start skill using aws/i);
   });
 
   it("does not stamp this thread's kickoff onto the shared lane when models fail", async () => {

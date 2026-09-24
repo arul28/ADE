@@ -522,7 +522,7 @@ describe("ChatPrPane title bar", () => {
     });
   });
 
-  it("spins ↻ while a backend reconcile runs and stops after the hide debounce", async () => {
+  it("shows sync status while a backend reconcile runs and clears it when idle", async () => {
     vi.useFakeTimers();
     try {
       const pr = makePr({ id: "pr-reconcile", title: "Reconcile me" });
@@ -530,22 +530,22 @@ describe("ChatPrPane title bar", () => {
       renderPane();
       await act(async () => { await Promise.resolve(); });
 
-      const icon = () => screen.getByRole("button", { name: "Refresh pull request" }).querySelector("svg");
-      expect(icon()?.getAttribute("class") ?? "").not.toContain("animate-spin");
+      const syncButton = () => screen.getByRole("button", { name: "Refresh pull request" });
+      expect(syncButton().getAttribute("title")).toMatch(/refresh/i);
 
       act(() => {
         emitPrEvent({ type: "pr-reconcile", state: "running", polledAt: "2026-07-27T00:00:00.000Z" });
       });
-      expect(icon()?.getAttribute("class") ?? "").toContain("animate-spin");
+      expect(syncButton().getAttribute("title")).toMatch(/syncing/i);
 
       act(() => {
         emitPrEvent({ type: "pr-reconcile", state: "idle", polledAt: "2026-07-27T00:00:01.000Z" });
       });
-      // Still spinning inside the 300ms anti-flicker debounce.
-      expect(icon()?.getAttribute("class") ?? "").toContain("animate-spin");
+      // The status remains visible through the anti-flicker debounce.
+      expect(syncButton().getAttribute("title")).toMatch(/syncing/i);
 
       act(() => { vi.advanceTimersByTime(400); });
-      expect(icon()?.getAttribute("class") ?? "").not.toContain("animate-spin");
+      expect(syncButton().getAttribute("title")).toMatch(/refresh/i);
     } finally {
       vi.useRealTimers();
     }

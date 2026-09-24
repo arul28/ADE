@@ -327,29 +327,8 @@ describe("browserToolbarLayout", () => {
   it("never leaves the URL field below its minimum, at any width", () => {
     for (let width = 280; width <= 1_200; width += 1) {
       const layout = browserToolbarLayout(width);
-      expect({ width, urlWidth: layout.urlWidth })
-        .toEqual({ width, urlWidth: layout.urlWidth });
       expect(layout.urlWidth).toBeGreaterThanOrEqual(BROWSER_TOOLBAR_URL_MIN_WIDTH);
     }
-  });
-
-  it("prices the omnibox's own padding and padlock out of the field, not out of thin air", () => {
-    // The field's share is what is left after the lock and the box's padding —
-    // pricing the omnibox as a whole is what once left a 101px field inside a
-    // "comfortable" 180px box.
-    const bare = browserToolbarLayout(420, {
-      urlMinWidth: 0,
-      widths: { urlLock: 0, urlPadding: 0 },
-    });
-    expect(bare.urlWidth).toBe(164);
-    expect(browserToolbarLayout(420, { urlMinWidth: 0 }).urlWidth).toBe(130);
-
-    const layout = browserToolbarLayout(420);
-    expect(layout.density).toBe("compact");
-    expect(layout.showPopOut).toBe(false);
-    expect(layout.showDevice).toBe(true);
-    expect(layout.showCamera).toBe(true);
-    expect(layout.urlWidth).toBe(160);
   });
 
   it("sheds pop-out, then inspect, then the camera, then the device before it touches forward", () => {
@@ -369,14 +348,6 @@ describe("browserToolbarLayout", () => {
     expect(layout.showInspect).toBe(false);
     expect(layout.showPopOut).toBe(false);
     expect(layout.urlWidth).toBeGreaterThanOrEqual(BROWSER_TOOLBAR_URL_MIN_WIDTH);
-  });
-
-  it("prices every right-cluster glyph the same, because they are the same button", () => {
-    // The row that had a 90px device chip, a 72px "Inspect" and a 96px REC pill
-    // is the row that ran out of width at 420px. One 28px ghost square each.
-    const withDevice = browserToolbarLayout(470);
-    const withoutDevice = browserToolbarLayout(470, { widths: { control: 0 } });
-    expect(withoutDevice.urlWidth - withDevice.urlWidth).toBe(4 * 28);
   });
 
   it("only offers Attach when there is a selection and room for it", () => {

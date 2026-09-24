@@ -69,7 +69,6 @@ import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
-import { formatSubagentModelLabel } from "../../../shared/chatSubagents";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
@@ -638,21 +637,6 @@ export const SessionCard = React.memo(function SessionCard({
   const isCtoChild = Boolean(
     session.orchestrationParentSessionId && session.parentIdentityKey === "cto",
   );
-  /**
-   * The model, as a human reads it.
-   *
-   * `formatSubagentModelLabel` is the codebase's existing short-label helper
-   * (`shared/chatSubagents`), which resolves a ref through the model registry
-   * and falls back to the raw ref only when the registry has never heard of it.
-   * Reused rather than re-derived so the row, the Chat Info header and the
-   * subagent roster cannot end up calling the same model three different names.
-   *
-   * The canonical id is preferred over the provider's raw string because the
-   * registry is keyed on it; the raw string is the fallback for a provider
-   * whose answer never resolved. Null when there is nothing to say — a CLI or
-   * shell row has no model, and a chip reading "unknown" is worse than no chip.
-   */
-  const modelLabel = formatSubagentModelLabel(session.modelId ?? session.model);
   /**
    * What the CTO chip says on hover: an excerpt of what this child was ASKED,
    * which is the one thing the row does not otherwise show. The first user
@@ -1463,23 +1447,9 @@ export const SessionCard = React.memo(function SessionCard({
             ) : null}
             {/* The provider mark is the least informative thing in the row —
                 most rows share a provider — so it sits in the least prominent
-                slot rather than leading the card.
-
-                The model sits immediately before it, as text: the glyph says
-                WHOSE model and the label says WHICH, and the two read as one
-                unit. Muted and truncating — it is an attribute of the row, not
-                a thing to scan for — and rendered only when the provider
-                actually reported one. */}
-            {modelLabel ? (
-              <span
-                data-testid="session-model-label"
-                data-session-model={modelLabel}
-                className="min-w-0 max-w-[7.5rem] shrink truncate text-[10px] font-medium leading-none text-muted-fg/50"
-                title={modelLabel}
-              >
-                {modelLabel}
-              </span>
-            ) : null}
+                slot rather than leading the card. The model name used to sit
+                before it as text; that label is gone, so the glyph alone
+                carries the provider. */}
             {cursorCloudLink}
             <SessionProviderLogoStack session={session} size={20} />
           </div>

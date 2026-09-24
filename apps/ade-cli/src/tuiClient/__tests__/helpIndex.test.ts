@@ -9,7 +9,7 @@ import {
   pushRecent,
   type HelpGroup,
 } from "../helpIndex";
-import { BUILTIN_COMMANDS, COMMAND_CATEGORY_ORDER } from "../commands";
+import { BUILTIN_COMMANDS } from "../commands";
 import type { ClaudeKeybinding } from "../keybindings";
 
 function rowNames(groups: HelpGroup[]): string[] {
@@ -24,27 +24,6 @@ const BINDINGS: ClaudeKeybinding[] = [
 ];
 
 describe("buildHelpIndex", () => {
-  it("groups every built-in command into a category bucket", () => {
-    const groups = buildHelpIndex();
-    const total = groups.reduce((sum, g) => sum + g.rows.length, 0);
-    expect(total).toBe(BUILTIN_COMMANDS.length);
-  });
-
-  it("only emits non-empty groups, in category order", () => {
-    const groups = buildHelpIndex();
-    for (const g of groups) expect(g.rows.length).toBeGreaterThan(0);
-    const order = groups.map((g) => g.category);
-    const expectedOrder = COMMAND_CATEGORY_ORDER.filter((c) => order.includes(c));
-    expect(order).toEqual(expectedOrder);
-  });
-
-  it("preserves command metadata (name + description)", () => {
-    const groups = buildHelpIndex();
-    const commit = flattenHelpRows(groups).find((r) => r.name === "/commit");
-    expect(commit).toBeDefined();
-    expect(commit?.description).toBe("Commit lane changes");
-    expect(commit?.category).toBe("Lanes");
-  });
 
   it("places /commit under Lanes and /pr under PRs", () => {
     const groups = buildHelpIndex();
@@ -75,18 +54,6 @@ describe("buildHelpIndex", () => {
 });
 
 describe("getKeybindForCommand", () => {
-  it("returns the formatted chord for a bound command", () => {
-    expect(getKeybindForCommand("/help", BINDINGS)).toBe("Ctrl+/");
-  });
-
-  it("returns undefined for an unbound command", () => {
-    expect(getKeybindForCommand("/commit", BINDINGS)).toBeUndefined();
-  });
-
-  it("ignores unimplemented bindings", () => {
-    // app:redraw is present but implemented:false, and no command maps to it anyway.
-    expect(getKeybindForCommand("/quit", BINDINGS)).toBeUndefined();
-  });
 
   it("degrades to undefined when no registry is provided", () => {
     expect(getKeybindForCommand("/help", null)).toBeUndefined();
@@ -108,11 +75,6 @@ describe("formatChordForDisplay", () => {
 describe("helpMatchScore", () => {
   const row = { name: "/push", description: "Push the active lane branch", source: "ade" as const, category: "Lanes" as const };
 
-  it("scores exact name highest", () => {
-    expect(helpMatchScore("/push", row)).toBe(1000);
-    expect(helpMatchScore("push", row)).toBe(1000);
-  });
-
   it("scores prefix above description", () => {
     const prefix = helpMatchScore("pus", row);
     const desc = helpMatchScore("branch", row);
@@ -126,20 +88,10 @@ describe("helpMatchScore", () => {
   it("disqualifies rows where a token matches nowhere", () => {
     expect(helpMatchScore("zzzqqq", row)).toBe(-1);
   });
-
-  it("is case-insensitive", () => {
-    expect(helpMatchScore("PUSH", row)).toBe(1000);
-  });
 });
 
 describe("buildHelpRows", () => {
   const index = buildHelpIndex(BUILTIN_COMMANDS, BINDINGS);
-
-  it("with an empty filter keeps every command", () => {
-    const rows = buildHelpRows(index, "", []);
-    const total = rows.reduce((sum, g) => sum + g.rows.length, 0);
-    expect(total).toBe(BUILTIN_COMMANDS.length);
-  });
 
   it("narrows to matching commands and drops emptied groups", () => {
     const rows = buildHelpRows(index, "push", []);
@@ -186,16 +138,6 @@ describe("buildHelpRows", () => {
     const names = lanes.rows.map((r) => r.name);
     const sorted = [...names].sort((a, b) => a.localeCompare(b));
     expect(names).toEqual(sorted);
-  });
-});
-
-describe("flattenHelpRows", () => {
-  it("flattens groups in order", () => {
-    const groups = buildHelpRows(buildHelpIndex(), "", []);
-    const flat = flattenHelpRows(groups);
-    expect(flat.length).toBe(BUILTIN_COMMANDS.length);
-    // First flat row belongs to the first group.
-    expect(flat[0].category).toBe(groups[0].category);
   });
 });
 

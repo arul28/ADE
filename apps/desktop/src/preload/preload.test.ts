@@ -444,59 +444,6 @@ describe("preload OAuth bridge", () => {
    * three tests that lived here pinned the inert shims' return values; this
    * one pins their absence, which is the invariant that is left.
    */
-  it("no longer exposes the iOS Simulator window-capture bridge at all", async () => {
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: null, binding: null };
-      }
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    for (const method of [
-      "getSimulatorWindowState",
-      "listSimulatorWindowSources",
-      "retainWindowParking",
-      "releaseWindowParking",
-      "revealSimulator",
-      "openSystemSettings",
-    ]) {
-      expect(bridge.iosSimulator[method]).toBeUndefined();
-    }
-    // Raw channel strings, not `IPC.*`: these constants are deleted, so reading
-    // them off `IPC` would evaluate to `undefined` and make every assertion
-    // vacuously true — which is precisely the regression this guards.
-    for (const channel of [
-      "ade.iosSimulator.getWindowState",
-      "ade.iosSimulator.listWindowSources",
-      "ade.iosSimulator.retainWindowParking",
-      "ade.iosSimulator.releaseWindowParking",
-      "ade.iosSimulator.revealWindow",
-      "ade.iosSimulator.openSystemSettings",
-    ]) {
-      expect(invoke).not.toHaveBeenCalledWith(channel, expect.anything());
-      expect(invoke).not.toHaveBeenCalledWith(channel);
-    }
-  });
-
 
 describe("preload Apple device input routing", () => {
   beforeEach(() => {

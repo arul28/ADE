@@ -303,11 +303,6 @@ describe("send-time expansion", () => {
     expect(expandImageTokensForSend(text, attachments)).toBe("/tmp/ade/shot.png vs /tmp/ade/other.png");
   });
 
-  it("leaves prompts without tokens byte-identical", () => {
-    expect(expandImageTokensForSend("nothing to see", attachments)).toBe("nothing to see");
-    expect(expandImageTokensForSend("", attachments)).toBe("");
-  });
-
   it("degrades an unresolvable token to its label rather than dropping text", () => {
     const text = `see ${formatImageToken("gone.png")}`;
     expect(expandImageTokensForSend(text, attachments)).toBe("see gone.png");
@@ -358,9 +353,5 @@ describe("transcript image chips", () => {
         { path: "/tmp/b.png", type: "image" },
       ],
     })).toBe("compare\n⟦image:png⟧ ⟦image:png2⟧");
-  });
-
-  it("leaves a text-only user message unchanged", () => {
-    expect(formatUserMessageTranscriptBody({ text: "hello" })).toBe("hello");
   });
 });

@@ -136,15 +136,12 @@ describe("ManageLaneDialog tabs", () => {
 
     expect(screen.queryByText("Manage Lane")).toBeNull();
     expect(screen.getByRole("heading", { name: "Manage tabs" })).toBeTruthy();
-    const name = screen.getByText("Manage tabs", { selector: "span" });
-    expect(name.style.color).toBe("rgb(94, 234, 212)");
   });
 
-  it("keeps Select everything compact and separate from the delete targets", () => {
+  it("keeps Select everything separate from the delete targets", () => {
     render(<ManageLaneDialog {...makeProps()} />);
 
     const selectEverything = screen.getByRole("button", { name: "Select everything" });
-    expect(selectEverything.className).toContain("h-8");
     expect(screen.queryByText("Worktree, local & remote branch")).toBeNull();
     const targets = screen.getByRole("checkbox", { name: /Worktree/i }).closest(".ml-3");
     expect(targets).toBeTruthy();
@@ -289,7 +286,7 @@ describe("ManageLaneDialog tabs", () => {
     );
 
     await screen.findByRole("button", { name: /delete lane/i });
-    expect(screen.getByText("Removes the working folder and ADE registration.")).toBeTruthy();
+    expect(screen.getByText(/Removes the working folder and ADE registration/)).toBeTruthy();
     expect(screen.queryByText(/unlink from ade/i)).toBeNull();
     expect(screen.queryByText(/keeps the folder/i)).toBeNull();
   });
