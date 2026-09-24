@@ -6,7 +6,7 @@ This playbook drives a single lane (branch) from "work is ready" to "merged on `
 
 Run this playbook once per lane, when the code on the branch is done (or nearly done) and you want the agent to handle:
 
-- First-time commit + push + PR creation (if no PR exists yet)
+- First-time commit + push + PR creation (if no PR exists yet — normally `/quality` already opened it; see **Early PR and harvests**)
 - Polling CI and review comments
 - Fixing valid review comments and CI failures
 - Rebasing when teammates merge into `main` ahead of you
@@ -108,6 +108,8 @@ Therefore:
 - **Dispatch `ci-fix-agent` and `review-fix-agent` in parallel** (Phase 3b.3), each with its own minimum scope but in the same iteration.
 - **One commit, one push.** The lead reviews the combined diff, runs the narrow checks below, and pushes once. Never one push for CI and a second push for review feedback in the same iteration.
 
+**The one exception is a harvest** in `/quality` or `/test` (see **Early PR and harvests**). A harvest fixes finished results locally while other signals still run, because it never pushes on a partial signal — the push rule holds its commits until the remote head is terminal. Inside `/ship`, this section applies unchanged.
+
 ### 2. Never run a full test suite inside the loop — narrowest target only
 
 Running `npm test` or a full vitest shard inside the fix loop is wrong. The full sharded run is a `/finalize` gate, not an iteration tool. Re-running 1,000 tests to verify a 5-line fix burns wall clock and prompt cache.
@@ -139,7 +141,8 @@ Pick the richest available and **use it fully**:
 
 These are operational mistakes this playbook explicitly guards against:
 
-1. **Do not fix on a partial signal.** If CI has landed but review bots
+1. **Do not fix on a partial signal** (inside `/ship`; a harvest fixes
+   locally but never pushes on one). If CI has landed but review bots
    have not, or review bots have landed while CI is still running,
    reschedule and wait. Apply CI fixes and review-comment fixes only
    after both signals are terminal, then combine the edits into one
@@ -188,7 +191,13 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
   "qualityValidatedSha": "abc123...",
   "qualityValidatedTree": "def456...",
   "qualityValidatedBaseSha": "789abc...",
+  "qualityReviewedSha": "abc123...",
+  "localAhead": false,
   "addressedCommentIds": [987654, 987655],
+  "harvests": [
+    { "point": "quality", "headSha": "0a1b2c...", "failedJobs": ["test-desktop (3)"],
+      "commentsFixed": 2, "commentsStale": 5, "pendingReviewBots": [] }
+  ],
   "status": "running",
   "startedAt": "2026-04-23T14:30:00Z",
   "lastPolledAt": "2026-04-23T15:12:00Z",
@@ -196,8 +205,11 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
 }
 ```
 
-`status` values are `running`, `ready-stacked`, `done-clean`, `done-max`, and
-`blocked`. `mode` is `merge` for ordinary `/ship` and `stack` only when
+`status` values are `prepping`, `running`, `ready-stacked`, `done-clean`,
+`done-max`, and `blocked`. `prepping` means `/quality` opened the early PR and
+`/ship` has not started yet. `qualityReviewedSha` is the last commit a clean
+quality pass covered; every later review looks only at the delta from it.
+`localAhead` is true while reviewed commits are held back by the push rule. `mode` is `merge` for ordinary `/ship` and `stack` only when
 `--stack-ready` was explicitly supplied. A resumed run must reject mode/base
 changes rather than accidentally switching lifecycle semantics.
 
@@ -311,8 +323,32 @@ base, narrow test targets, and push command; they do not restate this algorithm.
    it is not: if the fetched direct parent is not an ancestor of the candidate
    head, stop here and exit `stack-coordinator-sync-required` instead of routing
    through Phase 3a.
-2. Run both `/quality` tracks on the final combined diff, fix every accepted
-   finding, and repeat both tracks until the same pass is clean.
+2. Review the delta, not the whole branch again. Run both `/quality` tracks on
+   the changes since `qualityReviewedSha` — the last commit whose tree a clean
+   quality pass covered — plus untracked files, with the full contents of every
+   touched file as context:
+
+   ```bash
+   git diff "$QUALITY_REVIEWED_SHA"      # delta since the last clean review
+   git ls-files --others --exclude-standard
+   ```
+
+   Fix every accepted finding and repeat both tracks on the fix delta until a
+   pass is clean. If the delta is empty, the review is already clean.
+
+   When `qualityReviewedSha` is not usable, widen the review:
+   - **After a Phase 3a rebase or merge** (`qualityReviewedSha` is no longer an
+     ancestor of HEAD): set `OLD_BASE` to the merge-base before the rebase,
+     `NEW_BASE` to the fetched base, and `ORIG_HEAD` to the pre-rebase head.
+     Review every file with a resolved conflict, every file whose branch-side
+     change differs in `git range-diff "$OLD_BASE"..ORIG_HEAD "$NEW_BASE"..HEAD`,
+     and every branch file that `git diff --name-only "$OLD_BASE" "$NEW_BASE"`
+     also lists. The last group catches code on the base that now interacts
+     with this branch.
+   - **Missing field** (an older state file): use `qualityValidatedSha` when it
+     is an ancestor of HEAD.
+   - **Anything else** (no usable SHA, or a non-ancestor outside Phase 3a, such
+     as an amend or force-push): review the whole branch diff.
 3. Build the validation scope from the union of committed, unstaged, staged,
    and untracked changes, so quality-created files cannot evade narrow tests:
 
@@ -346,9 +382,16 @@ base, narrow test targets, and push command; they do not restate this algorithm.
    intended base as a provisional binding; Phase 0.5 performs the PR-field
    verification immediately after creation. In both modes, require the base to
    be an ancestor of the head and `HEAD^{tree}` to still equal
-   `QUALITY_VALIDATED_TREE` before writing all three values to ship state. Any
-   later edit, head mismatch, or base movement clears the binding and restarts
-   this procedure.
+   `QUALITY_VALIDATED_TREE` before writing all three values to ship state. Also
+   set `qualityReviewedSha` to `QUALITY_VALIDATED_SHA`. Any later edit, head
+   mismatch, or base movement clears the binding and restarts this procedure.
+
+**Held commits.** Step 5 pushes only when the push rule in **Early PR and
+harvests** allows it. When a review bot is still in flight on the remote head,
+keep the reviewed commit local, record `qualityReviewedSha`, and leave the three
+binding fields empty. The next allowed push binds it through this procedure;
+because the delta since `qualityReviewedSha` is empty, that costs one push and
+no second review.
 
 The exact head/base/tree checks in Phase 3c are the second half of this
 contract; a green CI result never substitutes for them. GitHub creates the
@@ -373,10 +416,112 @@ Only then may state become `done-clean`. A head mismatch is
 
 ---
 
+## Early PR and harvests (run by `/quality` and `/test`)
+
+CI takes minutes and Greptile takes 15–25 minutes per push. When the PR opens
+only at `/ship`, `/quality` and `/test` finish first and the first real signal
+arrives after them, so every problem the bots find costs a full extra ship
+iteration. The early PR moves that first round in front of `/ship`:
+`/quality` opens the PR when it starts, CI and the bots run while quality
+works, and each later phase reads their results and acts on them. `/ship` then
+starts with one round already done and usually only closes the PR out.
+
+The timeline for an ordinary lane:
+
+| Point | Action | Push? |
+| --- | --- | --- |
+| `/quality` starts | **Open**: checkpoint commit, push, open the PR | yes — starts round 1 |
+| `/quality` finishes its review | **Harvest** round 1, fix what it found, commit | only under the push rule |
+| `/test` finishes | **Harvest** again (round 1 leftovers or round 2), fix, commit | only under the push rule |
+| `/ship` | Poll → fix → merge, with the rounds above already done | per Phase 3b |
+
+### Open (first step of `/quality`)
+
+1. Refuse to run on `main`. Resolve the mode and base exactly as Phase 0.1
+   does (`merge` + `main`, or `stack` + the validated direct parent). Commit
+   the lane's own uncommitted work as `wip: checkpoint before quality`. If
+   uncommitted changes do not belong to this lane, skip the early PR and say
+   so; the lane still gets its PR in `/ship` Phase 0.
+2. `git push -u origin "$CURRENT_BRANCH"`.
+3. If no PR exists, open one with the **Discovery protocol** (ADE CLI first,
+   `gh` fallback) against `main`, or against the resolved direct parent in stack
+   mode. Open it **ready for review, not as a draft** — review bots can skip
+   drafts, and a skipped round 1 defeats the purpose. Use the PR body house
+   style, with Verification reading `pending /quality and /test`.
+4. Post the Phase 4 pings only for a >250-file diff.
+5. Write the state file. The checkpoint was not reviewed, so it binds nothing.
+   - **No state file yet:** write `status: "prepping"`, `mode`, `baseBranch`,
+     `prNumber`, `lastPushSha`, `iteration: 0`, `localAhead: false`, empty
+     `qualityReviewedSha`, and all three binding fields empty. In stack mode
+     also write the `stackBinding` identity fields (stack number, size,
+     position, expected parent branch) from `gh stack view --json`.
+   - **A state file exists** (for example, `/quality` runs again on a lane that
+     `/ship` already started): keep its `status`, `iteration`,
+     `addressedCommentIds`, and `harvests`. Update only `lastPushSha` and
+     `localAhead`, and clear the three binding fields when this step pushed.
+
+Do not wait for anything. Start the quality review immediately.
+
+### Harvest (end of `/quality`, end of `/test`)
+
+One bounded poll — the Phase 1.1–1.3 calls through a poll-agent — then act on
+whatever has finished. Do not wait for anything still running.
+
+Fixing here on a partial signal is allowed. Fix discipline §1 forbids
+*pushing* on a partial signal, and the push rule below still enforces that.
+Harvest fixes stay local until every signal on the remote head is terminal.
+
+- **Finished CI jobs** give their failures now, even while other jobs run. A
+  finished job is final for that head.
+- **Posted bot reviews and comments** are final for that head. A bot still in
+  flight is recorded under `pendingReviewBots` and read at the next harvest.
+- **Drop what the phase already fixed.** For each comment, check the current
+  working tree: if the requested change is present or the line is gone, record
+  the id in `addressedCommentIds` as stale and move on. Most round-1 comments
+  on a pre-quality head land here.
+- **Treat each remaining comment as a quality finding.** Verify it against the
+  real code (quality synthesis step 4), then fix it or reject it. Never trust a
+  bot finding as fact. Record every handled id.
+- **Rerun each CI failure locally** with only the failing file (Fix
+  discipline §2). The phase's own edits often fixed it already. Fix the real
+  failures that remain. At the `/quality` harvest, route a failure whose cause
+  is the test itself into the `/test` input list instead of fixing it there.
+- Record the harvest in `harvests` in the state file: point, head SHA, failed
+  jobs, comment counts, pending bots.
+
+### Push rule
+
+A push cancels and restarts an in-flight Greptile review. So, after a harvest:
+
+- **Push** when both of these hold:
+  - at least 12 minutes have passed since `lastPushSha` was pushed (the bot
+    grace window — earlier, a bot that has not started yet looks idle); and
+  - every CI job and every bot with start evidence on the remote head is
+    terminal.
+
+  The push starts the next round, which then runs during the next phase.
+  Update `lastPushSha`, set `localAhead: false`, and add the harvest entry.
+- **Hold** otherwise. Commit locally, set `localAhead: true`, and continue to
+  the next phase. The next harvest or `/ship` pushes the held commits together
+  with its own fixes, in one push.
+- Before any push, run **Commit-bound quality revalidation**. At the end of
+  `/quality` the delta is already clean, so this is only the bind and the push.
+  At the end of `/test` it reviews only what `/test` changed.
+
+### What `/ship` inherits
+
+`/ship` Phase 0 finds `status: "prepping"`, an open PR, and usually a current
+binding. It skips PR creation and skips revalidation when the binding matches
+HEAD, the remote head, and the PR head. Held commits are fix work for Phase 2,
+so the first ship push carries them together with any new fixes.
+
+---
+
 ## Phase 0 — Setup (first invocation only)
 
 Skip this phase if `.ade/shipLane/<branch>.json` exists with `status: running`.
-If it exists with `status: ready-stacked`, revalidate the complete binding
+If it exists with `status: prepping`, the early PR is open: run only **0.6 Adopt
+the early PR**. If it exists with `status: ready-stacked`, revalidate the complete binding
 first. When it still holds, print the persisted coordinator handoff and exit
 without a poll, wake, push, rebase, merge, or branch deletion. When it does not,
 the binding is stale: external movement exits `stack-coordinator-sync-required`,
@@ -439,7 +584,8 @@ Preconditions here:
   to this lane, commit them with `ship: checkpoint before ship`. If they're
   unrelated, exit `blocked` with `exitReason: "dirty-working-tree"`.
 - The lane must have completed `/quality` and `/test`. Read the final quality
-  result from the current conversation or lane handoff. A non-empty gate, a
+  result and its `qualityReviewedSha` from the state file, the current
+  conversation, or the lane handoff. A non-empty gate, a
   missing result, or an ambiguous placeholder row blocks ship; set
   `exitReason: "quality-gate-nonempty"` or `"quality-result-missing"` rather
   than assuming unknown means clean. Ship does not replace either baseline
@@ -460,8 +606,9 @@ git diff --cached --quiet || git commit -m "ship: prepare lane for review"
 
 Fetch the selected origin base, bind it, and set `QUALITY_DIFF_BASE` to the
 feature merge-base before running the canonical Commit-bound quality
-revalidation procedure. This includes every committed feature file rather than
-only edits made after the checkpoint:
+revalidation procedure. `QUALITY_DIFF_BASE` scopes the narrow tests to every
+committed feature file. The review itself covers only the delta since
+`qualityReviewedSha`, which is usually just the `/test` changes:
 
 ```bash
 git fetch origin "$SHIP_BASE_BRANCH"
@@ -551,6 +698,31 @@ actual PR head and base.
 ```
 
 Then schedule the first wake-up (see Phase 5).
+
+### 0.6 Adopt the early PR
+
+Runs instead of 0.1–0.5 when the state file says `status: "prepping"`.
+
+1. Resolve the mode and base as in 0.1. Require them to equal the state's
+   `mode` and `baseBranch`; a mismatch is the "reject mode/base changes" rule
+   of the state file section. In stack mode, complete the `stackBinding` from
+   `gh stack view --json` as the 0.1 stack-mode branch does.
+2. Apply the 0.2 preconditions: clean tree, and a completed `/quality` with an
+   empty gate plus a completed `/test`.
+3. Require the state's `prNumber` to be open and its base to equal the resolved
+   base. A closed PR clears the state; restart at 0.1. A changed base is
+   `stack-coordinator-sync-required` in stack mode, and a restart at 0.1 in
+   merge mode.
+4. If the three binding fields match local HEAD, the remote head, the PR head,
+   and the PR base, keep them. Do not review again. If they do not match and
+   nothing is held, clear them; the next push or Phase 3c revalidates the
+   delta.
+5. If HEAD is ahead of the remote head (held commits), leave them unpushed. Set
+   `localAhead: true`; Phase 2 treats them as fix work, so the first Phase 3b
+   push carries them with the fixes from the current round.
+6. Set `status: "running"` and go straight to Phase 1. The state already holds
+   `addressedCommentIds` and the harvest history, so the poll does not
+   resurface handled comments.
 
 ---
 
@@ -642,9 +814,13 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
       "type": "diff-line"
     }
   ],
-  "pollHeadSha": "<current PR head sha>"
+  "pollHeadSha": "<current PR head sha>",
+  "localAhead": false
 }
 ```
+
+`localAhead` is `true` when local HEAD has commits that the remote branch does
+not (`git rev-list --count "origin/$CURRENT_BRANCH"..HEAD` is non-zero).
 
 `reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty.
 Populate `pendingReviewBots` only for bots with explicit current-head in-flight
@@ -671,8 +847,8 @@ Pure logic on the poll summary:
 | `merged == true` | Run **Confirm the validated merge result**; exit `done-clean` only when it succeeds. |
 | `behindBase == true` | In ordinary mode, go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. In stack mode this is external movement and the stack row above already routed it to `stack-coordinator-sync-required`. |
 | `ciRunning == true` OR `reviewBotsRunning == true` | Do NOT iterate on a partial signal. Go to Phase 5 (schedule next wake). This applies even if the other signal already shows failures/comments — pushing a fix now means the next CI+review cycle races the fix and you likely re-push for the other half. |
-| `ciFailed` empty, `newComments` empty, `ciRunning == false`, `reviewBotsRunning == false` | Go to **Phase 3c**. Done-clean does not mean "stop and leave for human" — it means everything is green, and the lane should land on `main`. |
-| Otherwise (both signals terminal, fix work exists) | Go to Phase 3b (fix). Fix CI failures and review comments **in the same iteration / same push**. |
+| `ciFailed` empty, `newComments` empty, `localAhead == false`, `ciRunning == false`, `reviewBotsRunning == false` | Go to **Phase 3c**. Done-clean does not mean "stop and leave for human" — it means everything is green, and the lane should land on `main`. |
+| Otherwise (both signals terminal, fix work exists) | Go to Phase 3b (fix). Fix CI failures and review comments **in the same iteration / same push**. Held commits (`localAhead == true`) are fix work: when nothing else needs fixing, 3b still runs to push them. A 3b pass that only pushes held commits does not increment `iteration`. |
 
 ---
 
