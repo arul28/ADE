@@ -1585,6 +1585,13 @@ interval (clamped to 5 s–5 min, jittered ±10%). Each sweep:
    (opened, reopened, closed, merged, checks failing, review requested,
    changes requested, merge ready).
 
+`checks_failing` fires once per red stretch. `pending`, `none`, and `not_run`
+do not arm another toast, so a newer attempt of the same check going red again
+on the same head stays quiet. The toast arms again when checks return to
+`passing` and then fail, or when the head commit changes and that commit is
+failing. A pull request that is already failing on the first poll after start
+is not announced.
+
 `prService.ingestGithubWebhook` does not emit one `prs-updated` for each
 delivery. The event carries the whole PR list (about 225 KB for 194 PRs), and a
 CI run delivers dozens of `check_run` webhooks in a few seconds. Each delivery

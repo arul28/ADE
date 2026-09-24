@@ -33,6 +33,47 @@ function isMergeReady(pr: PrSummary): boolean {
     && Math.max(0, pr.behindBaseBy ?? 0) === 0;
 }
 
+function normalizeHeadSha(headSha: string | null | undefined): string | null {
+  const trimmed = headSha?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+type ChecksFailureMemory = {
+  headSha: string | null;
+  /** True after this head has been announced red, until checks pass or the head changes. */
+  announced: boolean;
+};
+
+/**
+ * One "checks failing" toast per red stretch.
+ *
+ * A newer attempt of the same check drops the rollup to `pending` and then
+ * back to `failing` within seconds. That is the same failure, so `pending`,
+ * `none`, and `not_run` do not re-arm the toast. It arms again when checks
+ * actually pass, or when the head commit changes.
+ *
+ * The first observation of a PR (startup, or a row that just appeared) never
+ * announces: `previous === null`. If that observation is already failing, it
+ * is remembered so a later pending dip cannot announce a failure the user
+ * was not shown entering.
+ */
+function rememberChecksFailure(
+  previous: ChecksFailureMemory | null,
+  pr: PrSummary,
+): { memory: ChecksFailureMemory; announce: boolean } {
+  const headSha = normalizeHeadSha(pr.headSha);
+  const headChanged = previous != null
+    && previous.headSha != null
+    && headSha != null
+    && previous.headSha !== headSha;
+  let announced = previous?.announced ?? false;
+  if (headChanged || pr.checksStatus === "passing") announced = false;
+  const open = pr.state === "open" || pr.state === "draft";
+  const announce = open && previous != null && pr.checksStatus === "failing" && !announced;
+  if (pr.checksStatus === "failing") announced = true;
+  return { memory: { headSha, announced }, announce };
+}
+
 function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
   switch (kind) {
     case "opened":
@@ -206,6 +247,8 @@ export function createPrPollingService({
       mergeReady: boolean;
       mergeConflicts: boolean | null;
       behindBaseBy: number | null;
+      headSha: string | null;
+      checksFailureAnnounced: boolean;
     }
   >();
 
@@ -337,6 +380,7 @@ export function createPrPollingService({
         lastByPrId.clear();
         lastFingerprintByPrId.clear();
         for (const pr of prs) {
+          const failure = rememberChecksFailure(null, pr);
           lastByPrId.set(pr.id, {
             checksStatus: pr.checksStatus,
             reviewStatus: pr.reviewStatus,
@@ -344,6 +388,8 @@ export function createPrPollingService({
             mergeReady: isMergeReady(pr),
             mergeConflicts: pr.mergeConflicts ?? null,
             behindBaseBy: pr.behindBaseBy ?? null,
+            headSha: failure.memory.headSha,
+            checksFailureAnnounced: failure.memory.announced,
           });
           lastFingerprintByPrId.set(pr.id, getPrFingerprint(pr));
         }
@@ -384,10 +430,16 @@ export function createPrPollingService({
           });
         }
 
+        const failure = rememberChecksFailure(
+          prev
+            ? { headSha: prev.headSha, announced: prev.checksFailureAnnounced }
+            : null,
+          pr,
+        );
         const shouldNotifyStatusKind = (kind: PrNotificationKind): boolean => {
           if (pr.state !== "open" && pr.state !== "draft") return false;
           if (!prev) return false;
-          if (kind === "checks_failing") return prev.checksStatus !== "failing" && pr.checksStatus === "failing";
+          if (kind === "checks_failing") return failure.announce;
           if (kind === "review_requested") return prev.reviewStatus !== "requested" && pr.reviewStatus === "requested";
           if (kind === "changes_requested") return prev.reviewStatus !== "changes_requested" && pr.reviewStatus === "changes_requested";
           if (kind === "merge_ready") return prev.mergeReady !== true && mergeReady === true && pr.state === "open";
@@ -433,6 +485,8 @@ export function createPrPollingService({
           mergeReady,
           mergeConflicts: pr.mergeConflicts ?? null,
           behindBaseBy: pr.behindBaseBy ?? null,
+          headSha: failure.memory.headSha,
+          checksFailureAnnounced: failure.memory.announced,
         });
         lastFingerprintByPrId.set(pr.id, nextFingerprint);
       }
