@@ -1921,11 +1921,16 @@ export function createAutomationService({
       ...(ruleProviders ?? {}),
       ...(actionProviders ?? {}),
     };
+    const actionCursorRaw = actionProviders?.cursor as string | undefined;
+    const ruleCursorRaw = ruleProviders?.cursor as string | undefined;
+    const actionClearedCursor = actionCursorRaw === "inherit";
+    const actionCursor = actionClearedCursor ? undefined : actionProviders?.cursor;
+    const ruleCursor = ruleCursorRaw === "inherit" ? undefined : ruleProviders?.cursor;
     const cursorMode = rule.verification.mode === "dry-run"
       ? "plan"
-      : (actionProviders?.cursor
-        ?? cursorPermissionFromMisfiledOpenCode(actionProviders?.opencode)
-        ?? ruleProviders?.cursor
+      : (actionCursor
+        ?? (actionClearedCursor ? undefined : cursorPermissionFromMisfiledOpenCode(actionProviders?.opencode))
+        ?? ruleCursor
         ?? cursorPermissionFromMisfiledOpenCode(ruleProviders?.opencode)
         ?? "edit");
     return {

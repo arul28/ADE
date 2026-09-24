@@ -34,6 +34,8 @@ export function selectedPermissionMode(
   const providers = permissionConfig?.providers;
   const stored = providers ? (providers as Record<string, unknown>)[meta.key] : undefined;
   const direct = typeof stored === "string" ? stored : "";
+  // "inherit" is an explicit Rule default. It must not fall through to a legacy OpenCode value.
+  if (direct === "inherit") return "";
   if (direct) return direct;
   if (meta.key !== "cursor") return "";
   return cursorPermissionFromMisfiledOpenCode(providers?.opencode) ?? "";
@@ -48,11 +50,13 @@ export function patchPermissionConfig(
   if (!meta) return permissionConfig;
   const providers: Record<string, unknown> = { ...(permissionConfig?.providers ?? {}) };
   if (!rawMode) {
-    const hadExplicitCursor = meta.key === "cursor" && typeof providers.cursor === "string" && providers.cursor.length > 0;
+    const cursorValue = typeof providers.cursor === "string" ? providers.cursor : "";
+    const hadExplicitCursor = meta.key === "cursor" && cursorValue.length > 0 && cursorValue !== "inherit";
     const legacyCursor = meta.key === "cursor" && !hadExplicitCursor
       ? cursorPermissionFromMisfiledOpenCode(typeof providers.opencode === "string" ? providers.opencode : null)
       : null;
-    delete providers[meta.key];
+    if (hadExplicitCursor) providers.cursor = "inherit";
+    else delete providers[meta.key];
     if (meta.key === "codex") delete providers.codexSandbox;
     if (legacyCursor) delete providers.opencode;
     return { ...(permissionConfig ?? {}), providers: providers as AutomationPermissionConfig["providers"] };
