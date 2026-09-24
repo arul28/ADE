@@ -4730,6 +4730,76 @@ button, [role="button"] {
   background-position: 50% 0;
 }
 
+/* Live reasoning (ThinkingPreview.tsx): shimmering "Claude is thinking" header
+   over a compact block of streamed text that grows to four lines, then keeps
+   the newest line at the bottom while older lines scroll up under a top fade.
+   The sweep is stepped (24 updates/s) rather than per display refresh: it is a
+   slow 5s pass, and a smooth one costs a frame per refresh on 240Hz. */
+.ade-thinking-shimmer {
+  background-image: linear-gradient(
+    110deg,
+    color-mix(in srgb, var(--color-fg) 42%, transparent) 0%,
+    color-mix(in srgb, var(--color-fg) 42%, transparent) 38%,
+    color-mix(in srgb, var(--color-fg) 92%, transparent) 50%,
+    color-mix(in srgb, var(--color-fg) 42%, transparent) 62%,
+    color-mix(in srgb, var(--color-fg) 42%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: ade-thinking-shimmer 5s steps(120) infinite;
+}
+
+@keyframes ade-thinking-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.ade-thinking-card {
+  background: var(--color-muted);
+  border: 1px solid var(--chat-block-border, rgba(255, 255, 255, 0.06));
+}
+
+/* Reasoning text (MarkdownBlock tone="thought"): one step quieter than the
+   assistant's prose. Beats `.ade-prose-themed`'s per-element colour. */
+.ade-prose-themed.ade-thought-text,
+.ade-prose-themed.ade-thought-text :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  color: color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
+/* The live block's viewport. Its font size and line height match the thought
+   text inside it, so `1lh` is one line of that text: a one-line thought is a
+   one-line block, and four lines is the cap. The top fade appears only once
+   older lines have scrolled out (`data-overflowing`, set by the tail-follow
+   frame without a React render). */
+.ade-thinking-live-viewport {
+  max-height: calc(4 * 1lh);
+  overflow: hidden;
+}
+
+.ade-thinking-live-viewport[data-overflowing="true"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.25lh);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.25lh);
+}
+
+.ade-thinking-live-smooth {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-thinking-shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+    color: color-mix(in srgb, var(--color-fg) 60%, transparent);
+  }
+  .ade-thinking-live-smooth {
+    scroll-behavior: auto;
+  }
+}
+
 .pull-btn-flash {
   animation: ade-duty-pulse 2s infinite;
 }

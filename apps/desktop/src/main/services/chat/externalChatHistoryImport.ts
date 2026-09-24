@@ -3,6 +3,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatImportProvider,
+  AgentChatTextPhase,
   CodexWebSearchResult,
   ExternalSessionProvider,
 } from "../../../shared/types";
@@ -429,6 +430,16 @@ function codexMessageText(item: JsonRecord): string {
   return contentToText(item.text ?? item.content ?? item.message ?? item.output ?? item.delta);
 }
 
+/**
+ * Codex's commentary/final-answer label on an assistant message item. Codex
+ * sends it on `agentMessage` items (and `phase` on rollout messages) only for
+ * some models; anything else means the phase is unknown.
+ */
+export function codexMessagePhase(item: Record<string, unknown> | null | undefined): AgentChatTextPhase | undefined {
+  const phase = item?.phase;
+  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+}
+
 function codexThreadItemToEvents(
   item: JsonRecord,
   turn: JsonRecord,
@@ -450,7 +461,8 @@ function codexThreadItemToEvents(
     case "agentMessage":
     case "agent_message": {
       const text = codexMessageText(item);
-      return text.trim().length ? [base({ type: "text", text, itemId, turnId })] : [];
+      const phase = codexMessagePhase(item);
+      return text.trim().length ? [base({ type: "text", text, itemId, turnId, ...(phase ? { phase } : {}) })] : [];
     }
     case "userMessage":
     case "user_message": {
@@ -463,7 +475,10 @@ function codexThreadItemToEvents(
       const text = role === "user" ? cleanExternalSessionUserText(rawText) ?? "" : rawText;
       if (!text.trim().length) return [];
       if (role === "user") return [base({ type: "user_message", text, messageId: itemId, turnId })];
-      if (role === "assistant") return [base({ type: "text", text, itemId, turnId })];
+      if (role === "assistant") {
+        const phase = codexMessagePhase(item);
+        return [base({ type: "text", text, itemId, turnId, ...(phase ? { phase } : {}) })];
+      }
       return [];
     }
     case "reasoning":

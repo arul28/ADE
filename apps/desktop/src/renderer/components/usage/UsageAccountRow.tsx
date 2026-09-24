@@ -12,10 +12,10 @@
  * (Claude's OAuth-apps allowance) wrapped to its own line anyway — so the row
  * was already one-and-a-half rows tall and pretending to be one.
  *
- * Colour: the bar is the PROVIDER's brand colour, from `providerColors`, and
- * `usagePressureColor` still overrides at 70/90 so a nearly-dry window reads
- * hot. Accounts get no colour of their own — hashing an account id into a
- * palette is what drew a Claude window in Gemini's blue.
+ * Colour: the bar follows its headroom (`usageHeadroomColor` — green, yellow,
+ * red as it runs out), the same rule as the header rings, for every provider.
+ * Accounts get no colour of their own — hashing an account id into a palette
+ * is what drew a Claude window in Gemini's blue.
  *
  * The tinted fill is the HEADROOM and the number says the same thing in words.
  * What has been spent is left plain: it was drawn as a diagonal hatch, which at
@@ -27,7 +27,6 @@ import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type React from "react";
 import { ArrowClockwise, ArrowSquareOut } from "@phosphor-icons/react";
 import type { UsageProvider } from "../../../shared/types";
-import type { ThemeId } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import {
   RESET_CREDIT_OUTCOME_TEXT,
@@ -35,14 +34,13 @@ import {
 } from "../../../shared/usageResetCredit";
 import { cn } from "../ui/cn";
 import { usageProviderLogo } from "../terminals/ToolLogos";
-import { providerColor } from "./providerColors";
 import { PacePill } from "./UsagePaceBar";
 import type { AccountLimitRow, AccountWindowCell } from "./usageLimitModel";
 import {
   USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_CLASS,
   USAGE_TEXT,
-  usagePressureColor,
+  usageHeadroomColor,
 } from "./usageDesign";
 import {
   formatCountdown,
@@ -142,7 +140,6 @@ export function ProviderMark({
 
 export function UsageAccountRow({
   row,
-  theme,
   providerTitle,
   fallbackAccountUrl,
   fallbackEmail,
@@ -151,7 +148,6 @@ export function UsageAccountRow({
   dim,
 }: {
   row: AccountLimitRow;
-  theme: ThemeId;
   /** "OAuth · 2m ago" — where this reading came from, on the account's title. */
   providerTitle?: string;
   /** Limits page for a host that sends no account directory. */
@@ -266,7 +262,6 @@ export function UsageAccountRow({
               key={cell.card.key}
               cell={cell}
               provider={row.provider}
-              theme={theme}
               accountLabel={email ?? "this machine"}
               accountUrl={account?.url ?? fallbackAccountUrl}
               nowMs={nowMs}
@@ -292,7 +287,6 @@ export function UsageAccountRow({
 function WindowMeter({
   cell,
   provider,
-  theme,
   accountLabel,
   accountUrl,
   nowMs,
@@ -302,7 +296,6 @@ function WindowMeter({
 }: {
   cell: AccountWindowCell;
   provider: UsageProvider;
-  theme: ThemeId;
   accountLabel: string;
   accountUrl?: string;
   nowMs: number;
@@ -314,9 +307,7 @@ function WindowMeter({
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const { segment, card } = cell;
   const left = Math.round(segment.percentLeft);
-  // Colour is fed CONSUMPTION even though the bar draws headroom: a nearly-dry
-  // window has to read hot, and "10% left" is the hot case.
-  const fill = usagePressureColor(100 - segment.percentLeft, providerColor(provider, theme));
+  const fill = usageHeadroomColor(segment.percentLeft);
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const closeTimerRef = useRef<number | null>(null);

@@ -49,7 +49,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   Bash: { label: "Shell", icon: Terminal, badgeCls: "border-amber-400/25 bg-amber-400/12 text-amber-200", category: "exec", sourceTone: "warning", getTarget: a => String(a.command ?? "") || null },
   BashOutput: { label: "Output", icon: Terminal, badgeCls: "border-amber-400/25 bg-amber-400/12 text-amber-200", category: "exec", sourceTone: "warning" },
   KillBash: { label: "Kill", icon: StopCircle, badgeCls: "border-red-400/25 bg-red-500/12 text-red-200", category: "exec", sourceTone: "warning" },
-  WebSearch: { label: "Search", icon: MagnifyingGlass, badgeCls: "border-indigo-400/25 bg-indigo-400/12 text-indigo-200", category: "web", sourceTone: "accent", getTarget: a => String(a.query ?? "") || null },
+  WebSearch: { label: "Search", icon: Globe, badgeCls: "border-indigo-400/25 bg-indigo-400/12 text-indigo-200", category: "web", sourceTone: "accent", getTarget: a => String(a.query ?? a.searchTerm ?? a.search_term ?? "") || null },
   WebFetch: { label: "Fetch", icon: Globe, badgeCls: "border-indigo-400/25 bg-indigo-400/12 text-indigo-200", category: "web", sourceTone: "accent", getTarget: a => String(a.url ?? "") || null },
   TodoWrite: { label: "Plan", icon: ClipboardText, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "plan", sourceTone: "accent" },
   TodoRead: { label: "Plan", icon: ClipboardText, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "plan", sourceTone: "accent" },
@@ -108,6 +108,12 @@ const TOOL_META: Record<string, ToolMeta> = {
   report_result: { label: "Result", icon: CheckCircle, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "meta", sourceTone: "success", getTarget: a => String(a.workerId ?? "") || null },
   report_validation: { label: "Validation", icon: Checks, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "meta", sourceTone: "success", getTarget: a => String(a.workerId ?? a.targetWorkerId ?? "") || null },
 };
+
+// Provider spellings of the same two web tools: Cursor `webSearch`/`webFetch`,
+// OpenCode `websearch`/`webfetch`, Droid `FetchUrl`, snake_case variants.
+// Without them these rows fell through to the warning glyph.
+for (const alias of ["webSearch", "websearch", "web_search"]) TOOL_META[alias] = TOOL_META.WebSearch!;
+for (const alias of ["webFetch", "webfetch", "web_fetch", "FetchUrl", "fetch_url"]) TOOL_META[alias] = TOOL_META.WebFetch!;
 
 export function isCodeChangeTool(toolName: string): boolean {
   return getToolMeta(toolName).category === "write";

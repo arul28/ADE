@@ -9947,11 +9947,35 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.ptyResumeSession, async (_event, arg: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> => {
-    return await requirePtyService().resumeSession(arg);
+    const ctx = getCtx();
+    const result = await requirePtyService().resumeSession(arg);
+    if (result.resumed) {
+      try {
+        ctx.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        ctx.logger.warn("pty.resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.ptySendToSession, async (_event, arg: PtySendToSessionArgs): Promise<PtySendToSessionResult> => {
-    return await requirePtyService().sendToSession(arg);
+    const ctx = getCtx();
+    const result = await requirePtyService().sendToSession(arg);
+    if (result.resumed) {
+      try {
+        ctx.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        ctx.logger.warn("pty.resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.ptyWrite, async (_event, arg: { ptyId: string; data: string }): Promise<void> => {

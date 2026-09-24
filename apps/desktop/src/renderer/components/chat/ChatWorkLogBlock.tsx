@@ -361,6 +361,14 @@ function aggregateFilesFromEntries(entries: ChatWorkLogEntry[]): AggregatedFile[
   return [...map.values()];
 }
 
+/**
+ * How many distinct files a turn's code-change entries touched — the same
+ * count {@link ChatTurnWorkSummary} shows as `N files changed`.
+ */
+export function countChatTurnChangedFiles(entries: ChatWorkLogEntry[]): number {
+  return aggregateFilesFromEntries(entries.filter(isCodeChangeEntry)).length;
+}
+
 export function dedupeChatToolActivityEntries(entries: ChatWorkLogEntry[]): ChatWorkLogEntry[] {
   const byId = new Map<string, ChatWorkLogEntry>();
   for (const entry of entries) {
@@ -408,8 +416,21 @@ function webSearchUrlActions(entry: ChatWorkLogEntry): NonNullable<ChatWorkLogEn
 const WEB_SEARCH_RESULT_LIMIT = 8;
 
 function webSearchResults(entry: ChatWorkLogEntry): NonNullable<ChatWorkLogEntry["results"]> {
-  if (entry.entryKind !== "web_search" || !entry.results?.length) return [];
+  // Native web searches and provider web tools (whose hits arrive as sources).
+  if ((entry.entryKind !== "web_search" && entry.entryKind !== "tool") || !entry.results?.length) return [];
   return entry.results.slice(0, WEB_SEARCH_RESULT_LIMIT);
+}
+
+/**
+ * How many results/pages a web row found, shown on the collapsed header so the
+ * count does not need a click. Null when the row has none to report.
+ */
+export function webResultCount(entry: ChatWorkLogEntry): number | null {
+  if (entry.entryKind !== "web_search" && entry.entryKind !== "tool") return null;
+  if (typeof entry.resultsTotal === "number" && entry.resultsTotal > 0) return entry.resultsTotal;
+  if (entry.results?.length) return entry.results.length;
+  const urlActions = webSearchUrlActions(entry).length;
+  return urlActions > 0 ? urlActions : null;
 }
 
 function WebSearchResultRows({ entry }: { entry: ChatWorkLogEntry }) {
@@ -482,6 +503,7 @@ function ToolCallRow({
   const argText = replaceInternalToolNames(entryArgText(entry));
   const kindTone = workLogEntryKindToneClass(entry);
   const searchResults = webSearchResults(entry);
+  const resultCount = webResultCount(entry);
   // Structured results are the richer, deduped surface; fall back to raw action
   // URLs only when the provider didn't send a results array.
   const searchUrlActions = searchResults.length > 0 ? [] : webSearchUrlActions(entry);
@@ -506,6 +528,14 @@ function ToolCallRow({
         </span>
         {argText ? (
           <span className="min-w-0 truncate font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-fg/88">{argText}</span>
+        ) : null}
+        {resultCount !== null ? (
+          <span
+            className="ml-auto shrink-0 font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums text-fg/38"
+            data-testid="work-log-web-result-count"
+          >
+            {resultCount} {resultCount === 1 ? "result" : "results"}
+          </span>
         ) : null}
       </button>
       {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
@@ -997,6 +1027,10 @@ function TurnTokenBlurb({ usage }: { usage: TurnTokenUsage | null | undefined })
   );
 }
 
+/** Keyboard focus draws the ring; a mouse click leaves no outline behind. */
+const TURN_WORK_TOGGLE_CLASS =
+  "inline-flex items-center gap-1 rounded text-fg/55 outline-none transition-colors hover:text-fg/85 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/35";
+
 export function ChatTurnWorkSummary({
   toolEntries,
   fileEntries,
@@ -1009,6 +1043,7 @@ export function ChatTurnWorkSummary({
   tokenUsage,
   checkpointFiles = null,
   checkpointDetail = null,
+  align = "end",
 }: {
   toolEntries: ChatWorkLogEntry[];
   fileEntries: ChatWorkLogEntry[];
@@ -1026,6 +1061,12 @@ export function ChatTurnWorkSummary({
    */
   checkpointFiles?: { count: number; additions: number; deletions: number } | null;
   checkpointDetail?: React.ReactNode;
+  /**
+   * Where the tools/files toggles sit. `end` (the turn-end line) pushes them
+   * right of the time and usage; `start` (inside an open turn fold) keeps them
+   * left-aligned with the fold row.
+   */
+  align?: "start" | "end";
 }) {
   const workspacePaths = useChatWorkspacePaths();
   const [open, setOpen] = useState<null | "tools" | "files">(null);
@@ -1052,19 +1093,21 @@ export function ChatTurnWorkSummary({
   return (
     <div className="w-full min-w-0">
       <div className="flex min-w-0 flex-nowrap items-center gap-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55">
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          {leading}
-          {leading && tokens ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
-          {tokens}
-        </div>
-        <div className="ml-auto flex shrink-0 items-center gap-3">
+        {leading || tokenUsage || align === "end" ? (
+          <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+            {leading}
+            {leading && tokens ? <span className="shrink-0 text-fg/25" aria-hidden>·</span> : null}
+            {tokens}
+          </div>
+        ) : null}
+        <div className={cn("flex shrink-0 items-center gap-3", align === "end" && "ml-auto")}>
           {tools.length > 0 ? (
             <button
               type="button"
               aria-expanded={open === "tools"}
               aria-label={`${open === "tools" ? "Hide" : "Show"} ${tools.length} tool${tools.length === 1 ? "" : "s"} from this turn`}
               onClick={() => toggle("tools")}
-              className="inline-flex items-center gap-1 text-fg/55 transition-colors hover:text-fg/85"
+              className={TURN_WORK_TOGGLE_CLASS}
             >
               <Wrench size={11} weight="bold" aria-hidden />
               <span className="font-mono tabular-nums">{tools.length}</span>
@@ -1080,7 +1123,7 @@ export function ChatTurnWorkSummary({
               aria-expanded={open === "files"}
               aria-label={`${open === "files" ? "Hide" : "Show"} files changed`}
               onClick={() => toggle("files")}
-              className="inline-flex items-center gap-1 text-fg/55 transition-colors hover:text-fg/85"
+              className={TURN_WORK_TOGGLE_CLASS}
             >
               <GitDiff size={11} weight="bold" aria-hidden />
               <span>{fileStat.count} {fileStat.count === 1 ? "file" : "files"} changed</span>

@@ -480,10 +480,21 @@ const PLACEHOLDER_SUMMARIES = new Set([
   "agent stopped",
 ]);
 
+/**
+ * OpenCode's child-session summary is a diff stat (`+0 −0 · 0 files`). With
+ * every count at zero it says only that nothing changed, so it is not shown.
+ */
+const EMPTY_DIFF_STAT_SUMMARY = /^\+0\s*[−-]\s*0(?:\s*·\s*0\s+files?)?$/;
+
+/** True for a diff-stat summary whose counts are all zero. */
+export function isEmptyDiffStatSummary(value: string | null | undefined): boolean {
+  return EMPTY_DIFF_STAT_SUMMARY.test((value ?? "").trim());
+}
+
 export function isPlaceholderSummary(value: string | null | undefined): boolean {
   const text = (value ?? "").trim().toLowerCase().replace(/[.!]+$/, "");
   if (!text) return true;
-  return PLACEHOLDER_SUMMARIES.has(text);
+  return PLACEHOLDER_SUMMARIES.has(text) || isEmptyDiffStatSummary(text);
 }
 
 /**
@@ -498,72 +509,5 @@ export function firstMeaningfulSummary(...candidates: Array<string | null | unde
   return null;
 }
 
-export type AgentIdentityLabel = {
-  /** Human role, sentence case — "Ship poller". */
-  label: string;
-  /** Trailing issue/PR number lifted out of the path, e.g. "#927". */
-  ref: string | null;
-  /** The raw value, kept for the `title` tooltip. */
-  raw: string;
-};
-
-/**
- * Turn a runtime's internal agent path into a role.
- *
- * Codex hands us `/ROOT/SHIP_POLL_927` — an id, not an identity. Identity
- * should read as role + intent, so the last segment becomes sentence case
- * ("Ship poll") and a trailing issue/PR number is lifted into its own chip.
- * Runtimes that never set an agent type (OpenCode, Droid) get `null` and
- * render no chip at all.
- */
-export function humanizeAgentIdentity(value: string | null | undefined): AgentIdentityLabel | null {
-  const raw = (value ?? "").trim();
-  if (!raw) return null;
-  // `background` is a flag the spawn card already renders as its own chip.
-  if (raw.toLowerCase() === "background") return null;
-  const segments = raw.split(/[/\\]+/).filter((segment) => segment.length > 0);
-  let tail = segments.length ? segments[segments.length - 1]! : raw;
-  // A bare "/root" (or an all-separator value) carries no role at all.
-  if (segments.length === 1 && /^root$/i.test(tail)) return null;
-  let ref: string | null = null;
-  const numberMatch = tail.match(/[_\-\s](\d{2,})$/);
-  if (numberMatch) {
-    ref = `#${numberMatch[1]}`;
-    tail = tail.slice(0, numberMatch.index);
-  }
-  const words = tail.split(/[_\-\s]+/).filter((word) => word.length > 0);
-  if (!words.length) return ref ? { label: raw, ref, raw } : null;
-  const joined = words.join(" ").toLowerCase();
-  const label = joined.charAt(0).toUpperCase() + joined.slice(1);
-  return { label, ref, raw };
-}
-
-/**
- * `runs in 4m · 12:17` — a schedule is only actionable as a relative distance
- * plus a local wall clock; a raw ISO string is neither.
- */
-export function formatScheduledRunAt(value: string | null | undefined, nowMs = Date.now()): string | null {
-  const raw = (value ?? "").trim();
-  if (!raw) return null;
-  const at = Date.parse(raw);
-  if (!Number.isFinite(at)) return null;
-  const clock = new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  const deltaMs = at - nowMs;
-  const absMinutes = Math.round(Math.abs(deltaMs) / 60_000);
-  const relative = absMinutes < 1
-    ? (deltaMs >= 0 ? "runs now" : "ran just now")
-    : absMinutes < 60
-      ? (deltaMs >= 0 ? `runs in ${absMinutes}m` : `ran ${absMinutes}m ago`)
-      : absMinutes < 60 * 24
-        ? (() => {
-            const hours = Math.floor(absMinutes / 60);
-            const minutes = absMinutes % 60;
-            const span = minutes ? `${hours}h ${minutes}m` : `${hours}h`;
-            return deltaMs >= 0 ? `runs in ${span}` : `ran ${span} ago`;
-          })()
-        : (() => {
-            const days = Math.round(absMinutes / (60 * 24));
-            return deltaMs >= 0 ? `runs in ${days}d` : `ran ${days}d ago`;
-          })();
-  return `${relative} · ${clock}`;
-}
+// Lives in shared so the TUI and other surfaces derive the same agent names.
+export { humanizeAgentIdentity, type AgentIdentityLabel } from "../../../shared/chatSubagents";

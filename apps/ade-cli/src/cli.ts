@@ -4131,10 +4131,20 @@ function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
 
 function chatWaitTargetMatches(summary: JsonObject, waitFor: ChatWaitTarget): boolean {
   const status = asString(summary.status);
-  if (waitFor === "idle") return status === "idle";
-  if (waitFor === "active") return status === "active" && summary.awaitingInput !== true;
-  if (waitFor === "awaiting-input") return summary.awaitingInput === true;
-  return status === "failed" || status === "interrupted" || status === "completed" || summary.endedAt != null;
+  const phase = asString(summary.phase);
+  const awaitingInput = summary.awaitingInput === true || phase === "blocked";
+  const cliSession = isRecord(summary.cliSession) ? summary.cliSession : null;
+  const cliStatus = asString(cliSession?.status);
+  if (waitFor === "idle") return status === "idle" || phase === "idle";
+  if (waitFor === "active") {
+    return (status === "active" || phase === "running") && !awaitingInput;
+  }
+  if (waitFor === "awaiting-input") return awaitingInput;
+  return status === "failed"
+    || status === "interrupted"
+    || status === "completed"
+    || summary.endedAt != null
+    || (cliStatus !== null && cliStatus !== "running");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -8472,6 +8482,18 @@ function buildChatPlan(args: string[]): CliPlan {
           "listSessions",
           input,
         ),
+        {
+          // Tracked `--mode cli` children are PTY sessions, not chats, so
+          // listSessions never returns them; an agent still needs to find and
+          // poll its CLI children here. Optional: an older brain lacks it.
+          ...actionStep(
+            "cli",
+            "chat",
+            "listCliChildSessions",
+            laneId ? { laneId } : {},
+          ),
+          optional: true,
+        },
       ],
     };
   }
@@ -24506,14 +24528,35 @@ export function formatChatResumeNow(value: unknown): string {
 
 function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
+  const hasCliRows = sessions.some((session) => session.kind === "cli");
+  if (!hasCliRows) {
+    return renderTable(
+      ["session", "provider", "lane", "title"],
+      sessions.map((session) => [
+        session.id ?? session.sessionId,
+        session.provider ?? session.modelId,
+        session.laneId,
+        session.title,
+      ]),
+      "ADE chats\n(no sessions)",
+    );
+  }
+  // A tracked CLI child reads its terminal status (and exit code) in place of
+  // a chat's; its parent column is what an agent polling its children needs.
   return renderTable(
-    ["session", "provider", "lane", "title"],
-    sessions.map((session) => [
-      session.id ?? session.sessionId,
-      session.provider ?? session.modelId,
-      session.laneId,
-      session.title,
-    ]),
+    ["session", "provider", "lane", "title", "kind", "parent"],
+    sessions.map((session) => {
+      const cli = session.kind === "cli";
+      const exitCode = typeof session.exitCode === "number" ? ` (exit ${session.exitCode})` : "";
+      return [
+        session.id ?? session.sessionId,
+        session.provider ?? session.modelId,
+        session.laneId,
+        session.title,
+        cli ? `cli · ${String(session.status ?? "unknown")}${exitCode}` : "chat",
+        cli ? session.parentSessionId : session.orchestrationParentSessionId,
+      ];
+    }),
     "ADE chats\n(no sessions)",
   );
 }
@@ -27012,6 +27055,15 @@ function summarizeExecution(args: {
     };
   }
 
+  if (plan.label === "chat list" && values.cli !== undefined) {
+    // One flat array, chats first, so `--json` consumers keep reading a list.
+    // CLI rows carry `kind: "cli"` plus status / exit code / parent.
+    const chats = unwrapActionEnvelope(values.result);
+    const cliChildren = unwrapActionEnvelope(values.cli);
+    if (!Array.isArray(chats) || !Array.isArray(cliChildren) || cliChildren.length === 0) return chats;
+    return [...chats, ...cliChildren];
+  }
+
   if (plan.label === "chat status") {
     // The turn-status record stays FLAT at the top level: `--json` consumers
     // (and this plan's own exit code) read `.phase` there, and nesting it under
@@ -27870,18 +27922,22 @@ async function runChatWaitCommand(
 
   const startedAt = Date.now();
   const readSummary = async (): Promise<JsonObject | null> => {
-    const raw = await connection.request("ade/actions/call", {
-      name: "run_ade_action",
-      arguments: {
-        domain: "chat",
-        action: "getSessionSummary",
-        argsList: [plan.sessionId],
-      },
-    });
-    const unwrapped = unwrapActionEnvelope(unwrapToolResult(raw));
+    const readAction = async (action: "getSessionSummary" | "getTurnStatus"): Promise<unknown> => {
+      const raw = await connection.request("ade/actions/call", {
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action,
+          argsList: [plan.sessionId],
+        },
+      });
+      return unwrapActionEnvelope(unwrapToolResult(raw));
+    };
+    const summary = await readAction("getSessionSummary");
+    const unwrapped = summary == null ? await readAction("getTurnStatus") : summary;
     if (unwrapped == null) return null;
     if (!isRecord(unwrapped)) {
-      throw new CliExecutionError("chat.getSessionSummary returned an unexpected result.", {
+      throw new CliExecutionError("chat status action returned an unexpected result.", {
         sessionId: plan.sessionId,
         result: unwrapped,
       });

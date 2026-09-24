@@ -43,7 +43,7 @@ function tokenStats(overrides: Partial<TokenStats> = {}): TokenStats {
 }
 
 describe("deriveChatInfoSnapshot", () => {
-  it("derives plan from the most recent plan event with current/total counts and live state", () => {
+  it("derives the task list from the most recent plan event", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-05-18T12:00:00.000Z", {
         type: "plan",
@@ -74,21 +74,21 @@ describe("deriveChatInfoSnapshot", () => {
       streaming: false,
     });
 
-    expect(snapshot.plan).toEqual({
-      current: 2,
-      total: 3,
-      live: true,
-      steps: [
-        { text: "patch runtime bridge", status: "completed" },
-        { text: "verify desktop smoke", status: "in_progress" },
-        { text: "ship", status: "pending" },
+    expect(snapshot.taskList).toEqual({
+      source: "plan",
+      label: "Plan",
+      turnId: null,
+      items: [
+        { id: "step-0", label: "patch runtime bridge", status: "done" },
+        { id: "step-1", label: "verify desktop smoke", status: "running" },
+        { id: "step-2", label: "ship", status: "pending" },
       ],
     });
     expect(snapshot.provider).toBe("codex");
     expect(snapshot.modelLabel).toBe("gpt-5.5");
   });
 
-  it("returns null plan and null token summary when there are no plan events and no token stats", () => {
+  it("returns a null task list and null token summary when there are no list events and no token stats", () => {
     const snapshot = deriveChatInfoSnapshot({
       events: [
         env("2026-05-18T12:00:00.000Z", { type: "text", text: "hi" }, 1),
@@ -103,7 +103,7 @@ describe("deriveChatInfoSnapshot", () => {
       streaming: true,
     });
 
-    expect(snapshot.plan).toBeNull();
+    expect(snapshot.taskList).toBeNull();
     expect(snapshot.tokenSummary).toBeNull();
     expect(snapshot.contextPercent).toBeNull();
     expect(snapshot.streaming).toBe(true);
@@ -132,7 +132,7 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.tokenSummary).toBe("+1.2k/340 (5.5k✶) $0.14");
   });
 
-  it("derives a completed-only plan as non-live with current pointing at the completed count", () => {
+  it("derives a completed-only plan with every item done", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-05-18T12:00:00.000Z", {
         type: "plan",
@@ -155,7 +155,7 @@ describe("deriveChatInfoSnapshot", () => {
       streaming: false,
     });
 
-    expect(snapshot.plan).toMatchObject({ current: 2, total: 2, live: false });
+    expect(snapshot.taskList?.items.map((item) => item.status)).toEqual(["done", "done"]);
   });
 
   it("prefers the active session provider over the argument and passes laneLabel/streaming through", () => {
@@ -257,7 +257,7 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.claudeTag).toBe("review-ready");
   });
 
-  it("derives todos, plan explanation, and the lane PR rollup", () => {
+  it("derives ONE task list (the newest list wins), the proposal text, and the lane PR rollup", () => {
     const snapshot = deriveChatInfoSnapshot({
       events: [
         env("2026-05-18T12:00:00.000Z", {
@@ -265,6 +265,12 @@ describe("deriveChatInfoSnapshot", () => {
           turnId: "t1",
           steps: [{ text: "step", status: "in_progress" }],
           explanation: "Do the risky part first.",
+        } as never, 1),
+        env("2026-05-18T12:00:00.500Z", {
+          type: "plan",
+          turnId: "t1",
+          steps: [],
+          state: "delta",
           streamingText: "still planning…",
         } as never, 1),
         env("2026-05-18T12:00:01.000Z", {
@@ -286,12 +292,18 @@ describe("deriveChatInfoSnapshot", () => {
       pr: { number: 7, state: "open", checksPassed: 1, checksTotal: 2 },
     });
 
-    expect(snapshot.planExplanation).toBe("Do the risky part first.");
+    // The plan-mode proposal is not the list; its text rides alongside.
     expect(snapshot.planStreamingText).toBe("still planning…");
-    expect(snapshot.todos).toEqual([
-      { id: "todo-1", description: "Fix adapter", status: "completed" },
-      { id: "todo-2", description: "Add tests", status: "pending" },
-    ]);
+    // The later todo update (no turn, not covered by the plan) replaces the plan.
+    expect(snapshot.taskList).toEqual({
+      source: "todo",
+      label: "Tasks",
+      turnId: null,
+      items: [
+        { id: "todo-1", label: "Fix adapter", status: "done" },
+        { id: "todo-2", label: "Add tests", status: "pending" },
+      ],
+    });
     expect(snapshot.pr).toEqual({ number: 7, state: "open", checksPassed: 1, checksTotal: 2 });
   });
 

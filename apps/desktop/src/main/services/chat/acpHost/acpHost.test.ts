@@ -831,13 +831,105 @@ describe("stream translation", () => {
         ],
       },
     ]);
-    expect(events[0]).toMatchObject({
+    expect(events[0]).toEqual({
       type: "plan",
       steps: [
-        { text: "step one", status: "completed" },
-        { text: "step two", status: "in_progress" },
+        { text: "step one", status: "completed", priority: "high" },
+        { text: "step two", status: "in_progress", priority: "low" },
       ],
+      turnId: "turn-1",
     });
+  });
+
+  it("maps plan_removed to a plan with no steps, which clears the task list", () => {
+    const events = translateAll([{ sessionUpdate: "plan_removed" }]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "plan", steps: [] });
+    expect(events[0]).not.toHaveProperty("streamingText");
+  });
+});
+
+describe("source translation", () => {
+  function translateAll(updates: AcpSessionUpdate[]): AgentChatEvent[] {
+    const translator = createAcpEventTranslator();
+    translator.beginTurn("turn-1");
+    return updates.flatMap((update) => translator.translate(update));
+  }
+
+  it("renders a resource_link message chunk as a link and cites it, instead of dropping it", () => {
+    const events = translateAll([{
+      sessionUpdate: "agent_message_chunk",
+      messageId: "m1",
+      content: { type: "resource_link", uri: "https://agentclientprotocol.com/spec", name: "spec", title: "ACP spec" },
+    }]);
+    expect(events).toEqual([
+      { type: "text", text: "[ACP spec](<https://agentclientprotocol.com/spec>)", messageId: "m1", itemId: "m1", turnId: "turn-1" },
+      {
+        type: "sources",
+        sources: [{ kind: "citation", url: "https://agentclientprotocol.com/spec", cited: true, title: "ACP spec" }],
+        itemId: "m1",
+        turnId: "turn-1",
+      },
+    ]);
+  });
+
+  it("separates a resource_link from preceding text and percent-encodes markdown delimiters", () => {
+    const translator = createAcpEventTranslator();
+    translator.beginTurn("turn-1");
+    const events = [
+      ...translator.translate({ sessionUpdate: "agent_message_chunk", messageId: "m2", content: { type: "text", text: "See" } }),
+      ...translator.translate({ sessionUpdate: "agent_message_chunk", messageId: "m2", content: { type: "resource_link", uri: "https://example.dev/a>b\nc", name: "spec" } }),
+    ];
+
+    expect(events[1]).toMatchObject({ type: "text", text: "\n[spec](<https://example.dev/a%3Eb%0Ac>)" });
+  });
+
+  it("keeps a trailing resource_link out of the ACP tool result output", () => {
+    const events = translateAll([
+      { sessionUpdate: "tool_call", toolCallId: "t-source", title: "Search", kind: "search", status: "in_progress" },
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "t-source",
+        status: "completed",
+        content: [
+          { type: "content", content: { type: "text", text: "Found the API contract." } },
+          { type: "content", content: { type: "resource_link", uri: "https://example.dev/api", name: "API" } },
+        ],
+      },
+    ]);
+
+    expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", result: "Found the API contract." }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", sources: [{ kind: "citation", url: "https://example.dev/api", title: "API" }] }));
+  });
+
+  it("attaches a fetched page to a completed fetch tool", () => {
+    const events = translateAll([
+      { sessionUpdate: "tool_call", toolCallId: "t1", title: "Fetch", kind: "fetch", status: "in_progress", rawInput: { url: "https://a.dev/doc" } },
+      { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed", rawOutput: "# Doc" },
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "tool_result",
+      itemId: "t1",
+      status: "completed",
+      sources: [{ kind: "fetched_url", url: "https://a.dev/doc" }],
+    });
+  });
+
+  it("never treats a grep-shaped search as a web source", () => {
+    const events = translateAll([
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "g1",
+        title: "grep TODO",
+        kind: "search",
+        status: "completed",
+        rawInput: { pattern: "TODO", path: "src" },
+        rawOutput: { results: [{ url: "https://looks-like-web.dev" }] },
+        locations: [{ path: "/repo/src/a.ts", line: 3 }],
+      },
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "tool_result", itemId: "g1" });
+    expect(events.at(-1)).not.toHaveProperty("sources");
   });
 });
 

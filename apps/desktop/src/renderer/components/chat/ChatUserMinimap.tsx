@@ -19,7 +19,8 @@ type ChatUserMinimapProps = {
   entries: readonly ChatUserMinimapSourceEntry[];
   /** `activeFullUserOrdinal` — ticks are 1:1 with entries, so this is already an index. */
   activeIndex: number | null;
-  onJumpToRow: (rowIndex: number) => void;
+  /** `entry` carries the row key and, for a row hidden in a closed turn fold, its fold. */
+  onJumpToRow: (rowIndex: number, entry: ChatUserMinimapSourceEntry) => void;
   /** Older transcript pages exist before the currently resident row window. */
   hasOlderHistory?: boolean;
   /** Keeps the continuation marker stable while its page is in flight. */
@@ -144,7 +145,7 @@ export function ChatUserMinimap({
       if (index === null) return;
       const entry = entries[index];
       if (!entry) return;
-      onJumpToRow(entry.rowIndex);
+      onJumpToRow(entry.rowIndex, entry);
     },
     [entries, onJumpToRow],
   );

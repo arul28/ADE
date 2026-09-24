@@ -540,7 +540,6 @@ function ProviderLimitsRow({
         <UsageAccountRow
           key={row.key}
           row={row}
-          theme={theme}
           providerTitle={sourceLine}
           fallbackAccountUrl={usageUrl}
           fallbackEmail={status?.accountEmail ?? null}
