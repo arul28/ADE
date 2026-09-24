@@ -5247,7 +5247,10 @@ export function AgentChatComposer({
       const block = cursorCloudSendBlock({
         hasEligibleModels: cursorCloudHasEligibleModels,
         modelReady: cursorCloudModelReady,
-        hasContent: hasComposerContextContent
+        // The launch prompt carries typed text, issue context, and delivered
+        // file attachments — visual-context items are not part of it, so a
+        // visual-only draft must stay blocked rather than launch with "".
+        hasContent: trimmed.length > 0 || contextAttachmentCount > 0
           || (cloudFileAttachmentsDelivered && attachments.length > 0),
       });
       if (block) {
@@ -5352,8 +5355,14 @@ export function AgentChatComposer({
     ? cursorCloudSendBlock({
       hasEligibleModels: cursorCloudHasEligibleModels,
       modelReady: cursorCloudModelReady,
-      hasContent: hasComposerContextContent
-        || (cursorCloudCanLaunch && cloudFileAttachmentsDelivered && attachments.length > 0),
+      // Match the predicate of the path the send will actually take: a fresh
+      // launch delivers text + issue context + file attachments, while a
+      // linked reply rides submit, which accepts composer context but not
+      // file-attachment-only payloads.
+      hasContent: cursorCloudCanLaunch
+        ? draft.trim().length > 0 || contextAttachmentCount > 0
+          || (cloudFileAttachmentsDelivered && attachments.length > 0)
+        : hasComposerContextContent,
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
