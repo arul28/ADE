@@ -312,7 +312,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       resolution: readValue(args, ["--resolution", "--size"]),
     }, "mac-desktop-status");
   if (sub === "stop" || sub === "destroy" || sub === "release-display")
-    return desktopAction("mac-desktop stop", "stop", requireLane());
+    return desktopAction("mac-desktop stop", "stop", requireLane(), "mac-desktop-stop");
   if (sub === "windows" || sub === "list" || sub === "ls")
     return desktopAction("mac-desktop windows", "listWindows", { ...claimArgs }, "mac-desktop-windows");
   if (sub === "claim") {
@@ -824,6 +824,41 @@ export function formatMacDesktopStatus(value: unknown): string {
         "(no lanes hold a display)",
       ),
     );
+  }
+  return sections.join("\n");
+}
+
+/**
+ * `mac-desktop stop`: which apps quit, and which stayed on the user's screen.
+ *
+ * The generic result formatter clips each cell at 96 characters and prints an
+ * `appsLeftOpen` object as JSON, so the sentence the service wrote — "TextEdit
+ * did not quit, even when forced. It moved to your screen." — never arrives
+ * whole. Each left-open app is its own line, and the message is that line.
+ */
+export function formatMacDesktopStop(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const quitApps = (Array.isArray(result.quitApps) ? result.quitApps : [])
+    .filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+  const leftOpen = (Array.isArray(result.appsLeftOpen) ? result.appsLeftOpen : [])
+    .filter(isRecord);
+  const sections = [
+    renderKeyValues("ADE Mac Desktop stop", [
+      ["stopped", result.stopped],
+      ["released windows", result.releasedWindows],
+    ]),
+    "",
+    quitApps.length ? `Quit  ${quitApps.join(", ")}` : "Quit  (none)",
+  ];
+  if (!leftOpen.length) {
+    sections.push("Left open  (none)");
+  } else {
+    sections.push("Left open");
+    for (const app of leftOpen) {
+      const message = asString(app.message);
+      const name = asString(app.appName) ?? "An app";
+      sections.push(`  ${message ?? `${name} did not quit. It moved to your screen.`}`);
+    }
   }
   return sections.join("\n");
 }

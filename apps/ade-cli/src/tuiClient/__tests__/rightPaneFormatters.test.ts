@@ -642,6 +642,74 @@ describe("work tools pane", () => {
     expect(body).toContain("last frame: frame captured · 1h ago");
   });
 
+  it("describes the lane's Mac Desktop when one is up", () => {
+    const body = formatWorkToolsLaneState(workToolsState({
+      activeTool: "mac-desktop",
+      openTools: ["mac-desktop"],
+      macDesktop: {
+        supported: true,
+        display: {
+          laneId: "lane-1",
+          displayId: 7,
+          name: "ADE · lane one",
+          mode: "virtual",
+          width: 2560,
+          height: 1440,
+          scale: 2,
+          origin: { x: 0, y: 0 },
+          createdAt: "2026-08-24T11:00:00Z",
+          windowCount: 1,
+          lastActivityAt: "2026-08-24T11:58:00Z",
+        },
+        windows: [],
+        lease: {
+          laneId: "lane-1",
+          holder: "user",
+          holderId: "you",
+          holderLabel: "You",
+          grantedAt: "2026-08-24T11:50:00Z",
+          expiresAt: "2026-08-24T12:10:00Z",
+        },
+        stream: { running: true, idle: false, fps: 30, bitrateKbps: 2000, lastError: null },
+        permissions: { screenRecording: "granted", accessibility: "granted" },
+        lastObservation: {
+          id: "obs-1",
+          capturedAt: "2026-08-24T11:59:00Z",
+          caption: "click · Sign in",
+          screenshotPath: "/tmp/desk.png",
+        },
+        hostIsLocal: false,
+        recording: { running: true, startedAt: "2026-08-24T11:40:00Z" },
+        notParked: [{
+          windowId: 91,
+          reason: "gave_up",
+          at: WORK_TOOLS_NOW,
+          firstSeenAt: WORK_TOOLS_NOW,
+        }],
+      },
+    }), WORK_TOOLS_NOW);
+    expect(body).toContain("Mac Desktop");
+    expect(body).toContain("2560x1440 · 0 windows · You · streaming · recording");
+    expect(body).toContain("last frame: click · Sign in · 1m ago");
+    expect(body).toContain("Window 91 keeps leaving the lane's screen. It is on your main screen.");
+  });
+
+  it("hides Mac Desktop on a host that cannot run one", () => {
+    const body = formatWorkToolsLaneState(workToolsState({
+      macDesktop: {
+        supported: false,
+        display: null,
+        windows: [],
+        lease: null,
+        stream: null,
+        permissions: { screenRecording: "unknown", accessibility: "unknown" },
+        lastObservation: null,
+        hostIsLocal: false,
+      },
+    }), WORK_TOOLS_NOW);
+    expect(body).not.toContain("Mac Desktop");
+  });
+
   it("keeps the read-only note aligned with the shared hint", () => {
     expect(WORK_TOOLS_PANE_NOTE).toBe("Control from the desktop");
   });

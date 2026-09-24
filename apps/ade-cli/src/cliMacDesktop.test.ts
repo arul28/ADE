@@ -303,6 +303,27 @@ describe("ade mac-desktop text output", () => {
     expect(text).toContain("#91 Preview — shot.png");
   });
 
+  it("prints stop's quit apps and left-open sentences in full", () => {
+    expect(plan(["mac-desktop", "stop"]).formatter).toBe("mac-desktop-stop");
+    const message = "TextEdit did not quit, even when forced. It moved to your screen.";
+    const text = formatOutput(
+      {
+        stopped: true,
+        releasedWindows: 2,
+        quitApps: ["Safari", "Preview"],
+        appsLeftOpen: [{ pid: 88, appName: "TextEdit", message }],
+      },
+      { text: true } as never,
+      "mac-desktop-stop",
+    );
+    expect(text).toContain("stopped");
+    expect(text).toContain("yes");
+    expect(text).toContain("released windows");
+    expect(text).toContain("Quit  Safari, Preview");
+    expect(text).toContain(message);
+    expect(text).not.toContain("pid");
+  });
+
   it("prints observations as a numbered handle list with the truncation note", () => {
     const text = formatOutput(
       {
