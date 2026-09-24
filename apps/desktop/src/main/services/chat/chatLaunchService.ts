@@ -445,7 +445,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       setStage(record, "checkout", "done", { percent: 100, detail: "Recovered after restart" });
       publish(record);
       assertActive(record);
-      startLaneNaming(record, interrupted);
+      // A user-configured lane keeps the name they chose; only a prompt-derived
+      // auto-create lane is AI-renamed.
+      if (!record.laneConfig) startLaneNaming(record, interrupted);
       return;
     }
     if (record.checkoutAttempted && deps.laneService.cleanupReservedWorktree) {
@@ -476,7 +478,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       lane = await deps.laneService.create(
         {
           name: record.snapshot.laneName,
-          branchName: temporaryAutoLaneBranch(),
+          // A configured lane derives its branch from the user's name; an
+          // auto-create lane gets a placeholder branch and is renamed after.
+          ...(record.laneConfig ? {} : { branchName: temporaryAutoLaneBranch() }),
           ...(baseRef ? { baseBranch: baseRef } : {}),
           ...(config?.mode === "child" && config.parentLaneId ? { parentLaneId: config.parentLaneId } : {}),
           // A child's base override has to travel as the start point: `create`
@@ -518,7 +522,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     publish(record);
     // A cancel that raced the checkout's last moments still owns this lane.
     assertActive(record);
-    startLaneNaming(record, lane);
+    // Keep the user's configured name and its derived branch; only a
+    // prompt-derived auto-create lane is AI-renamed.
+    if (!record.laneConfig) startLaneNaming(record, lane);
   };
 
   /**

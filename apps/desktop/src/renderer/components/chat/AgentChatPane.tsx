@@ -3962,7 +3962,6 @@ export function AgentChatPane({
     pendingRendererRef,
     dialogOpen: newLaneDialogOpen,
     setDialogOpen: setNewLaneDialogOpen,
-    openConfigure: handleConfigureNewLane,
     applyConfigured: handleNewLaneConfigured,
     clearConfig: clearNewLaneConfig,
   } = useNewLaneDraftConfig({
@@ -10335,6 +10334,7 @@ export function AgentChatPane({
           parentLaneId,
           name: laneName,
           ...(childBaseRef ? { baseBranchRef: childBaseRef } : {}),
+          ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
         };
         createdLane = pin
           ? await window.ade.lanes.createChild(childArgs, pin)
@@ -10364,8 +10364,10 @@ export function AgentChatPane({
         assertActive?.();
         const createArgs = {
           name: laneName,
-          branchName: createTemporaryAutoLaneBranch(),
+          // A configured lane derives its branch from the user's name.
+          ...(configured ? {} : { branchName: createTemporaryAutoLaneBranch() }),
           ...(baseBranch ? { baseBranch } : {}),
+          ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
         };
         createdLane = pin
           ? await window.ade.lanes.create(createArgs, pin)
@@ -15490,7 +15492,7 @@ export function AgentChatPane({
                                 lanes={draftShelfLanes}
                                 value={draftShelfLaneValue}
                                 onChange={handleShelfLaneChange}
-                                onCreateLane={handleConfigureNewLane}
+                                onCreateLane={() => setNewLaneDialogOpen(true)}
                                 variant="pill"
                                 // Matches the 28px control height the composer
                                 // pills directly above the shelf already use.

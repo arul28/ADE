@@ -19,17 +19,19 @@ export function useNewLaneDraftConfig(args: {
   const [dialogOpen, setDialogOpen] = useState(false);
   /** Latest recipe, readable from detached launch callbacks without a stale closure. */
   const configRef = useRef<NewLaneDraftConfig | null>(null);
-  configRef.current = config;
   const pendingRendererRef = useRef<NewLaneDraftConfig | null>(null);
 
-  const openConfigure = useCallback(() => setDialogOpen(true), []);
   const applyConfigured = useCallback((next: NewLaneDraftConfig) => {
+    configRef.current = next;
     setError(null);
     setConfig(next);
     // Ride the auto-create target: the lane is not created until send.
     setDraftLaunchTargetId(autoCreateOptionId);
   }, [autoCreateOptionId, setDraftLaunchTargetId, setError]);
-  const clearConfig = useCallback(() => setConfig(null), []);
+  const clearConfig = useCallback(() => {
+    configRef.current = null;
+    setConfig(null);
+  }, []);
 
   return {
     config,
@@ -37,7 +39,6 @@ export function useNewLaneDraftConfig(args: {
     pendingRendererRef,
     dialogOpen,
     setDialogOpen,
-    openConfigure,
     applyConfigured,
     clearConfig,
   };

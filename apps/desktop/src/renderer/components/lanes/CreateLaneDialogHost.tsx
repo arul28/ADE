@@ -942,14 +942,23 @@ export function CreateLaneDialogHost({
   // Configuring a draft creates nothing and owns no machine; the two behaviors
   // differ in one bundle of props, kept here instead of nine ternaries inline.
   const configureForChat = behavior === "configure-for-chat";
-  const behaviorChrome = configureForChat
+  const behaviorChrome: {
+    envInitProgress: LaneEnvInitProgress | null;
+    laneCreated: boolean;
+    setupStatus: string | null;
+    setupSteps: CreateLaneSetupStep[];
+    submitLabelOverride: string | null;
+    machines: LaneMachineOption[];
+    onSelectMachine: ((machineId: string) => void) | undefined;
+    onConnectMachine: (() => void) | undefined;
+  } = configureForChat
     ? {
         envInitProgress: null,
         laneCreated: false,
         setupStatus: null,
-        setupSteps: [] as CreateLaneSetupStep[],
+        setupSteps: [],
         submitLabelOverride: "Use this setup",
-        machines: [] as LaneMachineOption[],
+        machines: [],
         onSelectMachine: undefined,
         onConnectMachine: undefined,
       }
