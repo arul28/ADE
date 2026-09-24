@@ -2,6 +2,7 @@ import dns from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import { isPrivateIpAddress, isPublicIpAddress, pinnedLookup } from "../net/publicHostGuard";
 import {
   deriveSmartLinkPreview,
   type SmartLinkPreview,
@@ -32,20 +33,6 @@ const MAX_HTML_BYTES = 256 * 1024;
 const MAX_ICON_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 2_500;
 const previewCache = new Map<string, CachedPreview>();
-const publicIpv6Ranges = new net.BlockList();
-publicIpv6Ranges.addSubnet("2000::", 3, "ipv6");
-const nonPublicIpv6Ranges = new net.BlockList();
-for (const [network, prefix] of [
-  ["2001::", 32], // Teredo
-  ["2001:2::", 48], // benchmarking
-  ["2001:10::", 28], // ORCHID
-  ["2001:20::", 28], // ORCHIDv2
-  ["2001:db8::", 32], // documentation
-  ["2002::", 16], // 6to4 can embed non-public IPv4 destinations
-] as const) {
-  nonPublicIpv6Ranges.addSubnet(network, prefix, "ipv6");
-}
-
 function rememberPreview(key: string, value: SmartLinkPreview, ttlMs: number): SmartLinkPreview {
   previewCache.delete(key);
   previewCache.set(key, { value, expiresAt: Date.now() + ttlMs });
@@ -69,34 +56,6 @@ function cachedPreview(key: string): SmartLinkPreview | null {
   return cached.value;
 }
 
-function isPrivateIpv4(address: string): boolean {
-  const parts = address.split(".").map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-  const [a, b] = parts as [number, number, number, number];
-  return a === 0
-    || a === 10
-    || a === 127
-    || (a === 100 && b >= 64 && b <= 127)
-    || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && (b === 0 || b === 168 || (b === 88 && parts[2] === 99)))
-    || (a === 198 && (b === 18 || b === 19 || (b === 51 && parts[2] === 100)))
-    || (a === 203 && b === 0 && parts[2] === 113)
-    || a >= 224;
-}
-
-function isPrivateIp(address: string): boolean {
-  const version = net.isIP(address);
-  if (version === 4) return isPrivateIpv4(address);
-  if (version !== 6) return true;
-  // BlockList performs Node's canonical IPv6 parsing, including compressed and
-  // hex-form IPv4-mapped addresses. Be conservative: only ordinary global
-  // unicast space is eligible, and reject tunnelling/documentation ranges that
-  // can encode non-public IPv4 destinations or are not globally routable.
-  return !publicIpv6Ranges.check(address, "ipv6")
-    || nonPublicIpv6Ranges.check(address, "ipv6");
-}
-
 async function resolvePublicAddress(url: URL): Promise<{ address: string; family: 4 | 6 }> {
   if (url.username || url.password) throw new Error("Link preview credentials are not allowed.");
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Unsupported link preview protocol.");
@@ -110,11 +69,11 @@ async function resolvePublicAddress(url: URL): Promise<{ address: string; family
     : hostname;
   const literalFamily = net.isIP(ipLiteral);
   if (literalFamily) {
-    if (isPrivateIp(ipLiteral)) throw new Error("Private link previews are disabled.");
+    if (isPrivateIpAddress(ipLiteral)) throw new Error("Private link previews are disabled.");
     return { address: ipLiteral, family: literalFamily as 4 | 6 };
   }
   const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some((entry) => isPrivateIp(entry.address))) {
+  if (!addresses.length || addresses.some((entry) => isPrivateIpAddress(entry.address))) {
     throw new Error("Private link previews are disabled.");
   }
   const selected = addresses[0]!;
@@ -187,7 +146,7 @@ async function requestBounded(url: URL, maxBytes: number, accept: string): Promi
           "user-agent": "ADE-LinkPreview/1.0",
         },
         signal,
-        lookup: (_hostname, _options, callback) => callback(null, target.address, target.family),
+        lookup: pinnedLookup(target.address, target.family),
       }, (response) => void readBoundedResponse(response, maxBytes).then(resolve, reject));
       request.on("error", reject);
       request.end();
@@ -324,7 +283,7 @@ export function clearSmartLinkPreviewCacheForTesting(): void {
 }
 
 export const smartLinkPreviewTesting = {
-  isPublicIpAddress: (address: string): boolean => !isPrivateIp(address),
+  isPublicIpAddress,
   readBoundedResponse,
   withWallClockTimeout,
 };

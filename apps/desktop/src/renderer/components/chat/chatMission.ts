@@ -42,6 +42,14 @@ export function deriveMissionSnapshot(events: AgentChatEventEnvelope[]): Mission
   return { state, features, progress };
 }
 
+/**
+ * Whether the mission has anything to list. A state with no features and no
+ * progress yet is not shown: the chat actions drawer has no placeholder areas.
+ */
+export function missionHasContent(mission: MissionSnapshot): boolean {
+  return mission.features.length > 0 || mission.progress.length > 0;
+}
+
 const FEATURE_STATUS_WEIGHT: Record<string, number> = {
   in_progress: 0,
   pending: 1,

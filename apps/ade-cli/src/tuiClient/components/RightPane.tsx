@@ -28,6 +28,7 @@ import {
 import { formatRelativePastTime } from "../relativeTime";
 import { usageLimitResumePill } from "../../../../desktop/src/shared/usageLimitResumePresentation";
 import { formatExternalSessionSize } from "../../../../desktop/src/shared/externalSessionAffordances";
+import { chatTaskItemDisplayLabel, chatTaskListProgress, type ChatTaskItem } from "../../../../desktop/src/shared/chatTaskList";
 import {
   isEarlierBackgroundItem,
   isEarlierScheduleItem,
@@ -828,11 +829,11 @@ function chatInfoIdentityLines(info: ChatInfoSnapshot): number {
 }
 
 function chatInfoPlanLines(info: ChatInfoSnapshot): number {
-  const plan = info.plan;
-  if (!plan || !plan.steps.length) return 0;
+  const items = info.taskList?.items.length ?? 0;
+  if (!items && !info.planStreamingText) return 0;
   return 2
-    + Math.min(6, plan.steps.length)
-    + (info.planExplanation ? 1 : 0)
+    + Math.min(TASKS_VISIBLE_CAP, items)
+    + (items > TASKS_VISIBLE_CAP ? 1 : 0)
     + (info.planStreamingText ? 1 : 0);
 }
 
@@ -862,21 +863,42 @@ export function resolveChatInfoRosterViewState(viewState: SubagentPaneViewState 
   };
 }
 
+const TASK_STEP_STATUS: Record<ChatTaskItem["status"], ChatInfoPlanStep["status"]> = {
+  pending: "pending",
+  running: "in_progress",
+  done: "completed",
+  failed: "failed",
+};
+
+/**
+ * The chat's one task list (plan or todos, every provider) as one PLAN/TASKS
+ * section above the roster — the TUI's copy of desktop's Tasks section.
+ */
 function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
-  const plan = info.plan;
+  const list = info.taskList;
   const inner = Math.max(10, width - 4);
-  if (!plan || !plan.steps.length) return null;
+  if (!list?.items.length && !info.planStreamingText) return null;
+  const items = list?.items ?? [];
+  const progress = chatTaskListProgress(items);
+  const visible = items.slice(0, TASKS_VISIBLE_CAP);
+  const hiddenAfter = items.length - visible.length;
+  const title = list?.source === "todo" ? "TASKS" : "PLAN";
+  // A short plan explanation is the list's label; it rides on the header line.
+  const label = list && list.label !== "Plan" && list.label !== "Tasks"
+    ? endTruncate(list.label, Math.max(8, inner - title.length - 10))
+    : undefined;
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} width={width} />
-      {plan.steps.slice(0, 6).map((step, index) => (
-        <Text key={`${index}:${step.text}`} color={planStepColor(step.status)} wrap="truncate-end">
-          {planStepGlyph(step.status)} {endTruncate(step.text, inner - 2)}
-        </Text>
-      ))}
-      {info.planExplanation ? (
-        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.planExplanation, inner)}</Text>
-      ) : null}
+      <ChatInfoSectionHead title={title} dimSuffix={label} hint={items.length ? `${progress.done}/${progress.total}` : undefined} color={brandColor} width={width} />
+      {visible.map((item) => {
+        const status = TASK_STEP_STATUS[item.status];
+        return (
+          <Text key={item.id} color={item.skipped ? theme.color.t4 : planStepColor(status)} dimColor={item.skipped} wrap="truncate-end">
+            {item.skipped ? "–" : planStepGlyph(status)} {endTruncate(chatTaskItemDisplayLabel(item), inner - 2)}
+          </Text>
+        );
+      })}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
       {info.planStreamingText ? (
         <Text color={theme.color.t4} dimColor italic wrap="truncate-end">{endTruncate(info.planStreamingText, inner)}</Text>
       ) : null}
@@ -1301,30 +1323,6 @@ function ChatInfoBackgroundBlock({ info, brandColor, width, viewState }: { info:
   );
 }
 
-function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
-  if (!info.todos.length) return null;
-  const inner = Math.max(10, width - 4);
-  const done = info.todos.filter((todo) => todo.status === "completed").length;
-  const visible = info.todos.slice(0, TASKS_VISIBLE_CAP);
-  const hiddenAfter = info.todos.length - visible.length;
-  return (
-    <Box flexDirection="column">
-      <ChatInfoSectionHead title="TASKS" hint={`${done}/${info.todos.length}`} color={brandColor} width={width} />
-      {visible.map((todo, index) => {
-        const status = todo.status === "completed" || todo.status === "failed" || todo.status === "in_progress"
-          ? todo.status
-          : "pending";
-        return (
-          <Text key={`${todo.id || "todo"}:${index}`} color={planStepColor(status as ChatInfoPlanStep["status"])} wrap="truncate-end">
-            {planStepGlyph(status as ChatInfoPlanStep["status"])} {endTruncate(todo.description, inner - 2)}
-          </Text>
-        );
-      })}
-      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
-    </Box>
-  );
-}
-
 /** Same tones as the desktop Merge card, in the TUI palette. */
 function prNextStepColor(tone: PrNextStepTone): string {
   switch (tone) {
@@ -1420,7 +1418,6 @@ function ChatInfoPane({
       <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} viewState={rosterState} />
-      <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} viewState={rosterState} />
       <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} viewState={rosterState} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />

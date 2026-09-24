@@ -210,8 +210,27 @@ func workHumanizedAgentType(_ value: String?) -> String? {
   }
   let words = tail.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == " " }).map(String.init)
   guard !words.isEmpty else { return nil }
-  let joined = words.joined(separator: " ").lowercased()
-  return joined.prefix(1).uppercased() + joined.dropFirst()
+  let acronyms: [String: String] = [
+    "ios": "iOS", "cli": "CLI", "tui": "TUI", "ui": "UI", "ux": "UX",
+    "api": "API", "ipc": "IPC", "pr": "PR", "ci": "CI", "sdk": "SDK",
+    "mcp": "MCP", "db": "DB", "json": "JSON", "url": "URL", "http": "HTTP",
+    "sql": "SQL", "css": "CSS", "html": "HTML", "ai": "AI", "id": "ID",
+  ]
+  return words.enumerated().map { index, word in
+    if let acronym = acronyms[word.lowercased()] { return acronym }
+    let lower = word.lowercased()
+    guard index == 0 else { return lower }
+    return lower.prefix(1).uppercased() + lower.dropFirst()
+  }.joined(separator: " ")
+}
+
+private func workCleanSubagentName(_ value: String) -> String {
+  let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.replacingOccurrences(
+    of: #"\s*\(@agent(?:\s+[^)]+)?\)$"#,
+    with: "",
+    options: [.regularExpression, .caseInsensitive]
+  ).trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 /// The row title, in the order a reader actually wants it: the human-chosen
@@ -220,18 +239,18 @@ func workHumanizedAgentType(_ value: String?) -> String? {
 /// the roster row already prints next to it — desktop titles by description for
 /// the same reason.
 func workSubagentMeaningfulName(_ snapshot: WorkSubagentSnapshot) -> String {
-  if let label = snapshot.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+  if let label = snapshot.label.map(workCleanSubagentName),
      !label.isEmpty {
     return label
   }
-  let description = snapshot.description.trimmingCharacters(in: .whitespacesAndNewlines)
+  let description = workCleanSubagentName(snapshot.description)
   if !description.isEmpty, description.lowercased() != "subagent" {
     return description
   }
   if let humanized = workHumanizedAgentType(snapshot.agentType) {
     return humanized
   }
-  if let agentId = snapshot.agentId?.trimmingCharacters(in: .whitespacesAndNewlines),
+  if let agentId = snapshot.agentId.map(workCleanSubagentName),
      !agentId.isEmpty {
     return agentId
   }
@@ -1486,6 +1505,7 @@ func formattedSessionDuration(startedAt: String, endedAt: String?) -> String {
   guard let start = workParsedDate(startedAt) else { return "—" }
   let end = workParsedDate(endedAt) ?? Date()
   let interval = max(0, Int(end.timeIntervalSince(start)))
+  if interval == 0 { return "<1s" }
   let hours = interval / 3600
   let minutes = (interval % 3600) / 60
   let seconds = interval % 60

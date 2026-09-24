@@ -171,20 +171,15 @@ export type SetupPaneRow = {
   cyclable?: boolean;
 };
 
-export type { SubagentSnapshot, ChatInfoPlan, ChatInfoPlanStep } from "../../../desktop/src/shared/chatSubagents";
+export type { SubagentSnapshot, ChatInfoPlanStep } from "../../../desktop/src/shared/chatSubagents";
 export type { ChatScheduledWorkSnapshot } from "../../../desktop/src/shared/chatScheduledWork";
-import type { SubagentSnapshot, ChatInfoPlan } from "../../../desktop/src/shared/chatSubagents";
+import type { SubagentSnapshot } from "../../../desktop/src/shared/chatSubagents";
+import type { ChatTaskListSnapshot } from "../../../desktop/src/shared/chatTaskList";
 import type { ChatScheduledWorkSnapshot } from "../../../desktop/src/shared/chatScheduledWork";
 import type { SubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
 import type { MissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 
 export type { MissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
-
-export type ChatInfoTodoItem = {
-  id: string;
-  description: string;
-  status: string;
-};
 
 /** Lane PR rollup shown in the chat-info pane (same shape the drawer uses). */
 export type ChatInfoPrSummary = {
@@ -208,13 +203,13 @@ export type ChatInfoSnapshot = {
   contextPercent: number | null;
   tokenSummary: string | null;
   goal: CodexThreadGoal | null;
-  plan: ChatInfoPlan;
-  /** Provider-supplied explanation for the latest plan (desktop CodexPlanCard parity). */
-  planExplanation: string | null;
-  /** Live streaming text on the latest plan event, when the plan is still forming. */
+  /**
+   * The chat's one task list — plan or todos, every provider
+   * (`shared/chatTaskList`, the same list desktop's Tasks section shows).
+   */
+  taskList: ChatTaskListSnapshot | null;
+  /** Text of the latest Codex plan-mode proposal, when the last plan event is one. */
   planStreamingText: string | null;
-  /** Latest todo_update snapshot (desktop ChatTasksPanel parity). */
-  todos: ChatInfoTodoItem[];
   /** Schedule kinds only (wakeup/cron/loop/remote_trigger). */
   scheduledWork: ChatScheduledWorkSnapshot[];
   /** True when all durable schedules for the active chat are paused. */

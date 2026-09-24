@@ -5198,7 +5198,7 @@ final class ADETests: XCTestCase {
     let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
 
     XCTAssertEqual(snapshot.events.count, 3)
-    guard case .text(let text, _, _, _) = snapshot.events[0].event else {
+    guard case .text(let text, _, _, _, _) = snapshot.events[0].event else {
       return XCTFail("Expected the known text event before the unknown event to survive.")
     }
     XCTAssertEqual(text, "Before")
@@ -5362,7 +5362,7 @@ final class ADETests: XCTestCase {
 
     let toolItemIds = transcript.compactMap { envelope -> String? in
       if case .toolCall(_, _, let itemId, _, _) = envelope.event { return itemId }
-      if case .toolResult(_, _, let itemId, _, _, _) = envelope.event { return itemId }
+      if case .toolResult(_, _, let itemId, _, _, _, _, _) = envelope.event { return itemId }
       return nil
     }
     XCTAssertFalse(toolItemIds.contains("child-tool-1"))
@@ -6652,7 +6652,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(history.count, 2, "A sub-24-char text chunk must not be swallowed by a reused sequence")
     XCTAssertTrue(
       history.contains(where: { envelope in
-        if case .text(let text, _, _, _) = envelope.event { return text == "No problem — re-as" }
+        if case .text(let text, _, _, _, _) = envelope.event { return text == "No problem — re-as" }
         return false
       }),
       "The short text chunk must survive"
@@ -6818,7 +6818,7 @@ final class ADETests: XCTestCase {
     let delayedInsert = AgentChatEventEnvelope(
       sessionId: "session-1",
       timestamp: "2026-03-17T00:00:01.500Z",
-      event: .toolResult(tool: "fs_read", result: .string("ok"), itemId: "tool-1", logicalItemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: "completed"),
+      event: .toolResult(tool: "fs_read", result: .string("ok"), itemId: "tool-1", logicalItemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: "completed", sources: nil, sourceRefsOmittedForMobile: nil),
       sequence: 3,
       provenance: nil
     )
@@ -16080,9 +16080,9 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
-    // The two activity updates are consecutive so they cluster into one bundle;
-    // the real subagent's spawn row is a hard timeline boundary that sits
-    // separately and is never folded into that bundle.
+    // A todo update is the chat's one task list, not an activity row. The cron
+    // stays its own activity card, and the subagent stays a spawn row — never
+    // folded into that activity.
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"Review mobile activity rows","status":"in_progress"}]}}
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"CI follow-up","turnId":"turn-1"}}
@@ -16095,30 +16095,23 @@ final class ADETests: XCTestCase {
       artifacts: [],
       localEchoMessages: []
     )
-    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
-      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+    let eventCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload else { return nil }
       return card
     }
+    let activityCards = eventCards.filter { $0.kind == "activity" || $0.kind == "activityBundle" }
     let subagentRows = snapshot.timeline.compactMap { entry -> WorkSubagentTimelineRow? in
       guard case .subagent(let row) = entry.payload else { return nil }
       return row
     }
 
-    XCTAssertEqual(activityBundles.count, 1)
     XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
     XCTAssertEqual(snapshot.subagentSnapshots.first?.description, "Inspect iOS transcript")
-    XCTAssertEqual(activityBundles.first?.title, "Activity")
-    XCTAssertTrue(activityBundles.first?.body?.contains("2 activity updates") == true)
-    XCTAssertTrue(activityBundles.first?.body?.contains("CI follow-up") == true)
-    // The subagent now lives in its own timeline row, NOT folded into the
-    // activity bundle body or its bullets.
-    XCTAssertFalse(activityBundles.first?.body?.contains("Inspect iOS transcript") == true)
-    XCTAssertEqual(Array(activityBundles.first?.bullets.prefix(2) ?? []), [
-      "Tasks · 0/1 complete",
-      "Cron scheduled",
-    ])
-    // A real subagent that started (but never sent progress/result) surfaces as
-    // exactly one dedicated spawn row — a hard timeline boundary, not swallowed.
+    XCTAssertEqual(snapshot.taskList?.items.map(\.label), ["Review mobile activity rows"])
+    XCTAssertEqual(eventCards.filter { $0.kind == "activityBundle" }.count, 0)
+    XCTAssertEqual(activityCards.count, 1)
+    XCTAssertTrue(activityCards.first?.body?.contains("CI follow-up") == true)
+    XCTAssertFalse(activityCards.contains { $0.body?.contains("Inspect iOS transcript") == true })
     XCTAssertEqual(subagentRows.count, 1)
     XCTAssertEqual(subagentRows.first?.kind, .spawn)
     XCTAssertEqual(subagentRows.first?.snapshot.description, "Inspect iOS transcript")
@@ -16139,16 +16132,18 @@ final class ADETests: XCTestCase {
       artifacts: [],
       localEchoMessages: []
     )
-    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
-      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+    let activityCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload, card.kind == "activity" || card.kind == "activityBundle" else { return nil }
       return card
     }
 
-    XCTAssertEqual(activityBundles.count, 2)
+    XCTAssertEqual(activityCards.count, 2)
     XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
-    XCTAssertTrue(activityBundles[0].body?.contains("First turn cron") == true)
-    XCTAssertFalse(activityBundles[0].body?.contains("First turn agent") == true)
-    XCTAssertTrue(activityBundles[1].body?.contains("Second turn cron") == true)
+    XCTAssertEqual(snapshot.taskList?.items.map(\.label), ["Second turn task"])
+    XCTAssertTrue(activityCards[0].body?.contains("First turn cron") == true)
+    XCTAssertFalse(activityCards[0].body?.contains("First turn agent") == true)
+    XCTAssertTrue(activityCards[1].body?.contains("Second turn cron") == true)
+    XCTAssertEqual(activityCards.map(\.turnId), ["turn-1", "turn-2"])
   }
 
   func testWorkTimelineOmitsPromptSuggestionsForClaudeButPreservesOtherProviders() {
@@ -16172,7 +16167,7 @@ final class ADETests: XCTestCase {
     let claudePresented = workPresentedTimelineEntries(snapshot.timeline, provider: "claude")
     let codexPresented = workPresentedTimelineEntries(snapshot.timeline, provider: "codex")
 
-    XCTAssertTrue(rawCards.contains { $0.kind == "activityBundle" })
+    XCTAssertTrue(rawCards.contains { $0.kind == "activity" })
     XCTAssertTrue(rawCards.contains { $0.kind == "promptSuggestion" })
     XCTAssertTrue(claudePresented.contains { entry in
       guard case .message(let message) = entry.payload else { return false }
@@ -20441,7 +20436,7 @@ final class ADETests: XCTestCase {
       "result": "https://example.com/icon.png",
       "status": "completed",
     ])
-    guard case .toolResult(let tool, let result, let itemId, _, let turnId, let status) = makeWorkChatEvent(from: decoded) else {
+    guard case .toolResult(let tool, let result, let itemId, _, let turnId, let status, _, _) = makeWorkChatEvent(from: decoded) else {
       return XCTFail("Expected decoded image generation to map to a compact tool result.")
     }
     XCTAssertEqual(tool, "image_generation")
@@ -20900,7 +20895,7 @@ final class ADETests: XCTestCase {
 
     guard transcript.count == 2,
           case .toolCall(let callTool, _, let callItemId, _, _) = transcript[0].event,
-          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status) = transcript[1].event else {
+          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status, _, _) = transcript[1].event else {
       return XCTFail("Expected malformed MCP metadata to preserve the raw tool call and result.")
     }
     XCTAssertEqual(callTool, "google_drive:search_files")
@@ -22101,8 +22096,8 @@ final class ADETests: XCTestCase {
 
     guard case .toolCall(_, _, let callId, _, _) = first[0].event,
           case .toolCall(_, _, let secondCallId, _, _) = second[0].event,
-          case .toolResult(_, _, let resultId, _, _, _) = first[1].event,
-          case .toolResult(_, _, let secondResultId, _, _, _) = second[1].event,
+          case .toolResult(_, _, let resultId, _, _, _, _, _) = first[1].event,
+          case .toolResult(_, _, let secondResultId, _, _, _, _, _) = second[1].event,
           case .structuredQuestion(_, _, let questionId, _) = first[2].event,
           case .structuredQuestion(_, _, let secondQuestionId, _) = second[2].event
     else {
@@ -23698,7 +23693,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(markers[0].turnId.hasPrefix("fallback-"))
     XCTAssertEqual(markers[0].workedDurationLabel, "2s")
     XCTAssertEqual(markers[1].turnId, "turn-without-start")
-    XCTAssertEqual(markers[1].workedDurationLabel, "0s")
+    XCTAssertEqual(markers[1].workedDurationLabel, "<1s")
   }
 
   func testWorkEventCardsHideLowSignalLifecycleNoise() {
@@ -24091,23 +24086,23 @@ final class ADETests: XCTestCase {
   func testWorkDeliveryBadgeDistinguishesAcceptedFromProcessed() {
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "accepted", processed: nil),
-      .accepted
+      .steering
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "delivered", processed: nil),
-      .accepted
+      nil
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "processed", processed: true),
-      .processed
+      .steered
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "unprocessed", processed: false),
-      .unprocessed
+      .notSteered
     )
-    XCTAssertEqual(WorkDeliveryBadge.State.accepted.label, "Accepted")
-    XCTAssertEqual(WorkDeliveryBadge.State.processed.label, "Processed")
-    XCTAssertEqual(WorkDeliveryBadge.State.unprocessed.label, "Not processed")
+    XCTAssertEqual(WorkDeliveryBadge.State.steering.label, "Steering…")
+    XCTAssertEqual(WorkDeliveryBadge.State.steered.label, "Steered")
+    XCTAssertEqual(WorkDeliveryBadge.State.notSteered.label, "Not steered — turn ended first")
   }
 
   func testProviderNeutralRecoveryFeedbackDoesNotAssumeCodex() {
@@ -26299,7 +26294,9 @@ final class ADETests: XCTestCase {
       logicalItemId: "tool-logical-1",
       parentItemId: nil,
       turnId: "turn-1",
-      status: "completed"
+      status: "completed",
+      sources: nil,
+      sourceRefsOmittedForMobile: nil
     ))
 
     let transcript = [
@@ -26391,7 +26388,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:02.000Z",
         sequence: 2,
-        event: .toolResult(tool: "functions.Read", resultText: "{\"content\":\"ADE\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: .completed)
+        event: .toolResult(tool: "functions.Read", resultText: "{\"content\":\"ADE\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",

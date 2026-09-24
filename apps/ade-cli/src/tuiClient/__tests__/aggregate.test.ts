@@ -1214,12 +1214,19 @@ describe("aggregateChatBlocks claude history accuracy", () => {
     ];
 
     const blocks = aggregate(events);
-    expect(blocks).toEqual([expect.objectContaining({
-      kind: "user-bubble",
-      line: expect.objectContaining({
-        header: "not processed · dismissed",
-        body: "Continue",
+    expect(blocks).toEqual([
+      expect.objectContaining({
+        kind: "user-bubble",
+        line: expect.objectContaining({
+          body: "Continue",
+        }),
       }),
-    })]);
+      expect.objectContaining({
+        kind: "notice",
+        line: expect.objectContaining({
+          body: "↳ Not processed · dismissed",
+        }),
+      }),
+    ]);
   });
 });

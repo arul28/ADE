@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendBufferedAssistantText,
   canAppendBufferedAssistantText,
+  canCoalesceBufferedAssistantText,
   shouldFlushBufferedAssistantTextForEvent,
   type BufferedAssistantText,
 } from "./chatTextBatching";
@@ -293,6 +294,35 @@ describe("chatTextBatching", () => {
       expect(appended.text).toBe("Hello world");
     });
 
+    it("carries the Codex phase and keeps differently-phased messages apart", () => {
+      const commentary = appendBufferedAssistantText(null, {
+        type: "text",
+        text: "Looking.",
+        messageId: "m-1",
+        turnId: "turn-1",
+        itemId: "msg-1",
+        phase: "commentary",
+      });
+      expect(commentary.phase).toBe("commentary");
+
+      // Same message id (Codex items in one turn can share one), other phase:
+      // still the same stream for merging, but never one buffered event.
+      const answer = { type: "text" as const, text: "Done.", messageId: "m-1", turnId: "turn-1", itemId: "msg-2", phase: "final_answer" as const };
+      expect(canAppendBufferedAssistantText(commentary, answer)).toBe(true);
+      expect(canCoalesceBufferedAssistantText(commentary, answer)).toBe(false);
+      expect(appendBufferedAssistantText(commentary, answer)).toEqual({
+        text: "Done.",
+        messageId: "m-1",
+        turnId: "turn-1",
+        itemId: "msg-2",
+        phase: "final_answer",
+      });
+
+      const unlabeled = { type: "text" as const, text: "More.", messageId: "m-1", turnId: "turn-1", itemId: "msg-3" };
+      expect(canCoalesceBufferedAssistantText(commentary, unlabeled)).toBe(false);
+      expect(canCoalesceBufferedAssistantText(commentary, { ...answer, phase: "commentary", itemId: "msg-1" })).toBe(true);
+    });
+
     it("does not carry messageId when event has none", () => {
       const result = appendBufferedAssistantText(null, {
         type: "text",
@@ -307,6 +337,14 @@ describe("chatTextBatching", () => {
   // ── shouldFlushBufferedAssistantTextForEvent ─────────────────────
 
   describe("shouldFlushBufferedAssistantTextForEvent", () => {
+    it("does not split the streaming message for a data-only sources event", () => {
+      expect(shouldFlushBufferedAssistantTextForEvent({
+        type: "sources",
+        sources: [{ kind: "citation", url: "https://a.dev", cited: true }],
+        turnId: "turn-1",
+      })).toBe(false);
+    });
+
     it("does not flush for text events", () => {
       expect(shouldFlushBufferedAssistantTextForEvent({
         type: "text",

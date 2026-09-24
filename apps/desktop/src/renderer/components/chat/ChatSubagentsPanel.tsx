@@ -3,9 +3,6 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   CaretDown,
   CaretRight,
-  Check,
-  Circle,
-  CircleHalf,
   CopySimple,
   Pause,
   Play,
@@ -16,23 +13,22 @@ import {
 import { cn } from "../ui/cn";
 import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
-import { derivePlan, subagentTreeDepth } from "./chatExecutionSummary";
+import { subagentTreeDepth } from "./chatExecutionSummary";
 import { annotateSubagentTree, shouldAutoCollapseFinishedSubtree } from "../../../shared/chatSubagentTree";
 import { resourceLinkCopyPaths } from "../../../shared/claudeAgentSdkFields";
-import type { TodoItemSnapshot } from "./chatExecutionSummary";
-import { ChatTaskList } from "./ChatTasksPanel";
-import type { ChatInfoPlanStep, PaneSectionKey } from "../../../shared/chatSubagents";
+import { ChatTaskListView } from "./ChatTaskListCard";
+import { chatTaskListProgress, deriveChatTaskList, type ChatTaskListSnapshot } from "../../../shared/chatTaskList";
+import type { PaneSectionKey } from "../../../shared/chatSubagents";
 import {
   BACKGROUND_ACTIVE_CAP,
-  PROGRESS_CAP,
   SCHEDULE_ACTIVE_CAP,
   SUBAGENTS_ACTIVE_CAP,
-  TASKS_CAP,
   capPaneSectionItems,
   groupPaneSectionItems,
   isBackgroundShellCommand,
   isEarlierSubagentSnapshot,
   subagentModelAttribution,
+  subagentSummaryPlainText,
 } from "../../../shared/chatSubagents";
 import {
   backgroundCommandCwd,
@@ -56,7 +52,6 @@ import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPa
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { ChatWorkflowActiveCard } from "./ChatWorkflowActiveCard";
 
-const GLYPH_SIZE = 16;
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
 const PANE_CLEARED_STORAGE_PREFIX = "ade.chat.paneCleared.v1";
 const PANE_STORAGE_ENTRY_CAP = 100;
@@ -173,26 +168,6 @@ function paneSectionHint(args: {
 }
 
 type GlyphCategory = "subagent" | "background";
-
-function PlanGlyph({ status }: { status: ChatInfoPlanStep["status"] }) {
-  if (status === "completed") {
-    return <Check aria-hidden size={GLYPH_SIZE} weight="bold" className="text-emerald-300/90" />;
-  }
-  if (status === "in_progress") {
-    return (
-      <CircleHalf
-        aria-hidden
-        size={GLYPH_SIZE}
-        weight="fill"
-        className="text-[color:var(--color-accent,#A78BFA)] motion-safe:ade-glow-pulse"
-      />
-    );
-  }
-  if (status === "failed") {
-    return <X aria-hidden size={GLYPH_SIZE} weight="bold" className="text-rose-300/85" />;
-  }
-  return <Circle aria-hidden size={GLYPH_SIZE} weight="regular" className="text-fg/30" />;
-}
 
 /* ── Section header — sentence case, paper-section feel ── */
 
@@ -459,20 +434,6 @@ function PaneScalableSection<T>({
         ) : null}
       </SectionDisclosure>
     </section>
-  );
-}
-
-/* ── Progress bar — 1 px hairline rule ── */
-
-function ProgressBar({ percent }: { percent: number }) {
-  const clamped = Math.max(0, Math.min(100, percent));
-  return (
-    <div className="mx-4 mb-1 h-px rounded-full bg-white/[0.05]">
-      <div
-        className="h-px rounded-full bg-[color:var(--color-accent,#A78BFA)]/55 transition-[width] duration-500 ease-out"
-        style={{ width: `${clamped}%` }}
-      />
-    </div>
   );
 }
 
@@ -905,7 +866,8 @@ function SubagentRow({
   const lastTool = snapshot.lastToolName?.trim();
   // Latest progress/result text (e.g. Cursor's task `text`, OpenCode's diff
   // summary) — shown only when it adds something beyond the description.
-  const summaryRaw = (snapshot.finalSummary ?? snapshot.summary)?.trim();
+  // Reports are markdown; the drawer shows them as plain prose, clamped.
+  const summaryRaw = subagentSummaryPlainText(snapshot.finalSummary ?? snapshot.summary);
   const summaryText = summaryRaw && summaryRaw !== snapshot.description?.trim() ? summaryRaw : null;
   const filePaths = resourceLinkCopyPaths(snapshot.resourceLinks ?? []);
   const copyFilePaths = useCallback(() => {
@@ -1081,7 +1043,7 @@ function SubagentRow({
                 <div className="break-words text-fg/65">{snapshot.description}</div>
               ) : null}
               {summaryText ? (
-                <div className="break-words text-fg/50">{summaryText}</div>
+                <div className="line-clamp-3 break-words text-fg/50" data-subagent-panel-summary>{summaryText}</div>
               ) : null}
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums text-fg/45">
                 {typeof totalTokens === "number" && totalTokens > 0 ? <span>{totalTokens.toLocaleString()} tokens</span> : null}
@@ -1138,7 +1100,7 @@ export function ChatSubagentsPanel({
   onClearGoal,
   onSetGoalStatus,
   goalPending = false,
-  todoItems = [],
+  taskList: taskListProp,
   scheduleItems = [],
   backgroundItems = [],
   schedulesPaused = false,
@@ -1178,7 +1140,11 @@ export function ChatSubagentsPanel({
   onClearGoal?: () => void;
   onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
   goalPending?: boolean;
-  todoItems?: TodoItemSnapshot[];
+  /**
+   * The chat's one task list (`shared/chatTaskList.ts`). The host derives it
+   * once and passes it; when omitted the panel derives it from `events`.
+   */
+  taskList?: ChatTaskListSnapshot | null;
   /** Schedule kinds only (wakeup/cron/loop/remote_trigger) — background tasks live in `backgroundItems`. */
   scheduleItems?: ChatScheduledWorkSnapshot[];
   /** Background command tasks (kind background_task). */
@@ -1285,7 +1251,11 @@ export function ChatSubagentsPanel({
     updatePaneCleared((current) => ({ ...current, [section]: [] }));
   }, [updatePaneCleared]);
 
-  const plan = useMemo(() => derivePlan(events), [events]);
+  const derivedTaskList = useMemo(
+    () => (taskListProp === undefined ? deriveChatTaskList(events) : null),
+    [events, taskListProp],
+  );
+  const taskList = taskListProp === undefined ? derivedTaskList : taskListProp;
 
   // Self-heal first, so every count, cap, grouping and label below reads the
   // truthful status rather than a "running" the event stream never closed.
@@ -1538,25 +1508,7 @@ export function ChatSubagentsPanel({
       });
   };
 
-  const planComplete = plan?.steps.filter((step) => step.status === "completed").length ?? 0;
-  const planTotal = plan?.steps.length ?? 0;
-  const planPercent = planTotal > 0 ? Math.round((planComplete / planTotal) * 100) : 0;
-  const progressCollapsible = planTotal > PROGRESS_CAP;
-  const progressCollapsed = progressCollapsible && paneUi.collapsed.progress === true;
-  const visiblePlanSteps = plan && !showAll.progress ? plan.steps.slice(0, PROGRESS_CAP) : plan?.steps ?? [];
-  const hiddenPlanCount = Math.max(0, planTotal - visiblePlanSteps.length);
-  const taskComplete = todoItems.filter((item) => item.status === "completed").length;
-  const taskActive = todoItems.filter((item) => item.status === "in_progress").length;
-  const tasksCollapsible = todoItems.length > TASKS_CAP;
-  const tasksCollapsed = tasksCollapsible && paneUi.collapsed.tasks === true;
-  const visibleTodoItems = showAll.tasks ? todoItems : todoItems.slice(0, TASKS_CAP);
-  const hiddenTaskCount = todoItems.length - visibleTodoItems.length;
-  const taskHint = todoItems.length
-    ? [
-        `${taskComplete}/${todoItems.length} complete`,
-        ...(taskActive ? [`${taskActive} active`] : []),
-      ].join(" · ")
-    : undefined;
+  const taskProgress = taskList ? chatTaskListProgress(taskList.items) : null;
 
   const subagentRunningCount = subagentGroups.active.filter((item) => item.status === "running").length;
   const subagentFailedCount = subagentGroups.active.filter((item) => item.status === "failed").length;
@@ -1569,11 +1521,11 @@ export function ChatSubagentsPanel({
 
   const hasGoal = Boolean(goal?.objective?.trim());
   const hasClaudeGoal = Boolean(claudeGoal?.condition?.trim());
-  const hasTasks = todoItems.length > 0;
+  const hasTasks = (taskList?.items.length ?? 0) > 0;
   const hasSubagents = subagents.length > 0;
   const hasBackground = healedBackgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasAnything = hasGoal || hasClaudeGoal || Boolean(plan) || hasTasks || hasSubagents || hasBackground || hasScheduled;
+  const hasAnything = hasGoal || hasClaudeGoal || hasTasks || hasSubagents || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1606,7 +1558,7 @@ export function ChatSubagentsPanel({
   );
 
   const body = (
-    <div className="flex min-h-full flex-col font-sans">
+    <div className="flex flex-col font-sans">
       <ChatWorkflowActiveCard
         snapshots={snapshots}
         onSelectSubagent={handleRowClick}
@@ -1627,75 +1579,23 @@ export function ChatSubagentsPanel({
         <GoalCard variant="claude" goal={claudeGoal} />
       ) : null}
 
-      {/* ── Progress ─────────────────────────────────────────────── */}
-      {plan && plan.steps.length > 0 ? (
-        <section className="pb-3">
-          <SectionHeader
-            label="Progress"
-            hint={`${planComplete}/${planTotal} · ${planPercent}%`}
-            tone="subagent"
-            sticky={stickyHeaders}
-            collapsible={progressCollapsible}
-            collapsed={progressCollapsed}
-            onToggle={() => toggleSection("progress")}
-          />
-          <SectionDisclosure open={!progressCollapsed}>
-            <ProgressBar percent={planPercent} />
-            <ul className="px-4 pt-2">
-            {visiblePlanSteps.map((step, index) => {
-              const isCompleted = step.status === "completed";
-              const isInProgress = step.status === "in_progress";
-              const isFailed = step.status === "failed";
-              return (
-                <li
-                  key={`${index}-${step.text}`}
-                  className={cn(
-                    "flex items-start gap-2.5 py-[3px] text-[12.5px] leading-5",
-                    isCompleted && "text-fg/45",
-                    isInProgress && "text-[color:var(--color-accent-bright,#C4B5FD)]",
-                    !isCompleted && !isInProgress && !isFailed && "text-fg/65",
-                    isFailed && "text-rose-200/90",
-                  )}
-                >
-                  <span className="mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                    <PlanGlyph status={step.status} />
-                  </span>
-                  <span className="min-w-0 flex-1 break-words">{step.text}</span>
-                </li>
-              );
-            })}
-            </ul>
-            {hiddenPlanCount > 0 ? (
-              <ShowAllButton hiddenLabel={`${hiddenPlanCount}`} onClick={() => setShowAll((current) => ({ ...current, progress: true }))} />
-            ) : null}
-          </SectionDisclosure>
-        </section>
-      ) : null}
-
-      {/* ── Tasks ───────────────────────────────────────────────── */}
-      {hasTasks ? (
-        <section
-          className={cn(
-            "pb-3",
-            (hasGoal || plan) && "border-t border-white/[0.04]",
-          )}
-        >
+      {/* ── Tasks: the chat's one task list, always expanded ──────── */}
+      {hasTasks && taskList && taskProgress ? (
+        <section className={cn("pb-3", hasGoal && "border-t border-white/[0.04]")} data-testid="chat-info-tasks">
+          {/* A plan explanation or "Plan" reads as the list's own header
+              (with the count); a bare todo list needs only the section's. */}
           <SectionHeader
             label="Tasks"
-            hint={taskHint}
+            hint={taskList.label === "Tasks" ? `${taskProgress.done}/${taskProgress.total}` : undefined}
             tone="workflow"
             emphasized
             sticky={stickyHeaders}
-            collapsible={tasksCollapsible}
-            collapsed={tasksCollapsed}
-            onToggle={() => toggleSection("tasks")}
           />
-          <SectionDisclosure open={!tasksCollapsed}>
-            <ChatTaskList items={visibleTodoItems} className="px-1 pb-1 pt-0" />
-            {hiddenTaskCount > 0 ? (
-              <ShowAllButton hiddenLabel={`${hiddenTaskCount}`} onClick={() => setShowAll((current) => ({ ...current, tasks: true }))} />
-            ) : null}
-          </SectionDisclosure>
+          <ChatTaskListView
+            list={taskList}
+            showHeader={taskList.label !== "Tasks"}
+            className="px-4 pt-1"
+          />
         </section>
       ) : null}
 
@@ -1710,7 +1610,7 @@ export function ChatSubagentsPanel({
           onToggleCollapsed={() => toggleSection("subagents")} onToggleEarlier={() => toggleEarlier("subagents")}
           onClear={(ids) => clearEarlier("subagents", ids)} onRestore={() => restoreCleared("subagents")}
           onShowAll={() => setShowAll((current) => ({ ...current, subagents: true }))} showAll={showAll.subagents === true}
-          hasPrecedingSection={Boolean(hasGoal || plan || hasTasks)} showAllLabel={`${cappedSubagents.hiddenCount} running`}
+          hasPrecedingSection={Boolean(hasGoal || hasTasks)} showAllLabel={`${cappedSubagents.hiddenCount} running`}
           animateEarlierRows subagentTaskIdOf={(snap) => snap.taskId}
         />
       ) : null}
@@ -1727,7 +1627,7 @@ export function ChatSubagentsPanel({
           onToggleCollapsed={() => toggleSection("background")} onToggleEarlier={() => toggleEarlier("background")}
           onClear={(ids) => clearEarlier("background", ids)} onRestore={() => restoreCleared("background")}
           onShowAll={() => setShowAll((current) => ({ ...current, background: true }))} showAll={showAll.background === true}
-          hasPrecedingSection={Boolean(hasGoal || plan || hasTasks || hasSubagents)}
+          hasPrecedingSection={Boolean(hasGoal || hasTasks || hasSubagents)}
         />
       ) : null}
 
@@ -1767,28 +1667,24 @@ export function ChatSubagentsPanel({
           onToggleCollapsed={() => toggleSection("schedule")} onToggleEarlier={() => toggleEarlier("schedule")}
           onClear={(ids) => clearEarlier("schedule", ids)} onRestore={() => restoreCleared("schedule")}
           onShowAll={() => setShowAll((current) => ({ ...current, schedule: true }))} showAll={showAll.schedule === true}
-          hasPrecedingSection={Boolean(hasGoal || plan || hasTasks || hasSubagents || hasBackground)}
+          hasPrecedingSection={Boolean(hasGoal || hasTasks || hasSubagents || hasBackground)}
           animateActiveRows={false} keepEmptyActiveList={false}
         />
-      ) : null}
-
-      {/* ── Single-agent empty state ─────────────────────────────── */}
-      {!hasAnything ? (
-        <div className="px-4 py-6 text-[12px] leading-5 text-fg/40">
-          No agent activity for this chat.
-          <span className="block pt-0.5 text-fg/25">Single-agent mode.</span>
-        </div>
       ) : null}
 
     </div>
   );
 
+  // Pane = one section of the chat actions drawer. The drawer owns the only
+  // scroll, so this renders no height, no scroller and no empty placeholder:
+  // nothing to show means no DOM at all, and the drawer's divider/empty-line
+  // rules see it as absent. `paneScrollRef` still finds rows for
+  // scroll-into-view; the browser scrolls the drawer's scroller.
   if (variant === "pane") {
+    if (!hasAnything) return null;
     return (
-      <div className={cn("flex h-full min-h-0 flex-col font-sans", className)}>
-        <div ref={paneScrollRef} data-testid="chat-subagents-pane-scroll" className="min-h-0 flex-1 overflow-y-auto">
-          {body}
-        </div>
+      <div ref={paneScrollRef} data-testid="chat-subagents-pane" className={cn("font-sans", className)}>
+        {body}
       </div>
     );
   }

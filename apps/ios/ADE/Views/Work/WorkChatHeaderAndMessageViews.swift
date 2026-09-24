@@ -443,12 +443,6 @@ struct WorkChatMessageBubble: View, Equatable {
     return HStack(alignment: .top, spacing: 8) {
       Spacer(minLength: 0)
       VStack(alignment: .trailing, spacing: 6) {
-        if let deliveryBadge {
-          // Follow-up delivery is a durable lifecycle. Showing the precise
-          // state prevents "accepted by the server" from being mistaken for
-          // "the agent actually processed this message."
-          WorkDeliveryBadge(state: deliveryBadge)
-        }
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
@@ -473,6 +467,10 @@ struct WorkChatMessageBubble: View, Equatable {
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityElement(children: .combine)
           .accessibilityLabel(userMessageAccessibilityLabel)
+        }
+        if let deliveryBadge {
+          WorkDeliveryBadge(state: deliveryBadge)
+            .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
         }
         if message.deliveryState == "unprocessed" {
           WorkUnprocessedMessageActions(
@@ -528,7 +526,8 @@ struct WorkChatMessageBubble: View, Equatable {
     guard message.role == "user" else { return nil }
     return workDeliveryBadgeState(
       deliveryState: message.deliveryState,
-      processed: message.processed
+      processed: message.processed,
+      steerId: message.steerId
     )
   }
 
@@ -1070,7 +1069,12 @@ struct WorkTurnEndMarkerView: View {
   /// line, no FAILED, no red. The turn's usage numbers move behind the details
   /// toggle below rather than sitting in their own row beside it.
   private var workSummaryLabel: String? {
-    workFormatTurnWorkSummaryLabel(toolCount: toolCount, fileCount: fileCount)
+    let base = workFormatTurnWorkSummaryLabel(toolCount: toolCount, fileCount: fileCount)
+    let sourceCount = marker.sourceCount > 0
+      ? "\(marker.sourceCount) source\(marker.sourceCount == 1 ? "" : "s")"
+      : nil
+    let label = [base, sourceCount].compactMap { $0 }.joined(separator: " · ")
+    return label.isEmpty ? nil : label
   }
 
   private var usageLimitLine: String {
@@ -1396,38 +1400,37 @@ extension EnvironmentValues {
 
 struct WorkDeliveryBadge: View {
   enum State: Equatable {
-    case queued, sending, accepted, processed, unprocessed, failed
+    case sending, steering, steered, sentAfterTurn, notSteered, steerFailed, sendFailed
 
     var label: String {
       switch self {
-      case .queued: return "Queued"
       case .sending: return "Sending"
-      case .accepted: return "Accepted"
-      case .processed: return "Processed"
-      case .unprocessed: return "Not processed"
-      case .failed: return "Failed"
+      case .steering: return "Steering…"
+      case .steered: return "Steered"
+      case .sentAfterTurn: return "Sent after turn"
+      case .notSteered: return "Not steered — turn ended first"
+      case .steerFailed: return "Steer failed"
+      case .sendFailed: return "Couldn't send"
       }
     }
 
     var icon: String {
       switch self {
-      case .queued: return "clock"
       case .sending: return "arrow.up.circle"
-      case .accepted: return "tray.and.arrow.down"
-      case .processed: return "checkmark.circle"
-      case .unprocessed: return "arrow.clockwise.circle"
-      case .failed: return "exclamationmark.triangle"
+      case .steering, .steered, .notSteered, .steerFailed: return "steeringwheel"
+      case .sentAfterTurn: return "clock"
+      case .sendFailed: return "exclamationmark.triangle"
       }
     }
 
     var tint: Color {
       switch self {
-      case .queued: return ADEColor.accent
       case .sending: return ADEColor.accent
-      case .accepted: return ADEColor.accent
-      case .processed: return ADEColor.success
-      case .unprocessed: return ADEColor.warning
-      case .failed: return ADEColor.danger
+      case .steering: return ADEColor.accent
+      case .steered: return ADEColor.textMuted
+      case .sentAfterTurn: return ADEColor.textMuted
+      case .notSteered: return ADEColor.warning
+      case .steerFailed, .sendFailed: return ADEColor.warning
       }
     }
   }
@@ -1441,10 +1444,9 @@ struct WorkDeliveryBadge: View {
     }
     .font(.caption2.weight(.semibold))
     .foregroundStyle(state.tint)
-    .padding(.horizontal, 6)
-    .padding(.vertical, 2)
-    .background(state.tint.opacity(0.12), in: Capsule(style: .continuous))
-    .accessibilityLabel("Delivery state: \(state.label)")
+    .padding(.horizontal, 2)
+    .padding(.top, 1)
+    .accessibilityLabel(state.label)
   }
 }
 
@@ -1583,21 +1585,22 @@ private struct WorkUnprocessedMessageActions: View {
 
 func workDeliveryBadgeState(
   deliveryState: String?,
-  processed: Bool?
+  processed: Bool?,
+  steerId: String? = nil
 ) -> WorkDeliveryBadge.State? {
   switch deliveryState {
-  case "queued": return .queued
-  case "accepted": return .accepted
-  case "processed": return .processed
-  case "unprocessed": return .unprocessed
+  case "queued": return nil
+  case "accepted": return .steering
+  case "processed": return .steered
+  case "unprocessed": return .notSteered
   case "delivered":
-    return processed == true ? .processed : .accepted
+    return steerId?.isEmpty == false ? .sentAfterTurn : nil
   case "inline":
-    return .processed
-  case "failed": return .failed
+    return .steered
+  case "failed": return steerId?.isEmpty == false ? .steerFailed : .sendFailed
   case "sending": return .sending
   default:
-    return processed == true ? .processed : nil
+    return processed == true && steerId?.isEmpty == false ? .steered : nil
   }
 }
 

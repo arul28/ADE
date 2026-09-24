@@ -1412,6 +1412,7 @@ struct WorkSessionDestinationView: View {
         WorkFullscreenImageView(image: image)
       }
       .sheet(isPresented: $chatInfoPresented) {
+        let sourceList = buildWorkChatSourceList(from: transcript)
         WorkChatInfoDetailsSheet(
           sessionId: sessionId,
           subagentSnapshots: subagentSnapshots,
@@ -1421,6 +1422,10 @@ struct WorkSessionDestinationView: View {
           provider: subagentProvider,
           expandedTaskIds: $expandedSubagentDetailIds,
           sessionModel: composerChatSummary?.model,
+          sourceRefs: sourceList.refs,
+          omittedSourceRefCount: sourceList.omittedCount,
+          taskList: buildWorkChatTaskListSnapshot(from: transcript),
+          onResolveSourceFavicons: { domains in try await syncService.resolveSourceFavicons(domains: domains) },
           onSelect: handleSubagentSelection,
           onCancelScheduledWork: scheduledWorkCancelAction,
           onSetScheduledWorkPaused: scheduledWorkPauseAction,

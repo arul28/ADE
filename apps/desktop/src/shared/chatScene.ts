@@ -61,20 +61,19 @@ export function sceneScopeKeyFor(rowIdentity: string, source: string): string {
  * What identifies the ROW a scene was drawn in, across every rebuild of the
  * transcript.
  *
- * The render key cannot do this job. It embeds the event's index in the events
- * array, so the same message gets a different key the moment anything is
- * inserted before it — an older page prepended by scroll-back, a front trim, a
- * reopened chat that replayed a different window. The still had been filed
- * under the old key, the lookup on the next mount missed it, the scene ran
- * again and filed a SECOND still, and it did that on every reopen.
+ * This is a FILE NAME on disk, so its format is frozen: stills already filed
+ * under `message:` / `item:` names must keep matching. Render keys used to
+ * embed the event's index in the loaded window (so a prepended page or a front
+ * trim renamed every row, and a scene re-ran and re-filed a second still on
+ * every reopen); they are now built from the same identity facts
+ * (`allocateTranscriptEventRowKey`), but they carry a session prefix and an
+ * event-type tag this name never had.
  *
- * `messageId` is the provider's own name for the message and is what survives
- * all of that. `turnId` + `itemId` is the same fact assembled from two fields,
- * for providers that name items but not messages. The row key is the last
- * resort and is honest about what it costs: a row with no stable identity of
- * any kind — today, a text event carrying none of the three — keeps the old
- * behaviour of re-running and re-filing rather than sharing a key with a
- * neighbour, which would be worse.
+ * `messageId` is the provider's own name for the message. `turnId` + `itemId`
+ * is the same fact assembled from two fields, for providers that name items
+ * but not messages. The row key is the last resort — for a text event carrying
+ * none of the three it is timestamp-based, which survives paging but not a
+ * provider that rewrites timestamps.
  */
 export function sceneRowIdentity(
   event: { messageId?: string | null; turnId?: string | null; itemId?: string | null },
