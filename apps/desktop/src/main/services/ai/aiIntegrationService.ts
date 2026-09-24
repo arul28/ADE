@@ -1667,9 +1667,11 @@ export function createAiIntegrationService(args: {
     return {
       configured: true,
       authMode: detectDevinAuthMode(apiKey),
-      // The cached client's org belongs to the key that built it — a key
-      // swapped in through another path must not inherit that org label.
-      orgId: (devinCloudClientCache?.apiKey === apiKey ? devinCloudClientCache.orgId : null) ?? readDevinCloudOrgId(),
+      // The persisted org is the freshest answer — org discovery writes it
+      // after the client was built, so the cache can lag behind it. The cached
+      // client's org is only a fallback and only when its key still matches.
+      orgId: readDevinCloudOrgId()
+        ?? (devinCloudClientCache?.apiKey === apiKey ? devinCloudClientCache.orgId : null),
       orgName: null,
       error: null,
     };

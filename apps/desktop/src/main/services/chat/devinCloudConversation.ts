@@ -115,3 +115,16 @@ export function isDevinCloudSessionLive(
     || lower === "resuming"
   );
 }
+
+/**
+ * Hard end — the session will not produce further output on its own.
+ * Suspended is deliberately absent: a suspended session resumes (from the web
+ * app or another client) without a new ADE send, so treating it as terminal
+ * would emit `done` under a turn that later output continues.
+ */
+export function isDevinCloudSessionTerminal(
+  status: string | null | undefined,
+): boolean {
+  const lower = status?.toLowerCase() ?? "";
+  return lower === "exit" || lower === "error";
+}

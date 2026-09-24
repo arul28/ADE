@@ -982,6 +982,7 @@ import {
   consumeDevinEchoFingerprint,
   devinCloudMessageFingerprint,
   isDevinCloudSessionLive,
+  isDevinCloudSessionTerminal,
   stripDevinAppendedLines,
 } from "./devinCloudConversation";
 import { DEVIN_ATTACHMENT_MAX_BYTES, normalizeDevinSessionId } from "../ai/devinCloudClient";
@@ -47666,7 +47667,7 @@ export function createAgentChatService(args: {
             remote = remote ?? await aiIntegrationService.getDevinCloudSession(devinSessionId).catch(() => null);
             liveStatus = remote?.status ?? null;
           }
-          if (liveStatus != null && !isDevinCloudSessionLive(liveStatus)) {
+          if (liveStatus != null && isDevinCloudSessionTerminal(liveStatus)) {
             devinCloudDoneAnnounced.add(managed.session.id);
             devinCloudPendingDoneTurn.delete(managed.session.id);
             emitChatEvent(managed, {
@@ -47922,10 +47923,10 @@ export function createAgentChatService(args: {
         if (!filePath || !fs.existsSync(filePath)) {
           throw new Error(`Attachment '${attachment.path}' is no longer on disk — re-attach it and send again.`);
         }
-        const bytes = fs.readFileSync(filePath);
-        if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
+        if (fs.statSync(filePath).size > DEVIN_ATTACHMENT_MAX_BYTES) {
           throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
         }
+        const bytes = fs.readFileSync(filePath);
         attachmentUrls.push(await aiIntegrationService.uploadDevinCloudAttachment({
           name: path.basename(filePath),
           bytes,
@@ -48162,9 +48163,11 @@ export function createAgentChatService(args: {
         branchOnRemote = Boolean(headSha);
       }
     }
+    // v1 create accepts no repos field — the repo binding has to ride the
+    // prompt for every key mode, not only when a lane branch was pushed.
     const cloudPrompt = laneBranch && branchOnRemote
       ? `Repo: ${repoUrl} (branch: ${laneBranch})\nCheck out the existing '${laneBranch}' branch first — it has been pushed to the remote and carries this lane's commits.\n\n${prompt}`
-      : prompt;
+      : `Repo: ${repoUrl}\n\n${prompt}`;
     // Session create takes no attachment field, so files ride the prompt the
     // way v1 messages carry them: upload to Devin's attachment store, then
     // reference each URL in the text (`Image URL:` hints for hosted images,
@@ -48181,10 +48184,10 @@ export function createAgentChatService(args: {
       if (!filePath || !fs.existsSync(filePath)) {
         throw new Error(`Attachment '${attachment.path}' is no longer on disk — re-attach it and send again.`);
       }
-      const bytes = fs.readFileSync(filePath);
-      if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
+      if (fs.statSync(filePath).size > DEVIN_ATTACHMENT_MAX_BYTES) {
         throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
       }
+      const bytes = fs.readFileSync(filePath);
       attachmentRefs.push(`ATTACHMENT:"${await aiIntegrationService.uploadDevinCloudAttachment({
         name: path.basename(filePath),
         bytes,

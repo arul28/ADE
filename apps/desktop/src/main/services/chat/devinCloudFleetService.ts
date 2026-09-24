@@ -319,7 +319,13 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
 
     if (!lane) {
       // Materialize the PR head as a local branch first — importBranch only
-      // resolves refs that already exist.
+      // resolves refs that already exist. The forced fetch can overwrite a
+      // branch a previous pull left behind, so remember it and restore on a
+      // failed import instead of deleting it.
+      const priorSha = (await runGit(
+        ["rev-parse", "--verify", `refs/heads/${safeBranch}`],
+        { cwd: projectRoot, timeoutMs: 8_000 },
+      ).then((result) => (result.exitCode === 0 ? result.stdout.trim() : null)).catch(() => null)) ?? null;
       const fetchResult = await runGit(
         ["fetch", "origin", `+refs/pull/${prNumber}/head:refs/heads/${safeBranch}`],
         { cwd: projectRoot, timeoutMs: 60_000 },
@@ -336,10 +342,12 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
         });
         created = true;
       } catch (error) {
-        await runGit(["update-ref", "-d", `refs/heads/${safeBranch}`], {
-          cwd: projectRoot,
-          timeoutMs: 15_000,
-        }).catch(() => undefined);
+        await runGit(
+          priorSha
+            ? ["update-ref", `refs/heads/${safeBranch}`, priorSha]
+            : ["update-ref", "-d", `refs/heads/${safeBranch}`],
+          { cwd: projectRoot, timeoutMs: 15_000 },
+        ).catch(() => undefined);
         throw error;
       }
     } else {
