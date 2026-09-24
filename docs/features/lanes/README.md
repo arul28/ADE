@@ -751,11 +751,12 @@ restart:
 
 ## Deleting a lane removes the worktree
 
-Deleting any lane removes its checkout. There is no lane you can delete that
-leaves its worktree behind, and no lane type that opts out — the old
-"attached folders are not ADE-managed, so we only forget the row" behavior is
-gone. What differs between an ADE-created worktree and one the user made
-elsewhere is not *whether* ADE removes it, but *how hard ADE is allowed to try*.
+Deleting any lane removes its ADE row. An ADE-created checkout under
+`.ade/worktrees` is removed from disk. A checkout the user made elsewhere is
+removed only while Git still recognizes that directory as the worktree root.
+When Git has already forgotten it, the lane row is still deleted and the
+folder stays on disk. The desktop then asks whether to reveal that folder or
+delete it. Close leaves the folder. A symbolic link is never followed.
 
 Rails checked before `git worktree remove`, for every lane:
 
@@ -764,9 +765,14 @@ Rails checked before `git worktree remove`, for every lane:
 - no symlink: managed paths are walked segment by segment from
   `.ade/worktrees` down (`hasSymlinkInManagedPath`), and an external path must
   not itself be a symlink;
-- an external directory that exists must verify as a Git worktree root
-  (`isExpectedGitWorktreeRoot`) or the delete fails without touching it;
-- the dirty-state check and `--force` confirmation flow are unchanged.
+- an external directory that Git still registers is removed with
+  `git worktree remove` after it verifies as the worktree root;
+- an external directory Git no longer registers is left on disk, the lane
+  row is deleted, and `DeleteLaneResult.leftoverWorktree` names the path.
+  The desktop dialog can reveal it or delete that directory. The CLI and TUI
+  report the path. A symlink is reported and not deleted;
+- the dirty-state check and `--force` confirmation flow are unchanged for a
+  directory Git still recognizes.
 
 Residual cleanup is where the two cases part. Inside `.ade/worktrees` — the
 storage ADE owns — a failed or partial `git worktree remove` still falls back
@@ -775,9 +781,12 @@ cannot be removed the delete completes with a warning and records a row in
 `local_worktree_residual_cleanups` so the next lane-list sweep retries it
 (`worktreeResidualCleanup`, which drops any record whose path is not a direct
 child of the managed directory). **Outside `.ade/worktrees` there is no
-filesystem fallback and nothing is queued**: ADE asks git to remove the
-worktree, and if git refuses, the git error is surfaced as the delete failure.
-Files ADE did not create are never removed by ADE's own `rm`.
+filesystem fallback during the lane delete**: ADE asks git to remove the
+worktree while Git still registers it, and if git refuses, the git error is
+the delete failure. A directory Git no longer registers is not removed in
+that step. The user can delete that one folder afterward from the desktop
+dialog, which refuses the project root, a symlink, and a path Git has
+registered again.
 
 ## What a deleted lane leaves behind
 

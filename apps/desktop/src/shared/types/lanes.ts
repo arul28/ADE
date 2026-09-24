@@ -498,6 +498,21 @@ export type DeleteLaneArgs = {
   force?: boolean;
 };
 
+/**
+ * An external checkout Git no longer recognizes. The lane row is gone; the
+ * directory is still on disk until the user deletes it from the dialog.
+ */
+export type LaneDeleteLeftoverWorktree = {
+  path: string;
+  /** False when the path is a symlink. The dialog then has no Delete folder button. */
+  canDelete: boolean;
+  laneName: string;
+};
+
+export type DeleteLaneResult = {
+  leftoverWorktree: LaneDeleteLeftoverWorktree | null;
+};
+
 export type LaneDeleteStepName =
   | "stop_chats"
   | "stop_ptys"
@@ -541,6 +556,11 @@ export type LaneDeleteProgress = {
   completedAt?: string;
   overallStatus: LaneDeleteOverallStatus;
   cancellable: boolean;
+  /**
+   * Set when delete finishes and an external folder was left on disk.
+   * Present on the terminal progress event the desktop dialog reads.
+   */
+  leftoverWorktree?: LaneDeleteLeftoverWorktree | null;
 };
 
 export type LaneDeleteEvent = {

@@ -13151,7 +13151,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         title: "Delete lane",
         body: `Deleting ${lane.name}...\nScope: ${scope.replace("_", " ")}\nForce: ${deleteArgs.force ? "yes" : "no"}`,
       });
-      await conn.action("lane", "delete", deleteArgs);
+      const deleted = await conn.action("lane", "delete", deleteArgs) as {
+        leftoverWorktree?: { path?: string } | null;
+      };
       setFormDiscardArmed(false);
       setFormValues({});
       setFormFieldIndex(0);
@@ -13166,7 +13168,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setSelectedDrawerLaneId(fallbackLane?.id ?? null);
       setSelectedDrawerChatId(null);
       focusAfterDetails();
-      addNotice(`Deleted lane ${lane.name}.`, "success");
+      const leftoverPath = deleted?.leftoverWorktree?.path;
+      addNotice(
+        leftoverPath
+          ? `Deleted lane ${lane.name}. Folder left at ${leftoverPath}.`
+          : `Deleted lane ${lane.name}.`,
+        leftoverPath ? "info" : "success",
+      );
       await refreshState();
       return;
     }

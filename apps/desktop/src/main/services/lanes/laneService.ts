@@ -39,7 +39,9 @@ import type {
   CreateLaneArgs,
   CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
+  DeleteLaneResult,
   LaneDeleteEvent,
+  LaneDeleteLeftoverWorktree,
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
@@ -1318,6 +1320,7 @@ function cloneLaneDeleteProgress(progress: LaneDeleteProgress): LaneDeleteProgre
   return {
     ...progress,
     steps: progress.steps.map((step) => ({ ...step })),
+    leftoverWorktree: progress.leftoverWorktree ? { ...progress.leftoverWorktree } : progress.leftoverWorktree,
   };
 }
 
@@ -3822,6 +3825,8 @@ export function createLaneService({
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
+  /** External folders left behind after a successful lane delete, keyed by the removed lane id. */
+  const leftoverWorktreeByLaneId = new Map<string, LaneDeleteLeftoverWorktree>();
   const laneReclaimInFlight = new Set<string>();
   const laneStorageWorktreeLocks = createLaneWorktreeLockService({ db, logger });
   let gitWorktreeMutationQueue: Promise<void> = Promise.resolve();
@@ -7410,7 +7415,7 @@ export function createLaneService({
     async delete(
       args: DeleteLaneArgs,
       runtimeOpts?: { teardownEnv?: () => Promise<void> }
-    ): Promise<void> {
+    ): Promise<DeleteLaneResult> {
       const {
         laneId,
         deleteBranch = true,
@@ -7665,13 +7670,35 @@ export function createLaneService({
                 throw new Error("ADE will not remove a lane folder through a symbolic link.");
               }
             } else {
-              if (await isSymbolicLinkPath(targetPath)) {
-                throw new Error("ADE will not remove a lane folder through a symbolic link.");
-              }
-              // Outside `.ade/worktrees` ADE never falls back to deleting files,
-              // so a directory that git does not recognise is left untouched.
-              if (fs.existsSync(targetPath) && !(await isExpectedGitWorktreeRoot(targetPath))) {
-                throw new Error(STALE_WORKTREE_ROOT_MESSAGE);
+              const symlink = await isSymbolicLinkPath(targetPath);
+              const directoryExists = fs.existsSync(targetPath);
+              const recognizedRoot = directoryExists && !symlink && await isExpectedGitWorktreeRoot(targetPath);
+              // A folder ADE did not create is removed only by `git worktree remove`
+              // while Git still claims it. Once Git has forgotten it, the lane row
+              // can go and the directory stays until the user deletes it.
+              if (symlink || (directoryExists && !recognizedRoot)) {
+                const worktrees = await listGitWorktrees();
+                const canonicalTarget = canonicalPath(targetPath);
+                const stillRegistered = worktrees.some((worktree) =>
+                  !worktree.isBare && (
+                    worktree.path === targetPath || canonicalPath(worktree.path) === canonicalTarget
+                  )
+                );
+                if (!stillRegistered) {
+                  progress.leftoverWorktree = {
+                    path: targetPath,
+                    canDelete: !symlink,
+                    laneName: row.name,
+                  };
+                  return {
+                    detail: symlink
+                      ? `left symlink on disk: ${targetPath}`
+                      : `left on disk: ${targetPath}`,
+                  };
+                }
+                if (symlink) {
+                  throw new Error("ADE will not remove a lane folder through a symbolic link.");
+                }
               }
             }
             return runGitWorktreeMutation(async () => {
@@ -7865,6 +7892,8 @@ export function createLaneService({
         });
 
         invalidateLanePathCaches();
+        const leftover = progress.leftoverWorktree ?? null;
+        if (leftover) leftoverWorktreeByLaneId.set(laneId, leftover);
         finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
         broadcastLifecycleEvent({
           type: "lane-deleted",
@@ -7889,7 +7918,9 @@ export function createLaneService({
             durationMs: totalMs
           });
         }
+        return { leftoverWorktree: leftover };
       } catch (error) {
+        progress.leftoverWorktree = null;
         finalize("failed");
         finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
         throw error;
@@ -7955,6 +7986,50 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       return row.worktree_path;
+    },
+
+    getLeftoverWorktree(laneId: string): LaneDeleteLeftoverWorktree | null {
+      const leftover = leftoverWorktreeByLaneId.get(laneId);
+      return leftover ? { ...leftover } : null;
+    },
+
+    /**
+     * Removes the external directory a finished delete left on disk.
+     * Refuses the project root, a symlink, and a path Git has registered again.
+     */
+    async deleteLeftoverWorktree(laneId: string): Promise<{ removed: boolean }> {
+      const leftover = leftoverWorktreeByLaneId.get(laneId);
+      if (!leftover) throw new Error("That folder is no longer waiting to be deleted.");
+      if (!leftover.canDelete) {
+        throw new Error("ADE will not remove a lane folder through a symbolic link.");
+      }
+      const targetPath = normAbs(leftover.path);
+      if (protectedRootPaths.has(targetPath) || protectedRootPaths.has(canonicalPath(targetPath))) {
+        throw new Error("ADE will not remove the project's own folder.");
+      }
+      if (await isSymbolicLinkPath(targetPath)) {
+        throw new Error("ADE will not remove a lane folder through a symbolic link.");
+      }
+      if (await isExpectedGitWorktreeRoot(targetPath)) {
+        throw new Error("That folder is a Git worktree again. Remove it from the lane that owns it.");
+      }
+      const worktrees = await listGitWorktrees();
+      const canonicalTarget = canonicalPath(targetPath);
+      const stillRegistered = worktrees.some((worktree) =>
+        !worktree.isBare && (
+          worktree.path === targetPath || canonicalPath(worktree.path) === canonicalTarget
+        )
+      );
+      if (stillRegistered) {
+        throw new Error("Git still has this folder registered as a worktree.");
+      }
+      if (!fs.existsSync(targetPath)) {
+        leftoverWorktreeByLaneId.delete(laneId);
+        return { removed: false };
+      }
+      await fs.promises.rm(targetPath, { recursive: true, force: false });
+      leftoverWorktreeByLaneId.delete(laneId);
+      return { removed: true };
     },
 
     /**

@@ -5013,6 +5013,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       dismissAutoRebaseStatus: resolvedArg(undefined),
       onAutoRebaseEvent: noop,
       openFolder: resolvedArg(undefined),
+      revealWorktree: resolvedArg(undefined),
+      revealLeftoverWorktree: resolvedArg(undefined),
+      deleteLeftoverWorktree: resolvedArg({ removed: false }),
       initEnv: resolvedArg({
         laneId: "mock",
         steps: [],

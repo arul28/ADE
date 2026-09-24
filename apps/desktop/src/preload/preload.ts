@@ -6331,6 +6331,28 @@ const adeBridge = {
       }
       await ipcRenderer.invoke(IPC.lanesOpenFolder, args);
     },
+    revealWorktree: async (args: { laneId: string }): Promise<void> => {
+      const binding = await getRemoteProjectBinding();
+      if (binding) {
+        throw new Error(
+          "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
+        );
+      }
+      await ipcRenderer.invoke(IPC.lanesRevealWorktree, args);
+    },
+    revealLeftoverWorktree: async (args: { laneId: string }): Promise<void> => {
+      const binding = await getRemoteProjectBinding();
+      if (binding) {
+        throw new Error(
+          "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
+        );
+      }
+      await ipcRenderer.invoke(IPC.lanesRevealLeftoverWorktree, args);
+    },
+    deleteLeftoverWorktree: async (args: { laneId: string }): Promise<{ removed: boolean }> =>
+      callProjectRuntimeActionOr("lane", "deleteLeftoverWorktree", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDeleteLeftoverWorktree, args),
+      ),
     initEnv: async (args: InitLaneEnvArgs): Promise<LaneEnvInitProgress> =>
       callProjectRuntimeActionOr("lane", "initEnv", { args }, () =>
         ipcRenderer.invoke(IPC.lanesInitEnv, args),
