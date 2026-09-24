@@ -749,6 +749,13 @@ export function createSearchService(deps: SearchServiceDeps) {
       for (const envelope of envelopes) {
         const seq = docSeq;
         docSeq += 1;
+        const steerId = chatEventSteerId(envelope);
+        // A steer the turn refused goes back to the staging strip, and its
+        // bubble is hidden until it is sent. Drop its hit until then.
+        if (steerId && (envelope.event as { deliveryState?: unknown }).deliveryState === "queued") {
+          deleteDocsWhere("doc_id = ?", [`chat:${sessionId}:steer:${steerId}`]);
+          continue;
+        }
         const text = chatEventSearchText(envelope);
         if (!text) continue;
         const sanitized = sanitizeIndexedText(text);
@@ -760,7 +767,6 @@ export function createSearchService(deps: SearchServiceDeps) {
           typeof envelope.sequence === "number" && envelope.sequence >= 0
             ? envelope.sequence
             : seq;
-        const steerId = chatEventSteerId(envelope);
         const docId = steerId ? `chat:${sessionId}:steer:${steerId}` : `chat:${sessionId}:${seq}`;
         if (steerId && getRow("SELECT 1 FROM docs WHERE doc_id = ?", [docId])) continue;
         upsertDoc({

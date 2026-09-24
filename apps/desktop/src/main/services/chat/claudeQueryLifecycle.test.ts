@@ -109,7 +109,10 @@ vi.mock("./permissionMapping", () => ({
   mapPermissionToClaude: vi.fn(() => "default"),
   mapPermissionToCodex: vi.fn(() => ({ approvalPolicy: "on-request", sandbox: "read-only" })),
 }));
-vi.mock("../../../shared/chatTranscript", () => ({ parseAgentChatTranscript: vi.fn(() => []) }));
+vi.mock("../../../shared/chatTranscript", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../shared/chatTranscript")>()),
+  parseAgentChatTranscript: vi.fn(() => []),
+}));
 
 import { createAgentChatService } from "./agentChatService";
 import type { ClaudeSubprocessReaper } from "./claudeSubprocessReaper";

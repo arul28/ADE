@@ -134,11 +134,14 @@ describe("searchService", () => {
 
   // A steer writes one row per lifecycle state on its steerId. The last row
   // lands in a second index pass, the way a live steer settles.
+  // A refused steer goes back to the staging strip with its bubble hidden, so
+  // it has no hit until it is sent; the sent row then owns the hit.
   it.each([
-    ["Codex", ["queued", "accepted", "processed", "unprocessed"]],
-    ["Cursor inline", ["accepted", "inline"]],
-    ["Cursor refused then sent", ["accepted", "queued", "delivered"]],
-  ] as const)("indexes one searchable hit across a %s steer's lifecycle rows", async (_label, states) => {
+    ["Codex", ["queued", "accepted", "processed", "unprocessed"], 2],
+    ["Cursor inline", ["accepted", "inline"], 1],
+    ["Cursor refused then sent", ["accepted", "queued", "delivered"], 3],
+    ["Cursor refused and still staged", ["accepted", "queued"], null],
+  ] as const)("indexes at most one searchable hit across a %s steer's lifecycle rows", async (_label, states, anchorEvent) => {
     const session = makeSession({ id: "chat-steer-lifecycle", title: "Steer lifecycle" });
     sessions.push(session);
     const writeRow = (index: number) => writeChatLine(
@@ -165,9 +168,12 @@ describe("searchService", () => {
     await service.processPendingNow();
 
     const result = await hits();
+    if (anchorEvent === null) {
+      expect(result).toHaveLength(0);
+      return;
+    }
     expect(result).toHaveLength(1);
-    // The hit links to where the message first showed.
-    expect(result[0]!.deepLink).toContain(`event=${states[0] === "queued" ? 2 : 1}`);
+    expect(result[0]!.deepLink).toContain(`event=${anchorEvent}`);
   });
 
   it("rebuilds searchable chat and terminal history from compressed transcripts", async () => {

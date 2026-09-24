@@ -183,7 +183,7 @@ For chat, a steer indexes once. Its rows share one document id,
 lifecycle rows of the same steer (`inline`, `delivered`, `failed`, Codex
 `processed`/`unprocessed`) do not create another document, so a steer that
 shows as "Steering…" and then "Steered", reconnect replay, and resolution
-events cannot duplicate one message in search. `queued` rows are not indexed.
+events cannot duplicate one message in search. `queued` rows are not indexed, and a steer the turn refuses back to `queued` loses its hit until the row that sends it is indexed, because its bubble is hidden while it waits in the staging strip.
 
 A chat's **meta** document also carries the identifiers of every pull request
 linked to it — `#1237`, `owner/repo#1237`, the PR URL, and the PR title — so
