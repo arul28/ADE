@@ -131,6 +131,7 @@ import {
   AgentChatComposer,
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
+  type ComposerDraftEditIntent,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
@@ -336,7 +337,7 @@ import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActi
 import {
   captureComposerHandoff,
   CHAT_SHELL_HEADER_SELECTOR,
-  findComposerHandoffElement,
+  findDraftComposerHandoffElement,
   peekComposerHandoffFirstMessage,
   playComposerDock,
   playDepartingDraftChrome,
@@ -345,7 +346,6 @@ import {
   stashComposerHandoffOrigin,
   stashComposerDockOrigin,
   takeComposerDockOrigin,
-  USER_MESSAGE_CARD_SELECTOR,
   type ComposerHandoff,
 } from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
@@ -353,12 +353,14 @@ import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
 import {
   clearSubmittedDraftText,
   removeSubmittedDraftItems,
+  removeSubmittedDraftItemsById,
   runRendererOwnedLaunch as runRendererOwnedDraftLaunch,
   sameStoredDraftItem,
   discardRendererLaunchHandoff,
   takeRendererLaunchHandoff,
   type DraftLaunchLaneTarget,
   type OpenLaunchedDraftSessionInput,
+  type SubmittedDraftTextEdit,
   type StartedDraftLaunch,
 } from "./launch/rendererOwnedLaunch";
 import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
@@ -950,12 +952,6 @@ function draftDepartingScope(shell: HTMLElement | null): Element | null {
   return shell?.closest("[data-work-draft-surface]") ?? shell;
 }
 
-function draftComposerHandoffElement(shell: HTMLElement | null): Element | null {
-  if (!shell) return null;
-  const emptyState = shell.querySelector("[data-chat-empty-state]") ?? shell;
-  return findComposerHandoffElement(emptyState);
-}
-
 /**
  * The opening `agentChat.send` for a drafted chat, minus the session id. Used
  * by the direct create-then-send path and by the brain-owned new-lane launch,
@@ -1498,6 +1494,8 @@ type ComposerDraftStorageSnapshot = {
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   attachments: AgentChatFileRef[];
+  attachmentDraftIds: string[];
+  submittedDraftTextEdit: SubmittedDraftTextEdit | null;
   attachmentOwnerBinding: OpenProjectBinding | null;
   contextAttachments: AgentChatContextAttachment[];
   iosContextItems: IosElementContextItem[];
@@ -1506,6 +1504,58 @@ type ComposerDraftStorageSnapshot = {
   draftLaunchTargetId: string | null;
   updatedAt: string;
 };
+
+let draftAttachmentIdSequence = 0;
+
+function createDraftAttachmentId(): string {
+  try {
+    const id = globalThis.crypto?.randomUUID?.();
+    if (id) return id;
+  } catch {
+    // Fall through in contexts without secure random UUID support.
+  }
+  draftAttachmentIdSequence += 1;
+  return `draft-attachment-${Date.now()}-${draftAttachmentIdSequence}`;
+}
+
+function reconcileDraftAttachmentIds(
+  current: readonly AgentChatFileRef[],
+  currentIds: readonly string[],
+  next: readonly AgentChatFileRef[],
+): string[] {
+  const available = new Set(current.map((_, index) => index));
+  return next.map((attachment) => {
+    const exactIndex = current.findIndex((candidate, index) => (
+      available.has(index) && candidate === attachment
+    ));
+    const currentIndex = exactIndex >= 0
+      ? exactIndex
+      : current.findIndex((candidate, index) => available.has(index) && candidate.path === attachment.path);
+    if (currentIndex < 0) return createDraftAttachmentId();
+    available.delete(currentIndex);
+    return currentIds[currentIndex] ?? createDraftAttachmentId();
+  });
+}
+
+function normalizeStoredDraftAttachmentIds(
+  value: unknown,
+  attachments: readonly AgentChatFileRef[],
+  updatedAt: string,
+): string[] {
+  const stored = Array.isArray(value) ? value : [];
+  return attachments.map((attachment, index) => (
+    nonEmptyString(stored[index]) ?? `legacy:${updatedAt}:${index}:${attachment.path}`
+  ));
+}
+
+function normalizeSubmittedDraftTextEdit(value: unknown): SubmittedDraftTextEdit | null {
+  if (!isRecord(value)) return null;
+  const submittedText = typeof value.submittedText === "string" ? value.submittedText : null;
+  const kind = value.kind;
+  return submittedText !== null && (kind === "append" || kind === "replacement")
+    ? { submittedText, kind }
+    : null;
+}
 
 function normalizeComposerAttachmentOwnerBinding(value: unknown): OpenProjectBinding | null {
   if (!isRecord(value)) return null;
@@ -2821,6 +2871,8 @@ function normalizeStoredComposerDraft(
 ): ComposerDraftStorageSnapshot | null {
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
+  const attachments = normalizeComposerFileAttachments(value.attachments);
+  const updatedAt = nonEmptyString(value.updatedAt) ?? new Date(0).toISOString();
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
@@ -2834,7 +2886,9 @@ function normalizeStoredComposerDraft(
       isRecord(value.controls) ? value.controls : {},
       defaults,
     ),
-    attachments: normalizeComposerFileAttachments(value.attachments),
+    attachments,
+    attachmentDraftIds: normalizeStoredDraftAttachmentIds(value.attachmentDraftIds, attachments, updatedAt),
+    submittedDraftTextEdit: normalizeSubmittedDraftTextEdit(value.submittedDraftTextEdit),
     attachmentOwnerBinding: normalizeComposerAttachmentOwnerBinding(
       value.attachmentOwnerBinding,
     ),
@@ -2843,7 +2897,7 @@ function normalizeStoredComposerDraft(
     appControlContextItems: normalizeComposerAppControlContextItems(value.appControlContextItems),
     builtInBrowserContextItems: normalizeComposerBuiltInBrowserContextItems(value.builtInBrowserContextItems),
     draftLaunchTargetId: nonEmptyString(value.draftLaunchTargetId),
-    updatedAt: nonEmptyString(value.updatedAt) ?? new Date(0).toISOString(),
+    updatedAt,
   };
 }
 
@@ -3753,7 +3807,28 @@ export function AgentChatPane({
         }
       : null,
   );
-  const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const [attachments, setAttachmentsState] = useState<AgentChatFileRef[]>([]);
+  const attachmentsRef = useRef<AgentChatFileRef[]>([]);
+  const attachmentDraftIdsRef = useRef<string[]>([]);
+  const setAttachments = useCallback((
+    update: AgentChatFileRef[] | ((current: AgentChatFileRef[]) => AgentChatFileRef[]),
+  ) => {
+    const current = attachmentsRef.current;
+    const next = typeof update === "function" ? update(current) : update;
+    if (next === current) return;
+    attachmentDraftIdsRef.current = reconcileDraftAttachmentIds(
+      current,
+      attachmentDraftIdsRef.current,
+      next,
+    );
+    attachmentsRef.current = next;
+    setAttachmentsState(next);
+  }, []);
+  const setAttachmentsWithIds = useCallback((next: AgentChatFileRef[], ids: readonly string[]) => {
+    attachmentsRef.current = next;
+    attachmentDraftIdsRef.current = next.map((_, index) => ids[index] ?? createDraftAttachmentId());
+    setAttachmentsState(next);
+  }, []);
   const chatPaneDropTargetRef = useRef<AgentChatAttachmentDropTarget | null>(null);
   const [chatPaneDropActive, setChatPaneDropActive] = useState(false);
   const clearChatPaneDropActive = useCallback(() => setChatPaneDropActive(false), []);
@@ -3786,6 +3861,8 @@ export function AgentChatPane({
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
+  const [submittedDraftTextEdit, setSubmittedDraftTextEdit] = useState<SubmittedDraftTextEdit | null>(null);
+  const submittedDraftTextEditRef = useRef<SubmittedDraftTextEdit | null>(null);
   const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
   const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
   const composerDraftWriteTimerRef = useRef<number | null>(null);
@@ -4082,9 +4159,7 @@ export function AgentChatPane({
     const optimistic = optimisticOutgoingMessage;
     if (optimistic?.sessionId !== pending.sessionId || optimistic.envelope !== pending.handoff.firstMessage) return;
     const shell = shellRef.current;
-    // The seeded event must have committed through AgentChatMessageList before
-    // the flight measures its target card.
-    if (!shell?.querySelector(USER_MESSAGE_CARD_SELECTOR)) return;
+    if (!shell) return;
     pendingComposerHandoffAnimationRef.current = null;
     playComposerDock(composerDockRef.current, pending.handoff.composer);
     playFirstMessageFlight(shell, pending.handoff.text);
@@ -4430,7 +4505,7 @@ export function AgentChatPane({
       linkedIosAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
-  }, []);
+  }, [setAttachments]);
   const removeAppControlContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
     setAppControlContextItems((current) => {
@@ -4442,7 +4517,7 @@ export function AgentChatPane({
       linkedAppControlAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
-  }, []);
+  }, [setAttachments]);
   const removeBuiltInBrowserContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
     setBuiltInBrowserContextItems((current) => {
@@ -4454,12 +4529,43 @@ export function AgentChatPane({
       linkedBuiltInBrowserAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
+  }, [setAttachments]);
+  const updateSubmittedDraftTextEdit = useCallback((value: SubmittedDraftTextEdit | null) => {
+    submittedDraftTextEditRef.current = value;
+    setSubmittedDraftTextEdit(value);
   }, []);
-  const updateComposerDraft = useCallback((value: string) => {
+  const updateComposerDraft = useCallback((value: string, editIntent?: ComposerDraftEditIntent) => {
+    const heldForegroundChat = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+      ?? EMPTY_DRAFT_LAUNCH_JOBS).find((job) => (
+      job.draftKind === "chat"
+      && job.mode === "foreground"
+      && !isDraftLaunchJobTerminal(job.status)
+    ));
+    if (heldForegroundChat) {
+      const submittedText = heldForegroundChat.snapshot.draft;
+      const previousEdit = submittedDraftTextEditRef.current;
+      const append = Boolean(
+        editIntent
+        && editIntent.previousText.startsWith(submittedText)
+        && editIntent.selectionStart >= submittedText.length
+        && editIntent.selectionEnd >= submittedText.length
+        && value.startsWith(submittedText),
+      );
+      let kind: SubmittedDraftTextEdit["kind"] = "replacement";
+      if (append && !(previousEdit?.submittedText === submittedText && previousEdit.kind === "replacement")) {
+        kind = "append";
+      }
+      updateSubmittedDraftTextEdit({
+        submittedText,
+        kind,
+      });
+    } else {
+      updateSubmittedDraftTextEdit(null);
+    }
     setDraft(value);
     draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
+  }, [clearPromptSuggestionForSession, companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
   const updateComposerMentionLabel = useCallback((token: string, title: string) => {
     const label = title.trim();
     if (!label) return;
@@ -4468,13 +4574,22 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const insertComposerDraft = useCallback((value: string) => {
-    setDraft((current) => {
-      const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
-      draftsPerSessionRef.current.set(companionStateKey, next);
-      return next;
+    const previousText = draft;
+    const foregroundChatLaunchPending = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+      ?? EMPTY_DRAFT_LAUNCH_JOBS).some((job) => (
+      job.draftKind === "chat"
+      && job.mode === "foreground"
+      && !isDraftLaunchJobTerminal(job.status)
+    ));
+    const appendedTo = foregroundChatLaunchPending ? previousText : previousText.trimEnd();
+    const next = appendedTo.trim().length ? `${appendedTo}\n\n${value}` : value;
+    updateComposerDraft(next, {
+      previousText,
+      selectionStart: previousText.length,
+      selectionEnd: previousText.length,
     });
     clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
+  }, [clearPromptSuggestionForSession, draft, draftLaunchJobsScopeKey, selectedSessionId, updateComposerDraft]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
@@ -8549,7 +8664,7 @@ export function AgentChatPane({
       if (prev.some((entry) => entry.path === attachment.path)) return prev;
       return [...prev, attachment];
     });
-  }, [claimDraftAttachmentOwner]);
+  }, [claimDraftAttachmentOwner, setAttachments]);
 
   const saveContextScreenshot = useCallback(async (args: {
     dataUrl: string;
@@ -8624,7 +8739,7 @@ export function AgentChatPane({
       },
       ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
     ]);
-  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot]);
+  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot, setAttachments]);
 
   const addAppControlContext = useCallback(async (item: AppControlContextItem) => {
     claimDraftAttachmentOwner();
@@ -8951,7 +9066,7 @@ export function AgentChatPane({
     setIosElementContextItems((prev) => prev.filter((entry) => getIosContextAttachmentPath(entry) !== attachmentPath));
     setAppControlContextItems((prev) => prev.filter((entry) => getAppControlContextAttachmentPath(entry) !== attachmentPath));
     setBuiltInBrowserContextItems((prev) => prev.filter((entry) => getBuiltInBrowserContextAttachmentPath(entry) !== attachmentPath));
-  }, []);
+  }, [setAttachments]);
 
   const addContextAttachment = useCallback((attachment: AgentChatContextAttachment) => {
     setContextAttachments((prev) => mergeChatContextAttachments(prev, [attachment]));
@@ -9171,8 +9286,9 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
       setMentionLabels(saved.mentionLabels);
       setDraft(saved.text);
+      updateSubmittedDraftTextEdit(saved.submittedDraftTextEdit);
       draftAttachmentOwnerBindingRef.current = saved.attachmentOwnerBinding;
-      setAttachments(saved.attachments);
+      setAttachmentsWithIds(saved.attachments, saved.attachmentDraftIds);
       setContextAttachments(saved.contextAttachments);
       setIosElementContextItems(saved.iosContextItems);
       setAppControlContextItems(saved.appControlContextItems);
@@ -9198,8 +9314,9 @@ export function AgentChatPane({
     const savedText = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setMentionLabels({});
     setDraft(savedText);
+    updateSubmittedDraftTextEdit(null);
     draftAttachmentOwnerBindingRef.current = null;
-    setAttachments([]);
+    setAttachmentsWithIds([], []);
     setContextAttachments([]);
     setIosElementContextItems([]);
     setAppControlContextItems([]);
@@ -9214,6 +9331,8 @@ export function AgentChatPane({
     draftLaunchConfigScopeKey,
     initialNativeControls,
     selectedSessionId,
+    setAttachmentsWithIds,
+    updateSubmittedDraftTextEdit,
   ]);
 
   const currentComposerDraftSnapshot = useMemo<ComposerDraftStorageSnapshot>(() => ({
@@ -9230,6 +9349,8 @@ export function AgentChatPane({
       cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
     },
     attachments,
+    attachmentDraftIds: [...attachmentDraftIdsRef.current],
+    submittedDraftTextEdit,
     attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
     contextAttachments,
     iosContextItems: iosElementContextItems,
@@ -9252,6 +9373,7 @@ export function AgentChatPane({
     mentionLabels,
     modelId,
     reasoningEffort,
+    submittedDraftTextEdit,
   ]);
   latestComposerDraftSnapshotRef.current = {
     storageKey: composerDraftStorageKeyValue,
@@ -9542,6 +9664,7 @@ export function AgentChatPane({
         cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
       },
       attachments: [...attachments],
+      attachmentDraftIds: [...attachmentDraftIdsRef.current],
       contextAttachments: contextAttachmentsSnapshot,
       iosContextItems: iosContextSnapshot,
       appControlContextItems: appControlContextSnapshot,
@@ -9553,6 +9676,7 @@ export function AgentChatPane({
   }, [
     appControlContextItems,
     attachments,
+    attachmentDraftIdsRef,
     builtInBrowserContextItems,
     cursorCloudServiceTier,
     fastMode,
@@ -9601,7 +9725,7 @@ export function AgentChatPane({
         updatedAt: new Date().toISOString(),
       });
     }
-  }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey]);
+  }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey, setAttachments]);
 
   // A cancelled or deleted new-lane launch hands its prompt back here, merged
   // into whatever is already typed (see `chatLaunchDraftRestore`).
@@ -9626,7 +9750,7 @@ export function AgentChatPane({
     if (chatLaunchDraftRestore.prompt.attachments.length) {
       setAttachments((current) => mergeAttachments(current, chatLaunchDraftRestore.prompt.attachments));
     }
-  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot]);
+  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot, setAttachments]);
 
   const patchDraftLaunchJob = useCallback((jobId: string, patch: Partial<DraftLaunchJob>) => {
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs(current.map((job) => (
@@ -9678,7 +9802,7 @@ export function AgentChatPane({
         );
         stashComposerHandoffOrigin(launch.sessionId, { ...handoff, firstMessage });
       } else {
-        stashComposerDockOrigin(launch.sessionId, draftComposerHandoffElement(shellRef.current), {
+        stashComposerDockOrigin(launch.sessionId, findDraftComposerHandoffElement(shellRef.current), {
           departingScope: draftDepartingScope(shellRef.current),
           firstMessage,
         });
@@ -9730,9 +9854,17 @@ export function AgentChatPane({
   // instance is mounted.
   const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
     const clearSubmittedContent = (saved: ComposerDraftStorageSnapshot): ComposerDraftStorageSnapshot => {
-      const text = clearSubmittedDraftText(saved.text, snapshot.draft);
+      const text = clearSubmittedDraftText(saved.text, snapshot.draft, saved.submittedDraftTextEdit);
       const clearText = text !== saved.text;
-      const attachments = removeSubmittedDraftItems(saved.attachments, snapshot.attachments, sameStoredDraftItem);
+      const attachmentResult = removeSubmittedDraftItemsById(
+        saved.attachments,
+        saved.attachmentDraftIds,
+        snapshot.attachments,
+        snapshot.attachmentDraftIds ?? [],
+        sameStoredDraftItem,
+      );
+      const consumesSubmittedTextEdit = saved.submittedDraftTextEdit?.submittedText === snapshot.draft;
+      const attachments = attachmentResult.items;
       const contextAttachments = removeSubmittedDraftItems(
         saved.contextAttachments,
         snapshot.contextAttachments,
@@ -9751,7 +9883,10 @@ export function AgentChatPane({
       );
       if (
         !clearText
-        && attachments === saved.attachments
+        && attachments.length === saved.attachments.length
+        && attachments.every((attachment, index) => attachment === saved.attachments[index])
+        && attachmentResult.ids.every((id, index) => id === saved.attachmentDraftIds[index])
+        && !consumesSubmittedTextEdit
         && contextAttachments === saved.contextAttachments
         && iosContextItems === saved.iosContextItems
         && appControlContextItems === saved.appControlContextItems
@@ -9760,10 +9895,14 @@ export function AgentChatPane({
       return {
         ...saved,
         text,
-        mentionLabels: clearText
+        mentionLabels: text !== saved.text || consumesSubmittedTextEdit
           ? Object.fromEntries(Object.entries(saved.mentionLabels).filter(([token]) => text.includes(token)))
           : saved.mentionLabels,
         attachments,
+        attachmentDraftIds: attachmentResult.ids,
+        submittedDraftTextEdit: consumesSubmittedTextEdit
+          ? null
+          : saved.submittedDraftTextEdit,
         contextAttachments,
         iosContextItems,
         appControlContextItems,
@@ -9784,11 +9923,9 @@ export function AgentChatPane({
       : null;
     for (const storageKey of storageKeys) {
       const saved = readComposerDraftSnapshot(storageKey, initialNativeControls);
-      const current = latestDraft?.storageKey === storageKey
-        ? latestDraft.snapshot
-        : pending?.storageKey === storageKey
-          ? pending.snapshot
-          : saved;
+      let current = saved;
+      if (pending?.storageKey === storageKey) current = pending.snapshot;
+      if (latestDraft?.storageKey === storageKey) current = latestDraft.snapshot;
       const clearedSaved = saved ? clearSubmittedContent(saved) : null;
       const clearedCurrent = current ? clearSubmittedContent(current) : null;
       if (clearedSaved && clearedSaved !== saved) writeComposerDraftSnapshot(storageKey, clearedSaved);
@@ -9799,18 +9936,27 @@ export function AgentChatPane({
       }
     }
 
+    const submittedTextEdit = submittedDraftTextEditRef.current;
     setDraft((current) => {
-      const next = clearSubmittedDraftText(current, snapshot.draft);
+      const next = clearSubmittedDraftText(current, snapshot.draft, submittedTextEdit);
       if (next === current) return current;
       draftsPerSessionRef.current.set(companionStateKey, next);
       return next;
     });
-    setAttachments((current) => removeSubmittedDraftItems(current, snapshot.attachments, sameStoredDraftItem));
+    updateSubmittedDraftTextEdit(null);
+    const liveAttachmentResult = removeSubmittedDraftItemsById(
+      attachmentsRef.current,
+      attachmentDraftIdsRef.current,
+      snapshot.attachments,
+      snapshot.attachmentDraftIds ?? [],
+      sameStoredDraftItem,
+    );
+    setAttachments(liveAttachmentResult.items);
     setContextAttachments((current) => removeSubmittedDraftItems(current, snapshot.contextAttachments, sameStoredDraftItem));
     setIosElementContextItems((current) => removeSubmittedDraftItems(current, snapshot.iosContextItems, sameStoredDraftItem));
     setAppControlContextItems((current) => removeSubmittedDraftItems(current, snapshot.appControlContextItems, sameStoredDraftItem));
     setBuiltInBrowserContextItems((current) => removeSubmittedDraftItems(current, snapshot.builtInBrowserContextItems, sameStoredDraftItem));
-  }, [companionStateKey, composerDraftStorageKeyValues, initialNativeControls]);
+  }, [companionStateKey, composerDraftStorageKeyValues, initialNativeControls, setAttachments, updateSubmittedDraftTextEdit]);
 
   useEffect(() => {
     if (!forceDraft) return;
@@ -10368,7 +10514,7 @@ export function AgentChatPane({
     setError(null);
     const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
     if (opensNow) {
-      stashComposerDockOrigin(launchId, draftComposerHandoffElement(shellRef.current), {
+      stashComposerDockOrigin(launchId, findDraftComposerHandoffElement(shellRef.current), {
         departingScope: draftDepartingScope(shellRef.current),
       });
     }
@@ -10428,6 +10574,7 @@ export function AgentChatPane({
       ))) {
         // A changed composer snapshot has a different request key, but it is
         // still the same held foreground launch until the first chat settles.
+        setError("A foreground chat launch is already in progress.");
         return;
       }
     }
@@ -10476,7 +10623,7 @@ export function AgentChatPane({
       inFlightKeysRef: draftLaunchInFlightKeysRef,
       paneMountedRef,
       captureHandoffOrigin: () => captureComposerHandoff(
-        draftComposerHandoffElement(shellRef.current),
+        findDraftComposerHandoffElement(shellRef.current),
         { departingScope: draftDepartingScope(shellRef.current) },
       ),
       prepare: prepareDraftLaunch,
@@ -11777,7 +11924,7 @@ export function AgentChatPane({
         // text until the chat exists; measure it now for the send handoff.
         inPlaceFirstSendHandoffRef.current = suppressOptimisticOutgoing
           ? null
-          : captureComposerHandoff(draftComposerHandoffElement(shellRef.current));
+          : captureComposerHandoff(findDraftComposerHandoffElement(shellRef.current));
         sessionId = await createSession();
         if (!sessionId) {
           throw new Error("Unable to create chat session.");
@@ -11952,6 +12099,7 @@ export function AgentChatPane({
     selectedSessionId,
     selectedSessionModelId,
     setOptimisticOutgoingMessageSynced,
+    setAttachments,
     sessionProvider,
     cursorRuntime,
     touchSession,
@@ -14170,6 +14318,8 @@ export function AgentChatPane({
                   cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
                 },
                 attachments: [...attachments],
+                attachmentDraftIds: [...attachmentDraftIdsRef.current],
+                submittedDraftTextEdit: submittedDraftTextEditRef.current,
                 attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
                 contextAttachments: [...contextAttachments],
                 iosContextItems: [...iosElementContextItems],

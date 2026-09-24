@@ -190,6 +190,15 @@ export function findComposerHandoffElement(scope: Element | null | undefined): E
     ?? scope.querySelector("[data-chat-composer-dock]");
 }
 
+/** Find the Work draft composer, including layouts that dock it outside the empty-state subtree. */
+export function findDraftComposerHandoffElement(shell: Element | null | undefined): Element | null {
+  if (!shell) return null;
+  const emptyState = shell.querySelector("[data-chat-empty-state]");
+  const composer = findComposerHandoffElement(emptyState ?? shell);
+  if (composer || !emptyState) return composer;
+  return findComposerHandoffElement(shell);
+}
+
 /** Store an already measured handoff under the session that is about to open. */
 export function stashComposerHandoffOrigin(sessionId: string, handoff: ComposerHandoff | null | undefined): void {
   if (!handoff) return;

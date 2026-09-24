@@ -7,6 +7,7 @@ import {
   type DraftLaunchKind,
   type DraftLaunchMode,
   type DraftLaunchSnapshot,
+  type NativeControlState,
   type PreparedDraftLaunch,
 } from "../../../lib/draftLaunchJobs";
 import { getAppResourceUsageCoalesced, latestAppResourcePressureLevel } from "../../../lib/resourcePressure";
@@ -14,6 +15,7 @@ import type { ComposerHandoff } from "./chatLaunchDock";
 import {
   clearSubmittedDraftText,
   removeSubmittedDraftItems,
+  removeSubmittedDraftItemsById,
   runRendererOwnedLaunch,
   sameStoredDraftItem,
   stashRendererLaunchHandoff,
@@ -23,6 +25,7 @@ import {
 
 import {
   findComposerHandoffElement,
+  findDraftComposerHandoffElement,
   hasPendingComposerDock,
   peekComposerHandoffFirstMessage,
   playComposerDock,
@@ -61,14 +64,49 @@ function firstMessage(sessionId: string): AgentChatEventEnvelope {
   };
 }
 
-const launchSnapshot = { text: "fix the flaky test", draft: "fix the flaky test" } as DraftLaunchSnapshot;
+const launchSnapshot = {
+  text: "fix the flaky test",
+  draft: "fix the flaky test",
+  modelId: "openai/gpt-5.4",
+  reasoningEffort: null,
+  fastMode: false,
+  cursorCloudServiceTier: null,
+  executionMode: "focused",
+  interactionMode: "default",
+  nativeControls: {
+    interactionMode: "default",
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "flags",
+    opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
+    cursorModeId: "agent",
+    cursorConfigValues: {},
+  } satisfies NativeControlState,
+  attachments: [],
+  contextAttachments: [],
+  iosContextItems: [],
+  appControlContextItems: [],
+  builtInBrowserContextItems: [],
+  visualContextPrefix: "",
+  visualContextDisplayChips: "",
+  isLiteralSlashCommand: false,
+} satisfies DraftLaunchSnapshot;
 const preparedLaunch = {
   ...launchSnapshot,
   finalText: "fix the flaky test",
   finalDisplayText: "fix the flaky test",
   selectedAttachments: [],
   selectedContextAttachments: [],
-} as PreparedDraftLaunch;
+} satisfies PreparedDraftLaunch;
+
+const launchBinding: OpenProjectBinding = {
+  kind: "local",
+  key: "local:/tmp/project-under-test",
+  rootPath: "/tmp/project-under-test",
+  displayName: "project-under-test",
+};
 
 function rendererLaunchDeps(
   kind: DraftLaunchKind,
@@ -80,7 +118,7 @@ function rendererLaunchDeps(
     kind,
     mode,
     snapshot: launchSnapshot,
-    launchBinding: {} as OpenProjectBinding,
+    launchBinding,
     requestKey: "request",
     autoCreate: false,
     paneLaneId: "lane-1",
@@ -120,6 +158,17 @@ function rendererLaunchDeps(
 }
 
 describe("composer handoff stash", () => {
+  it("falls back to the docked composer when the empty state has no inline composer", () => {
+    const shell = document.createElement("div");
+    const emptyState = document.createElement("div");
+    emptyState.setAttribute("data-chat-empty-state", "");
+    const dock = document.createElement("div");
+    dock.setAttribute("data-chat-composer-dock", "");
+    shell.append(emptyState, dock);
+
+    expect(findDraftComposerHandoffElement(shell)).toBe(dock);
+  });
+
   it("finds both empty-draft layouts and captures the send-time composer origin", () => {
     const surface = document.createElement("div");
     const wrapper = document.createElement("div");
@@ -527,10 +576,31 @@ describe("renderer-owned launch handoff", () => {
     expect(removeSubmittedDraftItems(currentAttachments, [capturedAttachment], sameStoredDraftItem))
       .toEqual([{ id: "added-while-waiting" }]);
     expect(clearSubmittedDraftText("submitted prompt", "submitted prompt")).toBe("");
-    expect(clearSubmittedDraftText("submitted prompt plus a later thought", "submitted prompt"))
+    expect(clearSubmittedDraftText(
+      "submitted prompt plus a later thought",
+      "submitted prompt",
+      { submittedText: "submitted prompt", kind: "append" },
+    ))
       .toBe(" plus a later thought");
     expect(clearSubmittedDraftText("new prompt typed while waiting", "submitted prompt"))
       .toBe("new prompt typed while waiting");
+    expect(clearSubmittedDraftText(
+      "Fix bug in tests",
+      "Fix bug",
+      { submittedText: "Fix bug", kind: "replacement" },
+    )).toBe("Fix bug in tests");
+    expect(clearSubmittedDraftText(
+      "Fix bug",
+      "Fix bug",
+      { submittedText: "Fix bug", kind: "replacement" },
+    )).toBe("Fix bug");
+    expect(removeSubmittedDraftItemsById(
+      [{ path: "/tmp/same.txt" }],
+      ["reattached-id"],
+      [{ path: "/tmp/same.txt" }],
+      ["submitted-id"],
+      sameStoredDraftItem,
+    )).toEqual({ items: [{ path: "/tmp/same.txt" }], ids: ["reattached-id"] });
   });
 
   it("keeps the visual origin through remount and expires unused recovery state", async () => {

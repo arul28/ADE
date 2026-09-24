@@ -16,9 +16,26 @@ import { extractError } from "../../../lib/format";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import type { ComposerHandoff } from "./chatLaunchDock";
 
-export function clearSubmittedDraftText(current: string, submitted: string): string {
-  if (!submitted || !current.startsWith(submitted)) return current;
-  return current.slice(submitted.length);
+export type SubmittedDraftTextEdit = {
+  submittedText: string;
+  kind: "append" | "replacement";
+};
+
+export function clearSubmittedDraftText(
+  current: string,
+  submitted: string,
+  edit?: SubmittedDraftTextEdit | null,
+): string {
+  if (!submitted) return current;
+  if (current === submitted) {
+    return edit?.submittedText === submitted && edit.kind === "replacement" ? current : "";
+  }
+  if (
+    edit?.submittedText === submitted
+    && edit.kind === "append"
+    && current.startsWith(submitted)
+  ) return current.slice(submitted.length);
+  return current;
 }
 
 export function removeSubmittedDraftItems<T>(
@@ -37,6 +54,34 @@ export function removeSubmittedDraftItems<T>(
     return false;
   });
   return changed ? next : current;
+}
+
+export function removeSubmittedDraftItemsById<T>(
+  current: readonly T[],
+  currentIds: readonly string[],
+  submitted: readonly T[],
+  submittedIds: readonly string[],
+  fallbackMatches: (current: T, submitted: T) => boolean = Object.is,
+): { items: T[]; ids: string[] } {
+  const remaining = submitted.map((item, index) => ({ item, id: submittedIds[index] }));
+  const items: T[] = [];
+  const ids: string[] = [];
+  let changed = false;
+  current.forEach((item, index) => {
+    const id = currentIds[index];
+    const matchIndex = remaining.findIndex((entry) => (
+      id && entry.id ? id === entry.id : fallbackMatches(item, entry.item)
+    ));
+    if (matchIndex < 0) {
+      items.push(item);
+      ids.push(id ?? "");
+      changed = changed || !id;
+      return;
+    }
+    remaining.splice(matchIndex, 1);
+    changed = true;
+  });
+  return changed ? { items, ids } : { items: [...current], ids: [...currentIds] };
 }
 
 export function sameStoredDraftItem(left: unknown, right: unknown): boolean {
