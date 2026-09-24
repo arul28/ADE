@@ -63,17 +63,6 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/chat/MacDesktopClaimPicker.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/chat/MacDesktopFullscreenView.tsx": {
-      "ade-ui/no-fixed-overlay": 1
-    },
-    "apps/desktop/src/renderer/components/chat/MacDesktopStopConfirm.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
-    },
     "apps/desktop/src/renderer/components/files/v2/ContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
@@ -89,10 +78,6 @@
     },
     "apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx": {
       "ade-ui/no-fixed-overlay": 1
-    },
-    "apps/desktop/src/renderer/components/lanes/LaneMacDesktopPeek.tsx": {
-      "ade-ui/no-fixed-overlay": 1,
-      "ade-ui/no-raw-z-index": 1
     },
     "apps/desktop/src/renderer/components/lanes/LanePrBadgePopover.tsx": {
       "ade-ui/no-raw-z-index": 1
