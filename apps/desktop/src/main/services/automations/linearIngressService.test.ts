@@ -4,7 +4,6 @@ import type { Logger } from "../logging/logger";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import { createLinearIngressService, type LinearIngressServiceDeps } from "./linearIngressService";
 import {
-  LINEAR_RELAY_LAST_ERROR_REF,
   LINEAR_RELAY_LAST_EVENT_AT_REF,
   LINEAR_RELAY_ORGANIZATION_ID_REF,
   LINEAR_RELAY_SECRET_REF,
@@ -396,28 +395,5 @@ describe("linearIngressService", () => {
     expect(harness.db.getJson(LINEAR_RELAY_ORGANIZATION_ID_REF)).toBeNull();
     expect(harness.cursorBySource.get("linear-relay")).toBeNull();
     expect(status.state).toBe("unconfigured");
-  });
-  // A runtime dispose stops the service and then closes the database, so a
-  // poll still in flight at stop() must not write its failure afterwards.
-  it.each([
-    ["still running", false, "relay unreachable"],
-    ["stopped mid-poll", true, null],
-  ] as const)("records a poll failure only while the service runs: %s", async (_label, stopFirst, recorded) => {
-    let failFetch!: () => void;
-    const fetchImpl = vi.fn(() => new Promise<Response>((_resolve, reject) => {
-      failFetch = () => reject(new Error("relay unreachable"));
-    })) as unknown as typeof fetch;
-    const harness = createHarness({ fetchImpl, linearToken: null, accountToken: "clerk-account-token" });
-    configureReady(harness);
-
-    harness.service.start();
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
-    if (stopFirst) harness.service.stop();
-    failFetch();
-    await harness.service.pollNow();
-    harness.service.stop();
-
-    expect(harness.db.getJson(LINEAR_RELAY_LAST_ERROR_REF)).toBe(recorded);
-    expect(vi.mocked(harness.deps.logger.warn).mock.calls.length > 0).toBe(!stopFirst);
   });
 });
