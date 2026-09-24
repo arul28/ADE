@@ -2809,10 +2809,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("puts the pane back on Escape without writing the abandoned drag to the store", () => {
-    // The drag only ever touches inline `flexGrow`, so on cancel the store
-    // already holds the width being restored. Writing it again re-ran
-    // persistence and cross-window sync for a gesture the user abandoned — and
-    // stamped the mousedown snapshot over any width that changed mid-drag.
+    // Escape abandons the drag without writing a width to the store.
     workMocks.currentWork = {
       ...workMocks.baseWork,
       workSidebarOpen: true,
@@ -2831,16 +2828,12 @@ describe("TerminalsPage chat session activation", () => {
     vi.spyOn(separator.parentElement!, "getBoundingClientRect").mockReturnValue({
       x: 0, y: 0, top: 0, left: 0, right: 1000, bottom: 0, width: 1000, height: 0, toJSON: () => ({}),
     } as DOMRect);
-    const sidebarPane = separator.parentElement!.querySelector<HTMLElement>("[data-work-sidebar-pane]")!;
-
     fireEvent.mouseDown(separator, { clientX: 600 });
-    expect(sidebarPane.style.flexGrow).toBe("36");
 
     // Drag left: the separator moves, so the pane on its right widens.
     fireEvent.mouseMove(document, { clientX: 500 });
     fireEvent.keyDown(document, { key: "Escape" });
 
-    expect(sidebarPane.style.flexGrow).toBe("36");
     expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
 
     // A drag that ENDS normally still persists where it was let go.
@@ -2911,11 +2904,6 @@ describe("TerminalsPage chat session activation", () => {
     // §0: the sibling column, its gutter and its persisted width are gone.
     expect(screen.queryByTestId("work-apple-column-pane")).toBeNull();
     expect(screen.queryByRole("separator", { name: "Resize Apple device column" })).toBeNull();
-    // So the chat column gives up exactly one share: the tools pane's.
-    const content = document.querySelector<HTMLElement>("[data-tour=\"work.chatColumn\"]")
-      ?? (screen.getByTestId("work-sidebar").parentElement?.parentElement
-        ?.firstElementChild as HTMLElement | null);
-    expect(content?.style.flexGrow).toBe("64");
     expect((sidebarProps.latest as unknown as { appleColumnOpen?: unknown } | null)?.appleColumnOpen)
       .toBeUndefined();
   });

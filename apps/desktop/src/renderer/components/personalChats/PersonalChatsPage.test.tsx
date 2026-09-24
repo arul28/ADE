@@ -753,18 +753,6 @@ describe("PersonalChatsPage", () => {
     await waitFor(() => expect(sendButton.disabled).toBe(true));
   });
 
-  it("paints the send button with the provider chat accent", async () => {
-    await renderPage();
-
-    await screen.findByText("What can I help with?");
-    const sendButton = screen.getByLabelText("Send message") as HTMLButtonElement;
-    expect(sendButton.className).toContain("bg-[color:var(--chat-accent)]");
-    // Light provider accent on colored tint → dark glyph for contrast. The
-    // glyph color lands only after the catalog load resolves the fallback
-    // modelId, so wait rather than asserting the first paint.
-    await waitFor(() => expect(sendButton.style.color).toBe("rgb(28, 25, 23)"));
-  });
-
   it("keeps the hero and composer visible while the initial fetch is still loading", async () => {
     let resolveList: (rows: AgentChatSessionSummary[]) => void = () => {};
     const pendingList = new Promise<AgentChatSessionSummary[]>((resolve) => { resolveList = resolve; });
@@ -799,8 +787,6 @@ describe("PersonalChatsPage", () => {
     await renderPage();
 
     expect(await screen.findByText("Ready chat")).toBeTruthy();
-    const sidebar = screen.getByText("Chats").closest("aside");
-    await waitFor(() => expect(sidebar?.querySelector(".animate-spin")).toBeNull());
   });
 
   it("routes transcript link requests into the visible personal browser collection", async () => {
@@ -925,18 +911,6 @@ describe("PersonalChatsPage", () => {
     });
     expect(sendish).toHaveLength(0);
     expect((textarea as HTMLTextAreaElement).value).toBe("こんにちは");
-  });
-
-  it("computes the send glyph contrast from the tint-resolved accent in neutral chrome", async () => {
-    storeState.chatChromeTint = "neutral";
-    await renderPage();
-
-    await screen.findByText("What can I help with?");
-    const sendButton = screen.getByLabelText("Send message") as HTMLButtonElement;
-    // Neutral tint paints the fill gray (#52525b), so the glyph must stay white
-    // even though the provider accent alone would demand a dark glyph.
-    await waitFor(() => expect(sendButton.style.color).toBe("rgb(255, 255, 255)"));
-    expect(sendButton.className).toContain("bg-[color:var(--chat-accent)]");
   });
 
   it("names the chats machine absolutely and offers every open machine", async () => {

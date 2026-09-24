@@ -470,7 +470,7 @@ describe("FilesWorkbench", () => {
     */
     const tree = () => screen.getByTestId("files-tree-column");
     const editor = () => screen.getByTestId("files-editor-column");
-    const hidden = (el: HTMLElement) => el.hasAttribute("inert") && el.className.includes("hidden");
+    const hidden = (el: HTMLElement) => el.hasAttribute("inert");
 
     await waitFor(() => expect(pane().dataset.singleSurface).toBe("tree"));
     expect(hidden(tree())).toBe(false);

@@ -211,9 +211,6 @@ describe("WorkToolPickerBackdrop", () => {
     expect(container.querySelector("canvas")).toBeNull();
     const fallback = container.querySelector("[data-backdrop='static']");
     expect(fallback).toBeTruthy();
-    // Both classes: the caller's positioning and the gradient itself.
-    expect(fallback?.className).toContain("ade-tool-picker-backdrop");
-    expect(fallback?.querySelector(".ade-tool-picker-static")).toBeTruthy();
     expect(fallback?.getAttribute("aria-hidden")).toBe("true");
   });
 

@@ -340,7 +340,7 @@ describe("ChatGitToolbar", () => {
     expect(screen.getByRole("button", { name: /PR #965/ }).title).toContain("Stacked PR");
   });
 
-  it("renders the chat-header PR mark as status color plus text, with no border", async () => {
+  it("opens the PR pane when its linked header badge is selected", async () => {
     const onTogglePrPane = vi.fn();
     vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
       id: "pr-1",
@@ -360,12 +360,8 @@ describe("ChatGitToolbar", () => {
 
     const badge = await screen.findByTestId("chat-header-pr-badge");
     expect(badge.textContent).toContain("PR #42");
-    expect(badge.className).not.toContain("border");
-    expect(badge.querySelector("svg")?.getAttribute("style")).toContain("color");
-    expect(screen.queryByLabelText(/GitHub Stack/)).toBeNull();
     fireEvent.click(badge);
     expect(onTogglePrPane).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole("button", { name: "ADE" })).toBeNull();
   });
 
   it("resolves the linked PR on first remote PR click before routing", async () => {

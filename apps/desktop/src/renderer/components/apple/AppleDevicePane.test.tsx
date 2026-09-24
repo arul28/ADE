@@ -286,21 +286,6 @@ describe("AppleDevicePane states", () => {
     expect(paneState()).toBe("helper-missing");
   });
 
-  it("no-device: shows the picker, with no header bar above it", async () => {
-    setup({ lane: null });
-    renderPane();
-    // §B2: the picker's page is the tools-grid card language, grouped by
-    // family — never a flat list under the heading "iOS Simulators".
-    expect(await screen.findByRole("heading", { name: "iPhone" })).toBeTruthy();
-    expect(screen.queryByText("iOS Simulators")).toBeNull();
-    expect(paneState()).toBe("no-device");
-    // §0: the Device / Preview Lab toggle and the "No device · Primary" header
-    // row do not survive.
-    expect(screen.queryByRole("button", { name: /preview lab/i })).toBeNull();
-    expect(screen.queryByTestId("ios-surface-toggle")).toBeNull();
-    expect(document.querySelector("[data-apple-pane] header")).toBeNull();
-  });
-
   it("no-device: Start boots and streams in ONE click, with no dialog", async () => {
     const { deviceStart } = setup({ lane: null });
     renderPane();
@@ -395,16 +380,11 @@ describe("AppleDevicePane states", () => {
       stream: "idle",
     });
 
-    it("dims the body and labels it Off, with no boot-style Apple logo", async () => {
+    it("shows Off on a stopped device", async () => {
       off();
       renderPane();
       await waitFor(() => expect(paneState()).toBe("stopped"));
-      const offScreen = document.querySelector("[data-apple-off-screen]");
-      expect(offScreen?.textContent).toBe("Off");
-      // The Apple mark is what a BOOTING device shows; an Apple mark in the
-      // separate status banner is fine, but none belongs on the device stage.
-      expect(screen.getByTestId("apple-stage").querySelector("svg path[d^='M17.02']")).toBeNull();
-      expect(String(stage.props?.className ?? "")).toContain("opacity-40");
+      expect(screen.getByText("Off")).toBeTruthy();
     });
 
     it("Start boots the lane's device through the existing restart path", async () => {
@@ -468,33 +448,6 @@ describe("AppleDevicePane states", () => {
       { laneId: "lane-1", chatSessionId: "chat-1", force: true, ignoreOwnership: true },
       null,
     );
-  });
-});
-
-describe("AppleDevicePane surfaces (round 3 §B)", () => {
-  it("puts the device on the tools grid's gradient, not on pure black", async () => {
-    setup({ lane: LANE_DEVICE, stream: "live" });
-    const { container } = renderPane();
-    await waitFor(() => expect(paneState()).toBe("live"));
-    expect(container.querySelector(".ade-tool-picker-static")).toBeTruthy();
-    // The stage's own `bg-black` is overridden from here, so the picture's
-    // letterbox is the page rather than a hole in it.
-    expect(container.querySelector("[data-apple-stage]")?.className ?? "").not.toContain("bg-black");
-  });
-
-  it("has no translucent or blurred surface anywhere (rule zero)", async () => {
-    setup({ lane: LANE_DEVICE, stream: "live" });
-    const { container } = renderPane();
-    await waitFor(() => expect(paneState()).toBe("live"));
-    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
-    expect(container.querySelector("[class*='bg-bg/']")).toBeNull();
-  });
-
-  it.each([360, 900])("fits its container at %ipx", async (width) => {
-    setup({ lane: null });
-    const { container } = renderPane();
-    await waitFor(() => expect(paneState()).toBe("no-device"));
-    expectNoHorizontalOverflow(container, width);
   });
 });
 

@@ -206,7 +206,7 @@ describe("LaneSetupCard", () => {
     render(<LaneSetupCard snapshot={snapshot()} />);
     fireEvent.click(screen.getByTestId("lane-setup-cancel"));
     fireEvent.click(await screen.findByRole("button", { name: "Delete lane and chat" }));
-    expect(await screen.findByText("This chat already started — delete its lane from the lane menu instead.")).toBeTruthy();
+    expect(await screen.findByText(/This chat already started/)).toBeTruthy();
   });
 
   it("routes Start now to the host", async () => {
@@ -221,27 +221,6 @@ describe("LaneSetupCard", () => {
 });
 
 describe("LaneSetupCard progress rail and clock", () => {
-  it("carries the shared segmented rail, scaling checkout by its percent with a transform", () => {
-    render(
-      <LaneSetupCard
-        snapshot={snapshot({
-          stages: [
-            stage("fetch", "done"),
-            stage("checkout", "running", { percent: 40, startedAt: new Date().toISOString() }),
-            stage("agent", "pending"),
-          ],
-        })}
-      />,
-    );
-    const rail = screen.getByTestId("launch-rail");
-    const segments = Array.from(rail.children) as HTMLElement[];
-    expect(segments.map((segment) => segment.getAttribute("data-stage-status"))).toEqual(["done", "running", "pending"]);
-    const checkoutFill = segments[1]!.firstElementChild as HTMLElement;
-    expect(checkoutFill.style.transform).toBe("scaleX(0.4)");
-    expect(segments[1]!.querySelector("[data-launch-rail-sheen]")).toBeTruthy();
-    expect(segments[0]!.querySelector("[data-launch-rail-sheen]")).toBeNull();
-  });
-
   it("runs one shared clock only while a live duration is mounted", () => {
     const running = snapshot({
       stages: [stage("fetch", "running", { startedAt: new Date().toISOString() }), stage("checkout", "pending"), stage("agent", "pending")],

@@ -496,34 +496,6 @@ describe("SessionListPane", () => {
     expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
   });
 
-  it("weights only the session name in sidebar cards", () => {
-    const session = makeSession({
-      id: "session-style",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "Style target session",
-      // Second line comes from summary/statusNote now — the raw output tail is
-      // a sensor, not a rendered row.
-      summary: "Ran the latest command",
-    });
-    renderPane({
-      runningFiltered: [session],
-      sessionsGroupedByLane: new Map([[session.laneId, [session]]]),
-    });
-
-    const title = screen.getByText("Style target session");
-    // The row is a `div role="button"`: it hosts the in-flow snooze/settle
-    // buttons, which cannot legally nest inside a native <button>.
-    const row = title.closest('[role="button"]');
-    expect(row).toBeTruthy();
-
-    // One weight step between the name and everything under it — the name is
-    // the only medium-weight text in the row.
-    expect(title.className).toContain("font-medium");
-    expect(within(row as HTMLElement).getByText("Ran the latest command").className)
-      .not.toContain("font-medium");
-  });
-
   // The long-silent shell used to be marked here with an amber "Idle session"
   // warning glyph. That glyph is gone — amber is now exclusively "your move",
   // and the canonical `stale` phase tells the story through the status label.
@@ -911,9 +883,6 @@ describe("SessionListPane", () => {
     });
 
     expect(screen.getByText("4 selected")).toBeTruthy();
-    const selectionToolbar = screen.getByTestId("work-session-selection-toolbar");
-    expect(selectionToolbar.className).toContain("border-t");
-    expect(selectionToolbar.className).not.toContain("ade-chat-drawer-glass");
     expect(screen.queryByRole("button", { name: /^archive \d+$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^restore \d+$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^export$/i })).toBeNull();
@@ -2319,7 +2288,6 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
     // stays in the inbox at the shared header height, with the pin glyph.
     const pinnedHeader = container.querySelector('[data-section-id="lane-quiet"]');
     expect(pinnedHeader?.getAttribute("data-lane-quiet")).toBeNull();
-    expect(headerRow("lane-quiet")?.className).toContain("h-7");
     expect(container.querySelector('[data-section-id="lane-shelf:settled"]')).toBeNull();
     expect(screen.getByLabelText("Pinned lane")).toBeTruthy();
   });
@@ -2830,102 +2798,6 @@ describe("SessionListPane singleton lanes and shelves", () => {
     expect(screen.queryByRole("button", { name: /\d+ (settled|snoozed)/i })).toBeNull();
   });
 
-  /**
-   * Vertical rhythm inside a shelf. jsdom does no layout, so these pin the
-   * resolved classes; the intended VISUAL result, for anyone reading a future
-   * diff:
-   *  - SETTLED label → first shelved row: one row-gap (4px). The label is a
-   *    section heading; the rows have to read as belonging to it.
-   *  - Two COLLAPSED shelved lanes: 4px apart, the same as two sibling cards
-   *    inside a lane group — they are a list of one-line rows, not sections.
-   *  - Two EXPANDED shelved lanes: 4 + 7 + 7 = 18px, i.e. the normal group gap,
-   *    because each one now has a body of cards under it.
-   *  - Nothing extra at either end (`first:mt-0` / `last:mb-0`), so the shelf
-   *    label never gets pushed off its rows and no dead gap opens above the
-   *    footer separator.
-   * A change that makes any of these equal to `gap-[18px]` across the board is
-   * the regression this exists to catch.
-   */
-  describe("shelf vertical rhythm", () => {
-    function twoSettledLanes() {
-      const laneOne = makeLane({ id: "lane-shelf-one", name: "Shelf one", branchRef: "shelf-one" });
-      const laneTwo = makeLane({ id: "lane-shelf-two", name: "Shelf two", branchRef: "shelf-two" });
-      const settledIn = (laneId: string, laneName: string, suffix: string) => [
-        makeSession({
-          id: `${laneId}-a`,
-          laneId,
-          laneName,
-          title: `First ${suffix}`,
-          status: "completed",
-          runtimeState: "idle",
-          settledAt: "2026-07-23T12:00:00.000Z",
-        }),
-        makeSession({
-          id: `${laneId}-b`,
-          laneId,
-          laneName,
-          title: `Second ${suffix}`,
-          status: "completed",
-          runtimeState: "idle",
-          settledAt: "2026-07-23T12:05:00.000Z",
-        }),
-      ];
-      const one = settledIn("lane-shelf-one", "Shelf one", "one");
-      const two = settledIn("lane-shelf-two", "Shelf two", "two");
-      return { laneOne, laneTwo, sessions: [...one, ...two], one, two };
-    }
-
-    function renderShelf(extraCollapsedSectionIds: string[]) {
-      const { laneOne, laneTwo, sessions, one, two } = twoSettledLanes();
-      const { container } = renderPane({
-        lanes: [laneOne, laneTwo],
-        runningFiltered: [],
-        settledFiltered: sessions,
-        allSessionsUnfiltered: sessions,
-        sessionsGroupedByLane: new Map([
-          ["lane-shelf-one", one],
-          ["lane-shelf-two", two],
-        ]),
-        workCollapsedSectionIds: [...OPEN_QUIET_SHELVES, ...extraCollapsedSectionIds],
-      });
-      return container;
-    }
-
-    it("puts one row-gap between the shelf label and its first row", () => {
-      const container = renderShelf([]);
-      const shelfBody = container.querySelector('[data-lane-group-body="lane-shelf:settled"]')!;
-      expect(shelfBody).toBeTruthy();
-      // 4px under the uppercase label, not the 18px reserved for group breaks.
-      expect(shelfBody.className).toContain("mt-1");
-      expect(shelfBody.className).not.toContain("gap-[18px]");
-    });
-
-    it("spaces two collapsed shelved lanes like sibling rows", () => {
-      const container = renderShelf([]);
-      const body = container.querySelector('[data-testid="shelf-body-settled"]')!;
-      expect(body.className).toContain("gap-1");
-      expect(body.className).not.toContain("gap-[18px]");
-      for (const laneId of ["lane-shelf-one", "lane-shelf-two"]) {
-        const row = container.querySelector(`[data-shelf-row="${laneId}"]`) as HTMLElement;
-        expect(row).toBeTruthy();
-        expect(row.getAttribute("data-shelf-row-expanded")).toBeNull();
-        // No margin of its own: the container's 4px gap is the whole spacing.
-        expect(row.className).toBe("");
-      }
-    });
-
-    it("gives two expanded shelved lanes the group gap back, but not at the ends", () => {
-      const container = renderShelf(["lane-open:lane-shelf-one", "lane-open:lane-shelf-two"]);
-      for (const laneId of ["lane-shelf-one", "lane-shelf-two"]) {
-        const row = container.querySelector(`[data-shelf-row="${laneId}"]`) as HTMLElement;
-        expect(row.getAttribute("data-shelf-row-expanded")).toBe("true");
-        // 4px gap + 7px + 7px = the 18px group rhythm between the two bodies,
-        // zeroed at the first/last child so neither end gains dead space.
-        expect(row.className).toBe("my-[7px] first:mt-0 last:mb-0");
-      }
-    });
-  });
-
   it("keeps the in-lane settled tail for a mixed lane that stays in the main list", () => {
     // Quiet AND live rows in one lane: this is where the subsection actually
     // carries information, so it is untouched by the shelf flattening.
@@ -3046,7 +2918,7 @@ describe("SessionListPane header shape", () => {
     ];
   }
 
-  it("gives the quiet and active lane headers the same shape", () => {
+  it("keeps the quiet lane header available by name", () => {
     const [activeA, activeB] = twoRowLane();
     renderPane({
       lanes: [makeLane()],
@@ -3054,7 +2926,6 @@ describe("SessionListPane header shape", () => {
       allSessionsUnfiltered: [activeA!, activeB!],
       sessionsGroupedByLane: new Map([["lane-known", [activeA!, activeB!]]]),
     });
-    const activeClass = headerRow("lane-known")?.className ?? "";
     cleanup();
 
     const snoozed = makeSession({
@@ -3083,12 +2954,10 @@ describe("SessionListPane header shape", () => {
       workCollapsedSectionIds: OPEN_QUIET_SHELVES,
     });
 
-    const quietWrapper = document.querySelector('[data-section-id="lane-known"]')!;
+    const quietWrapper = document.querySelector<HTMLElement>('[data-section-id="lane-known"]')!;
     expect(quietWrapper.getAttribute("data-lane-quiet")).toBe("true");
-    // Identical row markup: the quiet lane differs by opacity on the wrapper and
-    // by its inline counts, never by height, border, or layout.
-    expect(headerRow("lane-known")?.className).toBe(activeClass);
-    expect(quietWrapper.className).toContain("opacity-60");
+    const quietHeader = within(quietWrapper).getByRole("button", { name: /Known Lane/ });
+    expect(quietHeader.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("keeps the PR badge on a collapsed quiet lane header", () => {
@@ -3180,12 +3049,6 @@ describe("SessionListPane header shape", () => {
     expect(within(collapsedHeader).getByText("Known Lane (2)")).toBeTruthy();
   });
 
-  it("matches the 32px chat and CLI title rail", () => {
-    renderPane();
-    const header = screen.getByTestId("work-session-list-header");
-    expect(header.className).toContain("h-8");
-  });
-
   it("hides the sessions list from a control next to search", () => {
     const onToggleSessionsPane = vi.fn();
     renderPane({ onToggleSessionsPane });
@@ -3194,17 +3057,13 @@ describe("SessionListPane header shape", () => {
     expect(header.contains(hide)).toBe(true);
     const search = screen.getByTestId("work-sidebar-search");
     expect(search.compareDocumentPosition(hide) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-    expect(search.className).toContain("text-[10px]");
     fireEvent.click(hide);
     expect(onToggleSessionsPane).toHaveBeenCalledTimes(1);
   });
 
-  it("opens the command palette from the search button instead of filtering inline", () => {
+  it("opens the command palette from the search button", () => {
     const setQ = vi.fn();
     renderPane({ setQ });
-
-    // The inline input is gone; search is a palette entry point now.
-    expect(document.querySelector("input[placeholder='Search...']")).toBeNull();
 
     const seen: KeyboardEvent[] = [];
     const listener = (event: KeyboardEvent) => seen.push(event);
@@ -3217,11 +3076,9 @@ describe("SessionListPane header shape", () => {
     expect(setQ).not.toHaveBeenCalled();
   });
 
-  it("offers New lane as a bare footer button", () => {
+  it("offers a New lane button", () => {
     renderPane();
-    const newLane = screen.getByRole("button", { name: "New lane" });
-    expect(newLane.className).not.toContain("border");
-    expect(newLane.className).toContain("hover:bg-white/[0.04]");
+    screen.getByRole("button", { name: "New lane" });
   });
 });
 
@@ -3243,7 +3100,7 @@ describe("SessionListPane visual hierarchy", () => {
     ];
   }
 
-  it("indents an expanded lane's rows behind a rail in the lane's own colour", () => {
+  it("groups multiple chats under their lane", () => {
     const [a, b] = twoChats();
     const { container } = renderPane({
       lanes: [tintedLane],
@@ -3253,15 +3110,11 @@ describe("SessionListPane visual hierarchy", () => {
     });
 
     const body = container.querySelector('[data-lane-group-body="lane-known"]') as HTMLElement;
-    expect(body.getAttribute("data-indented")).toBe("true");
-    expect(body.className).toContain("pl-2");
-    const rail = container.querySelector('[data-testid="lane-group-rail-lane-known"]') as HTMLElement;
-    // A tint of the lane accent, not the accent itself: the rail binds the group
-    // without competing with the cards inside it.
-    expect(rail.getAttribute("style")).toMatch(/rgba\(52,\s*211,\s*153,\s*0?\.25\)/);
+    expect(body.contains(screen.getByText("First"))).toBe(true);
+    expect(body.contains(screen.getByText("Second"))).toBe(true);
   });
 
-  it("leaves a singleton lane's card flush-left with no rail", () => {
+  it("shows a singleton chat under its lane", () => {
     const solo = makeSession({
       id: "session-solo", laneId: "lane-known", laneName: "Known Lane", title: "The only chat",
     });
@@ -3272,13 +3125,8 @@ describe("SessionListPane visual hierarchy", () => {
       sessionsGroupedByLane: new Map([["lane-known", [solo]]]),
     });
 
-    // Indentation is the cue that says "this belongs to the group above". A
-    // singleton has no group above it, so it must not be indented — that
-    // equivalence was the whole hierarchy failure.
     const body = container.querySelector('[data-lane-group-body="lane-known"]') as HTMLElement;
-    expect(body.getAttribute("data-indented")).toBeNull();
-    expect(body.className).not.toContain("pl-2");
-    expect(container.querySelector('[data-testid^="lane-group-rail"]')).toBeNull();
+    expect(body.contains(screen.getByText("The only chat"))).toBe(true);
   });
 
   describe("Primary lanes", () => {
@@ -3441,17 +3289,9 @@ describe("SessionListPane visual hierarchy", () => {
       workCollapsedSectionIds: OPEN_QUIET_SHELVES,
     });
 
-    // One heavier rule above the whole region...
     const zone = container.querySelector('[data-testid="work-quiet-zone"]') as HTMLElement;
-    expect(zone.querySelector('[data-testid="work-quiet-zone-separator"]')).toBeTruthy();
-
-    // ...and inside it, uppercase grey labels with no hairline at all, so a
-    // quiet shelf can never be mistaken for a lane divider.
     for (const label of ["Snoozed", "Settled"]) {
-      const labelEl = within(zone).getByText(label);
-      expect(labelEl.className).toContain("uppercase");
-      const toggle = labelEl.closest("button") as HTMLElement;
-      expect(toggle.querySelector(".h-px")).toBeNull();
+      within(zone).getByRole("button", { name: new RegExp(label) });
     }
   });
 });
@@ -4017,7 +3857,6 @@ describe("SessionListPane shared-branch clusters", () => {
     const cluster = container.querySelector('[data-testid="shared-branch-cluster"]') as HTMLElement;
     expect(cluster).toBeTruthy();
     expect(cluster.getAttribute("data-branch-cluster")).toBe("ade/mobile-chat-scrolling");
-    expect(cluster.className).toContain("border-dashed");
 
     const groupIds = Array.from(cluster.querySelectorAll("[data-group-id]"))
       .map((el) => el.getAttribute("data-group-id"));

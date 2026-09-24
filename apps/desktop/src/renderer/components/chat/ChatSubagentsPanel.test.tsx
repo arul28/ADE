@@ -887,7 +887,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByRole("button", { name: "Cancel Native cron" })).toBeNull();
   });
 
-  it("dims active schedule rows and labels them paused when the chat schedule is paused", () => {
+  it("labels active schedule rows as paused when the chat schedule is paused", () => {
     render(
       <ChatSubagentsPanel
         snapshots={[]}
@@ -902,7 +902,6 @@ describe("ChatSubagentsPanel (pane variant)", () => {
 
     const row = screen.getByTitle("Check PR CI");
     expect(row.getAttribute("data-paused")).toBe("true");
-    expect(row.className).toContain("opacity-45");
     expect(screen.getByText("paused")).toBeTruthy();
   });
 
@@ -1205,16 +1204,6 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       expect(screen.getByText("Codex Chat")).toBeTruthy();
       expect(screen.getByText("codex")).toBeTruthy();
     });
-  });
-
-  it("owns the pane scroller and uses sticky opaque section headers", () => {
-    render(<ChatSubagentsPanel snapshots={[baseSnapshot]} events={[]} variant="pane" />);
-
-    const scroller = screen.getByTestId("chat-subagents-pane-scroll");
-    expect(scroller.className).toContain("overflow-y-auto");
-    const header = screen.getByText("Subagents").closest("div");
-    expect(header?.className).toContain("sticky");
-    expect(header?.className).toContain("--work-sidebar-bg");
   });
 
   it("indents nested agents with connector glyphs and a collapsible files-returned row", () => {

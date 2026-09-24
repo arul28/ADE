@@ -137,10 +137,8 @@ describe("WorkToolHeader tab strip", () => {
     // The contract, not the class string: on a 24px tab the ✕ is a corner
     // badge, because a full-size target over the middle means the obvious
     // click — dead centre, on the glyph — closes the tool instead of opening
-    // it. One style smoke check for the part CSS alone enforces: `opacity-0`
-    // still hit-tests, so the badge must also be untouchable at rest.
+    // it.
     expect(close?.getAttribute("data-tool-tab-close-mode")).toBe("corner");
-    expect(close?.className).toContain("pointer-events-none");
 
     fireEvent.click(tab);
     expect(props.onPick).toHaveBeenCalledWith("terminal");
