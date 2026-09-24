@@ -1588,9 +1588,12 @@ interval (clamped to 5 s–5 min, jittered ±10%). Each sweep:
 `checks_failing` fires once per red stretch. `pending`, `none`, and `not_run`
 do not arm another toast, so a newer attempt of the same check going red again
 on the same head stays quiet. The toast arms again when checks return to
-`passing` and then fail, or when the head commit changes and that commit is
-failing. A pull request that is already failing on the first poll after start
-is not announced.
+`passing` and then fail. A new head commit does not toast on the poll that
+first sees it — that poll can still be the previous commit's rollup — and
+toasts on a later poll if that same head is still failing. A missing head SHA
+keeps the last one we had. A pull request that is already failing on the first
+poll after start is not announced. A failed checks fetch does not store the
+new head SHA, so the old red result stays paired with the commit it belongs to.
 
 `prService.ingestGithubWebhook` does not emit one `prs-updated` for each
 delivery. The event carries the whole PR list (about 225 KB for 194 PRs), and a

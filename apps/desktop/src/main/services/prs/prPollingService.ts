@@ -61,16 +61,27 @@ function rememberChecksFailure(
   previous: ChecksFailureMemory | null,
   pr: PrSummary,
 ): { memory: ChecksFailureMemory; announce: boolean } {
-  const headSha = normalizeHeadSha(pr.headSha);
+  // A poll that omits the SHA must not forget the commit we already had.
+  // Otherwise A → (missing) → B looks like no change and a new red commit stays quiet.
+  const headSha = normalizeHeadSha(pr.headSha) ?? previous?.headSha ?? null;
   const headChanged = previous != null
     && previous.headSha != null
-    && headSha != null
-    && previous.headSha !== headSha;
+    && headSha !== previous.headSha;
   let announced = previous?.announced ?? false;
-  if (headChanged || pr.checksStatus === "passing") announced = false;
+  if (pr.checksStatus === "passing") announced = false;
+  // The first poll of a new head can still be carrying the previous commit's
+  // rollup: a webhook writes the SHA before checks are read, and a failed
+  // checks fetch keeps the old red. Announcing there attributes the old
+  // failure to the new commit, then suppresses the real one. Wait until a
+  // later poll still sees that same head failing.
+  if (headChanged) announced = false;
   const open = pr.state === "open" || pr.state === "draft";
-  const announce = open && previous != null && pr.checksStatus === "failing" && !announced;
-  if (pr.checksStatus === "failing") announced = true;
+  const announce = open
+    && previous != null
+    && !headChanged
+    && pr.checksStatus === "failing"
+    && !announced;
+  if (pr.checksStatus === "failing" && !headChanged) announced = true;
   return { memory: { headSha, announced }, announce };
 }
 

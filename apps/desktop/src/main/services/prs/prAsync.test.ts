@@ -786,9 +786,21 @@ describe("prPollingService", () => {
         announcements: 2,
       },
       {
-        name: "a new head commit arms the toast again",
+        name: "a new head commit arms the toast on the next poll, not the first sight",
         steps: [
           { checksStatus: "failing", headSha: "aaa" },
+          { checksStatus: "failing", headSha: "bbb" },
+          { checksStatus: "failing", headSha: "bbb" },
+        ],
+        announcements: 1,
+      },
+      {
+        name: "a missing head SHA keeps the last commit",
+        steps: [
+          { checksStatus: "failing", headSha: "aaa" },
+          { checksStatus: "pending", headSha: null },
+          { checksStatus: "failing", headSha: null },
+          { checksStatus: "failing", headSha: "bbb" },
           { checksStatus: "failing", headSha: "bbb" },
         ],
         announcements: 1,
