@@ -17,8 +17,8 @@ import { openExternalUrl } from "../../lib/openExternal";
 import {
   devinCloudErrorMessage,
   devinCloudRepoLabel,
+  devinCloudRepoMatchKey,
   formatDevinCloudAge,
-  repoMatchKey,
 } from "../../lib/devinCloudUtils";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
@@ -189,7 +189,7 @@ export function DevinCloudFleetModal({
         group.entries.push(entry);
         byLane.set(key, group);
       } else {
-        const key = (entry.session.repos[0] ? repoMatchKey(entry.session.repos[0]) : null) ?? "unknown";
+        const key = (entry.session.repos[0] ? devinCloudRepoMatchKey(entry.session.repos[0]) : null) ?? "unknown";
         const list = unlinked.get(key) ?? [];
         list.push(entry);
         unlinked.set(key, list);

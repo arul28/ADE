@@ -28,3 +28,18 @@ export function repoMatchKey(url: string | null | undefined): string {
   s = s.replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
   return s;
 }
+
+/**
+ * Devin reports a session's `repos` either as full URLs (sessions ADE
+ * launched, which send repo URLs at create) or as a bare `owner/repo` slug
+ * (sessions created on app.devin.ai). Normalize the slug form to the same
+ * host-qualified key a lane remote produces, so fleet matching does not
+ * silently miss rows whose repos arrive unqualified. Slugs are GitHub-scoped;
+ * other hosts always arrive qualified.
+ */
+export function devinCloudRepoMatchKey(repo: string | null | undefined): string {
+  const key = repoMatchKey(repo);
+  if (!key) return "";
+  const first = key.split("/")[0] ?? "";
+  return first.includes(".") ? key : `github.com/${key}`;
+}

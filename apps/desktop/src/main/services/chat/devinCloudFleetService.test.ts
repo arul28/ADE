@@ -40,6 +40,7 @@ function buildHarness(opts: {
   sessions: DevinCloudSessionSummary[];
   callerUserId?: string | null;
   withCallerDep?: boolean;
+  personalScope?: boolean;
 }) {
   const service = createDevinCloudFleetService({
     projectRoot: "/repo",
@@ -50,6 +51,7 @@ function buildHarness(opts: {
       : {
           getDevinCloudCallerUserId: async () => opts.callerUserId ?? null,
         }),
+    ...(opts.personalScope ? { callerIsListingOwner: () => true } : {}),
     laneService: {
       list: async () => [],
       importBranch: async () => { throw new Error("not used"); },
@@ -77,12 +79,25 @@ describe("devinCloudFleetService isMine", () => {
     expect(byId.get("s-nouser")?.isMine).toBe(false);
   });
 
-  it("reports isMine false when no caller identity is available (v1 key)", async () => {
+  it("reports isMine false when identity and listing scope are both unknown", async () => {
     const service = buildHarness({
       callerUserId: null,
       sessions: [session({ sessionId: "s1", userId: "user-abc" })],
     });
     const fleet = await service.getFleet({ force: true });
     expect(fleet.items[0]?.isMine).toBe(false);
+  });
+
+  it("marks every session Mine on a v1 personal-key (owner-scoped) listing", async () => {
+    const service = buildHarness({
+      callerUserId: null,
+      personalScope: true,
+      sessions: [
+        session({ sessionId: "s1", userId: "user-abc" }),
+        session({ sessionId: "s2", userId: null }),
+      ],
+    });
+    const fleet = await service.getFleet({ force: true });
+    expect(fleet.items.every((e) => e.isMine)).toBe(true);
   });
 });

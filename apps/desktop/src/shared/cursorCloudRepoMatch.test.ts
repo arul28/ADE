@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { repoMatchKey } from "./cursorCloudRepoMatch";
+import { devinCloudRepoMatchKey, repoMatchKey } from "./cursorCloudRepoMatch";
 
 describe("repoMatchKey", () => {
   it("normalizes https, scp-style ssh, and ssh:// URL forms to one key", () => {
@@ -28,5 +28,21 @@ describe("repoMatchKey", () => {
     expect(repoMatchKey(null)).toBe("");
     expect(repoMatchKey("")).toBe("");
     expect(repoMatchKey("   ")).toBe("");
+  });
+});
+
+describe("devinCloudRepoMatchKey", () => {
+  it("host-qualifies bare owner/repo slugs as github.com", () => {
+    expect(devinCloudRepoMatchKey("Owner/Repo")).toBe("github.com/owner/repo");
+  });
+
+  it("matches a lane remote against either reporting form", () => {
+    const laneKey = repoMatchKey("git@github.com:owner/repo.git");
+    expect(devinCloudRepoMatchKey("owner/repo")).toBe(laneKey);
+    expect(devinCloudRepoMatchKey("https://github.com/owner/repo")).toBe(laneKey);
+  });
+
+  it("leaves non-GitHub qualified remotes untouched", () => {
+    expect(devinCloudRepoMatchKey("https://gitlab.example.com/owner/repo")).toBe("gitlab.example.com/owner/repo");
   });
 });

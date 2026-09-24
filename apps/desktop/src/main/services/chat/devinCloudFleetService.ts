@@ -8,7 +8,7 @@ import type {
 } from "../../../shared/types/config";
 import type { DevinCloudListSessionsArgs } from "../ai/devinCloudClient";
 import type { LaneSummary } from "../../../shared/types/lanes";
-import { repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
+import { devinCloudRepoMatchKey, repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
 import {
   devinCloudAdeLaneId,
   devinCloudCreatedViaAde,
@@ -35,6 +35,11 @@ type FleetServiceDeps = {
   getDevinCloudSession?: (devinSessionId: string) => Promise<DevinCloudSessionSummary | null>;
   /** `user_id` of the credential's principal (`/v3/self`) — drives the "Mine" filter. */
   getDevinCloudCallerUserId?: () => Promise<string | null>;
+  /**
+   * True when the credential's listing is already owner-scoped (v1 personal
+   * keys) — those entries count as Mine even without a principal id.
+   */
+  callerIsListingOwner?: () => boolean;
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "importBranch">;
   /** ADE chat sessions already linked to a Devin cloud session. */
   listDevinCloudSessionLinks: () => Promise<SessionLink[]>;
@@ -103,9 +108,11 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
     }
   };
 
-  /** Local branch name ADE creates for a Devin session's pushed PR head. */
+  // The full normalized session id goes into the branch name — a shortened
+  // prefix could collide with another session's pull branch and the forced
+  // fetch would overwrite its commits.
   const devinBranchFor = (sessionId: string): string =>
-    `devin/${sessionId.trim().slice(0, 12).toLowerCase()}`;
+    `devin/${sessionId.trim().toLowerCase()}`;
 
   const buildEntries = async (includeArchived: boolean): Promise<DevinCloudFleetEntry[]> => {
     const [originKey, links, lanes] = await Promise.all([
@@ -155,6 +162,9 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
     const callerUserId = deps.getDevinCloudCallerUserId
       ? await deps.getDevinCloudCallerUserId().catch(() => null)
       : null;
+    // v1 personal-key listings are already scoped to the key owner — with no
+    // `/v3/self` principal to compare, ownership comes from the listing.
+    const listingIsPersonalScope = !callerUserId && (deps.callerIsListingOwner?.() === true);
 
     return listedItems.map((session): DevinCloudFleetEntry => {
       const link = linkByDevinId.get(session.sessionId) ?? null;
@@ -165,7 +175,7 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
         ?? null;
       const repoHit =
         Boolean(originKey)
-        && (session.repos ?? []).some((repo) => repoMatchKey(repo) === originKey);
+        && (session.repos ?? []).some((repo) => devinCloudRepoMatchKey(repo) === originKey);
       const createdViaAde = devinCloudCreatedViaAde(session.tags) || Boolean(link);
       const matchedBy: DevinCloudFleetEntry["matchedBy"] = link
         ? "session"
@@ -188,7 +198,10 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
         createdViaAde,
         adeLaneId: laneIdFromTag,
         matchedBy,
-        isMine: Boolean(callerUserId && session.userId && session.userId === callerUserId),
+        isMine: Boolean(
+          listingIsPersonalScope
+          || (callerUserId && session.userId && session.userId === callerUserId),
+        ),
       };
     });
   };

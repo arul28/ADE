@@ -969,6 +969,7 @@ import {
 import { createCursorCloudMirrorWatch } from "./cursorCloudMirrorWatch";
 import {
   DEVIN_CLOUD_EMPTY_TERMINAL_READ_LIMIT,
+  DEVIN_CLOUD_LATE_READ_INTERVAL_MS,
   DEVIN_CLOUD_MESSAGES_RETRY_ATTEMPTS,
   DEVIN_CLOUD_MESSAGES_RETRY_MS,
   DEVIN_CLOUD_PLACEHOLDER_NAME_READ_LIMIT,
@@ -46944,6 +46945,7 @@ export function createAgentChatService(args: {
   const devinCloudHydratedEventIds = new Map<string, Set<string>>();
   const devinCloudRemoteNameReadAt = new Map<string, number>();
   const devinCloudEmptyReads = new Map<string, number>();
+  const devinCloudEmptyReadAt = new Map<string, number>();
   const devinCloudPlaceholderNameReads = new Map<string, number>();
   const devinCloudDoneAnnounced = new Set<string>();
   /** Last seen message page cursor per ADE session — later polls only fetch the tail. */
@@ -47015,6 +47017,7 @@ export function createAgentChatService(args: {
     devinCloudHydratedEventIds.delete(sessionId);
     devinCloudRemoteNameReadAt.delete(sessionId);
     devinCloudEmptyReads.delete(sessionId);
+    devinCloudEmptyReadAt.delete(sessionId);
     devinCloudPlaceholderNameReads.delete(sessionId);
     devinCloudDoneAnnounced.delete(sessionId);
     devinCloudMessagesTailCursor.delete(sessionId);
@@ -47031,6 +47034,7 @@ export function createAgentChatService(args: {
     devinCloudHydratedEventIds.clear();
     devinCloudRemoteNameReadAt.clear();
     devinCloudEmptyReads.clear();
+    devinCloudEmptyReadAt.clear();
     devinCloudPlaceholderNameReads.clear();
     devinCloudDoneAnnounced.clear();
     devinCloudMessagesTailCursor.clear();
@@ -47353,8 +47357,10 @@ export function createAgentChatService(args: {
       if (items.length === 0 && liveStatus != null && !isDevinCloudSessionLive(liveStatus)) {
         const attempts = (devinCloudEmptyReads.get(managed.session.id) ?? 0) + 1;
         devinCloudEmptyReads.set(managed.session.id, attempts);
+        devinCloudEmptyReadAt.set(managed.session.id, Date.now());
       } else if (items.length > 0) {
         devinCloudEmptyReads.delete(managed.session.id);
+        devinCloudEmptyReadAt.delete(managed.session.id);
       }
 
       // Devin titles the session shortly after first output — after the read
@@ -47446,10 +47452,15 @@ export function createAgentChatService(args: {
     if (!devinSessionId) return "skipped";
     if (devinCloudHydrateInFlight.has(managed.session.id)) return "skipped";
     if (!getDevinCloudApiKey()) return "skipped";
-    // An empty terminal transcript stops polling after a few reads — nothing
-    // more will ever arrive.
+    // An empty terminal transcript only earns frequent reads for a while — but
+    // never zero. Devin can flush its final messages after the status flips,
+    // so past the bound the watch drops to a slow tail-read instead of
+    // stopping forever.
     if ((devinCloudEmptyReads.get(managed.session.id) ?? 0) >= DEVIN_CLOUD_EMPTY_TERMINAL_READ_LIMIT) {
-      return "skipped";
+      const lastReadAt = devinCloudEmptyReadAt.get(managed.session.id) ?? 0;
+      if (Date.now() - lastReadAt < DEVIN_CLOUD_LATE_READ_INTERVAL_MS) {
+        return "skipped";
+      }
     }
     try {
       const emitted = await attachAndHydrateDevinCloudChat({ managed, devinSessionId });
@@ -47681,6 +47692,7 @@ export function createAgentChatService(args: {
       // the pre-send session — a new turn revives it, so the mirror must
       // poll again.
       devinCloudEmptyReads.delete(managed.session.id);
+      devinCloudEmptyReadAt.delete(managed.session.id);
       // Record the exact delivered text next to the visible one — launch
       // directives and delivery lines make the remote echo differ from the
       // user_message the transcript shows, so dedupe needs both fingerprints.
@@ -47802,9 +47814,21 @@ export function createAgentChatService(args: {
     // v3 has no branch field — name the lane branch in the prompt the way
     // Devin's own handoff flow does, but only after the remote actually has it:
     // some callers (drawer, remote command) never push.
-    const laneBranch = laneInfo.branchRef?.trim();
+    const laneBranch = laneInfo.branchRef?.trim().replace(/^refs\/heads\//, "");
     let branchOnRemote = false;
     if (laneBranch) {
+      // The lane branch reaches git argv twice below (ls-remote pattern and
+      // the push refspec) — refuse anything git itself would not accept as a
+      // branch name instead of trusting the stored ref to be well-formed.
+      const refCheck = await runGit(["check-ref-format", "--branch", laneBranch], {
+        cwd: laneInfo.worktreePath,
+        timeoutMs: 5_000,
+      });
+      if (refCheck.exitCode !== 0) {
+        throw new Error(
+          `Lane '${trimmedLane}' has an unusable branch name ('${laneBranch}') — rename it before launching Devin Cloud.`,
+        );
+      }
       const headSha = (await runGit(["rev-parse", "HEAD"], {
         cwd: laneInfo.worktreePath,
         timeoutMs: 8_000,

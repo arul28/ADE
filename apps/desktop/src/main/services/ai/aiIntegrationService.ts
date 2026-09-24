@@ -1652,6 +1652,13 @@ export function createAiIntegrationService(args: {
     return devinCloudCaller.userId;
   };
 
+  // v1 personal-key listings only carry the key owner's sessions — the fleet
+  // can treat its rows as Mine without a `/v3/self` principal to compare.
+  const devinCloudListingIsPersonalScope = (): boolean => {
+    const apiKey = getStoredApiKey("devin");
+    return apiKey != null && detectDevinAuthMode(apiKey) === "v1";
+  };
+
   const getDevinCloudAuthStatus = async (): Promise<DevinCloudAuthStatus> => {
     const apiKey = getStoredApiKey("devin");
     if (!apiKey) {
@@ -2613,6 +2620,7 @@ export function createAiIntegrationService(args: {
     unarchiveDevinCloudSession,
     requireDevinCloudApiKey,
     getDevinCloudCallerUserId,
+    devinCloudListingIsPersonalScope,
 
     getAvailabilityAsync,
     resolveModelForTask,

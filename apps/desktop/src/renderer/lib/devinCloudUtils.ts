@@ -1,11 +1,11 @@
 // Shared helpers for Devin Cloud renderer components.
 
 import { stripElectronErrorWrapper } from "../../shared/codedError";
-import { repoMatchKey } from "../../shared/cursorCloudRepoMatch";
+import { devinCloudRepoMatchKey, repoMatchKey } from "../../shared/cursorCloudRepoMatch";
 import type { DevinCloudFleetStatus, DevinCloudMode } from "../../shared/types/config";
 import { formatCursorCloudAge } from "./cursorCloudUtils";
 
-export { repoMatchKey };
+export { devinCloudRepoMatchKey, repoMatchKey };
 
 export const DEVIN_BLUE = "#2563EB";
 

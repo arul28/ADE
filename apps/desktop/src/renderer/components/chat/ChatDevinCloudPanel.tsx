@@ -18,6 +18,7 @@ import {
   devinCloudRepoLabel,
   devinCloudStatusToneClass,
   formatDevinCloudAge,
+  devinCloudRepoMatchKey,
   repoMatchKey,
 } from "../../lib/devinCloudUtils";
 import { cn } from "../ui/cn";
@@ -124,7 +125,7 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
   const repoEntries = useMemo(() => {
     if (!repoKey) return entries;
     return entries.filter((entry) =>
-      entry.session.repos.some((repo) => repoMatchKey(repo) === repoKey),
+      entry.session.repos.some((repo) => devinCloudRepoMatchKey(repo) === repoKey),
     );
   }, [entries, repoKey]);
 

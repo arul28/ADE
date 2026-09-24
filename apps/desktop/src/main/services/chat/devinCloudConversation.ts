@@ -20,6 +20,13 @@ export const DEVIN_CLOUD_REMOTE_NAME_READ_TTL_MS = 60_000;
 export const DEVIN_CLOUD_EMPTY_TERMINAL_READ_LIMIT = 3;
 
 /**
+ * Once the empty-read bound is hit, the mirror still re-checks at this
+ * interval — a terminal session can flush its final messages after the
+ * status already flipped, and a permanent stop would drop them.
+ */
+export const DEVIN_CLOUD_LATE_READ_INTERVAL_MS = 60_000;
+
+/**
  * Event-driven name reads a still-unnamed cloud chat may make on top of the
  * TTL rule — Devin titles a session shortly after its first output lands.
  */
