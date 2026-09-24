@@ -9642,7 +9642,7 @@ export function createAgentChatService(args: {
    * ready;` in the same launch. Forget it and the env silently ships without
    * `ADE_BROWSER_ACTOR_TOKEN` on daemon-hosted chats — an omission that
    * compiles and reviews clean. The "browser actor capability on a
-   * daemon-hosted chat" tests in `agentChatService.test.ts` cover each launch.
+   * daemon-hosted chat" tests in `agentChatServiceHostPolicy.test.ts` cover each launch.
    */
   const prepareBrowserActorCapability = (
     managed: ManagedChatSession,

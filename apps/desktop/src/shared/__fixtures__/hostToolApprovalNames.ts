@@ -12,7 +12,7 @@
  * (https://github.com/arul28/ADE/issues/1208).
  *
  * Shared by `permissionPolicy.test.ts`, which asserts it against the policy
- * evaluator, `claudeToolGate.test.ts`, and `agentChatService.test.ts`, which
+ * evaluator, `claudeToolGate.test.ts`, and `agentChatServiceHostPolicy.test.ts`, which
  * asserts it end to end through Claude's `canUseTool`. One list, so the layers
  * cannot be tested against different cases.
  */
