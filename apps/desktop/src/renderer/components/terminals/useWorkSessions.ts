@@ -59,6 +59,7 @@ import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 import { seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
+import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
 import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
 import { mergeChatLaunchRows, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
 import { subscribeChatLaunchClosed } from "../chat/launch/chatLaunchDraftRestore";
@@ -2252,6 +2253,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {
+    // Every caller is a delete: the session record is gone for good, so its
+    // companion UI record goes with it rather than accumulating until the
+    // storage prune evicts a live chat's state instead.
+    clearChatCompanionUiState(sessionId);
     setHostSessions((prev) => prev.filter((session) => session.id !== sessionId));
   }, []);
 

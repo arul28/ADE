@@ -1,9 +1,11 @@
 @import "tailwindcss";
-/* Tailwind v4 ignores `tailwind.config.cjs` unless the CSS asks for it. Without
-   this line every token utility in that config — `bg-surface`, `text-fg`,
-   `border-border`, `bg-surface-overlay` … — compiled to NOTHING, so panels had
-   no background, text inherited its colour and dialogs were see-through. Class
-   names in tests still passed, because jsdom computes no styles. */
+/* The config, named rather than found, and load-bearing today.
+   `@tailwindcss/postcss` 4.2.1 does NOT auto-detect `tailwind.config.cjs`
+   beside package.json. I compiled this stylesheet both ways: with the line,
+   765,034 bytes and `.bg-surface`, `.text-fg` and `.border-border` all
+   present; without it, 702,484 bytes and none of the three emitted. Every
+   token utility then compiles to nothing and every panel that uses one
+   renders see-through. Do not remove this line. */
 @config "../../tailwind.config.cjs";
 
 [data-theme="dark"] .editor-target-logo--invert-in-dark {
@@ -277,6 +279,11 @@
   --color-accent: #049068;
   --color-accent-fg: #ffffff;
   --color-accent-muted: rgba(4, 144, 104, 0.10);
+  /* Light never defined these, so every light surface that reached for them —
+     the tools picker backdrop among them — silently got the DARK theme's
+     violets on a green page. */
+  --color-accent-bright: #4FC49B;
+  --color-accent-deep: #0E9A72;
   --color-surface-raised: #ffffff;
   --color-surface-recessed: #eae7e2;
   --color-surface-overlay: rgba(255, 255, 255, 0.92);
@@ -2500,49 +2507,115 @@ button, [role="button"] {
     var(--color-surface);
 }
 
-/* The card. Now that there is something behind it, the card is a piece of
-   glass rather than a flat rectangle: a translucent fill, one
-   hairline, and nothing else at rest. No `backdrop-filter` — six blur regions
-   over a 30fps animating canvas re-blur on every backdrop frame and spend back
-   everything the backdrop's own budget (DPR 1, 600k px, 30fps) saves. The
-   measured 82% fill is what carries the violet through and holds contrast.
-   Hover is the only place this page spends
-   colour — a 2px lift, the hairline to 45% accent, and one soft accent glow
-   over 160ms. Press settles back to a 0.99 scale, so the card gives under the
-   cursor rather than jumping out from under it. */
+/* The card: a piece of glass standing on the gradient, not a flat rectangle
+   punched out of it.
+
+   Three layers, and each one is there for a reason the flat version could not
+   cover. The FILL is a translucent `--color-card` at 82% (84% under the
+   cursor): enough to hold a 12px muted line at 4:1 over the brightest spot of
+   the mesh it can sit on, with no scrim between the two. The INNER hairline
+   (`inset 0 0 0 1px`) is the accent at low alpha:
+   it is what makes the edge read as lit from the gradient rather than drawn on
+   top of it, and it costs one shadow with no blur. The OUTER hairline is still
+   the border, kept neutral so the two do not fight.
+
+   Still no `backdrop-filter`. Seven blur regions over a 30fps animating canvas
+   re-blur on every backdrop frame and spend back everything the backdrop's own
+   budget (DPR 1, 600k px, 30fps) saves — the translucent fill plus the inner
+   accent edge buys the same read for one paint.
+
+   Hover is where this page spends colour: a 3px lift, the border and the inner
+   edge up to a real accent, and one soft accent glow over 160ms. Press settles
+   back to a 0.99 scale, so the card gives under the cursor rather than jumping
+   out from under it. */
+/* The hover glow lives on `::after`, not on this box-shadow, and the transition
+   list below deliberately does not name `box-shadow`. A transitioned shadow is
+   repainted on the main thread on every frame of the 160ms — sixteen cards deep,
+   over a live shader canvas — while an `opacity` transition is one Chromium
+   promotes and runs on the compositor. The resting shadow is still a shadow; it
+   just never animates. */
 .ade-tool-card {
-  border-radius: 10px;
-  border: 1px solid rgb(255 255 255 / 0.12);
-  /* 82%, not the 50-ish a "glass" card wants to be: the mesh peaks at a
-     luminance of ~118 and a card thin enough to show that peak takes its own
-     12px muted line down to a 2.4:1 contrast. 82% keeps every line at or above
-     4:1 over the brightest spot the backdrop can produce, and the blur still
-     carries the violet through. */
+  position: relative;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 12%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.06),
+    0 1px 2px -1px rgb(0 0 0 / 0.4);
   transition:
     transform 160ms ease-out,
     background-color 160ms ease-out,
-    border-color 160ms ease-out,
-    box-shadow 160ms ease-out;
+    border-color 160ms ease-out;
+}
+
+.ade-tool-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.1),
+    0 10px 26px -12px color-mix(in srgb, var(--color-accent) 60%, transparent);
+  transition: opacity 160ms ease-out;
+}
+
+[data-theme="light"] .ade-tool-card::after {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 26%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.6),
+    0 10px 26px -14px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 [data-theme="light"] .ade-tool-card {
   border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-card) 84%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 10%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.5),
+    0 1px 2px -1px rgb(15 23 42 / 0.08);
 }
 
 .ade-tool-card:not(:disabled):hover,
 .ade-tool-card:not(:disabled)[data-highlighted="true"] {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
   background: color-mix(in srgb, var(--color-card) 90%, transparent);
-  box-shadow: 0 8px 22px -12px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.ade-tool-card:not(:disabled):hover::after,
+.ade-tool-card:not(:disabled)[data-highlighted="true"]::after {
+  opacity: 1;
+}
+
+/* The glyph, tinted at rest. `--color-accent` at full strength would make the
+   icon compete with the label, and `text-muted-fg` on a coloured gradient reads
+   as a disabled control — 62% of the accent mixed into the muted foreground
+   sits between the two, and hover takes it the rest of the way. */
+.ade-tool-card-icon {
+  color: color-mix(in srgb, var(--color-accent) 62%, var(--color-muted-fg));
 }
 
 /* Press: the lift collapses and the card takes a hair off its own size. */
 .ade-tool-card:not(:disabled):active {
   transform: translateY(-1px) scale(0.99);
   background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-card,
+  .ade-tool-card::after {
+    transition: none;
+  }
+
+  .ade-tool-card:not(:disabled):hover,
+  .ade-tool-card:not(:disabled)[data-highlighted="true"],
+  .ade-tool-card:not(:disabled):active {
+    transform: none;
+  }
 }
 
 /* The last-opened tool is `aria-current` but carries NO fill: the picker is a
@@ -2558,7 +2631,8 @@ button, [role="button"] {
 /* Motion off: the fill and hairline still answer the cursor, the geometry does
    not. A lift is the part of this that moves. */
 @media (prefers-reduced-motion: reduce) {
-  .ade-tool-card {
+  .ade-tool-card,
+  .ade-tool-card::after {
     transition: none;
   }
 

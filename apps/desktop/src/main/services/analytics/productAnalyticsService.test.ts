@@ -1888,6 +1888,38 @@ describe("product analytics producers", () => {
     });
   });
 
+  it("keeps the three Mac Desktop outcomes and drops anything that identifies the screen", () => {
+    for (const outcome of ["started", "agent_drove", "recorded"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "mac_desktop",
+        outcome,
+      })).toEqual({ feature: "work", action: "mac_desktop", outcome });
+    }
+
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "mac_desktop",
+      outcome: "watched",
+    })).not.toHaveProperty("outcome");
+
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "mac_desktop",
+      outcome: "started",
+      lane_id: "lane-1",
+      chat_session_id: "chat-1",
+      app_name: "TextEdit",
+      path: "/tmp/clip.mp4",
+      window_title: "Untitled",
+      error: "the encoder failed",
+    })).toEqual({
+      feature: "work",
+      action: "mac_desktop",
+      outcome: "started",
+    });
+  });
+
   it("keeps every Work tool id through the sanitizer and nothing that is not one", () => {
     // The pane is a picker plus one active tool, so the closed id set IS the
     // dimension. `WORK_TOOL_IDS` is the source of truth; a tool added there and

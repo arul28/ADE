@@ -20,6 +20,7 @@ export const adeBundledAgentSkills = [
   "ade-harnesses",
   "ade-ios-simulator",
   "ade-app-control",
+  "ade-desktop",
   "ade-browser",
   "ade-pr-workflows",
   "ade-lanes-git",

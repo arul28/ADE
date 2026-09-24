@@ -107,6 +107,27 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // aggregator at all.
   "workTools.getLaneState",
   "workTools.readObservationPreview",
+  // Mac Desktop over the sync socket. `getStatus` and the two
+  // stream-subscription calls are read-only and viewer-allowed; `start`/`stop`
+  // create and destroy a host display, so they are controller-only like the
+  // takeover calls below. The phone calls `start` from its Off card, and the
+  // takeover calls when the user takes control; it never calls `stop`.
+  // Optional because a host with no Mac Desktop service — or a chat-only
+  // runtime — registers none of them, and clients then keep the still-image
+  // fallback.
+  "macDesktop.getStatus",
+  "macDesktop.start",
+  "macDesktop.stop",
+  "macDesktop.streamSubscribe",
+  "macDesktop.streamUnsubscribe",
+  // Web takeover. Controller-only (never viewer-allowed), and advertised as
+  // optional so a phone on an older build — or the phone at all, which is
+  // view-only by product decision — simply never calls them. A host with no
+  // Mac Desktop service registers none of them.
+  "macDesktop.takeControl",
+  "macDesktop.returnControl",
+  "macDesktop.renewLease",
+  "macDesktop.input",
   // Apple device environment. Optional in both directions: an older brain
   // simply omits them and the phone's Simulator card says the Mac needs an
   // update, rather than a version mismatch flipping the phone to "limited".

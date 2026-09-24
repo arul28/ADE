@@ -1,4 +1,3 @@
-// Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge, take theirs.
 import type { ReactElement } from "react";
 import { ArrowsInSimple, ArrowsOutSimple, PictureInPicture } from "@phosphor-icons/react";
 import type { WorkLiveScreenTool } from "../../state/workLiveCardState";
@@ -32,8 +31,9 @@ export function WorkToolPreviewControls({
   tool,
   chatSessionId,
   /**
-   * False where the surface already owns a maximize control — two buttons for
-   * one state is one too many.
+   * False where the surface already owns a maximize control — the Mac Desktop
+   * row's full-screen button is the same toggle, and two buttons for one state
+   * is one too many.
    */
   showMaximize = true,
   /** Distinguishes the pane's row from full screen's in the same tree. */

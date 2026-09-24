@@ -985,7 +985,7 @@ struct WorkChatSessionView: View {
         ForEach(laneTools.chips) { chip in
           WorkLaneToolChipView(chip: chip) {
             ADEHaptics.light()
-            laneTools.open(chip)
+            laneTools.open(chip, macDesktopStream: syncService.supportsMacDesktopStream)
           }
         }
       }

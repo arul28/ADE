@@ -710,6 +710,20 @@ ade --socket ios-sim fill-element --identifier email-field --value ada@example.c
 ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text   # --gone waits for it to leave
 ade --socket ios-sim assert-visible --label "Order confirmed" --text
 ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text  # screenshot, elements, and log rows as proof
+ade mac-desktop status --text                         # host support, this lane's display, windows, and lease
+ade mac-desktop start --text                          # create the lane's virtual display (macOS runtime host only)
+ade mac-desktop stop --text                           # quit the apps it opened; prints which quit and which stayed on your screen
+ade mac-desktop show --text                           # reveal it in the tools pane; --floating for the card over the chat
+ade mac-desktop release --window <id> --text          # give a window back; omit --window to release the lane's windows
+ade mac-desktop open <app|path|url> --text            # launch onto the display; args after -- belong to the app
+ade mac-desktop observe --text                        # screenshot + numbered elements
+ade mac-desktop click <handle> --text                 # also: type, press, scroll, drag, wait
+ade mac-desktop type "reddit" --submit --text         # --submit presses Return after the text
+ade mac-desktop press return --cmd --text             # modifiers: --cmd --shift --alt --control
+ade mac-desktop record start --caption "flow" --keep-idle --max-seconds 1200 --text
+ade mac-desktop record stop --text                    # duration, real time, and idle cut
+ade mac-desktop proof --caption "Login works" --text  # capture, re-observe, and file proof
+ade mac-desktop actions --text                        # full mac_desktop action inventory
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text

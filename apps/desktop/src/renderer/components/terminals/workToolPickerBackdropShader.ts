@@ -82,7 +82,10 @@ float noise(vec2 p) {
 float fbm(vec2 p) {
   float v = 0.0;
   float a = 0.5;
-  for (int i = 0; i < 4; i++) {
+  // Three octaves, not four: the warp moves the field by a fraction of a
+  // unit, so a fourth octave adds detail finer than this soft mesh can show,
+  // at a quarter more noise cost per pixel.
+  for (int i = 0; i < 3; i++) {
     v += a * noise(p);
     p = p * 2.03 + vec2(17.0, 9.2);
     a *= 0.5;
@@ -244,16 +247,53 @@ export const UNIFORMS = {
   timeScale: -0.34,
 } as const;
 
-/** DPR 1, always. This is a soft gradient; it has nothing to resolve. */
+/**
+ * DPR 1, always — and then `BACKDROP_RENDER_SCALE` under that. This is a soft
+ * gradient; it has nothing to resolve.
+ */
 export const BACKDROP_MAX_DPR = 1;
 /**
- * The hard pixel ceiling. Roughly a 1000×600 pane at DPR 1 — past that the
- * canvas keeps its CSS size and renders fewer pixels, stretched. A mesh this
- * soft cannot show the difference, and the fragment cost is linear in pixels.
+ * The hard pixel ceiling, applied AFTER `BACKDROP_RENDER_SCALE` — so it only
+ * bites on a pane past roughly 1450×1000 CSS pixels, where the canvas keeps its
+ * CSS size and renders fewer pixels, stretched. A mesh this soft cannot show the
+ * difference, and the fragment cost is linear in pixels.
  */
-export const BACKDROP_PIXEL_BUDGET = 600_000;
+export const BACKDROP_PIXEL_BUDGET = 300_000;
+
+/**
+ * Render at 60% of CSS pixels and let the compositor scale the result up.
+ *
+ * The mesh is a sum of gaussian lobes under a small warp: its highest
+ * spatial frequency is measured in tens of pixels, so a drawing buffer at 0.6×
+ * carries every feature it has and the upscale is free — it is the same bilinear
+ * blit the canvas was already doing. Fragment cost is linear in pixels, so this
+ * is 36% of the shader's former per-frame work at every pane size.
+ */
+export const BACKDROP_RENDER_SCALE = 0.6;
 /** 30 fps. Drift this slow gains nothing from 60, let alone from 240. */
 export const BACKDROP_FRAME_MS = 1000 / 30;
+/**
+ * 12 fps while nothing is chasing the cursor, and then nothing at all.
+ *
+ * The 30 fps ceiling exists for the swirl, which has to keep up with a pointer;
+ * the drift underneath it moves a fraction of a pixel a second — see the slowed
+ * `timeScale` — and cannot be told apart at 12. Idle is the state the picker is
+ * in essentially all the time, so this is 60% of the mesh's cost back for a
+ * difference nobody can see. The moment the pointer touches the canvas the loop
+ * steps back up to `BACKDROP_FRAME_MS`.
+ */
+export const BACKDROP_IDLE_FRAME_MS = 1000 / 12;
+
+/**
+ * After this long with the pointer somewhere else, stop drawing entirely.
+ *
+ * The canvas keeps its last composited frame — nothing blanks, nothing fades —
+ * and the renderer stops waking up at all. A pointer move over the canvas or the
+ * window regaining focus starts the drift again. Twenty seconds is long enough
+ * that a user reading the cards never sees it happen, and short enough that a
+ * picker left open behind a terminal costs nothing.
+ */
+export const BACKDROP_IDLE_FREEZE_MS = 20_000;
 
 /**
  * The drawing-buffer size for a given CSS box — the whole size/budget policy,
@@ -269,8 +309,9 @@ export function resolveBackdropSize(
     Math.max(Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1, 0.5),
     BACKDROP_MAX_DPR,
   );
-  const rawWidth = Math.max(1, Math.round((Number.isFinite(cssWidth) ? cssWidth : 0) * dpr));
-  const rawHeight = Math.max(1, Math.round((Number.isFinite(cssHeight) ? cssHeight : 0) * dpr));
+  const scaled = dpr * BACKDROP_RENDER_SCALE;
+  const rawWidth = Math.max(1, Math.round((Number.isFinite(cssWidth) ? cssWidth : 0) * scaled));
+  const rawHeight = Math.max(1, Math.round((Number.isFinite(cssHeight) ? cssHeight : 0) * scaled));
   const scale = Math.min(1, Math.sqrt(Math.max(1, budget) / (rawWidth * rawHeight)));
   // Floor, not round: rounding both axes up can carry the product a few hundred
   // pixels back over the ceiling it was just scaled under.

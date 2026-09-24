@@ -217,6 +217,33 @@ export function openExternalUrl(url: string | undefined | null): void {
   }
 }
 
+/**
+ * `openExternalUrl`, but the caller learns whether the handoff worked.
+ *
+ * A sign-in flow that starts the browser has to know: with the browser open the
+ * in-app prompt is a confirmation, and with it closed the prompt has to carry
+ * the URL itself. `openExternalUrl` deliberately swallows a failed handoff,
+ * which is right for a clicked link and wrong here.
+ */
+export async function tryOpenExternalUrl(url: string | undefined | null): Promise<boolean> {
+  if (!url) return false;
+  const bridge =
+    typeof window !== "undefined" ? window.ade?.app?.openExternal : undefined;
+  if (bridge) {
+    try {
+      await bridge(url);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return true;
+  }
+  return false;
+}
+
 // Warm the preference as soon as the renderer loads, so the first link click
 // already has the right answer rather than the default.
 if (typeof window !== "undefined") {

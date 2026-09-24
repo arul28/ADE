@@ -1820,11 +1820,46 @@ describe("ADE CLI", () => {
 
     expect(
       machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent"),
-    ).toBe("build hash changed");
+    ).toMatch(/^build hash changed \((version, )?role ok\)$/);
     expect(
       machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent", {
         enforceBuildCompatibility: false,
       }),
+    ).toBeNull();
+  });
+
+  it("prints a timed-out mac-desktop wait as nothing matched, not as a key sent", () => {
+    // A wait result carries `waitedMs` and no `action`.
+    const text = formatOutput(
+      { ok: false, waitedMs: 4313 },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "mac-desktop-action",
+    );
+    expect(text).toContain("(no element matched)");
+    expect(text).not.toContain("sent to the focused window");
+  });
+
+  it("names every failed runtime check at once, not only the first", () => {
+    const runtimeInfo = {
+      version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+      buildHash: "other-build",
+      defaultRole: "agent" as const,
+      packageChannel: null,
+      projectRoot: null,
+      pid: 123,
+      uptimeMs: null,
+    };
+
+    const reason = machineRuntimeMismatchReason(runtimeInfo, "expected-build", "cto");
+
+    expect(reason).toContain("build hash changed");
+    expect(reason).toContain("default role agent cannot serve CLI role cto");
+    expect(
+      machineRuntimeMismatchReason(
+        { ...runtimeInfo, buildHash: "expected-build", defaultRole: "cto" },
+        "expected-build",
+        "cto",
+      ),
     ).toBeNull();
   });
 
@@ -14786,6 +14821,15 @@ describe("ADE CLI", () => {
     expect(showArgs(["apple", "show"]).args).toEqual({ surface: "apple", chatSessionId: "chat-env" });
     expect(showArgs(["apple", "show", "--floating"]).args)
       .toEqual({ surface: "floating-apple", chatSessionId: "chat-env" });
+
+    // The Mac Desktop surfaces, and `mac-desktop show` as the same call.
+    expect(showArgs(["ui", "show", "mac-desktop"]).args).toEqual({ surface: "mac-desktop", chatSessionId: "chat-env" });
+    expect(showArgs(["ui", "show", "floating-mac-desktop"]).args.surface).toBe("floating-mac-desktop");
+    expect(showArgs(["ui", "show", "desk"]).args.surface).toBe("mac-desktop");
+    expect(showArgs(["mac-desktop", "show", "--lane", "lane-2"]).args)
+      .toEqual({ surface: "mac-desktop", chatSessionId: "chat-env", laneId: "lane-2" });
+    expect(showArgs(["mac-desktop", "show", "--floating"]).args)
+      .toEqual({ surface: "floating-mac-desktop", chatSessionId: "chat-env" });
 
     // Exit 1 when nothing was shown, so a script cannot read it as success.
     const { plan } = showArgs(["ui", "show", "apple"]);

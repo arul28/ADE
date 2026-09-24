@@ -92,6 +92,7 @@ export function AppControlToolbar({
   pickerOpen,
   onPickerOpenChange,
   renderOverflow,
+  previewControls,
 }: {
   appLabel: string;
   hasSession: boolean;
@@ -121,6 +122,8 @@ export function AppControlToolbar({
   pickerOpen: boolean;
   onPickerOpenChange: (open: boolean) => void;
   renderOverflow: (close: () => void) => ReactNode;
+  /** The pane's own preview/maximize controls, drawn at the far right. */
+  previewControls?: ReactNode;
 }) {
   const segments = windows.slice(0, MAX_WINDOW_SEGMENTS);
   const overflowWindows = windows.slice(MAX_WINDOW_SEGMENTS);
@@ -443,6 +446,8 @@ export function AppControlToolbar({
         >
           {renderOverflow}
         </AppControlMenu>
+
+        {previewControls}
       </div>
 
       {/*

@@ -18,14 +18,13 @@ import tailwind from "@tailwindcss/postcss";
  *
  * So this compiles the real stylesheet and fails on a dead colour class.
  *
- * On the `@config` line: the mac-desktop lane measured it as a no-op and read
- * it as v3 compatibility. On THIS lane it is not. Compiling this stylesheet
- * through `@tailwindcss/postcss` 4.1 with and without the directive gives
- * 742,847 bytes against 681,927, and `bg-surface`, `bg-surface-overlay`,
- * `text-fg` and `border-border` are emitted only with it. The likely reason
- * the two lanes disagree is that their "without" run still carried the
- * directive after they merged it. Either way this test is the arbiter: it
- * fails if the vocabulary stops compiling, whatever the reason.
+ * On the `@config` line: it is load-bearing, and an earlier note here said the
+ * opposite. That note came from a probe that compiled both variants in one
+ * process under the same `from` path, and `@tailwindcss/postcss` caches per
+ * path, so it measured the first compile twice. Compiled as separate builds
+ * under 4.2.1: 765,034 bytes with the line and 702,484 without, and
+ * `.bg-surface`, `.bg-surface-overlay`, `.text-fg` and `.border-border` are
+ * emitted only with it. Without `@config` the whole vocabulary is dead.
  */
 describe("tailwind token wiring", () => {
   const desktopRoot = path.resolve(__dirname, "..", "..");
@@ -67,39 +66,36 @@ describe("tailwind token wiring", () => {
 
     /**
      * Only classes in this product's own colour vocabulary. A name counts when
-     * it is a token, or shares a family with one — `bg-surface` is in scope
-     * because `surface-raised` exists, which is the case that shipped broken.
-     * Everything else in a class string (`border-box` in an inline style, a
-     * stock Tailwind colour) is somebody else's problem and is skipped.
+     * it is a token, shares a family with one, or has a `--color-<name>` of its
+     * own in index.css. That last rule matters: a colour the stylesheet defines
+     * but the config never registers is dead in exactly the same way, and the
+     * family rule alone cannot see it — `surface` was defined in both themes
+     * and absent from the config, so `bg-surface` compiled to nothing while
+     * this guard stayed green. Everything else in a class string (`border-box`
+     * in an inline style, a stock Tailwind colour) is skipped.
      */
-    /*
-     * A name is also ours when index.css defines `--color-<name>` for it, even
-     * if the config never registered it. That is the blind spot the family
-     * rule alone leaves: `text-success` in cto/shared/TimelineEntry.tsx is
-     * backed by `--color-success` but has no token, so nothing compiles and
-     * a token-family check cannot see it — the class looks like somebody
-     * else's stock colour.
-     */
-    const declaredVariables = new Set(
+    const defined = new Set(
       [...css.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((match) => match[1]!),
     );
     const ours = (name: string): boolean =>
-      declaredVariables.has(name)
+      defined.has(name)
       || tokens.some((token) => token === name || token.startsWith(`${name}-`) || name.startsWith(`${token}-`));
 
     const dead = new Map<string, Set<string>>();
     for (const file of files) {
-      for (const literal of fs.readFileSync(file, "utf8").matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`/g)) {
+      const source = fs.readFileSync(file, "utf8");
+      for (const literal of source.matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`/g)) {
         const text = literal[1] ?? literal[2] ?? literal[3] ?? "";
         if (!/\b(?:bg|text|border|ring)-/.test(text)) continue;
-        // `key="bg-command-details"` is a React key, not a class. Only look at
-        // literals that sit in a class position.
-        if (new RegExp(`(?:key|id|data-[a-z-]+)=["'\`]${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(fs.readFileSync(file, "utf8"))) continue;
+        // A React `key`, an `id` or a `data-*` value is not a class string.
+        // ChatSubagentsPanel spells `key="bg-command-details"`, which reads as
+        // a dead class and is not.
+        if (/\b(?:key|id|data-[a-z-]+)=$/.test(source.slice(Math.max(0, literal.index - 40), literal.index))) continue;
         // Opacity modifiers escape as `\/` in the output; the plain class is
         // the reliable signal and catches the same authoring mistake.
         for (const match of text.matchAll(/(?:^|\s)((?:[a-z-]+:)*(?:bg|text|border|ring)-[a-z][a-z0-9-]*)(\/\d+)?(?=\s|$)/g)) {
-          // A class used ONLY with an opacity modifier (`bg-info/10`) was
-          // invisible to both lanes' first version, because the modifier broke
+          // A class used ONLY with an opacity modifier (`bg-info/10`) would be
+          // invisible without the optional group, because the modifier breaks
           // the end-of-class lookahead. TimelineEntry spells exactly that:
           // `text-info bg-info/10 border-info/20`. Drop the modifier and check
           // the base utility, which is what has to exist for either to paint.

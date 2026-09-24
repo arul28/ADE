@@ -27,6 +27,7 @@ const PROMPT: AccountDeviceLoginPrompt = {
   userCode: "WDJB-MJHT",
   verificationUri: "https://directory.test/device",
   verificationUriComplete: null,
+  browserOpened: true,
 };
 
 const repairMachinePairing = vi.fn();

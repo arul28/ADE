@@ -4,6 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { WorkChatSessionCreatedDetail } from "../../lib/chatSessionEvents";
 import { createDefaultWorkProjectViewState } from "../../state/appStore";
+import {
+  chatCompanionUiStorageKey,
+  closeWorkLiveCardForChat,
+  floatWorkLiveCardForChat,
+  readChatCompanionUiState,
+  resetChatCompanionUiStateCacheForTests,
+} from "../chat/chatCompanionUiState";
 
 // ---------------------------------------------------------------------------
 // Spies used across all tests
@@ -4232,5 +4239,38 @@ describe("lanePrWaitingReason", () => {
 
   it("reads a draft PR's pending CI as a wait", () => {
     expect(lanePrWaitingReason([pr({ state: "draft", checksStatus: "pending" })])).toBe("ci");
+  });
+});
+
+describe("useWorkSessions — companion state cleanup (L3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFakeAppStoreState();
+    installWindowAde();
+    listSessionsCachedMock.mockResolvedValue([]);
+    useSearchParamsMock.mockReturnValue([new URLSearchParams(), vi.fn()]);
+    setDocumentVisibility("visible");
+    window.localStorage.clear();
+    resetChatCompanionUiStateCacheForTests();
+  });
+
+  afterEach(() => {
+    cleanup();
+    delete (window as any).ade;
+  });
+
+  it("clears a deleted session's companion UI record", () => {
+    closeWorkLiveCardForChat("chat-9", "browser", "tab-1");
+    floatWorkLiveCardForChat("chat-9", "mac-desktop");
+    expect(readChatCompanionUiState("chat-9").workLiveCardFloating).toEqual(["mac-desktop"]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    act(() => {
+      result.current.removeSessionFromList("chat-9");
+    });
+
+    expect(window.localStorage.getItem(chatCompanionUiStorageKey("chat-9"))).toBeNull();
+    expect(readChatCompanionUiState("chat-9").workLiveCardFloating).toEqual([]);
+    expect(readChatCompanionUiState("chat-9").workLiveCardClosedByTool).toEqual({});
   });
 });

@@ -1,6 +1,8 @@
 import type { ThemeId } from "../../state/appStore";
 import {
   BACKDROP_FRAME_MS,
+  BACKDROP_IDLE_FRAME_MS,
+  BACKDROP_IDLE_FREEZE_MS,
   FRAG,
   UNIFORMS,
   VERT,
@@ -235,10 +237,16 @@ export function createBackdropRenderer(options: {
   let pointerClientX = 0;
   let pointerClientY = 0;
   let raf = 0;
+  let frameTimer = 0;
   let layoutRaf = 0;
+  let lowPower = false;
   let lastNow: number | null = null;
   let lastDrawn = 0;
   let visible = document.visibilityState === "visible";
+  // The clock the freeze runs off. Anything that means "someone is looking at
+  // this" pushes it forward: a pointer move, the window coming back, the pane
+  // being resized or scrolled into view.
+  let lastActivity = performance.now();
   let focused = document.hasFocus();
   let inView = true;
   let disposed = false;
@@ -292,18 +300,96 @@ export function createBackdropRenderer(options: {
     context.drawArrays(context.TRIANGLES, 0, 3);
   };
 
+  /**
+   * 30 fps while the swirl is still catching up with the pointer, 12 otherwise.
+   *
+   * "Otherwise" is not just a pointer that is elsewhere: a pointer resting
+   * INSIDE the canvas has a settled swirl, and the frames it produces differ
+   * only by the drift underneath — which nobody can tell apart at 12. The rate
+   * goes back up the instant the pointer moves, because `updatePointerTarget`
+   * pulls the next frame forward rather than waiting out the idle interval.
+   */
+  const chasingPointer = () =>
+    Math.abs(targetPresence - cursorPresence) > 0.01
+    || Math.abs(targetX - mouseX) > 0.002
+    || Math.abs(targetY - mouseY) > 0.002;
+  const frameInterval = () =>
+    (chasingPointer() ? BACKDROP_FRAME_MS : BACKDROP_IDLE_FRAME_MS);
+
+  // `playing` is the caller's pause (a parked Work surface): the loop stops and
+  // the last frame stays on the canvas, exactly like every other gate here.
+  const canAnimate = () =>
+    playing && !reduceMotion && !lowPower && !disposed && visible && focused && inView;
+
+  /**
+   * Twenty seconds after the last sign of life, stop drawing and keep the frame.
+   *
+   * A picker left open is the steady state — it sits behind a terminal or under
+   * a chat the user is reading, drifting at a rate nobody is watching. The
+   * canvas holds whatever it last composited, so freezing costs nothing visible;
+   * `wake()` starts it again on the first pointer move or focus.
+   */
+  const frozen = () =>
+    !chasingPointer()
+    && performance.now() - lastActivity >= BACKDROP_IDLE_FREEZE_MS;
+
+  /**
+   * Sleep to the frame's deadline on a timer, and only then ask for a frame.
+   *
+   * The obvious loop — rAF every frame, skip the ones that arrive early — costs
+   * one callback per DISPLAY refresh, and this repo is developed on a 240Hz
+   * panel: measured in the real pane that was `240 rAF/s to draw 30`, and a
+   * page with a pending rAF is a page Chromium schedules a BeginFrame for on
+   * every vsync. Waiting on a timer instead means roughly one wake-up per drawn
+   * frame, and the trailing `requestAnimationFrame` keeps the draw itself on
+   * the compositor's own beat.
+   */
   function requestRender() {
-    if (!playing || reduceMotion || disposed || !visible || !focused || !inView) return;
-    if (raf === 0) raf = requestAnimationFrame(render);
+    if (!canAnimate() || frozen()) return;
+    if (raf !== 0 || frameTimer !== 0) return;
+    const wait = lastDrawn === 0
+      ? 0
+      // A couple of milliseconds early, so the rAF that follows lands on the
+      // first vsync at or after the deadline rather than the one after it.
+      : Math.max(0, frameInterval() - (performance.now() - lastDrawn) - 2);
+    if (wait <= 1) {
+      raf = requestAnimationFrame(render);
+      return;
+    }
+    frameTimer = window.setTimeout(() => {
+      frameTimer = 0;
+      if (!canAnimate() || frozen()) return;
+      raf = requestAnimationFrame(render);
+    }, wait);
+  }
+
+  /**
+   * Pull a sleeping frame forward.
+   *
+   * The idle interval is 83ms, and the pointer is the one input that must not
+   * wait that long to be answered — entering the canvas would otherwise stutter
+   * by up to a frame and a half before the swirl moved at all.
+   */
+  function requestRenderNow() {
+    if (frameTimer !== 0) {
+      window.clearTimeout(frameTimer);
+      frameTimer = 0;
+    }
+    requestRender();
+  }
+
+  /** Someone is here again: restart the freeze clock and draw now. */
+  function wake() {
+    lastActivity = performance.now();
+    requestRenderNow();
   }
 
   function render(now: number) {
     raf = 0;
-    if (!playing || disposed || !visible || !focused || !inView) return;
-    // 30 fps, gated on the timestamp rather than on a timer: the frame is
-    // simply skipped and re-requested, so a 240Hz panel costs eight cheap
-    // no-ops instead of eight mesh evaluations.
-    if (lastDrawn !== 0 && now - lastDrawn < BACKDROP_FRAME_MS - 1) {
+    if (!canAnimate() || frozen()) return;
+    // Gated on the timestamp as well as on the timer above: a coalesced or late
+    // frame is skipped and re-requested rather than drawn early.
+    if (lastDrawn !== 0 && now - lastDrawn < frameInterval() - 3) {
       requestRender();
       return;
     }
@@ -322,6 +408,10 @@ export function createBackdropRenderer(options: {
     if (raf !== 0) {
       cancelAnimationFrame(raf);
       raf = 0;
+    }
+    if (frameTimer !== 0) {
+      window.clearTimeout(frameTimer);
+      frameTimer = 0;
     }
     lastNow = null;
   };
@@ -353,14 +443,29 @@ export function createBackdropRenderer(options: {
     targetX = nextX;
     targetY = nextY;
     targetPresence = 1;
-    requestRender();
+    // The pointer is the one input that must not wait out an idle interval.
+    requestRenderNow();
   };
 
+  /**
+   * Window-level, always attached: a pointer move is what un-freezes the drift,
+   * and on a device that cannot hover it is the ONLY thing that does.
+   *
+   * It deliberately does not measure. `getBoundingClientRect` forces layout, and
+   * this fires on every move across the whole window — a pane that also holds a
+   * terminal and a chat stream was being reflowed hundreds of times a second to
+   * answer a question the ResizeObserver, the scroll listener and the resize
+   * listener already keep `bounds` current for.
+   */
   const onPointerMove = (event: PointerEvent) => {
+    lastActivity = performance.now();
+    if (!cursorEnabled) {
+      requestRender();
+      return;
+    }
     pointerKnown = true;
     pointerClientX = event.clientX;
     pointerClientY = event.clientY;
-    bounds = canvas.getBoundingClientRect();
     updatePointerTarget();
   };
   const onPointerLeave = () => {
@@ -374,6 +479,7 @@ export function createBackdropRenderer(options: {
     // frame, but a paused one (window blurred, tab hidden) would stay blank,
     // so repaint the last moment now.
     if (resizeCanvas()) draw(reduceMotion ? 0 : lastSeconds);
+    lastActivity = performance.now();
     updatePointerTarget();
     requestRender();
   };
@@ -395,12 +501,12 @@ export function createBackdropRenderer(options: {
   };
   const onVisibilityChange = () => {
     visible = document.visibilityState === "visible";
-    if (visible) requestRender();
+    if (visible) wake();
     else stop();
   };
   const onWindowFocus = () => {
     focused = true;
-    requestRender();
+    wake();
   };
   const onWindowBlur = () => {
     focused = false;
@@ -429,8 +535,8 @@ export function createBackdropRenderer(options: {
   window.addEventListener("focus", onWindowFocus);
   window.addEventListener("blur", onWindowBlur);
   document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("pointermove", onPointerMove, { passive: true });
   if (cursorEnabled) {
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
     window.addEventListener("pointercancel", onPointerLeave);
     window.addEventListener("scroll", updateLayout, true);
     document.documentElement.addEventListener("pointerleave", onPointerLeave);
@@ -440,10 +546,51 @@ export function createBackdropRenderer(options: {
   resizeObserver.observe(canvas);
   const intersectionObserver = new IntersectionObserver(([entry]) => {
     inView = entry?.isIntersecting ?? true;
-    if (inView) requestRender();
+    if (inView) wake();
     else stop();
   });
   intersectionObserver.observe(canvas);
+
+  /**
+   * A machine running the battery down gets the static frame.
+   *
+   * `navigator.getBattery` is not in an Electron renderer (nor in Firefox or
+   * Safari), so this is strictly opportunistic: where the API is missing the
+   * backdrop behaves exactly as before. Where it exists, a device under 20% and
+   * not charging is one where the user would rather have the screen than the
+   * gradient — the canvas keeps its last composited frame, like the
+   * reduced-motion path, and plugging in brings the drift back.
+   */
+  let detachBattery: (() => void) | null = null;
+  const battery = (navigator as unknown as {
+    getBattery?: () => Promise<{
+      charging: boolean;
+      level: number;
+      addEventListener: (type: string, listener: () => void) => void;
+      removeEventListener: (type: string, listener: () => void) => void;
+    }>;
+  }).getBattery;
+  if (!reduceMotion && typeof battery === "function") {
+    battery.call(navigator).then((status) => {
+      if (disposed) return;
+      const sync = () => {
+        const next = !status.charging && status.level <= 0.2;
+        if (next === lowPower) return;
+        lowPower = next;
+        if (lowPower) stop();
+        else requestRender();
+      };
+      status.addEventListener("levelchange", sync);
+      status.addEventListener("chargingchange", sync);
+      detachBattery = () => {
+        status.removeEventListener("levelchange", sync);
+        status.removeEventListener("chargingchange", sync);
+      };
+      sync();
+    }).catch(() => {
+      // No battery, or a platform that refuses to answer. Keep drifting.
+    });
+  }
 
   // One frame unconditionally, before any of the gates get a say: a window
   // that is blurred or a tab that is hidden at mount would otherwise show an
@@ -455,7 +602,9 @@ export function createBackdropRenderer(options: {
     setPlaying: (next: boolean) => {
       if (playing === next) return;
       playing = next;
-      if (playing) requestRender();
+      // Coming back is a sign of life: restart the idle-freeze clock too, or a
+      // picker parked for longer than the freeze window would resume frozen.
+      if (playing) wake();
       else stop();
     },
     dispose: () => {
@@ -465,6 +614,7 @@ export function createBackdropRenderer(options: {
         cancelAnimationFrame(layoutRaf);
         layoutRaf = 0;
       }
+      detachBattery?.();
       canvas.removeEventListener("webglcontextlost", onContextLost);
       resizeObserver.disconnect();
       intersectionObserver.disconnect();
@@ -472,8 +622,8 @@ export function createBackdropRenderer(options: {
       window.removeEventListener("resize", updateLayout);
       window.removeEventListener("focus", onWindowFocus);
       window.removeEventListener("blur", onWindowBlur);
+      window.removeEventListener("pointermove", onPointerMove);
       if (cursorEnabled) {
-        window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointercancel", onPointerLeave);
         window.removeEventListener("scroll", updateLayout, true);
         document.documentElement.removeEventListener("pointerleave", onPointerLeave);

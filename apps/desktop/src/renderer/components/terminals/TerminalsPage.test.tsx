@@ -39,11 +39,22 @@ import {
   resetWorkToolShowRequestsForTests,
 } from "../../lib/workToolShowRequests";
 import {
+  noteFloatingWorkSurfaceShown,
   noteWorkSurfaceMounted,
   resetWorkToolOnScreenForTests,
   setDocumentVisibleForTests,
   workSurfaceKey,
 } from "../../lib/workToolOnScreen";
+import {
+  MAC_DESKTOP_CARD_ON_SCREEN_KEY,
+  macDesktopCardGrantedAt,
+  resetMacDesktopCardGrantsForTests,
+} from "../work/macDesktopCardGrants";
+import {
+  readChatCompanionUiState,
+  resetChatCompanionUiStateCacheForTests,
+  setWorkLivePreviewEnabledForChat,
+} from "../chat/chatCompanionUiState";
 
 /** A tool laid out in a visible pane, as far as a show can measure it. */
 function mountTool(tool: string, laneId: string): void {
@@ -1945,6 +1956,78 @@ describe("TerminalsPage chat session activation", () => {
         expect.objectContaining({ workSidebarTool: "ios" }),
       );
     });
+
+    describe("Mac Desktop", () => {
+      afterEach(() => {
+        resetMacDesktopCardGrantsForTests();
+        window.localStorage.clear();
+        resetChatCompanionUiStateCacheForTests();
+      });
+
+      it("opens the Mac Desktop tool for the chat in front and answers shown once it is on screen", async () => {
+        paneMountsWhatIsWritten();
+        await renderWithChatInFront();
+        await expect(answerWorkToolShowRequest(showRequest({ surface: "mac-desktop" }))).resolves.toEqual({ status: "shown" });
+        expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+          "/repo",
+          "lane-background",
+          expect.objectContaining({ workSidebarTool: "mac-desktop" }),
+        );
+      });
+
+      /*
+       * Accessibility-mode input takes no lease and nothing watches yet, so the
+       * card never appeared for the chat whose agent drove the display. The
+       * agent's activity now authorizes the card, for that chat on that lane.
+       */
+      it("authorizes the floating card for the chat whose agent drives the display, and no other", async () => {
+        await renderWithChatInFront();
+        await answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).not.toBeNull();
+
+        await expect(answerWorkToolShowRequest(showRequest({
+          surface: "floating-mac-desktop",
+          auto: true,
+          chatSessionId: "chat-other",
+          laneId: "lane-other",
+        }))).resolves.toBeNull();
+        expect(macDesktopCardGrantedAt("lane-other", "chat-other")).toBeNull();
+        expect(macDesktopCardGrantedAt("lane-background", "chat-other")).toBeNull();
+      });
+
+      it("floats nothing automatically while the chat's preview is off, or while the tool opens", async () => {
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+        await renderWithChatInFront();
+        await answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).toBeNull();
+        cleanup();
+
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true);
+        workMocks.laneWorkViewByScope = {
+          "/repo::lane-background": { workSidebarTool: "mac-desktop", workSidebarOpenTools: ["mac-desktop"] },
+        };
+        await renderWithChatInFront({ workSidebarOpen: true });
+        await answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).toBeNull();
+      });
+
+      it("floats the card when asked by name, past an earlier ×, and answers shown once it is on screen", async () => {
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+        setDocumentVisibleForTests(true);
+        await renderWithChatInFront();
+        let answer: string | null = "pending";
+        const pending = answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop" }))
+          .then((result) => { answer = result?.status ?? null; });
+        await waitFor(() => expect(macDesktopCardGrantedAt("lane-background", "chat-1")).not.toBeNull());
+        expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toContain("mac-desktop");
+        expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"]).toBeUndefined();
+        expect(answer).toBe("pending");
+        // The card mounts over the chat: now it is shown.
+        noteFloatingWorkSurfaceShown(workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, "bound", "lane-background"));
+        await pending;
+        expect(answer).toBe("shown");
+      });
+    });
   });
 
   it("hands the floating device the lane and machine of the session in front", async () => {
@@ -2879,6 +2962,98 @@ describe("TerminalsPage chat session activation", () => {
     fireEvent.mouseDown(separator, { clientX: 600 });
     fireEvent.mouseUp(document);
     expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(36);
+  });
+
+  it("points the Mac Desktop corner card at the focused chat's machine", async () => {
+    // After #1269 the card takes the same session-machine pin the tools pane
+    // does: a Studio chat read from a MacBook-bound tab must ask the Studio
+    // about its own screen, so the card's reads carry the Studio binding.
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      transport: "paired",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const chat = workMocks.makeTerminalSession("chat-studio", "lane-studio", "codex-chat");
+    workMocks.projectRoot = "/repo";
+    workMocks.projectBinding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    workMocks.openRemoteProjectTabs = [studioBinding];
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-studio" }],
+        sessions: [chat],
+        online: true,
+      },
+    };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      activeItemId: "chat-studio",
+      selectedSessionId: "chat-studio",
+      sessions: [chat],
+      sessionsById: new Map([[chat.id, chat]]),
+      closingPtyIds: new Set<string>(),
+    };
+    const getStreamStatus = vi.fn(async () => ({
+      laneId: "lane-studio",
+      running: false,
+      fps: 0,
+      idle: false,
+      bitrateKbps: null,
+      transport: null,
+      lastError: null,
+      clients: 0,
+      viewerChatSessionIds: ["chat-studio"],
+    }));
+    const getStatus = vi.fn(async () => ({
+      supported: true,
+      display: null,
+      lease: null,
+      windows: [],
+      recording: null,
+    }));
+    const onEvent = vi.fn(() => () => {});
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        // A Studio-pinned chat listens for `ade ui show` and Apple drawer
+        // requests on its own pin.
+        iosSimulator: { onEvent: vi.fn(() => vi.fn()) },
+        workTools: { onShowRequest: vi.fn(() => vi.fn()), acknowledgeShow: vi.fn() },
+        macDesktop: { getStatus, getStreamStatus, onEvent },
+      },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    await waitFor(() => expect(getStreamStatus).toHaveBeenCalledWith(
+      { laneId: "lane-studio" },
+      studioBinding,
+    ));
+    // The capability probe behind the tool's availability asked the same
+    // machine — a remote Studio does not hide Mac Desktop, and a local tab
+    // does not answer for it.
+    expect(getStatus).toHaveBeenCalledWith({}, studioBinding);
+    expect(getStatus).toHaveBeenCalledWith(
+      { laneId: "lane-studio", chatSessionId: "chat-studio" },
+      studioBinding,
+    );
+    expect(onEvent).toHaveBeenCalledWith(expect.any(Function), studioBinding);
   });
 
   /* ── Apple device ────────────────────────────────────────────────────── */

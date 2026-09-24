@@ -177,6 +177,7 @@ export type AdeDbSyncApi = {
  *   "file-tree:<projectId>"       -> unknown (file tree state)
  *   "agent-chat-parallel-launch:<projectRoot>:<laneId>" -> AgentChatParallelLaunchState
  *   "agent-chat:scheduled-work:v1" -> durable Claude wakeup/cron/loop scheduler state
+ *   "macDesktop.resolution"       -> MacDesktopResolutionPreset
  *   "auto-rebase:<laneId>"        -> StoredStatus
  *   "rebase-suggestion:<laneId>"  -> StoredSuggestionState
  */

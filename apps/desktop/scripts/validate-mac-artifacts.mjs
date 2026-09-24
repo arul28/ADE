@@ -244,6 +244,21 @@ async function assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, descrip
   }
 }
 
+async function assertBundledMacDesktopDriver(resourcesPath, description) {
+  const helperPath = path.join(resourcesPath, "native", "ade-desktop-driver");
+  await assertPathExists(helperPath, `native Mac Desktop driver for ${description}`);
+  await assertExecutable(helperPath, `native Mac Desktop driver for ${description}`);
+  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
+  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
+  for (const architecture of ["arm64", "x86_64"]) {
+    if (!architectures.has(architecture)) {
+      throw new Error(
+        `[release:mac] Native Mac Desktop driver for ${description} is missing ${architecture}: ${helperPath}`,
+      );
+    }
+  }
+}
+
 async function assertBundledAttentionNotch(resourcesPath, description) {
   const helperPath = path.join(resourcesPath, "native", "ade-attention-notch");
   const resourceBundlePath = path.join(
@@ -494,6 +509,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertBundledAttentionNotch(resourcesPath, description);
+  await assertBundledMacDesktopDriver(resourcesPath, description);
   await assertBundledCaptureHelper(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);

@@ -21,6 +21,7 @@ import {
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import {
+  ADE_ACTION_ALLOWLIST,
   ADE_ACTION_DOMAIN_NAMES,
   type AdeActionDomain,
   callerHasRoleAtLeast,
@@ -3225,6 +3226,144 @@ function scopeWorkToolsAdeActionArgs(
   return workToolsArgs;
 }
 
+/**
+ * The `mac_desktop` actions that only READ, and so answer without a lane.
+ *
+ * The one hand-written half of the derivation below, because "does this act on
+ * the display" is a judgement no table records. `getStatus` is the domain's
+ * capability probe and has to work on every host; `listWindows` and
+ * `getStreamStatus` are redacted reads.
+ */
+const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(["getStatus", "listWindows", "getStreamStatus"]);
+
+/**
+ * Derived, not listed: every allowlisted `mac_desktop` action that is neither a
+ * read nor CTO-only is lane-bound. A hand-typed list fails OPEN — a new acting
+ * action added to the allowlist would be reachable by an unpinned caller until
+ * someone remembered to copy its name here. The allowlist table is the full
+ * policy surface (a runtime whose service omits a method rejects the call on
+ * its own), so deriving from it can only ever over-cover.
+ *
+ * CTO-only actions (`startStream`, `takeControl`, ...) are excluded because
+ * `scopeMacDesktopAdeActionArgs` refuses them outright for an agent-shaped
+ * caller, whatever its role; a lane check on top would answer with the wrong
+ * error.
+ */
+export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.mac_desktop ?? []).filter(
+    (action) => !MAC_DESKTOP_READ_ONLY_ACTIONS.has(action) && !isCtoOnlyAdeAction("mac_desktop", action),
+  ),
+);
+
+/**
+ * `mac_desktop` carries a caller-asserted identity the same way `work_tools`
+ * carried a caller-asserted lane.
+ *
+ * Every acting command on the domain takes an optional `chatSessionId`, and the
+ * service treats it as WHO is holding the display's input lease: it is how a
+ * turn's clips, the lease itself and the release-on-chat-end hook are attributed.
+ * Nothing checked that the id belonged to the caller, so an agent in chat A
+ * could pass chat B's id and act as B — taking the lease B was holding, or
+ * having its own clicks charged to B's turn. An agent never has a reason to name
+ * a chat other than its own, so the field is simply overwritten with the
+ * caller's own session id (and dropped when the caller has none, e.g. a bare
+ * run/step identity, so no foreign id survives).
+ *
+ * `controllerId` and `holderId` are stripped for the same reason, and they are
+ * the sharper half of it. A human takeover holds the lease under a controller id
+ * the viewing client minted, and `getStatus().lease.holderId` prints that id to
+ * anyone who can read the lane's status — including an agent. `inputHolderId` in
+ * the service prefers `controllerId` over the chat id, so an agent that echoed
+ * back the holder id it just read would have posted real `CGEvent` input while
+ * wearing the human's takeover. The id stays in the status payload because the
+ * UI needs it to renew and return its own lease; stripping it on the way IN is
+ * what makes reading it useless.
+ *
+ * `laneId` is pinned the same way `work_tools.getLaneState` pins it: a bound
+ * agent's display is its own lane's display, whatever it asked for.
+ *
+ * An agent-shaped caller with NO resolvable lane — an orchestration step, an
+ * automation attempt, a chat whose session record is gone after a daemon
+ * restart — is DENIED every acting command rather than passed through unpinned.
+ * The accessibility-mode commands are the reason: only `real` mode is behind the
+ * lease in the service, so `click`/`type`/`press`/`scroll` in the default
+ * accessibility mode check no lease and no lane ownership at all, and an
+ * unpinned caller naming someone else's `laneId` would drive that lane's
+ * display. The reads in `MAC_DESKTOP_READ_ONLY_ACTIONS` — `getStatus`,
+ * `listWindows` and `getStreamStatus` — still answer: `getStatus` is the
+ * domain's capability probe and has to work on every host, and the other two
+ * observe without driving anything.
+ *
+ * User clients keep what they sent: the desktop renderer, the web client and a
+ * paired phone each drive whichever lane's display their UI is showing, and the
+ * human's takeover holds the lease under a `controllerId`, not a chat id.
+ *
+ * A bound caller that names a *different* lane is refused out loud. The pin is
+ * deliberate — an agent may only drive its own lane's display — but silently
+ * swapping the target meant `--lane <other>` produced an error that named the
+ * socket's lane, which reads as a bug in the wrong place. Refusing names both
+ * lanes and the reason. Nothing changes for a caller that names its own lane,
+ * which is what an agent that passes `--lane` at all normally does.
+ *
+ * Exported for the scope tests: the refusal is a contract, not an implementation
+ * detail, and the full RPC dispatch is the wrong size for proving one sentence.
+ */
+export function scopeMacDesktopAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  isUserClient: boolean,
+  action: string,
+  macDesktopArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  if (isUserClient) return macDesktopArgs;
+  // The role gate alone is not enough: a chat identity is clamped to `agent`,
+  // but a run/step/attempt identity keeps a `cto` role, and it is still an
+  // agent — the viewing actions are a person's. `startStream` hands back the
+  // unredacted loopback token, and with it the agent could post real input
+  // under the human's takeover controller id it read off `getStatus`. Refused
+  // by caller shape, not role.
+  if (isCtoOnlyAdeAction("mac_desktop", action)) {
+    scopeAccessDenied(
+      "mac_desktop viewing and permission actions belong to user clients",
+      `run_ade_action:mac_desktop.${action}`,
+    );
+  }
+  const {
+    chatSessionId: _callerSupplied,
+    controllerId: _callerController,
+    holderId: _callerHolder,
+    ...rest
+  } = macDesktopArgs;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  if (!sessionLaneId && MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)) {
+    scopeAccessDenied(
+      "mac_desktop actions need a resolvable lane for this caller",
+      `run_ade_action:mac_desktop.${action}`,
+    );
+  }
+  // Only `laneId` counts here: `parentLaneId` is a lane-domain argument, and
+  // this domain would drop it anyway.
+  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
+  if (sessionLaneId && requestedLaneId && requestedLaneId !== sessionLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `This chat is bound to lane ${sessionLaneId}; --lane ${requestedLaneId} was ignored.`,
+      {
+        kind: "lane_bound",
+        method: `run_ade_action:mac_desktop.${action}`,
+        callerLaneId: sessionLaneId,
+        requestedLaneId,
+      },
+    );
+  }
+  return {
+    ...rest,
+    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
+    ...(sessionLaneId ? { laneId: sessionLaneId } : {}),
+  };
+}
+
 /** `work_tools` actions scoped for every role, the CTO's included. */
 const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow"]);
 
@@ -3251,6 +3390,40 @@ const APPLE_AGENT_DRIVING_ACTIONS = new Set([
   "fillElement",
   "recordStart",
 ]);
+
+/**
+ * `mac_desktop` actions an agent can call that do NOT drive the lane's display:
+ * the reads, stopping or releasing what it holds, observing and waiting, and
+ * asking for the input lease (the real input that follows it is what counts).
+ * The one hand-written half of the derivation below.
+ */
+const MAC_DESKTOP_NON_DRIVING_ACTIONS = new Set<string>([
+  ...MAC_DESKTOP_READ_ONLY_ACTIONS,
+  "stop",
+  "releaseWindow",
+  "observe",
+  "wait",
+  "screenshot",
+  "stopRecording",
+  "requestInputLease",
+]);
+
+/**
+ * `mac_desktop` actions that mean an agent is driving the lane's display, so
+ * the desktop may float the Mac Desktop card over that agent's chat (see
+ * `work_tools.noteAgentMacDesktopActivity`).
+ *
+ * Derived the same way as `MAC_DESKTOP_LANE_BOUND_ACTIONS`: every allowlisted
+ * action that is neither listed as non-driving nor CTO-only (which an agent
+ * cannot reach). A new acting action added to the allowlist floats the card
+ * without anyone remembering to copy its name here. `present` moves windows,
+ * so it counts.
+ */
+export const MAC_DESKTOP_AGENT_DRIVING_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.mac_desktop ?? []).filter(
+    (action) => !MAC_DESKTOP_NON_DRIVING_ACTIONS.has(action) && !isCtoOnlyAdeAction("mac_desktop", action),
+  ),
+);
 
 const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(EXTERNAL_SESSION_PROVIDERS);
 
@@ -4537,6 +4710,21 @@ async function runTool(args: {
         hasScalarArg,
         rawObjectArgs,
       );
+    } else if (domain === "mac_desktop" && !isUserClient) {
+      // Every action on the domain, including `getStatus`: the status read is
+      // what tells a caller whether the lease is free and who holds it, and it
+      // takes the same `chatSessionId`. No CTO carve-out — an elevated run/step
+      // identity has no chat of its own to act as, so it acts as nobody. User
+      // clients are branched around entirely rather than returned early from the
+      // scoping function, so this adds no object-args requirement to a surface
+      // that was already free to call the domain however it liked.
+      scopedObjectArgs = scopeMacDesktopAdeActionArgs(
+        runtime,
+        session,
+        isUserClient,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
     } else if (
       domain === "work_tools"
       && (!callerIsCto || WORK_TOOLS_ALWAYS_SCOPED_ACTIONS.has(action))
@@ -4704,15 +4892,21 @@ async function runTool(args: {
         }
       }
     }
-    if (domain === "ios_simulator" && !isUserClient && APPLE_AGENT_DRIVING_ACTIONS.has(action)) {
-      // An agent just drove its chat's device. The desktop showing that chat
-      // may float the device if the user has not turned that off.
+    const drivenDevice = isUserClient
+      ? null
+      : domain === "ios_simulator" && APPLE_AGENT_DRIVING_ACTIONS.has(action)
+        ? "apple"
+        : domain === "mac_desktop" && MAC_DESKTOP_AGENT_DRIVING_ACTIONS.has(action)
+          ? "mac-desktop"
+          : null;
+    if (drivenDevice) {
+      // An agent just drove its chat's device or lane display. The desktop
+      // showing that chat may float it if the user has not turned that off.
       const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
       if (chatSessionId) {
-        runtime.workToolsStateService?.noteAgentAppleActivity({
-          chatSessionId,
-          laneId: resolveChatSessionLaneId(runtime, session) ?? null,
-        });
+        const activity = { chatSessionId, laneId: resolveChatSessionLaneId(runtime, session) ?? null };
+        if (drivenDevice === "apple") runtime.workToolsStateService?.noteAgentAppleActivity?.(activity);
+        else runtime.workToolsStateService?.noteAgentMacDesktopActivity?.(activity);
       }
     }
     if (domain === "account" && action === "status") {

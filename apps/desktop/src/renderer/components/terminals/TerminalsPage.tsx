@@ -12,9 +12,11 @@ import { WorkSidebar } from "./WorkSidebar";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { PROJECT_SIDEBAR_DEFAULT_WIDTH, useProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
+import { cn } from "../ui/cn";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
 import { useWorkShowRequests } from "./useWorkShowRequests";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
+import { MacDesktopStopConfirmHost } from "../chat/MacDesktopStopConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
@@ -1094,9 +1096,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }
 
   const workSidebarVisible = active && work.workSidebarOpen;
-
-  /* ── Apple device ──────────────────────────────────────────────────────── */
-
+  // The tools pane at page size, its tab strip included. Page-owned so the
+  // columns beside it can be hidden without remounting the pane. Closing the
+  // pane always restores the columns.
+  const [workToolsMaximized, setWorkToolsMaximized] = useState(false);
+  useEffect(() => {
+    if (!workSidebarVisible) setWorkToolsMaximized(false);
+  }, [workSidebarVisible]);
 
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
@@ -1105,9 +1111,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
-    // The focused work item is the chat the pane's tools are attached to, which
-    // is what a tab close has to name when it stops the tool for real (A4).
-  } = useWorkSidebarTool(activeLaneId, activeWorkSessionRuntimePin, activeWorkSession?.id ?? null);
+  } = useWorkSidebarTool(
+    activeLaneId,
+    activeWorkSessionRuntimePin,
+    // The chat the pane's tools are attached to, so closing a tab can stop the
+    // tool with the right owner.
+    contextTarget?.kind === "chat" ? contextTarget.sessionId : null,
+  );
 
   /**
    * The floating device asks to come back into the pane. The pane IS the Apple
@@ -1503,10 +1513,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         is the single owner; both children read `useNativeToolFeeds()`.
       */
       <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin}>
-        <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
+        <div
+          className="relative flex h-full min-h-0 min-w-0 overflow-hidden"
+          data-work-tools-maximized={workToolsMaximized ? "true" : undefined}
+        >
           <div
             ref={workContentPaneRef}
-            className="relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+            className={cn(
+              "relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
+              // Hidden, not unmounted: the chat and its terminals stay alive
+              // under a maximised tools pane and come straight back.
+              workToolsMaximized && "hidden",
+            )}
             style={{ flexGrow: 100 - work.workSidebarWidthPct }}
           >
             {workViewArea}
@@ -1520,6 +1538,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               active={active}
               laneId={activeLaneId}
               activeTool={workSidebarVisible ? workSidebarTool : null}
+              // The chat you are reading. The card only shows sessions owned by
+              // it; a CLI session is not a chat, so its tools are held back too.
+              chatSessionId={activeWorkSession && isChatToolType(activeWorkSession.toolType)
+                ? activeWorkSession.id
+                : null}
+              sessionLaneId={activeWorkSession?.laneId || null}
               runtimePin={activeWorkSessionRuntimePin}
               onPick={setWorkSidebarTool}
             />
@@ -1536,9 +1560,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               renders nothing until something asks.
             */}
             <AppleShutdownConfirmHost />
+            {/* The Mac Desktop tab's "Stop Mac Desktop?", for the same reason. */}
+            <MacDesktopStopConfirmHost />
           </div>
           {/* Resize handle stays a row-level sibling so its width math is correct. */}
-          {workSidebarVisible ? (
+          {workSidebarVisible && !workToolsMaximized ? (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -1568,9 +1594,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 // 55% is the taste ceiling; the `max()` keeps the pane's own
                 // 280px floor reachable in a window too narrow for both, which is
                 // the case where the ceiling would otherwise clip its close button.
-                style={{ maxWidth: "max(55%, 280px)" }}
+                style={{ maxWidth: workToolsMaximized ? "100%" : "max(55%, 280px)" }}
                 initial={{ flexGrow: 0 }}
-                animate={{ flexGrow: work.workSidebarWidthPct }}
+                animate={{ flexGrow: workToolsMaximized ? 100 : work.workSidebarWidthPct }}
                 exit={{ flexGrow: 0 }}
                 transition={paneTransition}
               >
@@ -1587,6 +1613,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                   contextTarget={contextTarget}
                   contextDisabledReason={contextDisabledReason}
                   runtimePin={activeWorkSessionRuntimePin}
+                  maximized={workToolsMaximized}
+                  onMaximizedChange={setWorkToolsMaximized}
                 />
               </motion.div>
             ) : null}
@@ -1623,6 +1651,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workSidebarOpenTools,
       work.workSidebarWidthPct,
       workSidebarVisible,
+      workToolsMaximized,
       workViewArea,
       activeLaneDeleteProgress,
       openAppleTool,

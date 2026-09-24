@@ -39,6 +39,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachinePairResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSyncHostStartResult,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountPairMachineProgress,
@@ -452,6 +453,8 @@ export type AccountBridge = {
   ): () => void;
   removeMachine(machineKey: string): Promise<AdeAccountMachineRemovalResult>;
   repairMachinePairing(): Promise<AdeAccountMachinePairingRepairResult>;
+  /** Start (or re-host) mobile sync on THIS machine, so the account publisher can run. */
+  startSyncHost(): Promise<AdeAccountSyncHostStartResult>;
   /**
    * Repairs the credential FILE, not the account: converge its key binding and
    * merge back anything a peer process had to set aside. Synchronous work on a
@@ -884,6 +887,29 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
           ? "repaired"
           : "no_problem_found";
       return { outcome, readable, recoveredKeys: report.recoveredKeys };
+    },
+
+    startSyncHost: async (): Promise<AdeAccountSyncHostStartResult> => {
+      if (!options.callBrainAccountAction) {
+        throw new Error(
+          "ADE's background service isn't running on this computer, so sync can't start. Reopen ADE, then try again.",
+        );
+      }
+      const raw = await options.callBrainAccountAction("startSyncHost");
+      const envelope = unwrapAccountActionResult(raw);
+      if (!isRecord(envelope) || typeof envelope.ok !== "boolean") {
+        throw new Error("ADE couldn't read the result of starting sync. Check Connections to see whether it came up.");
+      }
+      const snapshot = isRecord(envelope.snapshot) ? envelope.snapshot : {};
+      const result = {
+        ok: envelope.ok === true,
+        state: typeof snapshot.state === "string" ? snapshot.state : "unavailable",
+        message: typeof envelope.message === "string" && envelope.message.trim()
+          ? envelope.message.trim()
+          : envelope.ok === true ? "Sync is running on this computer." : "Sync could not start on this computer.",
+      };
+      options.logger?.info("account.sync_host_start", { ok: result.ok, state: result.state });
+      return result;
     },
 
     repairMachinePairing: async (): Promise<AdeAccountMachinePairingRepairResult> => {

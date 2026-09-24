@@ -10,6 +10,7 @@ import {
   normalizeRuntimeRule,
   presetToTemplate,
   resolveLaneNameTemplate,
+  scopeAutomationAdeActionArgs,
   triggerMatches,
 } from "./automationService";
 import { openKvDb } from "../state/kvDb";
@@ -3416,5 +3417,52 @@ describe("automation ingress storage bounds", () => {
     expect(mapExecRows(raw.exec(
       "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
     ))[0]?.count).toBe(1);
+  });
+});
+
+describe("scopeAutomationAdeActionArgs", () => {
+  it("strips host-authored chat message provenance from automation args", () => {
+    const args = {
+      chatSessionId: "chat-1",
+      metadata: { spawnCompletion: { childSessionId: "child-1" }, note: "keep" },
+    };
+    scopeAutomationAdeActionArgs("chat", args, "rule-1");
+    expect(args.metadata).toEqual({ note: "keep" });
+    // The chat domain derives its own session scoping; only provenance is cut.
+    expect(args.chatSessionId).toBe("chat-1");
+  });
+
+  it("strips forged takeover identity from mac_desktop automation args", () => {
+    const args: Record<string, unknown> = {
+      laneId: "lane-1",
+      controllerId: "controller-the-human-minted",
+      holderId: "controller-the-human-minted",
+      chatSessionId: "someone-elses-chat",
+      x: 10,
+      y: 20,
+    };
+    scopeAutomationAdeActionArgs("mac_desktop", args, "rule-1");
+    // The borrowed identity is replaced, not just emptied: an empty
+    // `chatSessionId` collapses every rule on the host onto one shared
+    // `anonymous-agent` lease holder.
+    expect(args).toEqual({ laneId: "lane-1", x: 10, y: 20, chatSessionId: "automation:rule-1" });
+  });
+
+  it("strips mac_desktop identity from positional automation args too", () => {
+    const args = [{ laneId: "lane-1", controllerId: "c", holderId: "h", chatSessionId: "s" }];
+    scopeAutomationAdeActionArgs("mac_desktop", args, "rule-2");
+    expect(args[0]).toEqual({ laneId: "lane-1", chatSessionId: "automation:rule-2" });
+  });
+
+  it("refuses to scope mac_desktop args without a rule id", () => {
+    // A fallback id would put every unnamed rule on one shared lease holder.
+    expect(() => scopeAutomationAdeActionArgs("mac_desktop", { laneId: "lane-1" }, "  "))
+      .toThrow(/rule id/);
+  });
+
+  it("leaves other domains' args untouched", () => {
+    const args = { controllerId: "c", holderId: "h" };
+    scopeAutomationAdeActionArgs("lane", args, "rule-1");
+    expect(args).toEqual({ controllerId: "c", holderId: "h" });
   });
 });

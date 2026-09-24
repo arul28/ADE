@@ -733,6 +733,36 @@ describe("SessionCard auto-naming status", () => {
   });
 });
 
+describe("SessionCard Mac Desktop mark", () => {
+  it("marks the lane beside its name only while it holds a display", () => {
+    const view = render(
+      <SessionCard
+        session={makeSession({})}
+        lane={lane}
+        showLaneIdentity
+        laneMacDesktop
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    const identity = view.container.querySelector("[data-session-lane-identity]");
+    expect(identity?.querySelector("[data-lane-mac-desktop]")).toBeTruthy();
+
+    view.rerender(
+      <SessionCard
+        session={makeSession({})}
+        lane={lane}
+        showLaneIdentity
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(view.container.querySelector("[data-lane-mac-desktop]")).toBeNull();
+  });
+});
+
 describe("SessionCard metadata regeneration", () => {
   it("masks the title, lane name, and status line while those fields regenerate", () => {
     setSessionMetadataGenerating("session-1", {

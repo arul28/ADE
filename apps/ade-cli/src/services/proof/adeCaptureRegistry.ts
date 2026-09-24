@@ -107,4 +107,6 @@ export const ADE_CAPTURE_ACTIONS: ReadonlyMap<string, { field: "filePath" | "pat
     ["built_in_browser.observe", { field: "filePath", source: "ade-capture" }],
     ["built_in_browser.exportHar", { field: "filePath", source: "ade-capture" }],
     ["built_in_browser.stopRecording", { field: "path", source: "ade-recorder" }],
+    // `ade mac-desktop proof` files the frame its own `screenshot` step wrote.
+    ["mac_desktop.screenshot", { field: "filePath", source: "ade-capture" }],
   ]);
