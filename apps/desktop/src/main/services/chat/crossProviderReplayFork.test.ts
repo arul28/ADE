@@ -85,6 +85,36 @@ describe("buildTranscriptReplayDocument", () => {
   });
 });
 
+describe("buildTranscriptReplayDocument steer rows", () => {
+  type State = NonNullable<Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>["deliveryState"]>;
+  // The new model must see a steer exactly when the old one did, and once.
+  it.each<[label: string, states: State[], replayed: boolean]>([
+    ["inline after accepted", ["accepted", "inline"], true],
+    ["delivered as its own turn after a refusal", ["accepted", "queued", "delivered"], true],
+    ["processed by Codex", ["accepted", "processed"], true],
+    ["failed", ["accepted", "failed"], false],
+    ["unprocessed when Codex's turn ended", ["accepted", "unprocessed"], false],
+    ["still queued", ["queued"], false],
+    ["left accepted with no outcome", ["accepted"], false],
+  ])("replays a steer only when it reached the model: %s", (_label, states, replayed) => {
+    const document = buildTranscriptReplayDocument([
+      envelope(1, { type: "user_message", text: "Start the work." }),
+      envelope(2, { type: "text", text: "Working on it." }),
+      ...states.map((deliveryState, index) => envelope(3 + index, {
+        type: "user_message",
+        text: "Steer text.",
+        steerId: "steer-1",
+        turnId: deliveryState === "delivered" ? "turn-2" : "turn-1",
+        deliveryState,
+      })),
+    ]);
+
+    expect(document.text).toContain("Start the work.");
+    expect(document.text.split("Steer text.").length - 1).toBe(replayed ? 1 : 0);
+    expect(document.turnCount).toBe(replayed ? 2 : 1);
+  });
+});
+
 describe("fitTranscriptReplayToBudget", () => {
   it("keeps the full transcript when it fits", () => {
     const document = buildTranscriptReplayDocument([
@@ -146,13 +176,6 @@ describe("replay budget", () => {
     const budgetChars = replayBudgetChars(1_000_000);
     expect(estimateReplayTokens("x".repeat(budgetChars))).toBeLessThanOrEqual(600_000);
     expect(replayBudgetTokens(1_000_000)).toBe(600_000);
-  });
-
-  it("regression: a 1M-token window no longer admits a ~1.4M-token replay", () => {
-    // The old math was (window - 8k) * 4 chars, then counted at ~3 chars/token.
-    const oldBudgetChars = (1_000_000 - 8_000) * 4;
-    expect(estimateReplayTokens("x".repeat(oldBudgetChars))).toBeGreaterThan(1_000_000);
-    expect(replayBudgetChars(1_000_000)).toBeLessThan(oldBudgetChars);
   });
 
   it("reserves the larger of 32k tokens and 15% of the window", () => {

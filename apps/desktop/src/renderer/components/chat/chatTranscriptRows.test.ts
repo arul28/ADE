@@ -625,6 +625,44 @@ describe("chatTranscriptRows", () => {
     expect(rows.some((row) => row.event.type === "user_message")).toBe(true);
   });
 
+  it("keys one spawn-wake divider per child turn when several wakes steer into one parent turn", () => {
+    const wake = (second: number, childTurnId: string, steerId: string, deliveryState: "accepted" | "inline"): AgentChatEventEnvelope => ({
+      sessionId: "parent-session",
+      timestamp: `2026-07-14T10:00:0${second}.000Z`,
+      event: {
+        type: "user_message",
+        text: `Your subagent "Docs" finished ${childTurnId}.`,
+        turnId: "turn-parent",
+        steerId,
+        deliveryState,
+        metadata: {
+          spawnCompletion: {
+            childSessionId: "child-9",
+            childTitle: "Docs",
+            spawnKind: "subagent",
+            status: "completed",
+            summary: `Report for ${childTurnId}.`,
+            childTurnId,
+          },
+        },
+      },
+    });
+    const rows = collapseChatTranscriptEvents([
+      wake(0, "child-turn-1", "steer-1", "accepted"),
+      wake(1, "child-turn-1", "steer-1", "inline"),
+      wake(2, "child-turn-2", "steer-2", "accepted"),
+      wake(3, "child-turn-2", "steer-2", "inline"),
+    ]);
+
+    const dividers = rows.filter((row) => row.event.type === "spawn_wake_divider");
+    expect(dividers).toHaveLength(2);
+    expect(new Set(dividers.map((row) => row.key)).size).toBe(2);
+    expect(dividers.map((row) => (row.event.type === "spawn_wake_divider" ? row.event.summary : null)))
+      .toEqual(["Report for child-turn-1.", "Report for child-turn-2."]);
+    // Every row key is unique: the virtualized list renders ghost rows otherwise.
+    expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+  });
+
   it("updates streaming command and file-change entries in place instead of stacking", () => {
     const rows = collapseChatTranscriptEvents([
       {

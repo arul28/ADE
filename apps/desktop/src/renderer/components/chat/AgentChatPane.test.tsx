@@ -11488,6 +11488,22 @@ describe("deriveRuntimeState", () => {
     expect(deriveRuntimeState(events).pendingSteers).toEqual([]);
   });
 
+  it.each([
+    // A Cursor or OpenCode turn can refuse an inline steer it was offered; the
+    // same steerId comes back as `queued` and its chip must return.
+    { states: ["queued", "accepted", "queued"] as const, staged: true },
+    { states: ["queued", "accepted", "inline"] as const, staged: false },
+  ])("stages a steer by its latest row: $states", ({ states, staged }) => {
+    const events: AgentChatEventEnvelope[] = states.map((deliveryState, index) => ({
+      sessionId: "session-1",
+      timestamp: `2026-07-16T12:00:0${index}.000Z`,
+      sequence: index + 1,
+      event: { type: "user_message", text: "steer me", steerId: "steer-1", deliveryState },
+    }));
+
+    expect(deriveRuntimeState(events).pendingSteers.map((steer) => steer.steerId)).toEqual(staged ? ["steer-1"] : []);
+  });
+
   it("restores cancelled Claude queue entries after the user chooses Undo", () => {
     const events: AgentChatEventEnvelope[] = [
       {

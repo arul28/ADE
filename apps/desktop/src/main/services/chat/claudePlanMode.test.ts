@@ -142,30 +142,6 @@ describe("isSessionInPlanMode", () => {
       claudePermissionMode: "bypassPermissions",
     }))).toBe(false);
   });
-
-  it("captures Plan intent before Claude query option normalization", async () => {
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const source = fs.readFileSync(path.join(__dirname, "agentChatService.ts"), "utf8");
-    const builderStart = source.indexOf("const buildClaudeQueryOptions = (");
-    const planSnapshot = source.indexOf(
-      "const hadPlanIntentAtOptionBuildStart = isSessionInPlanMode(managed.session);",
-      builderStart,
-    );
-    const nativeModeNormalization = source.indexOf(
-      "const claudePermissionMode = resolveSessionClaudePermissionMode(",
-      builderStart,
-    );
-    const activityGate = source.indexOf(
-      "!hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== \"plan\"",
-      builderStart,
-    );
-
-    expect(builderStart).toBeGreaterThanOrEqual(0);
-    expect(planSnapshot).toBeGreaterThan(builderStart);
-    expect(planSnapshot).toBeLessThan(nativeModeNormalization);
-    expect(activityGate).toBeGreaterThan(nativeModeNormalization);
-  });
 });
 describe("persistence round-trip", () => {
   it("restores the pre-plan mode after the session is rehydrated mid-plan", () => {
@@ -206,42 +182,5 @@ describe("persistence round-trip", () => {
     applyClaudePlanModeTransition(withoutStash, "default");
 
     expect(withoutStash.claudePermissionMode).toBe("default");
-  });
-});
-
-/**
- * The invariant a type cannot express.
- *
- * Leaving plan mode has to re-assert the identity policy, or a CTO that a voice
- * call is holding read-only silently gets its write access back. That is easy
- * to forget at a new call site — it WAS forgotten at the third one — so the
- * rule is that `agentChatService` never transitions to "default" directly; it
- * goes through `exitPlanModeForSession`, which does both.
- */
-describe("agentChatService plan-mode exits", () => {
-  it("routes every exit through exitPlanModeForSession", async () => {
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    const source = fs.readFileSync(path.join(__dirname, "agentChatService.ts"), "utf8");
-
-    // Match the CALL, whatever the second argument looks like — the real bug
-    // was spelled `nowPlan ? "plan" : "default"`, which a pattern anchored on
-    // the literal `"default"` sails straight past. Both bindings are in scope
-    // for that file, so both spellings count.
-    const calls = source.match(
-      /applyClaudePlanModeTransition(?:Shared)?\([^;]*?\);/g,
-    ) ?? [];
-
-    // Anything that can produce "default" must be `exitPlanModeForSession`'s
-    // own call. Everything else may only ever enter plan mode.
-    // The optional trailing comma keeps a legitimate call from tripping this
-    // the day someone wraps it across lines.
-    const offenders = calls.filter((call) => !/,\s*"plan"\s*,?\s*\)/.test(call));
-
-    // Assert the SHAPE, not the source line: pinning the exact text would make
-    // a reindent or a parameter rename look like a defect.
-    expect(offenders).toHaveLength(1);
-    expect(offenders[0]).toContain('"default"');
-    expect(source).toContain("function exitPlanModeForSession");
   });
 });

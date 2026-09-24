@@ -18210,6 +18210,67 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("does not report a finished child's turn a second time when the idle child is deleted", async () => {
+      // The incident: the delete path re-reported the child's last turn as
+      // "Stopped before finishing" and woke the parent again for work it had
+      // already been told about.
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-delete-idle", slash_commands: [] };
+        yield {
+          type: "assistant",
+          message: { id: "msg-idle-summary", content: [{ type: "text", text: "Done." }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-delete-idle",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Finished child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      const wakes = () => events.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id);
+
+      await service.sendMessage({ sessionId: child.id, text: "Finish up." });
+      await vi.waitFor(() => { expect(wakes()).toHaveLength(1); });
+      const firstWake = wakes()[0]!.event;
+      expect(firstWake.type === "user_message" ? firstWake.metadata?.spawnCompletion?.status : null).toBe("completed");
+
+      // Restart, with the parent's copy of that report gone (compaction or the
+      // transcript cap): the parent's history can no longer dedupe it.
+      service.forceDisposeAll();
+      installRealTranscriptParser();
+      const realParse = vi.mocked(parseAgentChatTranscript).getMockImplementation()!;
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        realParse(raw).filter((envelope) => envelope.sessionId !== parent.id));
+      const after: AgentChatEventEnvelope[] = [];
+      const restarted = createService({ onEvent: (event: AgentChatEventEnvelope) => after.push(event) });
+      await restarted.service.resumeSession({ sessionId: child.id });
+
+      await restarted.service.deleteSession({ sessionId: child.id });
+      await restarted.service.getSessionSummary(parent.id);
+
+      expect(after.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id)).toEqual([]);
+      restarted.service.forceDisposeAll();
+    });
+
     it("notes a deleted parent once in the child and stops retrying", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let releaseTurn!: () => void;
@@ -25272,22 +25333,37 @@ describe("createAgentChatService", () => {
         .filter((event) => event.event.type === "system_notice")
         .map((event) => (event.event.type === "system_notice" ? event.event.message : ""));
 
-      it("folds the message into the live run when the turn accepts it", async () => {
+      /** Every delivery state the steer carrying `text` was shown in, in order. */
+      const steerRowStates = (events: AgentChatEventEnvelope[], text: string) => events
+        .flatMap((event) => (event.event.type === "user_message" && event.event.text === text
+          ? [event.event.deliveryState ?? "plain"]
+          : []));
+
+      it("shows the message as accepted while the run decides, then folds it inline on the same row", async () => {
         const events: AgentChatEventEnvelope[] = [];
         const { service, session } = await startStalledCursorTurn(events);
 
-        await service.steer({
+        // `Run.steer()` stays pending until the turn reads the message, which
+        // can take many seconds. The message must be on screen meanwhile.
+        const releaseSteer = parkCursorSteer();
+        const steering = service.steer({
           sessionId: session.id,
           text: "Do this instead.",
           dispatchMode: "inline",
         });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        expect(steerRowStates(events, "Do this instead.")).toEqual(["accepted"]);
+        releaseSteer();
+        const { steerId } = await steering;
 
         expect(mockState.cursorSdkSteerCalls).toEqual(["Do this instead."]);
         // The steered text belongs to the live turn, so it must not start one.
         expect(mockState.cursorSdkSendCalls).toHaveLength(1);
-        const inline = events.filter((event) =>
-          event.event.type === "user_message" && event.event.deliveryState === "inline");
-        expect(inline).toHaveLength(1);
+        // One row, moved on: the same steerId, no second bubble.
+        expect(steerRowStates(events, "Do this instead.")).toEqual(["accepted", "inline"]);
+        expect(events.filter((event) =>
+          event.event.type === "user_message" && event.event.text === "Do this instead."
+          && event.event.steerId !== steerId)).toEqual([]);
         // Nothing is left staged, so no chip survives the send.
         expect(events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(false);
@@ -25384,6 +25460,8 @@ describe("createAgentChatService", () => {
         const texts = noticeTexts(events);
         expect(texts.some((text) => text.includes("queue is full"))).toBe(true);
         expect(texts.some((text) => text.includes("send as a new message"))).toBe(false);
+        // The row it was offered on does not stay "Steering…".
+        expect(steerRowStates(events, "One too many.")).toEqual(["accepted", "failed"]);
       });
 
       it("queues the message rather than losing it when the steer call throws", async () => {
@@ -25427,6 +25505,16 @@ describe("createAgentChatService", () => {
         await pumpUntil("stranded row delivered", () => mockState.cursorSdkSendCalls.length >= 2);
         expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
           .toContain("Stranded without the flush.");
+        // It lands on the row it was offered on, not beside it as a second
+        // bubble: every row of this text is the one steer.
+        await pumpUntil("stranded row settled", () =>
+          steerRowStates(events, "Stranded without the flush.").includes("delivered"));
+        const rows = events.filter((event) =>
+          event.event.type === "user_message" && event.event.text === "Stranded without the flush.");
+        expect(steerRowStates(events, "Stranded without the flush.")[0]).toBe("accepted");
+        expect(steerRowStates(events, "Stranded without the flush.").at(-1)).toBe("delivered");
+        expect(new Set(rows.map((event) => event.event.type === "user_message" ? event.event.steerId : null)).size).toBe(1);
+        expect(steerRowStates(events, "Stranded without the flush.")).not.toContain("plain");
       });
 
       it("refuses to edit or cancel a row while its dispatch is in flight", async () => {
@@ -25552,6 +25640,30 @@ describe("createAgentChatService", () => {
         expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(true);
         expect(events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+
+      it("reports a promoted row dropped, and fails it, when Stop clears the queue mid-offer", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Offered, then stopped." });
+        await pumpUntil("staged row", () => steerRowStates(events, "Offered, then stopped.").includes("queued"));
+
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const releaseSteer = parkCursorSteer();
+        const dispatching = service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "inline" });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        expect(steerRowStates(events, "Offered, then stopped.").at(-1)).toBe("accepted");
+
+        // Stop clears the queue while the run is still deciding.
+        void service.interrupt({ sessionId: session.id });
+        await pumpUntil("queue cleared", () => steerRowStates(events, "Offered, then stopped.").includes("failed"));
+        releaseSteer();
+        const result = await dispatching;
+
+        // Gone, not still queued: nothing is left to send it.
+        expect(result).toEqual({ dispatchedAt: null, reason: "dropped" });
+        expect(steerRowStates(events, "Offered, then stopped.").at(-1)).toBe("failed");
+        expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(false);
       });
     });
 
@@ -42180,6 +42292,77 @@ describe("createAgentChatService", () => {
       });
     });
 
+    // A Cursor / OpenCode / Pi row reads `accepted` only while this process
+    // awaits the provider. A crash in that window leaves it "Steering…" for
+    // good unless the next load fails it.
+    it.each([
+      { label: "fails a Cursor steer a crash left accepted", provider: "cursor", swept: true },
+      { label: "leaves a Codex accepted steer to its own hydration", provider: "codex", swept: false },
+      { label: "leaves a Cursor steer that is still on the restored queue", provider: "cursor", swept: false, onQueue: true },
+      { label: "leaves a Cursor steer another ADE home's brain owns", provider: "cursor", swept: false, foreignOwner: true },
+    ] as const)("on load, $label", async ({ provider, swept, ...fixture }) => {
+      installRealTranscriptParser();
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const first = createService();
+      const session = await first.service.createSession({
+        laneId: "lane-1",
+        provider,
+        model: provider === "codex" ? "gpt-5.5" : "composer-2",
+        ...(provider === "cursor" ? { modelId: "cursor/composer-2" } : {}),
+      });
+      const transcriptPath = String(first.sessionService.get(session.id)?.transcriptPath);
+      first.service.forceDisposeAll();
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, `${JSON.stringify({
+        sessionId: session.id,
+        timestamp: "2026-09-24T05:20:00.000Z",
+        sequence: 1,
+        event: {
+          type: "user_message",
+          text: "Steered right before the crash.",
+          steerId: "steer-orphan",
+          turnId: "turn-old",
+          deliveryState: "accepted",
+        },
+      })}\n`, "utf8");
+      const fireAt = Date.now() + 30 * 60_000;
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        // Armed by a usage limit: failing the row is not the chat doing work,
+        // so it must not clear this.
+        usageLimitResume: {
+          state: "armed",
+          provider,
+          fireAt: new Date(fireAt).toISOString(),
+          resetAt: new Date(fireAt - 90_000).toISOString(),
+          scheduleId: `auto-resume:${session.id}`,
+          attempts: 1,
+          providerDetail: "100% utilized",
+          turnId: "turn-old",
+          updatedAt: new Date().toISOString(),
+        },
+        ...("onQueue" in fixture ? { pendingSteers: [{ steerId: "steer-orphan", text: "Steered right before the crash." }] } : {}),
+        ...("foreignOwner" in fixture
+          ? { runtimeOwner: { brainId: "other-brain", pid: 4242, startedAt: null, adeHome: "/elsewhere/.ade" } }
+          : {}),
+      });
+
+      const events: AgentChatEventEnvelope[] = [];
+      const second = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      await second.service.resumeSession({ sessionId: session.id });
+
+      const failed = events.filter((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.steerId === "steer-orphan"
+        && entry.event.deliveryState === "failed");
+      expect(failed).toHaveLength(swept ? 1 : 0);
+      if (swept) {
+        expect(failed[0]!.event).toMatchObject({ text: "Steered right before the crash.", turnId: "turn-old" });
+        expect((await second.service.getSessionSummary(session.id))?.usageLimitResume ?? null).not.toBeNull();
+      }
+      second.service.forceDisposeAll();
+    });
+
     it("runs an unprocessed Codex follow-up once and records an idempotent durable resolution", async () => {
       installRealTranscriptParser();
       const events: AgentChatEventEnvelope[] = [];
@@ -49863,6 +50046,11 @@ describe("createAgentChatService", () => {
           && (event.event as any).deliveryState === "inline",
       );
       expect((delivered.event as any).steerId).toBe(steerResult.steerId);
+      // Shown as "Steering…" before the round trip, then moved on: one row.
+      const rows = events.filter((event) =>
+        event.event.type === "user_message" && event.event.text === "Fold this into the live turn.");
+      expect(rows.map((event) => (event.event as any).deliveryState)).toEqual(["accepted", "inline"]);
+      expect(rows.every((event) => (event.event as any).steerId === steerResult.steerId)).toBe(true);
 
       firstTurnControl.release!();
       await firstTurn;
@@ -50022,11 +50210,10 @@ describe("createAgentChatService", () => {
       });
       expect(steerResult.queued).toBe(true);
       expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "This one has to wait."
-        && (entry.event as any).deliveryState === "queued"
-      )).toBe(true);
+      // The row it was offered on reads queued again, not "Steering…".
+      expect(events.filter((entry) =>
+        entry.event.type === "user_message" && entry.event.text === "This one has to wait."
+      ).map((entry) => (entry.event as any).deliveryState)).toEqual(["accepted", "queued"]);
       expect(events.some((entry) =>
         entry.event.type === "system_notice"
         && /couldn't go into the running turn/i.test(entry.event.message)
@@ -61399,6 +61586,38 @@ describe("Pi follows the chat's effort and names another provider's route", () =
     // Before, a cleared effort mapped to no level and nothing was sent, so the
     // live session kept thinking at `high`.
     expect(pooled.setThinking).toHaveBeenCalledWith(null);
+    service.forceDisposeAll();
+  });
+
+  it.each([
+    { label: "moves the row inline when the worker takes it", fails: false, states: ["accepted", "inline"] },
+    { label: "fails the row and rethrows when the worker throws", fails: true, states: ["accepted", "failed"] },
+  ])("shows a Pi steer as accepted before the worker answers, then $label", async ({ fails, states }) => {
+    let releaseTurn!: () => void;
+    const pooled = installFakePiWorker(() => new Promise((resolve) => { releaseTurn = () => resolve({}); }));
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await createPiSession(service);
+    const rowStates = () => events
+      .filter((event) => event.event.type === "user_message" && event.event.text === "Also check the docs.")
+      .map((event) => (event.event.type === "user_message" ? event.event.deliveryState : undefined));
+    let statesWhileWorkerDecides: unknown[] = [];
+    pooled.steer = vi.fn(async () => {
+      statesWhileWorkerDecides = rowStates();
+      if (fails) throw new Error("Pi worker gone");
+      return {};
+    });
+
+    await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
+    await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalled());
+    const steering = service.steer({ sessionId: session.id, text: "Also check the docs." });
+    if (fails) await expect(steering).rejects.toThrow("Pi worker gone");
+    else await expect(steering).resolves.toMatchObject({ queued: false });
+
+    expect(pooled.steer).toHaveBeenCalledTimes(1);
+    expect(statesWhileWorkerDecides).toEqual(["accepted"]);
+    expect(rowStates()).toEqual(states);
+    releaseTurn();
     service.forceDisposeAll();
   });
 
