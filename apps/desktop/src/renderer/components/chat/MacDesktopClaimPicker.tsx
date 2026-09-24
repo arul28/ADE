@@ -10,6 +10,7 @@ import {
 
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import { cn } from "../ui/cn";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { getFocusableElements } from "../ui/dialogFocus";
 import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
 import {
@@ -71,12 +72,6 @@ export type MacDesktopClaimPickerProps = {
    * replaced in place, so nothing ever covers the chat.
    */
   inline?: boolean;
-  /**
-   * Overlay stacking, used only when NOT inline. Full screen sits at 1000; a
-   * picker opened from inside that overlay has to be one step above or it is
-   * behind the picture.
-   */
-  zIndex?: number;
 };
 
 /** Header cell: the muted, normal-weight `micro` step the settings tables use. */
@@ -93,7 +88,6 @@ export function MacDesktopClaimPicker({
   onClaim,
   onClose,
   inline = false,
-  zIndex,
 }: MacDesktopClaimPickerProps) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -378,15 +372,16 @@ export function MacDesktopClaimPicker({
 
   if (typeof document === "undefined") return dialog;
   return createPortal(
+    <ViewportOverlayHost layer="macDesktopDialog">
     <div
-      className="fixed inset-0 flex items-start justify-center bg-black/55 p-4 pt-[10vh]"
-      style={{ zIndex: zIndex ?? 220 }}
+      className="pointer-events-auto absolute inset-0 flex items-start justify-center bg-black/55 p-4 pt-[10vh]"
       role="presentation"
       data-testid="mac-desktop-claim-picker"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       {dialog}
-    </div>,
+    </div>
+    </ViewportOverlayHost>,
     document.body,
   );
 }
