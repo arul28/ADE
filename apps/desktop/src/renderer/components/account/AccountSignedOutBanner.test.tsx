@@ -50,6 +50,8 @@ vi.mock("../../lib/accountLogin", () => ({
 }));
 
 import { AccountSignedOutBanner } from "./AccountSignedOutBanner";
+import { AppBannerHost } from "../ui/notice";
+import { resetAppBannersForTests } from "../ui/notice/appBannerStore";
 import { resetLocalSyncStatusReaderForTests } from "../../lib/localSyncStatusReader";
 import { resetReconnectFlowForTests } from "../../lib/reconnectThisComputer";
 import { createSyncAccountDirectoryHealth, type SyncAccountDirectoryHealth } from "../../../shared/types";
@@ -59,14 +61,32 @@ function renderBanner(route = "/work") {
   render(
     <MemoryRouter initialEntries={[route]}>
       <AccountSignedOutBanner navigate={navigate} />
+      <AppBannerHost />
     </MemoryRouter>,
   );
   return navigate;
 }
 
+function signedOutBanner(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-banner-id^="account-"]');
+}
+
+async function findRefusedBanner(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const el = document.querySelector<HTMLElement>('[data-banner-id="this-computer-refused"]');
+    if (!el) throw new Error("this-computer-refused banner not shown");
+    return el;
+  });
+}
+
+function refusedBanner(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-banner-id="this-computer-refused"]');
+}
+
 // The reconnect flow is one per window, so it outlives each test's render.
 afterEach(() => {
   resetReconnectFlowForTests();
+  resetAppBannersForTests();
 });
 
 describe("AccountSignedOutBanner", () => {
@@ -83,7 +103,7 @@ describe("AccountSignedOutBanner", () => {
 
     renderBanner();
 
-    expect(screen.queryByTestId("account-signed-out-banner")).toBeNull();
+    expect(signedOutBanner()).toBeNull();
   });
 
   it("stays silent until the first status lands", () => {
@@ -91,7 +111,7 @@ describe("AccountSignedOutBanner", () => {
 
     renderBanner();
 
-    expect(screen.queryByTestId("account-signed-out-banner")).toBeNull();
+    expect(signedOutBanner()).toBeNull();
   });
 
   it.each(["signed_out", "expired"] as const)("offers sign-in for a %s session", (sessionState) => {
@@ -99,8 +119,8 @@ describe("AccountSignedOutBanner", () => {
 
     const navigate = renderBanner();
 
-    const banner = screen.getByTestId("account-signed-out-banner");
-    expect(banner.getAttribute("data-session-state")).toBe(sessionState);
+    const banner = signedOutBanner();
+    expect(banner?.getAttribute("data-banner-id")).toBe(`account-${sessionState}`);
 
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(navigate).toHaveBeenCalledWith("/account", { state: { returnTo: "/work" } });
@@ -120,14 +140,23 @@ describe("AccountSignedOutBanner", () => {
   it("cannot be dismissed", () => {
     renderBanner();
 
-    expect(screen.getByTestId("account-signed-out-banner")).toBeTruthy();
+    expect(signedOutBanner()).toBeTruthy();
     expect(screen.queryByRole("button", { name: /dismiss/i })).toBeNull();
   });
 
   it("hides on the account page, where its own action would lead", () => {
     renderBanner("/account");
 
-    expect(screen.queryByTestId("account-signed-out-banner")).toBeNull();
+    expect(signedOutBanner()).toBeNull();
+  });
+
+  it("hides on the Account section of Settings, and only there", () => {
+    renderBanner("/settings?tab=account");
+    expect(signedOutBanner()).toBeNull();
+
+    cleanup();
+    renderBanner("/settings?tab=appearance");
+    expect(signedOutBanner()).toBeTruthy();
   });
 });
 
@@ -181,7 +210,7 @@ describe("AccountSignedOutBanner — this computer refused", () => {
   it("names the removal date and offers Reconnect this computer", async () => {
     renderBanner();
 
-    const banner = await screen.findByTestId("this-computer-refused-banner");
+    const banner = await findRefusedBanner();
     const removedOn = new Date("2026-08-14T09:30:00.000Z").toLocaleDateString(undefined, { day: "numeric", month: "long" });
     expect(banner.textContent).toContain(`This computer was removed from your account on ${removedOn}`);
     expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
@@ -194,7 +223,7 @@ describe("AccountSignedOutBanner — this computer refused", () => {
     health = refusedHealth({ recoveryGaveUpAt: 5 });
     renderBanner();
 
-    const banner = await screen.findByTestId("this-computer-refused-banner");
+    const banner = await findRefusedBanner();
     expect(banner.textContent).toContain("ADE stopped trying to reconnect it on its own.");
   });
 
@@ -202,7 +231,7 @@ describe("AccountSignedOutBanner — this computer refused", () => {
     health = refusedHealth({ lastHttpReason: "pairing_authentication_required" });
     renderBanner();
 
-    const banner = await screen.findByTestId("this-computer-refused-banner");
+    const banner = await findRefusedBanner();
     expect(banner.textContent).toContain(
       "This computer needs you to confirm it's you before it can rejoin your account",
     );
@@ -272,19 +301,19 @@ describe("AccountSignedOutBanner — this computer refused", () => {
     health = createSyncAccountDirectoryHealth("published", null);
     renderBanner();
     await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalled());
-    expect(screen.queryByTestId("this-computer-refused-banner")).toBeNull();
+    expect(refusedBanner()).toBeNull();
     cleanup();
 
     resetLocalSyncStatusReaderForTests();
     health = refusedHealth({ lastHttpReason: "forbidden_by_proxy" });
     renderBanner();
     await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalledTimes(2));
-    expect(screen.queryByTestId("this-computer-refused-banner")).toBeNull();
+    expect(refusedBanner()).toBeNull();
   });
 
   it("hides on the account page, whose card carries the same button", async () => {
     renderBanner("/account");
     await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalled());
-    expect(screen.queryByTestId("this-computer-refused-banner")).toBeNull();
+    expect(refusedBanner()).toBeNull();
   });
 });

@@ -1,67 +1,37 @@
-import React, { useCallback, useEffect } from "react";
+import React from "react";
+import { createPortal } from "react-dom";
 import { X } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
-import { getFocusableElements } from "../ui/dialogFocus";
+import { useDialogFocusTrap } from "../ui/dialogFocus";
+import { Z_LAYERS } from "../ui/zLayers";
 
-export function useDialogFocusTrap(
-  panelRef: React.RefObject<HTMLDivElement>,
-  onClose: () => void,
-  open: boolean,
-): React.KeyboardEventHandler<HTMLDivElement> {
-  useEffect(() => {
-    if (!open) return;
-    const frame = window.requestAnimationFrame(() => {
-      panelRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [open, panelRef]);
-
-  return useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const panel = panelRef.current;
-      if (!panel) return;
-      const focusable = getFocusableElements(panel);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (document.activeElement === panel) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    },
-    [onClose, panelRef],
-  );
-}
-
+/**
+ * The one top-bar dropdown shell (Connections, usage, activity): a click-away
+ * layer on `Z_LAYERS.sheet` with a panel pinned under the header's right edge,
+ * the shared focus trap, and Escape to close. Pass `bare` when the content draws
+ * its own header; `title` then only names the sheet for assistive tech.
+ */
 type HeaderSheetProps = {
   open: boolean;
   panelRef: React.RefObject<HTMLDivElement>;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   title: string;
-  subtitle: React.ReactNode;
+  subtitle?: React.ReactNode;
+  /** Render only `children` in the panel (no sticky header, no panel scroll). */
+  bare?: boolean;
+  /** Replaces the default panel surface (background, border, shadow) classes. */
+  surfaceClassName?: string;
+  /** Replaces the default sticky header surface classes. */
+  headerClassName?: string;
+  /** Replaces the default title text classes. */
+  titleClassName?: string;
   headerActions?: React.ReactNode;
   onClose: () => void;
   ariaLabelledBy?: string;
   width?: string;
+  panelStyle?: React.CSSProperties;
+  onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
   closeTitle?: string;
   children: React.ReactNode;
 };
@@ -73,54 +43,66 @@ export function HeaderSheet({
   title,
   subtitle,
   headerActions,
+  bare = false,
+  surfaceClassName = "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
+  headerClassName = "border-white/10 bg-[color:var(--ade-shell-surface,#121019)]",
+  titleClassName = "text-[13px] font-semibold",
   onClose,
   ariaLabelledBy,
   width,
+  panelStyle,
+  onKeyDown,
   closeTitle = `Close ${title}`,
   children,
 }: HeaderSheetProps) {
   const handleKeyDown = useDialogFocusTrap(panelRef, onClose, open);
-  const panelPositionClassName = width
-    ? cn(
-        "absolute right-3 top-10 max-h-[calc(100vh-72px)] overflow-y-auto",
-        width,
-      )
-    : "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(620px,calc(100vw-24px))] overflow-y-auto";
+  const handlePanelKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (event) => {
+    onKeyDown?.(event);
+    if (!event.defaultPrevented && !event.isPropagationStopped()) {
+      handleKeyDown(event);
+    }
+  };
+  const panelPositionClassName = cn(
+    "absolute right-3 top-10 max-h-[calc(100vh-72px)]",
+    !bare && "overflow-y-auto",
+    width ?? "w-[min(620px,calc(100vw-24px))]",
+  );
 
-  if (!open) return null;
+  if (!open || typeof document === "undefined") return null;
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[120]"
-      style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      className="fixed inset-0"
+      style={{ zIndex: Z_LAYERS.sheet, WebkitAppRegion: "no-drag" } as React.CSSProperties}
       onClick={onClose}
     >
       <div
         ref={panelRef}
-        className={cn(
-          panelPositionClassName,
-          "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
-        )}
+        className={cn(panelPositionClassName, surfaceClassName)}
+        style={panelStyle}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={ariaLabelledBy}
+        aria-labelledby={bare ? undefined : ariaLabelledBy}
+        aria-label={bare ? title : undefined}
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
-        onKeyDown={handleKeyDown}
+        onKeyDown={handlePanelKeyDown}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
+        {bare ? null : <div className={cn("sticky top-0 z-10 flex items-center justify-between border-b px-4 py-3", headerClassName)}>
           <div className="flex min-w-0 items-center gap-2">
             {icon}
             <div className="min-w-0">
               <div
                 id={ariaLabelledBy}
-                className="truncate text-[13px] font-semibold"
+                className={cn("truncate", titleClassName)}
               >
                 {title}
               </div>
-              <div className="truncate text-[11px] text-white/55">
-                {subtitle}
-              </div>
+              {subtitle != null ? (
+                <div className="truncate text-[11px] text-white/55">
+                  {subtitle}
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -135,9 +117,10 @@ export function HeaderSheet({
               <X size={13} weight="regular" />
             </button>
           </div>
-        </div>
+        </div>}
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

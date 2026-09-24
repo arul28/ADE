@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { paneTransition } from "../../lib/motion";
-import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
+import type { PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { useChatLaunchCliDriver } from "./useChatLaunchCliDriver";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
-import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { WorkLiveCornerCard } from "../work/WorkLiveCornerCard";
+import { Banner } from "../ui/notice/Banner";
 import { WorkSidebar } from "./WorkSidebar";
+import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
+import { PROJECT_SIDEBAR_DEFAULT_WIDTH, useProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
 import { useWorkShowRequests } from "./useWorkShowRequests";
@@ -29,7 +31,6 @@ import {
   type SessionContextMenuState,
 } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type {
   AgentChatSession,
   LaneSummary,
@@ -58,6 +59,7 @@ import {
   setSessionMetadataGenerating,
 } from "../../state/sessionMetadataGeneratingStore";
 import type { DropEdge } from "../ui/paneTreeOps";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
@@ -95,15 +97,6 @@ import {
   seedCrossMachineOptimisticChatSession,
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
-
-const TERMINALS_TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "sessions" }, defaultSize: 24, minSize: 15 },
-    { node: { type: "pane", id: "view" }, defaultSize: 76, minSize: 40 },
-  ],
-};
 
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
@@ -213,10 +206,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-  const stopAndDeleteConfirm = useConfirmDialog();
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
-  const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
-  const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
+  const hasProjectSidebar = useHasProjectSidebar();
+  const projectSidebarHidden = useProjectSidebarHidden();
+  const [boardHost, setBoardHost] = useState<HTMLDivElement | null>(null);
 
   const refreshWorkSessionsAfterLaneDelete = useCallback(
     () => refreshWork({ showLoading: false, force: true }),
@@ -248,23 +241,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     lanes: work.lanes,
     refreshSessions: refreshWorkSessionsAfterLaneDelete,
   });
-
-  const sessionsPaneRefCb = useCallback((el: HTMLDivElement | null) => {
-    if (sessionsPaneRoRef.current) {
-      sessionsPaneRoRef.current.disconnect();
-      sessionsPaneRoRef.current = null;
-    }
-    if (!el) {
-      unifiedChromeRef.current?.style.removeProperty("--ade-sessions-pane-w");
-      return;
-    }
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(([entry]) => {
-      unifiedChromeRef.current?.style.setProperty("--ade-sessions-pane-w", `${entry.contentRect.width}px`);
-    });
-    ro.observe(el);
-    sessionsPaneRoRef.current = ro;
-  }, []);
 
   const selectableSessions = useMemo(
     // The active binding's own roster, in sidebar order. Range selection and the
@@ -347,8 +323,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.setSelectedSessionId(id);
       work.openSessionTab(id);
       /* The board is an OVERVIEW, and opening a chat is diving out of it.
-         In board mode the chat has nowhere to render — the split is not
-         mounted — so selecting without leaving would look like a dead click on
+         In board mode the board holds the main area and the chat is not
+         mounted, so selecting without leaving would look like a dead click on
          a card that highlights and does nothing.
 
          Only on a plain open: the range and toggle branches above return
@@ -567,14 +543,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteChat = useCallback(
-    (
+    async (
       session: TerminalSessionSummary,
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this chat";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
-      );
+      const confirmed = await confirmDialog({
+        title: `Delete "${label}"?`,
+        message: "This permanently removes the saved chat history from ADE.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!confirmed) return;
 
       setSessionActionError(null);
@@ -618,14 +597,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteSession = useCallback(
-    (
+    async (
       session: TerminalSessionSummary,
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this session";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
-      );
+      const confirmed = await confirmDialog({
+        title: `Delete "${label}"?`,
+        message: "This permanently removes the saved terminal session from ADE.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!confirmed) return;
 
       setSessionActionError(null);
@@ -685,11 +667,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ) => {
       void (async () => {
         const label = (session.goal ?? session.title).trim() || "this session";
-        const confirmed = await stopAndDeleteConfirm.confirmAsync({
+        const confirmed = await confirmDialog({
           title: "Stop and delete session",
           message: `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
           confirmLabel: "Stop & delete",
-          danger: true,
+          destructive: true,
         });
         if (!confirmed) return;
 
@@ -719,7 +701,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })();
     },
-    [resolveSessionRuntimePin, stopAndDeleteConfirm, work],
+    [resolveSessionRuntimePin, work],
   );
 
   const selectedSessions = useMemo(
@@ -750,12 +732,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [resolveSessionRuntimePin],
   );
 
-  const handleBulkCloseSelected = useCallback(() => {
+  const handleBulkCloseSelected = useCallback(async () => {
     const running = selectedSessions.filter(canBulkStopSession);
     if (!running.length) return;
-    const confirmed = window.confirm(
-      `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?`,
+      message: "This terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.",
+      confirmLabel: "Stop",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setSessionActionError(null);
@@ -785,7 +770,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       });
   }, [selectedSessions, work]);
 
-  const handleBulkDeleteSelected = useCallback(() => {
+  const handleBulkDeleteSelected = useCallback(async () => {
     const deletable = selectedSessions.filter(canBulkDeleteSession);
     if (!deletable.length) {
       // Never a silent no-op: the header button is only offered when something
@@ -795,9 +780,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.setTimeout(() => setSessionActionError(null), 6000);
       return;
     }
-    const confirmed = window.confirm(
-      `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?`,
+      message: "This permanently removes the selected saved session history from ADE.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setSessionActionError(null);
@@ -873,11 +861,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const targets = selectedSessions;
       if (!targets.length) return;
       const runningCount = targets.filter(canBulkStopSession).length;
-      const confirmed = await stopAndDeleteConfirm.confirmAsync({
+      const confirmed = await confirmDialog({
         title: "Stop and delete sessions",
         message: `Stop ${runningCount} running runtime${runningCount === 1 ? "" : "s"} and permanently delete ${targets.length} selected session${targets.length === 1 ? "" : "s"}?\n\nThis terminates running CLI and shell processes, then removes every selected session from ADE.`,
         confirmLabel: "Stop & delete",
-        danger: true,
+        destructive: true,
       });
       if (!confirmed) return;
 
@@ -925,7 +913,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
     })();
-  }, [deleteSelectedSession, selectedSessions, stopAndDeleteConfirm, work]);
+  }, [deleteSelectedSession, selectedSessions, work]);
 
   const finalizeCliResumeResult = useCallback(
     async (
@@ -1210,9 +1198,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     });
   }, [active, setWorkSidebarTool]);
 
-  const toggleSessionsPane = useCallback(() => {
-    work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
-  }, [work]);
   const toggleWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(!work.workSidebarOpen);
   }, [work]);
@@ -1645,19 +1630,28 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ],
   );
 
+  /*
+    The board needs the full width, so it always draws in the main area. While
+    the project sidebar is on screen the sidebar keeps the list and the pane
+    portals its board into `boardHost`. With the sidebar hidden (or absent),
+    the pane itself takes the main area and becomes the board, toolbar and all,
+    so the List/Board toggle is still one click away.
+  */
+  const boardMode = work.workViewMode === "board";
+  const boardBesideList = boardMode && hasProjectSidebar && !projectSidebarHidden;
+
   /**
-   * The session roster, hoisted out of `paneConfigs` because it is rendered in
-   * TWO layouts now: as the narrow left pane of the split (list mode), and as
-   * the entire Work content area (board mode).
+   * The session roster. It lives in the project sidebar in list mode, stays
+   * there beside the board in board mode, and fills the main area only when
+   * the board has no sidebar to sit next to.
    *
    * One element, not two call sites: the toolbar it owns — search, the
-   * List/Board toggle, filters, new chat — must be the same control in the same
-   * place in both modes, so the toggle does not move under the cursor when it
-   * is used.
+   * List/Board toggle, filters, new chat — must be the same control in every
+   * mode, and the pane's cross-machine subscription must not run twice.
    */
   const sessionListPane = useMemo(
     () => (
-      <div ref={sessionsPaneRefCb} className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-tour="work.sessionsPane">
           {/* Active-binding inventory only: this pane reads and filters foreign
               rows from its own cross-machine union subscription. */}
           <SessionListPane
@@ -1698,6 +1692,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             setWorkViewMode={work.setWorkViewMode}
             workBoardBuckets={work.workBoardBuckets}
             workBoardWaitingReasons={work.workBoardWaitingReasons}
+            boardHost={boardBesideList ? boardHost : undefined}
             workCollapsedLaneIds={work.workCollapsedLaneIds}
             toggleWorkLaneCollapsed={work.toggleWorkLaneCollapsed}
             workCollapsedSectionIds={work.workCollapsedSectionIds}
@@ -1713,7 +1708,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             reorderWorkLanes={work.reorderWorkLanes}
             handoffJobs={handoffLaunchJobs}
             crossMachineSyncActive={active}
-            onToggleSessionsPane={toggleSessionsPane}
           />
       </div>
     ),
@@ -1730,91 +1724,70 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleRefreshOrphanSessions,
       handleContextMenu,
       handoffLaunchJobs,
-      sessionsPaneRefCb,
-      toggleSessionsPane,
+      boardBesideList,
+      boardHost,
     ],
   );
 
-  const paneConfigs: Record<string, PaneConfig> = useMemo(
-    () => ({
-      sessions: {
-        title: "",
-        minimizable: false,
-        children: sessionListPane,
-      },
-
-      view: {
-        title: "",
-        bodyClassName: "overflow-hidden",
-        // Stable automation anchor for the whole view area.
-        children: (
-          <div className="h-full min-h-0" data-tour="work.viewArea">
-            {workViewWithSidebar}
-          </div>
-        ),
-      },
-    }),
-    [sessionListPane, workViewWithSidebar],
+  // Stable automation anchor for the whole view area. `ade-work-surface` keeps
+  // the chat header on the same rail height as the tools pane header.
+  const viewArea = (
+    <div className="ade-work-surface min-h-0 min-w-0 flex-1 overflow-hidden" data-tour="work.viewArea">
+      {workViewWithSidebar}
+    </div>
   );
+
+  let mainArea: React.ReactNode;
+  if (boardBesideList) {
+    /* Board mode never renders the chat beside the board. That also keeps
+       `workSidebarWidthPct`, the user's LIST-mode tools width, untouched on
+       the round trip. Clicking a card selects the session and flips back to
+       list (see `handleSelectSession`). */
+    mainArea = (
+      <div
+        ref={setBoardHost}
+        className="flex min-h-0 flex-1 flex-col overflow-hidden px-1 pt-2"
+        data-testid="work-board-surface"
+      />
+    );
+  } else if (boardMode) {
+    mainArea = (
+      <div className="min-h-0 flex-1 overflow-hidden" data-testid="work-board-surface">
+        {sessionListPane}
+      </div>
+    );
+  } else if (hasProjectSidebar) {
+    mainArea = <div className="flex min-h-0 flex-1 overflow-hidden">{viewArea}</div>;
+  } else {
+    // No project sidebar above this page (tests, standalone hosts): keep the
+    // list in a plain column of the sidebar's default width.
+    mainArea = (
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div
+          className="flex min-h-0 shrink-0 flex-col border-r border-white/[0.06]"
+          style={{ width: PROJECT_SIDEBAR_DEFAULT_WIDTH }}
+          data-testid="work-sessions-column"
+        >
+          {sessionListPane}
+        </div>
+        {viewArea}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: "var(--color-bg)" }}>
       {sessionActionError ? (
-        <div
-          className="shrink-0 border-b border-red-500/25 px-4 py-2 text-[12px] text-red-300/95"
-          style={{ background: "rgba(239, 68, 68, 0.08)" }}
-          role="status"
-        >
-          {sessionActionError}
-        </div>
+        <Banner
+          model={{ id: "session-action-error", tone: "error", title: sessionActionError }}
+          layout="inline"
+          style={{ margin: "0 16px" }}
+        />
       ) : null}
-      {work.workViewMode === "board" ? (
-        /* BOARD MODE OWNS THE WHOLE TAB.
-           Four columns inside the ~390px sessions pane is not a board — at a
-           normal window width only "Needs you" and a sliver of "Working" are
-           reachable, behind the board's own horizontal scrollbar, while the
-           chat pane sits idle beside it.
-
-           So the split is not rendered at all here, rather than being stretched
-           to full width. Driving the splitter would mean writing
-           `workSidebarWidthPct`, and that value is the user's LIST-mode layout:
-           it has to survive the round trip untouched, or coming back from the
-           board leaves the chat pane the wrong size. Not rendering the split
-           also means the chat surfaces unmount cleanly instead of living on at
-           zero width.
-
-           `sessionListPane` is the same element the split uses, so the toolbar
-           — and the List/Board toggle in it — is in the same place in both
-           modes. Clicking a card selects the session and flips back to list
-           (see `handleSelectSession`), which is the way out of here. */
-        <div className="min-h-0 flex-1 overflow-hidden" data-testid="work-board-surface">
-          {sessionListPane}
-        </div>
-      ) : work.workFocusSessionsHidden ? (
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <div
-            className="flex w-8 shrink-0 flex-col items-center border-r border-white/[0.06] pt-1.5"
-            style={{ background: "var(--work-session-sidebar-bg, var(--work-sidebar-bg))" }}
-            data-testid="work-sessions-collapsed-rail"
-          >
-            <WorkHeaderSidebarToggle collapsed onToggle={toggleSessionsPane} />
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">
-            {workViewWithSidebar}
-          </div>
-        </div>
-      ) : (
-        <div ref={unifiedChromeRef} className="ade-work-unified-chrome flex min-h-0 flex-1 flex-col">
-          {/* Legacy top tab/grid bar removed — each chat/CLI surface owns its own
-              header (far-left sessions toggle + far-right Tools toggle). */}
-          <PaneTilingLayout
-            layoutId="work:tiling:v3"
-            tree={TERMINALS_TILING_TREE}
-            panes={paneConfigs}
-            className="ade-work-surface min-h-0 flex-1"
-          />
-        </div>
-      )}
+      {mainArea}
+      {hasProjectSidebar && (!boardMode || boardBesideList) ? (
+        <ProjectSidebarSlot active={active}>{sessionListPane}</ProjectSidebarSlot>
+      ) : null}
 
       <SessionContextMenu
         menu={contextMenu}
@@ -1925,8 +1898,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         closingPtyIds={work.closingPtyIds}
         deletingSessionId={deletingSessionId}
       />
-
-      <ConfirmDialog state={stopAndDeleteConfirm.state} onClose={stopAndDeleteConfirm.close} />
     </div>
   );
 }

@@ -14,6 +14,7 @@ import {
   TechnicalDetailsFold,
 } from "../../components/app/errorSurfaceKit";
 import type { ProjectHostRecoveryState } from "../../webclient/sync/projectHostRecoveryStore";
+import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import {
   getProjectHostRecoveryState,
   recoverProjectHost,
@@ -177,7 +178,7 @@ function staleListLabel(pathname: string): string {
   return "chats";
 }
 
-export function ProjectHostStartingBanner() {
+export function ProjectHostStartingBanner(): null {
   const { phase } = useProjectHostRecovery();
   const { pathname } = useLocation();
   const [busy, setBusy] = useState(false);
@@ -191,21 +192,19 @@ export function ProjectHostStartingBanner() {
     }
   }, []);
 
-  if (phase !== "retrying") return null;
-  return (
-    <div className="border-b border-border/60 bg-fg/[0.03]">
-      <div className="flex items-center justify-center gap-2 px-3 py-1.5 text-[12.5px] text-fg/65">
-        <CircleNotch size={13} weight="bold" className="animate-spin" />
-        Still starting this project&apos;s services…
-        <button type="button" className={ERROR_GHOST_BUTTON} disabled={busy} onClick={() => void onRetry()}>
-          Retry
-        </button>
-      </div>
-      <div className="flex items-center gap-2 px-3 pb-1.5 text-[11px] text-fg/40">
-        <span className="h-px flex-1 bg-border/60" />
-        {staleListLabel(pathname)} (may be out of date)
-        <span className="h-px flex-1 bg-border/60" />
-      </div>
-    </div>
+  useAppBanner(
+    phase === "retrying"
+      ? {
+          id: "project-host-starting",
+          tone: "neutral",
+          busy: true,
+          title: "Still starting this project's services…",
+          detail: `${staleListLabel(pathname)} (may be out of date)`,
+          actions: [{ label: "Retry", variant: "secondary", disabled: busy, onClick: () => void onRetry() }],
+        }
+      : null,
+    { placement: "docked", priority: APP_BANNER_PRIORITY.project },
   );
+
+  return null;
 }

@@ -112,7 +112,7 @@ describe("CtoTalkNoticeLine", () => {
 
     expect(screen.getByTestId("cto-talk-error").textContent)
       .toContain("macOS System Settings › Sound › Input");
-    fireEvent.click(screen.getByTestId("cto-talk-open-mic-settings"));
+    fireEvent.click(screen.getByRole("button", { name: /Open (sound|microphone) settings/ }));
     await waitFor(() => expect(openPaneSpy()).toHaveBeenCalledWith("macos-sound-input"));
   });
 
@@ -124,7 +124,7 @@ describe("CtoTalkNoticeLine", () => {
       />,
     );
 
-    fireEvent.click(screen.getByTestId("cto-talk-open-mic-settings"));
+    fireEvent.click(screen.getByRole("button", { name: /Open (sound|microphone) settings/ }));
     await waitFor(() => expect(openPaneSpy()).toHaveBeenCalledWith("windows-sound"));
   });
 
@@ -135,12 +135,12 @@ describe("CtoTalkNoticeLine", () => {
         notice={{ message: ctoVoiceMicrophoneMessage("no-device", "linux"), microphone: "no-device" }}
       />,
     );
-    expect(screen.queryByTestId("cto-talk-open-mic-settings")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Open (sound|microphone) settings/ })).toBeNull();
 
     cleanup();
     setPlatform("darwin");
     render(<CtoTalkNoticeLine notice={{ message: "The call ended.", microphone: null }} />);
-    expect(screen.queryByTestId("cto-talk-open-mic-settings")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Open (sound|microphone) settings/ })).toBeNull();
     expect(screen.getByTestId("cto-talk-error").textContent).toBe("The call ended.");
   });
 });

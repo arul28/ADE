@@ -412,7 +412,7 @@ export function BatchLaunchModal({
             : "Configure the lane, branch, and kickoff prompt. Model settings below apply to this launch."
       }
       icon={Rocket}
-      widthClassName="w-[min(960px,calc(100vw-32px))]"
+      width="min(960px, calc(100vw - 32px))"
     >
       {!laneOnly ? (
         <div

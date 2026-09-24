@@ -251,7 +251,7 @@ export function CursorCloudQuickViewButton({
             tile and inset, which made the glyph read smaller than Linear's
             mark in the same 20px control. */}
         {variant === "menu-row" ? <Cursor.Avatar size={12} /> : <Cursor size={15} />}
-        {variant !== "icon" ? <span className="ade-tab-label min-w-0 flex-1 truncate">Cursor Cloud</span> : null}
+        {variant !== "icon" ? <span className="min-w-0 flex-1 truncate">Cursor Cloud</span> : null}
         {unreadFinished > 0 ? (
           <span
             className="absolute -right-1 -top-1 grid h-[13px] min-w-[13px] place-items-center rounded-full px-[3px] font-mono text-[8px] font-bold leading-none text-white"

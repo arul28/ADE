@@ -32,7 +32,8 @@ export function isCssZoomedBrowserSurface(): boolean {
 }
 
 /**
- * The tab routes the web client surfaces, and the gate `TabNav` reads.
+ * The tab routes the web client surfaces, and the gate the project sidebar and
+ * the account menu read.
  *
  * Automations stays off the list: it has no `automations.*` action registered
  * host-side, so it would render a live-looking surface whose writes go nowhere. Every route here has to stay reachable through

@@ -12,6 +12,7 @@ import {
   useChatLaunchSnapshot,
 } from "../../../state/chatLaunchStore";
 import { dismissToast, getToasts } from "../../app/toast/toastStore";
+import { __resetDialogRequestsForTests } from "../../ui/dialog/confirm";
 import { LaneSetupCard, LaneSetupTranscriptCard, laneSetupActions } from "./LaneSetupCard";
 import { buildLaneSetupCardPayload } from "./chatLaunchSynthetic";
 import { resetChatLaunchDraftRestoreForTests, subscribeChatLaunchClosed } from "./chatLaunchDraftRestore";
@@ -53,6 +54,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  act(() => __resetDialogRequestsForTests());
   cleanup();
   resetChatLaunchStoreForTests();
   resetChatLaunchDraftRestoreForTests();

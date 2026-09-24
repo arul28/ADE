@@ -215,7 +215,7 @@ describe("WindowsBetaNoticeModal", () => {
         osReleaseOverride={null}
       />,
     );
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

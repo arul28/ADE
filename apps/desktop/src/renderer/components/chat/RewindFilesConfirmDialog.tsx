@@ -16,6 +16,7 @@ import type {
 } from "../../../shared/types";
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
 import { cn } from "../ui/cn";
+import { Dialog } from "../ui/dialog";
 import type { RewindPreviewFile } from "./rewindFilesPreview";
 
 export type RewindFilesConfirmRequest = {
@@ -208,28 +209,12 @@ export function RewindFilesConfirmDialog({
     if (first) void loadDiff(first);
   }, [files, firstPreviewablePath, loadDiff, state]);
 
-  useEffect(() => {
-    if (!state) return;
-    const handler = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [onCancel, state]);
-
   if (!state) return null;
 
   const { request, preview } = state;
   const filesCount = preview.filesChanged.length;
   const messagePreview = formatMessagePreview(request.text);
   const contextRollback = preview.conversationRollback === true;
-
-  const handleOverlayClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget) onCancel();
-  };
 
   const toggleFile = (file: RewindPreviewFile) => {
     if (expandedPath === file.path) {
@@ -242,31 +227,36 @@ export function RewindFilesConfirmDialog({
     void loadDiff(file);
   };
 
-  return (
-    <div
-      role="presentation"
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/75 px-5 py-6"
-      onClick={handleOverlayClick}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="rewind-files-title"
-        className="flex max-h-[88vh] w-full max-w-[860px] flex-col overflow-hidden border border-white/[0.10] bg-[#101018] shadow-[0_30px_90px_-38px_rgba(0,0,0,0.9)]"
-      >
-        <div className="border-b border-white/[0.07] bg-white/[0.025] px-5 py-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <GitDiff size={16} weight="regular" className="text-amber-200/75" />
-            <h2 id="rewind-files-title" className="text-[14px] font-semibold text-fg/92">
-              {contextRollback ? "Rewind Codex context" : "Undo file changes"}
-            </h2>
-            <span className="rounded-md border border-amber-200/10 bg-amber-300/[0.06] px-2 py-0.5 font-mono text-[10px] text-amber-100/58">
-              +{preview.insertions} / -{preview.deletions}
-            </span>
-          </div>
-        </div>
+  const confirmLabel = contextRollback && filesCount === 0
+    ? "Rollback context"
+    : `Revert ${filesCount} file${filesCount === 1 ? "" : "s"}`;
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onCancel();
+      }}
+      title={contextRollback ? "Rewind Codex context" : "Undo file changes"}
+      description={
+        <span className="rounded-md border border-amber-200/10 bg-amber-300/[0.06] px-2 py-0.5 font-mono text-[10px] text-amber-100/58">
+          +{preview.insertions} / -{preview.deletions}
+        </span>
+      }
+      tone="error"
+      icon={<GitDiff size={16} weight="regular" />}
+      width={860}
+      maxHeight="88vh"
+      // The diff colors are written for this dark surface in every theme.
+      panelStyle={{ background: "#101018" }}
+      bodyStyle={{ padding: "16px 20px" }}
+      // The key that answered this dialog is not also the chat's Escape.
+      onEscapeKeyDown={(event) => event.stopPropagation()}
+      actions={[
+        { label: "Cancel", onClick: onCancel, variant: "secondary" },
+        { label: confirmLabel, onClick: onConfirm, variant: "solid", autoFocus: true },
+      ]}
+    >
           <div className="rounded-md border border-white/[0.06] bg-black/18 px-4 py-3">
             <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-fg/35">Revert to before</div>
             <div className="mt-2 text-[13px] leading-5 text-fg/86">"{messagePreview || "User message"}"</div>
@@ -336,28 +326,6 @@ export function RewindFilesConfirmDialog({
               ? "Codex conversation context will roll back. Saved ADE transcript stays visible."
               : "Conversation history is not affected."}
           </div>
-        </div>
-
-        <div className="flex justify-end gap-2 border-t border-white/[0.07] bg-white/[0.018] px-5 py-3">
-          <button
-            type="button"
-            className="rounded-md border border-white/[0.12] bg-white/[0.035] px-3 py-1.5 text-[12px] font-medium text-fg/70 transition-colors hover:bg-white/[0.06]"
-            onClick={onCancel}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-red-300/20 bg-red-500/18 px-3 py-1.5 text-[12px] font-semibold text-red-50/90 transition-colors hover:bg-red-500/24"
-            onClick={onConfirm}
-            autoFocus
-          >
-            {contextRollback && filesCount === 0
-              ? "Rollback context"
-              : `Revert ${filesCount} file${filesCount === 1 ? "" : "s"}`}
-          </button>
-        </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

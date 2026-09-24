@@ -6,11 +6,11 @@
  * copies that had already drifted apart on type weight. These are the pieces
  * both sections build from, so a change to the pattern lands once.
  */
-import React, { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { CaretRight, CheckCircle, MagnifyingGlass, X } from "@phosphor-icons/react";
+import React, { useState } from "react";
+import { CaretRight, CheckCircle, MagnifyingGlass } from "@phosphor-icons/react";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, SECTION_LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { Dialog } from "../ui/dialog";
 
 export function panel(overrides?: React.CSSProperties): React.CSSProperties {
   return {
@@ -342,131 +342,46 @@ export function CollapsibleProviderCard({
 }
 
 /**
- * Modal shell for a provider's own page: overlay, Escape, focus in and back
- * out, and the identifying header. Callers supply only the body.
+ * Modal shell for a provider's own page: the shared `Dialog` with the
+ * identifying header (logo, name, status line). Callers supply only the body.
+ * A dialog raised on top of it (OAuth sign-in) takes Escape and focus through
+ * Radix's layer stack, then hands them back.
  */
 export function ProviderDetailDialog({
   providerId,
   title,
   subtitle,
-  suspended = false,
   onClose,
   children,
 }: {
   providerId: string;
   title: string;
   subtitle: React.ReactNode;
-  /** A dialog of its own is open on top; yield Escape and focus to it. */
-  suspended?: boolean;
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  const dialogRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (suspended) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-        return;
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      // Visible title is the provider name; the accessible name keeps "provider",
+      // and the JSX title leaves the close button's label as plain "Close".
+      title={
+        <>
+          {title}
+          <span className="ade-dialog-sr-only"> provider</span>
+        </>
       }
-      // `aria-modal` tells assistive tech the page behind is inert; without a
-      // trap, Tab still walks into it, so a keyboard user leaves the dialog
-      // with no way back and no idea it is still open.
-      if (event.key !== "Tab") return;
-      const node = dialogRef.current;
-      if (!node) return;
-      const focusable = [...node.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )].filter((element) => element.offsetParent !== null || element === node);
-      const first = focusable[0] ?? node;
-      const last = focusable[focusable.length - 1] ?? node;
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || active === node)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, suspended]);
-
-  // Move focus into the dialog so keyboard users aren't acting under the overlay.
-  useEffect(() => {
-    if (suspended) return;
-    const node = dialogRef.current;
-    if (!node) return;
-    const previous = document.activeElement as HTMLElement | null;
-    node.focus();
-    return () => {
-      previous?.focus?.();
-    };
-  }, [suspended]);
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.70)" }}
-      onClick={onClose}
+      description={<span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{subtitle}</span>}
+      icon={<ProviderLogo family={providerId} size={18} />}
+      width={448}
+      maxHeight="85vh"
+      preventAutoFocus
+      bodyPadding={false}
     >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${title} provider`}
-        tabIndex={-1}
-        className="w-full max-w-md max-h-[85vh] overflow-y-auto outline-none"
-        style={{
-          background: COLORS.cardBgSolid,
-          border: `1px solid ${COLORS.outlineBorder}`,
-          boxShadow: "0 28px 80px -36px rgba(0,0,0,0.82)",
-        }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "0 16px",
-            height: 52,
-            borderBottom: `1px solid ${COLORS.border}`,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <ProviderLogo family={providerId} size={24} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
-                {title}
-              </div>
-              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{subtitle}</div>
-            </div>
-          </div>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            style={{
-              border: `1px solid ${COLORS.border}`,
-              background: "transparent",
-              color: COLORS.textSecondary,
-              width: 26,
-              height: 26,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-            }}
-          >
-            <X size={13} weight="bold" />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>,
-    document.body,
+      {children}
+    </Dialog>
   );
 }

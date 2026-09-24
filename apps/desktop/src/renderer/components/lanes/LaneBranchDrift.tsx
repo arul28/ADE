@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { Warning } from "@phosphor-icons/react";
+import { GitBranch, Warning } from "@phosphor-icons/react";
 
 import type { LaneBranchDrift, LaneBranchDriftResolution } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { Banner, type NoticeAction } from "../ui/notice";
 
 // ---------------------------------------------------------------------------
 // Drift state
@@ -112,10 +113,8 @@ export function LaneBranchDriftChip({
 
 export function LaneBranchDriftStrip({
   laneId,
-  className,
 }: {
   laneId: string | null | undefined;
-  className?: string;
 }) {
   const drift = useLaneBranchDrift(laneId);
   const armed = useLaneBranchDriftArmed(laneId);
@@ -171,47 +170,46 @@ export function LaneBranchDriftStrip({
 
   if (!visible || !drift) return null;
 
+  const busy = pending != null;
+  const actions: NoticeAction[] = [];
+  if (forceable) {
+    actions.push({
+      label: "Switch anyway",
+      onClick: () => { void resolve(forceable, true); },
+      disabled: busy,
+      busy: pending === forceable,
+    });
+  }
+  actions.push(
+    {
+      label: "Switch back",
+      variant: forceable ? "secondary" : "primary",
+      onClick: () => { void resolve("switch-back"); },
+      disabled: busy,
+      busy: pending === "switch-back",
+    },
+    {
+      label: `Keep ${drift.headBranchRef}`,
+      variant: "secondary",
+      onClick: () => { void resolve("keep-head"); },
+      disabled: busy,
+      busy: pending === "keep-head",
+    },
+  );
+
   return (
-    <div
-      className={cn(
-        "flex shrink-0 items-center gap-2 border-t border-amber-200/[0.08] bg-amber-300/[0.055] px-3 py-1.5 font-sans text-[11px] text-amber-100/75",
-        className,
-      )}
-      role="status"
-      data-testid="lane-branch-drift-strip"
-    >
-      <Warning size={12} weight="fill" className="shrink-0 text-amber-300/80" aria-hidden />
-      <span className="min-w-0 flex-1 truncate" title={message}>
-        {error ? error : message}
-      </span>
-      <span className="flex shrink-0 items-center gap-1">
-        {forceable ? (
-          <button
-            type="button"
-            disabled={pending != null}
-            className="rounded px-1.5 py-0.5 font-medium text-amber-100/90 underline-offset-2 hover:bg-amber-200/10 hover:underline disabled:opacity-40"
-            onClick={() => { void resolve(forceable, true); }}
-          >
-            Switch anyway
-          </button>
-        ) : null}
-        <button
-          type="button"
-          disabled={pending != null}
-          className="rounded px-1.5 py-0.5 text-amber-200/70 underline-offset-2 hover:bg-amber-200/10 hover:text-amber-100 hover:underline disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:no-underline"
-          onClick={() => { void resolve("switch-back"); }}
-        >
-          Switch back
-        </button>
-        <button
-          type="button"
-          disabled={pending != null}
-          className="rounded px-1.5 py-0.5 text-amber-200/70 underline-offset-2 hover:bg-amber-200/10 hover:text-amber-100 hover:underline disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:no-underline"
-          onClick={() => { void resolve("keep-head"); }}
-        >
-          Keep {drift.headBranchRef}
-        </button>
-      </span>
-    </div>
+    <Banner
+      layout="inline"
+      testId="lane-branch-drift-strip"
+      style={{ margin: "6px 8px", flexShrink: 0 }}
+      model={{
+        id: `lane-branch-drift:${laneId}`,
+        tone: "warning",
+        icon: <GitBranch size={13} weight="bold" />,
+        title: error ? error : message,
+        ariaLabel: message,
+        actions,
+      }}
+    />
   );
 }

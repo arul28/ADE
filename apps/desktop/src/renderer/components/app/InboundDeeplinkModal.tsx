@@ -1,5 +1,5 @@
 import React from "react";
-import { GitBranch, Warning } from "@phosphor-icons/react";
+import { GitBranch } from "@phosphor-icons/react";
 
 import {
   COLORS,
@@ -7,8 +7,8 @@ import {
   MONO_FONT,
   SANS_FONT,
   outlineButton,
-  primaryButton,
 } from "../lanes/laneDesignTokens";
+import { Dialog, type DialogAction } from "../ui/dialog";
 import type {
   AppNavigationTarget,
   CreateLaneFromPrBranchPreflightResult,
@@ -17,6 +17,7 @@ import type {
 import type { DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { openExternalUrl } from "../../lib/openExternal";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { Banner } from "../ui/notice";
 
 export type InboundBranchDeeplink = {
   repoOwner: string;
@@ -198,28 +199,26 @@ export function InboundDeeplinkModal({
 
   if (existingLane) return null;
 
-  const renderFrame = (subtitle: string, body: React.ReactNode, footer: React.ReactNode): React.ReactElement => (
-    <div
-      role="presentation"
-      style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.52)", backdropFilter: "blur(10px)", padding: 20 }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !busy) onClose();
+  const renderFrame = (subtitle: string, body: React.ReactNode, actions: DialogAction[]): React.ReactElement => (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next && !busy) onClose();
       }}
+      title="Open in ADE"
+      description={subtitle}
+      width={560}
+      hideClose
+      preventAutoFocus
+      // This modal has never closed on Escape (a deeplink lands unannounced);
+      // the scrim and the footer buttons are its ways out.
+      onEscapeKeyDown={(event) => event.preventDefault()}
+      bodyStyle={{ display: "grid", gap: 14, paddingTop: 18 }}
+      actions={actions}
     >
-      <div role="dialog" aria-modal="true" aria-labelledby="inbound-deeplink-title" style={{ width: "min(560px, 100%)", borderRadius: 12, border: `1px solid ${COLORS.border}`, background: COLORS.cardBgSolid, boxShadow: "0 24px 80px rgba(0,0,0,0.45)", overflow: "hidden" }}>
-        <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <div id="inbound-deeplink-title" style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}>Open in ADE</div>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{subtitle}</div>
-        </div>
-        <div style={{ padding: 20, display: "grid", gap: 14 }}>
-          {body}
-          {error ? <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>{error}</div> : null}
-        </div>
-        <div style={{ padding: "14px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${COLORS.border}` }}>
-          {footer}
-        </div>
-      </div>
-    </div>
+      {body}
+      {error ? <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>{error}</div> : null}
+    </Dialog>
   );
 
   if (!branchTarget) {
@@ -269,10 +268,10 @@ export function InboundDeeplinkModal({
             </div>
           ))}
         </div>,
-        <>
-          <button type="button" onClick={onClose} disabled={busy} style={outlineButton({ height: 34, opacity: busy ? 0.6 : 1 })}>Cancel</button>
-          <button type="button" onClick={() => void onSwitchProject()} disabled={busy} style={primaryButton({ height: 34, opacity: busy ? 0.6 : 1 })}>{busy ? "Switching..." : "Switch project and open"}</button>
-        </>,
+        [
+          { label: "Cancel", onClick: onClose, disabled: busy, variant: "secondary" },
+          { label: busy ? "Switching..." : "Switch project and open", onClick: () => void onSwitchProject(), disabled: busy, variant: "solid" },
+        ],
       );
     }
 
@@ -364,7 +363,7 @@ export function InboundDeeplinkModal({
         {!repoLabel ? <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.5 }}>The link did not carry anything this machine can open.</div> : null}
         {actions.length > 0 ? <div style={{ display: "grid", gap: 8 }}>{actions}</div> : null}
       </>,
-      <button type="button" onClick={onClose} style={outlineButton({ height: 34 })}>Close</button>,
+      [{ label: "Close", onClick: onClose, variant: "secondary" }],
     );
   }
 
@@ -431,51 +430,39 @@ export function InboundDeeplinkModal({
     }
   };
 
-  return (
-    <div
-      role="presentation"
-      style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.52)", backdropFilter: "blur(10px)", padding: 20 }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !busy) onClose();
-      }}
-    >
-      <div role="dialog" aria-modal="true" aria-labelledby="inbound-deeplink-title" style={{ width: "min(560px, 100%)", borderRadius: 12, border: `1px solid ${COLORS.border}`, background: COLORS.cardBgSolid, boxShadow: "0 24px 80px rgba(0,0,0,0.45)", overflow: "hidden" }}>
-        <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <div id="inbound-deeplink-title" style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}>Open in ADE</div>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>
-            {isBranchOnly ? "A branch was shared with you. ADE can fetch it and create the lane locally." : "A branch was shared with you. Create a lane to start working on it locally."}
-          </div>
+  return renderFrame(
+    isBranchOnly ? "A branch was shared with you. ADE can fetch it and create the lane locally." : "A branch was shared with you. Create a lane to start working on it locally.",
+    <>
+      {loading ? (
+        <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
+          {isBranchOnly ? "Preparing branch import..." : "Checking branch ownership and remote availability..."}
         </div>
-        <div style={{ padding: 20, display: "grid", gap: 14 }}>
-          {loading ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
-              {isBranchOnly ? "Preparing branch import..." : "Checking branch ownership and remote availability..."}
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {rows.map(([label, value]) => (
+            <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
+              <div style={LABEL_STYLE}>{label}</div>
+              <div style={{ fontFamily: label === "PR" ? SANS_FONT : MONO_FONT, fontSize: 12, color: COLORS.textSecondary, minWidth: 0, overflowWrap: "anywhere" }}>{value}</div>
             </div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {rows.map(([label, value]) => (
-                <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
-                  <div style={LABEL_STYLE}>{label}</div>
-                  <div style={{ fontFamily: label === "PR" ? SANS_FONT : MONO_FONT, fontSize: 12, color: COLORS.textSecondary, minWidth: 0, overflowWrap: "anywhere" }}>{value}</div>
-                </div>
-              ))}
-            </div>
-          )}
-          {blocking ? (
-            <div style={{ display: "flex", gap: 10, padding: "10px 12px", borderRadius: 9, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>
-              <Warning size={15} weight="fill" style={{ marginTop: 2, flexShrink: 0 }} />
-              <span>{blocking}</span>
-            </div>
-          ) : null}
-          {error ? <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>{error}</div> : null}
+          ))}
         </div>
-        <div style={{ padding: "14px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${COLORS.border}` }}>
-          <button type="button" onClick={onClose} disabled={busy} style={outlineButton({ height: 34, opacity: busy ? 0.6 : 1 })}>Cancel</button>
-          <button type="button" onClick={() => void onConfirm()} disabled={!canConfirm} style={primaryButton({ height: 34, opacity: canConfirm ? 1 : 0.5 })}>
-            <GitBranch size={14} /> {busy ? "Creating..." : isBranchOnly ? "Create lane from branch" : "Create lane"}
-          </button>
-        </div>
-      </div>
-    </div>
+      )}
+      {blocking ? (
+        <Banner
+          layout="inline"
+          model={{ id: "inbound-branch-import-blocked", tone: "error", title: blocking }}
+        />
+      ) : null}
+    </>,
+    [
+      { label: "Cancel", onClick: onClose, disabled: busy, variant: "secondary" },
+      {
+        label: busy ? "Creating..." : isBranchOnly ? "Create lane from branch" : "Create lane",
+        icon: <GitBranch size={13} />,
+        onClick: () => void onConfirm(),
+        disabled: !canConfirm,
+        variant: "solid",
+      },
+    ],
   );
 }

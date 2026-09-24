@@ -589,7 +589,7 @@ Reused desktop renderer (web-mode adaptation):
   `isCssZoomedBrowserSurface()` is true for the hosted client and the Vite
   `browserMock` preview so `AppShell` fills the inverse-sized body with
   `h-full` instead of `100vh`. Desktop-only chrome
-  (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
+  (`AppShell.tsx`, `TopBar.tsx`, `projectSidebar/`, `OnboardingBootstrap.tsx`,
   `WelcomeVideoGate.tsx`) reads the web-client flag to hide native window
   controls, the updater, the onboarding tour, and tabs with no sync-protocol
   backing instead of rendering broken affordances.
@@ -656,7 +656,7 @@ Reused desktop renderer (web-mode adaptation):
   only the list failed to load — set only where it is both true and not
   obvious: a failure that costs nothing should say so, and one that costs
   something must not be dressed up as harmless.
-- `apps/desktop/src/renderer/components/settings/WebScopeBanner.tsx` - the
+- `apps/desktop/src/renderer/components/settings/WebScopePill.tsx` - the
   per-section scope line in Settings. On the desktop "where does this setting
   go" has one answer; in the browser it has three - the connected machine, the
   ADE account, or this browser's local storage alone - and which one is not

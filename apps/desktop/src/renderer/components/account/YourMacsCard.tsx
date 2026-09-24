@@ -4,11 +4,9 @@ import {
   ArrowRight,
   CaretDown,
   CaretRight,
-  CircleNotch,
   DesktopTower,
   DotsThreeVertical,
   Laptop,
-  WarningCircle,
 } from "@phosphor-icons/react";
 import type {
   AdeAccountLocalMachineIdentity,
@@ -38,7 +36,6 @@ import {
   RADII,
   SANS_FONT,
   cardStyle,
-  dangerButton,
   inlineBadge,
   outlineButton,
   primaryButton,
@@ -66,6 +63,7 @@ import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { CustomToolMark } from "../shared/CustomToolMark";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
+import { Banner } from "../ui/notice/Banner";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
 function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
@@ -95,6 +93,8 @@ function InventoryEmpty({ children }: { children: React.ReactNode }) {
 }
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
+import { Dialog } from "../ui/dialog";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -149,92 +149,25 @@ export function ConfirmSheet({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if (busy) return;
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [busy, onCancel]);
-
-  // A portal: the card behind this sheet uses `backdrop-filter`, which makes
-  // it the containing block for `position: fixed`. Inside it, a tall sheet was
-  // clipped at the top of the card.
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      onClick={(event) => {
-        if (busy) return;
-        if (event.target === event.currentTarget) onCancel();
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next && !busy) onCancel();
       }}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 9999,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-        background: "color-mix(in srgb, #000 55%, transparent)",
-        backdropFilter: "blur(2px)",
-        WebkitBackdropFilter: "blur(2px)",
-      }}
-    >
-      <div
-        style={cardStyle({
-          width: 400,
-          maxWidth: "100%",
-          padding: 0,
-          overflow: "hidden",
-          background: COLORS.cardBgSolid,
-          backdropFilter: "none",
-          WebkitBackdropFilter: "none",
-          boxShadow: "0 24px 64px -30px rgba(0,0,0,0.82)",
-        })}
-      >
-        <div style={{ padding: "18px 20px 4px" }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>
-            {title}
-          </div>
-          <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55, color: COLORS.textSecondary, whiteSpace: "pre-line" }}>
-            {body}
-          </div>
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "16px 20px 18px" }}>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onCancel}
-            style={outlineButton({ height: 34, fontSize: 12.5, padding: "0 14px" })}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            autoFocus
-            onClick={onConfirm}
-            style={(danger ? dangerButton : primaryButton)({
-              height: 34,
-              fontSize: 12.5,
-              padding: "0 16px",
-              opacity: busy ? 0.6 : 1,
-              cursor: busy ? "not-allowed" : "pointer",
-            })}
-          >
-            {busy ? <CircleNotch size={14} weight="bold" className="animate-spin" /> : null}
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+      title={title}
+      description={<span style={{ whiteSpace: "pre-line" }}>{body}</span>}
+      tone={danger ? "error" : "accent"}
+      size="sm"
+      hideClose
+      dismissible={!busy}
+      // The sheet owns Escape; the account page behind it must not also see it.
+      onEscapeKeyDown={(event) => event.stopPropagation()}
+      actions={[
+        { label: "Cancel", onClick: onCancel, disabled: busy, variant: "secondary" },
+        { label: confirmLabel, onClick: onConfirm, busy, autoFocus: true, variant: "solid" },
+      ]}
+    />
   );
 }
 
@@ -652,7 +585,7 @@ export function YourMacsCard() {
   const reconnectAction = reconnectFlow.view({ label: "Reconnect this computer", detail: missingCopy.body });
 
   // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
-  // stack behind, the cards that follow this one (mirrors the TabNav pattern).
+  // stack behind, the cards that follow this one (same approach as `ui/AnchoredMenu`).
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(menuAnchor, openMenuKey);
   const menuItemRef = useRef<HTMLButtonElement | null>(null);
   const menuTriggerRef = useRef<HTMLElement | null>(null);
@@ -844,50 +777,28 @@ export function YourMacsCard() {
         stale row must not hide the only Reconnect button.
       */}
       {showReconnectRow ? (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 12,
-            padding: "12px 18px",
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
-          }}
-        >
-          <WarningCircle size={16} weight="fill" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 2 }} />
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-              {missingCopy.title}
-            </div>
-            <div
-              role={reconnectAction.cancels ? "status" : undefined}
-              style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}
-            >
-              {reconnectAction.detail}
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 10 }}>
-              <button
-                type="button"
-                disabled={reconnectAction.disabled || repair.pending}
-                onClick={reconnectAction.onClick}
-                style={(reconnectAction.cancels ? outlineButton : primaryButton)({
-                  height: 30,
-                  fontSize: 12,
-                  padding: "0 12px",
-                  flexShrink: 0,
-                  opacity: reconnectAction.disabled || repair.pending ? 0.6 : 1,
-                  cursor: reconnectAction.disabled || repair.pending ? "not-allowed" : "pointer",
-                })}
-              >
-                {reconnectAction.busy ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : null}
-                {reconnectAction.label}
-              </button>
-              {repair.available ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "12px 18px" }}
+          model={{
+            id: "this-computer-reconnect",
+            tone: "warning",
+            title: missingCopy.title,
+            detail: reconnectAction.detail,
+            busy: reconnectAction.busy,
+            actions: [{
+              label: reconnectAction.label,
+              onClick: reconnectAction.onClick,
+              disabled: reconnectAction.disabled || repair.pending,
+              variant: reconnectAction.cancels ? "secondary" : "solid",
+            }],
+            extra: repair.available ? (
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
                 <BrainRepairButton repair={repair} height={30} disabled={reconnecting} />
-              ) : null}
-            </div>
-          </div>
-        </div>
+              </div>
+            ) : undefined,
+          }}
+        />
       ) : null}
 
       {rows.length > 0 ? (
@@ -1200,19 +1111,11 @@ export function YourMacsCard() {
       ) : null}
 
       {renameError ? (
-        <div
-          role="alert"
-          style={{
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            color: COLORS.danger,
-            lineHeight: 1.5,
-          }}
-        >
-          {renameError}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{ id: "this-computer-rename-error", tone: "error", title: renameError }}
+        />
       ) : null}
 
       {/*
@@ -1223,29 +1126,17 @@ export function YourMacsCard() {
         this row carries them when the attempt came from the ⋮ menu instead.
       */}
       {reconnectAction.cancels && !showReconnectRow ? (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            background: COLORS.recessedBg,
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{
+            id: "this-computer-reconnect-running",
+            tone: "info",
+            title: reconnectAction.detail,
+            busy: true,
+            actions: [{ label: reconnectAction.label, onClick: reconnectAction.onClick, variant: "secondary" }],
           }}
-        >
-          <CircleNotch size={14} weight="bold" className="animate-spin" color={COLORS.textSecondary} />
-          <div style={{ minWidth: 0, flex: 1, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5, color: COLORS.textSecondary }}>
-            {reconnectAction.detail}
-          </div>
-          <button
-            type="button"
-            onClick={reconnectAction.onClick}
-            style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px", flexShrink: 0 })}
-          >
-            {reconnectAction.label}
-          </button>
-        </div>
+        />
       ) : null}
 
       {/*
@@ -1255,38 +1146,23 @@ export function YourMacsCard() {
         shown it already carries a failure's reason in place of its body.
       */}
       {reconnectOutcome && (!showReconnectRow || reconnectOutcome.tone === "success") ? (
-        <div
-          role="status"
-          style={{
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            lineHeight: 1.5,
-            color: reconnectOutcome.tone === "success"
-              ? COLORS.success
-              : reconnectOutcome.tone === "warning"
-                ? COLORS.warning
-                : COLORS.danger,
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{
+            id: "this-computer-reconnect-outcome",
+            tone: reconnectOutcome.tone === "danger" ? "error" : reconnectOutcome.tone,
+            title: reconnectOutcome.message,
           }}
-        >
-          {reconnectOutcome.message}
-        </div>
+        />
       ) : null}
 
       {removeError ? (
-        <div
-          style={{
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            padding: "10px 18px",
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            color: COLORS.danger,
-            lineHeight: 1.5,
-          }}
-        >
-          {removeError}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 18px" }}
+          model={{ id: "this-computer-remove-error", tone: "error", title: removeError }}
+        />
       ) : null}
 
       {(!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))
@@ -1325,34 +1201,36 @@ export function YourMacsCard() {
 
       {openMenuKey && openMenuRow && menuAnchor
         ? createPortal(
-            <>
-              <div
-                onClick={closeMenu}
-                style={{ position: "fixed", inset: 0, zIndex: 9998 }}
-              />
-              <div
-                ref={menuRef}
-                role="menu"
-                onKeyDown={(event) => {
-                  if (event.key !== "Escape") return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  closeMenu();
-                }}
-                style={{
-                  position: "fixed",
-                  left: menuPosition?.left ?? menuAnchor.x,
-                  top: menuPosition?.top ?? menuAnchor.y,
-                  visibility: menuPosition ? "visible" : "hidden",
-                  zIndex: 9999,
-                  width: ACCOUNT_MENU_WIDTH,
-                  padding: 4,
-                  borderRadius: RADII.md,
-                  background: COLORS.cardBgSolid,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
-                }}
-              >
+            <ViewportOverlayHost layer="contextMenu">
+              <>
+                <div
+                  aria-hidden="true"
+                  onClick={closeMenu}
+                  style={{ position: "absolute", inset: 0, pointerEvents: "auto" }}
+                />
+                <div
+                  ref={menuRef}
+                  role="menu"
+                  onKeyDown={(event) => {
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeMenu();
+                  }}
+                  style={{
+                    position: "absolute",
+                    left: menuPosition?.left ?? menuAnchor.x,
+                    top: menuPosition?.top ?? menuAnchor.y,
+                    visibility: menuPosition ? "visible" : "hidden",
+                    width: ACCOUNT_MENU_WIDTH,
+                    padding: 4,
+                    borderRadius: RADII.md,
+                    background: COLORS.cardBgSolid,
+                    border: `1px solid ${COLORS.outlineBorder}`,
+                    boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
+                    pointerEvents: "auto",
+                  }}
+                >
                 {openMenuMachine ? (
                 <button
                   ref={menuItemRef}
@@ -1479,8 +1357,9 @@ export function YourMacsCard() {
                     Forget on this browser…
                   </button>
                 ) : null}
-              </div>
-            </>,
+                </div>
+              </>
+            </ViewportOverlayHost>,
             document.body,
           )
         : null}

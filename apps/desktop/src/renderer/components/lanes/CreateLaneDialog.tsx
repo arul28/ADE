@@ -1,6 +1,7 @@
 import React from "react";
 import { CaretDown, CaretRight, CheckCircle, Circle, GitBranch, GitFork, Plus, SpinnerGap, StackSimple, Tag, X } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice/Banner";
 import type {
   BranchPullRequest,
   LaneLinearIssue,
@@ -320,7 +321,7 @@ export function CreateLaneDialog({
           ? "Search by name, PR, author, or staleness."
           : "Create a lane from Primary, an existing branch, or another lane."}
       icon={Plus}
-      widthClassName="w-[min(560px,calc(100vw-24px))]"
+      width="min(560px, calc(100vw - 24px))"
       busy={busy}
       onCloseAutoFocus={(event) => {
         event.preventDefault();
@@ -332,9 +333,7 @@ export function CreateLaneDialog({
       footer={pickerOpen ? undefined : (
         <div className="space-y-3">
           {error ? (
-            <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-              {error}
-            </div>
+            <Banner model={{ id: "create-lane-error", tone: "error", title: error }} layout="inline" />
           ) : null}
           <div className="flex items-center justify-end gap-2">
             <Button
@@ -574,15 +573,11 @@ export function CreateLaneDialog({
                   <CaretRight size={14} className="shrink-0 text-muted-fg/50" />
                 </button>
                 {importBranchWarning ? (
-                  <div
-                    id="import-branch-warning"
-                    role="alert"
-                    aria-live="polite"
-                    className="mt-2 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200"
-                  >
-                    <span className="mt-px shrink-0">⚠</span>
-                    <span>{importBranchWarning}</span>
-                  </div>
+                  <Banner
+                    model={{ id: "import-branch-warning", tone: "warning", title: importBranchWarning }}
+                    layout="inline"
+                    style={{ marginTop: 8 }}
+                  />
                 ) : null}
               </>
             ) : null}

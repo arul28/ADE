@@ -162,8 +162,11 @@ cd apps/web && npm run typecheck
 
 ### 3d. Lint desktop
 
+Mirrors the `lint-desktop` CI job: errors fail, and so does any `ade-ui/*`
+warning count that grows past `lint-baseline.json` (see `docs/design/notices.md`).
+
 ```bash
-cd apps/desktop && npm run lint
+cd apps/desktop && npm run test:lint-tooling && npm run lint:ci
 ```
 
 ### 3e. Tests — desktop sharded 8-way + ade-cli, ALL 9 commands in one parallel round

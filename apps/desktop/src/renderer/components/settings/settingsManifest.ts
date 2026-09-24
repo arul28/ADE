@@ -27,6 +27,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 export type { SettingScope, SettingWebScope } from "../../../shared/types/settingsScope";
 
 export const SETTINGS_TAB_IDS = [
+  "account",
   "general",
   "appearance",
   "chat",
@@ -102,6 +103,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
   // ── Account ────────────────────────────────────────────────────────────
+  // No description: the page opens on your name and email.
+  { id: "account", label: "Account", group: "account" },
   { id: "secrets", label: "Secrets", description: "Keys and tokens your agents use, on every computer you sign in on.", group: "account" },
   { id: "stats", label: "Usage", description: "Spend, limits, and pacing across your providers and machines.", group: "account" },
 
@@ -149,6 +152,12 @@ export function groupScopeHint(group: SettingsGroupId): string {
  */
 export const DEFAULT_SETTINGS_TAB: SettingsTabId = "general";
 
+/**
+ * Where `/account` lands inside a project. The standalone account page is
+ * kept for surfaces with no project (welcome, projectless chats).
+ */
+export const ACCOUNT_SETTINGS_ROUTE = "/settings?tab=account";
+
 export type SettingEntry = {
   /** Stable dotted id, `<tab>.<slug>`. Used by tests and telemetry, not URLs. */
   id: string;
@@ -170,6 +179,18 @@ export type SettingEntry = {
  * Every setting ADE exposes. Order within a tab is the render order.
  */
 export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
+  // ── Account ──────────────────────────────────────────────────────────────
+  {
+    id: "account.profile",
+    label: "Account",
+    keywords: ["profile", "sign in", "sign out", "log out", "email", "avatar", "macs", "computers", "identity"],
+    tab: "account",
+    anchor: "account-profile",
+    scope: "account",
+    web: "account",
+    group: "Account",
+  },
+
   // ── General ──────────────────────────────────────────────────────────────
   {
     id: "general.project",
@@ -790,16 +811,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "browser",
     group: "Sound",
   },
-  {
-    id: "notifications.lane-banners",
-    label: "Lane banner budget",
-    keywords: ["banner", "lanes", "header", "strip", "clutter", "budget", "max"],
-    tab: "notifications",
-    anchor: "lane-banner-budget",
-    scope: "account",
-    web: "machine",
-    group: "On-screen banners",
-  },
 
   // ── Activity ─────────────────────────────────────────────────────────────
   {
@@ -1065,7 +1076,7 @@ export function sectionWebScope(entryIds: readonly string[]): SettingWebScope | 
   if (scopes.length === 0) return null;
 
   // Notifications is the mixed case: account-synced delivery rules alongside
-  // one machine-bound banner budget and one browser-local sound. The banner
+  // one browser-local sound. The banner
   // describes where most of the section goes, not the loudest exception —
   // ties break toward the narrowest claim, which is why the ranking is ordered.
   const tally = new Map<SettingWebScope, number>();

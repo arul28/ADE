@@ -1,10 +1,14 @@
 import { useCallback } from "react";
+import { ShieldWarning, UserCircle } from "@phosphor-icons/react";
 import { useLocation, type NavigateFunction } from "react-router-dom";
 import { accountSessionBanner, accountSessionState, useAccountStatus } from "../../lib/account";
 import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
 import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
-import { Banner, type BannerModel } from "../shared/Banner";
+import { APP_BANNER_PRIORITY, useAppBanner, type BannerModel } from "../ui/notice";
+
+const ACCOUNT_ICON = <UserCircle size={13} weight="fill" />;
+const REFUSED_ICON = <ShieldWarning size={13} weight="fill" />;
 
 /**
  * The permanent bar ADE shows while the account is not usable.
@@ -16,10 +20,10 @@ import { Banner, type BannerModel } from "../shared/Banner";
  * is not one of them. The only way to clear it is to sign in, or to repair a
  * store ADE could not read.
  *
- * It mounts above `IntegrationBannerHost` rather than inside it, because that
- * host renders only inside an open project (`AppShell`), and this bar has to
- * reach every surface — welcome, projectless chats, and the account page
- * itself.
+ * It registers with the app banner host in the account band, which sorts ahead
+ * of every other docked banner, so it can never fold into the host's "N more"
+ * overflow. It mounts in `AppShell` outside every project condition, because
+ * this bar has to reach every surface — welcome and projectless chats too.
  *
  * The copy for all four session states lives in one record in
  * `lib/account.ts`, so this component never decides what a state says.
@@ -31,7 +35,15 @@ import { Banner, type BannerModel } from "../shared/Banner";
  * disconnected for a month. It is not dismissable for the same reason: the fix
  * is one button away, and hiding it is how nobody noticed.
  */
-export function AccountSignedOutBanner({ navigate }: { navigate: NavigateFunction }): JSX.Element | null {
+export function AccountSignedOutBanner({ navigate }: { navigate: NavigateFunction }): null {
+  useAppBanner(useAccountBannerModel(navigate), {
+    placement: "docked",
+    priority: APP_BANNER_PRIORITY.account,
+  });
+  return null;
+}
+
+function useAccountBannerModel(navigate: NavigateFunction): BannerModel | null {
   const { status, loading } = useAccountStatus();
   const location = useLocation();
   const state = accountSessionState(status);
@@ -50,23 +62,21 @@ export function AccountSignedOutBanner({ navigate }: { navigate: NavigateFunctio
   if (loading) return null;
 
   // Already on the account page — the bar would point at the page you are on.
-  // The page's own card carries the same Reconnect button.
+  // The page's own card carries the same Reconnect button. Inside a project
+  // the account page is the Account section of Settings.
   if (location.pathname === "/account" || location.pathname.startsWith("/account/")) return null;
+  if (location.pathname === "/settings" && new URLSearchParams(location.search).get("tab") === "account") return null;
 
   if (copy) {
-    const model: BannerModel = {
+    return {
       id: `account-${state}`,
-      severity: "warning",
+      tone: "warning",
+      icon: ACCOUNT_ICON,
       title: copy.title,
       detail: copy.detail,
       actions: [{ label: copy.action, onClick: goToAccount, variant: "primary" }],
       dismiss: false,
     };
-    return (
-      <div className="shrink-0 mx-2 mt-1" data-testid="account-signed-out-banner" data-session-state={state}>
-        <Banner model={model} />
-      </div>
-    );
   }
 
   if (state !== "active" || !refusal || !reconnect.available) return null;
@@ -74,22 +84,20 @@ export function AccountSignedOutBanner({ navigate }: { navigate: NavigateFunctio
   const refusalCopy = describeThisComputerRefusal(refusal);
   const action = reconnect.view({ label: refusalCopy.action, detail: refusalCopy.detail });
 
-  const model: BannerModel = {
+  return {
     id: "this-computer-refused",
-    severity: "warning",
+    tone: "warning",
+    icon: REFUSED_ICON,
+    busy: reconnect.reconnecting,
     title: refusalCopy.title,
     detail: action.detail,
     actions: [{
       label: action.label,
       onClick: action.onClick,
       disabled: action.disabled,
+      busy: Boolean(action.disabled && reconnect.reconnecting),
       variant: action.cancels ? "secondary" : "primary",
     }],
     dismiss: false,
   };
-  return (
-    <div className="shrink-0 mx-2 mt-1" data-testid="this-computer-refused-banner" data-refusal-code={refusal.code}>
-      <Banner model={model} />
-    </div>
-  );
 }

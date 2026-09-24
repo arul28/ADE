@@ -14,7 +14,9 @@ import {
   Palette,
   PlugsConnected,
   Pulse as PulseIcon,
+  UserCircle,
 } from "@phosphor-icons/react";
+import { AccountPage } from "../account/AccountPage";
 import { ActivitySection } from "../settings/ActivitySection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { ChatSection } from "../settings/ChatSection";
@@ -42,7 +44,9 @@ import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
-import { WebSettingsSection } from "../settings/WebScopeBanner";
+import { WebSettingsSection } from "../settings/WebScopePill";
+import { Banner } from "../ui/notice";
+import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
 import {
   SETTINGS_ENTRIES,
   availableSettingsTabs,
@@ -64,6 +68,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { useAppStore } from "../../state/appStore";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
+import { ProjectSidebarSlot, useHasProjectSidebar } from "./projectSidebar/ProjectSidebarSlot";
 
 /**
  * The settings shell. Tabs, ordering, deep links, and search all resolve
@@ -75,6 +80,7 @@ import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
  */
 
 const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
+  account: UserCircle,
   general: GearSix,
   appearance: Palette,
   chat: ChatCircle,
@@ -115,24 +121,16 @@ function tabHasMachineSettings(tab: SettingsTabId): boolean {
  */
 function WebNoMachineNotice() {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 14px",
-        marginBottom: 20,
-        borderRadius: 8,
-        background: COLORS.recessedBg,
-        border: `1px solid ${COLORS.borderMuted}`,
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-        color: COLORS.textSecondary,
+    <Banner
+      layout="inline"
+      style={{ marginBottom: 20 }}
+      model={{
+        id: "settings-web-no-machine",
+        tone: "neutral",
+        icon: <HardDrives size={13} weight="regular" />,
+        title: "Connect to a project to edit machine settings.",
       }}
-    >
-      <HardDrives size={16} weight="regular" style={{ flexShrink: 0, color: COLORS.textDim }} />
-      <span>Connect to a project to edit machine settings.</span>
-    </div>
+    />
   );
 }
 
@@ -279,6 +277,17 @@ type TabSection = {
  * `TabContent` handles it directly.
  */
 const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
+  account: [
+    {
+      entryIds: ["account.profile"],
+      // The account page, without its own page chrome.
+      render: () => (
+        <div id="account-profile" data-settings-anchor="account-profile">
+          <AccountPage embedded />
+        </div>
+      ),
+    },
+  ],
   general: [
     {
       entryIds: ["general.about", "general.auto-updates"],
@@ -635,6 +644,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   }, [trimmedQuery, matchesThisTab, section]);
 
   const repoGroupLabel = useAppStore((state) => state.project?.displayName) ?? "This repository";
+  const hasProjectSidebar = useHasProjectSidebar();
 
   const renderTabButton = (tab: SettingsTab) => {
     const Icon = TAB_ICONS[tab.id];
@@ -652,8 +662,8 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           display: "flex",
           width: "100%",
           alignItems: "center",
-          gap: 10,
-          padding: "8px 10px",
+          gap: 9,
+          padding: "6px 10px",
           border: "none",
           background: isActive
             ? "var(--shell-sidebar-item-active-bg)"
@@ -666,12 +676,11 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               ? "var(--shell-sidebar-item-hover-fg)"
               : "var(--shell-sidebar-item-fg)",
           fontFamily: SANS_FONT,
-          fontSize: 11,
-          fontWeight: 600,
-          textTransform: "uppercase",
-          letterSpacing: "1px",
+          fontSize: 12.5,
+          fontWeight: isActive ? 600 : 500,
+          letterSpacing: "-0.01em",
           cursor: "pointer",
-          borderRadius: 8,
+          borderRadius: 7,
           textAlign: "left",
           transition: "background 120ms ease, color 120ms ease",
         }}
@@ -682,61 +691,84 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     );
   };
 
+  const sidebarHeader = (
+    <SettingsSidebarHeader onOpenAccount={() => navigateToTab("account")} />
+  );
+
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)
     ?? tabs[0];
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
 
+  // Inside a project the section list lives in the project sidebar. Outside
+  // one (the hosted web client, tests) the page keeps its own column.
+  const sectionList = (
+    <>
+      {SETTINGS_GROUPS.map((group) => {
+        const groupTabs = tabs.filter((tab) => tab.group === group.id);
+        // A group with nothing in it is not rendered. That is how the repo
+        // group disappears when Settings is opened outside a project: there
+        // is no repository to name and nothing filed under one.
+        if (!groupTabs.length) return null;
+        const label = group.label
+          ?? (group.id === "repo" ? repoGroupLabel : THIS_MACHINE_NAME);
+        return (
+          <div key={group.id} style={{ marginBottom: 14 }}>
+            <div
+              style={{
+                ...LABEL_STYLE,
+                fontFamily: SANS_FONT,
+                paddingLeft: 10,
+                marginBottom: 6,
+                // The group name is the scope, so it carries the weight the
+                // per-row chips used to; muting it would hide the one thing
+                // this reorganisation exists to say.
+                color: "var(--shell-sidebar-item-fg)",
+                opacity: 0.75,
+              }}
+              title={groupScopeHint(group.id)}
+            >
+              {label}
+            </div>
+            {groupTabs.map((tab) => renderTabButton(tab))}
+          </div>
+        );
+      })}
+    </>
+  );
+
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
-      <nav
-        style={{
-          width: 200,
-          flexShrink: 0,
-          background: "var(--shell-sidebar-bg)",
-          backdropFilter: "blur(20px)",
-          WebkitBackdropFilter: "blur(20px)",
-          borderRight: "1px solid var(--shell-sidebar-border)",
-          padding: "16px 8px",
-          overflowY: "auto",
-        }}
-      >
-        <div style={{ ...LABEL_STYLE, fontFamily: SANS_FONT, paddingLeft: 10, marginBottom: 12 }}>
-          SETTINGS
+      {hasProjectSidebar ? (
+        <ProjectSidebarSlot active={active}>
+          {sidebarHeader}
+          <nav
+            aria-label="Settings sections"
+            style={{ flex: 1, minHeight: 0, padding: "4px 8px 12px", overflowY: "auto" }}
+          >
+            {sectionList}
+          </nav>
+        </ProjectSidebarSlot>
+      ) : (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            width: 220,
+            flexShrink: 0,
+            background: "var(--shell-sidebar-bg)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+            borderRight: "1px solid var(--shell-sidebar-border)",
+          }}
+        >
+          {sidebarHeader}
+          <nav aria-label="Settings sections" style={{ flex: 1, minHeight: 0, padding: "4px 8px 12px", overflowY: "auto" }}>
+            {sectionList}
+          </nav>
         </div>
-
-        {SETTINGS_GROUPS.map((group) => {
-          const groupTabs = tabs.filter((tab) => tab.group === group.id);
-          // A group with nothing in it is not rendered. That is how the repo
-          // group disappears when Settings is opened outside a project: there
-          // is no repository to name and nothing filed under one.
-          if (!groupTabs.length) return null;
-          const label = group.label
-            ?? (group.id === "repo" ? repoGroupLabel : THIS_MACHINE_NAME);
-          return (
-            <div key={group.id} style={{ marginBottom: 14 }}>
-              <div
-                style={{
-                  ...LABEL_STYLE,
-                  fontFamily: SANS_FONT,
-                  paddingLeft: 10,
-                  marginBottom: 6,
-                  // The group name is the scope, so it carries the weight the
-                  // per-row chips used to; muting it would hide the one thing
-                  // this reorganisation exists to say.
-                  color: "var(--shell-sidebar-item-fg)",
-                  opacity: 0.75,
-                }}
-                title={groupScopeHint(group.id)}
-              >
-                {label}
-              </div>
-              {groupTabs.map((tab) => renderTabButton(tab))}
-            </div>
-          );
-        })}
-      </nav>
+      )}
 
       <div ref={contentRef} style={{ flex: 1, overflow: "auto", background: COLORS.pageBg, padding: 24 }}>
         {/* The remote banner contrasts a remote machine against this desktop.

@@ -20,6 +20,7 @@ import {
   PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice/Banner";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type {
   LaneDeleteEvent,
@@ -276,7 +277,7 @@ function ManageLaneHeaderDetails({
   );
 }
 
-type ManageLaneTab = "appearance" | "stack" | "archive" | "delete";
+export type ManageLaneTab = "appearance" | "stack" | "archive" | "delete";
 
 type ManageLaneTabDef = {
   id: ManageLaneTab;
@@ -376,6 +377,7 @@ export function ManageLaneDialog({
   onAppearanceChanged,
   onStackReorganized,
   runtimePin,
+  initialTab,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -396,6 +398,8 @@ export function ManageLaneDialog({
   onAppearanceChanged?: () => void | Promise<void>;
   onStackReorganized?: () => void | Promise<void>;
   runtimePin?: OpenProjectBinding | null;
+  /** Tab to open on, e.g. "archive" for the sidebar's "Archive all". Defaults to Delete. */
+  initialTab?: ManageLaneTab | null;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
@@ -424,11 +428,13 @@ export function ManageLaneDialog({
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
   }, [singleLaneType]);
-  // Manage Lane always opens on Delete — it's the first tab and the action
-  // users reach for most. Other tabs (appearance, restack, archive) are opt-in.
+  // Manage Lane opens on Delete — it's the first tab and the action users
+  // reach for most. Other tabs (appearance, restack, archive) are opt-in, or
+  // picked by the caller (the sidebar's "Archive all" opens on Archive).
   const defaultTab = React.useMemo((): ManageLaneTab => {
+    if (initialTab && tabDefs.some((tab) => tab.id === initialTab)) return initialTab;
     return tabDefs.some((tab) => tab.id === "delete") ? "delete" : tabDefs[0]?.id ?? "archive";
-  }, [tabDefs]);
+  }, [initialTab, tabDefs]);
 
   // Reset transient state when dialog closes or active lane changes.
   useEffect(() => {
@@ -604,7 +610,7 @@ export function ManageLaneDialog({
       title={dialogTitle}
       titleContent={titleContent}
       headerExtra={headerExtra}
-      widthClassName="w-[calc(100vw-1rem)] max-w-[720px] sm:max-w-[min(720px,calc(100vw-2rem))]"
+      width="min(720px, calc(100vw - 1rem))"
       busy={laneActionBusy}
     >
       {lanes.length === 0 ? (
@@ -676,10 +682,12 @@ export function ManageLaneDialog({
                       Removes the local worktree and ADE-generated lane data. Restoring the lane recreates its worktree.
                     </p>
                     {reclaimRisk?.blockedReasons.map((reason) => (
-                      <div key={reason.code} className="mt-2 flex gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-2.5 py-2 text-[11px] leading-relaxed text-amber-100/80">
-                        <WarningCircle size={13} className="mt-0.5 shrink-0" />
-                        {reason.message}
-                      </div>
+                      <Banner
+                        key={reason.code}
+                        model={{ id: `lane-reclaim-blocked-${reason.code}`, tone: "warning", title: reason.message }}
+                        layout="inline"
+                        style={{ marginTop: 8 }}
+                      />
                     ))}
                     {reclaimRisk?.dirty ? (
                       <label className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-amber-100/80">
@@ -702,7 +710,13 @@ export function ManageLaneDialog({
                         className={`${INPUT_CLASS_NAME} mt-1.5 w-full text-xs`}
                       />
                     </label>
-                    {reclaimError ? <div className="mt-2 text-xs text-red-300">{reclaimError}</div> : null}
+                    {reclaimError ? (
+                      <Banner
+                        model={{ id: "lane-reclaim-error", tone: "error", title: reclaimError }}
+                        layout="inline"
+                        style={{ marginTop: 8 }}
+                      />
+                    ) : null}
                     <div className="mt-3">
                       <Button
                         size="sm"
@@ -748,10 +762,15 @@ export function ManageLaneDialog({
               ) : null}
 
               {hasAnyDirty ? (
-                <div className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-200">
-                  <WarningCircle size={14} className="shrink-0" weight="fill" />
-                  {isBatch ? "Uncommitted changes on some lanes." : "Uncommitted changes on this lane."}
-                </div>
+                <Banner
+                  model={{
+                    id: "lane-delete-dirty-warning",
+                    tone: "warning",
+                    title: isBatch ? "Uncommitted changes on some lanes." : "Uncommitted changes on this lane.",
+                  }}
+                  layout="inline"
+                  style={{ marginTop: 12 }}
+                />
               ) : null}
 
               <DeleteTargetChecklist
@@ -791,10 +810,16 @@ export function ManageLaneDialog({
               ) : null}
 
               {laneActionError && (laneActionKind === "delete" || laneActionKind === "archive" || laneActionKind == null) ? (
-                <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/[0.08] px-3 py-2 text-xs text-red-200">
-                  <WarningCircle size={14} className="mt-0.5 shrink-0" weight="fill" />
-                  <span className="whitespace-pre-wrap">{laneActionError}</span>
-                </div>
+                <Banner
+                  model={{
+                    id: "lane-action-error",
+                    tone: "error",
+                    ariaLabel: laneActionError,
+                    title: <span style={{ whiteSpace: "pre-wrap" }}>{laneActionError}</span>,
+                  }}
+                  layout="inline"
+                  style={{ marginTop: 12 }}
+                />
               ) : null}
 
               <div className="mt-4 flex items-center gap-2">
@@ -1368,21 +1393,27 @@ function StackPositionSection({
       </div>
 
       {!primaryLane ? (
-        <div className="mt-3 text-xs text-amber-300/90">No primary lane found.</div>
+        <Banner
+          model={{ id: "lane-stack-no-primary", tone: "warning", title: "No primary lane found." }}
+          layout="inline"
+          style={{ marginTop: 12 }}
+        />
       ) : null}
 
       {lane.status.dirty ? (
-        <div className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-200">
-          <WarningCircle size={14} className="shrink-0" weight="fill" />
-          Commit or stash first.
-        </div>
+        <Banner
+          model={{ id: "lane-stack-dirty", tone: "warning", title: "Commit or stash first." }}
+          layout="inline"
+          style={{ marginTop: 12 }}
+        />
       ) : null}
 
       {lane.status.rebaseInProgress ? (
-        <div className="mt-2 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-200">
-          <WarningCircle size={14} className="shrink-0" weight="fill" />
-          Finish or abort the current rebase first.
-        </div>
+        <Banner
+          model={{ id: "lane-stack-rebase-in-progress", tone: "warning", title: "Finish or abort the current rebase first." }}
+          layout="inline"
+          style={{ marginTop: 8 }}
+        />
       ) : null}
 
       <span className={`${LABEL_CLASS_NAME} mt-4 block`}>Parent lane</span>

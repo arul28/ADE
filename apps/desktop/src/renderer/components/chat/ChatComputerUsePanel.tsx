@@ -11,8 +11,13 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   ComputerUseArtifactDeleteResult,
   ComputerUseArtifactView,
@@ -24,6 +29,8 @@ import {
   readProofProvenance,
 } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
+import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
   externalArtifactUrl,
@@ -82,6 +89,15 @@ function ProofProvenanceLines({ artifact, className, warningClassName }: {
         </div>
       ) : null}
     </>
+  );
+}
+
+function ProofPreviewFailureNotice({ failureText }: { failureText: string }) {
+  return (
+    <Banner
+      model={{ id: "proof-preview-failed", tone: "warning", title: failureText }}
+      layout="inline"
+    />
   );
 }
 
@@ -161,83 +177,64 @@ function ArtifactLightbox({
   onMediaError: () => void;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [onClose]);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
   const media = isImageArtifact(artifact) ? "image" : "video";
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/82 p-5 backdrop-blur-md"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Preview ${artifact.title}`}
-      onMouseDown={(event) => {
-        if (event.currentTarget === event.target) onClose();
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
+      title={`Preview ${artifact.title}`}
+      hideHeader
+      width={media === "video" ? "max-content" : 1152}
+      maxHeight="calc(100vh - 40px)"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      // Proof renders on this dark surface in every theme.
+      panelStyle={{ background: "#0d0d11", borderRadius: 16 }}
+      initialFocusRef={closeRef}
     >
-      <div
-        className={cn(
-          "flex max-h-full flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-[#0d0d11] shadow-[0_32px_120px_rgba(0,0,0,0.75)]",
-          // A video panel hugs the video, so a tall phone recording is not
-          // lost in a wide empty frame.
-          media === "video" ? "max-w-[90vw]" : "w-full max-w-6xl",
-        )}
-      >
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate font-sans text-[12px] font-semibold text-fg/88">{artifact.title}</div>
-            <div className="mt-0.5 font-mono text-[9.5px] text-muted-fg/42">
-              {kindLabel(artifact.kind)} · {relativeTime(artifact.createdAt)}
-            </div>
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
+        <div className="min-w-0">
+          <div className="truncate font-sans text-[12px] font-semibold text-fg/88">{artifact.title}</div>
+          <div className="mt-0.5 font-mono text-[9.5px] text-muted-fg/42">
+            {kindLabel(artifact.kind)} · {relativeTime(artifact.createdAt)}
           </div>
-          <button
-            type="button"
-            autoFocus
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/55 transition-colors hover:bg-white/[0.07] hover:text-fg/85"
-            aria-label="Close proof preview"
-            onClick={onClose}
-          >
-            <X size={15} weight="bold" />
-          </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto bg-black/30 p-3">
-          {failed ? (
-            <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
-              <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
-              <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
-                {failureText}
-              </div>
-            </div>
-          ) : media === "video" ? (
-            // Width and height stay auto so the browser keeps the recording's
-            // own shape. The caps only shrink it to fit the window.
-            <video
-              src={preview}
-              controls
-              autoPlay
-              playsInline
-              onError={onMediaError}
-              className="mx-auto block h-auto max-h-[calc(85vh-4.5rem)] w-auto max-w-[calc(90vw-1.5rem)] rounded-xl bg-black object-contain"
-            />
-          ) : (
-            <img
-              src={preview}
-              alt={artifact.title}
-              onError={onMediaError}
-              className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
-            />
-          )}
-        </div>
+        <button
+          ref={closeRef}
+          type="button"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/55 transition-colors hover:bg-white/[0.07] hover:text-fg/85"
+          aria-label="Close proof preview"
+          onClick={onClose}
+        >
+          <X size={15} weight="bold" />
+        </button>
       </div>
-    </div>,
-    document.body,
+      <div className="min-h-0 flex-1 overflow-auto bg-black/30 p-3">
+        {failed ? (
+          <ProofPreviewFailureNotice failureText={failureText} />
+        ) : media === "video" ? (
+          <video
+            src={preview}
+            controls
+            autoPlay
+            playsInline
+            onError={onMediaError}
+            className="mx-auto block h-auto max-h-[calc(85vh-4.5rem)] w-auto max-w-[calc(90vw-1.5rem)] rounded-xl bg-black object-contain"
+          />
+        ) : (
+          <img
+            src={preview}
+            alt={artifact.title}
+            onError={onMediaError}
+            className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
+          />
+        )}
+      </div>
+    </Dialog>
   );
 }
 
@@ -318,12 +315,7 @@ export function ChatProofArtifactCard({
         ) : failed ? (
           // Broken proof shrinks. A full-height empty box wastes the most
           // valuable space in a 322px rail to say nothing.
-          <div className="flex items-start gap-2.5 rounded-xl border border-amber-200/[0.09] bg-amber-300/[0.035] px-3 py-2.5">
-            <WarningCircle size={14} weight="duotone" className="mt-px shrink-0 text-amber-200/45" />
-            <div className="min-w-0 font-sans text-[10px] leading-[15px] text-muted-fg/48">
-              {failureText}
-            </div>
-          </div>
+          <ProofPreviewFailureNotice failureText={failureText} />
         ) : preview && image ? (
           <button
             type="button"
@@ -680,24 +672,19 @@ export function ChatComputerUsePanel({
       </div>
 
       {brokenCount > 0 ? (
-        <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200/[0.1] bg-amber-300/[0.035] px-2.5 py-1.5">
-          <span className="min-w-0 font-sans text-[9.5px] leading-[13px] text-muted-fg/48">
-            {brokenCount} item{brokenCount === 1 ? " has" : "s have"} no stored file.
-          </span>
-          <button
-            type="button"
-            onClick={handlePruneBroken}
-            className="shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[9.5px] font-medium text-amber-100/60 transition-colors hover:bg-amber-300/[0.1] hover:text-amber-50/90"
-          >
-            Remove {brokenCount === 1 ? "it" : "them"}
-          </button>
-        </div>
+        <Banner
+          model={{
+            id: "proof-artifacts-missing-files",
+            tone: "warning",
+            title: `${brokenCount} item${brokenCount === 1 ? " has" : "s have"} no stored file.`,
+            actions: [{ label: `Remove ${brokenCount === 1 ? "it" : "them"}`, onClick: handlePruneBroken }],
+          }}
+          layout="inline"
+        />
       ) : null}
 
       {error ? (
-        <div className="rounded-lg border border-red-400/20 bg-red-500/[0.06] px-2.5 py-1.5 font-sans text-[9.5px] leading-[13px] text-red-200/70">
-          {error}
-        </div>
+        <Banner model={{ id: "proof-artifact-error", tone: "error", title: error }} layout="inline" />
       ) : null}
 
       <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">

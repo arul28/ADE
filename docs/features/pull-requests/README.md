@@ -1298,7 +1298,8 @@ predicates, because every caller needs the same three things together (is there
 an outage, what do we say, where does the button go). It returns null when
 nothing is corroborated, and every GitHub-blaming surface gates on it:
 
-- `IntegrationBannerHost` collapses the whole GitHub banner family into one
+- `IntegrationBanners` registers GitHub integration states with `AppBannerHost`,
+  which collapses the whole GitHub banner family into one
   neutral `info` notice linking the live incident. The other banners (AI
   provider, mock provider, relay) are untouched, and the suppression is gated
   on the same condition that renders the replacement, so the GitHub family can
@@ -1323,7 +1324,7 @@ nothing is corroborated, and every GitHub-blaming surface gates on it:
 
 `describeGithubAuthFailure` and `describeGithubCliBanner` both consult
 `describeGithubOutage` first, so a corroborated outage outranks every
-credential-shaped reading of the same failure even though `IntegrationBannerHost`
+credential-shaped reading of the same failure even though `IntegrationBanners`
 already suppresses those banners — the redundancy exists so a future refactor of
 that suppression cannot silently reintroduce the accusation. Without
 corroboration, a bare `service_unavailable` still renders its own honest copy
@@ -2003,8 +2004,8 @@ long as the URL still points at the selected PR and drops them when the
 PR changes. `PrDetailPane` reads them on mount to scroll / open the
 right card and to pick the right sub-tab. `PRsPage` also writes the
 most recent `/prs...` path to `localStorage` via `writeStoredPrsRoute`
-scoped per project root, so the top-bar `TabNav` can route back to the
-user's last PR selection when they click the PRs tab from elsewhere.
+scoped per project root, so the project sidebar's PRs tab
+(`projectSidebarTabs.ts`) can route back to the user's last PR selection when they click the PRs tab from elsewhere.
 
 Event sources: `buildTimelineEvents` prepends a synthetic `pr_opened`
 event (title, PR number, head/base branches, draft flag, additions /

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Moon } from "@phosphor-icons/react";
 
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { isSessionSnoozed, nextSnoozeDeadlineMs, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { wakeSessionNow } from "../terminals/sessionLifecycleActions";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 
 /**
@@ -63,39 +64,42 @@ export function useSessionLifecycleSnapshot(
   return snapshot;
 }
 
+/** Portalled so the header's stacking and the tile's clipping cannot hide it. */
 function ChipMenu({
   label,
+  anchorRef,
   items,
   onClose,
 }: {
   label: string;
+  anchorRef: RefObject<HTMLElement | null>;
   items: Array<{ key: string; label: string; onSelect: () => void }>;
   onClose: () => void;
 }) {
   return (
-    <>
-      <div className="fixed inset-0 z-40" onClick={onClose} />
-      <div
-        role="menu"
-        aria-label={label}
-        className="ade-liquid-glass-menu absolute left-0 top-full z-50 mt-1 min-w-[150px] py-1"
-      >
-        {items.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            role="menuitem"
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/40"
-            onClick={() => {
-              onClose();
-              item.onSelect();
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-    </>
+    <AnchoredMenu
+      open
+      anchorRef={anchorRef}
+      onClose={onClose}
+      role="menu"
+      aria-label={label}
+      className="ade-liquid-glass-menu min-w-[150px] py-1"
+    >
+      {items.map((item) => (
+        <button
+          key={item.key}
+          type="button"
+          role="menuitem"
+          className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/40"
+          onClick={() => {
+            onClose();
+            item.onSelect();
+          }}
+        >
+          {item.label}
+        </button>
+      ))}
+    </AnchoredMenu>
   );
 }
 
@@ -110,6 +114,7 @@ export function SessionSnoozeChip({
 }) {
   const session = useSessionLifecycleSnapshot(sessionId);
   const [menuOpen, setMenuOpen] = useState(false);
+  const chipRef = useRef<HTMLButtonElement | null>(null);
 
   if (!session) return null;
 
@@ -121,6 +126,7 @@ export function SessionSnoozeChip({
   return (
     <span className={cn("relative inline-flex", className)}>
       <button
+        ref={chipRef}
         type="button"
         className={CHIP_CLASS}
         data-testid="chat-session-snoozed-chip"
@@ -136,6 +142,7 @@ export function SessionSnoozeChip({
       {menuOpen ? (
         <ChipMenu
           label="Snoozed session"
+          anchorRef={chipRef}
           onClose={() => setMenuOpen(false)}
           items={[
             { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session, runtimePin); } },

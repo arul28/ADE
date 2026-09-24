@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expectNoJargon } from "../../../test/jargonGuard";
 import { StorageSection } from "./StorageSection";
+import { ToastStack } from "../app/toast/ToastStack";
+import { dismissToast, getToasts } from "../app/toast/toastStore";
 import { readAppleRecordingsTotalBytes } from "./appleRecordingsFootprint";
 import type {
   MaintenanceRunReport,
@@ -324,6 +326,7 @@ function installAdeMock(options: {
 describe("StorageSection", () => {
   afterEach(() => {
     cleanup();
+    for (const toast of getToasts()) dismissToast(toast.id);
     vi.restoreAllMocks();
     vi.mocked(readAppleRecordingsTotalBytes).mockResolvedValue(0);
     if (originalAde === undefined) delete (globalThis.window as any).ade;
@@ -461,10 +464,10 @@ describe("StorageSection", () => {
     const dialog = await screen.findByRole("dialog", { name: /archive & reclaim old feature/i });
     const cancel = within(dialog).getByRole("button", { name: "Cancel" });
     cancel.focus();
-    fireEvent.keyDown(window, { key: "Tab" });
+    fireEvent.keyDown(cancel, { key: "Tab" });
     expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close" }));
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: /archive & reclaim/i })).toBeNull());
     expect(document.activeElement).toBe(trigger);
   });
@@ -536,7 +539,7 @@ describe("StorageSection", () => {
 
   it("shows and runs the compress action when compressNow exists", async () => {
     const { compressNow } = installAdeMock({ withCompress: true });
-    render(<StorageSection />);
+    render(<><StorageSection /><ToastStack /></>);
 
     const compressButton = await screen.findByRole("button", { name: /compress old history/i });
     fireEvent.click(compressButton);
@@ -619,11 +622,12 @@ describe("StorageSection", () => {
       dbSizeBytes: 30 * MB,
     };
     const { runMaintenanceNow } = installAdeMock({ withExtras: true, maintenanceReport: failedReport });
-    render(<StorageSection />);
+    render(<><StorageSection /><ToastStack /></>);
 
     fireEvent.click(await screen.findByRole("button", { name: /compact now/i }));
     await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Some cleanup steps couldn't finish")).toBeTruthy();
+    expect(getToasts().find((toast) => toast.title === "Some cleanup steps couldn't finish")?.tone).toBe("warning");
     expect(screen.queryByText("Storage is already tidy")).toBeNull();
   });
 

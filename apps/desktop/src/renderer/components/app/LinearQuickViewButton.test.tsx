@@ -8,8 +8,13 @@ import type { BatchLaunchItemState } from "../../lib/linearBatchLaunch";
 import { defaultNativeControls } from "../../lib/nativeLaunchControls";
 import { SessionLaunchModelControls } from "../shared/SessionLaunchModelControls";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
+import { ToastStack } from "./toast/ToastStack";
+import { dismissToast, getToasts } from "./toast/toastStore";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  for (const toast of getToasts()) dismissToast(toast.id);
+});
 
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
   ModelPicker: ({
@@ -137,6 +142,8 @@ describe("LinearQuickViewButton batch-launch UI", () => {
   it("keeps created sessions with kickoff errors openable and out of Retry failed", () => {
     const onDismiss = vi.fn();
     render(
+      <>
+      <ToastStack />
       <BatchLaunchStatusToast
         states={new Map([
           ["ready", state("ready", "ENG-1", {})],
@@ -154,7 +161,8 @@ describe("LinearQuickViewButton batch-launch UI", () => {
         onRetryFailed={vi.fn()}
         onDismiss={onDismiss}
         onOpenLane={vi.fn()}
-      />,
+      />
+      </>,
     );
 
     expect(screen.getByText("1 ready · 1 failed · 1 needs attention")).toBeTruthy();
@@ -162,5 +170,52 @@ describe("LinearQuickViewButton batch-launch UI", () => {
     expect(screen.getByRole("button", { name: "Retry 1 failed" })).toBeTruthy();
     expect((screen.getByTitle("Claude login required") as HTMLButtonElement).disabled).toBe(false);
     expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("renders into the shared toast stack, retries without closing, and closes through onDismiss", () => {
+    const onDismiss = vi.fn();
+    const onRetryFailed = vi.fn();
+    render(
+      <>
+        <ToastStack />
+        <BatchLaunchStatusToast
+          states={new Map([
+            ["failed", state("failed", "ENG-3", { status: "failed", laneId: null, sessionId: null, error: "boom" })],
+          ])}
+          onRetryFailed={onRetryFailed}
+          onDismiss={onDismiss}
+          onOpenLane={vi.fn()}
+        />
+      </>,
+    );
+
+    expect(getToasts()).toHaveLength(1);
+    expect(screen.getByTestId("batch-launch-rows")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry 1 failed" }));
+    expect(onRetryFailed).toHaveBeenCalledTimes(1);
+    expect(getToasts()).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /^Dismiss/ }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-dismisses a fully successful batch after the short beat", () => {
+    vi.useFakeTimers();
+    try {
+      const onDismiss = vi.fn();
+      render(
+        <BatchLaunchStatusToast
+          states={new Map([["ready", state("ready", "ENG-1", {})]])}
+          onRetryFailed={vi.fn()}
+          onDismiss={onDismiss}
+          onOpenLane={vi.fn()}
+        />,
+      );
+      vi.advanceTimersByTime(3199);
+      expect(onDismiss).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -64,7 +64,6 @@ import type {
 } from "../../../shared/types";
 import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import {
-  DEFAULT_LANE_BANNER_BUDGET,
   DEFAULT_REBASE_SUGGESTIONS,
   DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
   laneSetupScriptHasWork,
@@ -2078,13 +2077,11 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     const newLaneBaseSource = asNewLaneBaseSource(value.git.newLaneBaseSource);
     const rebaseSuggestions = asRebaseSuggestionDisplay(value.git.rebaseSuggestions);
     const rebaseSuggestionMinBehind = asNonNegativeInt(value.git.rebaseSuggestionMinBehind);
-    const laneBannerBudget = asNonNegativeInt(value.git.laneBannerBudget);
     const out: NonNullable<ProjectConfigFile["git"]> = {};
     if (autoRebaseOnHeadChange != null) out.autoRebaseOnHeadChange = autoRebaseOnHeadChange;
     if (newLaneBaseSource) out.newLaneBaseSource = newLaneBaseSource;
     if (rebaseSuggestions) out.rebaseSuggestions = rebaseSuggestions;
     if (rebaseSuggestionMinBehind != null) out.rebaseSuggestionMinBehind = rebaseSuggestionMinBehind;
-    if (laneBannerBudget != null) out.laneBannerBudget = laneBannerBudget;
     return Object.keys(out).length ? out : undefined;
   })();
 
@@ -2524,7 +2521,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       newLaneBaseSource: mergedGit?.newLaneBaseSource ?? "remote",
       rebaseSuggestions: mergedGit?.rebaseSuggestions ?? DEFAULT_REBASE_SUGGESTIONS,
       rebaseSuggestionMinBehind: mergedGit?.rebaseSuggestionMinBehind ?? DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
-      laneBannerBudget: mergedGit?.laneBannerBudget ?? DEFAULT_LANE_BANNER_BUDGET,
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),

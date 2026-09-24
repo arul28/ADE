@@ -318,7 +318,7 @@ describe("CrossMachineHandoffModal", () => {
 
     const notice = await screen.findByText(/lost confirmation from the destination/i);
     expect(notice.textContent).toMatch(/new chat may still appear there/i);
-    expect(notice.className).toContain("text-amber");
+    expect(notice.closest('[data-notice-tone="warning"]')).toBeTruthy();
     expect(screen.queryByText(failureMessage)).toBeNull();
     expect(screen.getByRole("button", { name: /send chat/i })).toHaveProperty("disabled", false);
   });

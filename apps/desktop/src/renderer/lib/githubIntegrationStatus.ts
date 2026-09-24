@@ -720,7 +720,7 @@ export function describeGithubCliBanner(status: GitHubStatus): {
   // outage invalidates all of them. (The check sits AFTER `!tokenStored`: that
   // one is a purely local fact and stays true regardless of GitHub's health.)
   //
-  // Belt-and-braces: IntegrationBannerHost suppresses this whole banner during
+  // Belt-and-braces: IntegrationBanners suppresses this whole banner during
   // a corroborated outage, so in production this branch is already unreachable.
   // It stays so that any other caller — or a future refactor of that
   // suppression — cannot silently reintroduce the credential accusation.

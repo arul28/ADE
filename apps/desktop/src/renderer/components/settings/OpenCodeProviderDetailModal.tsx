@@ -5,6 +5,7 @@ import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
 import { COLORS, MONO_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { OAuthConnectModal } from "./OAuthConnectModal";
 import { ProviderDetailDialog } from "./providerSectionPrimitives";
+import { Banner } from "../ui/notice/Banner";
 
 export type OpenCodeProviderDetail = {
   id: string;
@@ -95,8 +96,8 @@ export function OpenCodeProviderDetailModal({
         ? "Sign-in available"
         : "Not connected";
 
-  // Escape, focus-in, and focus-restore are owned by ProviderDetailDialog,
-  // which stands down while the nested OAuth modal is open.
+  // Escape, focus-in, and focus-restore are owned by ProviderDetailDialog; the
+  // nested OAuth dialog stacks above it and takes them while it is open.
 
   const save = async () => {
     const trimmed = keyValue.trim();
@@ -132,56 +133,25 @@ export function OpenCodeProviderDetailModal({
         providerId={provider.id}
         title={provider.name}
         subtitle={`${statusLabel}${typeof provider.modelCount === "number" ? ` \u00b7 ${provider.modelCount} models` : ""}`}
-        suspended={oauthOpen}
         onClose={onClose}
       >
             <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
               {error ? (
-                <div
-                  role="alert"
-                  style={{
-                    fontSize: 11,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.danger,
-                    padding: "8px 10px",
-                    border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-                    background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-                  }}
-                >
-                  {error}
-                </div>
+                <Banner layout="inline" model={{ id: "opencode-provider-error", tone: "error", title: error }} />
               ) : null}
 
               {authMethodsError && oauthMethods.length === 0 && !provider.hasKey && (provider.connected || !supportsApi) ? (
-                <div
-                  role="status"
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 8,
-                    fontSize: 11,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.warning,
-                    padding: "8px 10px",
-                    border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
-                    background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
-                    lineHeight: 1.45,
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "opencode-auth-methods-warning",
+                    tone: "warning",
+                    title: `Could not load OpenCode sign-in methods (${authMethodsError}). SuperGrok, ChatGPT, and Copilot OAuth may be unavailable until this succeeds.`,
+                    actions: onRetryAuthMethods
+                      ? [{ label: "Retry sign-in methods", onClick: onRetryAuthMethods, variant: "secondary" }]
+                      : undefined,
                   }}
-                >
-                  <span>
-                    Could not load OpenCode sign-in methods
-                    ({authMethodsError}). SuperGrok, ChatGPT, and Copilot OAuth may be unavailable until this succeeds.
-                  </span>
-                  {onRetryAuthMethods ? (
-                    <button
-                      type="button"
-                      style={outlineButton({ height: 28, alignSelf: "flex-start" })}
-                      onClick={onRetryAuthMethods}
-                    >
-                      Retry sign-in methods
-                    </button>
-                  ) : null}
-                </div>
+                />
               ) : null}
 
               {showOauthSection ? (

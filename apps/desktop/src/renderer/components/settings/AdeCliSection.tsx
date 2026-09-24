@@ -4,6 +4,7 @@ import type { AdeCliStatus } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { rendererPlatformAttribute } from "../../lib/platform";
 import { SettingsCard, SettingsGroup } from "./primitives";
+import { Banner } from "../ui/notice";
 
 /**
  * The terminal installer this card's button mirrors: it drops the same `ade`
@@ -98,9 +99,11 @@ export function AdeCliSection({ embedded = false }: Props) {
         control={<span style={inlineBadge(statusColor)}>{loading ? "Checking" : statusLabel}</span>}
       >
         {notice ? (
-          <div style={{ ...noticeStyle(notice.kind), marginBottom: 14 }}>
-            {notice.text}
-          </div>
+          <Banner
+            layout="inline"
+            style={{ marginBottom: 14 }}
+            model={{ id: "ade-cli-notice", tone: notice.kind, title: notice.text }}
+          />
         ) : null}
 
         <div style={{ display: "grid", gap: 8 }}>
@@ -195,18 +198,5 @@ function infoBoxStyle(): CSSProperties {
     fontFamily: MONO_FONT,
     color: COLORS.textSecondary,
     lineHeight: "18px",
-  };
-}
-
-function noticeStyle(kind: "success" | "error"): CSSProperties {
-  const color = kind === "success" ? COLORS.success : COLORS.danger;
-  return {
-    background: `${color}12`,
-    border: `1px solid ${color}30`,
-    padding: "8px 12px",
-    fontSize: 11,
-    fontFamily: MONO_FONT,
-    color,
-    borderRadius: 0,
   };
 }

@@ -1,5 +1,6 @@
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import { latestAppResourcePressureLevel } from "../../../lib/resourcePressure";
+import { applyViewportOverlayHostStyle, createViewportOverlayHost } from "../../ui/ViewportOverlayHost";
 
 /**
  * T3-style send handoff for the first message of a new chat.
@@ -459,14 +460,7 @@ function flyCardFrom(card: HTMLElement, from: ComposerTextOrigin): void {
     height: initial.height,
   };
 
-  const host = document.createElement("div");
-  const appearanceRoot = card.closest<HTMLElement>("[data-chat-appearance-root]");
-  if (appearanceRoot) host.style.cssText = appearanceRoot.style.cssText;
-  host.setAttribute("aria-hidden", "true");
-  host.inert = true;
-  host.dataset.chatFirstMessageFlight = "";
-  Object.assign(host.style, {
-    position: "fixed",
+  const hostFrame = {
     left: "0px",
     top: "0px",
     width: "0px",
@@ -474,9 +468,12 @@ function flyCardFrom(card: HTMLElement, from: ComposerTextOrigin): void {
     margin: "0",
     padding: "0",
     overflow: "visible",
-    pointerEvents: "none",
-    zIndex: "80",
-  });
+  } as const;
+  const host = createViewportOverlayHost("chatFirstMessageHandoff", hostFrame);
+  const appearanceRoot = card.closest<HTMLElement>("[data-chat-appearance-root]");
+  if (appearanceRoot) host.style.cssText = appearanceRoot.style.cssText;
+  applyViewportOverlayHostStyle(host, "chatFirstMessageHandoff", hostFrame);
+  host.dataset.chatFirstMessageFlight = "";
   const layerStyle = { position: "absolute", margin: "0", transformOrigin: "0 0", willChange: "transform, opacity" };
 
   const chrome = card.cloneNode(false) as HTMLElement;
@@ -605,21 +602,15 @@ function captureDepartingDraftChrome(scope: Element | null | undefined): Departi
   if (!scope || !shouldPlaySendHandoff()) return null;
   const sources = Array.from(scope.querySelectorAll<HTMLElement>(DRAFT_DEPART_SELECTOR));
   if (!sources.length) return null;
-  const host = document.createElement("div");
-  host.setAttribute("aria-hidden", "true");
-  host.inert = true;
-  host.dataset.chatDraftDeparting = "";
-  Object.assign(host.style, {
-    position: "fixed",
+  const hostFrame = {
     left: "0px",
     top: "0px",
     width: "0px",
     height: "0px",
     overflow: "visible",
-    pointerEvents: "none",
-    // Under the first-message flight (80), over the opening chat.
-    zIndex: "79",
-  });
+  } as const;
+  const host = createViewportOverlayHost("chatDraftDeparture", hostFrame);
+  host.dataset.chatDraftDeparting = "";
   const items: DepartingDraftChrome["items"] = [];
   for (const source of sources) {
     const rect = source.getBoundingClientRect();

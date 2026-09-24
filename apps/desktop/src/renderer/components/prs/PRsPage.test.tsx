@@ -101,8 +101,8 @@ describe("PRsPage error gating", () => {
 
     render(<PRsPage />);
 
-    // Normal render: header + GitHub tab present, no dead-end EmptyState.
-    expect(screen.getByText("Pull Requests")).toBeTruthy();
+    // Normal render: list column + GitHub tab present, no dead-end EmptyState.
+    expect(screen.getByRole("button", { name: "Create PR" })).toBeTruthy();
     expect(screen.getByTestId("github-tab")).toBeTruthy();
     expect(screen.queryByText(/Failed to load PRs/i)).toBeNull();
   });
@@ -165,5 +165,19 @@ describe("PRsPage error gating", () => {
     await waitFor(() => {
       expect(githubTabProps.current?.selectedPrTarget).toBeNull();
     });
+  });
+
+  it("does not write PR state onto CTO or History while the page is held inactive", () => {
+    locationMock.pathname = "/cto";
+    locationMock.search = "";
+    usePrsMock.mockReturnValue(baseValue({
+      prs: [makePr()],
+      selectedPrId: "pr-1",
+      activeTab: "normal",
+    }));
+
+    render(<PRsPage active={false} />);
+
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 });

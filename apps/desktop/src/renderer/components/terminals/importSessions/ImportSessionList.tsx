@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, type ReactNode } from "react";
-import { Warning } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
 import { ToolLogo } from "../ToolLogos";
 import { PROVIDER_TOOL_TYPE, type ExternalSessionSummary } from "./contract";
 import { sessionKey, type SessionPlace } from "./importBrowserModel";
@@ -168,10 +168,11 @@ export function ImportSessionList({
       ) : null}
       {!hasRows && !loading ? empty : null}
       {notice ? (
-        <p className="flex items-start gap-1.5 px-4 pt-3 text-[10.5px] leading-relaxed text-muted-fg/50">
-          <Warning size={11} className="mt-[2px] shrink-0" />
-          <span>{notice}</span>
-        </p>
+        <Banner
+          layout="inline"
+          style={{ margin: "10px 12px 0" }}
+          model={{ id: "external-session-scan-warning", tone: "warning", title: notice }}
+        />
       ) : null}
     </div>
   );

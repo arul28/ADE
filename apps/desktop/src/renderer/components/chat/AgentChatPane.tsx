@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -150,7 +150,7 @@ import {
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
-import { ChatLifecycleBanner, shouldRenderChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
@@ -199,6 +199,8 @@ export { mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot } from "../..
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
+import { ProviderLogo } from "../shared/ProviderLogos";
+import { Banner, NoticeChip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -206,6 +208,7 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionBrowser";
 import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
@@ -244,7 +247,6 @@ import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
@@ -1086,41 +1088,71 @@ type LocalRuntimeNoticeShape = {
   message: string;
 };
 
-function LocalRuntimeNoticeBlock(props: {
+/** Runtime banners sit at the top of the chat pane, inset from its edges. */
+const RUNTIME_BANNER_STYLE = { margin: "6px 8px" } as const;
+
+function RuntimeEndpointChip({ endpoint }: { endpoint?: string | null }) {
+  return endpoint ? <NoticeChip title={endpoint}>{endpoint}</NoticeChip> : null;
+}
+
+function LocalRuntimeNoticeBanner(props: {
   notice: LocalRuntimeNoticeShape;
   endpoint?: string | null;
-  /** `inline` = text only (inside a parent runtime card). */
-  variant?: "card" | "inline";
 }) {
-  const { notice, endpoint, variant = "card" } = props;
-  const isCard = variant === "card";
+  const { notice, endpoint } = props;
   return (
-    <div
-      className={cn(
-        isCard && "border-b px-4 py-2.5",
-        isCard && (notice.tone === "success"
-          ? "border-emerald-500/10 bg-emerald-500/[0.04]"
-          : "border-amber-500/10 bg-amber-500/[0.04]"),
-      )}
-    >
-      <div className={cn(
-        "font-mono text-[10px] uppercase tracking-[0.16em]",
-        notice.tone === "success" ? "text-emerald-200/70" : "text-amber-200/70",
-      )}>
-        {notice.title}
-      </div>
-      <div className={cn(
-        "mt-1 text-[12px] leading-5",
-        notice.tone === "success" ? "text-emerald-100/80" : "text-amber-100/80",
-      )}>
-        {notice.message}
-      </div>
-      {endpoint ? (
-        <code className="mt-2 block rounded-md border border-white/[0.06] bg-black/10 px-2 py-1 font-mono text-[10px] text-fg/60">
-          {endpoint}
-        </code>
-      ) : null}
-    </div>
+    <Banner
+      layout="inline"
+      style={RUNTIME_BANNER_STYLE}
+      model={{
+        id: "local-runtime",
+        tone: notice.tone,
+        title: notice.title,
+        detail: notice.message,
+        extra: endpoint ? <RuntimeEndpointChip endpoint={endpoint} /> : undefined,
+      }}
+    />
+  );
+}
+
+/**
+ * The CLI runtime is blocked. With `localNotice` it becomes the combined
+ * "Runtime status" banner: the CLI line first, then the local runtime line.
+ */
+function CliRuntimeBanner(props: {
+  logoFamily: string;
+  title: string;
+  body: string;
+  localNotice?: LocalRuntimeNoticeShape;
+  localEndpoint?: string | null;
+}) {
+  const { logoFamily, title, body, localNotice, localEndpoint } = props;
+  return (
+    <Banner
+      layout="inline"
+      style={RUNTIME_BANNER_STYLE}
+      model={localNotice ? {
+        id: "runtime-status",
+        tone: "warning",
+        icon: <ProviderLogo family={logoFamily} size={13} />,
+        title: "Runtime status",
+        detail: (
+          <>
+            <span className="block font-medium text-fg">{title}</span>
+            <span className="block">{body}</span>
+            <span className="mt-1.5 block font-medium text-fg">{localNotice.title}</span>
+            <span className="block">{localNotice.message}</span>
+          </>
+        ),
+        extra: localEndpoint ? <RuntimeEndpointChip endpoint={localEndpoint} /> : undefined,
+      } : {
+        id: "cli-runtime",
+        tone: "warning",
+        icon: <ProviderLogo family={logoFamily} size={13} />,
+        title,
+        detail: body || undefined,
+      }}
+    />
   );
 }
 
@@ -4413,7 +4445,7 @@ export function AgentChatPane({
   // Resolve this after the machine pin so foreign chats never send a wake or
   // unsettle request to the tab-bound runtime.
   const composerLifecycleSession = useSessionLifecycleSnapshot(composerSessionId);
-  const hasComposerLifecycleBanner = shouldRenderChatLifecycleBanner(composerLifecycleSession);
+  const hasComposerLifecyclePill = shouldRenderChatLifecyclePill(composerLifecycleSession);
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -5715,6 +5747,12 @@ export function AgentChatPane({
       : activeProviderConnection?.provider === "droid"
         ? "Droid runtime"
       : "Codex runtime";
+  // The same provider split as the title, as a ProviderLogo family.
+  const cliRuntimeLogoFamily = activeProviderConnection?.provider === "claude"
+    || activeProviderConnection?.provider === "cursor"
+    || activeProviderConnection?.provider === "droid"
+    ? activeProviderConnection.provider
+    : "codex";
   const cliRuntimeBody = activeProviderConnection?.blocker
     ?? (activeProviderConnection?.provider === "droid"
       ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
@@ -11620,12 +11658,15 @@ export function AgentChatPane({
     setHandoffLaunchJobs,
   ]);
 
-  const handleDeleteSelectedChat = useCallback(() => {
+  const handleDeleteSelectedChat = useCallback(async () => {
     if (!selectedSessionId || !selectedSession) return;
     const label = chatSessionTitle(selectedSession).trim() || "this chat";
-    const confirmed = window.confirm(
-      `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Delete "${label}"?`,
+      message: "This permanently removes the saved chat history from ADE.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setError(null);
@@ -11672,18 +11713,16 @@ export function AgentChatPane({
       });
   }, [invalidateCurrentChatSessionList, refreshSessions]);
 
-  const archiveConfirm = useConfirmDialog();
-  const memoryResetConfirm = useConfirmDialog();
   const requestArchiveChat = useCallback(
     async (sessionId: string, title: string) => {
-      const ok = await archiveConfirm.confirmAsync({
+      const ok = await confirmDialog({
         title: `Archive "${title}"?`,
         message: "Archived chats are hidden from the active chat tabs.",
         confirmLabel: "ARCHIVE",
       });
       if (ok) handleArchiveChat(sessionId);
     },
-    [archiveConfirm, handleArchiveChat],
+    [handleArchiveChat],
   );
 
   const handleUnarchiveChat = useCallback((sessionId: string) => {
@@ -12220,11 +12259,11 @@ export function AgentChatPane({
       && !contextAttachmentsSnapshot.length
       && !visualContextPrefix.length
     ) {
-      const ok = await memoryResetConfirm.confirmAsync({
+      const ok = await confirmDialog({
         title: "Reset Codex memory?",
         message: "Deletes every memory file under this Codex home, not just this chat.",
         confirmLabel: "Reset memory",
-        danger: true,
+        destructive: true,
       });
       if (!ok) return;
       setBusy(true);
@@ -13806,9 +13845,15 @@ export function AgentChatPane({
         </div>
       </div>
       {handoffTurnGate ? (
-        <div className="border-b border-amber-300/20 bg-amber-400/10 px-4 py-2 text-[11px] leading-4 text-amber-100/90">
-          A turn is running — wait for it to finish before handing off.
-        </div>
+        <Banner
+          model={{
+            id: "handoff-turn-running",
+            tone: "warning",
+            title: "A turn is running — wait for it to finish before handing off.",
+          }}
+          layout="inline"
+          style={{ margin: "0 16px" }}
+        />
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-4">
         <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
@@ -14020,9 +14065,10 @@ export function AgentChatPane({
       </div>
       <div ref={appleDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
-          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
-            {auxiliaryToolDisabledReason}
-          </div>
+          <Banner
+            model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
+            layout="inline"
+          />
         ) : (
           <ChatIosSimulatorPanel
             key={activeComposerRuntimeBinding?.key ?? "bound"}
@@ -14054,9 +14100,10 @@ export function AgentChatPane({
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
-          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
-            {auxiliaryToolDisabledReason}
-          </div>
+          <Banner
+            model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
+            layout="inline"
+          />
         ) : (
           <ChatAppControlPanel
             key={activeComposerRuntimeBinding?.key ?? "bound"}
@@ -14474,8 +14521,8 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
-  const lifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
-    <ChatLifecycleBanner sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
+  const lifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
+    <ChatLifecyclePill sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
   // The whole usage-limit surface: one line, above the composer, in the same
   // capped column the prompt box uses so the two share an edge. It is an
@@ -14506,9 +14553,9 @@ export function AgentChatPane({
         // Matches ChatComposerShell's own width rule exactly so the banner and
         // the prompt box share an edge: capped column when standard, full
         // bleed inside a grid tile where the composer drops its max width.
-        className={cn(
-          layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
-        )}
+        style={layoutVariant === "grid-tile"
+          ? { width: "100%" }
+          : { width: "100%", maxWidth: "var(--chat-column,52rem)", marginLeft: "auto", marginRight: "auto" }}
         onTakeOver={() => {
           const sessionId = composerSessionId;
           const previousShownAt = selectedSession.subagentTakeoverPromptShownAt ?? null;
@@ -15043,8 +15090,8 @@ export function AgentChatPane({
       onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
     />
   ) : null;
-  const appPanelLifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
-    <ChatLifecycleBanner
+  const appPanelLifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
+    <ChatLifecyclePill
       sessionId={composerSessionId}
       runtimePin={renderedChatRuntimePin}
       className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
@@ -15316,88 +15363,69 @@ export function AgentChatPane({
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-500/[0.08] bg-red-500/[0.03] px-4 py-2.5 font-sans text-[11px] text-red-300/80">
-            <span className="min-w-0 flex-1 break-words">{error}</span>
-            {draftMachineRecoveryAvailable ? (
-              <button
-                type="button"
-                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
-                onClick={useThisComputerForDraft}
-              >
-                Use this computer
-              </button>
-            ) : null}
-            {restorableErrorDraftLaunchJob ? (
-              <button
-                type="button"
-                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
-                onClick={() => restoreDraftLaunchJob(restorableErrorDraftLaunchJob, { clearError: true })}
-              >
-                Restore
-              </button>
-            ) : null}
-          </div>
+          <Banner
+            layout="inline"
+            style={RUNTIME_BANNER_STYLE}
+            model={{
+              id: "chat-error",
+              tone: "error",
+              title: <span className="break-words">{error}</span>,
+              ariaLabel: error,
+              actions: [
+                ...(draftMachineRecoveryAvailable
+                  ? [{ label: "Use this computer", onClick: useThisComputerForDraft }]
+                  : []),
+                ...(restorableErrorDraftLaunchJob
+                  ? [{
+                      label: "Restore",
+                      onClick: () => restoreDraftLaunchJob(restorableErrorDraftLaunchJob, { clearError: true }),
+                    }]
+                  : []),
+              ],
+            }}
+          />
         ) : null}
         {replayForkDisclosure ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5 font-sans text-[11px] text-amber-100/80">
-            <span className="min-w-0 flex-1 break-words">
-              {`Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `}
-              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`}
-            </span>
-            <button
-              type="button"
-              className="shrink-0 rounded-md border border-amber-300/15 px-2 py-0.5 font-medium text-amber-50/90 transition-colors hover:bg-amber-300/[0.12]"
-              onClick={() => setReplayForkDisclosure(null)}
-            >
-              Dismiss
-            </button>
-          </div>
+          <Banner
+            layout="inline"
+            style={RUNTIME_BANNER_STYLE}
+            model={{
+              id: "chat-replay-fork",
+              tone: "warning",
+              icon: <GitFork size={13} weight="bold" />,
+              title: `Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `
+                + `The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`,
+              dismiss: { onDismiss: () => setReplayForkDisclosure(null), label: "Dismiss" },
+            }}
+          />
         ) : null}
         {mergedRuntimeBanner?.kind === "cli-only" && !cursorRuntimeBlocked ? (
-          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
-            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              {mergedRuntimeBanner.cliTitle}
-            </div>
-            <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {mergedRuntimeBanner.cliBody}
-            </div>
-          </div>
+          <CliRuntimeBanner
+            logoFamily={cliRuntimeLogoFamily}
+            title={mergedRuntimeBanner.cliTitle}
+            body={mergedRuntimeBanner.cliBody}
+          />
         ) : null}
         {mergedRuntimeBanner?.kind === "local-only" ? (
-          <LocalRuntimeNoticeBlock
+          <LocalRuntimeNoticeBanner
             notice={mergedRuntimeBanner.localNotice}
             endpoint={mergedRuntimeBanner.localEndpoint}
           />
         ) : null}
         {mergedRuntimeBanner?.kind === "merged" ? (
           cursorRuntimeBlocked ? (
-            <LocalRuntimeNoticeBlock
+            <LocalRuntimeNoticeBanner
               notice={mergedRuntimeBanner.localNotice}
               endpoint={mergedRuntimeBanner.localEndpoint}
             />
           ) : (
-            <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
-              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-                Runtime status
-              </div>
-              <div className="mt-3 space-y-3">
-                <div>
-                  <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
-                    {mergedRuntimeBanner.cliTitle}
-                  </div>
-                  <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-                    {mergedRuntimeBanner.cliBody}
-                  </div>
-                </div>
-                <div className="border-t border-white/[0.06] pt-3">
-                  <LocalRuntimeNoticeBlock
-                    variant="inline"
-                    notice={mergedRuntimeBanner.localNotice}
-                    endpoint={mergedRuntimeBanner.localEndpoint}
-                  />
-                </div>
-              </div>
-            </div>
+            <CliRuntimeBanner
+              logoFamily={cliRuntimeLogoFamily}
+              title={mergedRuntimeBanner.cliTitle}
+              body={mergedRuntimeBanner.cliBody}
+              localNotice={mergedRuntimeBanner.localNotice}
+              localEndpoint={mergedRuntimeBanner.localEndpoint}
+            />
           )
         ) : null}
 
@@ -16014,8 +16042,6 @@ export function AgentChatPane({
           }}
         />
       ) : null}
-      <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
-      <ConfirmDialog state={memoryResetConfirm.state} onClose={memoryResetConfirm.close} />
       {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser
           open={importBrowserOpen}

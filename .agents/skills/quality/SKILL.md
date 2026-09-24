@@ -219,6 +219,19 @@ For each finding: cite `file:line`, name the standard, describe the **judo move*
 behavior-preserving. This track is the simplification arm — its applied moves
 are handled by the synthesis step below, not a separate phase.
 
+**UI primitives (whenever the diff touches `apps/desktop/src/renderer/**`).**
+Run `npm run lint:ci` in `apps/desktop`. Every `ade-ui/*` warning in a
+file this branch touched is a finding to fix, not just the ones the ratchet
+fails on. Fix it by moving to the primitive the message names, then run
+`npm run lint:baseline` so the lower count is locked in. Never raise the
+baseline to make a violation pass. Then read the touched UI by eye for
+hand-rolled notice or dialog styling the lint cannot see: a card that copies
+the banner look (tone border plus icon tile) instead of `<Banner>`, a
+corner card instead of `showToast`, a custom scrim and panel instead of
+`<Dialog>`, a class constant carrying `fixed` or `z-[N]`, a toast
+`durationMs` or banner tone that contradicts `docs/design/notices.md`.
+Cite the doc section in the finding.
+
 ### Synthesis (lead step, after both tracks finish)
 
 1. **Collect** all findings from Tracks A and B.

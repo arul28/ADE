@@ -84,9 +84,9 @@ describe("AppleShutdownConfirmHost", () => {
     expect(screen.getByText("Closing this tab powers off the simulator.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close and shut down" })).toBeTruthy();
-    // Opaque surface, per this feature's rule zero.
-    expect(dialog.className).toContain("bg-surface-overlay");
+    // Opaque surface, per this feature's rule zero: the panel itself never blurs.
     expect(dialog.className).not.toContain("backdrop-blur");
+    expect(dialog.style.backdropFilter || "").toBe("");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await answer;
   });
@@ -114,8 +114,9 @@ describe("AppleShutdownConfirmHost", () => {
     await expect(escaped).resolves.toBe(false);
 
     const dismissed = askAppleShutdownConfirm("ADE Repro");
-    const dialog = await screen.findByTestId("apple-shutdown-confirm");
-    fireEvent.mouseDown(dialog.parentElement!);
+    await screen.findByTestId("apple-shutdown-confirm");
+    // The shared Dialog's scrim: a pointer-down outside the panel dismisses.
+    fireEvent.pointerDown(document.body);
     await expect(dismissed).resolves.toBe(false);
   });
 

@@ -2,7 +2,6 @@ import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import type {
   GitHubPrListItem,
   GitHubPrStackMembership,
-  LaneListSnapshot,
   LaneSummary,
   PrChecksStatus,
   PrLabel,
@@ -10,7 +9,6 @@ import type {
   PrSummary,
 } from "../../../shared/types";
 import type { CreateLaneMode } from "./CreateLaneDialog";
-import { mergeUnique } from "./laneUtils";
 import { isTerminalPrState } from "../../lib/prState";
 import { buildPrsRouteSearch, prRouteCoordinatesMatch } from "../prs/prsRouteState";
 
@@ -78,8 +76,6 @@ export function lanePrTagRoutePath(
 
 export const VISIBLE_LANE_PR_REFRESH_LIMIT = 4;
 export const VISIBLE_LANE_PR_REFRESH_STALE_MS = 15_000;
-export const DEFERRED_LANE_PANE_STEP_MS = 220;
-export const DEFERRED_LANE_PANE_MAX_MS = 3_300;
 
 export function resolveCreateLaneRequest(args: {
   name: string;
@@ -591,100 +587,15 @@ export function selectVisibleLanePrRefreshIds(args: {
   return selected;
 }
 
-export function getDeferredLanePaneDelayMs(args: {
-  laneId: string | null;
-  visibleLaneIds: readonly string[];
-  stepMs?: number;
-  maxMs?: number;
-}): number {
-  if (!args.laneId) return 0;
-  const index = args.visibleLaneIds.indexOf(args.laneId);
-  if (index <= 0) return 0;
-  const stepMs = args.stepMs ?? DEFERRED_LANE_PANE_STEP_MS;
-  const maxMs = args.maxMs ?? DEFERRED_LANE_PANE_MAX_MS;
-  return Math.min(index * stepMs, maxMs);
-}
-
-type LaneRuntimeBucket = LaneListSnapshot["runtime"]["bucket"];
-
-export function sortLaneListRows<T extends Pick<LaneSummary, "id" | "laneType">>(args: {
-  lanes: T[];
-  laneRuntimeById: ReadonlyMap<string, Pick<LaneListSnapshot["runtime"], "bucket">>;
-  laneStatusFilter: LaneRuntimeBucket | "all";
-  laneOrderById: ReadonlyMap<string, number>;
-  pinnedLaneIds: ReadonlySet<string>;
-}): T[] {
-  const bucketRank: Record<LaneRuntimeBucket, number> = {
-    "awaiting-input": 0,
-    running: 1,
-    ended: 2,
-    none: 3,
-  };
-  const base =
-    args.laneStatusFilter === "all"
-      ? [...args.lanes]
-      : args.lanes.filter((lane) => (args.laneRuntimeById.get(lane.id)?.bucket ?? "none") === args.laneStatusFilter);
-  return base.sort((a, b) => {
-    const aPrimary = a.laneType === "primary" ? 0 : 1;
-    const bPrimary = b.laneType === "primary" ? 0 : 1;
-    if (aPrimary !== bPrimary) return aPrimary - bPrimary;
-    const aPinned = args.pinnedLaneIds.has(a.id) ? 0 : 1;
-    const bPinned = args.pinnedLaneIds.has(b.id) ? 0 : 1;
-    if (aPinned !== bPinned) return aPinned - bPinned;
-    const aBucket = args.laneRuntimeById.get(a.id)?.bucket ?? "none";
-    const bBucket = args.laneRuntimeById.get(b.id)?.bucket ?? "none";
-    const byBucket = bucketRank[aBucket] - bucketRank[bBucket];
-    if (byBucket !== 0) return byBucket;
-    return (args.laneOrderById.get(a.id) ?? 0) - (args.laneOrderById.get(b.id) ?? 0);
-  });
-}
-
-export function resolveLaneDeleteStartSelection(args: {
-  deletingLaneIds: Iterable<string>;
+/**
+ * Lane to show after `deletingLaneIds` start deleting: the current selection
+ * when it survives, else the first surviving candidate in list order.
+ */
+export function resolveLaneSelectionAfterDelete(args: {
+  deletingLaneIds: ReadonlySet<string>;
   selectedLaneId: string | null;
-  activeLaneIds: string[];
-  pinnedLaneIds: Iterable<string>;
-  filteredLaneIds: string[];
-  sortedLaneIds: string[];
-}): { selectedLaneId: string | null; activeLaneIds: string[]; pinnedLaneIds: Set<string> } {
-  const deleting = new Set(args.deletingLaneIds);
-  const isAvailable = (laneId: string | null | undefined): laneId is string =>
-    Boolean(laneId && !deleting.has(laneId));
-  const pinnedLaneIds = new Set(Array.from(args.pinnedLaneIds).filter((laneId) => !deleting.has(laneId)));
-  const nextSelectedLaneId = isAvailable(args.selectedLaneId)
-    ? args.selectedLaneId
-    : args.filteredLaneIds.find((laneId) => !deleting.has(laneId))
-      ?? args.sortedLaneIds.find((laneId) => !deleting.has(laneId))
-      ?? null;
-  const preservedActiveLaneIds = args.activeLaneIds.filter((laneId) => !deleting.has(laneId) && laneId !== nextSelectedLaneId);
-  return {
-    selectedLaneId: nextSelectedLaneId,
-    activeLaneIds: mergeUnique(
-      nextSelectedLaneId ? [nextSelectedLaneId] : [],
-      preservedActiveLaneIds,
-      Array.from(pinnedLaneIds),
-    ),
-    pinnedLaneIds,
-  };
-}
-
-export function resolveVisibleLaneIds(args: {
-  activeLaneIds: string[];
-  existingLaneIds: Iterable<string>;
-  filteredLaneIds: Iterable<string>;
-  selectableFilteredLaneIds: Iterable<string>;
-  deletingLaneIds: Iterable<string>;
-}): string[] {
-  const existing = new Set(args.existingLaneIds);
-  const deleting = new Set(args.deletingLaneIds);
-  const selectableFiltered = new Set(args.selectableFilteredLaneIds);
-  const filteredLaneIds = Array.from(args.filteredLaneIds);
-  const allowDeleteFallbackPane =
-    selectableFiltered.size === 0 && filteredLaneIds.some((laneId) => deleting.has(laneId));
-
-  return args.activeLaneIds.filter((laneId) => (
-    existing.has(laneId)
-    && !deleting.has(laneId)
-    && (selectableFiltered.has(laneId) || allowDeleteFallbackPane)
-  ));
+  candidateLaneIds: readonly string[];
+}): string | null {
+  if (args.selectedLaneId && !args.deletingLaneIds.has(args.selectedLaneId)) return args.selectedLaneId;
+  return args.candidateLaneIds.find((laneId) => !args.deletingLaneIds.has(laneId)) ?? null;
 }

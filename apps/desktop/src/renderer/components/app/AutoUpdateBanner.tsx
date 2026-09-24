@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
+import { ArrowsClockwise, Wrench } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot, UpdateTransactionResult } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
-import { useBrainRepair } from "../../hooks/useBrainRepair";
-import { BrainRepairButton } from "../settings/BrainRepairButton";
+import { useBrainRepair, type BrainRepair } from "../../hooks/useBrainRepair";
 import { dismissToast, showToast } from "./toast/toastStore";
+import { APP_BANNER_PRIORITY, useAppBanner, type NoticeAction } from "../ui/notice";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
+import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
 import { ReportIssueButton } from "./ReportIssueButton";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
+const APP_BANNER = { placement: "docked", priority: APP_BANNER_PRIORITY.app } as const;
+const UPDATE_PROMPT_BANNER = { placement: "floating", priority: APP_BANNER_PRIORITY.updatePrompt } as const;
 
 type StalenessBanner = {
   /** Exceptional install states that need a prominent recovery action. */
@@ -56,7 +59,9 @@ export function describeStalenessBanner(snapshot: AutoUpdateSnapshot): Staleness
 export function AutoUpdateBanner() {
   const snapshot = useAutoUpdateSnapshot();
   const [dismissedSignature, setDismissedSignature] = useState<string | null>(null);
+  const [dismissedReadyVersion, setDismissedReadyVersion] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [installRequested, setInstallRequested] = useState(false);
   const cancelRequestedRef = useRef(false);
 
   const banner = describeStalenessBanner(snapshot);
@@ -69,6 +74,10 @@ export function AutoUpdateBanner() {
   useEffect(() => {
     setRestarting(false);
   }, [signature]);
+
+  useEffect(() => {
+    if (snapshot.status !== "ready") setInstallRequested(false);
+  }, [snapshot.status, updateVersion]);
 
   const handleRestart = useCallback(() => {
     captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "accepted");
@@ -98,6 +107,13 @@ export function AutoUpdateBanner() {
     );
   }, [currentVersion, updateVersion]);
 
+  const handleInstallReadyUpdate = useCallback(() => {
+    void requestDownloadedUpdateInstall(snapshot, () => setInstallRequested(true))
+      .then((started) => {
+        if (!started) setInstallRequested(false);
+      });
+  }, [snapshot]);
+
   // Drive the countdown toast off `autoApplyPending`. Re-render once a second so
   // the visible seconds tick down; the snapshot event clears it on apply/cancel.
   const pending = snapshot.autoApplyPending;
@@ -115,7 +131,7 @@ export function AutoUpdateBanner() {
         title: `ADE will update in ${secondsLeft}s`,
         tone: "info",
         durationMs: 0,
-        action: { label: "Cancel", onClick: handleCancelAutoApply },
+        actions: [{ label: "Cancel", onClick: handleCancelAutoApply }],
       });
     };
     renderToast();
@@ -129,46 +145,115 @@ export function AutoUpdateBanner() {
   useEffect(() => () => dismissToast(AUTO_APPLY_TOAST_ID), []);
 
   const showBanner = Boolean(banner) && signature !== dismissedSignature;
+  const showReadyUpdatePrompt =
+    snapshot.status === "ready"
+    && Boolean(updateVersion)
+    && !banner
+    && dismissedReadyVersion !== updateVersion;
 
-  return (
-    <>
-      <UpdateTransactionNotice result={snapshot.updateTransaction ?? null} />
-      {showBanner && banner ? (
-        // Same dark-shell amber strip as UpdateTransactionNotice below: this
-        // one was still written for a light surface, so its body read as brown
-        // text on near-black while its dismiss was already converted.
-        <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-400/25 bg-amber-400/[0.08] px-3 py-1.5 text-[11px] text-amber-100/90">
-          <WarningCircle size={14} weight="fill" className="shrink-0 text-amber-300" aria-hidden="true" />
-          <span className="flex-1 min-w-0">
-            {banner.kind === "parked"
-              ? "ADE update didn't finish — Restart to retry"
-              : "ADE update did not install — Restart to retry"}
-          </span>
-          <button
-            type="button"
-            onClick={handleRestart}
-            disabled={restarting}
-            className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-400/35 bg-amber-400/15 px-2 py-0.5 font-medium text-amber-100 transition-colors hover:bg-amber-400/25 disabled:opacity-60"
-          >
-            <ArrowsClockwise size={12} weight="bold" aria-hidden="true" />
-            {restarting ? "Restarting…" : "Restart now"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
+  useAppBanner(
+    showBanner && banner
+      ? {
+          id: "auto-update-staleness",
+          tone: "warning",
+          icon: <ArrowsClockwise size={13} weight="bold" />,
+          title: banner.kind === "parked"
+            ? "ADE update didn't finish — Restart to retry"
+            : "ADE update did not install — Restart to retry",
+          actions: [{
+            label: restarting ? "Restarting…" : "Restart now",
+            icon: <ArrowsClockwise size={12} weight="bold" />,
+            variant: "primary",
+            busy: restarting,
+            onClick: handleRestart,
+          }],
+          dismiss: {
+            title: "Dismiss until the next update",
+            onDismiss: () => {
               captureUpdatePromptDecision(snapshot, "dismissed");
               setDismissedSignature(signature);
-            }}
-            className="shrink-0 text-amber-100/50 transition-colors hover:text-amber-100"
-            title="Dismiss until the next update"
-            aria-label="Dismiss update banner"
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
-    </>
+            },
+          },
+        }
+      : null,
+    APP_BANNER,
   );
+
+  useAppBanner(
+    showReadyUpdatePrompt
+      ? {
+          id: "auto-update-ready",
+          tone: "accent",
+          icon: <ArrowsClockwise size={13} weight="bold" />,
+          title: `Update v${updateVersion} is ready to install`,
+          actions: [{
+            label: installRequested ? "Restarting…" : "Restart and install",
+            icon: <ArrowsClockwise size={12} weight="bold" />,
+            variant: "primary",
+            busy: installRequested,
+            disabled: installRequested,
+            onClick: handleInstallReadyUpdate,
+          }],
+          dismiss: {
+            label: "Dismiss update prompt",
+            title: "Dismiss update prompt",
+            onDismiss: () => {
+              captureUpdatePromptDecision(snapshot, "dismissed");
+              setDismissedReadyVersion(updateVersion);
+            },
+          },
+        }
+      : null,
+    UPDATE_PROMPT_BANNER,
+  );
+
+  return <UpdateTransactionNotice result={snapshot.updateTransaction ?? null} />;
+}
+
+/**
+ * The Repair control as a banner action: same label, same pending state and
+ * same handler as `BrainRepairButton`, drawn as the banner's own pill.
+ */
+function repairAction(repair: BrainRepair): NoticeAction {
+  return {
+    label: repair.pending ? "Repairing…" : "Repair",
+    icon: <Wrench size={12} weight="bold" />,
+    variant: "secondary",
+    busy: repair.pending,
+    onClick: repair.run,
+  };
+}
+
+/**
+ * What the last Repair said, under the banner text — the same lines
+ * `BrainRepairButton` prints beside itself on other surfaces.
+ */
+function RepairOutcome({ repair }: { repair: BrainRepair }) {
+  if (repair.error) {
+    return (
+      <>
+        <span style={{ color: "var(--color-warning)", minWidth: 0 }} title={repair.error}>
+          {`Repair didn't finish. ${repair.error.replace(/\.?\s*$/, ".")}`}
+        </span>
+        <ReportIssueButton
+          variant="ghost"
+          context={{
+            surface: "brain_repair",
+            headline: "Repair didn't finish",
+            technicalDetail: repair.error,
+          }}
+        />
+      </>
+    );
+  }
+  if (repair.notice) {
+    return (
+      <span style={{ color: repair.notice.tone === "ok" ? "var(--color-secondary-fg)" : "var(--color-warning)" }}>
+        {repair.notice.text}
+      </span>
+    );
+  }
+  return null;
 }
 
 /**
@@ -176,7 +261,7 @@ export function AutoUpdateBanner() {
  * but the background service is not — say which step failed and offer the same
  * Repair control every other background-service failure uses.
  */
-function UpdateTransactionNotice({ result }: { result: UpdateTransactionResult | null }) {
+function UpdateTransactionNotice({ result }: { result: UpdateTransactionResult | null }): null {
   const [dismissed, setDismissed] = useState(false);
   const repair = useBrainRepair();
   const failureMessage = result && !result.ok ? result.failureMessage : null;
@@ -185,38 +270,35 @@ function UpdateTransactionNotice({ result }: { result: UpdateTransactionResult |
     setDismissed(false);
   }, [failureMessage]);
 
-  if (!failureMessage || dismissed) return null;
-
-  return (
-    // Same amber strip as every other app-shell failure banner. It used to be
-    // written for a light surface (amber-800 on amber-500/10), which on ADE's
-    // near-black shell rendered as brown text and an all-but-invisible dismiss.
-    <div className="shrink-0 mx-3 mt-1.5 flex items-start gap-2 rounded-md border border-amber-400/25 bg-amber-400/[0.08] px-3 py-1.5 text-[11.5px] leading-relaxed text-amber-100/90">
-      <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-300" aria-hidden="true" />
-      {/* The message can run long and Repair grows a failure line of its own,
-          so the row wraps rather than crushing either into an ellipsis. */}
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 leading-relaxed">
-        <span className="min-w-0">{failureMessage}</span>
-        {repair.available ? <BrainRepairButton repair={repair} height={20} /> : null}
-        <ReportIssueButton
-          variant="ghost"
-          context={{
-            surface: "update_transaction",
-            headline: failureMessage,
-            code: "update_transaction_failed",
-            technicalDetail: result ? JSON.stringify(result, null, 2) : null,
-          }}
-        />
-      </div>
-      <button
-        type="button"
-        onClick={() => setDismissed(true)}
-        className="shrink-0 text-amber-100/50 transition-colors hover:text-amber-100"
-        title="Dismiss"
-        aria-label="Dismiss update notice"
-      >
-        ×
-      </button>
-    </div>
+  useAppBanner(
+    failureMessage && !dismissed
+      ? {
+          id: "update-transaction-failed",
+          tone: "warning",
+          title: failureMessage,
+          actions: repair.available ? [repairAction(repair)] : undefined,
+          // The message can run long and Repair grows a failure line of its
+          // own, so the outcome and Report issue sit under the text rather
+          // than crushing it.
+          extra: (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 8px", fontSize: 11, lineHeight: 1.45 }}>
+              {repair.available ? <RepairOutcome repair={repair} /> : null}
+              <ReportIssueButton
+                variant="ghost"
+                context={{
+                  surface: "update_transaction",
+                  headline: failureMessage,
+                  code: "update_transaction_failed",
+                  technicalDetail: result ? JSON.stringify(result, null, 2) : null,
+                }}
+              />
+            </div>
+          ),
+          dismiss: { onDismiss: () => setDismissed(true) },
+        }
+      : null,
+    APP_BANNER,
   );
+
+  return null;
 }

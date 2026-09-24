@@ -324,12 +324,12 @@ describe("CtoPage settings", () => {
     });
     expect(screen.getByTestId("cto-talk-error").textContent)
       .toContain("No microphone is connected");
-    expect(screen.getByTestId("cto-talk-open-mic-settings")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Open (sound|microphone) settings/ })).toBeTruthy();
 
     // And a failure with no kind gets the sentence and nothing to press.
     emit({ phase: "connecting" });
     emit({ phase: "failed", error: "The voice connection failed." });
-    expect(screen.queryByTestId("cto-talk-open-mic-settings")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Open (sound|microphone) settings/ })).toBeNull();
 
     emit({ phase: "idle" });
   });

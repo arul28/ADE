@@ -13,6 +13,11 @@ import {
   useEditorGroupsStore,
 } from "./editorGroupsStore";
 import { FilesWorkbench } from "./FilesWorkbench";
+import { confirmDialog } from "../../ui/dialog/confirm";
+import {
+  ProjectSidebarSlotProvider,
+  useProjectSidebarSlotTarget,
+} from "../../app/projectSidebar/ProjectSidebarSlot";
 import {
   filesProjectCacheKey,
   filesTreeCacheKey,
@@ -55,6 +60,11 @@ const testState = vi.hoisted(() => ({
       { id: "lane-b", color: "#00ff00" },
     ],
   },
+}));
+
+vi.mock("../../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => true),
 }));
 
 vi.mock("../../../state/appStore", () => ({
@@ -225,7 +235,7 @@ describe("FilesWorkbench", () => {
     testState.appState.project = { rootPath: "/repo" };
     testState.appState.selectedLaneId = "lane-a";
     useEditorGroupsStore.setState({ sessions: {} });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockClear().mockResolvedValue(true);
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -306,7 +316,7 @@ describe("FilesWorkbench", () => {
 
     fireEvent.click(screen.getByTestId("switch-workspace"));
 
-    expect(window.confirm).not.toHaveBeenCalled();
+    expect(confirmDialog).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId("dirty-count").textContent).toBe("1"));
   });
 
@@ -507,6 +517,41 @@ describe("FilesWorkbench", () => {
     // The tab has the workspace picker and the status bar; a breadcrumb here
     // would be a third place saying the same thing.
     expect(screen.queryByTestId("files-pane-chrome")).toBeNull();
+  });
+
+  function SidebarBody() {
+    const setTarget = useProjectSidebarSlotTarget();
+    return <div data-testid="sidebar-body" ref={setTarget} />;
+  }
+
+  it("draws the Files tab tree in the project sidebar", async () => {
+    render(
+      <ProjectSidebarSlotProvider>
+        <SidebarBody />
+        <FilesWorkbench active />
+      </ProjectSidebarSlotProvider>,
+    );
+
+    const tree = await screen.findByTestId("files-tree-column");
+    expect(screen.getByTestId("sidebar-body").contains(tree)).toBe(true);
+    expect(screen.getByTestId("files-workbench-v2").contains(tree)).toBe(false);
+    // Opening from the tree still reaches the editor through the portal.
+    await waitFor(() => expect(screen.getByTestId("open-file")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("open-file"));
+    await waitFor(() => expect(screen.getByTestId("tab-count")).toBeTruthy());
+  });
+
+  it("keeps the embedded tree in its own pane even under a project sidebar", async () => {
+    render(
+      <ProjectSidebarSlotProvider>
+        <SidebarBody />
+        <FilesWorkbench active embedded />
+      </ProjectSidebarSlotProvider>,
+    );
+
+    const tree = await screen.findByTestId("files-tree-column");
+    expect(screen.getByTestId("files-workbench-v2").contains(tree)).toBe(true);
+    expect(screen.getByTestId("sidebar-body").childElementCount).toBe(0);
   });
 
   it("does not replay a tools-pane request into the next panel that mounts", async () => {

@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo } from "react";
-import { createPortal } from "react-dom";
-import { ArrowClockwise, CheckCircle, CircleNotch, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, CircleNotch, WarningCircle } from "@phosphor-icons/react";
 import {
   isBatchLaunchInFlight,
   type BatchLaunchItemState,
   type BatchLaunchItemStatus,
 } from "../../lib/linearBatchLaunch";
-import { LINEAR_BRAND } from "../lanes/linearBrand";
+import { LinearMark } from "../lanes/linearBrand";
+import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
+import { dismissToast, showToast } from "./toast/toastStore";
+
+/** One batch at a time, so a new launch (or retry) takes over the same card. */
+export const BATCH_LAUNCH_TOAST_ID = "linear-batch-launch";
 
 function statusLabel(status: BatchLaunchItemStatus): string {
   switch (status) {
@@ -21,20 +25,26 @@ function statusLabel(status: BatchLaunchItemStatus): string {
 }
 
 function StatusIcon({ status }: { status: BatchLaunchItemStatus }): React.ReactElement {
-  if (status === "done") return <CheckCircle size={13} weight="fill" className="text-emerald-400" />;
+  if (status === "done") return <CheckCircle size={13} weight="fill" style={{ color: noticeTone("success").color }} />;
   if (status === "failed" || status === "agent-error") {
-    return <WarningCircle size={13} weight="fill" className={status === "failed" ? "text-rose-400" : "text-amber-300"} />;
+    return (
+      <WarningCircle
+        size={13}
+        weight="fill"
+        style={{ color: noticeTone(status === "failed" ? "error" : "warning").color }}
+      />
+    );
   }
   if (isBatchLaunchInFlight(status)) {
-    return <CircleNotch size={13} className="animate-spin text-[color:var(--ade-linear,#7B8AF0)]" />;
+    return <CircleNotch size={13} className="animate-spin" style={{ color: noticeTone("info").color }} />;
   }
-  return <span className="inline-block h-2 w-2 rounded-full bg-white/25" />;
+  return <span className="inline-block h-2 w-2 rounded-full bg-fg/25" />;
 }
 
-function statusTextClass(status: BatchLaunchItemStatus): string {
-  if (status === "failed") return "shrink-0 text-[10px] font-medium text-rose-300/90";
-  if (status === "agent-error") return "shrink-0 text-[10px] font-medium text-amber-200/90";
-  return "shrink-0 text-[10px] text-muted-fg/55";
+function statusTextStyle(status: BatchLaunchItemStatus): React.CSSProperties {
+  if (status === "failed") return { color: noticeTone("error").text, fontWeight: 500 };
+  if (status === "agent-error") return { color: noticeTone("warning").text, fontWeight: 500 };
+  return { color: "var(--color-muted-fg)" };
 }
 
 function batchHeadline({
@@ -58,11 +68,52 @@ function batchHeadline({
   return parts.join(" · ");
 }
 
+function BatchLaunchRows({
+  rows,
+  onOpenLane,
+}: {
+  rows: BatchLaunchItemState[];
+  onOpenLane: (laneId: string) => void;
+}) {
+  return (
+    <div
+      className="-mx-1 max-h-64 overflow-y-auto rounded-lg border border-fg/[0.07] bg-fg/[0.025] p-1"
+      data-testid="batch-launch-rows"
+    >
+      {rows.map((row) => {
+        const clickable = Boolean(row.laneId);
+        return (
+          <button
+            key={row.issue.id}
+            type="button"
+            disabled={!clickable}
+            onClick={() => row.laneId && onOpenLane(row.laneId)}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors enabled:hover:bg-fg/[0.05] disabled:cursor-default"
+            title={row.error ?? (clickable ? "Open lane" : undefined)}
+          >
+            <StatusIcon status={row.status} />
+            <span className="shrink-0 rounded bg-fg/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
+              {row.issue.identifier}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg">{row.issue.title}</span>
+            <span className="shrink-0 text-[10px]" style={statusTextStyle(row.status)}>
+              {statusLabel(row.status)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
- * Floating status for an in-flight batch launch. The launch itself is not a
- * progress view (the user already rerouted to Lanes), but this toast keeps
- * per-issue state visible, lets the user jump to a created lane, and offers
- * Retry failed without losing the successful siblings.
+ * Status for an in-flight batch launch, as a card in the shared toast stack.
+ * The launch itself is not a progress view (the user already rerouted to
+ * Lanes), but this toast keeps per-issue state visible, lets the user jump to a
+ * created lane, and offers Retry failed without losing the successful siblings.
+ *
+ * Renders nothing itself: it mirrors `states` into one store toast (stable id,
+ * updated in place) and takes it down when the states clear or it unmounts.
  */
 export function BatchLaunchStatusToast({
   states,
@@ -74,12 +125,51 @@ export function BatchLaunchStatusToast({
   onRetryFailed: () => void;
   onDismiss: () => void;
   onOpenLane: (laneId: string) => void;
-}) {
+}): null {
   const rows = useMemo(() => [...states.values()], [states]);
   const failedCount = rows.filter((row) => row.status === "failed").length;
   const attentionCount = rows.filter((row) => row.status === "agent-error").length;
   const doneCount = rows.filter((row) => row.status === "done").length;
   const inFlight = rows.some((row) => isBatchLaunchInFlight(row.status));
+
+  useEffect(() => {
+    if (!rows.length) {
+      dismissToast(BATCH_LAUNCH_TOAST_ID);
+      return;
+    }
+    const tone: NoticeTone = inFlight
+      ? "info"
+      : failedCount > 0
+        ? "error"
+        : attentionCount > 0
+          ? "warning"
+          : "success";
+    showToast({
+      id: BATCH_LAUNCH_TOAST_ID,
+      tone,
+      icon: <LinearMark size={14} />,
+      title: batchHeadline({
+        rowCount: rows.length,
+        readyCount: doneCount,
+        failedCount,
+        attentionCount,
+        inFlight,
+      }),
+      content: <BatchLaunchRows rows={rows} onOpenLane={onOpenLane} />,
+      actions: failedCount > 0 && !inFlight
+        ? [{
+            label: `Retry ${failedCount} failed`,
+            variant: "primary",
+            icon: <ArrowClockwise size={12} weight="bold" />,
+            keepOpen: true,
+            onClick: onRetryFailed,
+          }]
+        : undefined,
+      onClose: onDismiss,
+      // The card's lifetime is the batch's: it closes with × or the success beat below.
+      durationMs: 0,
+    });
+  }, [rows, inFlight, failedCount, attentionCount, doneCount, onOpenLane, onRetryFailed, onDismiss]);
 
   // Auto-dismiss a fully-successful run after a short beat.
   useEffect(() => {
@@ -89,76 +179,7 @@ export function BatchLaunchStatusToast({
     return () => window.clearTimeout(timer);
   }, [rows.length, inFlight, failedCount, attentionCount, onDismiss]);
 
-  if (!rows.length) return null;
+  useEffect(() => () => dismissToast(BATCH_LAUNCH_TOAST_ID), []);
 
-  return createPortal(
-    <div className="fixed bottom-4 right-4 z-[10001] w-[min(340px,calc(100vw-32px))]">
-      <div
-        className="overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/50"
-        style={{ borderColor: LINEAR_BRAND.border }}
-      >
-        <div
-          className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2"
-          style={{ background: LINEAR_BRAND.surface }}
-        >
-          <span className="text-[12px] font-semibold text-fg/90">
-            {batchHeadline({
-              rowCount: rows.length,
-              readyCount: doneCount,
-              failedCount,
-              attentionCount,
-              inFlight,
-            })}
-          </span>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            onClick={onDismiss}
-            className="grid h-5 w-5 place-items-center rounded text-muted-fg/55 transition-colors hover:bg-white/[0.08] hover:text-fg/85"
-          >
-            <X size={11} />
-          </button>
-        </div>
-        <div className="max-h-64 overflow-y-auto px-1.5 py-1.5">
-          {rows.map((row) => {
-            const clickable = Boolean(row.laneId);
-            return (
-              <button
-                key={row.issue.id}
-                type="button"
-                disabled={!clickable}
-                onClick={() => row.laneId && onOpenLane(row.laneId)}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors enabled:hover:bg-white/[0.05] disabled:cursor-default"
-                title={row.error ?? (clickable ? "Open lane" : undefined)}
-              >
-                <StatusIcon status={row.status} />
-                <span className="shrink-0 rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-fg/80">
-                  {row.issue.identifier}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg/75">{row.issue.title}</span>
-                <span
-                  className={statusTextClass(row.status)}
-                >
-                  {statusLabel(row.status)}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        {failedCount > 0 && !inFlight ? (
-          <div className="border-t border-white/10 px-3 py-2">
-            <button
-              type="button"
-              onClick={onRetryFailed}
-              className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-white/[0.12] bg-white/[0.04] text-[11.5px] font-medium text-fg/85 transition-colors hover:border-white/[0.2] hover:bg-white/[0.08]"
-            >
-              <ArrowClockwise size={12} weight="bold" />
-              Retry {failedCount} failed
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </div>,
-    document.body,
-  );
+  return null;
 }

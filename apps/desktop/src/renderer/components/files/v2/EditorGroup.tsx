@@ -48,6 +48,8 @@ export type EditorGroupProps = {
   onTabDrop: (groupId: string) => void;
   isTabDragging: boolean;
   onBodyDrop: (targetGroupId: string, side: "left" | "right" | "center") => void;
+  /** Pinned to the right end of the tab row, outside the scrolling tabs. */
+  tabRowTrailing?: React.ReactNode;
 };
 
 type DropZone = "left" | "right" | "center";
@@ -181,31 +183,34 @@ export function EditorGroup(props: EditorGroupProps) {
       style={{ outline: props.isActiveGroup ? `1px solid ${COLORS.accentBorder}` : "none", outlineOffset: -1 }}
     >
       <div
-        className="flex shrink-0 items-stretch overflow-x-auto border-b"
+        className="flex shrink-0 items-stretch border-b"
         style={{ borderColor: COLORS.border, background: COLORS.recessedBg }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={() => props.onTabDrop(group.id)}
       >
-        {displayTabs.length === 0 ? (
-          <div className="px-3 py-1.5 text-xs" style={{ color: COLORS.textDim }}>No open files</div>
-        ) : (
-          displayTabs.map((tab, index) => (
-            <TabButton
-              key={tab.id}
-              tab={tab}
-              active={tab.id === activeTab?.id}
-              dirty={dirtyTabIds.has(tab.id)}
-              laneAccent={props.tabScope === "all" ? laneAccentForTab(tab, props.lanes) : undefined}
-              showLaneDivider={props.tabScope === "all" && isLaneGroupBoundary(displayTabs, index)}
-              onActivate={() => props.onActivateTab(group.id, tab.id)}
-              onClose={() => props.onCloseTab(group.id, tab.id)}
-              onPromote={() => props.onPromoteTab(group.id, tab.id)}
-              onDragStart={() => props.onTabDragStart(group.id, tab.id)}
-              onDragEnd={props.onTabDragEnd}
-              onContextMenu={(x, y) => setTabMenu({ x, y, tabId: tab.id })}
-            />
-          ))
-        )}
+        <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
+          {displayTabs.length === 0 ? (
+            <div className="px-3 py-1.5 text-xs" style={{ color: COLORS.textDim }}>No open files</div>
+          ) : (
+            displayTabs.map((tab, index) => (
+              <TabButton
+                key={tab.id}
+                tab={tab}
+                active={tab.id === activeTab?.id}
+                dirty={dirtyTabIds.has(tab.id)}
+                laneAccent={props.tabScope === "all" ? laneAccentForTab(tab, props.lanes) : undefined}
+                showLaneDivider={props.tabScope === "all" && isLaneGroupBoundary(displayTabs, index)}
+                onActivate={() => props.onActivateTab(group.id, tab.id)}
+                onClose={() => props.onCloseTab(group.id, tab.id)}
+                onPromote={() => props.onPromoteTab(group.id, tab.id)}
+                onDragStart={() => props.onTabDragStart(group.id, tab.id)}
+                onDragEnd={props.onTabDragEnd}
+                onContextMenu={(x, y) => setTabMenu({ x, y, tabId: tab.id })}
+              />
+            ))
+          )}
+        </div>
+        {props.tabRowTrailing ? <div className="flex shrink-0 items-center px-1.5">{props.tabRowTrailing}</div> : null}
       </div>
 
       {activeTab && activeContext ? (
