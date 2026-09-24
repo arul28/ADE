@@ -180,6 +180,24 @@ describe("LaneCombobox machine chrome", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain("render-perf");
   });
+
+  it("opens the configure-lane form from the create button and closes the popover", () => {
+    const onCreateLane = vi.fn();
+    render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} onCreateLane={onCreateLane} />);
+    openList();
+
+    fireEvent.click(screen.getByTestId("lane-popover-create"));
+
+    expect(onCreateLane).toHaveBeenCalledTimes(1);
+    // The popover closes so the dialog it opens is the only surface.
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("omits the create button when the caller has no configure-lane flow", () => {
+    render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} />);
+    openList();
+    expect(screen.queryByTestId("lane-popover-create")).toBeNull();
+  });
 });
 
 describe("LaneCombobox inside the modal handoff dialog", () => {
