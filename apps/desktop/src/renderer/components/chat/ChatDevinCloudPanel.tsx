@@ -128,6 +128,9 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
     if (!repoKey) return entries;
     return entries.filter((entry) =>
       entry.session.sessionId === devinSessionId
+      // v1 entries carry no repo binding (the v1 API does not expose one) —
+      // an unknown binding must not be read as a mismatch.
+      || entry.session.repos.length === 0
       || entry.session.repos.some((repo) => devinCloudRepoMatchKey(repo) === repoKey),
     );
   }, [devinSessionId, entries, repoKey]);

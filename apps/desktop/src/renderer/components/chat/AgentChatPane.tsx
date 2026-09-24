@@ -9817,7 +9817,7 @@ export function AgentChatPane({
       !text.length
       && !visualContextPrefix.length
       && !contextAttachmentsSnapshot.length
-      && !((isWorkCliLaunchDraft || devinCloudMode) && attachments.length)
+      && !(isWorkCliLaunchDraft && attachments.length)
     ) {
       return null;
     }
@@ -9856,7 +9856,6 @@ export function AgentChatPane({
     fastMode,
     contextAttachments,
     currentNativeControls,
-    devinCloudMode,
     draft,
     executionMode,
     interactionMode,
@@ -14973,8 +14972,9 @@ export function AgentChatPane({
               });
             }}
             cursorCloudCanLaunch={devinCloudMode ? devinCloudCanLaunch : cursorCloudCanLaunch}
-            cursorCloudModelReady={devinCloudMode ? true : cursorCloudModelReady}
-            cursorCloudHasEligibleModels={devinCloudMode ? true : cursorCloudModelIds.length > 0}
+            cursorCloudModelReady={devinCloudSessionActive ? true : cursorCloudModelReady}
+            cursorCloudHasEligibleModels={devinCloudSessionActive ? true : cursorCloudModelIds.length > 0}
+            cloudSessionLinked={Boolean(selectedSession?.devinSessionId || selectedSession?.cursorCloudAgentId)}
             cursorCloudModeActive={cursorCloudSessionActive || devinCloudSessionActive}
             cloudTargetLabel={devinCloudSessionActive ? "Devin Cloud" : "Cursor Cloud"}
             cloudFileAttachmentsDelivered={devinCloudSessionActive}

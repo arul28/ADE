@@ -1762,6 +1762,7 @@ export function AgentChatComposer({
   cursorCloudModelReady = false,
   cursorCloudHasEligibleModels = true,
   cursorCloudModeActive = false,
+  cloudSessionLinked = false,
   onSubmitToCloud,
   cloudTargetLabel = "Cursor Cloud",
   cloudFileAttachmentsDelivered = false,
@@ -2012,6 +2013,14 @@ export function AgentChatComposer({
    * disappearing, so the affordance does not move around under the cursor.
    */
   cursorCloudCanLaunch?: boolean;
+  /**
+   * Whether this chat is already bound to a cloud session (its agent is a
+   * cloud session id, not the launchable-draft state). Linked replies ride
+   * the ordinary submit path — they are not launches — so `cursorCloudCanLaunch`
+   * stays false; this prop exists only so send gating does not fall back to
+   * the local-model readiness check, which a cloud-bound chat never needs.
+   */
+  cloudSessionLinked?: boolean;
   /**
    * Whether the draft's model is one Cursor Cloud can run. Read only while cloud mode is active.
    * It is a separate prop from `cursorCloudCanLaunch` on purpose: cloud mode must stay on with an
@@ -5335,7 +5344,7 @@ export function AgentChatComposer({
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0 || contextAttachmentCount > 0);
   const singleReady = !parallelChatMode && singleModelReady && activeTurnHasContent;
-  const cloudModeActiveForSend = cursorCloudCanLaunch && cursorCloudModeActive && !parallelChatMode;
+  const cloudModeActiveForSend = (cursorCloudCanLaunch || cloudSessionLinked) && cursorCloudModeActive && !parallelChatMode;
   const cloudSendBlock = cloudModeActiveForSend
     ? cursorCloudSendBlock({
       hasEligibleModels: cursorCloudHasEligibleModels,
