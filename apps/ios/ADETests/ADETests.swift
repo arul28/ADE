@@ -24091,23 +24091,23 @@ final class ADETests: XCTestCase {
   func testWorkDeliveryBadgeDistinguishesAcceptedFromProcessed() {
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "accepted", processed: nil),
-      .accepted
+      .steering
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "delivered", processed: nil),
-      .accepted
+      nil
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "processed", processed: true),
-      .processed
+      .steered
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "unprocessed", processed: false),
-      .unprocessed
+      .notSteered
     )
-    XCTAssertEqual(WorkDeliveryBadge.State.accepted.label, "Accepted")
-    XCTAssertEqual(WorkDeliveryBadge.State.processed.label, "Processed")
-    XCTAssertEqual(WorkDeliveryBadge.State.unprocessed.label, "Not processed")
+    XCTAssertEqual(WorkDeliveryBadge.State.steering.label, "Steering…")
+    XCTAssertEqual(WorkDeliveryBadge.State.steered.label, "Steered")
+    XCTAssertEqual(WorkDeliveryBadge.State.notSteered.label, "Not steered — turn ended first")
   }
 
   func testProviderNeutralRecoveryFeedbackDoesNotAssumeCodex() {
