@@ -1860,6 +1860,7 @@ const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.listMentionSuggestions",
   "chat.modelCatalog",
   "chat.resolveSmartLinkPreview",
+  "chat.resolveSourceFavicons",
   "file.quickOpen",
   "ios_simulator.resolvePreviewMatch",
   "terminal.activeForChat",
@@ -7829,6 +7830,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
         deriveSmartLinkPreview(args.url),
       ),
+    // No runtime bound: no favicons, and every Sources row keeps its initial.
+    resolveSourceFavicons: async (args: { domains: string[] }): Promise<{ icons: Record<string, string | null> }> =>
+      callProjectRuntimeActionOr("chat", "resolveSourceFavicons", { args }, async () => ({ icons: {} })),
     getEventHistory: async (
       args: {
         sessionId: string;

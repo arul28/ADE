@@ -566,7 +566,7 @@ describe("ChatView", () => {
     expect(frame).not.toContain("queued version");
     expect(frame).not.toContain("staged message");
     expect(frame).toContain("delivered version");
-    expect(frame).toContain("accepted · waiting to be processed");
+    expect(frame).toContain("Sent after turn");
   });
 
   it("renders one user bubble for steer lifecycle updates with the latest state", () => {
@@ -586,8 +586,8 @@ describe("ChatView", () => {
     ], { width: 80 });
 
     expect(frame.match(/run release checks/g)).toHaveLength(1);
-    expect(frame).toContain("processed");
-    expect(frame).not.toContain("accepted · waiting");
+    expect(frame).toContain("Steered");
+    expect(frame).not.toContain("Steering");
   });
 
   it("keeps raw moderation quiet and renders cumulative turn diagnostics", () => {

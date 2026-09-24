@@ -2493,6 +2493,136 @@ describe("AgentChatPane companion drawers", () => {
     expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
   });
 
+  describe("chat actions drawer sections", () => {
+    const drawerSections = () => screen.getByTestId("chat-actions-drawer-sections");
+    const expectSingleScroll = () => {
+      expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-auto");
+      expect(
+        drawerSections().querySelector("[class*='overflow-y-auto'], [class*='overflow-auto'], [class*='min-h-full'], .h-full"),
+      ).toBeNull();
+    };
+    const attachmentEvent = (sessionId: string): AgentChatEventEnvelope => ({
+      sessionId,
+      timestamp: "2026-09-23T06:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "user_message",
+        text: "Read this",
+        attachments: [{ type: "file", path: "/repo/spec.md" }],
+      },
+    } as AgentChatEventEnvelope);
+
+    it("floating host: an empty chat shows one line and no placeholder areas", async () => {
+      renderDrawerPane();
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+
+      // The agents section is always handed over and renders nothing here, so
+      // the line is the sole child left, which is what its `only:block` shows.
+      const line = await screen.findByTestId("chat-actions-drawer-empty");
+      expect(line.matches(":only-child")).toBe(true);
+      expect(line.className).toContain("only:block");
+      expect(screen.getByTestId("chat-actions-drawer-scroll").closest(".ade-floating-side-pane")).not.toBeNull();
+      expect(screen.queryByText(/No agent activity|Single-agent mode|No sources yet|No features yet/i)).toBeNull();
+      expect(screen.queryByText("Sources")).toBeNull();
+      expectSingleScroll();
+    });
+
+    it("mounts Sources for a non-Codex chat once it has a source, and only then", async () => {
+      const session = buildSession("session-claude-sources", {
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+        status: "idle",
+        title: "Claude sources chat",
+      });
+      const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+      seedDrawerStore();
+      renderPane(session);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      await screen.findByTestId("chat-actions-drawer-sections");
+      expect(screen.queryByText("Sources")).toBeNull();
+
+      act(() => {
+        emitChatEvent(attachmentEvent(session.sessionId));
+      });
+
+      await waitFor(() => {
+        expect(within(drawerSections()).getByText("Sources")).toBeTruthy();
+      });
+      expect(within(drawerSections()).getByText("spec.md")).toBeTruthy();
+      expect(screen.getByTestId("chat-actions-drawer-empty").matches(":only-child")).toBe(false);
+      // The Sources section draws no scroller or placeholder of its own.
+      expectSingleScroll();
+      expect(screen.queryByText(/No sources yet|used in this Codex chat/i)).toBeNull();
+    });
+
+    it("plan-only chat shows only the agents panel section", async () => {
+      const session = buildSession("session-1");
+      const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+      seedDrawerStore();
+      renderPane(session);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      act(() => {
+        emitChatEvent({
+          sessionId: session.sessionId,
+          timestamp: "2026-09-23T06:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "todo_update",
+            items: [{ id: "task-1", description: "Draw the drawer", status: "in_progress" }],
+          },
+        } as AgentChatEventEnvelope);
+      });
+
+      await waitFor(() => {
+        expect(within(drawerSections()).getByTestId("chat-subagents-pane")).toBeTruthy();
+      });
+      const sections = [...drawerSections().children].filter(
+        (child) => child.getAttribute("data-testid") !== "chat-actions-drawer-empty",
+      );
+      expect(sections.map((child) => child.getAttribute("data-testid"))).toEqual(["chat-subagents-pane"]);
+      expectSingleScroll();
+    });
+
+    it("right-pane host (beside an open terminal pane) keeps the drawer to one scroll", async () => {
+      const session = buildSession("session-right-pane-drawer", { title: "Right pane drawer chat" });
+      const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+      seedDrawerStore();
+      // A heavy right pane (the chat terminal) is open, so the drawer cannot
+      // float and mounts as the split right pane instead.
+      window.localStorage.setItem(
+        `ade.chat.companionUiState.${session.sessionId}`,
+        JSON.stringify({ terminalDrawerOpen: true }),
+      );
+      renderPane(session);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      await screen.findByTestId("chat-actions-drawer-sections");
+      act(() => {
+        emitChatEvent({
+          sessionId: session.sessionId,
+          timestamp: "2026-09-23T06:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "todo_update",
+            items: [{ id: "task-1", description: "Right pane task", status: "pending" }],
+          },
+        } as AgentChatEventEnvelope);
+      });
+
+      await waitFor(() => {
+        expect(within(drawerSections()).getByTestId("chat-subagents-pane")).toBeTruthy();
+      });
+      const scroll = screen.getByTestId("chat-actions-drawer-scroll");
+      expect(scroll.closest(".ade-floating-side-pane")).toBeNull();
+      expect(scroll.closest("[class*='bg-surface/80']")).not.toBeNull();
+      expectSingleScroll();
+    });
+  });
+
   it("removes deleted proof from the open drawer when the event no longer has an owner", async () => {
     const session = buildSession("session-1", { title: "Proof event chat" });
     const proof: ComputerUseArtifactView = {
@@ -2594,6 +2724,55 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
+  });
+
+  it("auto-opens the drawer for a plan-only chat and badges the unfinished list as done/total", async () => {
+    const session = buildSession("session-plan-only");
+    const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+    renderPane(session);
+
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+    expect(screen.queryByTestId("chat-actions-task-badge")).toBeNull();
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-09-23T06:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "plan",
+          turnId: "turn-1",
+          steps: [
+            { text: "Read the schema", status: "completed" },
+            { text: "Write the migration", status: "in_progress" },
+          ],
+        },
+      } as AgentChatEventEnvelope);
+    });
+
+    // No subagents, no todos: the plan alone opens the drawer and fills Tasks.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Close chat actions drawer" })).toBeTruthy();
+    });
+    expect(within(await screen.findByTestId("chat-info-tasks")).getByText("Write the migration")).toBeTruthy();
+    expect(screen.getByTestId("chat-actions-task-badge").textContent).toBe("1/2");
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-09-23T06:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "plan",
+          turnId: "turn-1",
+          steps: [
+            { text: "Read the schema", status: "completed" },
+            { text: "Write the migration", status: "completed" },
+          ],
+        },
+      } as AgentChatEventEnvelope);
+    });
+    // A finished list is not "happening now": the badge goes away.
+    await waitFor(() => expect(screen.queryByTestId("chat-actions-task-badge")).toBeNull());
   });
 
   it("refetches selected envelope history after a repair invalidation signal", async () => {

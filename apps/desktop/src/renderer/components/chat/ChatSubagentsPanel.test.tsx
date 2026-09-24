@@ -8,7 +8,6 @@ import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
 import { deriveChatWorkflowRuns } from "./ChatWorkflowActiveCard";
-import { ChatTaskList } from "./ChatTasksPanel";
 
 function scheduledSnapshot(overrides: Partial<ChatScheduledWorkSnapshot>): ChatScheduledWorkSnapshot {
   return {
@@ -30,12 +29,20 @@ const CODEX_CAP = SUBAGENT_CAPABILITIES.codex;
 const CLAUDE_CAP = SUBAGENT_CAPABILITIES.claude;
 const CURSOR_CAP = SUBAGENT_CAPABILITIES.cursor;
 
-vi.mock("motion/react", () => ({
-  AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  motion: {
-    div: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
-  },
-}));
+vi.mock("motion/react", () => {
+  // Strip motion-only props so the stand-ins render plain DOM.
+  const strip = ({ initial: _i, animate: _a, exit: _e, transition: _t, layout: _l, ...rest }: Record<string, unknown>) => rest;
+  return {
+    AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    useReducedMotion: () => true,
+    motion: {
+      div: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...strip(props)}>{children}</div>,
+      li: ({ children, ...props }: React.HTMLAttributes<HTMLLIElement>) => <li {...strip(props)}>{children}</li>,
+      span: ({ children, ...props }: React.HTMLAttributes<HTMLSpanElement>) => <span {...strip(props)}>{children}</span>,
+      path: (props: React.SVGProps<SVGPathElement>) => <path {...(strip(props as Record<string, unknown>) as React.SVGProps<SVGPathElement>)} />,
+    },
+  };
+});
 
 const baseSnapshot: ChatSubagentSnapshot = {
   taskId: "task-1",
@@ -74,7 +81,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     vi.useRealTimers();
   });
 
-  it("renders the Progress section with bar, counter, and checklist", () => {
+  it("shows a plan-only chat's list as the one Tasks section, fully expanded", () => {
     render(
       <ChatSubagentsPanel
         snapshots={[]}
@@ -83,11 +90,36 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    expect(screen.getByText("Progress")).toBeTruthy();
-    expect(screen.getByText("2/5 · 40%")).toBeTruthy();
-    expect(screen.getByText("Map theme plumbing")).toBeTruthy();
-    expect(screen.getByText("Implement appearance mode")).toBeTruthy();
-    expect(screen.getByText("Run focused checks")).toBeTruthy();
+    expect(screen.queryByText("Progress")).toBeNull();
+    const section = screen.getByTestId("chat-info-tasks");
+    expect(within(section).getByText("Tasks")).toBeTruthy();
+    // A plan list carries its own header: label + derived count.
+    expect(within(section).getByText("Plan")).toBeTruthy();
+    expect(within(section).getByText("2/5")).toBeTruthy();
+    expect([...section.querySelectorAll<HTMLElement>("[data-task-status]")].map((row) => row.textContent)).toEqual([
+      "Map theme plumbing",
+      "Identify glass styling",
+      "Implement appearance mode",
+      "Apply glass styling app-wide",
+      "Run focused checks",
+    ]);
+  });
+
+  it("merges a plan and the todo list of the same turn into ONE section", () => {
+    const plan = buildPlanEvent();
+    const todo: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-05-12T00:00:01.000Z",
+      event: {
+        type: "todo_update",
+        items: [{ id: "t", description: "Implement appearance mode", status: "completed" }],
+      },
+    };
+    render(<ChatSubagentsPanel snapshots={[]} events={[plan, todo]} variant="pane" />);
+
+    expect(screen.getAllByTestId("chat-info-tasks")).toHaveLength(1);
+    expect(screen.getAllByTestId("chat-task-list")).toHaveLength(1);
+    expect(screen.getByText("3/5")).toBeTruthy();
   });
 
   it("opens workflow details from the active card with phases and agent telemetry", () => {
@@ -350,6 +382,22 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByRole("button", { name: "Stop workflow" })).toBeNull();
   });
 
+  it("shows a markdown report as clamped plain text in the row's details drawer", () => {
+    const finished: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      status: "completed",
+      background: false,
+      summary: "",
+      finalSummary: "## ADE Summary\n**ADE** is a unified workspace — see [the docs](https://ade.dev/docs).\n- Parallel `agents`",
+    };
+    const { container } = render(<ChatSubagentsPanel snapshots={[finished]} events={[]} variant="pane" />);
+    fireEvent.click(screen.getByRole("button", { name: "Completed (1)" }));
+    fireEvent.click(screen.getByTitle("Audit chat renderer"));
+    const summary = container.querySelector("[data-subagent-panel-summary]");
+    expect(summary?.textContent).toBe("ADE Summary: ADE is a unified workspace — see the docs. Parallel agents");
+    expect(summary?.className).toContain("line-clamp-3");
+  });
+
   it("merges foreground and background-run agents into one Subagents list with a background chip", () => {
     const foregroundSnapshot: ChatSubagentSnapshot = {
       ...baseSnapshot,
@@ -367,14 +415,30 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    // Both agents live under the single Subagents section now.
+    // Both agents live under the single Subagents section now, named like
+    // their transcript cards (task description before agent type).
     expect(screen.getByText("Subagents")).toBeTruthy();
-    expect(screen.getByText("Explore")).toBeTruthy();
+    expect(screen.getByText("Inspect codex flow")).toBeTruthy();
     expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
     // The background-run agent carries an inline "background" chip.
     expect(screen.getByText("background")).toBeTruthy();
     // No command-task Background section without backgroundItems.
     expect(screen.queryByText("Background")).toBeNull();
+  });
+
+  it("names a Codex agent like its transcript card, never by its raw /root path", () => {
+    const codexSnapshot: ChatSubagentSnapshot = {
+      ...baseSnapshot,
+      taskId: "thread-1",
+      agentId: "thread-1",
+      description: "/root/ios_shared_scan",
+      label: "/root/ios_shared_scan",
+      agentType: "/root/ios_shared_scan",
+      background: false,
+    };
+    render(<ChatSubagentsPanel snapshots={[codexSnapshot]} events={[]} variant="pane" />);
+    expect(screen.getByText("iOS shared scan")).toBeTruthy();
+    expect(screen.queryByText("/root/ios_shared_scan")).toBeNull();
   });
 
   it("shows a reported subagent model chip instead of the parent session model", () => {
@@ -443,7 +507,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Stop code-reviewer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop Audit chat renderer" }));
     expect(onStopSubagent).toHaveBeenCalledTimes(1);
     expect(onStopSubagent.mock.calls[0]![0].taskId).toBe("task-1");
     expect(onSelectSubagent).not.toHaveBeenCalled();
@@ -601,18 +665,24 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(onSelectSubagent).not.toHaveBeenCalled();
   });
 
-  it("renders the single-agent empty state when no plan and no subagents are present", () => {
-    render(
-      <ChatSubagentsPanel snapshots={[]} events={[]} variant="pane" />,
+  it("renders nothing in the drawer when no plan, tasks or subagents are present", () => {
+    const { container } = render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        // A cleared list (ACP plan_removed) and a plan-mode proposal are not a task list.
+        events={[
+          { sessionId: "s", timestamp: "2026-05-12T00:00:00.000Z", event: { type: "plan", steps: [{ text: "x", status: "pending" }] } },
+          { sessionId: "s", timestamp: "2026-05-12T00:00:01.000Z", event: { type: "plan", steps: [] } },
+          { sessionId: "s", timestamp: "2026-05-12T00:00:02.000Z", event: { type: "plan", steps: [], streamingText: "# Proposal", state: "complete" } },
+        ]}
+        variant="pane"
+      />,
     );
 
-    // The redesign splits the empty state onto two lines.
-    expect(
-      screen.getByText(/No agent activity for this chat\./i),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/Single-agent mode\./i),
-    ).toBeTruthy();
+    // No placeholder: an empty section leaves no DOM for the drawer to frame.
+    expect(container.innerHTML).toBe("");
+    expect(screen.queryByText(/No agent activity/i)).toBeNull();
+    expect(screen.queryByText(/Single-agent mode/i)).toBeNull();
   });
 
   it("renders task snapshots in the agents pane even when no subagents exist", () => {
@@ -621,41 +691,24 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         snapshots={[]}
         events={[]}
         variant="pane"
-        todoItems={[
-          { id: "todo-1", description: "Inspect model catalog", status: "completed" },
-          { id: "todo-2", description: "Wire task pane", status: "in_progress" },
-          { id: "todo-3", description: "Run focused checks", status: "pending" },
-        ]}
+        taskList={{
+          source: "todo",
+          label: "Tasks",
+          turnId: null,
+          items: [
+            { id: "todo-1", label: "Inspect model catalog", status: "done" },
+            { id: "todo-2", label: "Wire task pane", status: "running" },
+            { id: "todo-3", label: "Run focused checks", status: "pending" },
+          ],
+        }}
       />,
     );
 
     expect(screen.getByText("Tasks")).toBeTruthy();
-    expect(screen.getByText("1/3 complete · 1 active")).toBeTruthy();
+    expect(screen.getByText("1/3")).toBeTruthy();
     expect(screen.getByText("Wire task pane")).toBeTruthy();
     expect(screen.getByText("Run focused checks")).toBeTruthy();
     expect(screen.queryByText(/No agent activity/i)).toBeNull();
-  });
-
-  it("preserves task order within each status group", () => {
-    const { container } = render(
-      <ChatTaskList
-        items={[
-          { id: "todo-1", description: "Write docs", status: "pending" },
-          { id: "todo-2", description: "Audit API", status: "pending" },
-          { id: "todo-3", description: "Ship old item", status: "completed" },
-          { id: "todo-4", description: "Implement fix", status: "in_progress" },
-        ]}
-      />,
-    );
-
-    const rows = Array.from(container.querySelectorAll(".ade-chat-task-row"))
-      .map((row) => row.textContent?.trim());
-    expect(rows).toEqual([
-      "Implement fix",
-      "Write docs",
-      "Audit API",
-      "Ship old item",
-    ]);
   });
 
   it("toggles the inline drawer closed on a second click of the same row", async () => {

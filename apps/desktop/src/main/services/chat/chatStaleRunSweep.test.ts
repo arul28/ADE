@@ -42,6 +42,7 @@ function orphanTranscript(sessionId: string, subagentTaskId = "sub-1"): AgentCha
 function harness(overrides: {
   transcripts?: Record<string, AgentChatEventEnvelope[]>;
   chatRows?: Record<string, StaleRunSweepChatRow>;
+  deferChildTerminal?: (childSessionId: string) => boolean;
   ownerLive?: (sessionId: string) => boolean;
   adoptable?: (sessionId: string) => boolean;
   managed?: Record<string, Partial<FakeManaged>>;
@@ -80,6 +81,7 @@ function harness(overrides: {
     },
     listChatSessionIds: () => Object.keys(transcripts),
     getChatSessionRow: (sessionId) => overrides.chatRows?.[sessionId] ?? null,
+    ...(overrides.deferChildTerminal ? { deferChildTerminal: overrides.deferChildTerminal } : {}),
     chatRuntimeOwnerLive: (sessionId) => overrides.ownerLive?.(sessionId) ?? false,
     chatRuntimeAdoptable,
     peekManagedSession: (sessionId) => managedSessions.get(sessionId),
@@ -136,6 +138,74 @@ describe("terminalizeStaleRowsForSession", () => {
       stopReason: "another ADE brain took over this chat",
     });
     expect(persistChatState).toHaveBeenCalledTimes(1);
+  });
+
+  it("never closes a subagent whose result already landed, even after a late progress echo", () => {
+    const sessionId = "chat-ended";
+    const { sweep, emitted } = harness({
+      transcripts: {
+        [sessionId]: [
+          ...orphanTranscript(sessionId).slice(1),
+          envelope(sessionId, 3, {
+            type: "subagent_result",
+            taskId: "sub-1",
+            agentId: "sub-1",
+            status: "completed",
+            summary: "Found one IPC guard gap.",
+            turnId: "turn-old",
+          } as AgentChatEvent),
+          // Codex echoes the activity item after the child's turn completed.
+          envelope(sessionId, 4, {
+            type: "subagent_progress",
+            taskId: "sub-1",
+            agentId: "sub-1",
+            parentToolUseId: "subagent-completed-child-turn",
+            description: "look",
+            summary: "Agent active",
+            turnId: "turn-old",
+          } as AgentChatEvent),
+        ],
+      },
+    });
+
+    const outcome = sweep.terminalizeStaleRowsForSession(
+      { session: { id: sessionId }, runtime: null },
+      { stopSource: "system", stopReason: "the ADE brain restarted" },
+    );
+
+    expect(outcome).toEqual({ backgroundStopped: 0, subagentsTerminalized: 0, subagentsLeftRunning: 0 });
+    expect(results(emitted)).toEqual([]);
+  });
+
+  it("leaves a card whose child another path terminalizes (a tracked CLI child) instead of calling it gone", () => {
+    const sessionId = "chat-cli-parent";
+    const deferred: string[] = [];
+    const { sweep, emitted } = harness({
+      transcripts: {
+        [sessionId]: [envelope(sessionId, 1, {
+          type: "subagent_started",
+          taskId: "chat:cli-child-1",
+          agentId: "cli-child-1",
+          agentType: "codex",
+          parentToolUseId: null,
+          description: "Fix flaky tests",
+          taskType: "subagent",
+        } as unknown as AgentChatEvent)],
+      },
+      deferChildTerminal: (childSessionId) => {
+        deferred.push(childSessionId);
+        return childSessionId === "cli-child-1";
+      },
+    });
+
+    const outcome = sweep.terminalizeStaleRowsForSession(
+      { session: { id: sessionId }, runtime: null },
+      { stopSource: "system", stopReason: "the ADE brain restarted" },
+    );
+
+    expect(deferred).toEqual(["cli-child-1"]);
+    expect(results(emitted)).toEqual([]);
+    expect(outcome).toEqual({ backgroundStopped: 0, subagentsTerminalized: 0, subagentsLeftRunning: 1 });
   });
 
   it("emits nothing for a chat whose transcript holds no open rows", () => {

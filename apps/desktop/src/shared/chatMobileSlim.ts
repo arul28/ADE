@@ -1,4 +1,4 @@
-import type { AgentChatEvent } from "./types/chat";
+import type { AgentChatEvent, ChatSourceRef } from "./types/chat";
 import type { AgentChatEventEnvelope } from "./types";
 import { compactChatEventForWire } from "./chatEventCompaction";
 
@@ -74,6 +74,14 @@ import { compactChatEventForWire } from "./chatEventCompaction";
  */
 export const MOBILE_TOOL_RESULT_MAX_BYTES = 2_048;
 
+/**
+ * The phone shows three source rows before its "more" affordance. Carry only
+ * those rows, without excerpts or search queries, and cap the serialized refs
+ * to keep citations from becoming a second unbounded tool-result channel.
+ */
+export const MOBILE_SOURCE_REF_MAX_COUNT = 3;
+export const MOBILE_SOURCE_REFS_MAX_BYTES = 10 * 1024;
+
 const utf8Bytes = (value: string): number => Buffer.byteLength(value, "utf8");
 
 const sliceUtf8FromStart = (value: string, maxBytes: number): string => {
@@ -147,11 +155,59 @@ export function compactToolResultForMobile(
   };
 }
 
+function compactSourceRefsForMobile(refs: readonly ChatSourceRef[]): {
+  sources: ChatSourceRef[];
+  omitted: number;
+} {
+  const sources: ChatSourceRef[] = [];
+  for (const ref of refs) {
+    if (sources.length >= MOBILE_SOURCE_REF_MAX_COUNT) break;
+    const title = ref.title ? sliceUtf8FromStart(ref.title, 160) : undefined;
+    const path = ref.path ? sliceUtf8FromStart(ref.path, 512) : undefined;
+    const url = ref.url;
+    // Keep usable URLs whole: clipping a URL can change its destination. The
+    // shared source adapter already caps URL characters; this byte guard
+    // protects the wire from unusually multibyte URLs.
+    if (url && utf8Bytes(url) > 4 * 1024) continue;
+    const compacted: ChatSourceRef = {
+      kind: ref.kind,
+      ...(url ? { url } : {}),
+      ...(path ? { path } : {}),
+      ...(title ? { title } : {}),
+      ...(ref.lineStart !== undefined ? { lineStart: ref.lineStart } : {}),
+      ...(ref.lineEnd !== undefined ? { lineEnd: ref.lineEnd } : {}),
+      ...(ref.cited ? { cited: true } : {}),
+    };
+    const candidate = [...sources, compacted];
+    if (utf8Bytes(JSON.stringify(candidate)) > MOBILE_SOURCE_REFS_MAX_BYTES) continue;
+    sources.push(compacted);
+  }
+  return { sources, omitted: Math.max(0, refs.length - sources.length) };
+}
+
+function compactEventSourcesForMobile<T extends {
+  sources?: ChatSourceRef[];
+  sourceRefsOmittedForMobile?: number;
+}>(event: T): T {
+  if (!event.sources?.length) return event;
+  const compacted = compactSourceRefsForMobile(event.sources);
+  return {
+    ...event,
+    sources: compacted.sources,
+    ...(compacted.omitted > 0
+      ? { sourceRefsOmittedForMobile: (event.sourceRefsOmittedForMobile ?? 0) + compacted.omitted }
+      : {}),
+  };
+}
+
 /** Storage/wire compaction first, then the phone-only rules. */
 export function compactChatEventForMobileWire(event: AgentChatEvent): AgentChatEvent {
   const wire = compactChatEventForWire(event);
-  if (wire.type !== "tool_result") return wire;
-  return compactToolResultForMobile(wire);
+  if (wire.type === "tool_result") {
+    return compactEventSourcesForMobile(compactToolResultForMobile(wire));
+  }
+  if (wire.type === "sources") return compactEventSourcesForMobile(wire);
+  return wire;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,25 +427,24 @@ export function createSubagentProgressCoalescer(options: {
         //
         // The one case that does flush is a subagent ending: its result is the
         // last word on that card, so the progress behind it has no reader.
-        const endingEvent = event.event as AgentChatEvent;
-        const ending = endingEvent.type === "subagent_result" || endingEvent.type === "subagent.completed";
+        const endingEvent = event.event;
         const superseded: AgentChatEventEnvelope[] = [];
-        if (ending) {
-          const agentKey = subagentCompletionAgentKey(endingEvent as SubagentCompletionEvent);
+        if (endingEvent.type === "subagent_result" || endingEvent.type === "subagent.completed") {
+          const agentKey = subagentCompletionAgentKey(endingEvent);
           // Drop rather than emit: the result that follows in this same call
           // supersedes it, and emitting first would put a lower seq ahead of
           // a higher one for no visible gain.
-          const pendingEntry = agentKey ? pending.get(agentKey) : undefined;
-          if (pendingEntry) {
-            superseded.push(...(pendingEntry.superseded ?? []), pendingEntry.event);
-            pending.delete(agentKey!);
-            dueAtMs.delete(agentKey!);
-            lastSentAtMs.delete(agentKey!);
+          if (agentKey) {
+            const pendingEntry = pending.get(agentKey);
+            if (pendingEntry) {
+              superseded.push(...(pendingEntry.superseded ?? []), pendingEntry.event);
+              pending.delete(agentKey);
+              dueAtMs.delete(agentKey);
+              lastSentAtMs.delete(agentKey);
+            }
           }
-          lastProgressIdentity = null;
-        } else {
-          lastProgressIdentity = null;
         }
+        lastProgressIdentity = null;
         if (seq > lastEmittedSeq) lastEmittedSeq = seq;
         // A transcript pump can present the same source event again after its
         // live send was rejected. Keep the queued copy as the single retry;

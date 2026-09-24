@@ -604,7 +604,7 @@ ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --no-parent --prompt "fix failing tests"
 ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # required for parented spawns; use subagent for any result the parent will join/read/review, peer only for fire-and-forget work
-ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals; shell sessions do not record lineage
+ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out

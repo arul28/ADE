@@ -2055,6 +2055,19 @@ describe("createSyncRemoteCommandService", () => {
     expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });
   });
 
+  it("serves Sources favicons machine-wide and never resolves a local host", async () => {
+    const { service } = createService();
+    // Runtime scope: a personal (projectless) chat's Sources list can ask too.
+    expect(service.getDescriptor("chat.resolveSourceFavicons")).toEqual({
+      action: "chat.resolveSourceFavicons",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    });
+    await expect(service.execute(makePayload("chat.resolveSourceFavicons", {
+      domains: ["localhost", "10.0.0.1", "router"],
+    }))).resolves.toEqual({ icons: { localhost: null, "10.0.0.1": null, router: null } });
+  });
+
   it("routes per-project prompt stash create/list/delete through the project DB", async () => {
     const created = {
       id: "stash-1",

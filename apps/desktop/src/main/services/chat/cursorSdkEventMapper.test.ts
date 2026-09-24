@@ -110,14 +110,22 @@ describe("Cursor SDK event mapper", () => {
     it.each([
       ["wat", "pending", "pending"],
       ["constructor", "pending", "pending"],
-      ["cancelled", "pending", "failed"],
-    ])("maps todo status %s to todo %s and plan step %s", (status, itemStatus, stepStatus) => {
+    ])("maps an unrecognised todo status %s to todo %s and plan step %s", (status, itemStatus, stepStatus) => {
       const events = mapCursorSdkMessageToChatEvents({
         ...completedCall,
         result: { status: "success", value: { todos: [{ content: "Ship it", status }] } },
       }, mapperMeta());
       expect(events[0]).toMatchObject({ items: [{ id: "todo-0", description: "Ship it", status: itemStatus }] });
       expect(events[1]).toMatchObject({ steps: [{ text: "Ship it", status: stepStatus }] });
+    });
+
+    it("records a cancelled step as settled and flagged on both shapes, never as failed", () => {
+      const events = mapCursorSdkMessageToChatEvents({
+        ...completedCall,
+        result: { status: "success", value: { todos: [{ content: "Try it", status: "cancelled" }] } },
+      }, mapperMeta());
+      expect(events[0]).toMatchObject({ items: [{ status: "completed", cancelled: true }] });
+      expect(events[1]).toMatchObject({ steps: [{ status: "completed", cancelled: true }] });
     });
 
     it("keeps a failed call as a failed tool result rather than a plan", () => {
@@ -728,5 +736,36 @@ describe("Cursor SDK event mapper", () => {
       }),
     ]);
     expect(events[0] as { costUsd?: unknown }).not.toHaveProperty("costUsd");
+  });
+});
+
+describe("Cursor web tools → sources", () => {
+  it("keeps the webSearch tool row and attaches its references as sources", () => {
+    const events = mapCursorSdkMessageToChatEvents({
+      type: "tool_call",
+      call_id: "call-web",
+      name: "webSearch",
+      status: "completed",
+      args: { searchTerm: "ade sources" },
+      result: { status: "success", value: { references: [{ title: "ADE", url: "https://ade-app.dev", chunk: "…" }] } },
+    }, mapperMeta());
+    expect(events).toEqual([expect.objectContaining({
+      type: "tool_result",
+      tool: "webSearch",
+      itemId: "call-web",
+      status: "completed",
+      sources: [{ kind: "web_search_result", url: "https://ade-app.dev", title: "ADE", snippet: "…", query: "ade sources" }],
+    })]);
+  });
+
+  it("adds no sources to a failed call or to non-web tools", () => {
+    const failed = mapCursorSdkMessageToChatEvents({
+      type: "tool_call", call_id: "c1", name: "webFetch", status: "error", args: { url: "https://a.dev" }, result: {},
+    }, mapperMeta());
+    const grep = mapCursorSdkMessageToChatEvents({
+      type: "tool_call", call_id: "c2", name: "grep", status: "completed", args: { pattern: "x" }, result: { url: "https://a.dev" },
+    }, mapperMeta());
+    expect(failed[0]).not.toHaveProperty("sources");
+    expect(grep[0]).not.toHaveProperty("sources");
   });
 });

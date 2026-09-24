@@ -2,6 +2,16 @@ import SwiftUI
 import UIKit
 import AVKit
 
+func workChatSourceRefs(from raw: Any?) -> [AgentChatSourceRef]? {
+  guard let raw,
+        JSONSerialization.isValidJSONObject(raw),
+        let data = try? JSONSerialization.data(withJSONObject: raw),
+        let refs = try? JSONDecoder().decode([AgentChatSourceRef].self, from: data) else {
+    return nil
+  }
+  return refs
+}
+
 func workStableTimelineItemId(itemId: String, logicalItemId: String?) -> String {
   let logical = logicalItemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return logical.isEmpty ? itemId : logical
@@ -108,7 +118,9 @@ func workCodexImageGenerationEvent(
     itemId: itemId,
     parentItemId: nil,
     turnId: turnId,
-    status: status
+    status: status,
+    sources: nil,
+    sourceRefsOmittedForMobile: nil
   )
 }
 
@@ -150,7 +162,9 @@ func workCodexImageViewEvent(
     itemId: itemId,
     parentItemId: nil,
     turnId: turnId,
-    status: status
+    status: status,
+    sources: nil,
+    sourceRefsOmittedForMobile: nil
   )
 }
 
@@ -189,7 +203,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       replacementMessageId: replacementMessageId,
       turnId: turnId
     )
-  case .text(let text, let messageId, let turnId, let itemId):
+  case .text(let text, let messageId, let turnId, let itemId, _):
     return .assistantText(
       text: text,
       turnId: turnId,
@@ -203,25 +217,35 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       parentItemId: parentItemId,
       turnId: turnId
     )
-  case .toolResult(let tool, let result, let itemId, let logicalItemId, let parentItemId, let turnId, let status):
+  case .toolResult(let tool, let result, let itemId, let logicalItemId, let parentItemId, let turnId, let status, let sources, let sourceRefsOmittedForMobile):
     return .toolResult(
       tool: tool,
       resultText: prettyPrintedRemoteJSONValue(result),
       itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId),
       parentItemId: parentItemId,
       turnId: turnId,
-      status: toolStatus(from: status ?? "running")
+      status: toolStatus(from: status ?? "running"),
+      sources: sources,
+      sourceRefsOmittedForMobile: sourceRefsOmittedForMobile
     )
+  case .sources(let refs, _, let turnId, let omittedForMobile):
+    return .sources(refs: refs, turnId: turnId, omittedForMobile: omittedForMobile)
   case .activity(let activity, let detail, let turnId):
     return .activity(kind: activity.rawValue, detail: detail, turnId: turnId)
   // Labeled bindings on purpose: AgentChatEvent.plan orders (steps, turnId,
   // explanation) while WorkChatEvent.plan orders (steps, explanation, turnId).
   // A positional match here silently swaps turnId/explanation — the turn id
   // renders as the plan body and per-delta cards stop merging.
-  case .plan(steps: let steps, turnId: let turnId, explanation: let explanation):
-    let mapped = steps.map { WorkPlanStep(text: $0.text, status: $0.status) }
+  case .plan(steps: let steps, turnId: let turnId, explanation: let explanation, state: let state, streamingText: let streamingText):
+    let mapped = steps.map {
+      WorkPlanStep(text: $0.text, status: $0.status, priority: $0.priority, cancelled: $0.cancelled ?? false)
+    }
+    let proposalText = streamingText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if steps.isEmpty && (!proposalText.isEmpty || state == "delta" || state == "complete") {
+      return .planProposal(text: proposalText.isEmpty ? (explanation ?? "") : proposalText, turnId: turnId)
+    }
     return .plan(steps: mapped, explanation: explanation, turnId: turnId)
-  case .subagentStarted(let taskId, let agentId, let agentType, let parentAgentId, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
+  case .subagentStarted(let taskId, let agentId, let agentType, _, let parentAgentId, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
     return .subagentStarted(
       taskId: taskId,
       agentId: agentId,
@@ -307,10 +331,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .pendingInputResolved(let itemId, let resolution, let turnId):
     return .pendingInputResolved(itemId: itemId, resolution: resolution, turnId: turnId)
   case .todoUpdate(let items, let turnId):
-    let renderedItems = items.map { item in
-      "\(item.status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized): \(item.description)"
-    }
-    return .todoUpdate(items: renderedItems, turnId: turnId)
+    return .taskListUpdate(items: items, turnId: turnId)
   // TODO(subagent-spawn-link): host emits `status: "subagent_spawned"` notices
   // (noticeKind "info") carrying `detail.spawnedSession { sessionId, laneId?, title? }`
   // for CLI/spawnAgent child chats. Desktop renders a tappable "Subagent spawned"

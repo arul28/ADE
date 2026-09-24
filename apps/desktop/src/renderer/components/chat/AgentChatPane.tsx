@@ -232,12 +232,13 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel } from "./ChatCursorCloudPanel";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
+import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
-import { deriveMissionSnapshot } from "./chatMission";
+import { deriveMissionSnapshot, missionHasContent } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
 import { AskQuestionComposer } from "./AskQuestionComposer";
@@ -249,6 +250,7 @@ import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
 import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
+import { deriveChatSources } from "../../../shared/chatSources";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import { subscribeChatHandoff, takeChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { useWorkSidebarTool } from "../terminals/useWorkSidebarTool";
@@ -416,6 +418,15 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
  * Synthetic machine id for the launch shelf's Cursor Cloud row. It is never a real machine — it
  * only marks "run this off-machine", which the pane stores as cloud mode.
  */
+/**
+ * One width for everything that hangs under the new-chat composer: the launch
+ * shelf that pokes out beneath it and the activity card below that. Sharing the
+ * class (rather than matching two numbers) keeps their edges aligned at every
+ * window width. The activity card fills this slot instead of shrinking to its
+ * heatmap (`WorkActivityModule`).
+ */
+const DRAFT_SHELF_WIDTH_CLASS = "w-[calc(100%-6rem)]";
+
 const CURSOR_CLOUD_MACHINE_ID = "__ade_cursor_cloud__";
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -3952,6 +3963,14 @@ export function AgentChatPane({
   const openProofDrawer = useCallback(() => {
     setChatActionsOpen(true);
   }, []);
+  // The thread's "N sources" chip opens the drawer with Sources narrowed to
+  // that turn; the section's "Show all" clears it.
+  const [sourcesTurnFilter, setSourcesTurnFilter] = useState<string | null>(null);
+  const openTurnSources = useCallback((turnId: string) => {
+    setSourcesTurnFilter(turnId);
+    setChatActionsOpen(true);
+  }, []);
+  const clearSourcesTurnFilter = useCallback(() => setSourcesTurnFilter(null), []);
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
@@ -4910,6 +4929,13 @@ export function AgentChatPane({
   // AGI run that has surfaced mission events — non-AGI chats stay null
   // and the Missions tab never appears.
   const selectedMission = useMemo(() => deriveMissionSnapshot(selectedEvents), [selectedEvents]);
+  // Derived only while the drawer is open: a closed drawer never shows it, and
+  // the walk over every event is not free on a streaming transcript.
+  const selectedChatSources = useMemo(
+    () => deriveChatSources(selectedEventsForDisplay, { provider: selectedSession?.provider ?? null }),
+    [selectedEventsForDisplay, selectedSession?.provider],
+  );
+  const selectedChatHasSources = chatActionsOpen && selectedChatSources.total > 0;
   // Keep keyboard recall scoped to the transcript currently selected in Work.
   // The sidebar contains other sessions, but none of those prompts belong in
   // this composer's history.
@@ -4947,15 +4973,6 @@ export function AgentChatPane({
     },
     [selectedSessionId],
   );
-  // The pane is runtime-agnostic — Codex emits subagent_started/progress/result
-  // events for delegation and collabToolCall items (spawn_agent, etc.) just
-  // like Claude. Gate on whether we have anything to display: snapshots OR an
-  // active Codex chat goal (so the pane hosts the goal card even before any
-  // subagents are spawned).
-  const selectedSubagentPaneAvailable =
-    selectedSubagentSnapshots.length > 0
-    || selectedScheduledWorkSnapshots.length > 0
-    || (selectedSession?.provider === "codex" && Boolean(selectedCodexGoal?.objective));
   // Latest snapshot for the currently drilled-in subagent — keeps the
   // breadcrumb status in sync as the agent transitions running → completed.
   const subagentViewSnapshot = useMemo(() => {
@@ -5252,7 +5269,14 @@ export function AgentChatPane({
     [selectedSessionId],
   );
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
-  const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
+  // The chat's one task list (plan or todos, every provider). Feeds the Chat
+  // Info Tasks section, the drawer auto-open, and the toolbar badge.
+  const selectedTaskList = useMemo(() => deriveChatTaskList(selectedEvents), [selectedEvents]);
+  const selectedTaskCount = selectedTaskList?.items.length ?? 0;
+  const selectedTaskProgress = useMemo(
+    () => (selectedTaskList ? chatTaskListProgress(selectedTaskList.items) : null),
+    [selectedTaskList],
+  );
   /**
    * The one place the raw derivation is reconciled against the session summary.
    *
@@ -5372,7 +5396,7 @@ export function AgentChatPane({
       if (chatActionsOpen) setChatActionsOpen(false);
       return;
     }
-    const trackedActionCount = selectedSubagentSnapshots.length + selectedTodoItems.length + selectedScheduledWorkSnapshots.length;
+    const trackedActionCount = selectedSubagentSnapshots.length + selectedTaskCount + selectedScheduledWorkSnapshots.length;
     if (trackedActionCount === 0) {
       return;
     }
@@ -5410,7 +5434,7 @@ export function AgentChatPane({
     setAppControlOpen(false);
     setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
-  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTodoItems.length]);
+  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTaskCount]);
 
   const persistParallelLaunchState = useCallback(async (
     state: AgentChatParallelLaunchState | null,
@@ -13147,14 +13171,18 @@ export function AgentChatPane({
     modelColor: composerModelDescribesRenderedChat ? selectedModelDesc?.color ?? null : null,
   });
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
-  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
+  // Always handed to the drawer: the panel is runtime-agnostic (Codex and
+  // Claude both emit subagent/plan/goal events) and renders nothing when it
+  // has nothing, so the drawer never shows an empty agents area. A host-side
+  // gate here used to miss plan-only and Claude-goal chats.
+  const agentsTabContent = (
     <ChatSubagentsPanel
       sessionId={selectedSessionId}
       snapshots={selectedSubagentSnapshots}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
       events={selectedEvents}
-      todoItems={selectedTodoItems}
+      taskList={selectedTaskList}
       scheduleItems={selectedScheduleItems}
       backgroundItems={selectedBackgroundItems}
       schedulesPaused={selectedSession?.scheduledWorkPaused === true}
@@ -13268,13 +13296,9 @@ export function AgentChatPane({
           : undefined
       }
     />
-  ) : (
-    <div className="flex flex-col items-center justify-center px-4 py-8 text-center">
-      <p className="font-sans text-[13px] text-fg/50">No agent activity detected</p>
-    </div>
   );
   const proofTabContent = (
-    <div ref={proofDrawerRef} className="border-t border-white/[0.06] px-4 py-3">
+    <div ref={proofDrawerRef} className="px-4 py-3">
       {computerUseSnapshot && proofArtifactCount === 0 ? (
         <p className="font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
       ) : null}
@@ -13564,26 +13588,30 @@ export function AgentChatPane({
   );
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
-      agentsContent={agentsTabContent}
-      proofContent={proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot) ? proofTabContent : null}
-      extras={(
-        <>
-          {selectedMission ? (
-            <div className="border-t border-white/[0.06]">
-              <MissionControlPanel
-                mission={selectedMission}
-                onKillWorker={killDroidWorker}
-                killingWorkerIds={killingWorkerIds}
-              />
-            </div>
-          ) : null}
-          {selectedSession?.provider === "codex" ? (
-            <div className="border-t border-white/[0.06]">
-              <ChatSourcesPanel events={selectedEventsForDisplay} />
-            </div>
-          ) : null}
-        </>
-      )}
+      sections={[
+        { key: "agents", content: agentsTabContent },
+        (proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot)) && { key: "proof", content: proofTabContent },
+        selectedMission && missionHasContent(selectedMission) && {
+          key: "mission",
+          content: (
+            <MissionControlPanel
+              mission={selectedMission}
+              onKillWorker={killDroidWorker}
+              killingWorkerIds={killingWorkerIds}
+            />
+          ),
+        },
+        selectedChatHasSources && {
+          key: "sources",
+          content: (
+            <ChatSourcesPanel
+              sources={selectedChatSources}
+              turnId={sourcesTurnFilter}
+              onShowAll={clearSourcesTurnFilter}
+            />
+          ),
+        },
+      ]}
     />
   );
   const cursorCloudPanelContent = (
@@ -13886,6 +13914,15 @@ export function AgentChatPane({
       ) : runningSubagentCount > 0 ? (
         <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
           {runningSubagentCount}
+        </span>
+      ) : selectedTaskProgress && selectedTaskProgress.total > 0 && selectedTaskProgress.done < selectedTaskProgress.total ? (
+        // Proof, then running subagents, then an unfinished task list: the
+        // badge answers "how much is happening now". A finished list shows none.
+        <span
+          data-testid="chat-actions-task-badge"
+          className="absolute -right-1.5 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-black"
+        >
+          {selectedTaskProgress.done}/{selectedTaskProgress.total}
         </span>
       ) : null}
     </button>
@@ -15106,6 +15143,7 @@ export function AgentChatPane({
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
+                        chatSources={subagentView ? null : selectedChatSources}
                         showStreamingIndicator={subagentView
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
@@ -15198,6 +15236,7 @@ export function AgentChatPane({
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
+                        onOpenTurnSources={subagentView ? undefined : openTurnSources}
                       />
                     </ChatInfoHostContext.Provider>
                     ) : null}
@@ -15305,7 +15344,7 @@ export function AgentChatPane({
                               // emerging from nothing.
                               appPanelOpen
                                 ? "w-full"
-                                : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
+                                : cn("ade-chat-launch-shelf", DRAFT_SHELF_WIDTH_CLASS),
                             )}
                             data-draft-depart="fade"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
@@ -15404,7 +15443,7 @@ export function AgentChatPane({
                               "flex shrink-0 items-center gap-2",
                               appPanelOpen
                                 ? "rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-1.5"
-                                : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
+                                : cn("ade-chat-launch-shelf", DRAFT_SHELF_WIDTH_CLASS),
                             )}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
@@ -15430,7 +15469,7 @@ export function AgentChatPane({
                             exit={{ opacity: 0, y: 6 }}
                             transition={{ duration: 0.28, ease: "easeOut" }}
                           >
-                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="" data-draft-depart="fade">
+                            <div className={DRAFT_SHELF_WIDTH_CLASS} data-chat-empty-usage="" data-draft-depart="fade">
                               <WorkActivityModule />
                             </div>
                           </motion.div>

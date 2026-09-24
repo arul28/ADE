@@ -130,6 +130,7 @@ import {
   createSubagentProgressCoalescer,
   foldSubagentProgressForSnapshot,
   MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS,
+  subagentProgressIdentity,
   type CoalescedChatEvent,
   type SubagentProgressCoalescer,
 } from "../../../../desktop/src/shared/chatMobileSlim";
@@ -2171,7 +2172,26 @@ export type ChatEventReplayBuffer = {
   totalBytes: number;
   /** Delivery-key → assigned seq, so live + transcript-pump duplicates share one seq. */
   seqByKey: Map<string, number>;
+  /** Latest progress whose state was delivered without a replay cursor. */
+  mobileProgressRepairByAgent: Map<string, { sourceSeq: number; event: AgentChatEventEnvelope }>;
 };
+
+const MOBILE_PROGRESS_REPAIR_MAX_AGENTS = 256;
+
+function rememberMobileProgressRepair(
+  buffer: ChatEventReplayBuffer,
+  agentKey: string,
+  sourceSeq: number,
+  event: AgentChatEventEnvelope,
+): void {
+  buffer.mobileProgressRepairByAgent.delete(agentKey);
+  buffer.mobileProgressRepairByAgent.set(agentKey, { sourceSeq, event });
+  while (buffer.mobileProgressRepairByAgent.size > MOBILE_PROGRESS_REPAIR_MAX_AGENTS) {
+    const oldest = buffer.mobileProgressRepairByAgent.keys().next().value;
+    if (oldest === undefined) break;
+    buffer.mobileProgressRepairByAgent.delete(oldest);
+  }
+}
 
 export function createChatEventReplayBuffer(initialSequence = 0): ChatEventReplayBuffer {
   const latestSeq = typeof initialSequence === "number"
@@ -2179,7 +2199,27 @@ export function createChatEventReplayBuffer(initialSequence = 0): ChatEventRepla
     && initialSequence > 0
     ? Math.floor(initialSequence)
     : 0;
-  return { latestSeq, entries: [], totalBytes: 0, seqByKey: new Map() };
+  return {
+    latestSeq,
+    entries: [],
+    totalBytes: 0,
+    seqByKey: new Map(),
+    mobileProgressRepairByAgent: new Map(),
+  };
+}
+
+function lifecycleAgentKey(event: AgentChatEventEnvelope["event"]): string | null {
+  if (
+    event.type !== "subagent_started"
+    && event.type !== "subagent.started"
+    && event.type !== "subagent_result"
+    && event.type !== "subagent.completed"
+  ) return null;
+  const candidate = event.type === "subagent.started" || event.type === "subagent.completed"
+    ? event.agentId
+    : event.agentId ?? event.taskId;
+  const value = typeof candidate === "string" ? candidate.trim() : "";
+  return value || null;
 }
 
 function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
@@ -2218,6 +2258,19 @@ export function recordChatEventInReplayBuffer(
     buffer.seqByKey.delete(oldestKey);
   }
   const syncEvent = compactChatEventEnvelopeForSync(event);
+  const progressIdentity = subagentProgressIdentity(event.event);
+  if (progressIdentity) {
+    // A newer progress event replaces a repair snapshot for the same agent.
+    // Its source seq determines whether replay already covers it; the resume
+    // ack only includes it when the client's cursor has moved past that seq.
+    const previousRepair = buffer.mobileProgressRepairByAgent.get(progressIdentity.agentKey);
+    if (previousRepair) {
+      rememberMobileProgressRepair(buffer, progressIdentity.agentKey, seq, syncEvent);
+    }
+  } else {
+    const agentKey = lifecycleAgentKey(event.event);
+    if (agentKey) buffer.mobileProgressRepairByAgent.delete(agentKey);
+  }
   let bytes = 512;
   try {
     bytes = JSON.stringify(syncEvent).length;
@@ -5925,6 +5978,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const superseded of entry.superseded ?? []) {
       markChatEventSent(peer, superseded);
     }
+    if (entry.seq == null && peerWantsSlimChat(peer)) {
+      const identity = subagentProgressIdentity(entry.event.event);
+      const buffer = chatEventReplayBuffers.get(entry.event.sessionId);
+      if (identity && buffer) {
+        rememberMobileProgressRepair(
+          buffer,
+          identity.agentKey,
+          entry.sourceSeq,
+          compactChatEventEnvelopeForSync(entry.event),
+        );
+      }
+    }
   }
 
   function deliverCoalescedChatEvents(
@@ -8812,7 +8877,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           } else {
             page = unavailablePage();
           }
-          sendRequired(peer, "chat_history", page, envelope.requestId);
+          const pageForPeer = peerWantsSlimChat(peer)
+            ? {
+              ...page,
+              events: page.events.map(compactChatEventEnvelopeForMobileSync),
+            }
+            : page;
+          sendRequired(peer, "chat_history", pageForPeer, envelope.requestId);
         } catch (error) {
           args.logger.warn("sync.chat_history_failed", {
             sessionId,
@@ -9033,8 +9104,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Replay buffers hold the ACTIVE project's live events — a foreign
         // quick-look whose session id collides with a local session must never
         // resume from them (it would splice local events into the foreign feed).
+        const replayBuffer = foreignScope.kind === "local" ? chatEventReplayBuffers.get(sessionId) : undefined;
         const resumePlan = planChatEventResume(
-          foreignScope.kind === "local" ? chatEventReplayBuffers.get(sessionId) : undefined,
+          replayBuffer,
           payload?.sinceSeq,
         );
         if (resumePlan.mode === "replay") {
@@ -9044,11 +9116,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // ordinary chat_event envelopes (in order, after the ack).
           peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
           peer.chatTranscriptScanOffsets.delete(sessionId);
+          const resumeSinceSeq = typeof payload?.sinceSeq === "number" ? payload.sinceSeq : null;
           const resumeAck: SyncChatSubscribeSnapshotPayload = {
             sessionId,
             capturedAt: nowIso(),
             truncated: false,
-            events: [],
+            // A coalesced mobile progress update can be sent after the phone's
+            // sequenced cursor has already advanced. It is card state rather
+            // than replay history, so include the latest affected state in
+            // the resumed ack when the cursor would otherwise skip it. The
+            // phone merges resumed ack events idempotently without moving its
+            // replay watermark.
+            events: peerWantsSlimChat(peer) && resumeSinceSeq != null
+              ? [...(replayBuffer?.mobileProgressRepairByAgent.values() ?? [])]
+                .filter((repair) => repair.sourceSeq <= resumeSinceSeq)
+                .map((repair) => compactMobileChatEventEnvelopeOnce(repair.event))
+              : [],
             resumed: true,
             ...(await resolveLiveStatusFields()),
           };

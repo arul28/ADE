@@ -5,12 +5,16 @@ import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { sceneRowIdentity, sceneScopeKeyFor } from "../../../shared/chatScene";
 import { prependOlderChatHistoryPage } from "./chatHistoryWindow";
 import {
+  applyChatTranscriptTurnFolds,
+  buildTranscriptEventRowKeys,
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
   collapseGroupedActivityPhaseRows,
   countRowsAppendedSince,
+  countVisibleRowsAppendedSince,
+  deriveChatTranscriptTurnFolds,
   deriveTurnDividerData,
   deriveWebSearchResultDisplay,
   extractLocalhostUrlsFromText,
@@ -20,8 +24,12 @@ import {
   mergeAdjacentActivityBundleRows,
   groupConsecutiveWorkLogRows,
   readRecord,
+  readTurnEndSnapshots,
+  sameTurnFolds,
   summarizeDiffStats,
   summarizeInlineText,
+  summarizeTurnDetails,
+  type ChatTranscriptGroupedEnvelope,
 } from "./chatTranscriptRows";
 
 function groupEvents(events: AgentChatEventEnvelope[]) {
@@ -33,11 +41,11 @@ describe("chatTranscriptRows", () => {
    * A scene's still is a FILE, named by the key derived here, looked up again
    * on every reopen.
    *
-   * The render key cannot be that name. It carries the event's index in the
-   * events array, so scrolling back one page — which prepends older events and
-   * shifts every index — renamed the scene. The lookup missed, the generated
-   * code ran again, and a second still was filed on disk. Every reopen did it
-   * again.
+   * The render key used to carry the event's index in the events array, so
+   * scrolling back one page — which prepends older events and shifts every
+   * index — renamed the scene. The lookup missed, the generated code ran again,
+   * and a second still was filed on disk. Render keys are position-independent
+   * now, and the still's name stays on its own frozen identity.
    */
   it("names a scene by message identity, so a prepended older page cannot move it", () => {
     const base = { sessionId: "session-1", timestamp: "2026-09-17T10:00:00.000Z" };
@@ -69,8 +77,8 @@ describe("chatTranscriptRows", () => {
     const before = sceneRowIn(windowed);
     const after = sceneRowIn(withOlderPage);
 
-    // The hazard itself: the same message, two render keys.
-    expect(before.key).not.toBe(after.key);
+    // The render key no longer moves with the window either.
+    expect(after.key).toBe(before.key);
     // And the still's name, which must not move with it.
     expect(sceneScopeKeyFor(sceneRowIdentity(after.event, after.key), source))
       .toBe(sceneScopeKeyFor(sceneRowIdentity(before.event, before.key), source));
@@ -1165,6 +1173,40 @@ describe("summarizeInlineText", () => {
   });
 });
 
+describe("countVisibleRowsAppendedSince", () => {
+  // Logical rows: u, h1, h2, k, a, d. A fold hides h1 and h2 (k is kept).
+  const logicalKeys = ["u", "h1", "h2", "k", "a", "d"];
+  const fold = { foldId: "turn-fold:t1", spanStartIndex: 1 };
+  const closed = ["u", "turn-fold:t1", "k", "a", "d"];
+  const open = ["u", "turn-fold:t1", "h1", "h2", "k", "a", "d"];
+  const count = (visibleKeys: string[], anchorKey: string | null) => countVisibleRowsAppendedSince({
+    visibleKeys,
+    logicalKeys,
+    folds: [fold],
+    anchorKey,
+  });
+
+  it("keeps counting when the anchor row was folded away", () => {
+    // The reader detached on h1; the turn then folded h1 away.
+    expect(count(closed, "h1")).toBe(3); // k, a, d — not the fold row, which sits before h1
+    expect(count(closed, "h2")).toBe(3);
+  });
+
+  it("never counts rows hidden in a closed fold, and counts the fold row once when it is new", () => {
+    expect(count(closed, "u")).toBe(4); // fold row, k, a, d
+    expect(count(open, "u")).toBe(6);
+    expect(count(open, "h1")).toBe(4);
+  });
+
+  it("is the plain count without folds and fails quiet for an unknown anchor", () => {
+    expect(countVisibleRowsAppendedSince({ visibleKeys: ["a", "b", "c"], logicalKeys: ["a", "b", "c"], folds: [], anchorKey: "a" })).toBe(2);
+    expect(count(closed, "gone")).toBe(0);
+    expect(count(closed, null)).toBe(0);
+    expect(count(closed, "d")).toBe(0);
+    expect(count(closed, "turn-fold:t1")).toBe(3);
+  });
+});
+
 describe("countRowsAppendedSince", () => {
   it("counts rows after the anchor", () => {
     expect(countRowsAppendedSince(["a", "b", "c", "d"], "b")).toBe(2);
@@ -1791,7 +1833,7 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows.filter((row) => row.event.type === "system_notice")).toHaveLength(4);
   });
 
-  it("keeps populated plan steps when a streaming delta updates the same turn", () => {
+  it("keeps a plan-mode proposal as its own plan card beside the task list of the same turn", () => {
     const rows = collapseChatTranscriptEvents([
       {
         sessionId: "session-1",
@@ -1819,87 +1861,44 @@ describe("chatTranscriptRows edge cases", () => {
       },
     ]);
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.event.type).toBe("plan");
-    if (rows[0]!.event.type !== "plan") {
-      throw new Error("Expected merged plan row");
-    }
-    expect(rows[0]!.event.steps).toEqual([{ text: "Wire the command", status: "completed" }]);
-    expect(rows[0]!.event.explanation).toBe("Implementation plan");
-    expect(rows[0]!.event.streamingText).toBe("Streaming the next detail");
+    expect(rows.map((row) => [row.key, row.event.type])).toEqual([
+      ["task-list:session-1", "task_list"],
+      [expect.any(String), "plan"],
+    ]);
+    const taskList = rows[0]!.event;
+    if (taskList.type !== "task_list") throw new Error("Expected the task list row");
+    expect(taskList.list).toEqual({
+      source: "plan",
+      label: "Implementation plan",
+      turnId: "turn-1",
+      items: [{ id: "step-0", label: "Wire the command", status: "done" }],
+    });
+    const proposal = rows[1]!.event;
+    if (proposal.type !== "plan") throw new Error("Expected the proposal card");
+    expect(proposal.steps).toEqual([]);
+    expect(proposal.streamingText).toBe("Streaming the next detail");
   });
 
-  it("clears live plan text when structured plan steps arrive", () => {
+  it("merges a proposal's deltas and completion into one plan card", () => {
     const rows = collapseChatTranscriptEvents([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "plan",
-          turnId: "turn-1",
-          itemId: "plan-1",
-          state: "delta",
-          streamingText: "Drafting the plan",
-          steps: [],
-        },
+        event: { type: "plan", turnId: "turn-1", itemId: "plan-1", state: "delta", streamingText: "Drafting", steps: [] },
       },
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:01.000Z",
-        event: {
-          type: "plan",
-          turnId: "turn-1",
-          itemId: "plan-1",
-          state: "updated",
-          explanation: "Implementation plan",
-          steps: [{ text: "Wire the command", status: "completed" }],
-        },
+        event: { type: "plan", turnId: "turn-1", itemId: "plan-1", state: "complete", streamingText: "Drafting the plan", steps: [] },
       },
     ]);
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.event.type).toBe("plan");
-    if (rows[0]!.event.type !== "plan") {
-      throw new Error("Expected merged plan row");
-    }
-    expect(rows[0]!.event.steps).toEqual([{ text: "Wire the command", status: "completed" }]);
-    expect(rows[0]!.event.explanation).toBe("Implementation plan");
-    expect(rows[0]!.event.streamingText).toBeUndefined();
-  });
-
-  it("preserves plan item identity when a structured update omits it", () => {
-    const rows = collapseChatTranscriptEvents([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "plan",
-          turnId: "turn-1",
-          itemId: "plan-1",
-          state: "delta",
-          streamingText: "Drafting the plan",
-          steps: [],
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:01.000Z",
-        event: {
-          type: "plan",
-          turnId: "turn-1",
-          steps: [{ text: "Wire the command", status: "completed" }],
-        },
-      },
-    ]);
-
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.event.type).toBe("plan");
-    if (rows[0]!.event.type !== "plan") {
-      throw new Error("Expected merged plan row");
-    }
-    expect(rows[0]!.event.itemId).toBe("plan-1");
-    expect(rows[0]!.event.state).toBe("updated");
-    expect(rows[0]!.event.streamingText).toBeUndefined();
+    const plan = rows[0]!.event;
+    if (plan.type !== "plan") throw new Error("Expected merged plan row");
+    expect(plan.itemId).toBe("plan-1");
+    expect(plan.state).toBe("complete");
+    expect(plan.streamingText).toBe("Drafting the plan");
   });
 
   it("filters standalone whitespace-only assistant text chunks", () => {
@@ -2028,43 +2027,96 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.statusLine).toBe("Almost done, wrapping up.");
   });
 
-  it("renders todo_update deltas within the same turn", () => {
-    const rows = collapseChatTranscriptEvents([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "todo_update",
-          turnId: "turn-1",
-          items: [{ id: "t-1", description: "Task 1", status: "in_progress" }],
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:01.000Z",
-        event: {
-          type: "todo_update",
-          turnId: "turn-1",
-          items: [
-            { id: "t-1", description: "Task 1", status: "completed" },
-            { id: "t-2", description: "Task 2", status: "in_progress" },
-          ],
-        },
-      },
+  it("keeps ONE task-list row, keyed per session, that moves to the turn of its latest update", () => {
+    const env = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:${String(second).padStart(2, "0")}.000Z`,
+      event,
+    });
+    const events = [
+      env(0, { type: "user_message", text: "Plan it", turnId: "turn-1" }),
+      env(1, { type: "todo_update", turnId: "turn-1", items: [{ id: "t-1", description: "Task 1", status: "in_progress" }] }),
+      env(2, { type: "text", text: "Working on it.", turnId: "turn-1", itemId: "a-1" }),
+      env(3, { type: "done", turnId: "turn-1", status: "completed" }),
+      env(4, { type: "user_message", text: "Continue", turnId: "turn-2" }),
+      env(5, {
+        type: "todo_update",
+        turnId: "turn-2",
+        items: [
+          { id: "t-1", description: "Task 1", status: "completed" },
+          { id: "t-2", description: "Task 2", status: "in_progress" },
+        ],
+      }),
+      env(6, { type: "text", text: "Next.", turnId: "turn-2", itemId: "a-2" }),
+    ];
+    const rows = collapseChatTranscriptEvents(events);
+    const taskRows = rows.filter((row) => row.event.type === "task_list");
+    expect(taskRows).toHaveLength(1);
+    expect(rows.some((row) => row.event.type === "todo_update" || row.event.type === "plan")).toBe(false);
+    // It sits where the latest update landed: after turn 2's user message.
+    expect(rows.map((row) => row.event.type)).toEqual([
+      "user_message", "text", "done", "user_message", "task_list", "text",
     ]);
-    expect(rows).toHaveLength(2);
-    if (rows[0]!.event.type !== "todo_update") throw new Error("Expected todo_update");
-    if (rows[1]!.event.type !== "todo_update") throw new Error("Expected todo_update");
-    expect(rows[0]!.event.items).toEqual([
-      { id: "t-1", description: "Task 1", status: "in_progress" },
+    const row = taskRows[0]!;
+    expect(row.key).toBe("task-list:session-1");
+    expect(row.sceneScopeKey).toBeDefined();
+    if (row.event.type !== "task_list") throw new Error("Expected task_list");
+    expect(row.event.turnId).toBe("turn-2");
+    expect(row.event.list.items.map((item) => [item.label, item.status])).toEqual([
+      ["Task 1", "done"],
+      ["Task 2", "running"],
     ]);
-    expect(rows[1]!.event.items).toEqual([
-      { id: "t-1", description: "Task 1", status: "completed" },
-      { id: "t-2", description: "Task 2", status: "in_progress" },
-    ]);
+    // Before turn 2 the same key sat in turn 1.
+    const before = collapseChatTranscriptEvents(events.slice(0, 4));
+    expect(before.map((entry) => entry.key)).toContain("task-list:session-1");
+    expect(before.map((entry) => entry.event.type)).toEqual(["user_message", "task_list", "text", "done"]);
   });
 
-  it("bundles adjacent task + scheduled work but renders subagents as separate cards", () => {
+  it("removes the task-list row when the list is cleared, and leaves unrelated plans alone", () => {
+    const env = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-03-17T10:00:0${second}.000Z`,
+      event,
+    });
+    const rows = collapseChatTranscriptEvents([
+      env(0, { type: "plan", turnId: "turn-1", steps: [{ text: "Step", status: "pending" }] }),
+      // ACP plan_removed.
+      env(1, { type: "plan", turnId: "turn-1", steps: [] }),
+    ]);
+    expect(rows).toEqual([]);
+  });
+
+  it("stays in parity between incremental and full collapse while the task list moves past keyed rows", () => {
+    const env = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+      sessionId: "session-1",
+      timestamp: `2026-06-01T10:00:${String(second).padStart(2, "0")}.000Z`,
+      event,
+    });
+    const stream: AgentChatEventEnvelope[] = [
+      env(0, { type: "user_message", text: "Go", turnId: "turn-1" }),
+      env(1, { type: "plan", turnId: "turn-1", explanation: "Ship", steps: [{ text: "A", status: "in_progress" }] }),
+      env(2, { type: "subagent_started", taskId: "agent-1", agentType: "Explore", description: "Look around", turnId: "turn-1" }),
+      env(3, { type: "todo_update", turnId: "turn-1", items: [{ id: "1", description: "A", status: "completed" }] }),
+      // Updates the spawn anchor through its stored index, which the move shifted.
+      env(4, { type: "subagent_progress", taskId: "agent-1", summary: "reading files", turnId: "turn-1" }),
+      env(5, { type: "subagent_result", taskId: "agent-1", status: "completed", summary: "done", turnId: "turn-1" }),
+      env(6, { type: "plan", turnId: "turn-1", steps: [] }),
+      env(7, { type: "todo_update", turnId: "turn-1", items: [{ id: "x", description: "New", status: "pending" }] }),
+    ];
+    const full = collapseChatTranscriptEvents(stream);
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    let prev = collapseChatTranscriptEventsWithContext(prevEvents);
+    for (let index = 1; index <= stream.length; index += 1) {
+      const nextEvents = stream.slice(0, index);
+      prev = collapseChatTranscriptEventsIncrementalWithContext(nextEvents, prevEvents, prev.rows, prev.context);
+      prevEvents = nextEvents;
+      expect(prev.rows).toEqual(collapseChatTranscriptEvents(nextEvents));
+    }
+    expect(prev.rows).toEqual(full);
+    expect(full.map((row) => row.event.type)).toEqual(["user_message", "subagent_result_card", "task_list"]);
+  });
+
+  it("keeps the task list out of activity bundles and renders subagents as separate cards", () => {
     const rows = groupEvents([
       {
         sessionId: "session-1",
@@ -2113,16 +2165,17 @@ describe("chatTranscriptRows edge cases", () => {
       },
     ]);
 
-    // todo + cron bundle; Explore is still running (different taskId than the
-    // workflow result), so its spawn card stays. The workflow is one result card.
+    // The todo feeds the one task-list row; the cron bundles on its own.
+    // Explore is still running (different taskId than the workflow result), so
+    // its spawn card stays. The workflow is one result card.
     expect(rows.map((row) => row.event.type)).toEqual([
+      "task_list",
       "activity_bundle",
       "subagent_spawn_anchor",
       "subagent_result_card",
     ]);
-    if (rows[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
-    expect(rows[0]!.event.items.map((item) => item.event.type)).toEqual([
-      "todo_update",
+    if (rows[1]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
+    expect(rows[1]!.event.items.map((item) => item.event.type)).toEqual([
       "scheduled_work_update",
     ]);
   });
@@ -2203,8 +2256,11 @@ describe("chatTranscriptRows edge cases", () => {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
-          type: "todo_update",
-          items: [{ id: "task-1", description: "First unknown turn task", status: "in_progress" }],
+          type: "scheduled_work_update",
+          id: "wake-1",
+          kind: "wakeup",
+          status: "scheduled",
+          title: "First unknown turn wake-up",
         },
       },
       {
@@ -2230,15 +2286,18 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[1]!.event.items).toHaveLength(1);
   });
 
-  it("rejoins same-turn task cards after a hidden tool-only row is filtered", () => {
+  it("rejoins same-turn scheduled-work bundles after a hidden tool-only row is filtered", () => {
     const grouped = groupEvents([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
-          type: "todo_update",
+          type: "scheduled_work_update",
+          id: "cron-1",
+          kind: "cron",
+          status: "scheduled",
+          title: "Nightly",
           turnId: "turn-1",
-          items: [{ id: "task-1", description: "Inspect", status: "completed" }],
         },
       },
       {
@@ -2256,9 +2315,12 @@ describe("chatTranscriptRows edge cases", () => {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:02.000Z",
         event: {
-          type: "todo_update",
+          type: "scheduled_work_update",
+          id: "wake-1",
+          kind: "wakeup",
+          status: "scheduled",
+          title: "Check back",
           turnId: "turn-1",
-          items: [{ id: "task-2", description: "Implement", status: "in_progress" }],
         },
       },
     ]);
@@ -2276,8 +2338,8 @@ describe("chatTranscriptRows edge cases", () => {
     expect(visible[0]!.timestamp).toBe("2026-03-17T10:00:02.000Z");
     if (visible[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
     expect(visible[0]!.event.items.map((item) => item.event.type)).toEqual([
-      "todo_update",
-      "todo_update",
+      "scheduled_work_update",
+      "scheduled_work_update",
     ]);
   });
 
@@ -2357,6 +2419,44 @@ describe("chatTranscriptRows edge cases", () => {
     if (rows[0]!.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
     expect(rows[0]!.event.entry.entryKind).toBe("web_search");
     expect(rows[0]!.event.entry.query).toBe("typescript patterns");
+  });
+
+  it("draws no row for a data-only sources event and lists a web tool's sources as results", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-23T10:00:00.000Z",
+        event: { type: "tool_call", tool: "webSearch", args: { searchTerm: "ade" }, itemId: "t-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-23T10:00:01.000Z",
+        event: {
+          type: "tool_result",
+          tool: "webSearch",
+          result: { status: "success" },
+          sources: [
+            { kind: "web_search_result", url: "https://ade-app.dev", title: "ADE" },
+            { kind: "file", path: "/repo/notes.md" },
+          ],
+          itemId: "t-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-09-23T10:00:02.000Z",
+        event: { type: "sources", sources: [{ kind: "citation", url: "https://ade-app.dev", cited: true }], itemId: "m-1", turnId: "turn-1" },
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
+    expect(rows[0]!.event.entry).toMatchObject({
+      entryKind: "tool",
+      results: [{ url: "https://ade-app.dev", title: "ADE" }],
+      resultsTotal: 1,
+    });
   });
 
   it("threads structured web_search results and total onto the work log entry", () => {
@@ -2865,7 +2965,7 @@ describe("subagent one-card rendering", () => {
     expect(anchor.event.statusLine).toBe("Located the modal in Modal.tsx");
   });
 
-  it("collapses a double subagent_result into one card, richer summary wins, and drops the spawn card", () => {
+  it("collapses a double subagent_result into one card that settles in the spawn's row, richer summary wins", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
         type: "subagent_started",
@@ -2897,10 +2997,59 @@ describe("subagent one-card rendering", () => {
       "Found the modal in src/components/UpdateModal.tsx and wired the trigger.",
     );
     expect(result.event.status).toBe("completed");
-    expect(result.key).toBe("subagent-result:agent-1");
+    // The spawn row settled in place: its key is unchanged.
+    expect(result.key).toBe("subagent-spawn:agent-1");
   });
 
-  it("drops the spawn card and appends the result at the tail after many intervening rows", () => {
+  it("reopens a resumed CLI child in the same card row and clears the prior result", () => {
+    const startedAt = "2026-06-01T10:00:00.000Z";
+    const resumedAt = "2026-06-01T10:05:00.000Z";
+    const rows = collapseChatTranscriptEvents([
+      env(startedAt, {
+        type: "subagent_started",
+        taskId: "chat:cli-child",
+        agentId: "cli-child",
+        provider: "codex",
+        agentType: "codex",
+        taskType: "subagent",
+        spawnKind: "subagent",
+        description: "Fix flaky tests",
+      }),
+      env("2026-06-01T10:01:00.000Z", {
+        type: "subagent_result",
+        taskId: "chat:cli-child",
+        agentId: "cli-child",
+        provider: "codex",
+        agentType: "codex",
+        status: "completed",
+        summary: "All tests passed.",
+      }),
+      env(resumedAt, {
+        type: "subagent_started",
+        taskId: "chat:cli-child",
+        agentId: "cli-child",
+        provider: "codex",
+        agentType: "codex",
+        taskType: "subagent",
+        spawnKind: "subagent",
+        description: "Fix flaky tests",
+        resumed: true,
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.key).toBe("subagent-spawn:chat:cli-child");
+    expect(rows[0]?.event).toMatchObject({
+      type: "subagent_spawn_anchor",
+      provider: "codex",
+      status: "running",
+      startedAt: resumedAt,
+      endedAt: null,
+      resultSummary: null,
+    });
+  });
+
+  it("settles the card in the spawn's position after many intervening rows", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T10:00:00.000Z", {
         type: "subagent_started",
@@ -2925,9 +3074,56 @@ describe("subagent one-card rendering", () => {
       }),
     ]);
 
-    expect(rows[0]!.event.type).toBe("text");
-    expect(rows[rows.length - 1]!.event.type).toBe("subagent_result_card");
+    expect(rows.map((row) => row.event.type)).toEqual(["subagent_result_card", "text", "text", "work_log_entry"]);
+    expect(rows[0]!.key).toBe("subagent-spawn:agent-1");
     expect(rows.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
+  });
+
+  it("appends the result where it arrives when the spawn is not in the window", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:01.000Z", { type: "text", text: "one", messageId: "m-1" }),
+      env("2026-06-01T10:00:04.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        status: "completed",
+        summary: "done investigating",
+      }),
+      env("2026-06-01T10:00:05.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        status: "completed",
+        summary: "done investigating, with a longer report",
+      }),
+    ]);
+    expect(rows.map((row) => [row.event.type, row.key])).toEqual([
+      ["text", expect.any(String)],
+      ["subagent_result_card", "subagent-result:agent-1"],
+    ]);
+    // The richer re-emit updates that same appended card.
+    expect(rows[1]!.event).toMatchObject({ summaryPreview: "done investigating, with a longer report" });
+  });
+
+  it("settles a late result (after the parent's done, during a later turn) in place", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", { type: "user_message", text: "go", turnId: "turn-1" }),
+      env("2026-06-01T10:00:01.000Z", {
+        type: "subagent_started",
+        taskId: "agent-1",
+        description: "Background scan",
+        turnId: "turn-1",
+      }),
+      env("2026-06-01T10:00:02.000Z", { type: "text", text: "Scan running.", messageId: "m-1", turnId: "turn-1" }),
+      env("2026-06-01T10:00:03.000Z", { type: "done", turnId: "turn-1", status: "completed" }),
+      env("2026-06-01T10:00:04.000Z", { type: "user_message", text: "next", turnId: "turn-2" }),
+      env("2026-06-01T10:00:05.000Z", {
+        type: "subagent_result",
+        taskId: "agent-1",
+        status: "completed",
+        summary: "Scan finished",
+      }),
+    ]);
+    expect(rows.map((row) => row.event.type)).toEqual(["user_message", "subagent_result_card", "text", "done", "user_message"]);
+    expect(rows[1]!.key).toBe("subagent-spawn:agent-1");
   });
 
   it("rebinds a taskId anchor to an agentId while keeping the original render key", () => {
@@ -2958,7 +3154,7 @@ describe("subagent one-card rendering", () => {
     expect(rows.map((row) => row.event.type)).toEqual([
       "subagent_result_card",
     ]);
-    expect(rows[0]!.key).toBe("subagent-result:task-1");
+    expect(rows[0]!.key).toBe("subagent-spawn:task-1");
   });
 
   it("keeps incremental and full-recompute output identical over a mixed subagent stream", () => {
@@ -3116,17 +3312,17 @@ describe("subagent one-card rendering", () => {
 
     const full = collapseChatTranscriptEvents(stream);
     expect(full.map((row) => row.event.type)).toEqual([
-      "text",
       "subagent_result_card",
+      "text",
     ]);
-    const [remainingText, result] = full;
+    const [result, remainingText] = full;
     expect(remainingText?.event).toMatchObject({
       type: "text",
       text: "Parent text that remains",
       messageId: "message-stays",
     });
     expect(result).toMatchObject({
-      key: "subagent-result:agent-a",
+      key: "subagent-spawn:agent-a",
       event: {
         type: "subagent_result_card",
         agentKey: "agent-a",
@@ -3528,10 +3724,14 @@ describe("subagent one-card rendering", () => {
       },
     });
     expect(rows[1]).toMatchObject({
+      key: "turn-details:turn-1",
       event: {
-        type: "turn_diagnostics",
-        moderationChecks: 2,
-        optionalIntegrationFailures: [{ integration: "unityMCP" }],
+        type: "turn_details",
+        turnId: "turn-1",
+        diagnostics: [{
+          source: "turn-1",
+          event: { moderationChecks: 2, optionalIntegrationFailures: [{ integration: "unityMCP" }] },
+        }],
       },
     });
   });
@@ -3609,9 +3809,9 @@ describe("subagent one-card rendering", () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.event).toMatchObject({
-      type: "turn_recovery",
-      action: "nudge",
-      state: "recovered",
+      type: "turn_details",
+      turnId: "turn-1",
+      recovery: { type: "turn_recovery", action: "nudge", state: "recovered" },
     });
   });
 
@@ -3645,17 +3845,19 @@ describe("subagent one-card rendering", () => {
 });
 
 describe("interrupt-stopped subagent grouping", () => {
-  it("folds a run of 3 stopped-interrupted results into one group while a completed result stays individual", () => {
+  it("folds a run of 4 stopped-interrupted results into one group while a completed result stays individual", () => {
     const grouped = groupEvents([
       env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
       env("2026-07-11T10:00:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
       env("2026-07-11T10:00:00.200Z", { type: "subagent_started", taskId: "agent-c", agentType: "explorer", description: "Explore the UI" }),
+      env("2026-07-11T10:00:00.250Z", { type: "subagent_started", taskId: "agent-e", agentType: "explorer", description: "Explore the tests" }),
       env("2026-07-11T10:00:00.300Z", { type: "subagent_started", taskId: "agent-d", agentType: "builder", description: "Build the widget" }),
       // agent-d finishes for real; then the user interrupts and the rest are swept to "stopped".
       env("2026-07-11T10:00:05.000Z", { type: "subagent_result", taskId: "agent-d", status: "completed", summary: "Widget built" }),
       env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted", stopSource: "user" }),
       env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted", stopSource: "user" }),
       env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.003Z", { type: "subagent_result", taskId: "agent-e", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted", stopSource: "user" }),
     ]);
 
     // Exactly one folded group — never a wall of identical stopped cards.
@@ -3663,20 +3865,29 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(groups).toHaveLength(1);
     const group = groups[0]!;
     if (group.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
-    // The cause is part of the key: an interrupt group and a usage-limit
-    // group starting at the same agent must not share a React identity.
     // Cause AND attribution are part of the key: an interrupt group, a
     // usage-limit group, and an ADE-restart group can all start at the same
     // agent, and sharing a key would make React reuse one card's state.
     expect(group.key).toBe("subagent-stopped-group:interrupt:user:unknown:agent-a");
     expect(group.event.cause).toBe("interrupt");
     expect(group.event.stopSource).toBe("user");
-    expect(group.event.count).toBe(3);
+    expect(group.event.count).toBe(4);
     expect(group.event.items).toEqual([
       { agentKey: "agent-a", title: "Explore auth flow", lastActivity: null, resultLanded: false },
       { agentKey: "agent-b", title: "Explore sync flow", lastActivity: null, resultLanded: false },
       { agentKey: "agent-c", title: "Explore the UI", lastActivity: null, resultLanded: false },
+      { agentKey: "agent-e", title: "Explore the tests", lastActivity: null, resultLanded: false },
     ]);
+    // The folded cards' keys (they settled in place under their spawn keys),
+    // so a jump to one of them lands on the group.
+    expect(group.event.memberKeys).toEqual([
+      "subagent-spawn:agent-a",
+      "subagent-spawn:agent-b",
+      "subagent-spawn:agent-c",
+      "subagent-spawn:agent-e",
+    ]);
+    // agent-d settled in its own spawn slot, after the folded run.
+    expect(grouped.map((row) => row.event.type)).toEqual(["subagent_stopped_group", "subagent_result_card"]);
 
     // The completed agent keeps its own result card (real summary the user wants to read).
     const resultCards = grouped.filter((row) => row.event.type === "subagent_result_card");
@@ -3686,23 +3897,140 @@ describe("interrupt-stopped subagent grouping", () => {
     expect(resultCards[0]!.event.summaryPreview).toBe("Widget built");
   });
 
-  it("splits adjacent stopped groups when the stop reason changes", () => {
+  it("keeps up to three stopped cards as cards so they sit beside their siblings", () => {
     const grouped = groupEvents([
-      env("2026-09-18T02:14:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
-      env("2026-09-18T02:14:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
-      env("2026-09-18T02:14:00.200Z", { type: "subagent_started", taskId: "agent-c", agentType: "explorer", description: "Explore the UI" }),
-      env("2026-09-18T02:14:00.300Z", { type: "subagent_started", taskId: "agent-d", agentType: "explorer", description: "Explore the tests" }),
-      env("2026-09-18T02:14:07.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-a" }),
-      env("2026-09-18T02:14:07.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-a" }),
-      env("2026-09-18T02:14:07.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-b" }),
-      env("2026-09-18T02:14:07.003Z", { type: "subagent_result", taskId: "agent-d", status: "stopped", summary: "Stopped", stopSource: "system", stopReason: "reason-b" }),
+      env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
+      env("2026-07-11T10:00:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
+      env("2026-07-11T10:00:00.200Z", { type: "subagent_started", taskId: "agent-c", agentType: "explorer", description: "Explore the UI" }),
+      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+    ]);
+    expect(grouped.map((row) => row.event.type)).toEqual([
+      "subagent_result_card",
+      "subagent_result_card",
+      "subagent_result_card",
+    ]);
+  });
+
+  it("never folds a stopped card whose report landed or that says something of its own", () => {
+    const ids = ["agent-a", "agent-b", "agent-c", "agent-d", "agent-e"];
+    const grouped = groupEvents([
+      ...ids.map((id, index) => env(`2026-07-11T10:00:0${index}.000Z`, { type: "subagent_started", taskId: id, description: `Explore ${id}` })),
+      // agent-b's report lands before the stop; agent-c's stop carries a real summary.
+      env("2026-07-11T10:00:05.000Z", { type: "subagent_result", taskId: "agent-b", status: "completed", summary: "Auth flow mapped" }),
+      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "stopped", summary: "Found the stale cursor in syncHost.ts", stopSource: "user" }),
+      env("2026-07-11T10:00:06.003Z", { type: "subagent_result", taskId: "agent-d", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+      env("2026-07-11T10:00:06.004Z", { type: "subagent_result", taskId: "agent-e", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+    ]);
+    // Every card settles in its spawn slot. Only a/d/e are report-less, and b
+    // and c split them: nothing folds.
+    expect(grouped.some((row) => row.event.type === "subagent_stopped_group")).toBe(false);
+    const cards = grouped.filter((row) => row.event.type === "subagent_result_card");
+    expect(cards.map((row) => row.event.type === "subagent_result_card" ? row.event.agentKey : null))
+      .toEqual(["agent-a", "agent-b", "agent-c", "agent-d", "agent-e"]);
+    expect(cards.map((row) => row.event.type === "subagent_result_card" && row.event.resultLanded))
+      .toEqual([false, true, false, false, false]);
+  });
+
+  it("steps over a hidden work-log row inside a run of stopped cards", () => {
+    const ids = ["agent-a", "agent-b", "agent-c", "agent-d"];
+    const stop = (id: string, at: string) => env(at, {
+      type: "subagent_result",
+      taskId: id,
+      status: "stopped",
+      summary: "Stopped: the ADE brain restarted",
+      stopSource: "system",
+      stopReason: "the ADE brain restarted",
+      turnId: "turn-1",
+    });
+    const spawn = (id: string, at: string) => env(at, { type: "subagent_started", taskId: id, description: `Explore ${id}`, turnId: "turn-1" });
+    // The parent ran a tool between its second and third spawn; the cards
+    // settle in their spawn slots, so the tool row sits inside the run.
+    const grouped = groupEvents([
+      spawn("agent-a", "2026-07-11T10:00:00.000Z"),
+      spawn("agent-b", "2026-07-11T10:00:01.000Z"),
+      env("2026-07-11T10:00:01.500Z", {
+        type: "tool_call",
+        tool: "functions.exec_command",
+        args: { cmd: "pwd" },
+        itemId: "tool-1",
+        turnId: "turn-1",
+      }),
+      spawn("agent-c", "2026-07-11T10:00:02.000Z"),
+      spawn("agent-d", "2026-07-11T10:00:03.000Z"),
+      ...ids.map((id, index) => stop(id, `2026-07-11T10:00:06.00${index}Z`)),
+    ]);
+    // The tool row draws nothing in the timeline, so it moves ahead of the one
+    // group instead of splitting the mass stop into two pairs.
+    expect(grouped.map((row) => row.event.type)).toEqual(["work_log_group", "subagent_stopped_group"]);
+    const group = grouped[1]!;
+    if (group.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
+    expect(group.event.count).toBe(4);
+    expect(group.event.stopSource).toBe("system");
+  });
+
+  it.each(["system", "foreign-brain"] as const)("never lets a %s sweep stop replace a finished card", (stopSource) => {
+    // The shape of the owner's transcript: the child's result lands, Codex
+    // echoes "Agent active" after it, and a restart sweep later closes the
+    // agent it thought was still open.
+    const grouped = groupEvents([
+      env("2026-09-23T18:56:00.000Z", { type: "subagent_started", taskId: "thread-1", agentId: "thread-1", agentType: "/root/desktop_scan", description: "/root/desktop_scan" }),
+      env("2026-09-23T18:57:36.200Z", { type: "subagent_result", taskId: "thread-1", agentId: "thread-1", status: "completed", summary: "Found one IPC guard gap." }),
+      env("2026-09-23T18:57:36.201Z", { type: "subagent_progress", taskId: "thread-1", agentId: "thread-1", description: "/root/desktop_scan", summary: "Agent active" }),
+      env("2026-09-23T19:03:54.479Z", {
+        type: "subagent_result",
+        taskId: "thread-1",
+        status: "stopped",
+        summary: "Agent active",
+        finalSummary: "Agent active",
+        stopSource,
+        stopReason: "the ADE brain restarted",
+      }),
+    ]);
+    expect(grouped).toHaveLength(1);
+    const card = grouped[0]!.event;
+    if (card.type !== "subagent_result_card") throw new Error("Expected result card");
+    expect(card.status).toBe("completed");
+    expect(card.summaryPreview).toBe("Found one IPC guard gap.");
+    // The duration ends where the agent ended, not at the sweep's clock.
+    expect(card.durationMs).toBe(96_200);
+    expect(card.stopSource).toBe("unknown");
+  });
+
+  it("still lets a user stop settle a running agent", () => {
+    const grouped = groupEvents([
+      env("2026-09-23T18:56:00.000Z", { type: "subagent_started", taskId: "task-1", description: "Explore auth flow" }),
+      env("2026-09-23T18:56:10.000Z", { type: "subagent_result", taskId: "task-1", status: "stopped", summary: "Interrupted", stopSource: "user" }),
+      env("2026-09-23T18:57:00.000Z", { type: "subagent_result", taskId: "task-1", status: "stopped", summary: "Stopped: the ADE brain restarted", stopSource: "system", stopReason: "the ADE brain restarted" }),
+    ]);
+    const card = grouped[0]!.event;
+    if (card.type !== "subagent_result_card") throw new Error("Expected result card");
+    // The later sweep neither re-attributes the user's stop nor stretches it.
+    expect(card).toMatchObject({ status: "stopped", stopSource: "user", durationMs: 10_000 });
+  });
+
+  it("splits adjacent stopped groups when the stop reason changes", () => {
+    const ids = ["a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4"];
+    const grouped = groupEvents([
+      ...ids.map((id, index) => env(`2026-09-18T02:14:00.${index}00Z`, { type: "subagent_started", taskId: `agent-${id}`, agentType: "explorer", description: `Explore ${id}` })),
+      ...ids.map((id, index) => env(`2026-09-18T02:14:07.00${index}Z`, {
+        type: "subagent_result",
+        taskId: `agent-${id}`,
+        status: "stopped",
+        summary: "Stopped",
+        stopSource: "system",
+        stopReason: id.startsWith("a") ? "reason-a" : "reason-b",
+      })),
     ]);
 
     const groups = grouped.filter((row) => row.event.type === "subagent_stopped_group");
     expect(groups).toHaveLength(2);
     expect(groups.map((row) => row.key)).toEqual([
-      "subagent-stopped-group:interrupt:system:reason-a:agent-a",
-      "subagent-stopped-group:interrupt:system:reason-b:agent-c",
+      "subagent-stopped-group:interrupt:system:reason-a:agent-a1",
+      "subagent-stopped-group:interrupt:system:reason-b:agent-b1",
     ]);
     expect(groups.map((row) => row.event.type === "subagent_stopped_group" ? row.event.stopReason : null))
       .toEqual(["reason-a", "reason-b"]);
@@ -3730,10 +4058,8 @@ describe("interrupt-stopped subagent grouping", () => {
     // second with the same sentence. N identical cards say nothing the count
     // does not — but the cause has to be named, or the row reads as an interrupt.
     const grouped = groupEvents([
-      env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
-      env("2026-07-11T10:00:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
-      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
-      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
+      ...["a", "b", "c", "d"].map((id, index) => env(`2026-07-11T10:00:00.${index}00Z`, { type: "subagent_started", taskId: `agent-${id}`, agentType: "explorer", description: `Explore ${id}` })),
+      ...["a", "b", "c", "d"].map((id, index) => env(`2026-07-11T10:00:06.00${index}Z`, { type: "subagent_result", taskId: `agent-${id}`, status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" })),
     ]);
 
     const groups = grouped.filter((row) => row.event.type === "subagent_stopped_group");
@@ -3741,27 +4067,25 @@ describe("interrupt-stopped subagent grouping", () => {
     const group = groups[0]!;
     if (group.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
     expect(group.event.cause).toBe("usage_limit");
-    expect(group.event.count).toBe(2);
-    expect(group.event.items.map((item) => item.agentKey)).toEqual(["agent-a", "agent-b"]);
+    expect(group.event.count).toBe(4);
+    expect(group.event.items.map((item) => item.agentKey)).toEqual(["agent-a", "agent-b", "agent-c", "agent-d"]);
   });
 
   it("never folds a real failure away, and never mixes causes in one group", () => {
     const grouped = groupEvents([
-      env("2026-07-11T10:00:00.000Z", { type: "subagent_started", taskId: "agent-a", agentType: "explorer", description: "Explore auth flow" }),
-      env("2026-07-11T10:00:00.100Z", { type: "subagent_started", taskId: "agent-b", agentType: "explorer", description: "Explore sync flow" }),
+      ...["a", "b", "e", "f"].map((id, index) => env(`2026-07-11T10:00:00.0${index}0Z`, { type: "subagent_started", taskId: `agent-${id}`, agentType: "explorer", description: `Explore ${id}` })),
       env("2026-07-11T10:00:00.200Z", { type: "subagent_started", taskId: "agent-c", agentType: "builder", description: "Build the widget" }),
       env("2026-07-11T10:00:00.300Z", { type: "subagent_started", taskId: "agent-d", agentType: "builder", description: "Build the other widget" }),
-      env("2026-07-11T10:00:06.000Z", { type: "subagent_result", taskId: "agent-a", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
-      env("2026-07-11T10:00:06.001Z", { type: "subagent_result", taskId: "agent-b", status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" }),
-      env("2026-07-11T10:00:06.002Z", { type: "subagent_result", taskId: "agent-c", status: "failed", summary: "TypeError: cannot read property of undefined", finalSummary: "TypeError: cannot read property of undefined" }),
-      env("2026-07-11T10:00:06.003Z", { type: "subagent_result", taskId: "agent-d", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
+      ...["a", "b", "e", "f"].map((id, index) => env(`2026-07-11T10:00:06.00${index}Z`, { type: "subagent_result", taskId: `agent-${id}`, status: "failed", summary: "Usage limit reached", finalSummary: "Usage limit reached" })),
+      env("2026-07-11T10:00:06.012Z", { type: "subagent_result", taskId: "agent-c", status: "failed", summary: "TypeError: cannot read property of undefined", finalSummary: "TypeError: cannot read property of undefined" }),
+      env("2026-07-11T10:00:06.013Z", { type: "subagent_result", taskId: "agent-d", status: "stopped", summary: "Interrupted", finalSummary: "Interrupted" }),
     ]);
 
     const groups = grouped.filter((row) => row.event.type === "subagent_stopped_group");
     expect(groups).toHaveLength(1);
     if (groups[0]!.event.type !== "subagent_stopped_group") throw new Error("Expected stopped group");
     expect(groups[0]!.event.cause).toBe("usage_limit");
-    expect(groups[0]!.event.count).toBe(2);
+    expect(groups[0]!.event.count).toBe(4);
 
     // The real error and the lone interrupt each keep their own card.
     const resultCards = grouped.filter((row) => row.event.type === "subagent_result_card");
@@ -3810,94 +4134,6 @@ describe("interrupt-stopped subagent grouping", () => {
       stopSource,
       stopReason,
     });
-  });
-});
-
-describe("background job line grouping", () => {
-  const startBackground = (index: number, label: string, at: string) =>
-    env(at, {
-      type: "subagent_started",
-      taskId: `bg-${index}`,
-      taskType: "background",
-      description: label,
-    });
-  const finishBackground = (index: number, at: string, status: "completed" | "failed" = "completed") =>
-    env(at, {
-      type: "subagent_result",
-      taskId: `bg-${index}`,
-      taskType: "background",
-      status,
-      summary: "exited",
-    });
-
-  it("folds 8 consecutive same-label running jobs into one counted line", () => {
-    // The screenshot that motivated this: eight identical centered rules in a
-    // row, one per waiter shell, filling the whole viewport.
-    const grouped = groupEvents(
-      Array.from({ length: 8 }, (_, index) =>
-        startBackground(index + 1, "wait for desktop agents", `2026-08-06T10:00:0${index}.000Z`),
-      ),
-    );
-
-    expect(grouped).toHaveLength(1);
-    const row = grouped[0]!;
-    if (row.event.type !== "background_job_group") throw new Error("Expected a background job group");
-    expect(row.key).toBe("background-job-group:background-chip:bg-1");
-    expect(row.event.count).toBe(8);
-    expect(row.event.label).toBe("wait for desktop agents");
-    expect(row.event.status).toBe("running");
-    // One ticker, seeded from the EARLIEST job in the run.
-    expect(row.event.startedAt).toBe("2026-08-06T10:00:00.000Z");
-    expect(row.event.agentKeys).toHaveLength(8);
-    expect(row.event.agentKeys[0]).toBe("bg-1");
-  });
-
-  it("keeps different labels and different statuses on their own lines", () => {
-    const differentLabels = groupEvents([
-      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
-      startBackground(2, "npm install", "2026-08-06T10:00:01.000Z"),
-    ]);
-    expect(differentLabels.map((row) => row.event.type)).toEqual([
-      "background_job_line",
-      "background_job_line",
-    ]);
-
-    const differentStatuses = groupEvents([
-      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
-      startBackground(2, "wait for desktop agents", "2026-08-06T10:00:01.000Z"),
-      // bg-1 settles in place, so the run is now completed-then-running.
-      finishBackground(1, "2026-08-06T10:00:02.000Z"),
-    ]);
-    expect(differentStatuses.map((row) => row.event.type)).toEqual([
-      "background_job_line",
-      "background_job_line",
-    ]);
-  });
-
-  it("leaves a lone background job as its own line (no group of one)", () => {
-    const grouped = groupEvents([
-      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
-    ]);
-    expect(grouped).toHaveLength(1);
-    expect(grouped[0]!.event.type).toBe("background_job_line");
-    expect(grouped[0]!.key).toBe("background-chip:bg-1");
-  });
-
-  it("folds a settled run and reports the longest duration in the group", () => {
-    const grouped = groupEvents([
-      startBackground(1, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
-      startBackground(2, "wait for desktop agents", "2026-08-06T10:00:00.000Z"),
-      finishBackground(1, "2026-08-06T10:00:10.000Z"),
-      finishBackground(2, "2026-08-06T10:04:00.000Z"),
-    ]);
-
-    expect(grouped).toHaveLength(1);
-    const settled = grouped[0]!.event;
-    if (settled.type !== "background_job_group") throw new Error("Expected a background job group");
-    if (settled.status === "running") throw new Error("Expected a settled group");
-    expect(settled.count).toBe(2);
-    expect(settled.status).toBe("completed");
-    expect(settled.durationMs).toBe(240_000);
   });
 });
 
@@ -4289,13 +4525,13 @@ describe("voice call folding", () => {
     expect(rows.every((row) => row.voiceCallId === "call-3")).toBe(true);
   });
 
-  // A settled subagent keeps only its result card: the spawn row is spliced out
-  // and the result row pushed, which nets to zero new rows — so the caller that
-  // stamps "rows this event appended" sees nothing to stamp. An untagged result
-  // row sitting inside a tagged run splits one call into two cards that share
-  // the key `voice-call:${callId}`, so the result row has to claim the call
-  // itself: the dropped spawn row's, or the terminal event's own.
-  it("keeps a settled subagent's result card in the voice call it belongs to, and untagged when there is none", () => {
+  // A subagent's card settles in place, so it keeps the voice call its spawn
+  // row was stamped with (or none): it never moves into, or out of, a call. A
+  // result whose spawn is not in the window is appended where it arrives and
+  // claims the call its terminal event was spoken under, so an untagged row
+  // never lands inside a tagged run (which would split one call into two cards
+  // sharing the key `voice-call:${callId}`).
+  it("keeps a settled subagent's card in the voice call its row belongs to, and untagged when there is none", () => {
     // 1. Spawned and settled inside the call — the tag comes off the spawn row.
     const spawnedInCall = collapseChatTranscriptEvents([
       voiceEvent(1, { type: "user_message", text: "look into the flake" }, "call-sub"),
@@ -4314,8 +4550,8 @@ describe("voice call folding", () => {
     expect(spawnedInCall.some((row) => row.event.type === "subagent_spawn_anchor")).toBe(false);
     expect(spawnedInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
 
-    // 2. Spawned BEFORE the call, settled inside it — the spawn row carries no
-    //    tag, so the terminal event's own call id is the only source left.
+    // 2. Spawned BEFORE the call, settled inside it — the card stays in its
+    //    place before the call, untagged, and the call stays one card.
     const settledInCall = collapseChatTranscriptEvents([
       voiceEvent(
         1,
@@ -4330,13 +4566,26 @@ describe("voice call folding", () => {
       ),
       voiceEvent(4, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
     ]);
-    expect(settledInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
-    // One unbroken run, therefore ONE card — not two sharing `voice-call:call-sub`.
+    expect(settledInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBeUndefined();
     const grouped = groupChatTranscriptRows(settledInCall);
-    expect(grouped).toHaveLength(1);
-    expect(grouped[0]!.key).toBe("voice-call:call-sub");
-    if (grouped[0]!.event.type !== "voice_call_group") throw new Error("expected a voice_call_group row");
-    expect(grouped[0]!.event.rows.some((row) => row.event.type === "subagent_result_card")).toBe(true);
+    expect(grouped.map((row) => row.event.type)).toEqual(["subagent_result_card", "voice_call_group"]);
+    expect(grouped[1]!.key).toBe("voice-call:call-sub");
+
+    // 2b. Settled inside the call with no spawn in the window — the appended
+    //     card claims the terminal event's call and joins its one card.
+    const orphanInCall = collapseChatTranscriptEvents([
+      voiceEvent(1, { type: "user_message", text: "anything from that agent?" }, "call-sub"),
+      voiceEvent(
+        2,
+        { type: "subagent_result", taskId: "agent-orphan", status: "completed", summary: "It is a timing assumption." },
+        "call-sub",
+      ),
+      voiceEvent(3, { type: "text", text: "Here is what it found.", itemId: "a-1" }, "call-sub"),
+    ]);
+    expect(orphanInCall.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBe("call-sub");
+    const orphanGrouped = groupChatTranscriptRows(orphanInCall);
+    expect(orphanGrouped).toHaveLength(1);
+    expect(orphanGrouped[0]!.key).toBe("voice-call:call-sub");
 
     // 3. No call anywhere — the result card comes back untagged and renders inline.
     const plain = collapseChatTranscriptEvents([
@@ -4354,5 +4603,630 @@ describe("voice call folding", () => {
     ]);
     expect(plain.find((row) => row.event.type === "subagent_result_card")!.voiceCallId).toBeUndefined();
     expect(groupChatTranscriptRows(plain).some((row) => row.event.type === "voice_call_group")).toBe(false);
+  });
+});
+
+describe("turn fold (desktop adapter)", () => {
+  let clock = 0;
+  const at = () => new Date(Date.UTC(2026, 8, 23, 10, 0, clock++)).toISOString();
+  const ev = (event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: "session-1",
+    timestamp: at(),
+    event,
+  });
+
+  /** The same presentation filter the message list applies before folding. */
+  function present(rows: ReturnType<typeof collapseChatTranscriptEventsWithContext>["rows"]) {
+    return mergeAdjacentActivityBundleRows(
+      groupChatTranscriptRows(rows).filter((row) => row.event.type !== "work_log_group"),
+    );
+  }
+
+  function fold(events: AgentChatEventEnvelope[], open: ReadonlySet<string> = new Set()) {
+    const { rows, context } = collapseChatTranscriptEventsWithContext(events);
+    const presented = present(rows);
+    const folds = deriveChatTranscriptTurnFolds(presented, readTurnEndSnapshots(context));
+    const display = applyChatTranscriptTurnFolds(presented, folds, open);
+    return { folds, presented, display, context };
+  }
+
+  const types = (rows: ChatTranscriptGroupedEnvelope[]) => rows.map((row) => row.event.type);
+
+  it("reads user message → fold → answer → turn end once the turn is done", () => {
+    const events = [
+      ev({ type: "user_message", text: "fix it", turnId: "t1" }),
+      ev({ type: "reasoning", text: "Looking.", turnId: "t1" }),
+      ev({ type: "text", text: "I'll check the tests.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "command", command: "npm test", cwd: "/r", output: "", itemId: "c1", turnId: "t1", status: "completed" }),
+      ev({ type: "text", text: "Fixed.", turnId: "t1", itemId: "m2" }),
+    ];
+    // Live: nothing folds.
+    expect(fold(events).folds).toEqual([]);
+
+    const { display, presented, folds } = fold([...events, ev({ type: "done", turnId: "t1", status: "completed" })]);
+    expect(types(display)).toEqual(["user_message", "turn_fold", "text", "done"]);
+    expect(display[1]!.key).toBe("turn-fold:t1");
+    // Answer and turn-end rows keep their own envelopes (keys, measured heights).
+    expect(display[2]).toBe(presented.find((row) => row.event.type === "text" && row.event.text === "Fixed."));
+    expect(folds[0]!.hiddenKeys.size).toBe(2);
+  });
+
+  it("shows the whole span in original order under an open fold", () => {
+    const events = [
+      ev({ type: "user_message", text: "go", turnId: "t1" }),
+      ev({ type: "reasoning", text: "Plan.", turnId: "t1" }),
+      ev({ type: "error", message: "flaky", turnId: "t1" }),
+      ev({ type: "text", text: "Interim.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "command", command: "ls", cwd: "/r", output: "", itemId: "c1", turnId: "t1", status: "completed" }),
+      ev({ type: "text", text: "Answer.", turnId: "t1", itemId: "m2" }),
+      ev({ type: "done", turnId: "t1", status: "completed" }),
+    ];
+    const closed = fold(events);
+    expect(types(closed.display)).toEqual(["user_message", "turn_fold", "error", "text", "done"]);
+    const open = fold(events, new Set(["turn-fold:t1"]));
+    expect(types(open.display)).toEqual(["user_message", "turn_fold", "reasoning", "error", "text", "text", "done"]);
+  });
+
+  it("keeps rows that were live when the turn ended, even after they settle", () => {
+    const beforeDone = [
+      ev({ type: "user_message", text: "ship", turnId: "t1" }),
+      ev({ type: "scheduled_work_update", id: "background:job-live", kind: "background_task", status: "running", title: "npm run dev", sourceTaskId: "job-live", turnId: "t1" }),
+      ev({ type: "scheduled_work_update", id: "background:job-done", kind: "background_task", status: "running", title: "npm run build", sourceTaskId: "job-done", turnId: "t1" }),
+      ev({ type: "scheduled_work_update", id: "background:job-done", kind: "background_task", status: "completed", title: "npm run build", sourceTaskId: "job-done", turnId: "t1" }),
+      ev({ type: "ade_card", cardId: "setup-1", variant: "lane_setup", state: "live", title: "Setting up", fallbackText: "Setting up", turnId: "t1" }),
+      ev({ type: "approval_request", itemId: "ask-open", kind: "tool_call", description: "Run it?", turnId: "t1" }),
+      ev({ type: "approval_request", itemId: "ask-answered", kind: "tool_call", description: "Read it?", turnId: "t1" }),
+      ev({ type: "pending_input_resolved", itemId: "ask-answered", resolution: "accepted", turnId: "t1" }),
+      ev({ type: "reasoning", text: "Thinking.", turnId: "t1" }),
+      ev({ type: "text", text: "Started the server.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "done", turnId: "t1", status: "completed" }),
+    ];
+    const afterSettle = [
+      ...beforeDone,
+      ev({ type: "scheduled_work_update", id: "background:job-live", kind: "background_task", status: "completed", title: "npm run dev", sourceTaskId: "job-live", turnId: "t1" }),
+      ev({ type: "ade_card", cardId: "setup-1", variant: "lane_setup", state: "terminal", title: "Set up", fallbackText: "Set up", turnId: "t1" }),
+      ev({ type: "pending_input_resolved", itemId: "ask-open", resolution: "accepted", turnId: "t1" }),
+    ];
+
+    for (const events of [beforeDone, afterSettle]) {
+      const { display } = fold(events);
+      const visible = display.map((row) => row.key);
+      expect(visible).toContain("background-chip:job-live");
+      expect(visible).not.toContain("background-chip:job-done");
+      expect(display.some((row) => row.event.type === "ade_card" && row.event.cardId === "setup-1")).toBe(true);
+      const approvals = display.filter((row) => row.event.type === "approval_request")
+        .map((row) => (row.event as { itemId: string }).itemId);
+      expect(approvals).toEqual(["ask-open"]);
+      expect(display.some((row) => row.event.type === "reasoning")).toBe(false);
+    }
+  });
+
+  it("keeps subagent results and proof visible, and never folds rows after the answer", () => {
+    const { display } = fold([
+      ev({ type: "user_message", text: "fan out", turnId: "t1" }),
+      ev({ type: "subagent_started", taskId: "chat:child-1", agentId: "child-1", agentType: "claude", description: "Scout", spawnKind: "peer", taskType: "subagent" }),
+      ev({ type: "subagent_result", taskId: "chat:child-1", agentId: "child-1", status: "completed", summary: "Found it." }),
+      ev({ type: "ade_card", cardId: "proof-1", variant: "proof_artifact", state: "terminal", title: "Screenshot", fallbackText: "Screenshot", turnId: "t1" }),
+      ev({ type: "reasoning", text: "Combining.", turnId: "t1" }),
+      ev({ type: "text", text: "Here is the result.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "reasoning", text: "Late thought.", turnId: "t1" }),
+      ev({ type: "done", turnId: "t1", status: "completed" }),
+    ]);
+    expect(types(display)).toEqual([
+      "user_message",
+      "turn_fold",
+      "subagent_result_card",
+      "ade_card",
+      "text",
+      "reasoning",
+      "done",
+    ]);
+    const foldRow = display[1]!.event;
+    if (foldRow.type !== "turn_fold") throw new Error("expected fold row");
+    expect(foldRow.subagentCount).toBe(1);
+  });
+
+  it("reproduces the live session's folds on a full reload", () => {
+    const events = [
+      ev({ type: "user_message", text: "go", turnId: "t1" }),
+      ev({ type: "scheduled_work_update", id: "background:j", kind: "background_task", status: "running", title: "npm run dev", sourceTaskId: "j", turnId: "t1" }),
+      ev({ type: "reasoning", text: "Hmm.", turnId: "t1" }),
+      ev({ type: "text", text: "Running.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "done", turnId: "t1", status: "completed" }),
+      ev({ type: "scheduled_work_update", id: "background:j", kind: "background_task", status: "completed", title: "npm run dev", sourceTaskId: "j", turnId: "t1" }),
+      ev({ type: "user_message", text: "again", turnId: "t2" }),
+      ev({ type: "reasoning", text: "Again.", turnId: "t2" }),
+      ev({ type: "text", text: "Done again.", turnId: "t2", itemId: "m2" }),
+      ev({ type: "done", turnId: "t2", status: "interrupted" }),
+    ];
+    // Live: events arrive one at a time through the incremental collapse.
+    let live = collapseChatTranscriptEventsWithContext(events.slice(0, 1));
+    for (let count = 2; count <= events.length; count += 1) {
+      live = collapseChatTranscriptEventsIncrementalWithContext(
+        events.slice(0, count),
+        events.slice(0, count - 1),
+        live.rows,
+        live.context,
+      );
+    }
+    const reload = collapseChatTranscriptEventsWithContext(events);
+    const summarize = (result: typeof live) => deriveChatTranscriptTurnFolds(
+      present(result.rows),
+      readTurnEndSnapshots(result.context),
+    ).map((entry) => ({ ...entry, hiddenKeys: [...entry.hiddenKeys] }));
+    expect(summarize(live)).toEqual(summarize(reload));
+    expect(summarize(reload).map((entry) => [entry.turnId, entry.status, entry.keptKeys])).toEqual([
+      ["t1", "completed", ["background-chip:j"]],
+      ["t2", "interrupted", []],
+    ]);
+  });
+
+  it("sameTurnFolds keeps the fold list identity across a streaming delta elsewhere", () => {
+    const events = [
+      ev({ type: "user_message", text: "go", turnId: "t1" }),
+      ev({ type: "reasoning", text: "Hmm.", turnId: "t1" }),
+      ev({ type: "text", text: "Answer.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "done", turnId: "t1", status: "completed" }),
+      ev({ type: "user_message", text: "next", turnId: "t2" }),
+      ev({ type: "text", text: "Stream", turnId: "t2", itemId: "m2" }),
+    ];
+    const before = fold(events).folds;
+    const after = fold([...events, ev({ type: "text", text: "ing", turnId: "t2", itemId: "m2" })]).folds;
+    expect(after).not.toBe(before);
+    expect(sameTurnFolds(before, after)).toBe(true);
+    const opened = fold([...events, ev({ type: "reasoning", text: "Late.", turnId: "t2" }), ev({ type: "text", text: "Two.", turnId: "t2", itemId: "m3" }), ev({ type: "done", turnId: "t2", status: "completed" })]).folds;
+    expect(sameTurnFolds(before, opened)).toBe(false);
+  });
+
+  it("reuses an unchanged fold row envelope", () => {
+    const events = [
+      ev({ type: "user_message", text: "go", turnId: "t1" }),
+      ev({ type: "reasoning", text: "Hmm.", turnId: "t1" }),
+      ev({ type: "text", text: "Answer.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "done", turnId: "t1", status: "completed" }),
+    ];
+    const { presented, folds, display } = fold(events);
+    const previous = new Map(display.filter((row) => row.event.type === "turn_fold").map((row) => [row.key, row]));
+    const again = applyChatTranscriptTurnFolds(presented, folds, new Set(), previous);
+    expect(again[1]).toBe(display[1]);
+  });
+
+  describe("turn details and warnings (Codex config-warning turn)", () => {
+    // The owner's screenshot: the Codex config warning and the MCP-startup
+    // diagnostics arrive before the turn has an id, the turn's own diagnostics
+    // arrive with it, then the answer.
+    const codexTurn = () => [
+      ev({ type: "user_message", text: "how many days till christmas", turnId: "t1" }),
+      ev({ type: "system_notice", noticeKind: "warning", message: "⚠ Codex is ignoring 1 unrecognized configuration setting." }),
+      ev({ type: "turn_diagnostics", optionalIntegrationFailures: [{ integration: "unityMCP", message: "not configured" }] }),
+      ev({ type: "command", command: "date", cwd: "/r", output: "", itemId: "c1", turnId: "t1", status: "completed" }),
+      ev({ type: "turn_diagnostics", turnId: "t1", moderationChecks: 1, optionalIntegrationFailures: [{ integration: "unityMCP" }, { integration: "figma", message: "offline" }] }),
+      ev({ type: "turn_recovery", provider: "codex", turnId: "t1", action: "nudge", state: "recovered", message: "The provider resumed.", automatic: true, at: at(), recoveryCount: 1 }),
+      ev({ type: "turn_diagnostics", turnId: "t1", moderationChecks: 2, optionalIntegrationFailures: [{ integration: "unityMCP" }, { integration: "figma", message: "offline" }] }),
+      ev({ type: "text", text: "93 days.", turnId: "t1", itemId: "m1" }),
+      ev({ type: "done", turnId: "t1", status: "completed" }),
+    ];
+
+    it("merges every diagnostics snapshot and the recovery receipt of a turn into ONE turn_details row", () => {
+      const events = codexTurn();
+      const { presented } = fold(events);
+      const details = presented.filter((row) => row.event.type === "turn_details");
+      expect(details).toHaveLength(1);
+      const event = details[0]!.event;
+      if (event.type !== "turn_details") throw new Error("expected turn details");
+      // The id-less startup snapshot opened the row; the turn's own snapshots joined it.
+      expect(event.turnId).toBe("t1");
+      expect(event.recovery).toMatchObject({ type: "turn_recovery", state: "recovered" });
+      expect(summarizeTurnDetails(event)).toEqual({
+        moderationChecks: 2,
+        integrations: [
+          { integration: "unityMCP", message: "not configured" },
+          { integration: "figma", message: "offline" },
+        ],
+      });
+
+      // Live (one event at a time) and reload agree on the row, its key, and its place.
+      let live = collapseChatTranscriptEventsWithContext(events.slice(0, 1));
+      for (let count = 2; count <= events.length; count += 1) {
+        live = collapseChatTranscriptEventsIncrementalWithContext(events.slice(0, count), events.slice(0, count - 1), live.rows, live.context);
+      }
+      const reload = collapseChatTranscriptEventsWithContext(events);
+      expect(live.rows.map((row) => [row.key, row.event.type])).toEqual(reload.rows.map((row) => [row.key, row.event.type]));
+      expect(live.rows.find((row) => row.event.type === "turn_details")).toEqual(
+        reload.rows.find((row) => row.event.type === "turn_details"),
+      );
+      // Contextless collapse lands on the same single row.
+      expect(collapseChatTranscriptEvents(events).filter((row) => row.event.type === "turn_details")).toHaveLength(1);
+    });
+
+    it("starts a new turn_details row for the next turn, even for an id-less snapshot", () => {
+      const events = [
+        ...codexTurn(),
+        ev({ type: "user_message", text: "and easter?", turnId: "t2" }),
+        ev({ type: "turn_diagnostics", optionalIntegrationFailures: [{ integration: "linear" }] }),
+        ev({ type: "text", text: "Soon.", turnId: "t2", itemId: "m2" }),
+        ev({ type: "done", turnId: "t2", status: "completed" }),
+      ];
+      const details = collapseChatTranscriptEventsWithContext(events).rows.filter((row) => row.event.type === "turn_details");
+      expect(details).toHaveLength(2);
+      expect(new Set(details.map((row) => row.key)).size).toBe(2);
+      const second = details[1]!.event;
+      if (second.type !== "turn_details") throw new Error("expected turn details");
+      expect(summarizeTurnDetails(second).integrations.map((entry) => entry.integration)).toEqual(["linear"]);
+    });
+
+    it("folds the warning and the turn details; open, they read in their original order", () => {
+      const events = codexTurn();
+      expect(types(fold(events).display)).toEqual(["user_message", "turn_fold", "text", "done"]);
+      const open = fold(events, new Set(["turn-fold:t1"]));
+      expect(types(open.display)).toEqual(["user_message", "turn_fold", "system_notice", "turn_details", "text", "done"]);
+    });
+
+    it("keeps a warning that arrives after the answer visible", () => {
+      const events = codexTurn();
+      events.splice(events.length - 1, 0, ev({ type: "system_notice", noticeKind: "warning", message: "Late warning.", turnId: "t1" }));
+      expect(types(fold(events).display)).toEqual(["user_message", "turn_fold", "text", "system_notice", "done"]);
+    });
+
+    it("keeps an actionable row visible while folded, and in chronological place when open", () => {
+      const events = [
+        ev({ type: "user_message", text: "go", turnId: "t1" }),
+        ev({ type: "reasoning", text: "Plan.", turnId: "t1" }),
+        ev({ type: "system_notice", noticeKind: "warning", message: "⚠ heads up", turnId: "t1" }),
+        ev({ type: "error", message: "flaky", turnId: "t1" }),
+        ev({ type: "turn_diagnostics", turnId: "t1", moderationChecks: 1 }),
+        ev({ type: "text", text: "Answer.", turnId: "t1", itemId: "m1" }),
+        ev({ type: "done", turnId: "t1", status: "completed" }),
+      ];
+      expect(types(fold(events).display)).toEqual(["user_message", "turn_fold", "error", "text", "done"]);
+      // Open: the kept error sits between the rows around it, not right under the fold row.
+      expect(types(fold(events, new Set(["turn-fold:t1"])).display)).toEqual([
+        "user_message", "turn_fold", "reasoning", "system_notice", "error", "turn_details", "text", "done",
+      ]);
+    });
+  });
+
+  describe("cancellation terminus keys off the parent turn", () => {
+    const P = "parent-turn";
+    const opening = () => [
+      ev({ type: "user_message", text: "fan out", turnId: P }),
+      ev({ type: "subagent_started", taskId: "task-1", agentId: "sub-1", agentType: "Explore", description: "Scout", turnId: P }),
+      ev({ type: "scheduled_work_update", id: "background:job", kind: "background_task", status: "running", title: "npm run dev", sourceTaskId: "job", turnId: P }),
+      ev({ type: "reasoning", text: "Planning.", turnId: P }),
+      ev({ type: "text", text: "Starting the scout.", turnId: P, itemId: "m1" }),
+      ev({ type: "text", text: "Partial answer.", turnId: P, itemId: "m2" }),
+    ];
+    const heavy = { inputTokens: 9_000, outputTokens: 4_000 };
+    const light = { inputTokens: 100, outputTokens: 50 };
+    const doneRows = (display: ChatTranscriptGroupedEnvelope[]) => display.filter((row) => row.event.type === "done");
+
+    it("interrupt while subagents run: a heavier subagent done arriving first does not take the row", () => {
+      const { display, folds } = fold([
+        ...opening(),
+        ev({ type: "done", turnId: "sub-turn-1", status: "interrupted", usage: heavy }),
+        ev({ type: "status", turnStatus: "interrupted", turnId: P }),
+        ev({ type: "done", turnId: P, status: "interrupted", usage: light }),
+      ]);
+      const [terminus] = doneRows(display);
+      expect(terminus!.event).toMatchObject({ type: "done", turnId: P, status: "interrupted", subagentStoppedCount: 1 });
+      expect(folds.map((entry) => [entry.turnId, entry.status, entry.turnEndKey])).toEqual([[P, "interrupted", terminus!.key]]);
+      // The subagent's done did not cut the turn-end snapshot short: the job
+      // that was still running when the parent stopped stays visible.
+      expect(folds[0]!.keptKeys).toContain("background-chip:job");
+      expect(types(display)).toEqual(["user_message", "turn_fold", "subagent_spawn_anchor", "background_job_line", "text", "done"]);
+    });
+
+    it("interrupt after subagents finished: the subagent's own done folds as history", () => {
+      const events = [
+        ev({ type: "user_message", text: "fan out", turnId: P }),
+        ev({ type: "subagent_started", taskId: "task-1", agentId: "sub-1", agentType: "Explore", description: "Scout", turnId: P }),
+        ev({ type: "subagent_result", taskId: "task-1", agentId: "sub-1", status: "completed", summary: "Found it.", turnId: P }),
+        ev({ type: "done", turnId: "sub-turn-1", status: "completed", usage: heavy }),
+        ev({ type: "reasoning", text: "Combining.", turnId: P }),
+        ev({ type: "text", text: "Here is what it found.", turnId: P, itemId: "m1" }),
+        ev({ type: "status", turnStatus: "interrupted", turnId: P }),
+        ev({ type: "done", turnId: P, status: "interrupted" }),
+      ];
+      const { display, folds, presented } = fold(events);
+      const subDone = presented.find((row) => row.event.type === "done" && row.event.turnId === "sub-turn-1");
+      expect(folds.map((entry) => entry.turnId)).toEqual([P]);
+      expect(folds[0]!.hiddenKeys.has(subDone!.key)).toBe(true);
+      expect(doneRows(display).map((row) => (row.event as { turnId: string }).turnId)).toEqual([P]);
+      expect(display.some((row) => row.event.type === "subagent_result_card")).toBe(true);
+    });
+
+    it("usage-limit stop: the merged row keeps the parent's id and its 429 terminal reason", () => {
+      const { display, folds } = fold([
+        ...opening(),
+        ev({ type: "status", turnStatus: "failed", turnId: P }),
+        ev({ type: "done", turnId: "sub-turn-1", status: "failed", usage: heavy }),
+        ev({ type: "done", turnId: P, status: "failed", usage: light, terminalReason: "api_error", apiErrorStatus: 429 }),
+      ]);
+      const [terminus] = doneRows(display);
+      expect(terminus!.event).toMatchObject({ turnId: P, status: "failed", terminalReason: "api_error", apiErrorStatus: 429 });
+      expect(terminus!.event).toMatchObject({ usage: { inputTokens: 9_100, outputTokens: 4_050 } });
+      expect(folds.map((entry) => [entry.turnId, entry.status])).toEqual([[P, "failed"]]);
+    });
+
+    it("failed turn: folds with a failed status and keeps the error visible", () => {
+      const { display, folds } = fold([
+        ...opening(),
+        ev({ type: "error", message: "Provider exploded", turnId: P }),
+        ev({ type: "status", turnStatus: "failed", turnId: P }),
+        ev({ type: "done", turnId: P, status: "failed" }),
+      ]);
+      expect(folds.map((entry) => [entry.turnId, entry.status])).toEqual([[P, "failed"]]);
+      expect(display.some((row) => row.event.type === "error")).toBe(true);
+    });
+
+    it("multiple consecutive interrupted status rows merge into one parent turn end", () => {
+      const { display, folds } = fold([
+        ...opening(),
+        ev({ type: "status", turnStatus: "interrupted", turnId: P }),
+        ev({ type: "status", turnStatus: "interrupted", turnId: P }),
+        ev({ type: "done", turnId: "sub-turn-1", status: "interrupted", usage: heavy }),
+        ev({ type: "status", turnStatus: "interrupted", turnId: "sub-turn-2" }),
+        ev({ type: "done", turnId: "sub-turn-2", status: "interrupted", usage: heavy }),
+        ev({ type: "done", turnId: P, status: "interrupted" }),
+      ]);
+      const terminus = doneRows(display);
+      expect(terminus).toHaveLength(1);
+      expect(terminus[0]!.event).toMatchObject({ turnId: P, subagentStoppedCount: 2 });
+      expect(display.some((row) => row.event.type === "status")).toBe(false);
+      expect(folds.map((entry) => entry.turnId)).toEqual([P]);
+    });
+
+    it("subagent done arriving after the parent's done", () => {
+      const merged = fold([
+        ...opening(),
+        ev({ type: "status", turnStatus: "interrupted", turnId: P }),
+        ev({ type: "done", turnId: P, status: "interrupted", usage: light }),
+        ev({ type: "done", turnId: "sub-turn-1", status: "interrupted", usage: heavy }),
+      ]);
+      expect(doneRows(merged.display).map((row) => (row.event as { turnId: string }).turnId)).toEqual([P]);
+      expect(merged.folds.map((entry) => entry.turnId)).toEqual([P]);
+      expect(merged.folds[0]!.keptKeys).toContain("background-chip:job");
+
+      // A completed subagent done after the parent's is not merged; it sits
+      // after the answer, where nothing folds.
+      const separate = fold([
+        ...opening(),
+        ev({ type: "done", turnId: P, status: "completed" }),
+        ev({ type: "done", turnId: "sub-turn-1", status: "completed", usage: heavy }),
+      ]);
+      expect(separate.folds.map((entry) => entry.turnId)).toEqual([P]);
+      expect(doneRows(separate.display).map((row) => (row.event as { turnId: string }).turnId)).toEqual([P, "sub-turn-1"]);
+    });
+
+    it("parent done missing its turn id: the merged row and the fold take the turn's id", () => {
+      const { display, folds } = fold([
+        ...opening(),
+        ev({ type: "done", turnId: "sub-turn-1", status: "interrupted", usage: heavy }),
+        ev({ type: "status", turnStatus: "interrupted" }),
+        ev({ type: "done", turnId: "", status: "interrupted", usage: light }),
+      ]);
+      const [terminus] = doneRows(display);
+      expect(terminus!.event).toMatchObject({ turnId: P, subagentStoppedCount: 1 });
+      expect(folds.map((entry) => [entry.foldId, entry.turnEndKey])).toEqual([[`turn-fold:${P}`, terminus!.key]]);
+      // The turn-end snapshot was filed under the inferred id too.
+      expect(folds[0]!.keptKeys).toContain("background-chip:job");
+    });
+
+    it("an id-less done that is not merged still folds its turn", () => {
+      const { folds, context } = fold([
+        ...opening(),
+        ev({ type: "done", turnId: "", status: "completed" }),
+      ]);
+      expect(folds.map((entry) => entry.turnId)).toEqual([P]);
+      expect(readTurnEndSnapshots(context).has(P)).toBe(true);
+      expect(folds[0]!.keptKeys).toContain("background-chip:job");
+    });
+
+    it("live collapse and reload agree whatever order the done events arrive in", () => {
+      const events = [
+        ...opening(),
+        ev({ type: "done", turnId: "sub-turn-1", status: "interrupted", usage: heavy }),
+        ev({ type: "status", turnStatus: "interrupted", turnId: P }),
+        ev({ type: "done", turnId: P, status: "interrupted" }),
+      ];
+      let live = collapseChatTranscriptEventsWithContext(events.slice(0, 1));
+      for (let count = 2; count <= events.length; count += 1) {
+        live = collapseChatTranscriptEventsIncrementalWithContext(
+          events.slice(0, count),
+          events.slice(0, count - 1),
+          live.rows,
+          live.context,
+        );
+      }
+      const reload = collapseChatTranscriptEventsWithContext(events);
+      const summarize = (result: typeof live) => deriveChatTranscriptTurnFolds(
+        present(result.rows),
+        readTurnEndSnapshots(result.context),
+      ).map((entry) => ({ ...entry, hiddenKeys: [...entry.hiddenKeys] }));
+      expect(summarize(live)).toEqual(summarize(reload));
+      expect(summarize(reload)).toHaveLength(1);
+    });
+  });
+
+  describe("text phase", () => {
+    it("keeps Codex commentary and final answer apart when they share a message id", () => {
+      const { rows } = collapseChatTranscriptEventsWithContext([
+        ev({ type: "user_message", text: "go", turnId: "t1" }),
+        ev({ type: "text", text: "Looking around. ", turnId: "t1", messageId: "msg-1", phase: "commentary" }),
+        ev({ type: "reasoning", text: "Thinking.", turnId: "t1" }),
+        ev({ type: "text", text: "All ", turnId: "t1", messageId: "msg-1", phase: "final_answer" }),
+        ev({ type: "text", text: "set.", turnId: "t1", messageId: "msg-1", phase: "final_answer" }),
+      ]);
+      const texts = rows.filter((row) => row.event.type === "text")
+        .map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]);
+      expect(texts).toEqual([["Looking around. ", "commentary"], ["All set.", "final_answer"]]);
+    });
+
+    it("picks the final answer even when commentary comes after it", () => {
+      const { display } = fold([
+        ev({ type: "user_message", text: "go", turnId: "t1" }),
+        ev({ type: "reasoning", text: "Thinking.", turnId: "t1" }),
+        ev({ type: "text", text: "The answer.", turnId: "t1", messageId: "a", phase: "final_answer" }),
+        ev({ type: "command", command: "ls", cwd: "/r", output: "", itemId: "c1", turnId: "t1", status: "completed" }),
+        ev({ type: "text", text: "One more note.", turnId: "t1", messageId: "b", phase: "commentary" }),
+        ev({ type: "done", turnId: "t1", status: "completed" }),
+      ]);
+      expect(display.map((row) => row.event.type === "text" ? (row.event as { text: string }).text : row.event.type))
+        .toEqual(["user_message", "turn_fold", "The answer.", "One more note.", "done"]);
+    });
+
+    it("merges unlabelled text exactly as before and adopts a later fragment's label", () => {
+      const { rows } = collapseChatTranscriptEventsWithContext([
+        ev({ type: "text", text: "Hello ", turnId: "t1", messageId: "m" }),
+        ev({ type: "text", text: "world.", turnId: "t1", messageId: "m" }),
+        ev({ type: "text", text: "Late ", turnId: "t1", messageId: "n" }),
+        ev({ type: "text", text: "label.", turnId: "t1", messageId: "n", phase: "final_answer" }),
+      ]);
+      expect(rows.map((row) => [(row.event as { text: string }).text, (row.event as { phase?: string }).phase]))
+        .toEqual([["Hello world.", undefined], ["Late label.", "final_answer"]]);
+    });
+  });
+});
+
+describe("row keys are position-independent", () => {
+  const SESSION = "keys-session";
+  let second = 0;
+  const stamp = () => new Date(Date.UTC(2026, 8, 23, 9, 0, 0, 0) + (second++) * 1000).toISOString();
+  const ev = (event: AgentChatEventEnvelope["event"], timestamp = stamp()): AgentChatEventEnvelope => ({
+    sessionId: SESSION,
+    timestamp,
+    event,
+  });
+
+  /** One finished turn with every identity shape: message ids, item ids, logical ids, and none. */
+  function turn(n: number): AgentChatEventEnvelope[] {
+    const turnId = `turn-${n}`;
+    const sameMs = stamp();
+    return [
+      ev({ type: "user_message", text: `question ${n}`, turnId }),
+      ev({ type: "reasoning", text: `thinking ${n}`, turnId }),
+      ev({ type: "text", text: `interim ${n}`, turnId, messageId: `m-${n}-a`, phase: "commentary" }),
+      ev({ type: "tool_call", tool: "Read", args: { path: `f${n}` }, itemId: `tool-${n}`, logicalItemId: `logical-${n}`, turnId }),
+      ev({ type: "tool_result", tool: "Read", result: "ok", itemId: `tool-${n}`, logicalItemId: `logical-${n}`, turnId, status: "completed" }),
+      ev({ type: "command", command: `npm test ${n}`, cwd: "/r", output: "", itemId: `cmd-${n}`, turnId, status: "completed" }),
+      // Two id-less events in the same millisecond: the ordinal separates them.
+      ev({ type: "system_notice", noticeKind: "info", message: `notice ${n} a`, turnId }, sameMs),
+      ev({ type: "system_notice", noticeKind: "info", message: `notice ${n} b`, turnId }, sameMs),
+      ev({ type: "text", text: `answer ${n} `, turnId, messageId: `m-${n}-b`, phase: "final_answer" }),
+      ev({ type: "text", text: "continued", turnId, messageId: `m-${n}-b`, phase: "final_answer" }),
+      ev({ type: "text", text: `no-id note ${n}` }),
+      ev({ type: "done", turnId, status: "completed" }),
+    ];
+  }
+
+  function present(rows: ReturnType<typeof collapseChatTranscriptEventsWithContext>["rows"]) {
+    return mergeAdjacentActivityBundleRows(
+      groupChatTranscriptRows(rows).filter((row) => row.event.type !== "work_log_group"),
+    );
+  }
+
+  /** Every key a surface can hold: collapsed, grouped, and folded (closed and open). */
+  function keysOf(events: AgentChatEventEnvelope[]) {
+    const { rows, context } = collapseChatTranscriptEventsWithContext(events);
+    const presented = present(rows);
+    const folds = deriveChatTranscriptTurnFolds(presented, readTurnEndSnapshots(context));
+    const closed = applyChatTranscriptTurnFolds(presented, folds, new Set());
+    const open = applyChatTranscriptTurnFolds(presented, folds, new Set(folds.map((fold) => fold.foldId)));
+    return {
+      rows: rows.map((row) => row.key),
+      grouped: groupChatTranscriptRows(rows).map((row) => row.key),
+      closed: closed.map((row) => row.key),
+      open: open.map((row) => row.key),
+      folds,
+      snapshots: readTurnEndSnapshots(context),
+    };
+  }
+
+  function expectUnique(keys: readonly string[]) {
+    expect(new Set(keys).size).toBe(keys.length);
+  }
+
+  function expectContainsAll(superset: readonly string[], subset: readonly string[]) {
+    const all = new Set(superset);
+    expect(subset.filter((key) => !all.has(key))).toEqual([]);
+  }
+
+  const older = [...turn(1), ...turn(2), ...turn(3)];
+  const tail = [...turn(4), ...turn(5)];
+
+  it("keeps every tail key when an older page is prepended", () => {
+    const before = keysOf(tail);
+    const after = keysOf([...older, ...tail]);
+    for (const surface of ["rows", "grouped", "closed", "open"] as const) {
+      expectUnique(before[surface]);
+      expectUnique(after[surface]);
+      expectContainsAll(after[surface], before[surface]);
+    }
+    // The fold's own bookkeeping carries row keys too; it is unchanged by the prepend.
+    for (const fold of before.folds) {
+      const same = after.folds.find((candidate) => candidate.foldId === fold.foldId);
+      expect(same?.turnEndKey).toBe(fold.turnEndKey);
+      expect(same?.answerKey).toBe(fold.answerKey);
+      expect([...(same?.hiddenKeys ?? [])]).toEqual([...fold.hiddenKeys]);
+      expect(same?.keptKeys).toEqual(fold.keptKeys);
+    }
+    for (const [turnId, snapshot] of before.snapshots) {
+      expect([...(after.snapshots.get(turnId)?.liveRowKeys ?? [])]).toEqual([...snapshot.liveRowKeys]);
+    }
+  });
+
+  it("keeps every surviving key when the front is trimmed to the last N events", () => {
+    const all = [...older, ...tail];
+    const full = keysOf(all);
+    // Trim at a turn boundary, as the background-chat window keeps whole events.
+    const trimmed = keysOf(all.slice(turn(0).length * 2));
+    for (const surface of ["rows", "grouped", "closed", "open"] as const) {
+      expectUnique(trimmed[surface]);
+      expectContainsAll(full[surface], trimmed[surface]);
+    }
+  });
+
+  it("adds only the inserted row's key for a late mid-list insert", () => {
+    const all = [...older, ...tail];
+    const before = keysOf(all).rows;
+    const late = ev({ type: "error", message: "late failure", turnId: "turn-2" }, "2026-09-23T09:00:20.500Z");
+    const insertAt = turn(0).length + 5;
+    const after = keysOf([...all.slice(0, insertAt), late, ...all.slice(insertAt)]).rows;
+    expectUnique(after);
+    expect(after.filter((key) => !before.includes(key))).toEqual([`${SESSION}:error@2026-09-23T09:00:20.500Z`]);
+    expectContainsAll(after, before);
+  });
+
+  it("builds the same keys incrementally as a full recollapse", () => {
+    const all = [...older, ...tail];
+    let previousEvents: AgentChatEventEnvelope[] = [];
+    let previous = collapseChatTranscriptEventsWithContext([]);
+    for (let end = 1; end <= all.length; end += 1) {
+      const events = all.slice(0, end);
+      previous = collapseChatTranscriptEventsIncrementalWithContext(
+        events,
+        previousEvents,
+        previous.rows,
+        previousEvents.length ? previous.context : null,
+      );
+      previousEvents = events;
+    }
+    const full = collapseChatTranscriptEventsWithContext(all);
+    expect(previous.rows.map((row) => row.key)).toEqual(full.rows.map((row) => row.key));
+    expectUnique(full.rows.map((row) => row.key));
+  });
+
+  it("names rows by identity rather than position", () => {
+    const keys = buildTranscriptEventRowKeys(turn(9));
+    expect(keys[0]).toMatch(/^keys-session:user_message@/);
+    expect(keys[2]).toBe("keys-session:text:m:m-9-a:commentary");
+    expect(keys[3]).toBe("keys-session:tool_call:i:turn-9:logical-9");
+    expect(keys[5]).toBe("keys-session:command:i:turn-9:cmd-9");
+    expect(keys[7]).toBe(`${keys[6]}#1`);
+    expect(keys[9]).toBe("keys-session:text:m:m-9-b:final_answer#1");
+    // The collapse assigns exactly these keys to the rows the events open.
+    const events = turn(10);
+    const rowKeys = collapseChatTranscriptEvents(events).map((row) => row.key);
+    expectContainsAll(buildTranscriptEventRowKeys(events), rowKeys);
   });
 });

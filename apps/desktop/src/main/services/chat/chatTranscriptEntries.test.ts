@@ -20,6 +20,18 @@ function textsOf(envelopes: AgentChatEventEnvelope[]): string[] {
 }
 
 describe("transcriptEntriesFromEnvelopes", () => {
+  it("keeps one provider message id split by commentary and final-answer phase", () => {
+    const entries = transcriptEntriesFromEnvelopes(SESSION, [
+      envelope({ type: "text", text: "Looking into it.", messageId: "message-1", turnId: "turn-1", phase: "commentary" }),
+      envelope({ type: "text", text: "The answer.", messageId: "message-1", turnId: "turn-1", phase: "final_answer" }),
+    ]);
+
+    expect(entries.map(({ text, phase }) => [text, phase])).toEqual([
+      ["Looking into it.", "commentary"],
+      ["The answer.", "final_answer"],
+    ]);
+  });
+
   it("concatenates same-message deltas verbatim across an interleaved activity hint", () => {
     // Regression: an `activity` envelope between two deltas of one Claude
     // message used to splice "\n\n" into the middle of a word, so the canonical

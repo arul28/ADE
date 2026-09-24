@@ -8,6 +8,7 @@ import {
   createAgentChatService,
   createScheduledWorkDb,
   createService,
+  mockState,
   deriveScheduledWorkSnapshots,
   installClaudeResponseFixture,
   installClaudeWakeupFixture,
@@ -245,7 +246,7 @@ describe("createAgentChatService", () => {
         resumed: true,
         reusedExistingRuntime: false,
       }));
-      const { service, sessionService } = createService({
+      const { service, sessionService, logger } = createService({
         db: scheduledWork.db,
         ptyService: {
           create: vi.fn(),
@@ -263,6 +264,14 @@ describe("createAgentChatService", () => {
         toolType: "codex",
       });
       sessionService.end({ sessionId: "cli-scheduled", status: "completed" });
+      const row = mockState.sessions.get("cli-scheduled");
+      row.resumeMetadata = {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: null,
+        orchestrationParentSessionId: "missing-parent",
+        spawnKind: "subagent",
+      };
 
       const created = await service.createScheduledWork({
         sessionId: "cli-scheduled",
@@ -276,6 +285,13 @@ describe("createAgentChatService", () => {
         sessionId: "cli-scheduled",
         text: "Check CI and report the result.",
       });
+      expect(logger.info).toHaveBeenCalledWith(
+        "agent_chat.cli_child_spawn_parent_gone",
+        expect.objectContaining({
+          childSessionId: "cli-scheduled",
+          parentSessionId: "missing-parent",
+        }),
+      );
       expect(await service.listScheduledWork({
         sessionId: "cli-scheduled",
         includeTerminal: true,

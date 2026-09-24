@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
+import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
+import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
   getModelById,
   modelSupportsFastMode,
@@ -616,12 +618,17 @@ function isChatInfoAutoOpenEvent(eventType: string): boolean {
 
 export function shouldAutoOpenChatInfoForEvent(args: {
   eventType: string;
+  /** The event itself: a `plan` opens the pane only when it writes the task list. */
+  event?: AgentChatEvent | null;
   isActiveSessionEvent: boolean;
   activePane: string;
   userDismissedRightPane: boolean;
 }): boolean {
+  // A task-list `plan` opens the pane like a todo does. It is not a flush edge:
+  // plan-mode proposal deltas stream at token rate and must keep coalescing.
+  const opensForPlan = args.eventType === "plan" && args.event != null && isChatTaskListEvent(args.event);
   return (
-    isChatInfoAutoOpenEvent(args.eventType)
+    (isChatInfoAutoOpenEvent(args.eventType) || opensForPlan)
     && args.isActiveSessionEvent
     && args.activePane !== "drawer"
     && !args.userDismissedRightPane
@@ -9133,6 +9140,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (shouldAutoOpenChatInfoForEvent({
         eventType,
+        event: envelope.event,
         isActiveSessionEvent,
         activePane: activePaneRef.current,
         userDismissedRightPane: userDismissedRightPaneRef.current,

@@ -2373,6 +2373,7 @@ enum AgentChatTodoStatus: String, Codable, Equatable {
   case pending
   case inProgress = "in_progress"
   case completed
+  case failed
 }
 
 enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
@@ -2440,6 +2441,8 @@ extension AgentChatInputAnswerValue: Codable {
 struct AgentChatPlanStep: Codable, Equatable {
   var text: String
   var status: String
+  var priority: String?
+  var cancelled: Bool?
 }
 
 struct AgentChatStructuredQuestionOption: Codable, Equatable {
@@ -2455,6 +2458,8 @@ struct AgentChatTodoItem: Codable, Equatable {
   var id: String
   var description: String
   var status: AgentChatTodoStatus
+  var activeForm: String?
+  var cancelled: Bool?
 }
 
 struct AgentChatSubagentUsage: Codable, Equatable {
@@ -2572,6 +2577,21 @@ struct AgentChatMcpToolSource: Codable, Equatable {
   }
 }
 
+/// Provider source citation carried on tool results and data-only `sources`
+/// events. Old hosts omit the optional fields; newer mobile wires intentionally
+/// leave out excerpts and queries while keeping destinations and citations.
+struct AgentChatSourceRef: Decodable, Equatable, Hashable {
+  var kind: String
+  var url: String?
+  var title: String?
+  var snippet: String?
+  var path: String?
+  var lineStart: Int?
+  var lineEnd: Int?
+  var query: String?
+  var cited: Bool?
+}
+
 struct CodexSafetyBufferingState: Codable, Equatable {
   var threadId: String?
   var turnId: String?
@@ -2662,11 +2682,16 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// Raw subagent fields retained for desktop-parity classification without
   /// widening every AgentChatEvent lifecycle associated value.
   var subagentTaskType: String?
+  var subagentProvider: String?
   var subagentCommand: String?
   var subagentSpawnKind: AgentChatSpawnKind?
   var subagentParentAgentId: String?
   var subagentSpawnDepth: Int?
   var subagentResourceLinks: [AgentChatResourceLink]?
+  /// True when this start reopens a tracked child that had already settled.
+  /// Preserved raw so the Work timeline can reopen the existing card without
+  /// widening the shared lifecycle event enum.
+  var subagentResumed: Bool?
   /// HTTP status the host attached to a terminal SDK API error on a `done`
   /// frame (429 = provider usage limit).
   ///
@@ -2719,11 +2744,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     sequence: Int? = nil,
     provenance: AgentChatEventProvenance? = nil,
     subagentTaskType: String? = nil,
+    subagentProvider: String? = nil,
     subagentCommand: String? = nil,
     subagentSpawnKind: AgentChatSpawnKind? = nil,
     subagentParentAgentId: String? = nil,
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink]? = nil,
+    subagentResumed: Bool? = nil,
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
@@ -2736,11 +2763,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.sequence = sequence
     self.provenance = provenance
     self.subagentTaskType = subagentTaskType
+    self.subagentProvider = subagentProvider
     self.subagentCommand = subagentCommand
     self.subagentSpawnKind = subagentSpawnKind
     self.subagentParentAgentId = subagentParentAgentId
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
+    self.subagentResumed = subagentResumed
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
@@ -2767,6 +2796,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var stopReason: String?
     var resultTruncatedForMobile: Bool?
     var resultOriginalBytes: Int?
+    var resumed: Bool?
 
     private enum CodingKeys: String, CodingKey {
       case type
@@ -2776,6 +2806,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case stopReason
       case resultTruncatedForMobile
       case resultOriginalBytes
+      case resumed
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -2794,11 +2825,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       stopReason = (try? container.decodeIfPresent(String.self, forKey: .stopReason)) ?? nil
       resultTruncatedForMobile = (try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)) ?? nil
       resultOriginalBytes = (try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)) ?? nil
+      resumed = (try? container.decodeIfPresent(Bool.self, forKey: .resumed)) ?? nil
     }
   }
 
   private struct SubagentMetadata: Decodable {
     var taskType: String?
+    var provider: String?
     var command: String?
     var spawnKind: AgentChatSpawnKind?
     var parentAgentId: String?
@@ -2808,6 +2841,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey {
       case taskType
       case taskTypeSnake = "task_type"
+      case provider
       case command
       case spawnKind
       case parentAgentId
@@ -2821,6 +2855,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       let container = try decoder.container(keyedBy: CodingKeys.self)
       taskType = try container.decodeIfPresent(String.self, forKey: .taskType)
         ?? container.decodeIfPresent(String.self, forKey: .taskTypeSnake)
+      provider = try container.decodeIfPresent(String.self, forKey: .provider)
       command = try container.decodeIfPresent(String.self, forKey: .command)
       spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
       parentAgentId = try container.decodeIfPresent(String.self, forKey: .parentAgentId)
@@ -2840,12 +2875,14 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     provenance = try container.decodeIfPresent(AgentChatEventProvenance.self, forKey: .provenance)
     let metadata = try? container.decode(SubagentMetadata.self, forKey: .event)
     subagentTaskType = metadata?.taskType
+    subagentProvider = metadata?.provider
     subagentCommand = metadata?.command
     subagentSpawnKind = metadata?.spawnKind
     subagentParentAgentId = metadata?.parentAgentId
     subagentSpawnDepth = metadata?.spawnDepth
     subagentResourceLinks = metadata?.resourceLinks
     let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
+    subagentResumed = rawEvent?.resumed
     apiErrorStatus = rawEvent?.apiErrorStatus
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
@@ -3048,12 +3085,12 @@ enum AgentChatEvent: Decodable, Equatable {
     replacementMessageId: String?,
     turnId: String?
   )
-  case text(text: String, messageId: String?, turnId: String?, itemId: String?)
+  case text(text: String, messageId: String?, turnId: String?, itemId: String?, phase: String? = nil)
   case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
-  case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?)
+  case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?, sources: [AgentChatSourceRef]?, sourceRefsOmittedForMobile: Int?)
   case fileChange(path: String, diff: String, kind: AgentChatFileChangeKind, itemId: String, logicalItemId: String?, turnId: String?, status: String?)
   case command(command: String, cwd: String, output: String, itemId: String, logicalItemId: String?, turnId: String?, exitCode: Int?, durationMs: Int?, status: String)
-  case plan(steps: [AgentChatPlanStep], turnId: String?, explanation: String?)
+  case plan(steps: [AgentChatPlanStep], turnId: String?, explanation: String?, state: String?, streamingText: String?)
   case reasoning(text: String, turnId: String?, itemId: String?, summaryIndex: Int?)
   case approvalRequest(itemId: String, logicalItemId: String?, kind: AgentChatApprovalRequestKind, description: String, turnId: String?, detail: RemoteJSONValue?)
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
@@ -3072,7 +3109,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
   case stepBoundary(stepNumber: Int, turnId: String?)
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
-  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentStarted(taskId: String, agentId: String?, agentType: String?, provider: String?, parentAgentId: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentResult(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?, stopSource: String?, stopReason: String?)
   case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, firedAt: String?, late: Bool?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
@@ -3151,6 +3188,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case codexThreadDeleted(threadId: String, turnId: String?)
   case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
+  case sources(refs: [AgentChatSourceRef], itemId: String?, turnId: String?, omittedForMobile: Int?)
   case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, results: [CodexWebSearchResult]?, resultsTotal: Int?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
   case codexImageGeneration(itemId: String, turnId: String?, prompt: String?, revisedPrompt: String?, result: String?, savedPath: String?, resultOriginalBytes: Int?, resultOmittedBytes: Int?, status: String)
   case codexImageView(itemId: String, turnId: String?, path: String?, url: String?, title: String?, urlOriginalBytes: Int?, urlOmittedBytes: Int?, status: String)
@@ -3306,12 +3344,16 @@ extension AgentChatEvent {
     case replacementMessageId
     case messageId
     case itemId
+    case phase
+    case streamingText
     case logicalItemId
     case parentItemId
     case tool
     case mcp
     case args
     case result
+    case sources
+    case sourceRefsOmittedForMobile
     case path
     case diff
     case kind
@@ -3473,12 +3515,12 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "text":
-      self = .text(
-        text: try container.decode(String.self, forKey: .text),
-        messageId: try container.decodeIfPresent(String.self, forKey: .messageId),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
-      )
+      let text = try container.decode(String.self, forKey: .text)
+      let messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let itemId = try container.decodeIfPresent(String.self, forKey: .itemId)
+      let phase = try container.decodeIfPresent(String.self, forKey: .phase)
+      self = .text(text: text, messageId: messageId, turnId: turnId, itemId: itemId, phase: phase)
     case "tool_call":
       let rawTool = try container.decode(String.self, forKey: .tool)
       let mcp = try? container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
@@ -3500,7 +3542,16 @@ extension AgentChatEvent {
         logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
         parentItemId: try container.decodeIfPresent(String.self, forKey: .parentItemId),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        status: try container.decodeIfPresent(String.self, forKey: .status)
+        status: try container.decodeIfPresent(String.self, forKey: .status),
+        sources: try container.decodeIfPresent([AgentChatSourceRef].self, forKey: .sources),
+        sourceRefsOmittedForMobile: try container.decodeIfPresent(Int.self, forKey: .sourceRefsOmittedForMobile)
+      )
+    case "sources":
+      self = .sources(
+        refs: try container.decodeIfPresent([AgentChatSourceRef].self, forKey: .sources) ?? [],
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        omittedForMobile: try container.decodeIfPresent(Int.self, forKey: .sourceRefsOmittedForMobile)
       )
     case "file_change":
       self = .fileChange(
@@ -3525,11 +3576,12 @@ extension AgentChatEvent {
         status: try container.decode(String.self, forKey: .status)
       )
     case "plan":
-      self = .plan(
-        steps: try container.decode([AgentChatPlanStep].self, forKey: .steps),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        explanation: try container.decodeIfPresent(String.self, forKey: .explanation)
-      )
+      let steps = try container.decode([AgentChatPlanStep].self, forKey: .steps)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let explanation = try container.decodeIfPresent(String.self, forKey: .explanation)
+      let state = try container.decodeIfPresent(String.self, forKey: .state)
+      let streamingText = try container.decodeIfPresent(String.self, forKey: .streamingText)
+      self = .plan(steps: steps, turnId: turnId, explanation: explanation, state: state, streamingText: streamingText)
     case "reasoning":
       self = .reasoning(
         text: try container.decode(String.self, forKey: .text),
@@ -3678,6 +3730,7 @@ extension AgentChatEvent {
         taskId: try container.decode(String.self, forKey: .taskId),
         agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
         agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        provider: try container.decodeIfPresent(String.self, forKey: .provider),
         parentAgentId: try container.decodeIfPresent(String.self, forKey: .parentAgentId),
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try container.decode(String.self, forKey: .description),
@@ -3693,6 +3746,7 @@ extension AgentChatEvent {
         taskId: agentId,
         agentId: agentId,
         agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        provider: try container.decodeIfPresent(String.self, forKey: .provider),
         parentAgentId: nil,
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try decodeNonEmptyString(forKey: .description) ?? "Subagent task",
@@ -4095,6 +4149,7 @@ extension AgentChatEvent {
     case .codexThreadDeleted: return "codex_thread_deleted"
     case .systemNotice: return "system_notice"
     case .completionReport: return "completion_report"
+    case .sources: return "sources"
     case .webSearch: return "web_search"
     case .codexImageGeneration: return "codex_image_generation"
     case .codexImageView: return "codex_image_view"

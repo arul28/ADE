@@ -202,18 +202,16 @@ export function MissionControlPanel({
         <MissionStateChip state={mission.state} />
       </div>
 
-      {/* Feature checklist */}
-      <section className="pb-2">
-        <div className="flex items-center justify-between px-3.5 pb-1 pt-2.5">
-          <span className="font-sans text-[10px] font-medium uppercase tracking-[0.06em] text-fg/45">Features</span>
-          {hasFeatures ? (
+      {/* Feature checklist — absent until Droid proposes features. */}
+      {hasFeatures ? (
+        <section className="pb-2">
+          <div className="flex items-center justify-between px-3.5 pb-1 pt-2.5">
+            <span className="font-sans text-[10px] font-medium uppercase tracking-[0.06em] text-fg/45">Features</span>
             <span className="font-sans text-[10.5px] tabular-nums text-fg/35">
               {counts.completed}/{counts.total}
               {counts.inProgress ? ` · ${counts.inProgress} active` : ""}
             </span>
-          ) : null}
-        </div>
-        {hasFeatures ? (
+          </div>
           <div className="space-y-px px-2 pb-1">
             {features.map((feature) => (
               <FeatureRow
@@ -224,13 +222,8 @@ export function MissionControlPanel({
               />
             ))}
           </div>
-        ) : (
-          <p className="px-3.5 pb-2 text-[11.5px] leading-5 text-fg/40">
-            No features yet.
-            <span className="block pt-0.5 text-fg/25">Droid breaks the mission into features once the run starts.</span>
-          </p>
-        )}
-      </section>
+        </section>
+      ) : null}
 
       {/* Activity log */}
       <ProgressLog entries={mission.progress} />

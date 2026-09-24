@@ -487,10 +487,16 @@ describe("renderChatLines", () => {
       notices: [],
       events: baseEvents,
     });
-    expect(unresolved).toEqual([expect.objectContaining({
-      header: "not processed · /run-next steer-1 · /edit-message steer-1 · /dismiss-message steer-1",
-      body: "Please continue",
-    })]);
+    expect(unresolved).toEqual([
+      expect.objectContaining({
+        tone: "user",
+        body: "Please continue",
+      }),
+      expect.objectContaining({
+        tone: "notice",
+        body: "↳ Not steered — turn ended first · /run-next steer-1 · /edit-message steer-1 · /dismiss-message steer-1",
+      }),
+    ]);
 
     const resolved = renderChatLines({
       activeSession: null,
@@ -511,10 +517,16 @@ describe("renderChatLines", () => {
         },
       ],
     });
-    expect(resolved).toEqual([expect.objectContaining({
-      header: "not processed · started as the next turn",
-      body: "Please continue",
-    })]);
+    expect(resolved).toEqual([
+      expect.objectContaining({
+        tone: "user",
+        body: "Please continue",
+      }),
+      expect.objectContaining({
+        tone: "notice",
+        body: "↳ Not processed · started as the next turn",
+      }),
+    ]);
   });
 
   it("prefers provider-neutral health and recovery events over legacy duplicates", () => {
@@ -658,7 +670,7 @@ describe("renderChatLines", () => {
     expect(planLines[0]?.body).toContain("Write");
   });
 
-  it("drops an earlier todo row once a plan for that turn names every item, like desktop", () => {
+  it("draws the chat's ONE task list once, at its latest list event, like desktop", () => {
     const todo = (turnId: string, descriptions: string[], sequence: number) => ({
       sessionId: "s1",
       timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
@@ -689,14 +701,15 @@ describe("renderChatLines", () => {
         plan("t2", ["Read"], 4),
       ],
     });
-    const planLines = lines.filter((line) => line.body.startsWith("plan"));
-    // t1: the todo is covered, so only its plan card stays. t2: "Deploy" is
-    // not in the plan, so the todo row stays next to the plan.
-    expect(planLines).toHaveLength(3);
-    expect(planLines.filter((line) => line.body.includes("Deploy"))).toHaveLength(1);
+    const listLines = lines.filter((line) => line.body.startsWith("plan") || line.body.startsWith("tasks"));
+    // Every earlier plan/todo event draws nothing; the newest list (t2's plan)
+    // is drawn once, where it arrived — the last line.
+    expect(listLines).toHaveLength(1);
+    expect(listLines[0]?.body).toBe("plan  0/1\n○ Read");
+    expect(lines.at(-1)).toBe(listLines[0]);
   });
 
-  it("keeps a turn's plan steps when a later plan event for it arrives empty", () => {
+  it("clears the task list when a later plan event arrives with no steps (ACP plan_removed)", () => {
     const plan = (steps: string[], sequence: number) => ({
       sessionId: "s1",
       timestamp: `2026-01-01T12:00:0${sequence}.000Z`,
@@ -708,9 +721,7 @@ describe("renderChatLines", () => {
       notices: [],
       events: [plan(["Read", "Write"], 1), plan([], 2)],
     });
-    const last = lines.filter((line) => line.body.startsWith("plan")).at(-1);
-    expect(last?.body).toContain("Read");
-    expect(last?.body).toContain("Write");
+    expect(lines.filter((line) => line.body.startsWith("plan"))).toEqual([]);
   });
 
   it("renders the new event variants (status, error, done, todo, subagent, completion_report, turn_diff_summary, codex_context_compaction)", () => {
@@ -801,10 +812,11 @@ describe("renderChatLines", () => {
     expect(body).toContain("[status] completed");
     expect(body).toContain("[error] rate limited");
     expect(body).toMatch(/\[done\] completed/);
-    expect(body).toContain("plan  1/2");
+    // A todo list reads as the chat's one TASKS list.
+    expect(body).toContain("tasks  1/2");
     expect(body).toContain("● Read");
     expect(body).toContain("◐ Write");
-    expect(body).toContain("[agent] do thing (started)");
+    expect(body).toContain("[agent] do thing · running");
     expect(body).toContain("[done] turn summary: shipped it");
     expect(body).toContain("[diff] +12/-4 across 2 files");
     expect(body).toContain("⟳ compacting · manual");

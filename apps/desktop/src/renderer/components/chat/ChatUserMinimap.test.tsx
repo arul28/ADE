@@ -10,6 +10,7 @@ const ENTRIES: readonly ChatUserMinimapSourceEntry[] = [
   {
     rowIndex: 0,
     key: "first",
+    rowKey: "first",
     preview: "First checkpoint",
     fullUserOrdinal: 0,
     assistantPreview: "Acknowledged.",
@@ -18,6 +19,7 @@ const ENTRIES: readonly ChatUserMinimapSourceEntry[] = [
   {
     rowIndex: 2,
     key: "second",
+    rowKey: "second",
     preview: "Second checkpoint",
     fullUserOrdinal: 1,
     assistantPreview: "Shipped it.",

@@ -2,6 +2,91 @@ import XCTest
 @testable import ADE
 
 final class WorkAssistantRenderingTests: XCTestCase {
+  func testSubagentGridFitsCompactWidthsAndFillsShortRows() {
+    let compactColumns = workSubagentGridColumnsPerRow(isCompactWidth: true)
+    let regularColumns = workSubagentGridColumnsPerRow(isCompactWidth: false)
+
+    XCTAssertEqual(compactColumns, 2)
+    XCTAssertEqual(regularColumns, 3)
+    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 0, rowCount: 1, columnsPerRow: compactColumns, trackCount: 4), 2)
+    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 2, rowCount: 3, columnsPerRow: compactColumns, trackCount: 4), 4)
+    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 3, rowCount: 4, columnsPerRow: compactColumns, trackCount: 4), 2)
+    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 3, rowCount: 4, columnsPerRow: regularColumns, trackCount: 6), 6)
+    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 3, rowCount: 5, columnsPerRow: regularColumns, trackCount: 6), 3)
+    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 4, rowCount: 5, columnsPerRow: regularColumns, trackCount: 6), 3)
+  }
+
+  func testSourcesDecodeMapAndAppearInChatInfoSnapshot() throws {
+    let dataOnly = try AgentChatEvent.decode(from: [
+      "type": "sources",
+      "sources": [[
+        "kind": "citation",
+        "url": "https://example.com/guide",
+        "title": "Guide",
+        "cited": true,
+      ]],
+      "sourceRefsOmittedForMobile": 2,
+      "turnId": "turn-1",
+    ])
+    guard case .sources(let refs, _, let turnId, let omitted) = dataOnly else {
+      return XCTFail("sources event should decode as source references")
+    }
+    XCTAssertEqual(refs.first?.url, "https://example.com/guide")
+    XCTAssertEqual(refs.first?.title, "Guide")
+    XCTAssertEqual(turnId, "turn-1")
+    XCTAssertEqual(omitted, 2)
+
+    let toolResult = try AgentChatEvent.decode(from: [
+      "type": "tool_result",
+      "tool": "WebSearch",
+      "result": "done",
+      "itemId": "tool-1",
+      "status": "completed",
+      "sources": [["kind": "web_search_result", "url": "https://example.com/guide", "query": "guide"]],
+    ])
+    guard case .toolResult(_, _, _, _, _, _, _, let toolSources, _) = toolResult else {
+      return XCTFail("tool_result source refs should decode")
+    }
+    XCTAssertEqual(toolSources?.first?.kind, "web_search_result")
+    XCTAssertEqual(toolSources?.first?.query, "guide")
+
+    let mapped = makeWorkChatEvent(from: dataOnly)
+    guard case .sources(let mappedRefs, let mappedTurnId, let mappedOmitted) = mapped else {
+      return XCTFail("source refs should survive Work event mapping")
+    }
+    XCTAssertEqual(mappedRefs, refs)
+    XCTAssertEqual(mappedTurnId, turnId)
+    XCTAssertEqual(mappedOmitted, omitted)
+  }
+
+  func testSourceListCapsVisibleRefsAndCountsMobileOmissions() {
+    let refs = (0..<40).map { index in
+      AgentChatSourceRef(
+        kind: "web",
+        url: "https://example.com/page-\(index)",
+        title: "Page \(index)",
+        snippet: nil,
+        path: nil,
+        lineStart: nil,
+        lineEnd: nil,
+        query: nil,
+        cited: nil
+      )
+    }
+    let list = buildWorkChatSourceList(from: [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-09-24T00:00:00.000Z",
+        sequence: 1,
+        event: .sources(refs: refs, turnId: "turn-1", omittedForMobile: 5)
+      ),
+    ])
+
+    XCTAssertEqual(list.refs.count, 32)
+    XCTAssertEqual(list.omittedCount, 13)
+    XCTAssertEqual(list.countsByTurn["turn-1"], 45)
+  }
+
   func testAssistantMessageMarkdownWithPaddedTableIsNotMonospaced() {
     let markdown = """
     Here's the summary of the run:

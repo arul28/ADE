@@ -1,3 +1,4 @@
+import { isSubagentPlaceholderSummary } from "./chatSubagents";
 import type { AgentChatStopSource } from "./types";
 
 /**
@@ -91,12 +92,16 @@ export const ORPHAN_SUBAGENT_CHAT_MISSING_SUMMARY = "Stopped: the subagent chat 
 export const ORPHAN_SUBAGENT_CHAT_FAILED_SUMMARY = "Failed: the subagent chat reported a failure";
 export const ORPHAN_BACKGROUND_SUMMARY = "Stopped: the process that ran this command exited";
 
-/** A summary the agent actually wrote, as opposed to the row's own title. */
+/**
+ * A summary the agent actually wrote, as opposed to the row's own title or
+ * runtime filler ("Agent active", "Status: …"): filler saved as a report would
+ * turn a lost run into "Finished (report landed): Agent active".
+ */
 function reportedSummary(row: OrphanSubagentRow, childReport?: string | null): string | null {
   const fromChild = childReport?.trim();
-  if (fromChild) return fromChild;
+  if (fromChild && !isSubagentPlaceholderSummary(fromChild)) return fromChild;
   const own = row.summary?.trim();
-  if (own && own !== row.name.trim()) return own;
+  if (own && own !== row.name.trim() && !isSubagentPlaceholderSummary(own)) return own;
   return null;
 }
 

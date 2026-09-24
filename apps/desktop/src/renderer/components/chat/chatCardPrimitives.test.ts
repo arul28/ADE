@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   firstMeaningfulSummary,
-  formatScheduledRunAt,
   humanizeAgentIdentity,
+  isEmptyDiffStatSummary,
   isPlaceholderSummary,
 } from "./chatCardPrimitives";
 
@@ -55,27 +55,17 @@ describe("firstMeaningfulSummary", () => {
       .toBe("Head ccce46c4b is stable.");
     expect(firstMeaningfulSummary("Agent completed", null)).toBeNull();
   });
-});
 
-describe("formatScheduledRunAt", () => {
-  const now = Date.parse("2026-07-28T12:13:18.016Z");
-
-  it("formats a schedule as a relative distance plus a local clock", () => {
-    const formatted = formatScheduledRunAt("2026-07-28T12:17:18.016Z", now);
-    expect(formatted).toContain("runs in 4m");
-    // Never the raw ISO string.
-    expect(formatted).not.toContain("2026-07-28T");
-  });
-
-  it("handles hours, days and the past", () => {
-    expect(formatScheduledRunAt("2026-07-28T14:43:18.016Z", now)).toContain("runs in 2h 30m");
-    expect(formatScheduledRunAt("2026-07-30T12:13:18.016Z", now)).toContain("runs in 2d");
-    expect(formatScheduledRunAt("2026-07-28T12:08:18.016Z", now)).toContain("ran 5m ago");
-  });
-
-  it("returns null rather than echoing an unparseable value", () => {
-    expect(formatScheduledRunAt(null)).toBeNull();
-    expect(formatScheduledRunAt("")).toBeNull();
-    expect(formatScheduledRunAt("not-a-date")).toBeNull();
+  it("treats an all-zero diff stat as saying nothing, and any non-zero count as a result", () => {
+    expect(isEmptyDiffStatSummary("+0 −0 · 0 files")).toBe(true);
+    expect(isEmptyDiffStatSummary("+0 -0 · 0 file")).toBe(true);
+    expect(isEmptyDiffStatSummary("+0 −0")).toBe(true);
+    expect(isEmptyDiffStatSummary("+10 −0 · 0 files")).toBe(false);
+    expect(isEmptyDiffStatSummary("+0 −0 · 10 files")).toBe(false);
+    expect(isEmptyDiffStatSummary("+1 −0 · 1 files")).toBe(false);
+    expect(isEmptyDiffStatSummary("+0 −0 · 0 files and a note")).toBe(false);
+    expect(firstMeaningfulSummary("+0 −0 · 0 files")).toBeNull();
+    expect(firstMeaningfulSummary("+0 −0 · 0 files", "Found the bug.")).toBe("Found the bug.");
+    expect(firstMeaningfulSummary("+4 −1 · 2 files")).toBe("+4 −1 · 2 files");
   });
 });

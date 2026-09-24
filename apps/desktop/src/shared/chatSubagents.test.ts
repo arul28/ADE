@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "./types/chat";
 import {
+  deriveSubagentCardName,
   buildSubagentPaneRows,
   chatInfoHeaderModelAttribution,
   formatSubagentModelChip,
@@ -18,6 +19,8 @@ import {
   subagentSnapshotsFromEvents,
   collapseLegacySubagentEndEvents,
   isAgentChatWorkflowProgress,
+  isSubagentPlaceholderSummary,
+  subagentSummaryPlainText,
   type SubagentSnapshot,
 } from "./chatSubagents";
 
@@ -238,6 +241,7 @@ describe("chat pane scalability helpers", () => {
 describe("chatSubagents timeline helpers", () => {
   it("normalizes agent keys and prefers meaningful, richer summaries", () => {
     expect(subagentAgentKey({ agentId: "  agent-1  ", taskId: "task-1" })).toBe("agent-1");
+    expect(subagentAgentKey({ agentId: "cli-child", taskId: "chat:cli-child" })).toBe("chat:cli-child");
     expect(subagentAgentKey({ agentId: " ", taskId: " task-1 " })).toBe("task-1");
     expect(subagentAgentKey({ agentId: "", taskId: " " })).toBeNull();
 
@@ -685,5 +689,156 @@ describe("legacy subagent end-event pairs", () => {
       totalCount: 1,
       runningCount: 0,
     });
+  });
+});
+
+describe("late progress after a terminal result", () => {
+  const envelope = (timestamp: string, event: AgentChatEvent): AgentChatEventEnvelope => ({
+    sessionId: "session-1",
+    timestamp,
+    event,
+  });
+  // The owner's transcript: the child's result lands, then Codex echoes the
+  // `subAgentActivity` item as "Agent active" under a synthetic parent id.
+  const events: AgentChatEventEnvelope[] = [
+    envelope("2026-09-23T18:56:00.000Z", {
+      type: "subagent_started", taskId: "thread-1", agentId: "thread-1", description: "/root/desktop_scan", turnId: "turn-1",
+    }),
+    envelope("2026-09-23T18:57:36.200Z", {
+      type: "subagent_result", taskId: "thread-1", agentId: "thread-1", status: "completed", summary: "Found one IPC guard gap.", turnId: "turn-1",
+    }),
+    envelope("2026-09-23T18:57:36.201Z", {
+      type: "subagent_progress",
+      taskId: "thread-1",
+      agentId: "thread-1",
+      parentToolUseId: "subagent-completed-child-turn",
+      description: "/root/desktop_scan",
+      summary: "Agent active",
+      turnId: "turn-1",
+    }),
+  ];
+
+  it("does not reopen the snapshot, move its end, or replace its report", () => {
+    expect(subagentSnapshotsFromEvents(events)).toEqual([
+      expect.objectContaining({
+        id: "thread-1",
+        status: "completed",
+        summary: "Found one IPC guard gap.",
+        endedAt: "2026-09-23T18:57:36.200Z",
+      }),
+    ]);
+    expect(subagentActivitySummaryFromEvents(events)).toEqual({ totalCount: 1, runningCount: 0 });
+  });
+
+  it("reopens a settled agent only for a fresh start", () => {
+    const restarted = [
+      ...events,
+      envelope("2026-09-23T19:00:00.000Z", {
+        type: "subagent_started", taskId: "thread-1", agentId: "thread-1", description: "/root/desktop_scan", turnId: "turn-2",
+      }),
+    ];
+    const [snapshot] = subagentSnapshotsFromEvents(restarted);
+    expect(snapshot).toMatchObject({ status: "running" });
+    expect(snapshot?.endedAt).toBeUndefined();
+    expect(subagentActivitySummaryFromEvents(restarted)).toEqual({ totalCount: 1, runningCount: 1 });
+  });
+});
+
+describe("runtime filler summaries", () => {
+  it.each(["Agent active", "Agent received input", "Agent completed.", "Status: running", "Task updated"])(
+    "treats %s as filler",
+    (text) => expect(isSubagentPlaceholderSummary(text)).toBe(true),
+  );
+
+  it("keeps anything an agent wrote", () => {
+    expect(isSubagentPlaceholderSummary("Agent active sessions leak on reconnect")).toBe(false);
+    expect(preferSubagentSummary("Found one IPC guard gap.", "Agent active")).toBe("Found one IPC guard gap.");
+  });
+});
+
+describe("subagentSummaryPlainText", () => {
+  it("reads a markdown report as one plain paragraph", () => {
+    expect(subagentSummaryPlainText(
+      "## ADE Summary\n\n**ADE** is a unified workspace for _AI coding agents_ across macOS.\n\n### Key capabilities\n- Multi-agent orchestration\n- Git `worktrees` per agent\n1. See [the README](https://ade.dev/readme) and ![logo](x.png)",
+    )).toBe(
+      "ADE Summary: ADE is a unified workspace for AI coding agents across macOS. Key capabilities: Multi-agent orchestration; Git worktrees per agent; See the README and logo",
+    );
+  });
+
+  it("drops fences, rules, quotes, and table rules but keeps their text", () => {
+    expect(subagentSummaryPlainText("> Quoted **note**\n---\n```ts\nconst x = 1;\n```\n| a | b |\n|---|---|\n| 1 | 2 |"))
+      .toBe("Quoted note const x = 1; a · b; 1 · 2");
+  });
+
+  it("keeps plain text, snake_case, dunder names, and diff stats as they are", () => {
+    expect(subagentSummaryPlainText("Updated my_file_name.ts and `__init__.py`")).toBe("Updated my_file_name.ts and __init__.py");
+    expect(subagentSummaryPlainText("+3 −0 · 1 files")).toBe("+3 −0 · 1 files");
+    expect(subagentSummaryPlainText("2 * 3 = 6")).toBe("2 * 3 = 6");
+  });
+
+  it("drops a marker a clipped preview left unmatched, and returns null for nothing", () => {
+    expect(subagentSummaryPlainText("**ADE** is **unfinished")).toBe("ADE is unfinished");
+    expect(subagentSummaryPlainText("  \n## \n")).toBeNull();
+    expect(subagentSummaryPlainText(null)).toBeNull();
+  });
+});
+
+describe("deriveSubagentCardName", () => {
+  it("names a Codex agent from its path, never the raw path", () => {
+    // subAgentActivity stamps the agent path into description, label, and agentType.
+    const path = "/root/desktop_scan";
+    expect(deriveSubagentCardName({ description: path, label: path, agentType: path })).toBe("Desktop scan");
+    // Known acronyms keep their casing inside the sentence-case label.
+    expect(deriveSubagentCardName({ description: "/root/cli_tui_scan" })).toBe("CLI TUI scan");
+    expect(deriveSubagentCardName({ description: "/root/ios_shared_scan" })).toBe("iOS shared scan");
+    expect(deriveSubagentCardName({ description: "/root/scan_ipc_api_pr_927" })).toBe("Scan IPC API PR #927");
+    expect(deriveSubagentCardName({ description: "/ROOT/SHIP_POLL_927" })).toBe("Ship poll #927");
+    expect(deriveSubagentCardName({ description: "desktop_scan" })).toBe("Desktop scan");
+    // A Codex agent with no path gets a fallback nickname as its description.
+    expect(deriveSubagentCardName({ description: "Curie", label: "Curie", agentType: "Curie" })).toBe("Curie");
+  });
+
+  it("names a Claude Task by its description, then its name, then its subagent_type", () => {
+    expect(deriveSubagentCardName({
+      description: "Explore auth flow",
+      label: "auth-explorer",
+      agentType: "Explore",
+    })).toBe("Explore auth flow");
+    expect(deriveSubagentCardName({ description: null, label: "auth-explorer", agentType: "Explore" })).toBe("auth-explorer");
+    expect(deriveSubagentCardName({ description: null, agentType: "general-purpose" })).toBe("general-purpose");
+  });
+
+  it("names OpenCode, Cursor, and Droid agents by their description", () => {
+    // OpenCode omits agentType; description is the child session title.
+    expect(deriveSubagentCardName({ description: "Audit sync cursor" })).toBe("Audit sync cursor");
+    // Legacy OpenCode placeholder type never wins over nothing.
+    expect(deriveSubagentCardName({ description: null, agentType: "opencode-subagent" })).toBe("Subagent");
+    expect(deriveSubagentCardName({ description: "Refactor the store", label: "explore", agentType: "explore" }))
+      .toBe("Refactor the store");
+    expect(deriveSubagentCardName({ description: "Worker 3f9a21" })).toBe("Worker 3f9a21");
+  });
+
+  it("drops OpenCode's trailing agent mention from the title", () => {
+    expect(deriveSubagentCardName({ description: "Explore renderer UI (@explore subagent)" })).toBe("Explore renderer UI");
+    expect(deriveSubagentCardName({ description: "Explore desktop main process (@explore)" })).toBe("Explore desktop main process");
+    expect(deriveSubagentCardName({ description: "Audit docs (@general-purpose Subagent)  " })).toBe("Audit docs");
+    // Only a trailing mention goes; one inside the title, or prose in parens, stays.
+    expect(deriveSubagentCardName({ description: "Ask (@explore) about sync" })).toBe("Ask (@explore) about sync");
+    expect(deriveSubagentCardName({ description: "Scan iOS (and web) clients" })).toBe("Scan iOS (and web) clients");
+    expect(deriveSubagentCardName({ description: "Review mentions (see @alice notes)" })).toBe("Review mentions (see @alice notes)");
+    // A title that is nothing but the mention falls through to the next candidate.
+    expect(deriveSubagentCardName({ description: "(@explore subagent)", agentType: "explore" })).toBe("explore");
+  });
+
+  it("skips placeholders and bare roots, falling through to the next candidate", () => {
+    expect(deriveSubagentCardName({ description: "Subagent task", label: "Laplace" })).toBe("Laplace");
+    expect(deriveSubagentCardName({ description: "Delegated task", agentType: "Explore" })).toBe("Explore");
+    expect(deriveSubagentCardName({ description: "Background work", agentType: "background" })).toBe("Subagent");
+    expect(deriveSubagentCardName({ description: "/root", agentType: "/root/review_fixer" })).toBe("Review fixer");
+    expect(deriveSubagentCardName({})).toBe("Subagent");
+  });
+
+  it("keeps prose as written even when it mentions a path", () => {
+    expect(deriveSubagentCardName({ description: "Scan /root/desktop for secrets" })).toBe("Scan /root/desktop for secrets");
   });
 });

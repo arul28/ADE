@@ -850,7 +850,7 @@ func buildWorkToolCards(
 
   for envelope in transcript {
     switch envelope.event {
-    case .toolCall(let tool, let argsText, let itemId, _, _):
+    case .toolCall(let tool, let argsText, let itemId, _, let turnId):
       if suppressedPendingItemIds.contains(itemId) {
         continue
       }
@@ -871,9 +871,10 @@ func buildWorkToolCards(
         startedAt: envelope.timestamp,
         completedAt: nil,
         argsText: nonEmpty(argsText),
-        resultText: cards[itemId]?.resultText
+        resultText: cards[itemId]?.resultText,
+        turnId: turnId ?? cards[itemId]?.turnId
       )
-    case .toolResult(let tool, let resultText, let itemId, _, _, let status):
+    case .toolResult(let tool, let resultText, let itemId, _, let turnId, let status, _, _):
       // Skip results only when the corresponding call was intentionally
       // suppressed as a structured-question card (no fallback card exists).
       // If a fallback tool card was kept (malformed args), let the result
@@ -899,9 +900,10 @@ func buildWorkToolCards(
         remoteResultBytes: envelope.toolResultFullBytes,
         sessionId: envelope.sessionId,
         resultSequence: envelope.sequence,
-        resultSourceOffset: envelope.sourceOffset
+        resultSourceOffset: envelope.sourceOffset,
+        turnId: turnId ?? existing?.turnId
       )
-    case .webSearch(let query, let action, let actions, let results, let status, let itemId, _):
+    case .webSearch(let query, let action, let actions, let results, let status, let itemId, let turnId):
       // Web searches are tool calls — render them as tool cards so they're
       // absorbed into the same `Tool calls` cluster as Read/Bash/etc. on the
       // timeline, mirroring the desktop `work_log_group` behavior. Without
@@ -928,7 +930,8 @@ func buildWorkToolCards(
         argsText: nonEmpty(query),
         resultText: actionSummary.flatMap(nonEmpty) ?? action.flatMap(nonEmpty) ?? existing?.resultText,
         webSearchActions: actions ?? existing?.webSearchActions,
-        webSearchResults: results ?? existing?.webSearchResults
+        webSearchResults: results ?? existing?.webSearchResults,
+        turnId: turnId ?? existing?.turnId
       )
     default:
       continue

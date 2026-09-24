@@ -9,6 +9,7 @@ import {
 } from "./cursorSdkProtocol";
 import { presentChatFailure } from "../../../shared/chatErrorPresentation";
 import { liveContextUsageEvent } from "./liveContextUsageEvent";
+import { cursorWebToolSourceRefs } from "./chatSourceAdapters";
 
 const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
 
@@ -118,25 +119,25 @@ type CursorTodoItem = {
   text: string;
   todoStatus: "pending" | "in_progress" | "completed";
   planStatus: "pending" | "in_progress" | "completed" | "failed";
+  cancelled?: true;
 };
 
 /**
- * Cursor's published todo vocabulary, mapped to ADE's two.
+ * Cursor's published todo vocabulary, mapped to ADE's.
  *
  * The four keys are the SDK's own enum, not guesses: 1.0.31 converts the proto
  * todo status to exactly `pending | inProgress | completed | cancelled`. Keyed
  * on those spellings so a grep for the wire value finds this table.
  *
- * Both targets sit on one row because they disagree for exactly one value: a
- * `todo_update` row has no failure state, so a cancelled step reads as pending
- * there while the plan step — which does have one — records it as failed. That
- * does NOT mean the model failed the step.
+ * A cancelled step is settled, not failed: both shapes carry `completed` plus
+ * the `cancelled` flag, and the task list draws it as skipped. The model did
+ * not fail it.
  */
 const CURSOR_TODO_STATUS: Readonly<Record<string, Omit<CursorTodoItem, "text">>> = {
   pending: { todoStatus: "pending", planStatus: "pending" },
   inProgress: { todoStatus: "in_progress", planStatus: "in_progress" },
   completed: { todoStatus: "completed", planStatus: "completed" },
-  cancelled: { todoStatus: "pending", planStatus: "failed" },
+  cancelled: { todoStatus: "completed", planStatus: "completed", cancelled: true },
 };
 
 /**
@@ -416,12 +417,17 @@ export function mapCursorSdkMessageToChatEvents(
               id: `todo-${index}`,
               description: todo.text,
               status: todo.todoStatus,
+              ...(todo.cancelled ? { cancelled: true as const } : {}),
             })),
             turnId,
           }, runtime),
           tagRuntime({
             type: "plan" as const,
-            steps: todos.map((todo) => ({ text: todo.text, status: todo.planStatus })),
+            steps: todos.map((todo) => ({
+              text: todo.text,
+              status: todo.planStatus,
+              ...(todo.cancelled ? { cancelled: true as const } : {}),
+            })),
             turnId,
           }, runtime),
         ];
@@ -525,10 +531,13 @@ export function mapCursorSdkMessageToChatEvents(
       if (status === "running") {
         out.push(tagRuntime({ type: "tool_call" as const, tool, args, itemId: callId, turnId }, runtime));
       } else {
+        // webSearch/webFetch keep their tool row; the hits ride along as sources.
+        const sources = status === "error" ? [] : cursorWebToolSourceRefs(tool, args, result);
         out.push(tagRuntime({
           type: "tool_result" as const,
           tool,
           result,
+          ...(sources.length ? { sources } : {}),
           itemId: callId,
           turnId,
           status: status === "error" ? "failed" : "completed",
