@@ -48,7 +48,8 @@ export function patchPermissionConfig(
   if (!meta) return permissionConfig;
   const providers: Record<string, unknown> = { ...(permissionConfig?.providers ?? {}) };
   if (!rawMode) {
-    const legacyCursor = meta.key === "cursor"
+    const hadExplicitCursor = meta.key === "cursor" && typeof providers.cursor === "string" && providers.cursor.length > 0;
+    const legacyCursor = meta.key === "cursor" && !hadExplicitCursor
       ? cursorPermissionFromMisfiledOpenCode(typeof providers.opencode === "string" ? providers.opencode : null)
       : null;
     delete providers[meta.key];
