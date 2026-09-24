@@ -12897,11 +12897,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const notDispatched = dispatched?.dispatchedAt == null;
         // `dropped`: the refused message is gone, not back on the queue.
         const dropped = notDispatched && dispatched?.reason === "dropped";
-        const inlineNotice = dropped
-          ? "The message couldn't go into the running turn and was dropped."
-          : notDispatched
-            ? "The message couldn't go into the running turn; it is still queued."
-            : `Sent staged message into the active ${agentLabel} turn.`;
+        let inlineNotice = `Sent staged message into the active ${agentLabel} turn.`;
+        if (dropped) inlineNotice = "The message couldn't go into the running turn and was dropped.";
+        else if (notDispatched) inlineNotice = "The message couldn't go into the running turn; it is still queued.";
         const interruptNotice = notDispatched
           ? "The staged message couldn't be promoted into the running turn; it is still queued."
           : interruptContinues

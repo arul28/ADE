@@ -176,9 +176,10 @@ export function buildTranscriptReplayDocument(
   // once where the model got it (see `canonicalSteerRows`). A steer that
   // settled without reaching the model (`failed`, Codex's `unprocessed`) is not
   // replayed: the new model would answer a message the old one never saw.
-  // Neither is one left `accepted` with no outcome. A still-`queued` steer is
-  // replayed: a provider switch does not carry the old runtime's queue to the
-  // new one, so this text is the only way the new model learns of it.
+  // Neither is one left `accepted` or `queued` with no outcome. A provider
+  // switch cancels or drops the old runtime's queue, so a steer whose last row
+  // is still `queued` never reached any model; one a drain sent as a plain
+  // message already has its own plain row, which replays.
   const steerRows = canonicalSteerRows(envelopes);
   for (let index = 0; index < envelopes.length; index += 1) {
     let event = envelopes[index]!.event;
@@ -187,8 +188,7 @@ export function buildTranscriptReplayDocument(
       const steerRow = steerRows.get(index);
       if (steerRow === null) continue;
       if (steerRow) {
-        const state = steerRow.event.deliveryState;
-        if (state !== "queued" && !steerReachedModel(state)) continue;
+        if (!steerReachedModel(steerRow.event.deliveryState)) continue;
         event = steerRow.event;
       }
     }

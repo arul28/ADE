@@ -152,7 +152,7 @@ export type UserMessageChatEvent = Extract<AgentChatEvent, { type: "user_message
  * What to emit at a steer's place: the canonical row's event, stamped with
  * the time of the row it is emitted at.
  */
-export type CanonicalSteerRow = { event: UserMessageChatEvent; timestamp: string };
+type CanonicalSteerRow = { event: UserMessageChatEvent; timestamp: string };
 
 /**
  * One steer is one message, but the host writes its row once per lifecycle
