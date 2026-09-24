@@ -2210,19 +2210,26 @@ function handleSubagentLifecycleEvent(
 
   const taskId = subagentText(event.taskId);
   const agentId = subagentText(event.agentId);
+  const bareChatKey = agentKey.startsWith("chat:") ? agentKey.slice("chat:".length) : null;
 
   // Rebind: an anchor created under a taskId, then a later event carries agentId
   // for the same task. Move the map key but KEEP the original renderKey + rows.
+  // `chat:<id>` and the bare agent id are the same spawned chat: the underscore
+  // event keys on the chat id, the dot twin keys on the agent id.
   let state = anchors.get(agentKey)
-    ?? (agentId && taskId ? anchors.get(taskId) : undefined);
+    ?? (taskId ? anchors.get(taskId) : undefined)
+    ?? (agentId ? anchors.get(agentId) : undefined)
+    ?? (bareChatKey ? anchors.get(bareChatKey) : undefined)
+    ?? anchors.get(`chat:${agentKey}`);
   if (state && state.agentKey !== agentKey) {
-    anchors.delete(state.agentKey);
-    state.agentKey = agentKey;
     anchors.set(agentKey, state);
+    state.agentKey = agentKey;
   }
-  // Keep the taskId alias pointing at the same state so a taskId-only later event
-  // still resolves after rebind.
+  // Keep every identity alias pointing at the same state so a later twin
+  // (taskId-only, agentId-only, or the other chat:/bare spelling) still resolves.
   if (state && taskId) anchors.set(taskId, state);
+  if (state && agentId) anchors.set(agentId, state);
+  if (state && bareChatKey) anchors.set(bareChatKey, state);
 
   if (!state) {
     state = {
@@ -2259,6 +2266,8 @@ function handleSubagentLifecycleEvent(
     };
     anchors.set(agentKey, state);
     if (taskId) anchors.set(taskId, state);
+    if (agentId) anchors.set(agentId, state);
+    if (bareChatKey) anchors.set(bareChatKey, state);
   }
 
   enrichSubagentStateFromEvent(state, event);
