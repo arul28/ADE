@@ -1823,6 +1823,7 @@ declare global {
         setDefaultTemplate: (args: SetDefaultLaneTemplateArgs) => Promise<void>;
         applyTemplate: (
           args: ApplyLaneTemplateArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LaneEnvInitProgress>;
         saveTemplate: (args: SaveLaneTemplateArgs) => Promise<void>;
         deleteTemplate: (args: DeleteLaneTemplateArgs) => Promise<void>;

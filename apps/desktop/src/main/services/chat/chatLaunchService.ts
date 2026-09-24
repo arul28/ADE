@@ -57,13 +57,18 @@ type LaneServiceLike = {
       name: string;
       baseBranch?: string;
       branchName?: string;
-      /** child-mode launches branch from an existing lane instead of the base. */
-      parentLaneId?: string;
-      /** child-mode base override: checkout here instead of the parent's HEAD. */
-      startPoint?: string;
       /** Bound to the new lane the same way a manual create binds it. */
       linearIssue?: LaneLinearIssue | null;
     },
+    options?: LaneCreateRuntimeOptions,
+  ) => Promise<LaneSummary>;
+  /**
+   * child-mode launches. `createChild` is the path that resolves a remote base
+   * override (fetches/creates the local tracking branch), which a bare
+   * `create({ parentLaneId })` does not.
+   */
+  createChild?: (
+    args: { parentLaneId: string; name: string; baseBranchRef?: string; linearIssue?: LaneLinearIssue | null },
     options?: LaneCreateRuntimeOptions,
   ) => Promise<LaneSummary>;
   /** import-mode launches adopt an existing branch instead of cutting a new one. */
@@ -460,6 +465,19 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     setStage(record, "checkout", "running");
     publish(record);
     let totalFiles = 0;
+    const onCheckoutProgress = (progress: { percent: number; total: number }) => {
+      const stage = stageOf(record, "checkout");
+      if (!stage || stage.status !== "running") return;
+      if (stage.percent === progress.percent) return;
+      stage.percent = progress.percent;
+      totalFiles = progress.total;
+      publishProgress(record);
+    };
+    const runtimeOptions: LaneCreateRuntimeOptions = {
+      laneId: record.snapshot.laneId,
+      signal: runtime.abort.signal,
+      onCheckoutProgress,
+    };
     const config = record.laneConfig;
     let lane: LaneSummary;
     if (config?.mode === "import") {
@@ -474,6 +492,17 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         // opened, restart recovery, and cleanup all address the same lane.
         { laneId: record.snapshot.laneId },
       );
+    } else if (config?.mode === "child" && config.parentLaneId) {
+      if (!deps.laneService.createChild) throw new Error("This runtime cannot create child lanes.");
+      lane = await deps.laneService.createChild(
+        {
+          parentLaneId: config.parentLaneId,
+          name: record.snapshot.laneName,
+          ...(baseRef ? { baseBranchRef: baseRef } : {}),
+          ...(config.linearIssue ? { linearIssue: config.linearIssue } : {}),
+        },
+        runtimeOptions,
+      );
     } else {
       lane = await deps.laneService.create(
         {
@@ -482,24 +511,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
           // auto-create lane gets a placeholder branch and is renamed after.
           ...(record.laneConfig ? {} : { branchName: temporaryAutoLaneBranch() }),
           ...(baseRef ? { baseBranch: baseRef } : {}),
-          ...(config?.mode === "child" && config.parentLaneId ? { parentLaneId: config.parentLaneId } : {}),
-          // A child's base override has to travel as the start point: `create`
-          // only honors `baseBranch` when the parent is the primary lane.
-          ...(config?.mode === "child" && baseRef ? { startPoint: baseRef } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
         },
-        {
-          laneId: record.snapshot.laneId,
-          signal: runtime.abort.signal,
-          onCheckoutProgress: (progress) => {
-            const stage = stageOf(record, "checkout");
-            if (!stage || stage.status !== "running") return;
-            if (stage.percent === progress.percent) return;
-            stage.percent = progress.percent;
-            totalFiles = progress.total;
-            publishProgress(record);
-          },
-        },
+        runtimeOptions,
       );
     }
     adoptLane(record, lane);

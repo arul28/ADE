@@ -10397,7 +10397,7 @@ export function AgentChatPane({
       }
       if (configured?.templateId) {
         await window.ade.lanes
-          .applyTemplate({ laneId: createdLane.id, templateId: configured.templateId })
+          .applyTemplate({ laneId: createdLane.id, templateId: configured.templateId }, pin)
           .catch(() => undefined);
       }
       // A user-named lane keeps its name; only prompt-derived lanes get AI-named.

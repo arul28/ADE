@@ -5044,7 +5044,10 @@ export function createLaneService({
       }, runtimeOptions);
     },
 
-    async createChild(args: CreateChildLaneArgs): Promise<LaneSummary> {
+    async createChild(
+      args: CreateChildLaneArgs,
+      runtimeOptions: LaneCreateRuntimeOptions = {},
+    ): Promise<LaneSummary> {
       const parent = getLaneRow(args.parentLaneId);
       if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
       if (parent.status === "archived") throw new Error("Parent lane is archived");
@@ -5088,7 +5091,7 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
-        });
+        }, runtimeOptions);
       }
 
       if (parent.lane_type === "primary") {
@@ -5107,7 +5110,7 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
-        });
+        }, runtimeOptions);
       }
 
       const parentHeadSha = await getHeadSha(parent.worktree_path);

@@ -72,6 +72,8 @@ function createHarness(options: {
   const laneCreate = deferred<LaneSummary>();
   let laneCreateOptions: LaneCreateRuntimeOptions | undefined;
   let laneCreateArgs: Record<string, unknown> | null = null;
+  let childCreateArgs: Record<string, unknown> | null = null;
+  let childCreateOptions: LaneCreateRuntimeOptions | undefined;
   let importBranchArgs: { branchRef: string; name: string } | null = null;
   let importBranchOptions: { laneId?: string } | undefined;
   let laneDeleteArgs: Record<string, unknown> | null = null;
@@ -93,6 +95,12 @@ function createHarness(options: {
         importBranchArgs = args;
         importBranchOptions = opts;
         return laneSummary({ branchRef: args.branchRef });
+      }),
+      createChild: vi.fn(async (args, opts) => {
+        calls.push("lane.createChild");
+        childCreateArgs = args as Record<string, unknown>;
+        childCreateOptions = opts;
+        return laneSummary({ name: args.name });
       }),
       updateAppearance: vi.fn((args: { laneId: string; color: string | null }) => {
         calls.push(`lane.updateAppearance:${args.color}`);
@@ -187,6 +195,12 @@ function createHarness(options: {
     },
     get laneCreateArgs() {
       return laneCreateArgs;
+    },
+    get childCreateArgs() {
+      return childCreateArgs;
+    },
+    get childCreateOptions() {
+      return childCreateOptions;
     },
     get importBranchArgs() {
       return importBranchArgs;
@@ -850,24 +864,22 @@ describe("chatLaunchService configured lane (the composer's deferred recipe)", (
     });
   });
 
-  it("creates a child from the chosen base and never AI-renames the configured name", async () => {
+  it("creates a child through createChild (resolved remote base) and never AI-renames the configured name", async () => {
     const h = harness();
     await h.service.start(chatArgs({
       laneName: "My child lane",
       baseBranch: "origin/release",
       laneConfig: { mode: "child", parentLaneId: "parent-lane" },
     }));
-    await vi.waitFor(() => expect(h.laneCreateArgs).toBeTruthy());
-    expect(h.laneCreateArgs).toMatchObject({
-      name: "My child lane",
+    await vi.waitFor(() => expect(h.childCreateArgs).toBeTruthy());
+    expect(h.childCreateArgs).toMatchObject({
       parentLaneId: "parent-lane",
-      // `create` only honors baseBranch for a primary parent; the override rides the start point.
-      startPoint: "origin/release",
+      name: "My child lane",
+      baseBranchRef: "origin/release",
     });
-    // A configured lane derives its branch from the name, so no placeholder branch.
-    expect(h.laneCreateArgs).not.toHaveProperty("branchName");
+    // The launch's reserved lane id is honored so the open chat matches the lane.
+    expect(h.childCreateOptions).toMatchObject({ laneId: LANE_ID });
 
-    h.laneCreate.resolve(laneSummary({ name: "My child lane" }));
     await h.waitFor((snapshot) => snapshot.phase === "completed");
     expect(h.latest().laneName).toBe("My child lane");
     expect(h.deps.agentChatService.generateAutoLaneIdentity).not.toHaveBeenCalled();
