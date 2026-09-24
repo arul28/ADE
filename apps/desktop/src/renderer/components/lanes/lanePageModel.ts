@@ -276,7 +276,7 @@ export function lanePrMatchesCurrentBranch(
   const laneBranch = normalizeLanePrBranch(effectiveLanePrBranchRef(lane));
   const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
   if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
-  return !laneIsOnBaseBranch(lane);
+  return !laneIsOnBaseBranch({ ...lane, branchRef: laneBranch });
 }
 
 export function lanePrRole(
@@ -362,7 +362,7 @@ export function githubPrMatchesCurrentBranch(
     { prNumber: null, repoOwner: headRepoOwner ?? null, repoName: headRepoName ?? null },
     { prNumber: null, repoOwner: pr.repoOwner, repoName: pr.repoName },
   )) return false;
-  return !laneIsOnBaseBranch(lane);
+  return !laneIsOnBaseBranch({ ...lane, branchRef: laneBranch });
 }
 
 export function selectGithubLanePrTag(
