@@ -80,6 +80,7 @@ import { detectInstallSource } from "./services/analytics/installSource";
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureMacDesktopAnalytics,
   captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -4597,6 +4598,10 @@ app.whenReady().then(async () => {
       requestChatInput: (input) => agentChatService.requestChatInput(input),
       readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
       writeSetting: (key: string, value: unknown) => db.setJson(key, value),
+      captureAnalytics: (properties) => captureMacDesktopAnalytics({
+        analytics: productAnalyticsService,
+        properties,
+      }),
     });
     // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
     // teardown step never has to know what host it is on. Without this wiring a

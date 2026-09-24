@@ -152,6 +152,7 @@ import {
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureMacDesktopAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
@@ -1628,6 +1629,10 @@ export async function createAdeRuntime(args: {
         },
         readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
         writeSetting: (key: string, value: unknown) => db.setJson(key, value),
+        captureAnalytics: (properties) => captureMacDesktopAnalytics({
+          analytics: productAnalyticsService,
+          properties,
+        }),
       });
     teardown.push(() => macDesktopService?.dispose());
     // `built_in_browser` is hosted by the desktop's Electron main process (the

@@ -169,6 +169,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the whole question this backend exists to answer. Never a device, lane,
   // machine name, address, codec, resolution, or duration.
   "ios_live_view",
+  // Whether an installation uses its lane's Mac Desktop at all: a display was
+  // created, an agent drove it, or a recording was filed as proof. Three
+  // coarse outcomes and nothing about the lane, the chat, or the screen.
+  "mac_desktop",
   // One coarse fact per CTO voice call, at the call's end. Whether calls are
   // had at all, and whether they work, is the only question the feature has —
   // and a call that dies on a rejected key looks identical to a short one in
@@ -352,6 +356,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // is the only one that works when that machine is not this one. A third
     // spelling is dropped, not widened.
     "backend_window", "backend_host_encoded",
+    // The three Mac Desktop facts. `started` above already covers a display
+    // being created; these two are an agent driving it and a recording filed
+    // as proof. A fourth spelling is dropped, not widened.
+    "agent_drove", "recorded",
     // The three auto-resume transitions. `cancelled` above is deliberately NOT
     // reused for the fourth one: cancellation fires on ordinary user activity,
     // so it would be a typing signal rather than a workflow outcome, and it is

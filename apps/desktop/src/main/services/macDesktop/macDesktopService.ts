@@ -147,9 +147,27 @@ export class MacDesktopError extends Error {
   }
 }
 
+/**
+ * The whole analytics payload this service may produce. A display was created,
+ * an agent drove it, or a recording was filed as proof — and nothing about the
+ * lane, the chat, the app, or the screen can be added here without changing
+ * the type.
+ */
+export type MacDesktopAnalyticsProperties = {
+  action: "mac_desktop";
+  outcome: "started" | "agent_drove" | "recorded";
+};
+
 export type MacDesktopServiceDeps = {
   projectRoot: string;
   logger: Logger;
+  /**
+   * Coarse usage analytics. Injected for the same reason the logger is: this
+   * file owns the transitions, not the transport, and it must not be able to
+   * reach the analytics service or any id directly. Optional, so a wiring
+   * without analytics keeps the desktop working.
+   */
+  captureAnalytics?: ((properties: MacDesktopAnalyticsProperties) => void) | null;
   /** Published on the runtime event stream as a `mac_desktop_event`. */
   onEvent?: ((payload: MacDesktopEventPayload) => void) | null;
   platform?: NodeJS.Platform;
@@ -262,6 +280,9 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const platform = deps.platform ?? process.platform;
   const now = deps.now ?? (() => Date.now());
   const isDarwin = platform === "darwin";
+  const captureOutcome = (outcome: MacDesktopAnalyticsProperties["outcome"]): void => {
+    deps.captureAnalytics?.({ action: "mac_desktop", outcome });
+  };
 
   /** The app name macOS addresses in its permission UI. */
   const responsibleAppName = (): string => {
@@ -529,6 +550,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         ? `Lane ${laneId} is not recording its desktop. The last recording failed to finalise; its file is at ${partialFilePath}.`
         : `Lane ${laneId} is not recording its desktop.`,
     ),
+    onRecordingFiled: () => captureOutcome("recorded"),
   });
   const recordings = recording.recordings;
 
@@ -545,6 +567,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     noteTurnActivity: (laneId, chatSessionId) => recording.noteTurnActivity(laneId, chatSessionId),
     toServiceError,
     serviceError: (code, message) => new MacDesktopError(code, message),
+    onAgentActed: () => captureOutcome("agent_drove"),
   });
   // The takeover fast path on the stream server goes straight to the input
   // module; bound here because input is built after streaming.
@@ -861,6 +884,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     driverLifecycle.setDisplayMode(display.mode);
     const stored = ownership.setDisplay(display, laneName);
     emit({ type: "display-created", display: stored });
+    captureOutcome("started");
     ensureSweepTimer();
     return await buildStatus({ laneId });
   };

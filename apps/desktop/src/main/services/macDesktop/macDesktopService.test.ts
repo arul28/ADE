@@ -115,6 +115,7 @@ function makeService(options: {
   projectRoot?: string;
   now?: () => number;
   ingestArtifacts?: (request: ComputerUseArtifactIngestionRequest) => ComputerUseArtifactIngestionResult;
+  captureAnalytics?: (properties: { action: "mac_desktop"; outcome: "started" | "agent_drove" | "recorded" }) => void;
 } = {}) {
   const events: MacDesktopEventPayload[] = [];
   const driver = options.driver ?? createFakeDriver();
@@ -124,6 +125,7 @@ function makeService(options: {
     platform: options.platform ?? "darwin",
     ...(options.now ? { now: options.now } : {}),
     ...(options.ingestArtifacts ? { ingestArtifacts: options.ingestArtifacts } : {}),
+    ...(options.captureAnalytics ? { captureAnalytics: options.captureAnalytics } : {}),
     onEvent: (event) => events.push(event),
     createDriverClient: () => driver as unknown as MacDesktopDriverClient,
   });
@@ -172,6 +174,42 @@ describe("macDesktopService capability gate", () => {
     const { service } = makeService({ platform: "win32" });
     await expect(service.releaseIfOwnedBy("chat-1")).resolves.toEqual({ released: false });
     await expect(service.destroyForLane("lane-1")).resolves.toEqual({ destroyed: false });
+    service.dispose();
+  });
+});
+
+describe("macDesktopService usage analytics", () => {
+  it("emits one coarse fact per outcome and no id", async () => {
+    const clip = writeCapture("clip.mp4", 128);
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: clip, durationMs: 1_000 }),
+    });
+    const broker = createFakeBroker();
+    const captures: Array<{ action: "mac_desktop"; outcome: "started" | "agent_drove" | "recorded" }> = [];
+    const { service } = makeService({
+      driver,
+      ingestArtifacts: broker.ingest,
+      captureAnalytics: (properties) => captures.push(properties),
+    });
+
+    await service.start({ laneId: "lane-1", laneName: "Login fix" });
+    await service.start({ laneId: "lane-1" });
+    await service.click({ laneId: "lane-1", text: "OK", chatSessionId: "chat-1" });
+    await service.click({ laneId: "lane-1", text: "OK", controllerId: "ade-window:user" });
+    await service.startRecording({ laneId: "lane-1", caption: "the fix", chatSessionId: "chat-1" });
+    await service.stopRecording({ laneId: "lane-1" });
+
+    expect(captures).toEqual([
+      { action: "mac_desktop", outcome: "started" },
+      { action: "mac_desktop", outcome: "agent_drove" },
+      { action: "mac_desktop", outcome: "recorded" },
+    ]);
+    const serialized = JSON.stringify(captures);
+    expect(serialized).not.toContain("lane-1");
+    expect(serialized).not.toContain("chat-1");
+    expect(serialized).not.toContain("Login");
+    expect(serialized).not.toContain("clip");
+    expect(serialized).not.toContain("ade-window");
     service.dispose();
   });
 });

@@ -144,6 +144,11 @@ export type MacDesktopRecordingDeps = {
   recordingNotRunning: (laneId: string, partialFilePath?: string | null) => Error;
   /** The lane's name, for the caption of a recording the cap filed. */
   resolveLaneName?: (laneId: string) => Promise<string | null> | string | null;
+  /**
+   * A recording was filed as proof. No id: the caller is the service's
+   * analytics emitter, and a scratch file that was not filed says nothing.
+   */
+  onRecordingFiled?: (() => void) | null;
 };
 
 export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
@@ -308,6 +313,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         return null;
       });
       proofArtifactId = filed?.artifacts[0]?.id ?? null;
+      if (proofArtifactId) deps.onRecordingFiled?.();
     }
     const status: MacDesktopRecordingStatus = {
       ...finished,

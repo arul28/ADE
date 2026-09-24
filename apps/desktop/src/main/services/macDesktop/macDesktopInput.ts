@@ -80,6 +80,11 @@ export type MacDesktopInputDeps = {
   toServiceError: (error: unknown) => Error;
   /** Mints the service's own error, so this module owns no error class. */
   serviceError: (code: string, message: string) => Error;
+  /**
+   * An acting command succeeded for a caller that is not a human takeover.
+   * No id: the service's analytics emitter is the only consumer.
+   */
+  onAgentActed?: (() => void) | null;
 };
 
 export function createMacDesktopInput(deps: MacDesktopInputDeps) {
@@ -300,6 +305,10 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     ownership.touchDisplay(laneId);
     deps.noteTurnActivity(laneId, args.chatSessionId);
     if (failure) throw failure;
+    // A human takeover always carries a controller id; the action bus strips
+    // that field from every agent-shaped caller. The fast path never reaches
+    // here, so a person's pointer does not count as an agent driving.
+    if (!args.controllerId?.trim()) deps.onAgentActed?.();
     // The one early return. Everything above it — the lease check, the driver
     // call, the activity notes — is identical; what a silent call skips is the
     // capture, the AX walk, the `observation` event and the caption that would
