@@ -235,6 +235,20 @@ import { ScheduledWorkLine } from "./ScheduledWorkLine";
 
 export { deriveTranscriptToolActivity, deriveTurnStartedAtMs, stabilizeTranscriptToolActivity } from "./chatTranscriptPresentation";
 export { sameKeyList, sameMapContents, sameSetContents } from "../../lib/stableIdentity";
+
+const warnedDuplicateRowKeys = new Set<string>();
+
+/** Dev-only: the virtualizer keys rows by `row.key`, so a duplicate renders ghost rows. */
+function warnOnDuplicateRowKeys(keys: readonly string[]): void {
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (seen.has(key) && !warnedDuplicateRowKeys.has(key)) {
+      warnedDuplicateRowKeys.add(key);
+      console.warn(`[chat] duplicate transcript row key: ${key}`);
+    }
+    seen.add(key);
+  }
+}
 export {
   calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
@@ -6098,7 +6112,11 @@ function AgentChatMessageListMain({
   // change, the fresh array is returned and every downstream memo/effect
   // recomputes exactly as before.
   const groupedRowKeys = useStableIdentity(
-    useMemo(() => groupedRows.map((row) => row.key), [groupedRows]),
+    useMemo(() => {
+      const keys = groupedRows.map((row) => row.key);
+      if (import.meta.env.DEV) warnOnDuplicateRowKeys(keys);
+      return keys;
+    }, [groupedRows]),
     sameKeyList,
   );
   const backgroundJobGroupKeyByMemberKey = backgroundJobGroupKeyByMemberKeyRef.current;

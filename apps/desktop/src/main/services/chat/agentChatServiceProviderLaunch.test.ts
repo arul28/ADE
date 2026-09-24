@@ -518,6 +518,38 @@ describe("Pi follows the chat's effort and names another provider's route", () =
     service.forceDisposeAll();
   });
 
+  it.each([
+    { label: "moves the row inline when the worker takes it", fails: false, states: ["accepted", "inline"] },
+    { label: "fails the row and rethrows when the worker throws", fails: true, states: ["accepted", "failed"] },
+  ])("shows a Pi steer as accepted before the worker answers, then $label", async ({ fails, states }) => {
+    let releaseTurn!: () => void;
+    const pooled = installFakePiWorker(() => new Promise((resolve) => { releaseTurn = () => resolve({}); }));
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await createPiSession(service);
+    const rowStates = () => events
+      .filter((event) => event.event.type === "user_message" && event.event.text === "Also check the docs.")
+      .map((event) => (event.event.type === "user_message" ? event.event.deliveryState : undefined));
+    let statesWhileWorkerDecides: unknown[] = [];
+    pooled.steer = vi.fn(async () => {
+      statesWhileWorkerDecides = rowStates();
+      if (fails) throw new Error("Pi worker gone");
+      return {};
+    });
+
+    await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
+    await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalled());
+    const steering = service.steer({ sessionId: session.id, text: "Also check the docs." });
+    if (fails) await expect(steering).rejects.toThrow("Pi worker gone");
+    else await expect(steering).resolves.toMatchObject({ queued: false });
+
+    expect(pooled.steer).toHaveBeenCalledTimes(1);
+    expect(statesWhileWorkerDecides).toEqual(["accepted"]);
+    expect(rowStates()).toEqual(states);
+    releaseTurn();
+    service.forceDisposeAll();
+  });
+
   it("logs a Pi turn another provider answered, though the model name is the same", async () => {
     installFakePiWorker(async (pooled) => {
       pooled.bridge.onEvent?.({
