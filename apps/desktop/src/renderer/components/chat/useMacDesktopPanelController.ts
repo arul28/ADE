@@ -41,8 +41,9 @@ import { macDesktopClaimAppIcons } from "./macDesktopClaimPicker.logic";
 import { macDesktopErrorText } from "./macDesktopErrorText";
 import { useMacDesktopMachineFacts } from "./useMacDesktopMachineFacts";
 import { macDesktopParkedWindows } from "./macDesktopStrip";
+import { Z_LAYERS } from "../ui/zLayers";
 
-export const MAC_DESKTOP_FULLSCREEN_Z = 40_000;
+export const MAC_DESKTOP_FULLSCREEN_Z = Z_LAYERS.macDesktop;
 
 /**
  * A video that has not started after this long is not coming.

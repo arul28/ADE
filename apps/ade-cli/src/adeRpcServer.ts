@@ -67,6 +67,7 @@ import {
   type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
 import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
+import { isTrackedAgentCliToolType } from "../../desktop/src/shared/types/sessions";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -2926,6 +2927,22 @@ function ensurePtyTargetAuthorized(
   }
 }
 
+function ensureTrackedCliTargetAuthorized(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  targetSessionId: string | null,
+): void {
+  if (
+    callerHasRoleAtLeast(session.identity.role, "cto")
+    || isUnboundAdeCliCaller(session)
+    || !targetSessionId
+  ) return;
+  const target = getPtySessionForAuthorization(runtime, targetSessionId);
+  if (!target || !isTrackedAgentCliToolType(target.toolType ?? null)) return;
+  ensurePtyTargetAuthorized(runtime, session, method, { sessionId: targetSessionId });
+}
+
 function listAuthorizedPtySessions(
   runtime: AdeRuntime,
   session: SessionState,
@@ -4854,6 +4871,7 @@ async function runTool(args: {
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
+    let transformScopedResult: ((value: unknown) => unknown) | null = null;
     /** Set by the browser branch; fired again once the dispatch has returned. */
     let noteBrowserActivityOnSuccess: (() => void) | null = null;
     /** Set only when the pre-dispatch edge is what opened the presence window. */
@@ -4892,6 +4910,30 @@ async function runTool(args: {
           : { dedupeKey }),
       };
     }
+    if (!callerIsCto && domain === "chat" && action === "listCliChildSessions") {
+      const childArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      const laneIds = authorizedPtyLaneIds(runtime, session);
+      const requestedLaneId = extractLaneId(childArgs);
+      const localCliUser = isUnboundAdeCliCaller(session);
+      if (!localCliUser && (!laneIds.size || (requestedLaneId && !laneIds.has(requestedLaneId)))) {
+        ptyAccessDenied(`run_ade_action:${domain}.${action}`);
+      }
+      scopedObjectArgs = {
+        ...childArgs,
+        ...(requestedLaneId ? { laneId: requestedLaneId } : !localCliUser && laneIds.size === 1 ? { laneId: [...laneIds][0] } : {}),
+      };
+      transformScopedResult = (value) => Array.isArray(value)
+        ? localCliUser
+          ? value
+          : value.filter((entry) => isRecord(entry) && typeof entry.laneId === "string" && laneIds.has(entry.laneId))
+        : [];
+    } else if (!callerIsCto && domain === "chat" && action === "getTurnStatus") {
+      const targetSessionId = typeof argsList?.[0] === "string"
+        ? argsList[0]
+        : asOptionalTrimmedString(rawObjectArgs.sessionId);
+      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
+    }
+
     if (domain === "chat" && (action === "readTranscript" || action === "readTranscriptPage")) {
       const chatArgs = requireObjectArgsForScopedAdeAction(
         domain,
@@ -4901,6 +4943,8 @@ async function runTool(args: {
         rawObjectArgs,
       );
       const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      const targetSessionId = asOptionalTrimmedString(chatArgs.sessionId) || callerSessionId;
+      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
       scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
         ? chatArgs
         : { ...chatArgs, sessionId: callerSessionId };
@@ -5207,6 +5251,24 @@ async function runTool(args: {
     }
     noteBrowserActivityOnSuccess?.();
     await rememberCaptureActionResult(runtime, domain, action, result);
+    if (transformScopedResult) result = transformScopedResult(result);
+    if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
+      const sessionId = typeof result.sessionId === "string"
+        ? result.sessionId
+        : typeof scopedObjectArgs.sessionId === "string"
+          ? scopedObjectArgs.sessionId
+          : null;
+      if (sessionId) {
+        try {
+          runtime.agentChatService?.notifyParentOfCliChildSpawn?.(sessionId, { resumed: true });
+        } catch (error) {
+          runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
     const drivenDevice = isUserClient
       ? null
       : domain === "ios_simulator" && APPLE_AGENT_DRIVING_ACTIONS.has(action)
@@ -5260,6 +5322,7 @@ async function runTool(args: {
 
   if (name === "start_cli_session") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const requestedChatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
     const provider = parseCliSessionProvider(toolArgs.provider);
     const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
     const droidPermissionMode = parseCliSessionDroidPermissionMode(toolArgs.droidPermissionMode);
@@ -5272,6 +5335,16 @@ async function runTool(args: {
     const orchestrationParentSessionId = toolArgs.orchestrationParentSessionId == null
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
+    if (!callerHasRoleAtLeast(session.identity.role, "cto") && !isUnboundAdeCliCaller(session)) {
+      ensurePtyCreateAuthorized(runtime, session, "start_cli_session", {
+        laneId,
+        ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
+      });
+      const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      if (orchestrationParentSessionId && orchestrationParentSessionId !== callerChatSessionId) {
+        ptyAccessDenied("start_cli_session");
+      }
+    }
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
     const instanceId = toolArgs.instanceId == null
       ? null
@@ -5411,7 +5484,7 @@ async function runTool(args: {
         ? { spawnLineage: { parentChatSessionId: orchestrationParentSessionId, spawnKind } }
         : {}),
       ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
-      ...(asOptionalTrimmedString(toolArgs.chatSessionId) ? { chatSessionId: asOptionalTrimmedString(toolArgs.chatSessionId) } : {}),
+      ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
       ...launchFields,
     });
 
@@ -5419,10 +5492,10 @@ async function runTool(args: {
 
     const autoTitleApplied = Boolean(initialInputMeta.promptTitle) && title === initialInputMeta.promptTitle;
     if (initialInputMeta.goal || autoTitleApplied) {
-      const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+      const createdSession = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
       const metaPatch: Parameters<typeof runtime.sessionService.updateMeta>[0] = {
         sessionId: created.sessionId,
-        ...(initialInputMeta.goal && !session?.goal?.trim().length ? { goal: initialInputMeta.goal } : {}),
+        ...(initialInputMeta.goal && !createdSession?.goal?.trim().length ? { goal: initialInputMeta.goal } : {}),
         ...(autoTitleApplied ? { title: initialInputMeta.promptTitle!, manuallyNamed: false } : {}),
       };
       if (metaPatch.goal !== undefined || metaPatch.title !== undefined || metaPatch.manuallyNamed !== undefined) {
@@ -5430,8 +5503,24 @@ async function runTool(args: {
       }
     }
 
-    const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
-    const enrichedSession = session ? ptyService.enrichSessions([session])[0] ?? session : session;
+    // A parented agent CLI is a PTY session, not a chat, so the chat create
+    // path never tells the parent. Land the same spawn chip + subagent card a
+    // chat child gets; the child's PTY exit closes that card later. After the
+    // title/goal patch above, so the card is named like the sidebar row.
+    if (isCliProvider(provider) && orchestrationParentSessionId) {
+      try {
+        runtime.agentChatService?.notifyParentOfCliChildSpawn?.(created.sessionId);
+      } catch (error) {
+        runtime.logger?.warn?.("start_cli_session.parent_notify_failed", {
+          sessionId: created.sessionId,
+          parentSessionId: orchestrationParentSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const createdSession = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+    const enrichedSession = createdSession ? ptyService.enrichSessions([createdSession])[0] ?? createdSession : createdSession;
     return {
       provider,
       laneId,
@@ -5450,12 +5539,23 @@ async function runTool(args: {
   if (name === "send_to_session") {
     const sessionId = assertNonEmptyString(toolArgs.sessionId, "sessionId");
     const text = assertNonEmptyString(toolArgs.text, "text");
-    return await runtime.ptyService.sendToSession({
+    const result = await runtime.ptyService.sendToSession({
       sessionId,
       text,
       cols: clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 400),
       rows: clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200),
     });
+    if (result.resumed) {
+      try {
+        runtime.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
   }
 
   if (name === "get_ade_action_status") {
@@ -7214,11 +7314,33 @@ export function createAdeRpcRequestHandler(args: {
       }
       if (method === "pty.sendToSession") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
+        const result = await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
+        if (result.resumed) {
+          try {
+            runtime.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+          } catch (error) {
+            runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+              sessionId: result.sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return result;
       }
       if (method === "pty.resumeSession") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runtime.ptyService.resumeSession(ptyArgs as Parameters<typeof runtime.ptyService.resumeSession>[0]);
+        const result = await runtime.ptyService.resumeSession(ptyArgs as Parameters<typeof runtime.ptyService.resumeSession>[0]);
+        if (result.resumed) {
+          try {
+            runtime.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+          } catch (error) {
+            runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+              sessionId: result.sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return result;
       }
       if (method === "pty.write") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);

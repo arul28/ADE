@@ -702,6 +702,14 @@ export function mergeAttachments(
 export type AgentChatPlanStep = {
   text: string;
   status: "pending" | "in_progress" | "completed" | "failed";
+  /** ACP plan-entry priority, carried through when the agent reports one. */
+  priority?: "high" | "medium" | "low";
+  /**
+   * The provider cancelled this step (Cursor `cancelled`). The wire status is
+   * `completed` so clients that predate the flag read it as settled; the task
+   * list shows it as skipped.
+   */
+  cancelled?: true;
 };
 
 export type CodexPlanState = "active" | "delta" | "updated" | "complete";
@@ -720,6 +728,29 @@ export type CodexWebSearchResult = {
   url?: string;
   title?: string;
   snippet?: string;
+};
+
+/**
+ * One source a provider reported using: a web result, a fetched page, a
+ * citation in the answer, or a file. Adapters attach these to `tool_result`
+ * (web tools) and to `sources` events (answer citations). Renderers derive the
+ * Sources list from them with `shared/chatSources.ts`; nothing stores them
+ * separately. Optional everywhere, so older clients ignore them.
+ */
+export type ChatSourceRefKind = "web_search_result" | "fetched_url" | "citation" | "file";
+
+export type ChatSourceRef = {
+  kind: ChatSourceRefKind;
+  url?: string;
+  title?: string;
+  snippet?: string;
+  path?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  /** The search query that produced this result, when known. */
+  query?: string;
+  /** True when the answer text cites this source. */
+  cited?: boolean;
 };
 
 export type AgentChatMcpAppContext = {
@@ -822,6 +853,8 @@ export type AgentChatCompletionReport = {
 };
 
 export type AgentChatRuntime = "local" | "cloud";
+
+export type AgentChatTextPhase = "commentary" | "final_answer";
 
 /** Any provider the session importer lists can be opened as an ADE chat. */
 export type AgentChatImportProvider = ExternalSessionProvider;
@@ -1065,6 +1098,11 @@ export type AgentChatEvent =
       originTimestamp?: string;
       turnId?: string;
       itemId?: string;
+      /**
+       * Provider label for interim narration vs the turn's answer. Only Codex
+       * sends it today, and not for every model; absent means unknown.
+       */
+      phase?: AgentChatTextPhase;
       runtime?: AgentChatRuntime;
     }
   | {
@@ -1100,6 +1138,10 @@ export type AgentChatEvent =
       status?: "running" | "completed" | "failed" | "interrupted";
       structured?: unknown;
       toolResultMeta?: unknown;
+      /** Web results/pages this tool returned (provider web tools). Bounded by the adapter. */
+      sources?: ChatSourceRef[];
+      /** Additional refs omitted from the mobile-only source preview. Never stored. */
+      sourceRefsOmittedForMobile?: number;
       timedOutAfterMs?: number;
       backgroundCwdHint?: string;
       grepTotals?: {
@@ -1383,6 +1425,14 @@ export type AgentChatEvent =
         id: string;
         description: string;
         status: "pending" | "in_progress" | "completed";
+        /** Claude's present-continuous label ("Running tests") for the running item. */
+        activeForm?: string;
+        /**
+         * The provider cancelled this item (OpenCode/Cursor `cancelled`). The
+         * wire status stays `completed` because older clients (iOS decodes the
+         * status as a closed enum) know no cancelled state.
+         */
+        cancelled?: true;
       }>;
       turnId?: string;
     }
@@ -1390,6 +1440,11 @@ export type AgentChatEvent =
       type: "subagent_started";
       taskId: string;
       agentId?: string;
+      /** Runtime provider of an ADE chat spawned as this child. Runtime-native
+       * agents leave this unset and inherit their host session's provider. */
+      provider?: string;
+      /** True when a completed tracked CLI child is being resumed as a new run. */
+      resumed?: boolean;
       /** Claude SDK parent session that owns this native child transcript. */
       providerSessionId?: string;
       parentAgentId?: string | null;
@@ -1413,6 +1468,8 @@ export type AgentChatEvent =
       type: "subagent_progress";
       taskId: string;
       agentId?: string;
+      /** Explicit child provider when this lifecycle row belongs to an ADE chat. */
+      provider?: string;
       parentAgentId?: string | null;
       agentType?: string;
       model?: string | null;
@@ -1434,6 +1491,8 @@ export type AgentChatEvent =
       type: "subagent_result";
       taskId: string;
       agentId?: string;
+      /** Explicit child provider when this lifecycle row belongs to an ADE chat. */
+      provider?: string;
       parentAgentId?: string | null;
       agentType?: string;
       model?: string | null;
@@ -1466,6 +1525,7 @@ export type AgentChatEvent =
   | {
       type: "subagent.started";
       agentId: string;
+      provider?: string;
       parentToolUseId?: string | null;
       agentType?: string;
       model?: string | null;
@@ -1478,6 +1538,7 @@ export type AgentChatEvent =
   | {
       type: "subagent.progress";
       agentId: string;
+      provider?: string;
       parentToolUseId?: string | null;
       agentType?: string;
       model?: string | null;
@@ -1491,6 +1552,7 @@ export type AgentChatEvent =
   | {
       type: "subagent.completed";
       agentId: string;
+      provider?: string;
       parentToolUseId?: string | null;
       agentType?: string;
       model?: string | null;
@@ -1721,6 +1783,19 @@ export type AgentChatEvent =
   | {
       type: "completion_report";
       report: AgentChatCompletionReport;
+      turnId?: string;
+    }
+  | {
+      /**
+       * Data-only: sources an assistant message cited (Claude text-block
+       * citations, Codex memory citations, ACP resource links). No transcript
+       * row on any surface; Sources, the turn chip, and the fold count read it.
+       */
+      type: "sources";
+      sources: ChatSourceRef[];
+      /** Additional refs omitted from the mobile-only source preview. Never stored. */
+      sourceRefsOmittedForMobile?: number;
+      itemId?: string;
       turnId?: string;
     }
   | {
@@ -2739,12 +2814,16 @@ export type AgentChatTranscriptEntry = {
   turnId?: string;
   messageId?: string;
   itemId?: string;
+  /** Codex narration/final label, kept separate through transcript flattening. */
+  phase?: AgentChatTextPhase;
 };
 
 export type AgentChatSubagentSnapshot = {
   taskId: string;
   agentId?: string;
   parentAgentId?: string | null;
+  /** Explicit runtime for a spawned ADE chat; null for runtime-native tasks. */
+  provider?: string | null;
   agentType?: string;
   label?: string | null;
   parentToolUseId?: string | null;

@@ -1322,7 +1322,7 @@ function clampDims(cols: number, rows: number): { cols: number; rows: number } {
 function statusFromExit(exitCode: number | null): TerminalSessionStatus {
   if (exitCode == null) return "completed";
   if (exitCode === 0) return "completed";
-  if (exitCode === 130 || exitCode === 143) return "disposed";
+  if (exitCode === 130 || exitCode === 143 || exitCode === 0xC000013A || exitCode === -1073741510) return "disposed";
   return "failed";
 }
 
@@ -2499,6 +2499,7 @@ export function createPtyService({
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
   const exitListeners = new Set<PtyExitListener>();
+  const transcriptDependentWorkBySession = new Map<string, Promise<void>>();
   const terminalChatSessions = new Map<string, string>();
   const activeTerminalByChatSession = new Map<string, string>();
   const activeAuxiliaryTerminalByChatSession = new Map<string, string>();
@@ -3232,22 +3233,39 @@ export function createPtyService({
     entry: Pick<PtyEntry, "sessionId" | "toolTypeHint" | "transcriptStream" | "transcriptRolloverPromise" | "laneWorktreePath" | "boundCwd" | "piLaunchEnv">,
     reason: "close" | "dispose" | "orphan-dispose",
   ): void => {
-    void Promise.resolve(entry.transcriptRolloverPromise)
+    const sessionId = entry.sessionId;
+    if (transcriptDependentWorkBySession.has(sessionId)) return;
+    const work = Promise.resolve(entry.transcriptRolloverPromise)
       .catch(() => {})
       .then(() => endTranscriptStream(entry.transcriptStream))
-      .finally(() => {
-        backfillResumeTargetFromTranscriptBestEffort(
-          entry.sessionId,
+      .then(async () => {
+        try {
+          await tryBackfillResumeTarget(
+          sessionId,
           entry.toolTypeHint,
           reason,
           entry.boundCwd,
           entry.piLaunchEnv,
-        );
+          );
+        } catch (err) {
+          logger.warn("pty.resume_target_backfill_failed", {
+            sessionId,
+            toolType: entry.toolTypeHint,
+            reason,
+            err: String(err),
+          });
+        }
         summarizeSessionBestEffort(entry.sessionId, {
           laneWorktreePath: entry.laneWorktreePath,
           boundCwd: entry.boundCwd,
         });
       });
+    transcriptDependentWorkBySession.set(sessionId, work);
+    void work.finally(() => {
+      if (transcriptDependentWorkBySession.get(sessionId) === work) {
+        transcriptDependentWorkBySession.delete(sessionId);
+      }
+    }).catch(() => {});
   };
 
   const disableTranscriptWrite = (entry: PtyEntry, err: unknown): void => {
@@ -5820,6 +5838,11 @@ export function createPtyService({
   };
 
   const service = {
+    async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
+      const work = transcriptDependentWorkBySession.get(sessionId.trim());
+      if (work) await work;
+    },
+
     async ensureResumeTargets(sessionIds: string[]): Promise<void> {
       const uniqueSessionIds = Array.from(new Set(
         sessionIds

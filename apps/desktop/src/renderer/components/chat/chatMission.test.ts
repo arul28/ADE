@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
-import { deriveMissionSnapshot, missionFeatureCounts, orderMissionFeatures } from "./chatMission";
+import { deriveMissionSnapshot, missionFeatureCounts, missionHasContent, orderMissionFeatures } from "./chatMission";
 
 function env(event: AgentChatEventEnvelope["event"], seq: number): AgentChatEventEnvelope {
   return { sessionId: "s1", timestamp: `2026-06-05T00:00:0${seq}.000Z`, sequence: seq, event } as AgentChatEventEnvelope;
@@ -35,6 +35,10 @@ describe("deriveMissionSnapshot", () => {
   it("is non-null even if only one mission event kind appears", () => {
     const snapshot = deriveMissionSnapshot([env({ type: "mission_state", state: "awaiting_input" }, 0)]);
     expect(snapshot).toEqual({ state: "awaiting_input", features: [], progress: [] });
+    // A state alone has nothing to list, so the drawer shows no Mission section.
+    expect(missionHasContent(snapshot!)).toBe(false);
+    expect(missionHasContent({ state: null, features: [], progress: [{ type: "worker_started" }] })).toBe(true);
+    expect(missionHasContent({ state: null, features: [{ id: "f1", description: "A", status: "pending" }], progress: [] })).toBe(true);
   });
 });
 

@@ -12,6 +12,7 @@ import {
   resolveSmartLinkPreview,
   smartLinkPreviewTesting,
 } from "./smartLinkPreviewService";
+import { pinnedLookup } from "../net/publicHostGuard";
 
 function fakeIncomingMessage(headers: IncomingMessage["headers"] = {}): IncomingMessage & PassThrough {
   return Object.assign(new PassThrough(), { headers, statusCode: 200 }) as IncomingMessage & PassThrough;
@@ -65,6 +66,23 @@ describe("smart links", () => {
     expect(smartLinkPreviewTesting.isPublicIpAddress("::ffff:a9fe:a9fe")).toBe(false);
     expect(smartLinkPreviewTesting.isPublicIpAddress("2002:a9fe:a9fe::1")).toBe(false);
     expect(smartLinkPreviewTesting.isPublicIpAddress("2001:db8::1")).toBe(false);
+  });
+
+  it("answers the pinned address in both of Node's lookup call shapes", () => {
+    // Node 20+ connects with happy-eyeballs and asks `{ all: true }`, which
+    // needs an array. Answering it with a bare address failed every generic
+    // preview (and favicon) fetch with "Invalid IP address: undefined".
+    const lookup = pinnedLookup("93.184.216.34", 4) as unknown as (
+      hostname: string,
+      options: { all?: boolean },
+      callback: (...args: unknown[]) => void,
+    ) => void;
+    const all = vi.fn();
+    const single = vi.fn();
+    lookup("example.com", { all: true }, all);
+    lookup("example.com", {}, single);
+    expect(all).toHaveBeenCalledWith(null, [{ address: "93.184.216.34", family: 4 }]);
+    expect(single).toHaveBeenCalledWith(null, "93.184.216.34", 4);
   });
 
   it("rejects declared and streamed responses that exceed the byte limit", async () => {

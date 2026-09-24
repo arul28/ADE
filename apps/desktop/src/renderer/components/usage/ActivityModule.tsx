@@ -798,6 +798,7 @@ export function ActivityModule({
   onPresetChange,
   showRangeControl = true,
   className = "",
+  fillSlot = false,
 }: {
   stats: AdeUsageStats | null;
   loading?: boolean;
@@ -806,6 +807,8 @@ export function ActivityModule({
   onPresetChange?: (preset: AdeUsageRangePreset) => void;
   showRangeControl?: boolean;
   className?: string;
+  /** Stretch the card to the full slot instead of hugging the heatmap. */
+  fillSlot?: boolean;
 }) {
   const reduced = usePrefersReducedMotion();
   const theme = useAppStore((state) => state.theme);
@@ -861,7 +864,11 @@ export function ActivityModule({
   );
   // Held across tabs so switching to Tokens does not resize the card underneath
   // the pointer; the bar charts just fill whatever width the heatmap earned.
-  const cardWidth = slotWidth > 0 && heatmapLayout.width > 0
+  // `fillSlot` hands width to the caller: the new-chat surface lines the card
+  // up with the launch shelf above it, and the heatmap centres inside.
+  const cardWidth = fillSlot
+    ? "100%"
+    : slotWidth > 0 && heatmapLayout.width > 0
     ? Math.min(slotWidth, Math.max(MIN_CARD_WIDTH, heatmapLayout.width + cardPaddingX))
     : undefined;
 
@@ -1009,8 +1016,8 @@ export function WorkActivityModule() {
     persistActivityPatch({ preset: next });
   }, []);
 
-  // Width is the launch-shelf slot the parent gives this module. The card still
-  // sizes to its heatmap inside that cap.
+  // Width is the launch-shelf slot the parent gives this module, and the card
+  // fills it so its edges line up with the shelf above.
   return (
     <ActivityModule
       stats={stats}
@@ -1019,6 +1026,7 @@ export function WorkActivityModule() {
       preset={preset}
       onPresetChange={changePreset}
       className="mt-11 w-full"
+      fillSlot
     />
   );
 }

@@ -297,6 +297,31 @@ describe("codexTurnsToChatEvents", () => {
     });
   });
 
+  it("keeps the Codex commentary/final-answer phase on imported assistant text", () => {
+    const events = codexTurnsToChatEvents([{
+      id: "turn-phase",
+      items: [
+        { type: "agentMessage", id: "item-commentary", text: "Checking the tests.", phase: "commentary" },
+        { type: "agentMessage", id: "item-unknown", text: "No label.", phase: null },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "All green." }], phase: "final_answer" },
+        { type: "agentMessage", id: "item-bogus", text: "Odd label.", phase: "summary" },
+      ],
+    }], {
+      ...baseOptions,
+      provider: "codex",
+      externalSessionId: "thread_phase",
+    });
+
+    const texts = events.flatMap((envelope) => envelope.event.type === "text" ? [envelope.event] : []);
+    expect(texts.map((event) => [event.text, event.phase])).toEqual([
+      ["Checking the tests.", "commentary"],
+      ["No label.", undefined],
+      ["All green.", "final_answer"],
+      ["Odd label.", undefined],
+    ]);
+    expect(texts[1]).not.toHaveProperty("phase");
+  });
+
   it("maps rollout-style message and function call items", () => {
     const turns = [{
       id: "turn-2",

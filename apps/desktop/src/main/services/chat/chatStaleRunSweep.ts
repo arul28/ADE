@@ -76,6 +76,13 @@ export type StaleRunSweepDeps<TManaged extends StaleRunSweepManagedSession> = {
   listChatSessionIds: (limit: number) => string[];
   /** One chat session row by id; null when it is gone or is not a chat. */
   getChatSessionRow: (sessionId: string) => StaleRunSweepChatRow | null;
+  /**
+   * True when the row's child is terminalized by another path — a tracked CLI
+   * child, whose PTY exit reports its own result. The sweep leaves such a row
+   * alone (the hook starts that path for an ended child) instead of reading
+   * the missing chat row as "the subagent chat is gone".
+   */
+  deferChildTerminal?: (childSessionId: string) => boolean;
   /** Windows-safe liveness of the brain that owns a chat's runtime. */
   chatRuntimeOwnerLive: (sessionId: string) => boolean;
   /**
@@ -130,8 +137,13 @@ function collectStaleRows(envelopes: AgentChatEventEnvelope[]): StaleRows {
     background: deriveBackgroundItems(envelopes).filter(
       (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",
     ),
+    // An agent whose terminal result is already in the stream is not stale,
+    // whatever a late progress echo did to its status: closing it again is
+    // what stamped "stopped · the ADE brain restarted" on finished agents.
     subagents: subagentSnapshotsFromEvents(envelopes).filter(
-      (snapshot) => snapshot.kind === "subagent" && snapshot.status === "running",
+      (snapshot) => snapshot.kind === "subagent"
+        && snapshot.status === "running"
+        && !snapshot.endedAt,
     ),
   };
 }
@@ -149,6 +161,7 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     readFullTranscriptEnvelopesForSessionId,
     listChatSessionIds,
     getChatSessionRow,
+    deferChildTerminal,
     chatRuntimeOwnerLive,
     chatRuntimeAdoptable,
     peekManagedSession,
@@ -192,6 +205,11 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
   ): { state: OrphanChildChatState; report: string | null } | null => {
     const candidate = orphanRowChildSessionCandidate(rowId);
     if (!candidate || candidate === parentSessionId) return null;
+    try {
+      if (deferChildTerminal?.(candidate)) return { state: "active", report: null };
+    } catch {
+      // A failed deferral check falls through to the chat verdict.
+    }
     let row: StaleRunSweepChatRow | null = null;
     try {
       row = getChatSessionRow(candidate);

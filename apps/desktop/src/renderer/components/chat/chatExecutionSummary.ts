@@ -7,26 +7,16 @@ import type {
 } from "../../../shared/types";
 import {
   isAgentChatWorkflowProgress,
-  latestPlan,
+  isGenericSubagentName,
   normalizeSubagentLifecycleEvent,
-  type ChatInfoPlan,
   type NormalizedSubagentLifecycleEvent,
 } from "../../../shared/chatSubagents";
 
-export type { ChatInfoPlan, ChatInfoPlanStep } from "../../../shared/chatSubagents";
 export {
   deriveScheduledWorkSnapshots,
   mergeManagedScheduledWorkSnapshots,
   type ChatScheduledWorkSnapshot,
 } from "../../../shared/chatScheduledWork";
-
-/**
- * Latest plan snapshot derived from the event stream. Returns null when the
- * provider has not emitted a plan event for this chat.
- */
-export function derivePlan(events: AgentChatEventEnvelope[]): ChatInfoPlan {
-  return latestPlan(events);
-}
 
 export type ChatSubagentSnapshot = {
   taskId: string;
@@ -288,7 +278,12 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         parentAgentId: event.parentAgentId ?? existing?.parentAgentId ?? null,
-        description: event.description?.trim() || existing?.description || "Subagent task",
+        // The start names the task; a progress `description` is Claude's current
+        // activity ("Reading …"), which must not rename the agent in Chat Info.
+        // It only fills in when no start named it.
+        description: (existing?.description && !isGenericSubagentName(existing.description)
+          ? existing.description
+          : event.description?.trim()) || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
@@ -366,31 +361,6 @@ export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnD
     }
   }
   return summaries;
-}
-
-export type TodoItemSnapshot = {
-  id: string;
-  description: string;
-  status: "pending" | "in_progress" | "completed";
-};
-
-/**
- * Returns the latest todo_update snapshot from the event stream.
- * Each todo_update replaces the full list, so we just take the last one.
- */
-export function deriveTodoItems(events: AgentChatEventEnvelope[]): TodoItemSnapshot[] {
-  let latest: TodoItemSnapshot[] = [];
-  for (const envelope of events) {
-    const event = envelope.event;
-    if (event.type === "todo_update") {
-      latest = event.items.map((item) => ({
-        id: item.id,
-        description: item.description,
-        status: item.status,
-      }));
-    }
-  }
-  return latest;
 }
 
 export type SubagentTimelineEntry = {

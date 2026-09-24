@@ -259,7 +259,17 @@ and in tests.
   `ade new chat --mode cli` forwards the parent chat id and spawn kind for
   agent providers; `start_cli_session` validates them and persists them in
   `TerminalResumeMetadata` without assigning `chatSessionId`. Plain shell
-  sessions omit the fields.
+  sessions omit the fields. After the PTY is created, `start_cli_session` calls
+  `agentChatService.notifyParentOfCliChildSpawn`, which lands the same spawn
+  chip and `chat:<childId>` subagent card in the parent that a chat child gets.
+- `apps/desktop/src/main/services/chat/cliChildSessions.ts` — the pure half of
+  the CLI child bridge: lineage from the terminal row, the end verdict
+  (`completed` / `failed` / `disposed`·`detached` → stopped), the run key
+  (`cli-exit:<endedAt>`), and the report (the CLI's own last message from the
+  Codex rollout or Claude Code JSONL when ADE can locate it, else the last
+  meaningful terminal lines). `agentChatService` subscribes to `ptyService.onExit`
+  and closes the parent's card through the same delivery path chat children use;
+  `ade chat status` / `ade chat read` / `ade chat list` answer for these ids.
 - `apps/ade-cli/src/tuiClient/closedCliSessions.ts`,
   `apps/ade-cli/src/tuiClient/components/Drawer.tsx` — ADE Code projects spawn
   lineage from closed tracked CLI resume metadata and shows compact `sub` /

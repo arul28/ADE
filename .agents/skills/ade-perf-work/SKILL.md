@@ -484,3 +484,41 @@ Do not expose the raw `Error invoking remote method ...` prefix in Work Git hist
   display refresh, which is very expensive on the 240Hz panel this repo is
   developed on, and an uncapped skeleton turns a wedged machine into a grid of
   shimmering placeholders.
+
+## Chat transcript: stable row keys and DOM prepend anchoring
+
+Row keys used to embed the event's index in the loaded window
+(`${sessionId}:${index}:${timestamp}`). A 30-event prepend kept 0 of 30 keys,
+so every older page, background-chat trim to 1,000 events, or snapshot merge
+dropped every measured height (all rows back to the estimate), remounted every
+row (replayed fade-ins and async highlighting), and defeated the key-matching
+prepend anchor. With the auto-loader then firing again near the top, pages
+chained and the thread jumped. Preserve all of these:
+
+- **Keys come from identity.** `allocateTranscriptEventRowKey` builds
+  `<session>:<type>:m:<messageId>[:<phase>]`, `<session>:<type>:i:<turn>:<item>`,
+  or `<session>:<type>@<timestamp>`, plus `#n` for repeats of one base. It is
+  allocated once per event from `context.eventRowKeyOrdinals`, so the
+  incremental collapse and a full recollapse agree (parity test) and no
+  per-update `JSON.stringify` is needed. Never reintroduce an index into a row
+  key.
+- **Anchor by the DOM, not by keys.** Before a commit that changes the drawn
+  row keys under a scrolled-up reader, the render pass reads up to four
+  on-screen rows' tops (`readVisibleChatRows`); the list anchor layout effect
+  moves `scrollTop` by exactly the first surviving row's DOM delta. The
+  virtualized window for that commit is computed from the anchor's model
+  position (`windowScrollTop`) so the row is mounted. Keep `overflow-anchor:
+  none`; the list owns anchoring.
+- **Restore holds, then releases paging.** Scroll memory saves the DOM row,
+  offset, and distance from the bottom; the restore re-applies each frame until
+  two stable frames, is cancelled by wheel/touch/pointerdown/scroll keys, and
+  blocks older-history loading until it settles. Automatic older-page triggers
+  get one page per reader scroll (`MAX_CHAINED_AUTO_OLDER_PAGES`); the
+  underfilled-pane backfill is exempt.
+- **Heights.** Straddling rows (`rowTop < scrollTop`) reconcile too; unmeasured
+  rows use per-kind estimates cached per key; `HighlightedCode` renders cache
+  hits synchronously and gives the plain and Shiki `<pre>` the same box.
+
+Tests: `chatTranscriptRows.test.ts` "row keys are position-independent" and
+`AgentChatMessageList.test.tsx` "stable row keys, list anchoring, and scroll
+restore" (fake per-key layout, both render paths).

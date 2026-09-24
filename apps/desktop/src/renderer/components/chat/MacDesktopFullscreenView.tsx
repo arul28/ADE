@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../ui/cn";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { WORK_TOOL_CHROME_ROW } from "../terminals/workToolChrome";
 import { MacDesktopStatusStrip, type MacDesktopStripMessage } from "./MacDesktopStatusStrip";
 import {
-  MAC_DESKTOP_FULLSCREEN_Z,
   type MacDesktopChromeScope,
   type MacDesktopPanelController,
 } from "./useMacDesktopPanelController";
@@ -34,18 +34,11 @@ export function MacDesktopFullscreenView({
   if (!expanded || typeof document === "undefined") return null;
 
   return createPortal(
+    <ViewportOverlayHost layer="macDesktop">
     <div
       data-testid="mac-desktop-fullscreen"
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        width: "100vw",
-        height: "100vh",
-        zIndex: MAC_DESKTOP_FULLSCREEN_Z,
-        background: "var(--color-bg)",
-      }}
-      className="flex flex-col"
+      style={{ background: "var(--color-bg)" }}
+      className="pointer-events-auto absolute inset-0 flex flex-col"
     >
       <div
         data-testid="mac-desktop-fullscreen-chrome"
@@ -71,7 +64,8 @@ export function MacDesktopFullscreenView({
         {renderCaptureOverlay("fullscreen")}
         {renderVideoOverlay("fullscreen")}
       </div>
-    </div>,
+    </div>
+    </ViewportOverlayHost>,
     document.documentElement,
   );
 }

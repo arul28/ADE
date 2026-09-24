@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 import type { OpenProjectBinding } from "../../../shared/types";
 import { getFocusableElements } from "../ui/dialogFocus";
@@ -127,8 +128,9 @@ function MacDesktopStopConfirmDialog() {
   }, []);
 
   const body = (
+    <ViewportOverlayHost layer="macDesktopDialog">
     <div
-      className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 p-4"
+      className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/60 p-4"
       role="presentation"
       onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}
     >
@@ -185,6 +187,7 @@ function MacDesktopStopConfirmDialog() {
         </footer>
       </section>
     </div>
+    </ViewportOverlayHost>
   );
 
   return typeof document === "undefined" ? body : createPortal(body, document.body);

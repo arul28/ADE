@@ -3,7 +3,9 @@ import type {
   AgentChatMissionFeature,
   AgentChatMissionProgressEntry,
 } from "../../../shared/types";
+import { detectCompactionSignalText } from "../../../shared/contextCompaction";
 import { contextPercentage, liveContextUsageEvent } from "./liveContextUsageEvent";
+import { droidWebToolSourceRefs, isWebFetchToolName, isWebSearchToolName } from "./chatSourceAdapters";
 import {
   isDroidCompactingState,
   normalizeDroidSdkContextStats,
@@ -28,6 +30,8 @@ export type DroidSdkEventMapperState = {
    * model that answered, which a router slot (`routerId: "auto"`) picks.
    */
   servedModelId?: string;
+  /** Inputs of web tools (WebSearch/FetchUrl) by tool-use id, read when their result lands. */
+  webToolInputsByUseId?: Map<string, unknown>;
 };
 
 export function createDroidSdkEventMapperState(): DroidSdkEventMapperState {
@@ -249,6 +253,74 @@ function readMissionProgress(value: unknown): AgentChatMissionProgressEntry[] {
   return out;
 }
 
+type DroidTodoItem = Extract<AgentChatEvent, { type: "todo_update" }>["items"][number];
+
+const DROID_TODO_STATUSES: ReadonlySet<string> = new Set(["pending", "in_progress", "completed"]);
+
+/**
+ * One line of Droid's text checklist: `1. [in_progress] Write the migration`,
+ * `- [x] Done thing`, `[ ] Open thing`, or a bare/numbered line (pending).
+ */
+function parseDroidTodoLine(line: string, index: number): DroidTodoItem {
+  const id = String(index + 1);
+  const status = line.match(/^(?:(?:\d+[.)]\s*)|(?:[-*]\s+))?\[(completed|in_progress|pending)\]\s*(.*)$/);
+  if (status) return { id, status: status[1] as DroidTodoItem["status"], description: status[2]!.trim() || "(no description)" };
+  const checked = line.match(/^(?:(?:\d+[.)]\s*)|(?:[-*]\s+))?\[[xX]\]\s*(.*)$/);
+  if (checked) return { id, status: "completed", description: checked[1]!.trim() || "(no description)" };
+  const unchecked = line.match(/^(?:(?:\d+[.)]\s*)|(?:[-*]\s+))?\[\s*\]\s*(.*)$/);
+  if (unchecked) return { id, status: "pending", description: unchecked[1]!.trim() || "(no description)" };
+  const bare = line.match(/^\d+[.)]\s+(.+)$/)?.[1] ?? line.match(/^[-*]\s+(.+)$/)?.[1] ?? line;
+  return { id, status: "pending", description: bare.trim() };
+}
+
+function parseDroidTodoText(text: string): DroidTodoItem[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map(parseDroidTodoLine);
+}
+
+/**
+ * The list a Droid `TodoWrite` call writes.
+ *
+ * `@factory/droid-sdk` 0.9.1 declares the input as `{ todos: string }` (a text
+ * checklist) and its own `todoState.parseTodos` also accepts a JSON array of
+ * `{ id?, content, status, priority? }` or of strings. That parser is not
+ * exported, so this mirrors it: same line grammar, same `index + 1` ids, and
+ * objects with a status outside `pending | in_progress | completed` dropped.
+ */
+export function droidTodoItemsFromToolInput(input: unknown): DroidTodoItem[] {
+  const todos = asRecord(input)?.todos;
+  let source: unknown = todos;
+  if (typeof todos === "string") {
+    const trimmed = todos.trim();
+    if (!trimmed.startsWith("[")) return parseDroidTodoText(trimmed);
+    try {
+      source = JSON.parse(trimmed);
+    } catch {
+      return parseDroidTodoText(trimmed);
+    }
+  }
+  if (!Array.isArray(source)) return [];
+  if (source.length > 0 && typeof source[0] === "string") {
+    return parseDroidTodoText(source.filter((line): line is string => typeof line === "string").join("\n"));
+  }
+  const items: DroidTodoItem[] = [];
+  source.forEach((entry, index) => {
+    const record = asRecord(entry);
+    const content = typeof record?.content === "string" ? record.content : null;
+    const status = typeof record?.status === "string" ? record.status : "";
+    if (content === null || !DROID_TODO_STATUSES.has(status)) return;
+    items.push({
+      id: readString(record?.id) ?? String(index + 1),
+      description: content,
+      status: status as DroidTodoItem["status"],
+    });
+  });
+  return items;
+}
+
 export function mapDroidSdkMessageToChatEvents(
   message: unknown,
   meta: {
@@ -324,6 +396,9 @@ export function mapDroidSdkMessageToChatEvents(
       const tool = readString(record.name) ?? readString(record.toolName) ?? "tool";
       const input = record.input ?? record.toolInput;
       meta.state.toolNamesByUseId.set(toolUseId, tool);
+      if (isWebSearchToolName(tool) || isWebFetchToolName(tool)) {
+        (meta.state.webToolInputsByUseId ??= new Map()).set(toolUseId, input);
+      }
       const command = extractCommand(input);
       if (command) {
         return [{
@@ -336,7 +411,14 @@ export function mapDroidSdkMessageToChatEvents(
           status: "running",
         }];
       }
-      return [{ type: "tool_call", tool, args: input ?? {}, itemId: toolUseId, turnId }];
+      const toolCall: AgentChatEvent = { type: "tool_call", tool, args: input ?? {}, itemId: toolUseId, turnId };
+      if (tool === "TodoWrite") {
+        // Droid's todo tool feeds the chat task list, as Claude's does. The tool
+        // row stays, like Claude's TodoWrite row.
+        const items = droidTodoItemsFromToolInput(input);
+        if (items.length) return [toolCall, { type: "todo_update", items, turnId }];
+      }
+      return [toolCall];
     }
     case "tool_progress": {
       const toolUseId = readString(record.toolUseId) ?? `droid-tool-${Date.now()}`;
@@ -355,13 +437,20 @@ export function mapDroidSdkMessageToChatEvents(
     case "tool_result": {
       const toolUseId = readString(record.toolUseId) ?? `droid-tool-${Date.now()}`;
       const tool = readString(record.toolName) ?? meta.state.toolNamesByUseId.get(toolUseId) ?? "tool";
+      const status = toolResultStatus(record);
+      const webInput = meta.state.webToolInputsByUseId?.get(toolUseId);
+      meta.state.webToolInputsByUseId?.delete(toolUseId);
+      const sources = status === "completed" && (isWebSearchToolName(tool) || isWebFetchToolName(tool))
+        ? droidWebToolSourceRefs(tool, webInput, record.content)
+        : [];
       return [{
         type: "tool_result",
         tool,
         result: record.content,
+        ...(sources.length ? { sources } : {}),
         itemId: toolUseId,
         turnId,
-        status: toolResultStatus(record),
+        status,
       }];
     }
     case "working_state_changed": {
@@ -518,6 +607,11 @@ export function mapDroidSdkRunResultToDoneEvent(
     interrupted?: boolean;
   },
 ): Extract<AgentChatEvent, { type: "done" }> {
+  // The provider can omit a matching `tool_result` after cancellation or a
+  // failed turn. Those inputs are only needed to build Sources for this run.
+  // Clear them at the terminal edge so an interrupted long-lived chat cannot
+  // retain one entry per abandoned web call forever.
+  meta.state.webToolInputsByUseId?.clear();
   const record = asRecord(result);
   const tokenUsage = normalizeDroidSdkTokenUsage(record?.tokenUsage) ?? meta.state.latestUsage;
   // Context occupancy is not on `done`: the worker posts it as a trailing

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent } from "./types/chat";
 import { compactChatEventForStorage, compactChatEventForWire } from "./chatEventCompaction";
+import { compactChatEventForMobileWire } from "./chatMobileSlim";
 
 function toolResult(overrides: Partial<Extract<AgentChatEvent, { type: "tool_result" }>> = {}) {
   return {
@@ -261,5 +262,70 @@ describe("chat event compaction", () => {
 
     expect(Buffer.byteLength(wire.text, "utf8")).toBeLessThan(16 * 1024);
     expect(wire.textOmittedBytes ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe("sources survive storage and every wire", () => {
+  it("keeps desktop refs intact and sends a bounded phone preview", () => {
+    const sources = [{ kind: "web_search_result" as const, url: "https://a.dev", title: "A", query: "q" }];
+    const toolResult: AgentChatEvent = {
+      type: "tool_result",
+      tool: "WebSearch",
+      // Large enough to be capped on storage and sliced for mobile.
+      result: "x".repeat(400_000),
+      structured: { query: "q", results: [] },
+      sources,
+      itemId: "ws-1",
+      status: "completed",
+    };
+    const citation: AgentChatEvent = {
+      type: "sources",
+      sources: [{ kind: "citation", url: "https://a.dev", cited: true }],
+      itemId: "msg-1",
+      turnId: "turn-1",
+    };
+    for (const compact of [compactChatEventForStorage, compactChatEventForWire]) {
+      const compactedResult = compact(toolResult);
+      expect(compactedResult.type === "tool_result" && compactedResult.sources).toEqual(sources);
+      expect(compact(citation)).toEqual(citation);
+    }
+    const mobileResult = compactChatEventForMobileWire(toolResult);
+    const mobileCitation = compactChatEventForMobileWire(citation);
+    expect(mobileResult).toMatchObject({
+      type: "tool_result",
+      sources: [{ kind: "web_search_result", url: "https://a.dev", title: "A" }],
+    });
+    expect(mobileResult.type === "tool_result" && mobileResult.sources?.[0]).not.toHaveProperty("query");
+    expect(mobileResult.type === "tool_result" && mobileResult.sources?.[0]).not.toHaveProperty("snippet");
+    expect(mobileCitation).toMatchObject({
+      type: "sources",
+      sources: [{ kind: "citation", url: "https://a.dev", cited: true }],
+    });
+    expect(mobileCitation.type === "sources" && mobileCitation.sources[0]).not.toHaveProperty("query");
+    expect(mobileCitation.type === "sources" && mobileCitation.sources[0]).not.toHaveProperty("snippet");
+    // The raw SDK payload stays local; the sources are what clients read.
+    const wire = compactChatEventForWire(toolResult);
+    expect(wire).not.toHaveProperty("structured");
+  });
+
+  it("limits mobile source count and serialized source bytes while reporting omitted refs", () => {
+    const event: AgentChatEvent = {
+      type: "sources",
+      sources: Array.from({ length: 20 }, (_, index) => ({
+        kind: "citation" as const,
+        url: `https://example.com/${index}?q=${"x".repeat(2_000)}`,
+        title: "Source title",
+        snippet: "excerpt".repeat(50),
+        query: "search query",
+      })),
+      turnId: "turn-1",
+    };
+    const mobile = compactChatEventForMobileWire(event);
+    expect(mobile.type).toBe("sources");
+    if (mobile.type !== "sources") throw new Error("expected sources event");
+    expect(mobile.sources).toHaveLength(3);
+    expect(Buffer.byteLength(JSON.stringify(mobile.sources), "utf8")).toBeLessThanOrEqual(10 * 1024);
+    expect(mobile.sourceRefsOmittedForMobile).toBe(17);
+    expect(mobile.sources.every((source) => !("snippet" in source) && !("query" in source))).toBe(true);
   });
 });

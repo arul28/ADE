@@ -427,7 +427,9 @@ Browser `window.ade` adapter:
   transcript's Retry path does not become a no-op during a rolling upgrade. It routes
   smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
   and falls back to the shared deterministic provider label when an older host
-  does not advertise the action. The adapter also implements the shared
+  does not advertise the action. Sources favicons go through
+  `chat.resolveSourceFavicons`; an older host without it leaves every row on
+  its domain initial. The adapter also implements the shared
   `agentChat.promptStashes` object through
   `chat.listPromptStashes` / `chat.createPromptStash` /
   `chat.deletePromptStash`. The cross-machine handoff trio is genuinely

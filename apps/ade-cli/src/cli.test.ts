@@ -6351,6 +6351,55 @@ describe("ADE CLI", () => {
     });
   });
 
+  posixIt("chat wait falls back to turn status for a completed CLI child", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-chat-wait-child-"));
+    const socketPath = path.join(root, "ade.sock");
+    const actions: string[] = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") return { ok: true };
+        if (request.method === "ade/actions/call") {
+          const action = request.params?.arguments?.action;
+          actions.push(action);
+          if (action === "getSessionSummary") return { domain: "chat", action, result: null };
+          if (action === "getTurnStatus") {
+            return {
+              domain: "chat",
+              action,
+              result: {
+                sessionId: "cli-child-1",
+                phase: "idle",
+                cliSession: { status: "completed", endedAt: "2026-09-24T12:00:00.000Z" },
+              },
+            };
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await runCli([
+        "--socket", socketPath,
+        "--project-root", root,
+        "chat", "wait", "cli-child-1", "--for", "terminal", "--timeout-ms", "100", "--json",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.output)).toMatchObject({
+        ok: true,
+        sessionId: "cli-child-1",
+        waitFor: "terminal",
+        summary: { phase: "idle", cliSession: { status: "completed" } },
+      });
+      expect(actions).toEqual(["getSessionSummary", "getTurnStatus"]);
+    } finally {
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects reasoning effort on legacy agent spawn", () => {
     expect(() =>
       buildCliPlan([
@@ -6877,6 +6926,88 @@ describe("ADE CLI", () => {
     );
     expect(text).toContain("RUNNING");
     expect(text).toContain("Bash");
+  });
+
+  it("formats a tracked CLI session's status with its terminal facts and read hint", () => {
+    const text = formatOutput(
+      {
+        sessionId: "cli-1",
+        phase: "idle",
+        provider: "codex",
+        lastActivityMsAgo: 5_000,
+        queuedMessageCount: 0,
+        subagents: [],
+        cliSession: {
+          toolType: "codex",
+          provider: "codex",
+          status: "failed",
+          exitCode: 2,
+          laneId: "lane-1",
+          title: "Fix flaky tests",
+          endedAt: "2026-09-23T10:00:00.000Z",
+          parentSessionId: "chat-1",
+          spawnKind: "subagent",
+          readHint: "ade terminal read cli-1",
+        },
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "chat-status",
+    );
+    expect(text).toContain("IDLE");
+    expect(text).toMatch(/cli\s+codex · failed · exit 2/);
+    expect(text).toMatch(/parent\s+chat-1 \(subagent\)/);
+    expect(text).toMatch(/output\s+ade terminal read cli-1/);
+  });
+
+  it("merges a lane's tracked CLI children into chat list", () => {
+    const plan = expectExecutePlan(buildCliPlan(["chat", "list", "--lane", "lane-1"]));
+    expect(plan.steps[1]).toMatchObject({
+      key: "cli",
+      optional: true,
+      params: {
+        name: "run_ade_action",
+        arguments: { domain: "chat", action: "listCliChildSessions", args: { laneId: "lane-1" } },
+      },
+    });
+    const connection = {
+      mode: "runtime-socket" as const,
+      projectRoot: "/unused",
+      workspaceRoot: "/unused",
+      socketPath: "/tmp/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+    const chat = { sessionId: "chat-1", provider: "claude", laneId: "lane-1", title: "Coordinator" };
+    const cli = {
+      sessionId: "cli-1",
+      kind: "cli",
+      provider: "codex",
+      laneId: "lane-1",
+      title: "Fix flaky tests",
+      status: "completed",
+      exitCode: 0,
+      parentSessionId: "chat-1",
+      spawnKind: "subagent",
+    };
+    const merged = summarizeExecution({
+      plan,
+      connection,
+      values: {
+        result: { domain: "chat", action: "listSessions", result: [chat] },
+        cli: { domain: "chat", action: "listCliChildSessions", result: [cli] },
+      },
+    });
+    expect(merged).toEqual([chat, cli]);
+    const text = formatOutput(merged, { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true }, "chat-list");
+    expect(text).toContain("cli · completed (exit 0)");
+    expect(text).toContain("Fix flaky tests");
+
+    // An older brain without the CLI step keeps the plain chat list.
+    expect(summarizeExecution({
+      plan,
+      connection,
+      values: { result: { domain: "chat", action: "listSessions", result: [chat] } },
+    })).toEqual([chat]);
   });
 
   it("maps chat list filters to the listSessions action", () => {

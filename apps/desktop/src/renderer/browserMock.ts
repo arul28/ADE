@@ -5694,6 +5694,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
+      resolveSourceFavicons: async () => ({ icons: {} }),
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;

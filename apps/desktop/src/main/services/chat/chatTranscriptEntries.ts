@@ -3,7 +3,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatTranscriptEntry,
 } from "../../../shared/types/chat";
-import { canAppendBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
+import { canCoalesceBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
 
 /**
  * Flatten a transcript envelope stream into role-tagged entries.
@@ -108,7 +108,7 @@ function assistantStream(event: TextEvent): AssistantStream | null {
     : turnId ? `turn:${turnId}`
     : null;
   if (!key) return null;
-  return { key, identified: Boolean(messageId || itemId) };
+  return { key: `${key}\u0000${event.phase ?? ""}`, identified: Boolean(messageId || itemId) };
 }
 
 export type TranscriptEntriesOptions = {
@@ -170,6 +170,7 @@ export function transcriptEntriesFromEnvelopes(
         ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
         ...(assistantDraft.messageId ? { messageId: assistantDraft.messageId } : {}),
         ...(assistantDraft.itemId ? { itemId: assistantDraft.itemId } : {}),
+        ...(assistantDraft.phase ? { phase: assistantDraft.phase } : {}),
       };
       const sourceOffset = sourceOffsetByDraft.get(assistantDraft);
       if (sourceOffset != null) sourceOffsetByDraft.set(flushed, sourceOffset);
@@ -254,6 +255,7 @@ export function transcriptEntriesFromEnvelopes(
           ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
           ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
           ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+          ...(entry.event.phase ? { phase: entry.event.phase } : {}),
         };
         rememberDraftSource(draft, entry);
         assistantDraftsByKey.set(stream.key, draft);
@@ -261,7 +263,7 @@ export function transcriptEntriesFromEnvelopes(
         openStreamKey = stream.key;
         continue;
       }
-      if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
+      if (assistantDraft && canCoalesceBufferedAssistantText(assistantDraft, entry.event)) {
         assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
         openStreamKey = null;
         continue;
@@ -275,6 +277,7 @@ export function transcriptEntriesFromEnvelopes(
         ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
         ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
         ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+        ...(entry.event.phase ? { phase: entry.event.phase } : {}),
       };
       rememberDraftSource(assistantDraft, entry);
       openStreamKey = null;
@@ -297,6 +300,7 @@ export function transcriptEntriesFromEnvelopes(
       ...(entry.turnId ? { turnId: entry.turnId } : {}),
       ...(entry.messageId ? { messageId: entry.messageId } : {}),
       ...(entry.itemId ? { itemId: entry.itemId } : {}),
+      ...(entry.phase ? { phase: entry.phase } : {}),
     };
     options?.onEntrySourceOffset?.(sourceOffsetByDraft.get(entry) ?? null);
     return [normalized];

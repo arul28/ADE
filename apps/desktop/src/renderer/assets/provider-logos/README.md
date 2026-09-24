@@ -9,3 +9,5 @@ Cursor CLI / subscription rows use **`Cursor.Avatar`** from `@lobehub/icons`. Th
 ## Droid
 
 `droid.svg` is the local Factory Droid mark used for the Droid provider/runtime. Model rows still use the underlying model-family marks (Claude, OpenAI, Gemini, etc.) when the Droid model id reveals one.
+
+`droid-mark.svg` is the same Droid glyph without its black backing disc, filled solid so it can be used as a CSS mask and painted in `currentColor` (the empty-state import hint uses it).

@@ -3,7 +3,6 @@
 
 # Shared ADE project config
 !.gitignore
-!ade.yaml
 
 # Shared user-authored ADE assets
 !templates/

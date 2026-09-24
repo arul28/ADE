@@ -34,10 +34,17 @@ export type ChatUserMinimapTurnOutcome = "completed" | "interrupted" | "failed";
 export type ChatUserMinimapTickKind = "user" | "queued";
 
 export type ChatUserMinimapSourceEntry = {
-  /** Index in `groupedRows` for this user message. */
+  /** Index in `groupedRows` (the drawn timeline) for this user message. */
   rowIndex: number;
   /** Stable key for React lists. */
   key: string;
+  /** Key of the transcript row this entry stands for. */
+  rowKey: string;
+  /**
+   * Set when that row is hidden in a closed turn fold: `rowIndex` is then the
+   * fold row, and a jump opens the fold before scrolling to `rowKey`.
+   */
+  foldId?: string;
   /** Truncated prompt preview. */
   preview: string;
   /** Index into the full user-message list, 0..fullCount-1 (also this entry's array index). */
@@ -99,6 +106,7 @@ function collectCodexMinimapExtra(
     return {
       rowIndex,
       key: `${row.key}:queued`,
+      rowKey: row.key,
       preview: preview.length ? preview : "Queued follow-up",
       fullUserOrdinal: Math.max(0, fullUserOrdinal - 1),
       assistantPreview: null,
@@ -131,6 +139,7 @@ export function collectUserMessageMinimapSourceEntries(
       const entry: ChatUserMinimapSourceEntry = {
         rowIndex,
         key: row.key,
+        rowKey: row.key,
         preview: preview.length ? preview : "(empty message)",
         fullUserOrdinal,
         assistantPreview: null,
@@ -165,6 +174,36 @@ export function collectUserMessageMinimapSourceEntries(
   }
   settleSpan(span);
   return out;
+}
+
+/**
+ * Entries collected on the UNFOLDED rows, placed on the rows the timeline
+ * draws. A turn fold must not make the rail lose an item (or its reply
+ * preview), so an entry whose row is hidden in a closed fold sits on that
+ * fold's row and remembers the fold (`foldId`) for the jump to open it.
+ * Entries are never dropped: ticks are 1:1 with entries.
+ */
+export function placeMinimapEntriesOnVisibleRows(
+  entries: readonly ChatUserMinimapSourceEntry[],
+  visibleIndexByKey: ReadonlyMap<string, number>,
+  foldIdByHiddenRowKey: ReadonlyMap<string, string>,
+): ChatUserMinimapSourceEntry[] {
+  let previousIndex = 0;
+  return entries.map((entry) => {
+    const place = (rowIndex: number, foldId: string | undefined): ChatUserMinimapSourceEntry => {
+      previousIndex = rowIndex;
+      if (entry.rowIndex === rowIndex && entry.foldId === foldId) return entry;
+      const placed: ChatUserMinimapSourceEntry = { ...entry, rowIndex };
+      if (foldId) placed.foldId = foldId;
+      else delete placed.foldId;
+      return placed;
+    };
+    const visibleIndex = visibleIndexByKey.get(entry.rowKey);
+    if (visibleIndex !== undefined) return place(visibleIndex, undefined);
+    const foldId = foldIdByHiddenRowKey.get(entry.rowKey);
+    const foldIndex = foldId ? visibleIndexByKey.get(foldId) : undefined;
+    return foldIndex !== undefined ? place(foldIndex, foldId) : place(previousIndex, undefined);
+  });
 }
 
 /** Y-offset of each row's top edge within the scrollable timeline (matches list virtualizer math). */

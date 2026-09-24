@@ -6403,6 +6403,7 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.listPromptStashes",
         "chat.createPromptStash",
         "chat.deletePromptStash",
+        "chat.resolveSourceFavicons",
         "workTools.getLaneState",
         "workTools.readObservationPreview",
         "macDesktop.getStatus",
@@ -6495,12 +6496,13 @@ describe("CTO-gated Linear sync commands", () => {
         if (action.startsWith("apple.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
+        const scope = action === "chat.resolveSourceFavicons" ? "runtime" : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
         // with an accurate viewerAllowed bit.
         expect(actions).toContainEqual(expect.objectContaining({
           action,
-          scope: "project",
+          scope,
           policy: expect.objectContaining({ viewerAllowed: !viewerBlocked }),
         }));
         if (controllerAllowed) {
@@ -12168,6 +12170,13 @@ describe("chat_subscribe snapshots", () => {
     const transcriptPath = path.join(projectRoot, "transcripts", "chat-tool-result.chat.jsonl");
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
     const fullResult = "x".repeat(8_000);
+    const sources = Array.from({ length: 8 }, (_, index) => ({
+      kind: "web_search_result" as const,
+      url: `https://source-${index}.example/guide`,
+      title: `Source ${index}`,
+      snippet: "context that should stay on the host ".repeat(500),
+      query: "private search wording",
+    }));
     const event: AgentChatEventEnvelope = {
       sessionId,
       timestamp: "2026-09-20T10:00:00.000Z",
@@ -12178,6 +12187,7 @@ describe("chat_subscribe snapshots", () => {
         result: fullResult,
         itemId,
         status: "completed",
+        sources,
       },
     };
     fs.writeFileSync(transcriptPath, `${JSON.stringify(event)}\n`, "utf8");
@@ -12221,6 +12231,13 @@ describe("chat_subscribe snapshots", () => {
           windowTruncated: false,
           sessionFound: true,
         }),
+        getChatEventHistoryPage: vi.fn().mockResolvedValue({
+          sessionId,
+          events: [event],
+          startOffset: 0,
+          hasMore: false,
+          sessionFound: true,
+        }),
         getSessionSummary: vi.fn().mockResolvedValue({ status: "inactive" }),
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
@@ -12242,8 +12259,28 @@ describe("chat_subscribe snapshots", () => {
         type: "tool_result",
         resultTruncatedForMobile: true,
         resultOriginalBytes: fullResult.length,
+        sourceRefsOmittedForMobile: 5,
       });
       expect((snapshotEvent.event as { result: string }).result).not.toBe(fullResult);
+      const snapshotSources = (snapshotEvent.event as { sources: Array<{ snippet?: string; query?: string }> }).sources;
+      expect(snapshotSources).toHaveLength(3);
+      expect(snapshotSources.some((source) => source.snippet || source.query)).toBe(false);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "chat-tool-result-history-page",
+        payload: {
+          sessionId,
+          beforeOffset: Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8"),
+          maxBytes: 256 * 1_024,
+        },
+      }));
+      const historyPage = await waitForEnvelope(peer.envelopes, "chat_history", "chat-tool-result-history-page");
+      const pageEvent = (historyPage.payload as { events: AgentChatEventEnvelope[] }).events[0]!;
+      expect(pageEvent.event).toMatchObject({ type: "tool_result", sourceRefsOmittedForMobile: 5 });
+      const pageSources = (pageEvent.event as { sources: Array<{ snippet?: string; query?: string }> }).sources;
+      expect(pageSources).toHaveLength(3);
+      expect(pageSources.some((source) => source.snippet || source.query)).toBe(false);
 
       peer.ws.send(encodeSyncEnvelope({
         type: "chat_tool_result",

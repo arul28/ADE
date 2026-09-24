@@ -366,7 +366,7 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
 - `createScheduledWork`, `cancelScheduledWork`, `setScheduledWorkPaused`
-- `launch`, `getSlashCommands`, `resolveSmartLinkPreview`, `getContextUsage`, `warmupModel`,
+- `launch`, `getSlashCommands`, `resolveSmartLinkPreview`, `resolveSourceFavicons`, `getContextUsage`, `warmupModel`,
   `getParallelLaunchState`, `setParallelLaunchState`, `handoff`,
   `prepareCrossMachineHandoff`, `validateCrossMachineSource`,
   `preflightCrossMachineDestination`,
@@ -436,6 +436,12 @@ only by the runtime's SSRF-hardened preview service. Unsupported, unreachable,
 local/private, oversized, or non-HTML URLs fall back to the deterministic
 preview instead of failing the composer. The canonical URL is never replaced by
 the title.
+
+`chat.resolveSourceFavicons` is a viewer-allowed, runtime-scoped (no project
+needed) read for the Sources list. `{ domains: string[] }` returns
+`{ icons: { [domain]: dataUrl | null } }`, fetched first-party from each site by
+the host's SSRF-guarded favicon resolver and cached on its disk. See
+[Favicons](../chat/transcript-and-turns.md#favicons).
 
 `chat.createScheduledWork` takes `{ sessionId, cron, prompt, recurring?,
 reason? }` and creates an ADE-owned durable schedule for any provider-backed
