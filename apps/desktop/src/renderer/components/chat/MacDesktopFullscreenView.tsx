@@ -34,12 +34,12 @@ export function MacDesktopFullscreenView({
   if (!expanded || typeof document === "undefined") return null;
 
   return createPortal(
-    <ViewportOverlayHost
-      layer="fullscreenTakeover"
+    <ViewportOverlayHost layer="macDesktop">
+    <div
+      data-testid="mac-desktop-fullscreen"
       style={{ background: "var(--color-bg)" }}
-      testId="mac-desktop-fullscreen"
+      className="pointer-events-auto absolute inset-0 flex flex-col"
     >
-      <div className="pointer-events-auto absolute inset-0 flex flex-col">
       <div
         data-testid="mac-desktop-fullscreen-chrome"
         className={cn(
@@ -64,7 +64,7 @@ export function MacDesktopFullscreenView({
         {renderCaptureOverlay("fullscreen")}
         {renderVideoOverlay("fullscreen")}
       </div>
-      </div>
+    </div>
     </ViewportOverlayHost>,
     document.documentElement,
   );

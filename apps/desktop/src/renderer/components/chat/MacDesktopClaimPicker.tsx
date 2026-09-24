@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowClockwise,
   CircleNotch,
@@ -9,7 +10,8 @@ import {
 
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import { cn } from "../ui/cn";
-import { Dialog } from "../ui/dialog/Dialog";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { getFocusableElements } from "../ui/dialogFocus";
 import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
 import {
   USAGE_DIVIDER_COLOR_CLASS,
@@ -90,6 +92,7 @@ export function MacDesktopClaimPicker({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [claiming, setClaiming] = useState<number | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const rows = useMemo(
@@ -171,6 +174,7 @@ export function MacDesktopClaimPicker({
 
   const dialog = (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal={inline ? undefined : true}
       aria-label="Add an app to this desktop"
@@ -186,6 +190,21 @@ export function MacDesktopClaimPicker({
         USAGE_HAIRLINE_CLASS,
         "bg-surface-raised text-fg shadow-float",
       )}
+        onKeyDown={(event) => {
+          if (event.key !== "Tab") return;
+          const nodes = getFocusableElements(event.currentTarget);
+          if (!nodes.length) return;
+          const first = nodes[0]!;
+          const last = nodes[nodes.length - 1]!;
+          const activeElement = document.activeElement as HTMLElement | null;
+          if (event.shiftKey && activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
       >
         <header className={cn("flex items-start gap-3 border-b px-4 py-3", USAGE_DIVIDER_COLOR_CLASS)}>
           <div className="min-w-0 flex-1">
@@ -351,21 +370,18 @@ export function MacDesktopClaimPicker({
     );
   }
 
-  return (
-    <Dialog
-      open
-      onOpenChange={(open) => { if (!open) onClose(); }}
-      title="Add an app to this desktop"
-      hideHeader
-      hideClose
-      width={720}
-      maxHeight="min(560px, calc(100vh - 20vh))"
-      bodyPadding={false}
-      scrollBody={false}
-      panelStyle={{ padding: 0, background: "transparent", border: "none", boxShadow: "none" }}
-      testId="mac-desktop-claim-picker"
+  if (typeof document === "undefined") return dialog;
+  return createPortal(
+    <ViewportOverlayHost layer="macDesktopDialog">
+    <div
+      className="pointer-events-auto absolute inset-0 flex items-start justify-center bg-black/55 p-4 pt-[10vh]"
+      role="presentation"
+      data-testid="mac-desktop-claim-picker"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       {dialog}
-    </Dialog>
+    </div>
+    </ViewportOverlayHost>,
+    document.body,
   );
 }
