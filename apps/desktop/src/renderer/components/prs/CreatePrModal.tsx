@@ -20,6 +20,7 @@ import {
 } from "../../../shared/linearMagicWords";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
@@ -226,7 +227,10 @@ async function runWithDirtyWorktreeConfirmation<T>(args: {
     return await args.run(false);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\n${args.confirmMessage}`)) {
+    if (
+      !isDirtyWorktreeErrorMessage(message)
+      || !(await confirmDialog({ title: args.confirmMessage, message: stripDirtyWorktreePrefix(message), confirmLabel: "Continue", tone: "warning" }))
+    ) {
       throw error;
     }
     return await args.run(true);

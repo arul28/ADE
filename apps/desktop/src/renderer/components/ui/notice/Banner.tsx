@@ -27,7 +27,12 @@ export type BannerDismiss =
   /** Durable: remembered in `bannerDismiss.ts` until the fingerprint changes. */
   | { key: string; fingerprint: string }
   /** The owner decides what dismissing means (in-memory, a snooze, a store). */
-  | { onDismiss: () => void; title?: string };
+  | {
+      onDismiss: () => void;
+      title?: string;
+      /** Accessible name for the ×; defaults to `Dismiss: <title>`. */
+      label?: string;
+    };
 
 export type BannerModel = {
   /** Stable identity for one logical banner (React key, registry key). */
@@ -70,6 +75,9 @@ export function Banner({
 }): JSX.Element {
   const tokens = noticeTone(model.tone);
   const floating = layout === "floating";
+  // Docked banners share the inline wrapping row: in a narrow window the
+  // actions drop under the text instead of crushing it.
+  const inline = layout !== "floating";
   const compactPill = floating && !model.detail && !model.extra;
   const name = model.ariaLabel ?? (typeof model.title === "string" ? model.title : "notice");
 
@@ -95,6 +103,30 @@ export function Banner({
         border: `1px solid ${tokens.edge}`,
       };
 
+  const text = (
+    <div
+      style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: inline ? "1 1 180px" : 1 }}
+    >
+      <span
+        style={{
+          fontSize: compactPill ? 12 : 12.5,
+          fontWeight: compactPill ? 500 : 600,
+          lineHeight: 1.35,
+          color: "var(--color-fg)",
+          overflow: compactPill ? "hidden" : undefined,
+          textOverflow: compactPill ? "ellipsis" : undefined,
+          whiteSpace: compactPill ? "nowrap" : undefined,
+        }}
+      >
+        {model.title}
+      </span>
+      {model.detail ? (
+        <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)" }}>{model.detail}</span>
+      ) : null}
+      {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
+    </div>
+  );
+
   return (
     <div
       role={model.tone === "error" ? "alert" : "status"}
@@ -114,35 +146,39 @@ export function Banner({
       }}
     >
       <NoticeIcon tone={model.tone} icon={model.icon} busy={model.busy} size="sm" bare={compactPill} />
-      <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
-        <span
+      {inline ? (
+        // Inline banners live in panes that can be ~320px wide: the text and the
+        // actions share one wrapping row, so the actions drop under the text
+        // instead of crushing it, while the × stays pinned top-right.
+        <div
           style={{
-            fontSize: compactPill ? 12 : 12.5,
-            fontWeight: compactPill ? 500 : 600,
-            lineHeight: 1.35,
-            color: "var(--color-fg)",
-            overflow: compactPill ? "hidden" : undefined,
-            textOverflow: compactPill ? "ellipsis" : undefined,
-            whiteSpace: compactPill ? "nowrap" : undefined,
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            columnGap: 10,
+            rowGap: 6,
+            minWidth: 0,
+            flex: 1,
           }}
         >
-          {model.title}
-        </span>
-        {model.detail ? (
-          <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)" }}>{model.detail}</span>
-        ) : null}
-        {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
-      </div>
-      <NoticeActions
-        actions={model.actions}
-        tone={model.tone}
-        size="sm"
-        style={{ flexShrink: 0, flexWrap: "nowrap", alignSelf: "center" }}
-      />
+          {text}
+          <NoticeActions actions={model.actions} tone={model.tone} size="sm" style={{ flexShrink: 0 }} />
+        </div>
+      ) : (
+        <>
+          {text}
+          <NoticeActions
+            actions={model.actions}
+            tone={model.tone}
+            size="sm"
+            style={{ flexShrink: 0, flexWrap: "nowrap", alignSelf: "center" }}
+          />
+        </>
+      )}
       {handleDismiss ? (
         <NoticeCloseButton
           onClick={handleDismiss}
-          label={`Dismiss: ${name}`}
+          label={dismiss && "onDismiss" in dismiss && dismiss.label ? dismiss.label : `Dismiss: ${name}`}
           title={dismiss && "onDismiss" in dismiss && dismiss.title ? dismiss.title : "Dismiss"}
         />
       ) : null}

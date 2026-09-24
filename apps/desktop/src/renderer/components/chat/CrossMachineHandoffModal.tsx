@@ -93,6 +93,7 @@ import {
   type SourceCheck,
 } from "./crossMachineHandoffPresentation";
 import { cn } from "../ui/cn";
+import { Dialog } from "../ui/dialog";
 
 export function CrossMachineHandoffModal({
   open,
@@ -279,7 +280,6 @@ export function CrossMachineHandoffModal({
     return (
       <PermissionModePicker
         ariaLabel="Permission mode for the new chat"
-        menuLayerClassName="z-[200]"
         selectedValue={current}
         options={pickerOptions}
         onSelect={(value) => {
@@ -479,18 +479,6 @@ export function CrossMachineHandoffModal({
     }));
     return () => { cancelled = true; };
   }, [eligibleTargetIds, sourceCheck.originUrl, stage]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && stage !== "sending") {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onClose, open, stage]);
 
   const runDestinationPreflight = useCallback(async (
     connection: RemoteRuntimeConnectionStatus,
@@ -877,27 +865,129 @@ export function CrossMachineHandoffModal({
     ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
     : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
 
+  const sending = stage === "sending";
   return (
-    <div
-      className="fixed inset-0 z-[190] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && stage !== "sending") onClose();
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
+      title="Continue on another computer"
+      hideHeader
+      width={760}
+      maxHeight="min(780px, calc(100vh - 32px))"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      // The form's colors are written for this dark surface in every theme.
+      panelStyle={{ background: "#11131a", borderColor: "rgba(255,255,255,0.09)" }}
+      // Nothing inside takes focus on open; the panel holds it.
+      preventAutoFocus
+      // A handoff in flight cannot be backed out of.
+      dismissible={!sending}
+      onEscapeKeyDown={(event) => {
+        // An open permission list takes Escape first and closes itself only.
+        if (document.querySelector("[data-permission-mode-picker-dropdown]")) {
+          event.preventDefault();
+          return;
+        }
+        // The key that closed this dialog is not also the chat's Escape.
+        if (!sending) event.stopPropagation();
+      }}
+      footerStart={
+        <div className="min-w-0 text-[10px] text-fg/38">
+          {stage === "sending" ? (
+            <div className="flex flex-col gap-1">
+              {SEND_STEPS.map((step) => {
+                const done = sendProgress.includes(step.id);
+                const current = !done && sendProgress.length === SEND_STEPS.findIndex((item) => item.id === step.id);
+                return (
+                  <span
+                    key={step.id}
+                    className={cn(
+                      "inline-flex items-center gap-1.5",
+                      done ? "text-emerald-200/70" : current ? "text-fg/62" : "text-fg/26",
+                    )}
+                  >
+                    {done ? (
+                      <Check size={11} weight="bold" />
+                    ) : current ? (
+                      <CircleNotch size={11} className="animate-spin" />
+                    ) : (
+                      <span className="h-[11px] w-[11px] rounded-full border border-current opacity-45" />
+                    )}
+                    {step.label}
+                  </span>
+                );
+              })}
+            </div>
+          ) : busyLabel ? (
+            <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
+          ) : stage === "choose" ? "Nothing is sent until you confirm." : stage === "complete" ? "This chat stays here too." : "Retrying is safe."}
+        </div>
+      }
+      footer={
+        <div className="flex shrink-0 items-center gap-2">
+          {stage === "clone" || stage === "review" ? (
+            <button
+              type="button"
+              disabled={Boolean(busyLabel)}
+              onClick={() => {
+                setStage("choose");
+                setPrepared(null);
+                setDestinationProject(null);
+                setDestinationPreflight(null);
+                setStoragePreflight(null);
+                setCloneApproved(false);
+                setError(null);
+              }}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 text-[10px] font-semibold text-fg/58 hover:text-fg/80 disabled:opacity-40"
+            >
+              <ArrowLeft size={12} /> Back
+            </button>
+          ) : null}
+          {stage === "choose" ? (
+            <BlockedActionButton
+              reasons={loading ? [] : continueBlockers}
+              busy={loading || Boolean(busyLabel)}
+              onClick={() => void prepareDestination()}
+            >
+              Continue <ArrowRight size={12} />
+            </BlockedActionButton>
+          ) : null}
+          {stage === "clone" ? (
+            <button
+              type="button"
+              disabled={Boolean(busyLabel) || !cloneApproved || Boolean(storagePreflight?.blockingErrors.length)}
+              onClick={() => void cloneDestination()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/12 px-3 text-[10px] font-semibold text-sky-100 hover:bg-sky-400/17 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              Clone repository <ArrowRight size={12} />
+            </button>
+          ) : null}
+          {stage === "review" ? (
+            <button
+              type="button"
+              disabled={Boolean(busyLabel) || reviewBlocked}
+              onClick={() => void sendHandoff()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              Send chat <ArrowRight size={12} />
+            </button>
+          ) : null}
+          {stage === "complete" ? (
+            <button type="button" onClick={onClose} className="h-8 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17">Done</button>
+          ) : null}
+        </div>
+      }
     >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cross-machine-handoff-title"
-        className="grid max-h-[min(780px,calc(100vh-32px))] w-[min(760px,calc(100vw-32px))] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl border border-white/[0.09] bg-[#11131a] shadow-[0_32px_120px_rgba(0,0,0,0.65)]"
-      >
-        <header className="flex items-start justify-between gap-4 border-b border-white/[0.065] px-5 py-4">
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-white/[0.065] px-5 py-4">
           <div className="flex min-w-0 items-start gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-sky-300/20 bg-sky-400/10 text-sky-200">
               <CloudArrowUp size={19} weight="duotone" />
             </div>
             <div className="min-w-0">
-              <h2 id="cross-machine-handoff-title" className="font-sans text-[14px] font-semibold text-fg/92">
+              <h2 aria-hidden="true" className="font-sans text-[14px] font-semibold text-fg/92">
                 Continue on another computer
               </h2>
               <p className="mt-1 text-[11px] leading-4 text-fg/48">
@@ -909,14 +999,14 @@ export function CrossMachineHandoffModal({
             type="button"
             aria-label="Close handoff setup"
             onClick={onClose}
-            disabled={stage === "sending"}
+            disabled={sending}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-30"
           >
             <X size={15} />
           </button>
         </header>
 
-        <div className="min-h-0 overflow-y-auto px-5 py-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {stage === "complete" && result && selectedConnection ? (
             <div className="mx-auto flex max-w-[520px] flex-col items-center py-8 text-center">
               <div className="grid h-14 w-14 place-items-center rounded-full border border-emerald-300/25 bg-emerald-400/10 text-emerald-200">
@@ -1332,91 +1422,6 @@ export function CrossMachineHandoffModal({
           ) : null}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-white/[0.065] px-5 py-3.5">
-          <div className="min-w-0 text-[10px] text-fg/38">
-            {stage === "sending" ? (
-              <div className="flex flex-col gap-1">
-                {SEND_STEPS.map((step) => {
-                  const done = sendProgress.includes(step.id);
-                  const current = !done && sendProgress.length === SEND_STEPS.findIndex((item) => item.id === step.id);
-                  return (
-                    <span
-                      key={step.id}
-                      className={cn(
-                        "inline-flex items-center gap-1.5",
-                        done ? "text-emerald-200/70" : current ? "text-fg/62" : "text-fg/26",
-                      )}
-                    >
-                      {done ? (
-                        <Check size={11} weight="bold" />
-                      ) : current ? (
-                        <CircleNotch size={11} className="animate-spin" />
-                      ) : (
-                        <span className="h-[11px] w-[11px] rounded-full border border-current opacity-45" />
-                      )}
-                      {step.label}
-                    </span>
-                  );
-                })}
-              </div>
-            ) : busyLabel ? (
-              <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
-            ) : stage === "choose" ? "Nothing is sent until you confirm." : stage === "complete" ? "This chat stays here too." : "Retrying is safe."}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {stage === "clone" || stage === "review" ? (
-              <button
-                type="button"
-                disabled={Boolean(busyLabel)}
-                onClick={() => {
-                  setStage("choose");
-                  setPrepared(null);
-                  setDestinationProject(null);
-                  setDestinationPreflight(null);
-                  setStoragePreflight(null);
-                  setCloneApproved(false);
-                  setError(null);
-                }}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 text-[10px] font-semibold text-fg/58 hover:text-fg/80 disabled:opacity-40"
-              >
-                <ArrowLeft size={12} /> Back
-              </button>
-            ) : null}
-            {stage === "choose" ? (
-              <BlockedActionButton
-                reasons={loading ? [] : continueBlockers}
-                busy={loading || Boolean(busyLabel)}
-                onClick={() => void prepareDestination()}
-              >
-                Continue <ArrowRight size={12} />
-              </BlockedActionButton>
-            ) : null}
-            {stage === "clone" ? (
-              <button
-                type="button"
-                disabled={Boolean(busyLabel) || !cloneApproved || Boolean(storagePreflight?.blockingErrors.length)}
-                onClick={() => void cloneDestination()}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/12 px-3 text-[10px] font-semibold text-sky-100 hover:bg-sky-400/17 disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                Clone repository <ArrowRight size={12} />
-              </button>
-            ) : null}
-            {stage === "review" ? (
-              <button
-                type="button"
-                disabled={Boolean(busyLabel) || reviewBlocked}
-                onClick={() => void sendHandoff()}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                Send chat <ArrowRight size={12} />
-              </button>
-            ) : null}
-            {stage === "complete" ? (
-              <button type="button" onClick={onClose} className="h-8 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17">Done</button>
-            ) : null}
-          </div>
-        </footer>
-      </section>
-    </div>
+    </Dialog>
   );
 }

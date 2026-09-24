@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { CaretRight, ChatCircleText, Check, TerminalWindow, Warning, X } from "@phosphor-icons/react";
+import { CaretRight, ChatCircleText, Check, TerminalWindow, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { ChatLaunchSnapshot } from "../../../shared/types";
 import { chatLaunchProgress, chatLaunchStatusLine, isChatLaunchSucceeded } from "../../../shared/chatLaunch";
@@ -13,10 +13,19 @@ import {
 } from "../../state/chatLaunchStore";
 import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
-import { LaneSetupCard, LaunchStageGlyph, TILE_TONE } from "../chat/launch/LaneSetupCard";
+import { LaneSetupCard, LaunchStageGlyph } from "../chat/launch/LaneSetupCard";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { useLaunchDurationText } from "../chat/launch/launchClock";
 import { LaneIcon } from "../ui/vcsIcons";
+import { NoticeCloseButton, NoticeIcon } from "../ui/notice/NoticeParts";
+import { NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
+
+/** A launch's tone on the shared notice palette: failed is red, like every other failure. */
+function launchTone(failed: boolean, succeeded: boolean): NoticeTone {
+  if (failed) return "error";
+  if (succeeded) return "success";
+  return "accent";
+}
 
 /**
  * The Launches slide-out: this window's new-lane launches that are NOT showing
@@ -98,11 +107,12 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
       }
     : null;
   const KindIcon = launch.kind === "cli" ? TerminalWindow : ChatCircleText;
+  const tone = launchTone(failed, succeeded);
   return (
     <li
       data-testid="chat-launch-row"
       data-launch-id={launch.launchId}
-      className={cn("px-3 py-2.5 transition-colors", expanded ? "bg-white/[0.018]" : "hover:bg-white/[0.02]")}
+      className={cn("px-3 py-2.5 transition-colors", expanded ? "bg-fg/[0.025]" : "hover:bg-fg/[0.03]")}
     >
       <button
         type="button"
@@ -111,52 +121,47 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
         className="flex w-full min-w-0 flex-col gap-1.5 text-left"
       >
         <span className="flex w-full min-w-0 items-center gap-2.5">
-          <span
-            className={cn(
-              "relative grid h-6 w-6 shrink-0 place-items-center rounded-[7px] border transition-colors duration-300",
-              TILE_TONE[failed ? "failed" : succeeded ? "done" : "running"],
-            )}
-            aria-hidden
-          >
-            <KindIcon size={13} weight="bold" />
+          <span className="relative shrink-0" aria-hidden>
+            <NoticeIcon tone={tone} size="sm" icon={<KindIcon size={13} weight="bold" />} />
             <span className="absolute -bottom-1 -right-1 grid h-3 w-3 place-items-center rounded-full bg-card">
               {failed ? (
                 <LaunchStageGlyph status="failed" size={8} />
               ) : succeeded ? (
-                <Check size={7} weight="bold" className="text-emerald-300" />
+                <Check size={7} weight="bold" style={{ color: noticeTone("success").color }} />
               ) : (
                 <LaunchStageGlyph status="running" size={9} />
               )}
             </span>
           </span>
-          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-fg/88" title={launch.title}>
+          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-fg" title={launch.title}>
             {launch.title || launch.prompt.text}
           </span>
-          <span className="shrink-0 rounded-full border border-white/[0.06] bg-white/[0.03] px-1.5 py-px text-[10px] text-fg/50">
+          <span className="shrink-0 rounded-full border border-fg/[0.09] bg-fg/[0.04] px-1.5 py-px text-[10px] text-muted-fg">
             {launch.kind === "cli" ? "CLI" : "Chat"}
           </span>
           <CaretRight
             size={10}
             weight="bold"
             aria-hidden
-            className={cn("shrink-0 text-fg/30 transition-transform duration-150", expanded && "rotate-90")}
+            className={cn("shrink-0 text-muted-fg/70 transition-transform duration-150", expanded && "rotate-90")}
           />
         </span>
-        <span className="flex w-full min-w-0 items-center gap-2 pl-[34px] text-[11px]">
-          <span className="inline-flex min-w-0 max-w-[40%] items-center gap-1 text-fg/55" title={launch.laneName}>
-            <LaneIcon size={10} className="text-violet-300/75" />
+        <span className="flex w-full min-w-0 items-center gap-2 pl-[32px] text-[11px]">
+          <span className="inline-flex min-w-0 max-w-[40%] items-center gap-1 text-muted-fg" title={launch.laneName}>
+            <LaneIcon size={10} style={{ color: noticeTone("accent").text }} />
             <span className="min-w-0 truncate">{launch.laneName}</span>
           </span>
-          <span className="h-3 w-px shrink-0 bg-white/[0.08]" aria-hidden />
+          <span className="h-3 w-px shrink-0 bg-fg/[0.1]" aria-hidden />
           <span
-            className={cn("min-w-0 flex-1 truncate", failed ? "text-amber-200/80" : succeeded ? "text-emerald-200/70" : "text-fg/50")}
+            className="min-w-0 flex-1 truncate"
+            style={{ color: failed || succeeded ? noticeTone(tone).text : "var(--color-muted-fg)" }}
             data-testid="chat-launch-row-status"
           >
             {chatLaunchStatusLine(launch)}
           </span>
           <LaunchElapsed launch={launch} />
         </span>
-        <span className="block w-full pl-[34px]" title={`${done} of ${total} steps`}>
+        <span className="block w-full pl-[32px]" title={`${done} of ${total} steps`}>
           <LaunchProgressRail stages={launch.stages} />
         </span>
       </button>
@@ -170,7 +175,7 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
             transition={{ duration: 0.18, ease: STANDARD_EASE }}
             className="overflow-hidden"
           >
-            <div className="ml-[34px] mt-2.5 rounded-lg border border-white/[0.05] bg-black/[0.12] px-2.5 pt-0.5 pb-1">
+            <div className="ml-[32px] mt-2.5 rounded-lg border border-fg/[0.07] bg-fg/[0.03] px-2.5 pt-0.5 pb-1">
               <LaneSetupCard snapshot={launch} variant="compact" showTitle={false} onOpen={open} />
             </div>
           </motion.div>
@@ -202,39 +207,40 @@ export function ChatLaunchesSlideOut() {
 
   if (launches.length === 0) return null;
   const hasFailure = launches.some((launch) => launch.phase === "failed");
+  const tone: NoticeTone = anyRunning ? "accent" : hasFailure ? "error" : "success";
   return (
     <section
       data-testid="chat-launches-slide-out"
       aria-label="Launches"
-      className={cn(
-        "ade-toast-enter pointer-events-auto overflow-hidden rounded-xl border bg-card/95 shadow-float backdrop-blur",
-        hasFailure ? "border-amber-400/20" : "border-white/[0.08]",
-      )}
+      className="pointer-events-auto overflow-hidden"
+      style={{
+        ...NOTICE_FLOAT_SURFACE,
+        borderRadius: 14,
+        border: `1px solid ${noticeTone(hasFailure ? "error" : "neutral").edge}`,
+        fontFamily: "var(--font-sans)",
+        color: "var(--color-fg)",
+      }}
     >
-      <header className="flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.015] px-3 py-2">
+      <header className="flex items-center gap-2.5 border-b border-fg/[0.07] py-2 pl-3 pr-2">
+        <NoticeIcon
+          tone={tone}
+          size="sm"
+          icon={anyRunning ? <LaneIcon size={12} weight="bold" /> : hasFailure ? <Warning size={12} weight="bold" /> : <Check size={12} weight="bold" />}
+        />
         <span
-          className={cn(
-            "grid h-5 w-5 shrink-0 place-items-center rounded-md border",
-            TILE_TONE[anyRunning ? "running" : hasFailure ? "failed" : "done"],
-          )}
-          aria-hidden
+          className="min-w-0 flex-1 truncate"
+          style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}
+          data-testid="chat-launches-headline"
         >
-          {anyRunning ? <LaneIcon size={11} weight="bold" /> : hasFailure ? <Warning size={11} weight="bold" /> : <Check size={11} weight="bold" />}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg/70" data-testid="chat-launches-headline">
           {slideOutHeadline(launches)}
         </span>
-        <button
-          type="button"
-          aria-label="Dismiss launches"
+        <NoticeCloseButton
+          label="Dismiss launches"
           title="Dismiss"
           onClick={() => dismissChatLaunches(launches.map((launch) => launch.launchId))}
-          className="grid h-5 w-5 shrink-0 place-items-center rounded-md text-fg/40 transition-colors hover:bg-white/[0.06] hover:text-fg/80"
-        >
-          <X size={11} weight="bold" aria-hidden />
-        </button>
+        />
       </header>
-      <ul className="max-h-[min(60vh,420px)] divide-y divide-white/[0.06] overflow-y-auto">
+      <ul className="max-h-[min(60vh,420px)] divide-y divide-fg/[0.07] overflow-y-auto">
         {launches.map((launch) => (
           <LaunchRow key={launch.launchId} launch={launch} />
         ))}

@@ -25,6 +25,7 @@ import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
 import { findLaneBaseNeed, findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { getActiveRebaseNeeds } from "./rebaseWorkflowModel";
+import { confirmDialog } from "../../ui/dialog/confirm";
 
 /* ---- Outcome dot with design-system colors ---- */
 
@@ -674,7 +675,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         return result.pr.id;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the integration PR anyway?`)) {
+        if (
+          !isDirtyWorktreeErrorMessage(message)
+          || !(await confirmDialog({
+            title: "Continue and create the integration PR anyway?",
+            message: stripDirtyWorktreePrefix(message),
+            confirmLabel: "Continue",
+            tone: "warning",
+          }))
+        ) {
           throw error;
         }
         const result = await window.ade.prs.commitIntegration({
@@ -710,13 +719,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
   const handleResimulate = async (p: IntegrationProposal) => {
     const deleteIntegrationLane = p.integrationLaneId && isAdeOwnedIntegrationLane(p)
-      ? window.confirm(
-          [
-            "Re-simulating will replace this proposal.",
+      ? await confirmDialog({
+          title: "Re-simulating will replace this proposal.",
+          message: [
             `Also delete the integration lane "${p.integrationLaneName || p.integrationLaneId}" that ADE created for it?`,
             ...getIntegrationLaneWarningMessages(p),
           ].join("\n\n"),
-        )
+          confirmLabel: "Delete",
+          destructive: true,
+        })
       : false;
     setResimBusy(true);
     setCommitError(null);
@@ -1083,7 +1094,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         result = await runCreate(false);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and prepare the integration lane anyway?`)) {
+        if (
+          !isDirtyWorktreeErrorMessage(message)
+          || !(await confirmDialog({
+            title: "Continue and prepare the integration lane anyway?",
+            message: stripDirtyWorktreePrefix(message),
+            confirmLabel: "Continue",
+            tone: "warning",
+          }))
+        ) {
           throw error;
         }
         result = await runCreate(true);

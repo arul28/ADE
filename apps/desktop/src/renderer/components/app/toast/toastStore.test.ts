@@ -46,13 +46,13 @@ describe("toastStore", () => {
     vi.useRealTimers();
   });
 
-  it("caps the stack at 4, dropping the oldest and keeping newest at the end", () => {
-    const ids = [1, 2, 3, 4, 5].map((n) => showToast({ title: `t${n}` }));
+  it("caps the stack at 5, dropping the oldest and keeping newest at the end", () => {
+    const ids = [1, 2, 3, 4, 5, 6].map((n) => showToast({ title: `t${n}` }));
     const stack = getToasts();
-    expect(stack).toHaveLength(4);
+    expect(stack).toHaveLength(5);
     // Oldest (ids[0]) dropped; order is oldest -> newest.
-    expect(stack.map((t) => t.id)).toEqual([ids[1], ids[2], ids[3], ids[4]]);
-    expect(stack[stack.length - 1].title).toBe("t5");
+    expect(stack.map((t) => t.id)).toEqual([ids[1], ids[2], ids[3], ids[4], ids[5]]);
+    expect(stack[stack.length - 1].title).toBe("t6");
   });
 
   it("auto-dismisses after the default duration", () => {

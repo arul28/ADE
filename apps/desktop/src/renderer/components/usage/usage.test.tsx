@@ -3,6 +3,7 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Z_LAYERS } from "../ui/zLayers";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -754,7 +755,8 @@ describe("usage components", () => {
       const meter = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
       fireEvent.mouseEnter(meter.parentElement!);
       const popover = screen.getByRole("dialog", { name: "Weekly details" });
-      expect(popover.className).toContain("z-[90]");
+      // Above the header usage sheet it opens from (Z_LAYERS.sheet).
+      expect(Number(popover.style.zIndex)).toBeGreaterThan(Z_LAYERS.sheet);
 
       fireEvent.mouseLeave(meter.parentElement!, { relatedTarget: document.body });
       expect(screen.getByRole("dialog", { name: "Weekly details" })).toBeTruthy();

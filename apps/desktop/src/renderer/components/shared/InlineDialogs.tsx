@@ -1,50 +1,12 @@
-import React, { useEffect, useRef, useCallback } from "react";
-import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
+import React, { useCallback } from "react";
+import { ConfirmDialogView, PromptDialogView } from "../ui/dialog/confirm";
 
-/* ─── Shared overlay + panel styles ─── */
-
-const overlayStyle: React.CSSProperties = {
-  position: "fixed",
-  inset: 0,
-  zIndex: 9999,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  background: "rgba(0,0,0,0.70)",
-};
-
-const panelStyle: React.CSSProperties = {
-  width: 420,
-  maxWidth: "90vw",
-  background: COLORS.cardBgSolid,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  boxShadow: "0 24px 64px -30px rgba(0,0,0,0.82)",
-};
-
-const titleStyle: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 700,
-  fontFamily: SANS_FONT,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
-  color: COLORS.textPrimary,
-};
-
-const bodyTextStyle: React.CSSProperties = {
-  fontSize: 12,
-  fontFamily: MONO_FONT,
-  color: COLORS.textSecondary,
-  lineHeight: 1.5,
-  whiteSpace: "pre-wrap",
-};
-
-const footerStyle: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "flex-end",
-  gap: 8,
-  padding: "12px 16px",
-  borderTop: `1px solid ${COLORS.border}`,
-};
+/**
+ * Hook-driven confirm/prompt dialogs, kept for their existing call sites. They
+ * render through the shared dialog shell (`ui/dialog`), so they look and behave
+ * exactly like `confirmDialog` / `promptDialog`. New code should call those
+ * imperative helpers instead of adding state for a dialog.
+ */
 
 /* ─── ConfirmDialog ─── */
 
@@ -100,49 +62,21 @@ export function ConfirmDialog({
   state: ConfirmDialogState | null;
   onClose: () => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!state?.open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [state?.open, onClose]);
-
   if (!state?.open) return null;
-
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) onClose();
-  };
-
   return (
-    <div style={overlayStyle} onClick={handleOverlayClick}>
-      <div ref={panelRef} style={panelStyle}>
-        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: "#120F1A" }}>
-          <div style={titleStyle}>{state.title}</div>
-        </div>
-        <div style={{ padding: "16px 16px" }}>
-          <div style={bodyTextStyle}>{state.message}</div>
-        </div>
-        <div style={footerStyle}>
-          <button style={outlineButton()} onClick={onClose}>
-            CANCEL
-          </button>
-          <button
-            style={state.danger ? dangerButton() : primaryButton()}
-            onClick={state.onConfirm}
-            autoFocus
-          >
-            {state.confirmLabel ?? "CONFIRM"}
-          </button>
-        </div>
-      </div>
-    </div>
+    <ConfirmDialogView
+      open
+      options={{
+        title: state.title,
+        message: state.message,
+        confirmLabel: state.confirmLabel ?? "Confirm",
+        destructive: state.danger,
+      }}
+      onResult={(confirmed) => {
+        if (confirmed) state.onConfirm();
+        else onClose();
+      }}
+    />
   );
 }
 
@@ -202,92 +136,21 @@ export function PromptDialog({
   state: PromptDialogState | null;
   onClose: () => void;
 }) {
-  const [value, setValue] = React.useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (state?.open) {
-      setValue(state.defaultValue ?? "");
-      // Focus on next tick so the input exists in DOM
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      });
-    }
-  }, [state?.open, state?.defaultValue]);
-
-  useEffect(() => {
-    if (!state?.open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [state?.open, onClose]);
-
   if (!state?.open) return null;
-
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) onClose();
-  };
-
-  const handleSubmit = () => {
-    if (value.trim()) {
-      state.onConfirm(value);
-    }
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    height: 32,
-    background: COLORS.recessedBg,
-    border: `1px solid ${COLORS.outlineBorder}`,
-    padding: "0 8px",
-    fontSize: 12,
-    color: COLORS.textPrimary,
-    fontFamily: MONO_FONT,
-    borderRadius: 0,
-    outline: "none",
-  };
-
   return (
-    <div style={overlayStyle} onClick={handleOverlayClick}>
-      <div style={panelStyle}>
-        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${COLORS.border}`, background: "#120F1A" }}>
-          <div style={titleStyle}>{state.title}</div>
-        </div>
-        <div style={{ padding: "16px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
-          {state.message && <div style={bodyTextStyle}>{state.message}</div>}
-          <input
-            ref={inputRef}
-            style={inputStyle}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={state.placeholder}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleSubmit();
-              }
-            }}
-          />
-        </div>
-        <div style={footerStyle}>
-          <button style={outlineButton()} onClick={onClose}>
-            CANCEL
-          </button>
-          <button
-            style={primaryButton()}
-            onClick={handleSubmit}
-            disabled={!value.trim()}
-          >
-            {state.confirmLabel ?? "OK"}
-          </button>
-        </div>
-      </div>
-    </div>
+    <PromptDialogView
+      open
+      options={{
+        title: state.title,
+        message: state.message,
+        defaultValue: state.defaultValue,
+        placeholder: state.placeholder,
+        confirmLabel: state.confirmLabel ?? "OK",
+      }}
+      onResult={(value) => {
+        if (value === null) onClose();
+        else state.onConfirm(value);
+      }}
+    />
   );
 }

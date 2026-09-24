@@ -1,6 +1,7 @@
 import React from "react";
-import { Archive, CheckCircle, Trash, Warning } from "@phosphor-icons/react";
+import { Archive, Trash, Warning } from "@phosphor-icons/react";
 import { LaneIcon } from "../../ui/vcsIcons";
+import { Banner } from "../../ui/notice";
 import type { LaneSummary, PrSummary } from "../../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
 import { branchNameFromRef } from "./laneBranchTargets";
@@ -87,12 +88,11 @@ export function PrLaneCleanupBanner({
   // the confirmation form even after a successful delete.
   if (done) {
     return (
-      <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: "color-mix(in srgb, var(--color-success) 30%, transparent)", background: "color-mix(in srgb, var(--color-success) 8%, transparent)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: shellPadding }}>
-          <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: titleSize, color: COLORS.success }}>{done}</span>
-        </div>
-      </div>
+      <Banner
+        layout="inline"
+        style={{ flexShrink: 0 }}
+        model={{ id: `pr-lane-cleanup-done:${lane.id}`, tone: "success", title: done }}
+      />
     );
   }
 

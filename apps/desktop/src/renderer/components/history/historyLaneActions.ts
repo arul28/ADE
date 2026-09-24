@@ -1,5 +1,6 @@
 import type { GitConflictState, GitStashSummary } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
+import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 
 export type HistoryLaneActionId =
   | "fetch"
@@ -321,19 +322,27 @@ export function groupHistoryLaneActions(actions: HistoryLaneAction[]): HistoryLa
     .filter((group) => group.actions.length > 0);
 }
 
-function confirmOrCancel(message: string): boolean {
-  return typeof window.confirm === "function" ? window.confirm(message) : false;
+type HistoryConfirmOptions = { confirmLabel?: string; destructive?: boolean };
+
+/** Splits "Question? Detail." into a dialog title and body; the words stay the same. */
+function splitQuestion(text: string): { title: string; message?: string } {
+  const index = text.indexOf("? ");
+  if (index < 0) return { title: text };
+  return { title: text.slice(0, index + 1), message: text.slice(index + 2).trim() };
 }
 
-function promptOrCancel(message: string, fallback: string): string | null {
-  const value =
-    typeof window.prompt === "function" ? window.prompt(message, fallback) : fallback;
+async function confirmOrCancel(text: string, options: HistoryConfirmOptions = {}): Promise<boolean> {
+  return confirmDialog({ ...splitQuestion(text), ...options });
+}
+
+async function promptOrCancel(title: string, fallback: string): Promise<string | null> {
+  const value = await promptDialog({ title, defaultValue: fallback });
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }
 
-function promptConfirmOrCancel(message: string, expected: string): boolean {
-  const value = typeof window.prompt === "function" ? window.prompt(message) : expected;
+async function promptConfirmOrCancel(text: string, expected: string, options: HistoryConfirmOptions = {}): Promise<boolean> {
+  const value = await promptDialog({ ...splitQuestion(text), placeholder: expected, ...options });
   return value?.trim() === expected;
 }
 
@@ -369,7 +378,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "pull":
-        if (!confirmOrCancel(`Fast-forward pull from upstream${target}? This updates the lane worktree.`)) {
+        if (!await confirmOrCancel(`Fast-forward pull from upstream${target}? This updates the lane worktree.`)) {
           return;
         }
         await window.ade.git.pull({ laneId, mode: "ff-only" });
@@ -377,7 +386,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "pull_rebase":
-        if (!confirmOrCancel(`Pull with rebase${target}? Local commits will replay on top of upstream.`)) {
+        if (!await confirmOrCancel(`Pull with rebase${target}? Local commits will replay on top of upstream.`)) {
           return;
         }
         await window.ade.git.pull({ laneId, mode: "rebase" });
@@ -385,7 +394,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "pull_merge":
-        if (!confirmOrCancel(`Pull with merge${target}? This may create a merge commit.`)) {
+        if (!await confirmOrCancel(`Pull with merge${target}? This may create a merge commit.`)) {
           return;
         }
         await window.ade.git.pull({ laneId, mode: "merge" });
@@ -393,9 +402,10 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "undo_last_head_change":
-        if (!promptConfirmOrCancel(
+        if (!await promptConfirmOrCancel(
           `Undo the latest head-changing git operation${target}? Type undo to confirm. This runs git reset --hard.`,
           "undo",
+          { confirmLabel: "Undo", destructive: true },
         )) {
           return;
         }
@@ -404,9 +414,10 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "redo_last_head_change":
-        if (!promptConfirmOrCancel(
+        if (!await promptConfirmOrCancel(
           `Redo the last undone git head change${target}? Type redo to confirm. This runs git reset --hard.`,
           "redo",
+          { confirmLabel: "Redo", destructive: true },
         )) {
           return;
         }
@@ -415,7 +426,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "push":
-        if (!confirmOrCancel(`Push this lane${target} to its upstream remote?`)) {
+        if (!await confirmOrCancel(`Push this lane${target} to its upstream remote?`)) {
           return;
         }
         await window.ade.git.push({ laneId });
@@ -424,7 +435,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "force_push_lease":
-        if (!confirmOrCancel("Force push with lease? This can rewrite the remote branch.")) {
+        if (!await confirmOrCancel("Force push with lease? This can rewrite the remote branch.", { confirmLabel: "Force push", destructive: true })) {
           return;
         }
         await window.ade.git.push({ laneId, forceWithLease: true });
@@ -481,7 +492,7 @@ export async function runHistoryLaneAction(args: {
       }
       case "rename_lane": {
         const currentName = laneName?.trim() || "Lane";
-        const nextName = promptOrCancel("Rename lane", currentName);
+        const nextName = await promptOrCancel("Rename lane", currentName);
         if (!nextName || nextName === currentName) return;
         await window.ade.lanes.rename({ laneId, name: nextName });
         onNotice?.(`Renamed lane to ${nextName}`);
@@ -490,7 +501,7 @@ export async function runHistoryLaneAction(args: {
       }
       case "archive_lane": {
         const currentName = laneName?.trim() || "this lane";
-        if (!confirmOrCancel(`Archive ${currentName}? The worktree and branch stay on disk.`)) {
+        if (!await confirmOrCancel(`Archive ${currentName}? The worktree and branch stay on disk.`)) {
           return;
         }
         await window.ade.lanes.archive({ laneId });
@@ -500,9 +511,10 @@ export async function runHistoryLaneAction(args: {
       }
       case "delete_lane_worktree": {
         const currentName = laneName?.trim() || "this lane";
-        if (!promptConfirmOrCancel(
+        if (!await promptConfirmOrCancel(
           `Delete ${currentName}'s ADE lane and worktree? Type delete to confirm. The local branch stays.`,
           "delete",
+          { confirmLabel: "Delete", destructive: true },
         )) {
           return;
         }
@@ -518,7 +530,7 @@ export async function runHistoryLaneAction(args: {
         const message = branch
           ? `Delete this ADE lane, worktree, and local branch "${branch}"? Type ${branch} to confirm.`
           : "Delete this ADE lane, worktree, and local branch? Type delete to confirm.";
-        if (!promptConfirmOrCancel(message, expected)) {
+        if (!await promptConfirmOrCancel(message, expected, { confirmLabel: "Delete", destructive: true })) {
           return;
         }
         await window.ade.lanes.delete({ laneId, deleteBranch: true, force: false });
@@ -527,7 +539,7 @@ export async function runHistoryLaneAction(args: {
         return;
       }
       case "merge_upstream":
-        if (!confirmOrCancel(`Merge the lane base into this lane${target}?`)) {
+        if (!await confirmOrCancel(`Merge the lane base into this lane${target}?`)) {
           return;
         }
         await window.ade.git.sync({ laneId, mode: "merge" });
@@ -536,7 +548,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "rebase_upstream":
-        if (!confirmOrCancel(`Rebase this lane${target} onto its base?`)) {
+        if (!await confirmOrCancel(`Rebase this lane${target} onto its base?`)) {
           return;
         }
         await window.ade.git.sync({ laneId, mode: "rebase" });
@@ -545,9 +557,9 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "stash": {
-        const message = promptOrCancel("Stash message", "ADE history stash");
+        const message = await promptOrCancel("Stash message", "ADE history stash");
         if (!message) return;
-        const includeUntracked = confirmOrCancel("Include untracked files in the stash?");
+        const includeUntracked = await confirmOrCancel("Include untracked files in the stash?");
         await window.ade.git.stashPush({ laneId, message, includeUntracked });
         onNotice?.("Saved stash");
         onComplete?.();
@@ -559,7 +571,7 @@ export async function runHistoryLaneAction(args: {
           onNotice?.("No branch stashes saved");
           return;
         }
-        if (!confirmOrCancel(`Apply ${stash.ref}: ${stash.subject || "saved stash"}?`)) return;
+        if (!await confirmOrCancel(`Apply ${stash.ref}: ${stash.subject || "saved stash"}?`)) return;
         await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid });
         onNotice?.(`Applied ${stash.ref}`);
         onComplete?.();
@@ -571,7 +583,7 @@ export async function runHistoryLaneAction(args: {
           onNotice?.("No branch stashes saved");
           return;
         }
-        if (!confirmOrCancel(`Pop ${stash.ref}: ${stash.subject || "saved stash"}? This removes it from stashes.`)) return;
+        if (!await confirmOrCancel(`Pop ${stash.ref}: ${stash.subject || "saved stash"}? This removes it from stashes.`)) return;
         await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
         onNotice?.(`Popped ${stash.ref}`);
         onComplete?.();
@@ -583,7 +595,7 @@ export async function runHistoryLaneAction(args: {
           onNotice?.("No branch stashes saved");
           return;
         }
-        if (!confirmOrCancel(`Delete ${stash.ref}: ${stash.subject || "saved stash"}?`)) return;
+        if (!await confirmOrCancel(`Delete ${stash.ref}: ${stash.subject || "saved stash"}?`, { confirmLabel: "Delete", destructive: true })) return;
         await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
         onNotice?.(`Dropped ${stash.ref}`);
         onComplete?.();
@@ -595,7 +607,7 @@ export async function runHistoryLaneAction(args: {
           onNotice?.("No branch stashes saved");
           return;
         }
-        if (!confirmOrCancel(`Delete ${stashes.length} branch stash${stashes.length === 1 ? "" : "es"}?`)) return;
+        if (!await confirmOrCancel(`Delete ${stashes.length} branch stash${stashes.length === 1 ? "" : "es"}?`, { confirmLabel: "Delete", destructive: true })) return;
         await window.ade.git.stashClear({ laneId });
         onNotice?.("Cleared branch stashes");
         onComplete?.();
@@ -607,7 +619,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "rebase_abort":
-        if (!confirmOrCancel("Abort the in-progress rebase?")) return;
+        if (!await confirmOrCancel("Abort the in-progress rebase?", { confirmLabel: "Abort", destructive: true })) return;
         await window.ade.git.rebaseAbort({ laneId });
         onNotice?.("Aborted rebase");
         onComplete?.();
@@ -618,7 +630,7 @@ export async function runHistoryLaneAction(args: {
         onComplete?.();
         return;
       case "merge_abort":
-        if (!confirmOrCancel("Abort the in-progress merge?")) return;
+        if (!await confirmOrCancel("Abort the in-progress merge?", { confirmLabel: "Abort", destructive: true })) return;
         await window.ade.git.mergeAbort({ laneId });
         onNotice?.("Aborted merge");
         onComplete?.();

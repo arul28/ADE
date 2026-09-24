@@ -17,11 +17,11 @@
  *   left running behind a closed dialog is a leak nobody can see.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { CheckCircle, X } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
+import { CheckCircle } from "@phosphor-icons/react";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { TerminalView } from "../../terminals/TerminalView";
 import { openExternalUrl } from "../../../lib/openExternal";
+import { Dialog } from "../../ui/dialog";
 
 /**
  * Poll cadence for "are we signed in yet".
@@ -182,107 +182,66 @@ export function ProviderSignInModal({
     return () => clearTimeout(timer);
   }, [close, signedIn]);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [close]);
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.70)" }}
-      onClick={close}
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) close();
+      }}
+      // JSX title keeps the close button's exact "Close sign in" label.
+      title={<>{title}</>}
+      description={<span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{command}</span>}
+      closeLabel="Close sign in"
+      width={768}
+      maxHeight="82vh"
+      // The terminal takes focus itself once the PTY is up; do not steal it for the × first.
+      preventAutoFocus
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column", marginTop: 14, borderTop: `1px solid ${COLORS.border}` }}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="w-full max-w-3xl outline-none"
-        style={{
-          background: COLORS.cardBgSolid,
-          border: `1px solid ${COLORS.outlineBorder}`,
-          boxShadow: "0 28px 80px -36px rgba(0,0,0,0.82)",
-          display: "flex",
-          flexDirection: "column",
-          maxHeight: "82vh",
-        }}
-        onClick={(event) => event.stopPropagation()}
-      >
+      {signedIn ? (
         <div
+          role="status"
           style={{
             display: "flex",
             alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            padding: "0 16px",
-            height: 52,
+            gap: 8,
+            padding: "8px 16px",
             flexShrink: 0,
+            fontSize: 11,
+            fontFamily: MONO_FONT,
+            color: COLORS.success,
             borderBottom: `1px solid ${COLORS.border}`,
           }}
         >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
-              {title}
-            </div>
-            <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{command}</div>
-          </div>
-          <button
-            type="button"
-            aria-label="Close sign in"
-            onClick={close}
-            style={{ ...outlineButton({ height: 26 }), width: 26, padding: 0, justifyContent: "center" }}
-          >
-            <X size={12} weight="bold" />
-          </button>
+          <CheckCircle size={13} weight="fill" />
+          Signed in to {providerLabel}.
         </div>
+      ) : null}
 
-        {signedIn ? (
+      <div style={{ flex: 1, minHeight: 320, display: "flex", flexDirection: "column" }}>
+        {error ? (
           <div
-            role="status"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 16px",
-              flexShrink: 0,
-              fontSize: 11,
-              fontFamily: MONO_FONT,
-              color: COLORS.success,
-              borderBottom: `1px solid ${COLORS.border}`,
-            }}
+            role="alert"
+            style={{ padding: 16, fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.danger, overflowWrap: "anywhere" }}
           >
-            <CheckCircle size={13} weight="fill" />
-            Signed in to {providerLabel}.
+            {error}
           </div>
-        ) : null}
-
-        <div style={{ flex: 1, minHeight: 320, display: "flex", flexDirection: "column" }}>
-          {error ? (
-            <div
-              role="alert"
-              style={{ padding: 16, fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.danger, overflowWrap: "anywhere" }}
-            >
-              {error}
-            </div>
-          ) : terminal ? (
-            <TerminalView
-              key={`${providerId}:${terminal.sessionId}`}
-              ptyId={terminal.ptyId}
-              sessionId={terminal.sessionId}
-              isActive
-              className="h-full w-full"
-            />
-          ) : (
-            <div style={{ padding: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-              Starting a terminal…
-            </div>
-          )}
-        </div>
+        ) : terminal ? (
+          <TerminalView
+            key={`${providerId}:${terminal.sessionId}`}
+            ptyId={terminal.ptyId}
+            sessionId={terminal.sessionId}
+            isActive
+            className="h-full w-full"
+          />
+        ) : (
+          <div style={{ padding: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+            Starting a terminal…
+          </div>
+        )}
       </div>
-    </div>,
-    document.body,
+    </Dialog>
   );
 }

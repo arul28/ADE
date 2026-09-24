@@ -5,6 +5,16 @@ import {
   runHistoryLaneAction,
 } from "./historyLaneActions";
 
+const dialogMocks = vi.hoisted(() => ({
+  confirmDialog: vi.fn(),
+  promptDialog: vi.fn(),
+}));
+vi.mock("../ui/dialog/confirm", () => dialogMocks);
+
+function asked(title: string, message?: string) {
+  return expect.objectContaining(message === undefined ? { title } : { title, message });
+}
+
 function stubGitWindow(promptValues: string[] = ["checkpoint"]) {
   const git = {
     fetch: vi.fn(async () => ({ operationId: "fetch", preHeadSha: "a", postHeadSha: "a" })),
@@ -51,8 +61,10 @@ function stubGitWindow(promptValues: string[] = ["checkpoint"]) {
     archive: vi.fn(async () => undefined),
     delete: vi.fn(async () => undefined),
   };
-  const confirm = vi.fn(() => true);
-  const prompt = vi.fn((_: string, fallback?: string) => promptValues.shift() ?? fallback ?? null);
+  const confirm = dialogMocks.confirmDialog.mockReset().mockImplementation(async () => true);
+  const prompt = dialogMocks.promptDialog
+    .mockReset()
+    .mockImplementation(async (options: { defaultValue?: string }) => promptValues.shift() ?? options.defaultValue ?? null);
 
   vi.stubGlobal("window", {
     ade: {
@@ -63,8 +75,6 @@ function stubGitWindow(promptValues: string[] = ["checkpoint"]) {
         writeClipboardText: vi.fn(async () => undefined),
       },
     },
-    confirm,
-    prompt,
   });
 
   return { git, lanes, confirm, prompt };
@@ -129,7 +139,7 @@ describe("history lane actions", () => {
     });
 
     expect(confirm).toHaveBeenCalledWith(
-      "Force push with lease? This can rewrite the remote branch.",
+      asked("Force push with lease?", "This can rewrite the remote branch."),
     );
     expect(git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: true });
     expect(onComplete).toHaveBeenCalledTimes(1);
@@ -144,13 +154,13 @@ describe("history lane actions", () => {
     await runHistoryLaneAction({ actionId: "pull_merge", laneId: "lane-1", onComplete });
 
     expect(confirm).toHaveBeenCalledWith(
-      "Fast-forward pull from upstream? This updates the lane worktree.",
+      asked("Fast-forward pull from upstream?", "This updates the lane worktree."),
     );
     expect(confirm).toHaveBeenCalledWith(
-      "Pull with rebase? Local commits will replay on top of upstream.",
+      asked("Pull with rebase?", "Local commits will replay on top of upstream."),
     );
     expect(confirm).toHaveBeenCalledWith(
-      "Pull with merge? This may create a merge commit.",
+      asked("Pull with merge?", "This may create a merge commit."),
     );
     expect(git.pull).toHaveBeenNthCalledWith(1, { laneId: "lane-1", mode: "ff-only" });
     expect(git.pull).toHaveBeenNthCalledWith(2, { laneId: "lane-1", mode: "rebase" });
@@ -175,11 +185,11 @@ describe("history lane actions", () => {
 
     expect(prompt).toHaveBeenNthCalledWith(
       1,
-      "Undo the latest head-changing git operation? Type undo to confirm. This runs git reset --hard.",
+      asked("Undo the latest head-changing git operation?", "Type undo to confirm. This runs git reset --hard."),
     );
     expect(prompt).toHaveBeenNthCalledWith(
       2,
-      "Redo the last undone git head change? Type redo to confirm. This runs git reset --hard.",
+      asked("Redo the last undone git head change?", "Type redo to confirm. This runs git reset --hard."),
     );
     expect(git.undoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(git.redoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
@@ -228,9 +238,9 @@ describe("history lane actions", () => {
   it("renames, archives, and deletes lanes through existing ADE lane APIs", async () => {
     const { git, lanes, confirm, prompt } = stubGitWindow();
     prompt
-      .mockReturnValueOnce("Review lane")
-      .mockReturnValueOnce("delete")
-      .mockReturnValueOnce("cursor/history-tab");
+      .mockResolvedValueOnce("Review lane")
+      .mockResolvedValueOnce("delete")
+      .mockResolvedValueOnce("cursor/history-tab");
     const onComplete = vi.fn();
 
     await runHistoryLaneAction({
@@ -260,7 +270,7 @@ describe("history lane actions", () => {
 
     expect(lanes.rename).toHaveBeenCalledWith({ laneId: "lane-1", name: "Review lane" });
     expect(confirm).toHaveBeenCalledWith(
-      "Archive Review lane? The worktree and branch stay on disk.",
+      asked("Archive Review lane?", "The worktree and branch stay on disk."),
     );
     expect(lanes.archive).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(lanes.delete).toHaveBeenNthCalledWith(1, {
@@ -300,8 +310,8 @@ describe("history lane actions", () => {
       laneId: "lane-1",
     });
 
-    expect(prompt).toHaveBeenCalledWith("Stash message", "ADE history stash");
-    expect(confirm).toHaveBeenCalledWith("Include untracked files in the stash?");
+    expect(prompt).toHaveBeenCalledWith({ title: "Stash message", defaultValue: "ADE history stash" });
+    expect(confirm).toHaveBeenCalledWith(asked("Include untracked files in the stash?"));
     expect(git.stashPush).toHaveBeenCalledWith({
       laneId: "lane-1",
       message: "checkpoint",
@@ -347,8 +357,8 @@ describe("history lane actions", () => {
     expect(git.rebaseAbort).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(git.mergeContinue).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(git.mergeAbort).toHaveBeenCalledWith({ laneId: "lane-1" });
-    expect(confirm).toHaveBeenCalledWith("Abort the in-progress rebase?");
-    expect(confirm).toHaveBeenCalledWith("Abort the in-progress merge?");
+    expect(confirm).toHaveBeenCalledWith(asked("Abort the in-progress rebase?"));
+    expect(confirm).toHaveBeenCalledWith(asked("Abort the in-progress merge?"));
   });
 
   it("syncs merge and rebase actions through the shared sync command", async () => {

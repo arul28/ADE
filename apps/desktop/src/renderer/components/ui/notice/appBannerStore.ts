@@ -48,7 +48,36 @@ export type AppBannerEntry = {
   model: BannerModel;
 };
 
-type Owned = AppBannerEntry & { owner: symbol };
+/** The owner's latest model; callbacks read through it at call time. */
+type Live = { model: BannerModel };
+
+type Owned = AppBannerEntry & { owner: symbol; live: Live };
+
+/**
+ * The model the host draws: the owner's model with every callback routed
+ * through `live`, so a re-registration that changes only closures (a
+ * `navigate` that captured an older route) takes effect without re-rendering
+ * the host.
+ */
+function liveModel(live: Live): BannerModel {
+  const model = live.model;
+  const dismiss = model.dismiss;
+  return {
+    ...model,
+    actions: model.actions?.map((action, index) =>
+      action.onClick ? { ...action, onClick: () => live.model.actions?.[index]?.onClick?.() } : action,
+    ),
+    dismiss: dismiss && "onDismiss" in dismiss
+      ? {
+          ...dismiss,
+          onDismiss: () => {
+            const latest = live.model.dismiss;
+            if (latest && "onDismiss" in latest) latest.onDismiss();
+          },
+        }
+      : dismiss,
+  };
+}
 
 let entries: Owned[] = [];
 let snapshot: readonly AppBannerEntry[] = [];
@@ -136,9 +165,10 @@ function syncOwner(owner: symbol, next: Array<{ model: BannerModel; options?: Ap
     const priority = replacement.options?.priority ?? APP_BANNER_PRIORITY.default;
     if (placement !== entry.placement || priority !== entry.priority || !sameVisible(entry.model, replacement.model)) {
       changed = true;
-      updated.push({ ...entry, placement, priority, model: replacement.model });
+      entry.live.model = replacement.model;
+      updated.push({ ...entry, placement, priority, model: liveModel(entry.live) });
     } else {
-      entry.model = replacement.model;
+      entry.live.model = replacement.model;
       updated.push(entry);
     }
   }
@@ -150,13 +180,15 @@ function syncOwner(owner: symbol, next: Array<{ model: BannerModel; options?: Ap
     const collision = updated.findIndex((entry) => entry.id === item.model.id);
     if (collision >= 0) updated.splice(collision, 1);
     changed = true;
+    const live: Live = { model: item.model };
     updated.push({
       id: item.model.id,
       owner,
       order: nextOrder++,
       placement: item.options?.placement ?? "docked",
       priority: item.options?.priority ?? APP_BANNER_PRIORITY.default,
-      model: item.model,
+      live,
+      model: liveModel(live),
     });
   }
   entries = updated;

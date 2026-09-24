@@ -36,6 +36,7 @@ import {
   SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
 import { SettingsTextField } from "./primitives";
+import { Banner } from "../ui/notice";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -327,26 +328,6 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     gap: 16,
   };
 
-  const noticeStyle: CSSProperties = {
-    background: "color-mix(in srgb, var(--color-success) 12%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)",
-    padding: "8px 12px",
-    fontSize: 11,
-    fontFamily: MONO_FONT,
-    color: COLORS.success,
-    borderRadius: 0,
-  };
-
-  const errorStyle: CSSProperties = {
-    background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-    border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-    padding: "8px 12px",
-    fontSize: 11,
-    fontFamily: MONO_FONT,
-    color: COLORS.danger,
-    borderRadius: 0,
-  };
-
   const scopeRowStyle = (present: boolean): CSSProperties => ({
     display: "flex",
     alignItems: "center",
@@ -396,8 +377,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div style={sectionGap}>
-      {saveNotice ? <div style={noticeStyle}>{saveNotice}</div> : null}
-      {actionError ? <div style={errorStyle}>{actionError}</div> : null}
+      {saveNotice ? (
+        <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
+      ) : null}
+      {actionError ? (
+        <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />
+      ) : null}
 
       <SettingsManagerPage
         anchor="github-connection"
@@ -614,22 +599,40 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           </div>
 
           {hasMissingScopes ? (
-            <div style={errorStyle}>
-              Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-missing-scopes",
+                tone: "error",
+                title: (
+                  <>
+                    Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
+                  </>
+                ),
+              }}
+            />
           ) : null}
 
           {repoProbeFailed ? (
-            <div style={errorStyle}>
-              Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
-              <strong>{githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "this repo"}</strong>
-              {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
-              {isFineGrainedToken ? (
-                <> Add this repository to the fine-grained token and grant Contents, Pull requests, Metadata, Actions, and Workflows permissions.</>
-              ) : (
-                <> Make sure the token has access to this repository.</>
-              )}
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-repo-probe",
+                tone: "error",
+                title: (
+                  <span style={{ fontWeight: 500 }}>
+                    Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
+                    <strong>{githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "this repo"}</strong>
+                    {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
+                    {isFineGrainedToken ? (
+                      <> Add this repository to the fine-grained token and grant Contents, Pull requests, Metadata, Actions, and Workflows permissions.</>
+                    ) : (
+                      <> Make sure the token has access to this repository.</>
+                    )}
+                  </span>
+                ),
+              }}
+            />
           ) : null}
 
           {shouldShowGhAuthInstructions ? (

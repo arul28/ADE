@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { PencilSimple } from "@phosphor-icons/react";
 import type { CodexThreadGoal } from "../../../../shared/types";
-import { cn } from "../../ui/cn";
-
-const AMBER = "#F59E0B";
+import { CodexLogo } from "../../terminals/ToolLogos";
+import { Banner, NoticeBadge, type NoticeAction, type NoticeTone } from "../../ui/notice";
 
 type CodexGoalBannerProps = {
   goal: CodexThreadGoal;
@@ -28,22 +28,21 @@ function formatElapsed(seconds: number | null | undefined): string | null {
   return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
 }
 
-function statusPillClass(status: CodexThreadGoal["status"]): string {
+function statusTone(status: CodexThreadGoal["status"]): NoticeTone {
   switch (status) {
     case "complete":
-      return "bg-emerald-500/12 text-emerald-200/85 ring-1 ring-inset ring-emerald-400/25";
+      return "success";
     case "paused":
-      return "bg-fg/8 text-fg/55 ring-1 ring-inset ring-fg/15";
     case "cancelled":
-      return "bg-fg/8 text-fg/45 ring-1 ring-inset ring-fg/15";
+      return "neutral";
     case "blocked":
-      return "bg-rose-500/12 text-rose-100 ring-1 ring-inset ring-rose-400/25";
+      return "error";
     case "usage_limited":
-      return "bg-sky-500/12 text-sky-100 ring-1 ring-inset ring-sky-400/25";
+      return "info";
     case "budget_limited":
     case "active":
     default:
-      return "bg-amber-500/12 text-amber-100 ring-1 ring-inset ring-amber-400/30";
+      return "warning";
   }
 }
 
@@ -98,103 +97,84 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
     onClear?.();
   };
 
-  return (
-    <div
-      role="status"
-      className="relative shrink-0 border-b border-amber-300/15 bg-amber-500/[0.045] px-4 py-2.5"
-      style={{ boxShadow: "inset 3px 0 0 0 rgba(245,158,11,0.65)" }}
+  const tone = statusTone(status);
+
+  const title = editing ? (
+    <input
+      ref={inputRef}
+      type="text"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => {
+        // Moving focus to the clear (×) button must not commit the draft first:
+        // clearing throws the goal away, edit and all.
+        const next = e.relatedTarget;
+        if (onClear && next instanceof HTMLElement && next.closest(".ade-notice-close")) return;
+        submitEdit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitEdit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancelEdit();
+        }
+      }}
+      className="w-full min-w-0 rounded-md border border-border bg-transparent px-2 py-0.5 font-medium leading-tight text-fg outline-none focus:border-accent"
+      aria-label="Edit goal objective"
+    />
+  ) : onEdit ? (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      title={objective}
+      className="block max-w-full cursor-text truncate border-none bg-transparent p-0 text-left font-[inherit] text-inherit"
     >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <span aria-hidden className="select-none text-[15px] leading-none" style={{ color: AMBER }}>
-          {"◎"}
-        </span>
+      {objective}
+    </button>
+  ) : (
+    <span title={objective} className="block max-w-full truncate">
+      {objective}
+    </span>
+  );
 
-        {editing ? (
-          <input
-            ref={inputRef}
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={submitEdit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                submitEdit();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancelEdit();
-              }
-            }}
-            className="min-w-0 flex-1 rounded border border-amber-400/30 bg-amber-950/30 px-2 py-0.5 text-[length:calc(var(--chat-font-size)*12/14)] font-medium leading-tight text-amber-50 outline-none focus:border-amber-300/60"
-            aria-label="Edit goal objective"
-          />
-        ) : onEdit ? (
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            title={objective}
-            className="min-w-0 flex-1 cursor-text truncate rounded text-left text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium leading-tight text-amber-50 hover:text-amber-200"
-          >
-            {objective}
-          </button>
-        ) : (
-          <span
-            title={objective}
-            className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium leading-tight text-amber-50"
-          >
-            {objective}
-          </span>
-        )}
+  const actions: NoticeAction[] = [];
+  if (onEdit && !editing) {
+    actions.push({
+      label: "Edit goal",
+      variant: "link",
+      icon: <PencilSimple size={12} />,
+      onClick: () => setEditing(true),
+    });
+  }
 
-        <span
-          className={cn(
-            "shrink-0 rounded-full px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10/14)] font-medium capitalize tracking-tight",
-            statusPillClass(status),
-          )}
-        >
-          {statusLabel(status)}
-        </span>
-
-        {onEdit && !editing ? (
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="shrink-0 rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100"
-            aria-label="Edit goal"
-            title="Edit goal"
-          >
-            <span aria-hidden className="text-[13px] leading-none">{"✎"}</span>
-          </button>
-        ) : null}
-        {onClear ? (
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              if (editing) e.preventDefault();
-            }}
-            onClick={clearGoal}
-            className="shrink-0 rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100"
-            aria-label="Clear goal"
-            title="Clear goal"
-          >
-            <span aria-hidden className="text-[13px] leading-none">{"✕"}</span>
-          </button>
-        ) : null}
-      </div>
-
-      <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/65">
-        <div className="h-1 min-w-0 flex-1 rounded-full bg-amber-950/35" aria-hidden />
-        <span className="shrink-0 tabular-nums">
-          {formatTokens(tokensUsed)}
-        </span>
-        {elapsed ? (
-          <>
-            <span aria-hidden className="text-amber-100/25">·</span>
-            <span className="shrink-0 tabular-nums">{elapsed}</span>
-          </>
-        ) : null}
-      </div>
-    </div>
+  return (
+    <Banner
+      layout="inline"
+      style={{ margin: "6px 8px", flexShrink: 0 }}
+      model={{
+        id: "codex-goal",
+        tone,
+        icon: <CodexLogo size={13} />,
+        ariaLabel: objective,
+        title,
+        actions,
+        dismiss: onClear ? { onDismiss: clearGoal, title: "Clear goal", label: "Clear goal" } : false,
+        extra: (
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] tabular-nums text-muted-fg">
+            <NoticeBadge tone={tone}><span className="capitalize">{statusLabel(status)}</span></NoticeBadge>
+            <span>{formatTokens(tokensUsed)}</span>
+            {elapsed ? (
+              <>
+                <span aria-hidden>·</span>
+                <span>{elapsed}</span>
+              </>
+            ) : null}
+          </div>
+        ),
+      }}
+    />
   );
 }
 

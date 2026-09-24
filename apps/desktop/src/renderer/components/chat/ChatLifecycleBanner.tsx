@@ -6,50 +6,37 @@ import { isSessionSnoozed, snoozeWakeDescription } from "../../lib/sessionSnooze
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
 import { unsettleSession, wakeSessionNow } from "../terminals/sessionLifecycleActions";
 import { cn } from "../ui/cn";
+import { noticeTone, type NoticeTone } from "../ui/notice";
+import { NOTICE_FLOAT_SURFACE } from "../ui/notice/noticeTones";
 
-/** Compact lifecycle pill that floats over the transcript above the composer. */
+/**
+ * Compact lifecycle pill that floats over the transcript above the composer.
+ * This is a status pill, not a banner: its type scales with the chat font, so
+ * it keeps its own size logic and paints only its colours from the shared
+ * notice tones.
+ */
 const PILL_BASE_CLASS =
-  "pointer-events-auto inline-flex min-w-0 max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-full border px-2.5 py-1 font-sans shadow-[0_10px_28px_rgba(0,0,0,0.28)] backdrop-blur-xl";
+  "pointer-events-auto inline-flex min-w-0 max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-full border px-2.5 py-1 font-sans backdrop-blur-xl";
+// Hover and keyboard focus share one fill (keyboard users never see hover),
+// read from the tone's soft-hover token the pill sets on itself.
 const BUTTON_BASE_CLASS =
-  "ml-0.5 inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9.5/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40";
+  "ml-0.5 inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9.5/14)] font-medium transition-colors hover:bg-[var(--lifecycle-pill-hover)] hover:text-fg focus-visible:bg-[var(--lifecycle-pill-hover)] focus-visible:text-fg disabled:pointer-events-none disabled:opacity-40";
 
 type LifecycleVariant = "settled" | "snoozed";
 
 const VARIANT_CHROME: Record<LifecycleVariant, {
-  pill: string;
-  iconClass: string;
-  title: string;
-  detail: string;
-  button: string;
+  tone: NoticeTone;
   // Phosphor's own component type, borrowed from an existing icon (the idiom
   // ChatContinuityRecoveryCard uses) — `ComponentType<…>` does not match its
   // ForwardRef/propTypes shape.
   icon: typeof CheckCircle;
 }> = {
-  // Emerald = "finished cleanly, you have not looked yet" — the same hue the
+  // Success = "finished cleanly, you have not looked yet" — the same hue the
   // sidebar spends on Done, so a settled chat reads as an outcome, not a warning.
-  settled: {
-    pill: "border-emerald-300/18 bg-[#101b18]/92",
-    iconClass: "text-emerald-300/85",
-    title: "text-emerald-50/90",
-    detail: "text-emerald-50/55",
-    // focus-visible mirrors hover exactly: keyboard users never see hover, and
-    // the action offers an explicit way out alongside sending a new turn.
-    button:
-      "text-emerald-100/70 hover:bg-emerald-300/[0.10] hover:text-emerald-50 focus-visible:bg-emerald-300/[0.10] focus-visible:text-emerald-50",
-    icon: CheckCircle,
-  },
+  settled: { tone: "success", icon: CheckCircle },
   // Neutral on purpose: snooze hides a row, it does not change what the row IS.
   // Giving it a hue would claim a lifecycle change that never happened.
-  snoozed: {
-    pill: "border-white/[0.10] bg-[#17161c]/92",
-    iconClass: "text-muted-fg/75",
-    title: "text-fg/85",
-    detail: "text-fg/50",
-    button:
-      "text-fg/65 hover:bg-white/[0.07] hover:text-fg/90 focus-visible:bg-white/[0.07] focus-visible:text-fg/90",
-    icon: Moon,
-  },
+  snoozed: { tone: "neutral", icon: Moon },
 };
 
 /**
@@ -96,6 +83,7 @@ export function ChatLifecycleBanner({
   const variant: LifecycleVariant = snoozed ? "snoozed" : "settled";
   const chrome = VARIANT_CHROME[variant];
   const Icon = chrome.icon;
+  const tokens = noticeTone(chrome.tone);
 
   const title = snoozed ? "Snoozed" : "Settled";
   const detail = snoozed
@@ -107,20 +95,30 @@ export function ChatLifecycleBanner({
     <div
       data-testid="chat-lifecycle-banner"
       data-lifecycle-variant={variant}
-      className={cn(PILL_BASE_CLASS, chrome.pill, className)}
+      data-notice-tone={chrome.tone}
+      className={cn(PILL_BASE_CLASS, className)}
+      style={{
+        ...NOTICE_FLOAT_SURFACE,
+        borderColor: tokens.edge,
+        ["--lifecycle-pill-hover" as string]: tokens.softHover,
+      }}
     >
-      <Icon size={12} weight="fill" aria-hidden className={cn("shrink-0", chrome.iconClass)} />
-      <span className={cn("shrink-0 text-[length:calc(var(--chat-font-size)*10.5/14)] font-semibold", chrome.title)}>
+      <Icon size={12} weight="fill" aria-hidden className="shrink-0" style={{ color: tokens.color }} />
+      <span
+        className="shrink-0 text-[length:calc(var(--chat-font-size)*10.5/14)] font-semibold"
+        style={{ color: tokens.text }}
+      >
         {title}
       </span>
-      <span aria-hidden className={cn("shrink-0 text-[10px]", chrome.detail)}>·</span>
-      <span className={cn("min-w-0 truncate text-[length:calc(var(--chat-font-size)*10/14)]", chrome.detail)}>
+      <span aria-hidden className="shrink-0 text-[10px] text-muted-fg">·</span>
+      <span className="min-w-0 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg">
         {detail}
       </span>
       <button
         type="button"
         data-testid={snoozed ? "chat-lifecycle-wake" : "chat-lifecycle-unsettle"}
-        className={cn(BUTTON_BASE_CLASS, chrome.button)}
+        className={BUTTON_BASE_CLASS}
+        style={{ color: tokens.text }}
         onClick={() => {
           // Both route through the shared Work-tab lifecycle actions rather than
           // calling `window.ade.sessions` directly, so this pill, the snooze

@@ -115,6 +115,8 @@ export type NoticeAction = {
   disabled?: boolean;
   /** The action it started is still running: spinner, and not pressable. */
   busy?: boolean;
+  /** Announce whether this action's associated disclosure is open. */
+  expanded?: boolean;
   /** Tooltip. */
   title?: string;
 };
@@ -189,6 +191,7 @@ export function NoticeButton({
       style={style}
       disabled={disabled}
       aria-busy={action.busy || undefined}
+      aria-expanded={action.expanded}
       title={action.title}
       onClick={() => {
         if (action.onClick) action.onClick();

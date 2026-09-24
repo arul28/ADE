@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowSquareOut,
   ArrowsClockwise,
@@ -26,6 +25,10 @@ import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { Dialog } from "../ui/dialog";
+import { NoticeCloseButton, NoticeIcon } from "../ui/notice/NoticeParts";
+import { NOTICE_FLOAT_SURFACE, noticeTone } from "../ui/notice/noticeTones";
+import { Banner } from "../ui/notice";
 import { FleetRow, SectionHeader } from "./CursorCloudFleetRow";
 
 const CURSOR_VIOLET = "#A78BFA";
@@ -386,38 +389,53 @@ export function CursorCloudFleetModal({
     if (result.relayState === "ready") return null;
     if (result.relayState === "error") {
       return (
-        <div className="flex shrink-0 items-center gap-2 border-b border-amber-400/20 bg-amber-500/[0.06] px-4 py-1.5 text-[11px] text-amber-100/80">
-          <Warning size={12} weight="fill" />
-          Live updates hit an error — statuses may be stale. Use refresh.
-        </div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "cursor-cloud-relay-error",
+            tone: "warning",
+            title: "Live updates hit an error — statuses may be stale. Use refresh.",
+          }}
+          style={{ margin: "6px 8px", flexShrink: 0 }}
+        />
       );
     }
     return (
-      <div className="shrink-0 border-b border-white/[0.05] px-4 py-1.5 text-[11px] text-fg/45">
-        Live updates not configured yet — this list updates on refresh and when agents finish.
-      </div>
+      <Banner
+        layout="inline"
+        model={{
+          id: "cursor-cloud-relay-unconfigured",
+          tone: "neutral",
+          title: "Live updates not configured yet — this list updates on refresh and when agents finish.",
+        }}
+        style={{ margin: "6px 8px", flexShrink: 0 }}
+      />
     );
   })();
 
-  return createPortal(
-    <>
-      <button
-        type="button"
-        aria-label="Close Cursor Cloud fleet"
-        className="fixed inset-0 z-[9998] cursor-default bg-black/55 backdrop-blur-md"
-        onClick={onClose}
-        tabIndex={-1}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Cursor Cloud fleet"
-        className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(760px,calc(100dvh-28px))] w-[min(880px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
-        style={{
-          borderColor: "rgba(167,139,250,0.32)",
-          boxShadow: "0 24px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(167,139,250,0.14)",
-        }}
-      >
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title="Cursor Cloud fleet"
+      hideHeader
+      width={880}
+      height="min(760px, calc(100dvh - 28px))"
+      maxHeight="calc(100dvh - 28px)"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      // Nothing in the fleet grabs focus on open; the panel holds it.
+      preventAutoFocus
+      panelStyle={{
+        background: "var(--ade-shell-surface, #121019)",
+        borderRadius: 12,
+        borderColor: "rgba(167,139,250,0.32)",
+        boxShadow: "0 24px 70px rgba(0,0,0,0.55), 0 0 0 1px rgba(167,139,250,0.14)",
+      }}
+    >
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3.5 py-2" style={{ background: "rgba(167,139,250,0.055)" }}>
           <div className="flex min-w-0 items-center gap-2.5">
@@ -698,21 +716,18 @@ export function CursorCloudFleetModal({
         {pulledNotice ? (
           <div
             role="status"
-            className="absolute bottom-12 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-emerald-400/25 bg-[#101a14]/95 px-3.5 py-2 text-[11.5px] text-emerald-100/90 shadow-lg"
+            className="absolute bottom-12 left-1/2 flex -translate-x-1/2 items-center gap-2 py-1.5 pl-3 pr-1.5 text-[11.5px] text-fg"
+            style={{
+              ...NOTICE_FLOAT_SURFACE,
+              borderRadius: 14,
+              border: `1px solid ${noticeTone("success").edge}`,
+            }}
           >
+            <NoticeIcon tone="success" size="sm" bare />
             {pulledNotice}
-            <button
-              type="button"
-              onClick={() => setPulledNotice(null)}
-              className="ml-1 text-emerald-100/50 hover:text-emerald-100/90"
-              aria-label="Dismiss"
-            >
-              <X size={11} weight="bold" />
-            </button>
+            <NoticeCloseButton label="Dismiss" title="Dismiss" onClick={() => setPulledNotice(null)} />
           </div>
         ) : null}
-      </div>
-    </>,
-    document.body,
+    </Dialog>
   );
 }

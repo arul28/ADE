@@ -23,6 +23,7 @@
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Z_LAYERS } from "../ui/zLayers";
 import type React from "react";
 import { ArrowClockwise, ArrowSquareOut } from "@phosphor-icons/react";
 import type { UsageProvider } from "../../../shared/types";
@@ -544,15 +545,17 @@ function WindowPopover({
         // Measured before it is placed: showing it at 0,0 for one frame would
         // be a visible jump in the corner of the screen.
         visibility: position ? "visible" : "hidden",
+        // A hover card: above the top-bar sheet it opens from (the header
+        // usage sheet's click-away layer is `Z_LAYERS.sheet`). Below that
+        // layer the pointer never entered the card and the meter's mouseleave
+        // closed it on the way to the link.
+        zIndex: Z_LAYERS.tooltip,
       }}
       className={cn(
         // `bg-surface-raised` is translucent on the light theme, and this panel
         // floats over the rows beneath it — they read straight through. The
         // overlay token is the one every other floating usage readout uses.
-        // Above the header usage scrim (`z-[80]`). At `z-[60]` the panel was
-        // painted under that scrim, so the pointer never entered it and the
-        // meter’s mouseleave closed it on the way to the link.
-        "z-[90] p-3",
+        "p-3",
         USAGE_OVERLAY_CLASS,
       )}
       onMouseEnter={onPointerEnter}

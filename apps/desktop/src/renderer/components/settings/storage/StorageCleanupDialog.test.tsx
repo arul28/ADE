@@ -24,7 +24,7 @@ describe("StorageDialogFrame", () => {
       </>,
     );
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
 
     expect(closeFront).toHaveBeenCalledTimes(1);
     expect(closeBack).not.toHaveBeenCalled();
@@ -34,7 +34,7 @@ describe("StorageDialogFrame", () => {
         <button type="button">Back action</button>
       </StorageDialogFrame>,
     );
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
 
     expect(closeBack).toHaveBeenCalledTimes(1);
   });
@@ -53,7 +53,7 @@ describe("StorageDialogFrame", () => {
       </>,
     );
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
 
     expect(closeFront).not.toHaveBeenCalled();
     expect(closeBack).not.toHaveBeenCalled();

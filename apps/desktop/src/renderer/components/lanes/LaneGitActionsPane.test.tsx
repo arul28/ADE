@@ -10,6 +10,11 @@ import { __resetLaneGitActionRuntimeForTests, formatLaneGitError, LaneGitActions
 
 const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
 
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => true),
+}));
+
 vi.mock("./CommitTimeline", () => ({
   CommitTimeline: (props: Record<string, unknown>) => commitTimelineMock(props),
 }));
@@ -118,7 +123,6 @@ function buildStash(
 
 describe("LaneGitActionsPane rescue action", () => {
   const originalAde = globalThis.window.ade;
-  const originalConfirm = globalThis.window.confirm;
   let mockChangesByLaneId: Record<string, DiffChanges>;
   let mockStashesByLaneId: Record<string, GitStashSummary[]>;
   let mockConflictState: GitConflictState;
@@ -126,7 +130,6 @@ describe("LaneGitActionsPane rescue action", () => {
   let failDiffRefresh: boolean;
 
   beforeEach(() => {
-    globalThis.window.confirm = vi.fn(() => true);
     mockStoreState = {
       lanes: [
         buildLane(),
@@ -229,7 +232,6 @@ describe("LaneGitActionsPane rescue action", () => {
   afterEach(() => {
     cleanup();
     __resetLaneGitActionRuntimeForTests();
-    globalThis.window.confirm = originalConfirm;
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -689,7 +691,7 @@ describe("LaneGitActionsPane rescue action", () => {
     });
 
     const rebaseTabButton = await screen.findByRole("button", { name: /open rebase\/merge tab/i });
-    screen.getByText("AUTO-REBASE FAILED");
+    screen.getByText("Auto-rebase failed");
     screen.getByText(/auto-rebase failed\. files need follow-up before this lane can be pushed\./i);
 
     await user.click(rebaseTabButton);

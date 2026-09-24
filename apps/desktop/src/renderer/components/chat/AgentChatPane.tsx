@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -198,6 +198,8 @@ export { mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot } from "../..
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
+import { ProviderLogo } from "../shared/ProviderLogos";
+import { Banner, NoticeChip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -205,6 +207,7 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionBrowser";
 import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
@@ -1075,41 +1078,71 @@ type LocalRuntimeNoticeShape = {
   message: string;
 };
 
-function LocalRuntimeNoticeBlock(props: {
+/** Runtime banners sit at the top of the chat pane, inset from its edges. */
+const RUNTIME_BANNER_STYLE = { margin: "6px 8px" } as const;
+
+function RuntimeEndpointChip({ endpoint }: { endpoint?: string | null }) {
+  return endpoint ? <NoticeChip title={endpoint}>{endpoint}</NoticeChip> : null;
+}
+
+function LocalRuntimeNoticeBanner(props: {
   notice: LocalRuntimeNoticeShape;
   endpoint?: string | null;
-  /** `inline` = text only (inside a parent runtime card). */
-  variant?: "card" | "inline";
 }) {
-  const { notice, endpoint, variant = "card" } = props;
-  const isCard = variant === "card";
+  const { notice, endpoint } = props;
   return (
-    <div
-      className={cn(
-        isCard && "border-b px-4 py-2.5",
-        isCard && (notice.tone === "success"
-          ? "border-emerald-500/10 bg-emerald-500/[0.04]"
-          : "border-amber-500/10 bg-amber-500/[0.04]"),
-      )}
-    >
-      <div className={cn(
-        "font-mono text-[10px] uppercase tracking-[0.16em]",
-        notice.tone === "success" ? "text-emerald-200/70" : "text-amber-200/70",
-      )}>
-        {notice.title}
-      </div>
-      <div className={cn(
-        "mt-1 text-[12px] leading-5",
-        notice.tone === "success" ? "text-emerald-100/80" : "text-amber-100/80",
-      )}>
-        {notice.message}
-      </div>
-      {endpoint ? (
-        <code className="mt-2 block rounded-md border border-white/[0.06] bg-black/10 px-2 py-1 font-mono text-[10px] text-fg/60">
-          {endpoint}
-        </code>
-      ) : null}
-    </div>
+    <Banner
+      layout="inline"
+      style={RUNTIME_BANNER_STYLE}
+      model={{
+        id: "local-runtime",
+        tone: notice.tone,
+        title: notice.title,
+        detail: notice.message,
+        extra: endpoint ? <RuntimeEndpointChip endpoint={endpoint} /> : undefined,
+      }}
+    />
+  );
+}
+
+/**
+ * The CLI runtime is blocked. With `localNotice` it becomes the combined
+ * "Runtime status" banner: the CLI line first, then the local runtime line.
+ */
+function CliRuntimeBanner(props: {
+  logoFamily: string;
+  title: string;
+  body: string;
+  localNotice?: LocalRuntimeNoticeShape;
+  localEndpoint?: string | null;
+}) {
+  const { logoFamily, title, body, localNotice, localEndpoint } = props;
+  return (
+    <Banner
+      layout="inline"
+      style={RUNTIME_BANNER_STYLE}
+      model={localNotice ? {
+        id: "runtime-status",
+        tone: "warning",
+        icon: <ProviderLogo family={logoFamily} size={13} />,
+        title: "Runtime status",
+        detail: (
+          <>
+            <span className="block font-medium text-fg">{title}</span>
+            <span className="block">{body}</span>
+            <span className="mt-1.5 block font-medium text-fg">{localNotice.title}</span>
+            <span className="block">{localNotice.message}</span>
+          </>
+        ),
+        extra: localEndpoint ? <RuntimeEndpointChip endpoint={localEndpoint} /> : undefined,
+      } : {
+        id: "cli-runtime",
+        tone: "warning",
+        icon: <ProviderLogo family={logoFamily} size={13} />,
+        title,
+        detail: body || undefined,
+      }}
+    />
   );
 }
 
@@ -5692,6 +5725,12 @@ export function AgentChatPane({
       : activeProviderConnection?.provider === "droid"
         ? "Droid runtime"
       : "Codex runtime";
+  // The same provider split as the title, as a ProviderLogo family.
+  const cliRuntimeLogoFamily = activeProviderConnection?.provider === "claude"
+    || activeProviderConnection?.provider === "cursor"
+    || activeProviderConnection?.provider === "droid"
+    ? activeProviderConnection.provider
+    : "codex";
   const cliRuntimeBody = activeProviderConnection?.blocker
     ?? (activeProviderConnection?.provider === "droid"
       ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
@@ -11235,12 +11274,15 @@ export function AgentChatPane({
     setHandoffLaunchJobs,
   ]);
 
-  const handleDeleteSelectedChat = useCallback(() => {
+  const handleDeleteSelectedChat = useCallback(async () => {
     if (!selectedSessionId || !selectedSession) return;
     const label = chatSessionTitle(selectedSession).trim() || "this chat";
-    const confirmed = window.confirm(
-      `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Delete "${label}"?`,
+      message: "This permanently removes the saved chat history from ADE.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setError(null);
@@ -14050,9 +14092,9 @@ export function AgentChatPane({
         // Matches ChatComposerShell's own width rule exactly so the banner and
         // the prompt box share an edge: capped column when standard, full
         // bleed inside a grid tile where the composer drops its max width.
-        className={cn(
-          layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
-        )}
+        style={layoutVariant === "grid-tile"
+          ? { width: "100%" }
+          : { width: "100%", maxWidth: "var(--chat-column,52rem)", marginLeft: "auto", marginRight: "auto" }}
         onTakeOver={() => {
           const sessionId = composerSessionId;
           const previousShownAt = selectedSession.subagentTakeoverPromptShownAt ?? null;
@@ -14827,88 +14869,69 @@ export function AgentChatPane({
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-500/[0.08] bg-red-500/[0.03] px-4 py-2.5 font-sans text-[11px] text-red-300/80">
-            <span className="min-w-0 flex-1 break-words">{error}</span>
-            {draftMachineRecoveryAvailable ? (
-              <button
-                type="button"
-                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
-                onClick={useThisComputerForDraft}
-              >
-                Use this computer
-              </button>
-            ) : null}
-            {restorableErrorDraftLaunchJob ? (
-              <button
-                type="button"
-                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
-                onClick={() => restoreDraftLaunchJob(restorableErrorDraftLaunchJob, { clearError: true })}
-              >
-                Restore
-              </button>
-            ) : null}
-          </div>
+          <Banner
+            layout="inline"
+            style={RUNTIME_BANNER_STYLE}
+            model={{
+              id: "chat-error",
+              tone: "error",
+              title: <span className="break-words">{error}</span>,
+              ariaLabel: error,
+              actions: [
+                ...(draftMachineRecoveryAvailable
+                  ? [{ label: "Use this computer", onClick: useThisComputerForDraft }]
+                  : []),
+                ...(restorableErrorDraftLaunchJob
+                  ? [{
+                      label: "Restore",
+                      onClick: () => restoreDraftLaunchJob(restorableErrorDraftLaunchJob, { clearError: true }),
+                    }]
+                  : []),
+              ],
+            }}
+          />
         ) : null}
         {replayForkDisclosure ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5 font-sans text-[11px] text-amber-100/80">
-            <span className="min-w-0 flex-1 break-words">
-              {`Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `}
-              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`}
-            </span>
-            <button
-              type="button"
-              className="shrink-0 rounded-md border border-amber-300/15 px-2 py-0.5 font-medium text-amber-50/90 transition-colors hover:bg-amber-300/[0.12]"
-              onClick={() => setReplayForkDisclosure(null)}
-            >
-              Dismiss
-            </button>
-          </div>
+          <Banner
+            layout="inline"
+            style={RUNTIME_BANNER_STYLE}
+            model={{
+              id: "chat-replay-fork",
+              tone: "warning",
+              icon: <GitFork size={13} weight="bold" />,
+              title: `Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `
+                + `The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`,
+              dismiss: { onDismiss: () => setReplayForkDisclosure(null), label: "Dismiss" },
+            }}
+          />
         ) : null}
         {mergedRuntimeBanner?.kind === "cli-only" && !cursorRuntimeBlocked ? (
-          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
-            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              {mergedRuntimeBanner.cliTitle}
-            </div>
-            <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {mergedRuntimeBanner.cliBody}
-            </div>
-          </div>
+          <CliRuntimeBanner
+            logoFamily={cliRuntimeLogoFamily}
+            title={mergedRuntimeBanner.cliTitle}
+            body={mergedRuntimeBanner.cliBody}
+          />
         ) : null}
         {mergedRuntimeBanner?.kind === "local-only" ? (
-          <LocalRuntimeNoticeBlock
+          <LocalRuntimeNoticeBanner
             notice={mergedRuntimeBanner.localNotice}
             endpoint={mergedRuntimeBanner.localEndpoint}
           />
         ) : null}
         {mergedRuntimeBanner?.kind === "merged" ? (
           cursorRuntimeBlocked ? (
-            <LocalRuntimeNoticeBlock
+            <LocalRuntimeNoticeBanner
               notice={mergedRuntimeBanner.localNotice}
               endpoint={mergedRuntimeBanner.localEndpoint}
             />
           ) : (
-            <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
-              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-                Runtime status
-              </div>
-              <div className="mt-3 space-y-3">
-                <div>
-                  <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
-                    {mergedRuntimeBanner.cliTitle}
-                  </div>
-                  <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-                    {mergedRuntimeBanner.cliBody}
-                  </div>
-                </div>
-                <div className="border-t border-white/[0.06] pt-3">
-                  <LocalRuntimeNoticeBlock
-                    variant="inline"
-                    notice={mergedRuntimeBanner.localNotice}
-                    endpoint={mergedRuntimeBanner.localEndpoint}
-                  />
-                </div>
-              </div>
-            </div>
+            <CliRuntimeBanner
+              logoFamily={cliRuntimeLogoFamily}
+              title={mergedRuntimeBanner.cliTitle}
+              body={mergedRuntimeBanner.cliBody}
+              localNotice={mergedRuntimeBanner.localNotice}
+              localEndpoint={mergedRuntimeBanner.localEndpoint}
+            />
           )
         ) : null}
 

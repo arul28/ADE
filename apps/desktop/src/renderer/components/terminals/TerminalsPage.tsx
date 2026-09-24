@@ -58,6 +58,7 @@ import {
   setSessionMetadataGenerating,
 } from "../../state/sessionMetadataGeneratingStore";
 import type { DropEdge } from "../ui/paneTreeOps";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
@@ -567,14 +568,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteChat = useCallback(
-    (
+    async (
       session: TerminalSessionSummary,
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this chat";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
-      );
+      const confirmed = await confirmDialog({
+        title: `Delete "${label}"?`,
+        message: "This permanently removes the saved chat history from ADE.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!confirmed) return;
 
       setSessionActionError(null);
@@ -618,14 +622,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleDeleteSession = useCallback(
-    (
+    async (
       session: TerminalSessionSummary,
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this session";
-      const confirmed = window.confirm(
-        `Delete "${label}"?\n\nThis permanently removes the saved terminal session from ADE.`,
-      );
+      const confirmed = await confirmDialog({
+        title: `Delete "${label}"?`,
+        message: "This permanently removes the saved terminal session from ADE.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!confirmed) return;
 
       setSessionActionError(null);
@@ -750,12 +757,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [resolveSessionRuntimePin],
   );
 
-  const handleBulkCloseSelected = useCallback(() => {
+  const handleBulkCloseSelected = useCallback(async () => {
     const running = selectedSessions.filter(canBulkStopSession);
     if (!running.length) return;
-    const confirmed = window.confirm(
-      `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?`,
+      message: "This terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.",
+      confirmLabel: "Stop",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setSessionActionError(null);
@@ -785,7 +795,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       });
   }, [selectedSessions, work]);
 
-  const handleBulkDeleteSelected = useCallback(() => {
+  const handleBulkDeleteSelected = useCallback(async () => {
     const deletable = selectedSessions.filter(canBulkDeleteSession);
     if (!deletable.length) {
       // Never a silent no-op: the header button is only offered when something
@@ -795,9 +805,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.setTimeout(() => setSessionActionError(null), 6000);
       return;
     }
-    const confirmed = window.confirm(
-      `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?`,
+      message: "This permanently removes the selected saved session history from ADE.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setSessionActionError(null);

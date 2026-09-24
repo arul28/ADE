@@ -14,6 +14,7 @@ import {
   Strategy,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { usePortalContainer } from "../ui/portalContainer";
 
 /**
  * The permission-mode pill from the chat composer, lifted into `shared/` so the
@@ -168,15 +169,19 @@ export function PermissionModePicker<Value extends string>({
   title?: string;
   /**
    * Tailwind z-index for the portalled option list. The default sits above the
-   * composer, but a caller inside a modal must raise it above that modal's
-   * overlay: the list is portalled to `document.body`, so it does not inherit
-   * the modal's stacking context and would otherwise render behind the
-   * backdrop where it cannot be clicked.
+   * composer. Inside the shared `Dialog` the list portals into the dialog
+   * (`PortalContainerContext`) and needs nothing more; a caller inside a
+   * hand-rolled modal must raise it above that modal's overlay, because there
+   * the list is portalled to `document.body` and would otherwise render
+   * behind the backdrop where it cannot be clicked.
    */
   menuLayerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  // Inside a dialog the list portals into it: a modal dialog blocks pointer
+  // events and focus everywhere outside its content.
+  const portalContainer = usePortalContainer();
   const selectedOption = options.find((option) => option.value === selectedValue) ?? options[0];
   const selectedTone = PERMISSION_MODE_TONE_STYLES[selectedOption?.tone ?? "slate"];
 
@@ -292,7 +297,7 @@ export function PermissionModePicker<Value extends string>({
             </div>
           );
         })(),
-        document.body,
+        portalContainer ?? document.body,
       ) : null}
     </div>
   );

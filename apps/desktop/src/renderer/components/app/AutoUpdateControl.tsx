@@ -7,6 +7,7 @@ import { cn } from "../ui/cn";
 import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
+import { confirmDialog } from "../ui/dialog/confirm";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
 const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";
@@ -125,10 +126,8 @@ export function AutoUpdateControl() {
     // what drops while ADE and its brain service restart on the new version.
     const impact = await window.ade.updateGetInstallImpact().catch(() => null);
     const phones = impact?.connectedPhones ?? [];
-    const lines = [
-      `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.`,
-      "",
-    ];
+    const title = `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.`;
+    const lines: string[] = [];
     if (phones.length === 1) {
       lines.push(
         `${phones[0].deviceName} is connected through ADE phone sync. It will disconnect during the update and reconnect automatically once ADE is back.`,
@@ -143,7 +142,7 @@ export function AutoUpdateControl() {
       "",
       "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
     );
-    const confirmed = window.confirm(lines.join("\n"));
+    const confirmed = await confirmDialog({ title, message: lines.join("\n"), confirmLabel: "Continue" });
     if (!confirmed) {
       captureUpdatePromptDecision(snapshot, "deferred");
       return;

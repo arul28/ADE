@@ -38,7 +38,6 @@ import {
   RADII,
   SANS_FONT,
   cardStyle,
-  dangerButton,
   inlineBadge,
   outlineButton,
   primaryButton,
@@ -95,6 +94,7 @@ function InventoryEmpty({ children }: { children: React.ReactNode }) {
 }
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
+import { Dialog } from "../ui/dialog";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -149,92 +149,25 @@ export function ConfirmSheet({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if (busy) return;
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onCancel();
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [busy, onCancel]);
-
-  // A portal: the card behind this sheet uses `backdrop-filter`, which makes
-  // it the containing block for `position: fixed`. Inside it, a tall sheet was
-  // clipped at the top of the card.
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      onClick={(event) => {
-        if (busy) return;
-        if (event.target === event.currentTarget) onCancel();
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next && !busy) onCancel();
       }}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 9999,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-        background: "color-mix(in srgb, #000 55%, transparent)",
-        backdropFilter: "blur(2px)",
-        WebkitBackdropFilter: "blur(2px)",
-      }}
-    >
-      <div
-        style={cardStyle({
-          width: 400,
-          maxWidth: "100%",
-          padding: 0,
-          overflow: "hidden",
-          background: COLORS.cardBgSolid,
-          backdropFilter: "none",
-          WebkitBackdropFilter: "none",
-          boxShadow: "0 24px 64px -30px rgba(0,0,0,0.82)",
-        })}
-      >
-        <div style={{ padding: "18px 20px 4px" }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>
-            {title}
-          </div>
-          <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55, color: COLORS.textSecondary, whiteSpace: "pre-line" }}>
-            {body}
-          </div>
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "16px 20px 18px" }}>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onCancel}
-            style={outlineButton({ height: 34, fontSize: 12.5, padding: "0 14px" })}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            autoFocus
-            onClick={onConfirm}
-            style={(danger ? dangerButton : primaryButton)({
-              height: 34,
-              fontSize: 12.5,
-              padding: "0 16px",
-              opacity: busy ? 0.6 : 1,
-              cursor: busy ? "not-allowed" : "pointer",
-            })}
-          >
-            {busy ? <CircleNotch size={14} weight="bold" className="animate-spin" /> : null}
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+      title={title}
+      description={<span style={{ whiteSpace: "pre-line" }}>{body}</span>}
+      tone={danger ? "error" : "accent"}
+      size="sm"
+      hideClose
+      dismissible={!busy}
+      // The sheet owns Escape; the account page behind it must not also see it.
+      onEscapeKeyDown={(event) => event.stopPropagation()}
+      actions={[
+        { label: "Cancel", onClick: onCancel, disabled: busy, variant: "secondary" },
+        { label: confirmLabel, onClick: onConfirm, busy, autoFocus: true, variant: "solid" },
+      ]}
+    />
   );
 }
 

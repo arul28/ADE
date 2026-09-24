@@ -13,6 +13,7 @@ import type {
   TestSuiteDefinition,
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { cn } from "../ui/cn";
 import { extractError } from "./shared";
 import { inputCls } from "./designTokens";
@@ -148,9 +149,14 @@ export function AutomationsWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
-  const confirmDiscardIfDirty = useCallback((): boolean => {
+  const confirmDiscardIfDirty = useCallback(async (): Promise<boolean> => {
     if (!isDirty) return true;
-    const ok = window.confirm("You have unsaved changes. Discard them and continue?");
+    const ok = await confirmDialog({
+      title: "You have unsaved changes.",
+      message: "Discard them and continue?",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (ok && savedSnapshotRef.current != null) {
       try {
         setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
@@ -304,8 +310,8 @@ export function AutomationsWorkspace({
     }
   }, [draft]);
 
-  const createRule = useCallback(() => {
-    if (!confirmDiscardIfDirty()) return;
+  const createRule = useCallback(async () => {
+    if (!(await confirmDiscardIfDirty())) return;
     setSelectedRuleId(null);
     const blank = createBlankDraft();
     setDraft(blank);
@@ -378,8 +384,8 @@ export function AutomationsWorkspace({
         ingressStatus={ingressStatus}
         delivery={delivery}
         onSearch={setSearch}
-        onSelect={(id) => {
-          if (id !== selectedRuleId && !confirmDiscardIfDirty()) return;
+        onSelect={async (id) => {
+          if (id !== selectedRuleId && !(await confirmDiscardIfDirty())) return;
           setSelectedRuleId(id);
           setDetailView("builder");
         }}
@@ -390,18 +396,18 @@ export function AutomationsWorkspace({
             .catch((err) => setError(extractError(err)));
         }}
         onRunNow={beginRunRule}
-        onOpenHistory={(id) => {
-          if (!confirmDiscardIfDirty()) return;
+        onOpenHistory={async (id) => {
+          if (!(await confirmDiscardIfDirty())) return;
           setSelectedRuleId(id);
           setDetailView("history");
         }}
         onDelete={(id) => void deleteRule(id)}
         onNew={createRule}
-        onOpenTemplates={() => {
-          if (confirmDiscardIfDirty()) onOpenTemplates();
+        onOpenTemplates={async () => {
+          if (await confirmDiscardIfDirty()) onOpenTemplates();
         }}
-        onUseTemplate={(templateDraft) => {
-          if (!confirmDiscardIfDirty()) return;
+        onUseTemplate={async (templateDraft) => {
+          if (!(await confirmDiscardIfDirty())) return;
           setSelectedRuleId(null);
           const seeded = { ...templateDraft } as AutomationRuleDraft;
           setDraft(seeded);
@@ -423,8 +429,8 @@ export function AutomationsWorkspace({
               active={detailView === "history"}
               label="History"
               icon={ClockCounterClockwise}
-              onClick={() => {
-                if (confirmDiscardIfDirty()) setDetailView("history");
+              onClick={async () => {
+                if (await confirmDiscardIfDirty()) setDetailView("history");
               }}
             />
           </div>

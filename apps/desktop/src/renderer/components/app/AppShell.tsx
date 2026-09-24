@@ -1,39 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ArrowCounterClockwise,
-  ArrowSquareOut,
-  CheckCircle,
-  CircleNotch,
-  GitBranch,
-  GithubLogo,
-  GitPullRequest,
-  LinkSimple,
-  WarningCircle,
-  XCircle,
-} from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AccountSignedOutBanner } from "../account/AccountSignedOutBanner";
 import { CommandPalette } from "./CommandPalette";
-import { IntegrationBannerHost } from "./IntegrationBannerHost";
+import { IntegrationBanners } from "./IntegrationBanners";
 import { TabNav } from "./TabNav";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
-import {
-  getPrToastHeadline,
-  getPrToastMeta,
-  getPrToastSummary,
-  getPrToastTone,
-  type PrToastTone,
-} from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
-import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { selectActiveProjectRoot, useAppStore, workViewStoreForProject } from "../../state/appStore";
-import { Button } from "../ui/Button";
+import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
 import type {
   AiSettingsStatus,
   GitHubStatus,
-  PrEventPayload,
   ProjectInfo,
   OpenProjectBinding,
   SyncRoleSnapshot,
@@ -72,14 +51,16 @@ import { holdLayoutSettle } from "../../lib/layoutSettle";
 import { readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
-import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
-import { ToastStack } from "./toast/ToastStack";
+import { ToastViewport } from "./toast/ToastViewport";
 import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunchesSlideOut";
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
+import { FolderSimpleDashed } from "@phosphor-icons/react";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
-import { showToast, useToasts } from "./toast/toastStore";
+import { dismissToast, showToast } from "./toast/toastStore";
+import { usePrEventToasts } from "./toast/usePrEventToasts";
+import { STALE_CLI_TOAST_ID, buildStaleCliToast } from "./toast/staleCliToast";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
@@ -90,18 +71,6 @@ import { CtoVoiceHudHost } from "../cto/CtoVoiceHudHost";
 import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
 import { isActivityRoute } from "../../lib/legacyRoutes";
-
-type PrToast = {
-  id: string;
-  event: Extract<PrEventPayload, { type: "pr-notification" }>;
-};
-
-type AutoLinkToast = {
-  id: string;
-  event: Extract<PrEventPayload, { type: "pr-auto-linked" }>;
-  undoing?: boolean;
-  undoFailed?: boolean;
-};
 
 function primaryTabPath(pathname: string): string {
   const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/prs", "/history", "/automations", "/cto", "/settings"];
@@ -223,13 +192,7 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
   }
 }
 
-type AiBannerState = {
-  laneId: string | null;
-  jobId: string | null;
-  status: string | null;
-  error: string;
-  createdAt: string;
-};
+const FEEDBACK_PROGRESS_TOAST_ID = "ade-feedback-report-progress";
 
 type StaleCliNoticeLane = {
   laneId: string;
@@ -244,57 +207,6 @@ type StaleCliNotice = {
   /** Per-lane breakdown so the notice can show which lanes hold stale sessions. */
   lanes: StaleCliNoticeLane[];
 };
-
-function shortId(id: string): string {
-  const trimmed = (id ?? "").trim();
-  if (!trimmed) return "";
-  return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
-}
-
-function getPrToastToneClasses(tone: PrToastTone): {
-  panel: string;
-  badge: string;
-  iconWrap: string;
-  iconClass: string;
-} {
-  if (tone === "danger") {
-    return {
-      panel: "border-red-500/25 bg-card/95",
-      badge: "border border-red-500/30 bg-red-500/10 text-red-300",
-      iconWrap: "border border-red-500/30 bg-red-500/12",
-      iconClass: "text-red-300",
-    };
-  }
-  if (tone === "warning") {
-    return {
-      panel: "border-amber-500/25 bg-card/95",
-      badge: "border border-amber-500/30 bg-amber-500/10 text-amber-300",
-      iconWrap: "border border-amber-500/30 bg-amber-500/12",
-      iconClass: "text-amber-300",
-    };
-  }
-  if (tone === "success") {
-    return {
-      panel: "border-emerald-500/25 bg-card/95",
-      badge: "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-      iconWrap: "border border-emerald-500/30 bg-emerald-500/12",
-      iconClass: "text-emerald-300",
-    };
-  }
-  return {
-    panel: "border-sky-500/25 bg-card/95",
-    badge: "border border-sky-500/30 bg-sky-500/10 text-sky-300",
-    iconWrap: "border border-sky-500/30 bg-sky-500/12",
-    iconClass: "text-sky-300",
-  };
-}
-
-function getPrToastIcon(kind: PrToast["event"]["kind"]) {
-  if (kind === "checks_failing") return XCircle;
-  if (kind === "changes_requested") return WarningCircle;
-  if (kind === "merge_ready") return CheckCircle;
-  return GitPullRequest;
-}
 
 /**
  * Backstop for the tab-rail ResizeObserver hold. The rail's width transition is
@@ -321,6 +233,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const shellMainRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
   useLaneEventToasts(navigate);
+  usePrEventToasts(navigate);
   useAutoDiagnosticsToast();
   const setProject = useAppStore((s) => s.setProject);
   const setProjectHydrated = useAppStore((s) => s.setProjectHydrated);
@@ -328,7 +241,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
   const refreshKeybindings = useAppStore((s) => s.refreshKeybindings);
-  const providerMode = useAppStore((s) => s.providerMode);
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
@@ -347,38 +259,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const closeProject = useAppStore((s) => s.closeProject);
-  const selectLane = useAppStore((s) => s.selectLane);
-  const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const [commandOpen, setCommandOpen] = useState(false);
   const visitedTabsRef = useRef(new Set<string>());
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
-  const storeToasts = useToasts();
-  const [prToasts, setPrToasts] = useState<PrToast[]>([]);
-  const toastTimersRef = useRef<Map<string, number>>(new Map());
-  const dismissPrToast = (id: string) => {
-    setPrToasts((prev) => prev.filter((t) => t.id !== id));
-    const timer = toastTimersRef.current.get(id);
-    if (timer != null) window.clearTimeout(timer);
-    toastTimersRef.current.delete(id);
-  };
-  const [autoLinkToasts, setAutoLinkToasts] = useState<AutoLinkToast[]>([]);
-  const autoLinkToastTimersRef = useRef<Map<string, number>>(new Map());
-  const dismissAutoLinkToast = (id: string) => {
-    setAutoLinkToasts((prev) => prev.filter((t) => t.id !== id));
-    const timer = autoLinkToastTimersRef.current.get(id);
-    if (timer != null) window.clearTimeout(timer);
-    autoLinkToastTimersRef.current.delete(id);
-  };
   const [staleCliNotice, setStaleCliNotice] =
     useState<StaleCliNotice | null>(null);
   // Whether a stale-CLI notice is currently displayed. Lets refreshes keep an
   // already-visible notice updated without re-tripping the once-per-hour snooze,
   // and prevents the snooze from hiding a notice the user is actively looking at.
   const staleCliNoticeActiveRef = useRef(false);
-  const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
-  const [aiMockProvider, setAiMockProvider] = useState<{
-    createdAt: string;
-  } | null>(null);
   const [aiStatus, setAiStatus] = useState<AiSettingsStatus | null>(null);
   const [aiStatusLoaded, setAiStatusLoaded] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
@@ -1052,10 +941,65 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return dispose;
   }, []);
 
+  // A report in flight is a progress toast, not a strip: it is short-lived and
+  // about something the user just asked for.
   useEffect(() => {
-    setAiFailure(null);
-    setAiMockProvider(null);
-  }, [providerMode]);
+    if (!feedbackGenerating) {
+      dismissToast(FEEDBACK_PROGRESS_TOAST_ID);
+      return;
+    }
+    showToast({
+      id: FEEDBACK_PROGRESS_TOAST_ID,
+      title: "Generating feedback report...",
+      tone: "accent",
+      busy: true,
+      durationMs: 0,
+      dismissible: false,
+    });
+  }, [feedbackGenerating]);
+  useEffect(() => () => dismissToast(FEEDBACK_PROGRESS_TOAST_ID), []);
+
+  const relocateMissingProject = useCallback(() => {
+    void openRepo()
+      .then((nextProject) => {
+        if (nextProject) setProjectMissing(false);
+      })
+      .catch(() => {});
+  }, [openRepo]);
+
+  const removeMissingProject = useCallback(() => {
+    const rootPath = project?.rootPath;
+    if (!rootPath) return;
+    window.ade.project
+      .forgetRecent(rootPath)
+      .then(async (remaining) => {
+        const next = remaining.find((rp) => rp.exists);
+        if (next) {
+          await switchProjectToPath(next.rootPath);
+        } else {
+          await closeProject();
+        }
+        setProjectMissing(false);
+      })
+      .catch(() => {});
+  }, [closeProject, project?.rootPath, switchProjectToPath]);
+
+  useAppBanner(
+    projectMissing && project?.rootPath
+      ? {
+          id: "project-directory-missing",
+          tone: "error",
+          icon: <FolderSimpleDashed size={13} weight="bold" />,
+          title: "Project directory not found — it may have been moved or deleted.",
+          actions: [
+            { label: "Relocate", variant: "primary", onClick: relocateMissingProject },
+            { label: "Remove", variant: "secondary", onClick: removeMissingProject },
+          ],
+          dismiss: { onDismiss: () => setProjectMissing(false) },
+        }
+      : null,
+    { placement: "docked", priority: APP_BANNER_PRIORITY.project },
+  );
 
   const hasAnyAiProvider = useMemo(() => {
     return hasConfiguredAiProvider(aiStatus);
@@ -1088,63 +1032,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [commandPaletteBinding]);
-
-  useEffect(() => {
-    const newId = (): string =>
-      globalThis.crypto?.randomUUID
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now()}-${Math.random()}`;
-
-    const dismiss = (id: string) => {
-      setPrToasts((prev) => prev.filter((toast) => toast.id !== id));
-      const timer = toastTimersRef.current.get(id);
-      if (timer != null) window.clearTimeout(timer);
-      toastTimersRef.current.delete(id);
-    };
-
-    const dismissAutoLink = (id: string) => {
-      setAutoLinkToasts((prev) => prev.filter((toast) => toast.id !== id));
-      const timer = autoLinkToastTimersRef.current.get(id);
-      if (timer != null) window.clearTimeout(timer);
-      autoLinkToastTimersRef.current.delete(id);
-    };
-
-    const unsub = window.ade.prs.onEvent((event) => {
-      if (event.type === "pr-sessions-auto-settled") {
-        showToast({
-          title: `PR #${event.prNumber} merged · ${event.settledCount} ${
-            event.settledCount === 1 ? "session" : "sessions"
-          } settled`,
-          tone: "success",
-        });
-        return;
-      }
-      if (event.type === "pr-auto-linked") {
-        const id = newId();
-        setAutoLinkToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
-        const timer = window.setTimeout(() => dismissAutoLink(id), 18_000);
-        autoLinkToastTimersRef.current.set(id, timer);
-        return;
-      }
-      if (event.type !== "pr-notification") return;
-      const id = newId();
-      setPrToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
-      const timer = window.setTimeout(() => dismiss(id), 18_000);
-      toastTimersRef.current.set(id, timer);
-    });
-
-    return () => {
-      unsub();
-      for (const timer of toastTimersRef.current.values()) {
-        window.clearTimeout(timer);
-      }
-      toastTimersRef.current.clear();
-      for (const timer of autoLinkToastTimersRef.current.values()) {
-        window.clearTimeout(timer);
-      }
-      autoLinkToastTimersRef.current.clear();
-    };
-  }, []);
 
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
@@ -1205,6 +1092,50 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     staleCliNoticeActiveRef.current = false;
     setStaleCliNotice(null);
   }, [currentProjectRoot]);
+
+  const viewStaleCliProcesses = useCallback(() => {
+    if (currentProjectRoot) {
+      // AppShell renders above AppStoreProvider, so this
+      // must go through the store that owns the project —
+      // writing to the root store would leave the mounted
+      // Work surface showing its own older view state.
+      const workStore = workViewStoreForProject(currentProjectRoot);
+      // Reset the lane filter too so stale sessions across
+      // *all* lanes are visible, not just the active one.
+      workStore.getState().setWorkViewState(currentProjectRoot, (current) => ({
+        ...current,
+        laneFilter: "all",
+        sessionListOrganization: "all-lanes-by-status",
+        workCollapsedSectionIds: current.workCollapsedSectionIds
+          .filter((sectionId) => sectionId !== "status:running"),
+      }));
+    }
+    navigate("/work");
+    dismissStaleCliNotice();
+  }, [currentProjectRoot, dismissStaleCliNotice, navigate]);
+
+  // The idle-sessions notice is a store toast with a stable id: a refresh
+  // updates it in place, and clearing the notice (project switch, sessions
+  // gone, welcome screen) takes it down. × snoozes it via `onClose`.
+  useEffect(() => {
+    if (!staleCliNotice) {
+      dismissToast(STALE_CLI_TOAST_ID);
+      return;
+    }
+    showToast(
+      buildStaleCliToast({
+        count: staleCliNotice.count,
+        ageHours: staleCliNoticeAgeHours,
+        lanes: staleCliNotice.lanes.map((noticeLane) => ({
+          ...noticeLane,
+          color: lanes.find((lane) => lane.id === noticeLane.laneId)?.color ?? null,
+        })),
+        onViewProcesses: viewStaleCliProcesses,
+        onDismiss: dismissStaleCliNotice,
+      }),
+    );
+  }, [staleCliNotice, staleCliNoticeAgeHours, lanes, viewStaleCliProcesses, dismissStaleCliNotice]);
+  useEffect(() => () => dismissToast(STALE_CLI_TOAST_ID), []);
   return (
     <div
       className={cn(
@@ -1225,124 +1156,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
       </div>
 
-      <ProjectTransitionErrorAlert />
-
       {/*
-        Above the update banner, and outside every project condition below it:
-        ADE requires an account, so an unusable session outranks an update and
-        has to be visible on welcome and projectless surfaces too.
+        The one banner host, outside every project condition so account and
+        app-level banners reach the welcome screen too. The components below
+        render nothing: each registers its banners with the host, which owns
+        order (account, project, app, outage, integration), the two-banner cap
+        and dismissal.
       */}
+      <AppBannerHost />
+      <ProjectTransitionErrorAlert />
       <AccountSignedOutBanner navigate={navigate} />
-
       <AutoUpdateBanner />
-
       <BrainRecoveryNotice />
-
-      {projectMissing && project?.rootPath ? (
-        <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">
-          <span className="font-semibold">Project directory not found</span> —
-          it may have been moved or deleted.
-          <span className="ml-2 inline-flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              onClick={() => {
-                void openRepo()
-                  .then((nextProject) => {
-                    if (nextProject) setProjectMissing(false);
-                  })
-                  .catch(() => {});
-              }}
-            >
-              Relocate
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              onClick={() => {
-                const rootPath = project?.rootPath;
-                if (!rootPath) return;
-                window.ade.project
-                  .forgetRecent(rootPath)
-                  .then(async (remaining) => {
-                    const next = remaining.find((rp) => rp.exists);
-                    if (next) {
-                      await switchProjectToPath(next.rootPath);
-                    } else {
-                      await closeProject();
-                    }
-                    setProjectMissing(false);
-                  })
-                  .catch(() => {});
-              }}
-            >
-              Remove
-            </Button>
-            <button
-              type="button"
-              className="text-red-900/70 hover:text-red-900"
-              onClick={() => setProjectMissing(false)}
-              title="Dismiss"
-            >
-              ×
-            </button>
-          </span>
-        </div>
-      ) : null}
-
       {!showWelcome && project?.rootPath ? (
-        <IntegrationBannerHost
+        <IntegrationBanners
           currentProjectRoot={currentProjectRoot}
           githubStatus={githubStatus}
           hasAnyAiProvider={hasAnyAiProvider}
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
-          providerMode={providerMode}
-          aiMockProvider={Boolean(aiMockProvider)}
           relayHealth={syncRelayHealth}
           navigate={navigate}
         />
-      ) : null}
-
-      {providerMode === "subscription" && aiFailure ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
-          <span className="font-semibold">Last AI job failed:</span>{" "}
-          {aiFailure.jobId ? `job ${shortId(aiFailure.jobId)} · ` : ""}
-          {aiFailure.error}
-          <span className="ml-2 inline-flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              disabled={!aiFailure.laneId}
-              onClick={() => {
-                const laneId = aiFailure.laneId;
-                if (!laneId) return;
-                selectLane(laneId);
-                setLaneInspectorTab(laneId, "context");
-                window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single&inspectorTab=context`;
-              }}
-              title="Open lane context"
-            >
-              Details
-            </Button>
-            <button
-              type="button"
-              className="text-red-900/70 hover:text-red-900"
-              onClick={() => setAiFailure(null)}
-              title="Dismiss"
-            >
-              ×
-            </button>
-          </span>
-        </div>
-      ) : null}
-
-      {feedbackGenerating ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-violet-500/6 px-3 py-1.5 text-[11px] font-mono text-violet-800 animate-pulse">
-          Generating feedback report...
-        </div>
       ) : null}
 
       <div className="flex-1 flex min-h-0">
@@ -1366,364 +1200,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             {children}
           </div>
-          {staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 || storeToasts.length > 0 || chatLaunchesVisible ? (
-            <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
-              {staleCliNotice ? (
-                <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/12">
-                      <WarningCircle size={16} weight="fill" className="text-amber-300" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-300">
-                            Idle sessions
-                          </span>
-                          <div className="mt-2 text-[13px] font-semibold leading-tight text-fg">
-                            {staleCliNotice.count} CLI or shell session{staleCliNotice.count === 1 ? "" : "s"} sitting idle
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                          onClick={dismissStaleCliNotice}
-                          aria-label="Dismiss idle sessions notice"
-                          title="Dismiss for an hour"
-                        >
-                          ×
-                        </button>
-                      </div>
-                      <div className="mt-2 text-[12px] leading-relaxed text-muted-fg">
-                        No activity for about {staleCliNoticeAgeHours} hours. Close anything you're done with to free up memory.
-                      </div>
-                      {staleCliNotice.lanes.length > 0 ? (
-                        <div className="mt-2 flex flex-wrap items-center gap-1">
-                          {staleCliNotice.lanes.slice(0, 4).map((noticeLane) => {
-                            const laneColor =
-                              lanes.find((lane) => lane.id === noticeLane.laneId)?.color ?? null;
-                            return (
-                              <span
-                                key={noticeLane.laneId}
-                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.04] px-1.5 py-0.5 text-[10px] text-muted-fg"
-                                title={`${noticeLane.count} idle session${noticeLane.count === 1 ? "" : "s"} in ${noticeLane.laneName}`}
-                              >
-                                <span
-                                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                                  style={{ backgroundColor: laneColor ?? "currentColor" }}
-                                />
-                                <span className="max-w-[120px] truncate">{noticeLane.laneName}</span>
-                                {noticeLane.count > 1 ? (
-                                  <span className="shrink-0 tabular-nums text-muted-fg/70">×{noticeLane.count}</span>
-                                ) : null}
-                              </span>
-                            );
-                          })}
-                          {staleCliNotice.lanes.length > 4 ? (
-                            <span className="text-[10px] text-muted-fg/70">
-                              +{staleCliNotice.lanes.length - 4} more
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      <div className="mt-3 flex justify-end">
-                        <button
-                          type="button"
-                          className="inline-flex h-8 items-center gap-1.5 rounded-md bg-amber-300 px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110"
-                          onClick={() => {
-                            if (currentProjectRoot) {
-                              // AppShell renders above AppStoreProvider, so this
-                              // must go through the store that owns the project —
-                              // writing to the root store would leave the mounted
-                              // Work surface showing its own older view state.
-                              const workStore = workViewStoreForProject(currentProjectRoot);
-                              // Reset the lane filter too so stale sessions across
-                              // *all* lanes are visible, not just the active one.
-                              workStore.getState().setWorkViewState(currentProjectRoot, (current) => ({
-                                ...current,
-                                laneFilter: "all",
-                                sessionListOrganization: "all-lanes-by-status",
-                                workCollapsedSectionIds: current.workCollapsedSectionIds
-                                  .filter((sectionId) => sectionId !== "status:running"),
-                              }));
-                            }
-                            navigate("/work");
-                            dismissStaleCliNotice();
-                          }}
-                        >
-                          View processes
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-              {prToasts.map((toast) => {
-                const toastLane = lanes.find((lane) => lane.id === toast.event.laneId) ?? null;
-                const laneName = toastLane?.name ?? toast.event.laneId;
-                const laneColor = toastLane?.color ?? null;
-                const tone = getPrToastTone(toast.event.kind, toast.event.checksStatus);
-                const toneClasses = getPrToastToneClasses(tone);
-                const Icon = getPrToastIcon(toast.event.kind);
-                const headline = getPrToastHeadline(toast.event);
-                const summary = getPrToastSummary(toast.event);
-                const meta = getPrToastMeta(toast.event, laneName);
-                return (
-                  <div
-                    key={toast.id}
-                    className={cn(
-                      "pointer-events-auto overflow-hidden rounded-xl border px-3 py-3 shadow-float backdrop-blur",
-                      toneClasses.panel,
-                    )}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div
-                        className={cn(
-                          "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
-                          toneClasses.iconWrap,
-                        )}
-                      >
-                        <Icon
-                          size={16}
-                          weight="fill"
-                          className={toneClasses.iconClass}
-                        />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span
-                                className={cn(
-                                  "inline-flex items-center rounded-full px-2 py-1 text-[10px] font-medium",
-                                  toneClasses.badge,
-                                )}
-                              >
-                                {toast.event.title}
-                              </span>
-                              <span className="text-[11px] font-medium text-muted-fg">
-                                #{toast.event.prNumber}
-                              </span>
-                            </div>
-                            <div className="mt-2 line-clamp-2 text-[13px] font-semibold leading-tight text-fg">
-                              {headline}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                            onClick={() => dismissPrToast(toast.id)}
-                            aria-label="Dismiss notification"
-                            title="Dismiss"
-                          >
-                            ×
-                          </button>
-                        </div>
-                        {meta.length > 0 ? (
-                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                            {meta.map((item, index) => {
-                              const isLane = laneName != null && item === laneName;
-                              return (
-                                <span
-                                  key={`${toast.id}-meta-${index}`}
-                                  className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/50 bg-black/10 px-2 py-1 text-[10px] text-muted-fg"
-                                  style={isLane && laneColor ? { color: laneColor } : undefined}
-                                >
-                                  {isLane && laneColor ? (
-                                    <LaneAccentDot lane={{ color: laneColor }} size={7} />
-                                  ) : item.includes("/") ? (
-                                    <GitBranch size={10} />
-                                  ) : item.includes("#") ||
-                                    (toast.event.repoOwner &&
-                                      item.includes(toast.event.repoOwner)) ? (
-                                    <GithubLogo size={10} />
-                                  ) : (
-                                    <GitPullRequest size={10} />
-                                  )}
-                                  <span className="truncate">{item}</span>
-                                </span>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                        <div className="mt-2 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">
-                          {summary}
-                        </div>
-                        <div className="mt-3 flex justify-end gap-2">
-                          <button
-                            type="button"
-                            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-3 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg"
-                            onClick={() => {
-                              let detailTab: PrDetailRouteTab | null = null;
-                              if (toast.event.kind === "checks_failing") {
-                                detailTab = "checks";
-                              } else if (
-                                toast.event.kind === "changes_requested" ||
-                                toast.event.kind === "review_requested"
-                              ) {
-                                detailTab = "overview";
-                              }
-                              const search = buildPrsRouteSearch({
-                                activeTab: "normal",
-                                selectedPrId: toast.event.prId,
-                                selectedPrNumber: toast.event.prNumber,
-                                repoOwner: toast.event.repoOwner,
-                                repoName: toast.event.repoName,
-                                selectedRebaseItemId: null,
-                                detailTab,
-                              });
-                              navigate(`/prs${search}`);
-                              dismissPrToast(toast.id);
-                            }}
-                          >
-                            <GitPullRequest size={12} />
-                            Open in ADE
-                          </button>
-                          <button
-                            type="button"
-                            className={cn(
-                              "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110",
-                              tone === "danger"
-                                ? "bg-red-300"
-                                : tone === "warning"
-                                  ? "bg-amber-300"
-                                  : tone === "success"
-                                    ? "bg-emerald-300"
-                                    : "bg-[#A78BFA]",
-                            )}
-                            onClick={() => {
-                              void window.ade.prs
-                                .openInGitHub(toast.event.prId)
-                                .then(
-                                  () => dismissPrToast(toast.id),
-                                  () => {
-                                    /* keep toast visible on failure */
-                                  },
-                                );
-                            }}
-                          >
-                            <ArrowSquareOut size={12} />
-                            Open on GitHub
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {autoLinkToasts.map((toast) => {
-                const toastLane =
-                  lanes.find((lane) => lane.id === toast.event.laneId) ?? null;
-                const laneName = toastLane?.name ?? toast.event.laneName;
-                const laneColor = toastLane?.color ?? null;
-                return (
-                  <div
-                    key={toast.id}
-                    className="pointer-events-auto overflow-hidden rounded-xl border border-[#A78BFA]/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#A78BFA]/15">
-                        <LinkSimple
-                          size={16}
-                          weight="bold"
-                          className="text-[#A78BFA]"
-                        />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-semibold leading-tight text-fg">
-                              Auto-linked PR #{toast.event.prNumber}
-                            </div>
-                            <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-fg">
-                              <span className="truncate">to</span>
-                              {laneColor ? (
-                                <LaneAccentDot lane={{ color: laneColor }} size={7} />
-                              ) : null}
-                              <span
-                                className="truncate font-medium"
-                                style={laneColor ? { color: laneColor } : undefined}
-                              >
-                                {laneName}
-                              </span>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                            onClick={() => dismissAutoLinkToast(toast.id)}
-                            aria-label="Dismiss notification"
-                            title="Dismiss"
-                          >
-                            ×
-                          </button>
-                        </div>
-                        <div className="mt-2 line-clamp-2 text-[12px] leading-relaxed text-muted-fg">
-                          {toast.event.prTitle}
-                        </div>
-                        {toast.undoFailed ? (
-                          <div className="mt-2 text-[11px] font-medium text-red-400">
-                            Couldn't undo the link. Try again.
-                          </div>
-                        ) : null}
-                        <div className="mt-3 flex justify-end gap-2">
-                          <button
-                            type="button"
-                            disabled={toast.undoing}
-                            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-3 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg disabled:opacity-60"
-                            onClick={() => {
-                              if (!toast.event.prId) {
-                                dismissAutoLinkToast(toast.id);
-                                return;
-                              }
-                              setAutoLinkToasts((prev) =>
-                                prev.map((t) =>
-                                  t.id === toast.id
-                                    ? { ...t, undoing: true, undoFailed: false }
-                                    : t,
-                                ),
-                              );
-                              void window.ade.prs
-                                .delete({
-                                  prId: toast.event.prId,
-                                  closeOnGitHub: false,
-                                  archiveLane: false,
-                                })
-                                .then(
-                                  () => dismissAutoLinkToast(toast.id),
-                                  (error) => {
-                                    console.error(
-                                      `Failed to undo auto-link for PR #${toast.event.prNumber} (${toast.event.prId})`,
-                                      error,
-                                    );
-                                    setAutoLinkToasts((prev) =>
-                                      prev.map((t) =>
-                                        t.id === toast.id
-                                          ? { ...t, undoing: false, undoFailed: true }
-                                          : t,
-                                      ),
-                                    );
-                                  },
-                                );
-                            }}
-                          >
-                            {toast.undoing ? (
-                              <CircleNotch size={12} className="animate-spin" />
-                            ) : (
-                              <ArrowCounterClockwise size={12} />
-                            )}
-                            {toast.undoFailed ? "Retry undo" : "Undo"}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              <ToastStack />
-              {chatLaunchesVisible ? <ChatLaunchesSlideOut /> : null}
-            </div>
-          ) : null}
+          <ToastViewport
+            slot={chatLaunchesVisible ? <ChatLaunchesSlideOut /> : null}
+            slotKey="chat-launches"
+          />
         </main>
       </div>
 

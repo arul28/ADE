@@ -95,8 +95,8 @@ export function OpenCodeProviderDetailModal({
         ? "Sign-in available"
         : "Not connected";
 
-  // Escape, focus-in, and focus-restore are owned by ProviderDetailDialog,
-  // which stands down while the nested OAuth modal is open.
+  // Escape, focus-in, and focus-restore are owned by ProviderDetailDialog; the
+  // nested OAuth dialog stacks above it and takes them while it is open.
 
   const save = async () => {
     const trimmed = keyValue.trim();
@@ -132,7 +132,6 @@ export function OpenCodeProviderDetailModal({
         providerId={provider.id}
         title={provider.name}
         subtitle={`${statusLabel}${typeof provider.modelCount === "number" ? ` \u00b7 ${provider.modelCount} models` : ""}`}
-        suspended={oauthOpen}
         onClose={onClose}
       >
             <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>

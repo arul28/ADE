@@ -8,6 +8,7 @@ import {
 } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../components/lanes/laneDesignTokens";
 import { accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
+import { confirmDialog } from "../../components/ui/dialog/confirm";
 import {
   useOptionalWebWorkspace,
   useWebMachines,
@@ -496,7 +497,7 @@ function WebMachineRow({
             <MenuRow
               label="Remove from account"
               destructive
-              onSelect={() => {
+              onSelect={async () => {
                 const accountMachine = machine.accountMachine;
                 const machineKey = accountMachine?.machineKey;
                 if (!accountMachine || !machineKey) return;
@@ -504,7 +505,13 @@ function WebMachineRow({
                 // Same words as the desktop sheet, including the warning for a
                 // machine that reported in minutes ago.
                 const label = webMachineRowLabel(machine);
-                if (!window.confirm(`Remove ${label} from your ADE account?\n\n${accountMachineRemovalConfirmBody(accountMachine)}`)) return;
+                const confirmed = await confirmDialog({
+                  title: `Remove ${label} from your ADE account?`,
+                  message: accountMachineRemovalConfirmBody(accountMachine),
+                  confirmLabel: "Remove",
+                  destructive: true,
+                });
+                if (!confirmed) return;
                 void run(machine, async () => {
                   await workspace.removeAccountMachine(machineKey);
                 });
@@ -515,11 +522,11 @@ function WebMachineRow({
             <MenuRow
               label="Forget on this browser"
               destructive
-              onSelect={() => {
+              onSelect={async () => {
                 const envId = machine.environment?.envId;
                 if (!envId) return;
                 setMenuKey(null);
-                if (!window.confirm(`Forget ${machine.name} on this browser?`)) return;
+                if (!(await confirmDialog({ title: `Forget ${machine.name} on this browser?`, confirmLabel: "Forget", destructive: true }))) return;
                 void run(machine, () => workspace.forgetEnvironment(envId));
               }}
             />

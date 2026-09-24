@@ -7,7 +7,8 @@ import {
   ADE_GITHUB_URL,
   ADE_WINDOWS_SUPPORT_DOC_URL,
 } from "../../../shared/productLinks";
-import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { Dialog } from "../ui/dialog";
 import { openExternalUrl } from "../../lib/openExternal";
 import { rendererPackageChannel } from "../../lib/packageChannel";
 import {
@@ -140,163 +141,67 @@ export function WindowsBetaNoticeModal({
     };
   }, [osReleaseOverride]);
 
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   const version = appInfo?.appVersion ?? null;
   const issueUrl = buildBugReportIssueUrl({ appInfo, channel, osRelease });
 
   return (
-    <div
-      role="presentation"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 220,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.52)",
-        backdropFilter: "blur(10px)",
-        padding: 20,
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      title="ADE on Windows is in beta"
+      description="The Windows build is the newest part of ADE and is still catching up."
+      tone="accent"
+      icon={<WindowsLogo size={17} weight="fill" />}
+      width={520}
+      hideClose
+      preventAutoFocus
+      bodyStyle={{ display: "grid", gap: 13, paddingTop: 16 }}
+      footerStart={
+        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+          {version ? `ADE ${version}` : ""}
+        </span>
+      }
+      actions={[
+        { label: "Dismiss", onClick: onClose, variant: "secondary" },
+        {
+          label: "Report a bug",
+          icon: <Bug size={13} weight="fill" />,
+          onClick: () => openExternalUrl(issueUrl),
+          variant: "solid",
+        },
+      ]}
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ade-windows-beta-notice-title"
-        aria-describedby="ade-windows-beta-notice-body"
+        id="ade-windows-beta-notice-body"
         style={{
-          width: "min(520px, 100%)",
-          borderRadius: 14,
-          border: `1px solid ${COLORS.border}`,
-          background: "var(--color-card)",
-          boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
-          overflow: "hidden",
+          fontFamily: SANS_FONT,
+          fontSize: 13,
+          lineHeight: 1.6,
+          color: COLORS.textSecondary,
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 13,
-            padding: "20px 22px 16px",
-            borderBottom: `1px solid ${COLORS.borderMuted}`,
-          }}
-        >
-          <span
-            aria-hidden
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 36,
-              height: 36,
-              flexShrink: 0,
-              borderRadius: 10,
-              color: COLORS.accent,
-              background: COLORS.accentSubtle,
-              border: `1px solid ${COLORS.accentBorder}`,
-            }}
-          >
-            <WindowsLogo size={19} weight="fill" />
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <div
-              id="ade-windows-beta-notice-title"
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 16,
-                fontWeight: 700,
-                letterSpacing: "-0.01em",
-                color: COLORS.textPrimary,
-              }}
-            >
-              ADE on Windows is in beta
-            </div>
-            <div
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                lineHeight: 1.5,
-                color: COLORS.textMuted,
-                marginTop: 3,
-              }}
-            >
-              The Windows build is the newest part of ADE and is still catching up.
-            </div>
-          </div>
-        </div>
-
-        <div style={{ padding: "16px 22px 18px", display: "grid", gap: 13 }}>
-          <div
-            id="ade-windows-beta-notice-body"
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 13,
-              lineHeight: 1.6,
-              color: COLORS.textSecondary,
-            }}
-          >
-            Day-to-day work — lanes, chats, terminals, PRs — is expected to hold up. Some corners
-            are rougher here than on macOS, and a few are still missing. When something
-            breaks, reporting it is what closes the gap.
-          </div>
-
-          <div style={{ display: "grid", gap: 8 }}>
-            <LinkRow
-              icon={<BookOpenText size={15} />}
-              label="Known gaps on Windows"
-              detail="docs/development/windows-support.md"
-              onClick={() => openExternalUrl(ADE_WINDOWS_SUPPORT_DOC_URL)}
-            />
-            <LinkRow
-              icon={<GithubLogo size={15} />}
-              label="Source, issues, and pull requests"
-              detail="github.com/arul28/ADE"
-              onClick={() => openExternalUrl(ADE_GITHUB_URL)}
-            />
-          </div>
-        </div>
-
-        <div
-          style={{
-            padding: "13px 22px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            borderTop: `1px solid ${COLORS.borderMuted}`,
-            background: "color-mix(in srgb, var(--color-fg) 2%, transparent)",
-          }}
-        >
-          <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-            {version ? `ADE ${version}` : ""}
-          </span>
-          <span style={{ display: "flex", gap: 10 }}>
-            <button type="button" onClick={onClose} style={outlineButton({ height: 34 })}>
-              Dismiss
-            </button>
-            <button
-              type="button"
-              onClick={() => openExternalUrl(issueUrl)}
-              style={primaryButton({ height: 34, fontWeight: 600 })}
-            >
-              <Bug size={14} weight="fill" />
-              Report a bug
-            </button>
-          </span>
-        </div>
+        Day-to-day work — lanes, chats, terminals, PRs — is expected to hold up. Some corners
+        are rougher here than on macOS, and a few are still missing. When something
+        breaks, reporting it is what closes the gap.
       </div>
-    </div>
+
+      <div style={{ display: "grid", gap: 8 }}>
+        <LinkRow
+          icon={<BookOpenText size={15} />}
+          label="Known gaps on Windows"
+          detail="docs/development/windows-support.md"
+          onClick={() => openExternalUrl(ADE_WINDOWS_SUPPORT_DOC_URL)}
+        />
+        <LinkRow
+          icon={<GithubLogo size={15} />}
+          label="Source, issues, and pull requests"
+          detail="github.com/arul28/ADE"
+          onClick={() => openExternalUrl(ADE_GITHUB_URL)}
+        />
+      </div>
+    </Dialog>
   );
 }
 

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import reactHooks from "eslint-plugin-react-hooks";
+import adeUi, { adeUiRecommendedRules } from "./eslint-rules/ade-ui.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -113,5 +114,28 @@ export default [
         },
       ],
     },
+  },
+  {
+    // UI primitives: banners, toasts, confirm/prompt, modals and top-bar sheets
+    // each have one shared primitive, and overlays stack on one Z_LAYERS scale.
+    // Warnings only; `npm run lint:ci` (scripts/lint-ratchet.mjs) fails CI when
+    // a file's count for an `ade-ui/*` rule grows past lint-baseline.json.
+    // A plugin rather than more `no-restricted-syntax` entries, so these never
+    // replace the chat-scope `no-restricted-syntax` options above.
+    // Guide: docs/design/notices.md. The primitives themselves are exempt.
+    files: ["src/renderer/**/*.{ts,tsx}"],
+    ignores: [
+      "src/renderer/**/*.test.{ts,tsx}",
+      "src/renderer/components/ui/notice/**",
+      "src/renderer/components/ui/dialog/**",
+      "src/renderer/components/ui/zLayers.ts",
+      "src/renderer/components/app/toast/ToastStack.tsx",
+      "src/renderer/components/app/toast/ToastViewport.tsx",
+      "src/renderer/components/app/HeaderSheet.tsx",
+    ],
+    plugins: {
+      "ade-ui": adeUi,
+    },
+    rules: adeUiRecommendedRules,
   },
 ];

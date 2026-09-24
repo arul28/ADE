@@ -9,6 +9,11 @@ import type { GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
 import type { MachineBranchState } from "../../../shared/laneDivergence";
 import { __resetLaneGitActionRuntimeForTests, LaneGitActionsPane } from "./LaneGitActionsPane";
 
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => true),
+}));
+
 vi.mock("./CommitTimeline", () => ({
   CommitTimeline: () => <div data-testid="commit-timeline-mock" />,
 }));
@@ -95,11 +100,9 @@ function otherMachine(overrides: Partial<MachineBranchState> = {}): MachineBranc
 
 describe("LaneGitActionsPane push divergence guard", () => {
   const originalAde = globalThis.window.ade;
-  const originalConfirm = globalThis.window.confirm;
   let mockSyncStatus: GitUpstreamSyncStatus;
 
   beforeEach(() => {
-    globalThis.window.confirm = vi.fn(() => true);
     __resetLaneGitActionRuntimeForTests();
     mockStoreState = {
       lanes: [buildLane()],
@@ -146,7 +149,6 @@ describe("LaneGitActionsPane push divergence guard", () => {
   afterEach(() => {
     cleanup();
     __resetLaneGitActionRuntimeForTests();
-    globalThis.window.confirm = originalConfirm;
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {

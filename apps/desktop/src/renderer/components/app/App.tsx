@@ -19,6 +19,7 @@ import {
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
+import { DialogHost } from "../ui/dialog/confirm";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
@@ -1349,6 +1350,8 @@ export function App() {
             <Route path="/startup" element={<Navigate to="/work" replace />} />
             <Route path="*" element={<ShellLayout />} />
           </Routes>
+          {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
+          <DialogHost />
         </div>
       </Router>
     </LaunchGate>

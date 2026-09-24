@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Warning } from "@phosphor-icons/react";
+import { useState, type ReactNode } from "react";
+import { GithubLogo } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   AutomationIngressDelivery,
@@ -9,7 +9,8 @@ import type {
 } from "../../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../../shared/types";
 import { linearIngressApi } from "../linearIngressApi";
-import { Button } from "../../ui/Button";
+import { Banner, type NoticeAction } from "../../ui/notice";
+import { LinearMark } from "../../lanes/linearBrand";
 import { cn } from "../../ui/cn";
 import { inputCls, labelCls, recessedCls, selectCls } from "../designTokens";
 import {
@@ -54,29 +55,6 @@ function SmallField({
   );
 }
 
-function CalloutActionButton({
-  label,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="ml-auto shrink-0 text-amber-100"
-      disabled={disabled}
-      onClick={onClick}
-    >
-      {label}
-    </Button>
-  );
-}
-
 function TriggerDeliveryCallout({
   deliveryKey,
   status,
@@ -103,27 +81,29 @@ function TriggerDeliveryCallout({
     }
   };
 
-  let action = null;
+  let action: NoticeAction | null = null;
+  let icon: ReactNode = undefined;
   if (deliveryKey === "github" || deliveryKey === "githubWebhook") {
-    action = (
-      <CalloutActionButton label="Open GitHub settings" onClick={() => navigate(settingsRouteFor("integrations.github"))} />
-    );
+    icon = <GithubLogo size={13} weight="fill" />;
+    action = { label: "Open GitHub settings", onClick: () => navigate(settingsRouteFor("integrations.github")) };
   } else if (deliveryKey === "linear") {
-    action = linearApi?.setup ? (
-      <CalloutActionButton label="Connect Linear" disabled={linearPending} onClick={() => void setupLinear()} />
-    ) : (
-      <CalloutActionButton label="Open Linear settings" onClick={() => navigate(settingsRouteFor("integrations.linear"))} />
-    );
+    icon = <LinearMark size={13} />;
+    action = linearApi?.setup
+      ? { label: "Connect Linear", disabled: linearPending, onClick: () => void setupLinear() }
+      : { label: "Open Linear settings", onClick: () => navigate(settingsRouteFor("integrations.linear")) };
   }
 
   return (
-    <div className="flex items-center gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-      <Warning size={13} weight="regular" className="shrink-0" />
-      <span className="min-w-0 flex-1 leading-relaxed">
-        {status.setupError ?? "Events for this trigger can't be delivered yet."}
-      </span>
-      {action}
-    </div>
+    <Banner
+      layout="inline"
+      model={{
+        id: `trigger-delivery:${deliveryKey}`,
+        tone: "warning",
+        icon,
+        title: status.setupError ?? "Events for this trigger can't be delivered yet.",
+        actions: action ? [action] : undefined,
+      }}
+    />
   );
 }
 

@@ -15,15 +15,9 @@
  * the list with no explanation.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { CheckCircle, CircleNotch, X } from "@phosphor-icons/react";
-import {
-  COLORS,
-  MONO_FONT,
-  SANS_FONT,
-  outlineButton,
-  primaryButton,
-} from "../../../lanes/laneDesignTokens";
+import { CheckCircle, CircleNotch } from "@phosphor-icons/react";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../../lanes/laneDesignTokens";
+import { Dialog, type DialogAction } from "../../../ui/dialog";
 import { TerminalView } from "../../../terminals/TerminalView";
 import type {
   ProviderInstance,
@@ -72,6 +66,7 @@ export function AddProviderAccountSheet({
   const changedRef = useRef(false);
   const closedRef = useRef(false);
   const aliveRef = useRef(true);
+  const labelInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -100,14 +95,6 @@ export function AddProviderAccountSheet({
     closedRef.current = true;
     onClose(changedRef.current);
   }, [onClose]);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [close]);
 
   /** Start the provider's own login in a PTY bound to this account's config home. */
   const runLogin = useCallback(async (login: ProviderInstanceLoginCommand) => {
@@ -254,200 +241,136 @@ export function AddProviderAccountSheet({
     ? `Sign in to ${providerLabel}`
     : `Add a ${providerLabel} account`;
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.70)" }}
-      onClick={close}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="w-full max-w-2xl outline-none"
-        style={{
-          background: COLORS.cardBgSolid,
-          border: `1px solid ${COLORS.outlineBorder}`,
-          boxShadow: "0 28px 80px -36px rgba(0,0,0,0.82)",
-          display: "flex",
-          flexDirection: "column",
-          maxHeight: "82vh",
-        }}
-        onClick={(event) => event.stopPropagation()}
+  const footerStart =
+    phase === "terminal" ? (
+      <span
+        role="status"
+        style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}
       >
+        <CircleNotch size={12} />
+        Waiting for sign-in…
+      </span>
+    ) : phase === "success" ? (
+      <span
+        role="status"
+        style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.success }}
+      >
+        <CheckCircle size={13} weight="fill" />
+        {signedInAs ?? "Signed in"}
+      </span>
+    ) : phase === "failed" ? (
+      <span role="status" style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+        Sign-in did not complete.
+      </span>
+    ) : undefined;
+  const actions: DialogAction[] =
+    phase === "form"
+      ? [{
+          label: busy ? "Starting…" : "Sign in →",
+          onClick: () => void startCreate(),
+          disabled: busy || label.trim().length === 0,
+          variant: "solid",
+        }]
+      : phase === "terminal"
+        ? [{ label: checking ? "Checking…" : "Check again", onClick: onCheckAgain, disabled: checking, variant: "link" }]
+        : phase === "failed"
+          ? [
+              { label: "Try again", onClick: onTryAgain, variant: "secondary" },
+              { label: "Close", onClick: close, variant: "secondary" },
+            ]
+          : [];
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) close();
+      }}
+      // JSX title keeps the close button's exact "Close add account" label.
+      title={<>{title}</>}
+      closeLabel="Close add account"
+      width={672}
+      maxHeight="82vh"
+      initialFocusRef={labelInputRef}
+      // Resuming opens straight on the terminal; nothing to focus but the panel.
+      preventAutoFocus={resuming}
+      bodyPadding={false}
+      scrollBody={phase === "form"}
+      bodyStyle={{ display: "flex", flexDirection: "column", marginTop: 14 }}
+      tone="accent"
+      footerStart={footerStart}
+      actions={actions}
+    >
+      {error ? (
         <div
+          role="alert"
           style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            padding: "0 16px",
-            height: 48,
-            flexShrink: 0,
+            padding: "8px 20px",
+            fontSize: 11,
+            fontFamily: SANS_FONT,
+            lineHeight: 1.5,
+            color: COLORS.danger,
+            background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
             borderBottom: `1px solid ${COLORS.border}`,
+            overflowWrap: "anywhere",
           }}
         >
-          <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>
-            {title}
-          </div>
-          <button
-            type="button"
-            aria-label="Close add account"
-            onClick={close}
-            style={{ ...outlineButton({ height: 26 }), width: 26, padding: 0, justifyContent: "center" }}
-          >
-            <X size={12} weight="bold" />
-          </button>
+          {error}
         </div>
+      ) : null}
 
-        {error ? (
-          <div
-            role="alert"
-            style={{
-              padding: "8px 16px",
-              fontSize: 11,
-              fontFamily: SANS_FONT,
-              lineHeight: 1.5,
-              color: COLORS.danger,
-              background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-              borderBottom: `1px solid ${COLORS.border}`,
-              overflowWrap: "anywhere",
-            }}
-          >
-            {error}
-          </div>
-        ) : null}
-
-        {phase === "form" ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: 16 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>Label</span>
-              <input
-                aria-label="Account label"
-                value={label}
-                autoFocus
-                placeholder="Work"
-                onChange={(event) => setLabel(event.target.value)}
-                style={{
-                  height: 28,
-                  padding: "0 8px",
-                  fontSize: 12,
-                  fontFamily: SANS_FONT,
-                  color: COLORS.textPrimary,
-                  background: COLORS.cardBg,
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 6,
-                  outline: "none",
-                }}
-              />
-            </label>
-
-            <AccentSwatchRow value={accent} onChange={setAccent} />
-
-            <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              This account gets its own sign-in. Your other accounts are not touched.
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                style={primaryButton({ height: 28 })}
-                disabled={busy || label.trim().length === 0}
-                onClick={() => void startCreate()}
-              >
-                {busy ? "Starting…" : "Sign in →"}
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {phase !== "form" ? (
-          <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
-            <div style={{ flex: 1, minHeight: 260, display: "flex", flexDirection: "column" }}>
-              {terminal ? (
-                <TerminalView
-                  key={terminal.sessionId}
-                  ptyId={terminal.ptyId}
-                  sessionId={terminal.sessionId}
-                  isActive
-                  className="h-full w-full"
-                />
-              ) : (
-                <div style={{ padding: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-                  Starting a terminal…
-                </div>
-              )}
-            </div>
-
-            <div
+      {phase === "form" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "16px 20px 4px" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>Label</span>
+            <input
+              ref={labelInputRef}
+              aria-label="Account label"
+              value={label}
+              autoFocus
+              placeholder="Work"
+              onChange={(event) => setLabel(event.target.value)}
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 16px",
-                flexShrink: 0,
-                borderTop: `1px solid ${COLORS.border}`,
+                height: 28,
+                padding: "0 8px",
+                fontSize: 12,
+                fontFamily: SANS_FONT,
+                color: COLORS.textPrimary,
+                background: COLORS.cardBg,
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 6,
+                outline: "none",
               }}
-            >
-              {phase === "terminal" ? (
-                <>
-                  <span
-                    role="status"
-                    style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}
-                  >
-                    <CircleNotch size={12} />
-                    Waiting for sign-in…
-                  </span>
-                  <button
-                    type="button"
-                    onClick={onCheckAgain}
-                    disabled={checking}
-                    style={{
-                      marginLeft: "auto",
-                      background: "transparent",
-                      border: "none",
-                      padding: 0,
-                      fontSize: 11,
-                      fontFamily: SANS_FONT,
-                      color: COLORS.accent,
-                      cursor: "pointer",
-                    }}
-                  >
-                    {checking ? "Checking…" : "Check again"}
-                  </button>
-                </>
-              ) : null}
+            />
+          </label>
 
-              {phase === "success" ? (
-                <span
-                  role="status"
-                  style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.success }}
-                >
-                  <CheckCircle size={13} weight="fill" />
-                  {signedInAs ?? "Signed in"}
-                </span>
-              ) : null}
+          <AccentSwatchRow value={accent} onChange={setAccent} />
 
-              {phase === "failed" ? (
-                <>
-                  <span role="status" style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-                    Sign-in did not complete.
-                  </span>
-                  <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                    <button type="button" style={outlineButton({ height: 26 })} onClick={onTryAgain}>
-                      Try again
-                    </button>
-                    <button type="button" style={outlineButton({ height: 26 })} onClick={close}>
-                      Close
-                    </button>
-                  </div>
-                </>
-              ) : null}
-            </div>
+          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+            This account gets its own sign-in. Your other accounts are not touched.
           </div>
-        ) : null}
-      </div>
-    </div>,
-    document.body,
+        </div>
+      ) : null}
+
+      {phase !== "form" ? (
+        <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
+          <div style={{ flex: 1, minHeight: 260, display: "flex", flexDirection: "column" }}>
+            {terminal ? (
+              <TerminalView
+                key={terminal.sessionId}
+                ptyId={terminal.ptyId}
+                sessionId={terminal.sessionId}
+                isActive
+                className="h-full w-full"
+              />
+            ) : (
+              <div style={{ padding: 16, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                Starting a terminal…
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </Dialog>
   );
 }

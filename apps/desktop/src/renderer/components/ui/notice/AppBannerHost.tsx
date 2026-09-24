@@ -12,8 +12,9 @@ import { NOTICE_TONE_RANK } from "./noticeTones";
  * - Docked banners stack in flow under the top bar: ordered by priority band,
  *   then tone urgency, then registration. At most `MAX_DOCKED` show; the rest
  *   fold behind a "N more" toggle so a bad day never eats the window.
- * - Floating banners are short prompts at the top center, over the app, newest
- *   last, at most `MAX_FLOATING` at once.
+ * - Floating banners are short prompts, centered just below the docked stack
+ *   (or the top bar when nothing is docked), over the app content, at most
+ *   `MAX_FLOATING` at once.
  *
  * Mount exactly one, in `AppShell`, outside any project condition so account
  * and app-level banners reach the welcome screen too.
@@ -58,8 +59,14 @@ export function AppBannerHost(): JSX.Element | null {
   const visible = docked.slice(0, MAX_DOCKED);
   const overflow = docked.slice(MAX_DOCKED);
 
+  if (docked.length === 0 && floating.length === 0) return null;
+
+  // One in-flow anchor: docked banners stack inside it, and floating prompts
+  // hang just below its bottom edge — under the top bar when nothing is docked,
+  // under the last docked banner otherwise — so a prompt never covers the text
+  // of a banner that is already on screen.
   return (
-    <>
+    <div data-testid="app-banner-host" style={{ position: "relative", flexShrink: 0 }}>
       {docked.length > 0 ? (
         <div
           data-testid="app-banner-dock"
@@ -112,8 +119,8 @@ export function AppBannerHost(): JSX.Element | null {
         <div
           data-testid="app-banner-floating"
           style={{
-            position: "fixed",
-            top: 48,
+            position: "absolute",
+            top: "calc(100% + 8px)",
             left: "50%",
             transform: "translateX(-50%)",
             zIndex: Z_LAYERS.floatingBanner,
@@ -123,6 +130,7 @@ export function AppBannerHost(): JSX.Element | null {
             gap: 8,
             width: "max-content",
             maxWidth: "min(640px, calc(100vw - 28px))",
+            paddingTop: docked.length === 0 ? 2 : 0,
             pointerEvents: "none",
           }}
         >
@@ -133,6 +141,6 @@ export function AppBannerHost(): JSX.Element | null {
           ))}
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

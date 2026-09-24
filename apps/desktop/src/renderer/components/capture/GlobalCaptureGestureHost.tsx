@@ -15,6 +15,8 @@ import { supportsCaptureGesturePlatform } from "../../lib/platform";
 import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
 import { encodeUtf8Base64 } from "../../lib/base64";
+import { NoticeIcon } from "../ui/notice/NoticeParts";
+import { NOTICE_FLOAT_SURFACE, noticeTone } from "../ui/notice/noticeTones";
 import {
   describeShot,
   isCallJoinable,
@@ -210,23 +212,29 @@ export function GlobalCaptureGestureHost() {
           role="status"
           data-capture-gesture-notice
           style={{
+            ...NOTICE_FLOAT_SURFACE,
             position: "fixed",
             bottom: 24,
             left: "50%",
             transform: "translateX(-50%)",
             zIndex: 2147483000,
             maxWidth: 460,
-            padding: "10px 14px",
-            borderRadius: 10,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            padding: "9px 14px 9px 11px",
+            borderRadius: 14,
+            fontFamily: "var(--font-sans)",
             fontSize: 12,
             lineHeight: 1.45,
-            background: "var(--color-card)",
             color: "var(--color-fg)",
-            border: "1px solid var(--color-border)",
-            boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
+            border: `1px solid ${noticeTone("warning").edge}`,
           }}
         >
-          {notice}
+          <span style={{ marginTop: 1 }}>
+            <NoticeIcon tone="warning" size="sm" bare />
+          </span>
+          <span>{notice}</span>
         </div>
       ) : null}
     </>

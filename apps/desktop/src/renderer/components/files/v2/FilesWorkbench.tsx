@@ -75,6 +75,7 @@ import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 import { ArrowLeft, CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
+import { confirmDialog } from "../../ui/dialog/confirm";
 
 /**
  * Below this pane width the embedded workbench shows ONE surface at a time.
@@ -527,12 +528,24 @@ export function FilesWorkbench({
     [allOpenTabs, dirtyTabIds],
   );
 
-  const confirmDiscardDirtyTabIds = useCallback((tabIds: readonly string[], action: string): boolean => {
+  const confirmDiscardDirtyTabIds = useCallback(async (tabIds: readonly string[], action: string): Promise<boolean> => {
     if (tabIds.length === 0) return true;
     const labels = tabIds.map((tabId) => allOpenTabs.find((tab) => tab.id === tabId)?.path ?? tabId);
     const label = labels.length === 1 ? `"${labels[0]}" has` : `${labels.length} files have`;
-    return window.confirm(`${label} unsaved changes. ${action} anyway?`);
+    return confirmDialog({
+      title: `${label} unsaved changes.`,
+      message: `${action} anyway?`,
+      confirmLabel: action,
+      destructive: true,
+    });
   }, [allOpenTabs]);
+
+  // The discard confirm is async, so tab handlers re-read the groups after it
+  // resolves instead of applying a close to the snapshot from before it opened.
+  const readLatestGroupsState = useCallback(
+    () => useEditorGroupsStore.getState().sessions[sessionKey] ?? EMPTY_GROUPS_STATE,
+    [sessionKey],
+  );
 
   const pruneClosedTabState = useCallback((shouldPrune: (tabId: string) => boolean) => {
     setDirtyTabIds((prev) => {
@@ -1204,21 +1217,28 @@ export function FilesWorkbench({
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(
-    (groupId: string, tabId: string) => {
+    async (groupId: string, tabId: string) => {
       const tab = allOpenTabs.find((candidate) => candidate.id === tabId);
+      let baseState = groupsState;
       if (dirtyTabIds.has(tabId)) {
         const label = tab?.path ?? tabId;
-        const ok = window.confirm(`"${label}" has unsaved changes. Close anyway?`);
+        const ok = await confirmDialog({
+          title: `"${label}" has unsaved changes.`,
+          message: "Close anyway?",
+          confirmLabel: "Close",
+          destructive: true,
+        });
         if (!ok) return;
+        baseState = readLatestGroupsState();
       }
-      const nextState = closeTab(groupsState, groupId, tabId);
+      const nextState = closeTab(baseState, groupId, tabId);
       if (!isTabOpenInGroups(nextState, tabId)) {
         registryRef.current.dispose(tabId);
         pruneClosedTabState((candidate) => candidate === tabId);
       }
       applyGroups(() => nextState);
     },
-    [allOpenTabs, applyGroups, dirtyTabIds, groupsState, pruneClosedTabState],
+    [allOpenTabs, applyGroups, dirtyTabIds, groupsState, pruneClosedTabState, readLatestGroupsState],
   );
 
   const handleDirtyChange = useCallback((tabId: string, dirty: boolean) => {
@@ -1301,15 +1321,19 @@ export function FilesWorkbench({
   );
 
   const handleCloseOthers = useCallback(
-    (groupId: string, keepTabId: string) => {
+    async (groupId: string, keepTabId: string) => {
       const group = groupsState.groups[groupId];
       if (!group) return;
       const closing = group.tabs
         .filter((tab) => tab.id !== keepTabId && !tab.pinned)
         .map((tab) => tab.id);
       const dirtyClosing = closing.filter((tabId) => dirtyTabIds.has(tabId));
-      if (!confirmDiscardDirtyTabIds(dirtyClosing, "Close them")) return;
-      const nextState = closeOtherTabs(groupsState, groupId, keepTabId);
+      let baseState = groupsState;
+      if (dirtyClosing.length > 0) {
+        if (!(await confirmDiscardDirtyTabIds(dirtyClosing, "Close them"))) return;
+        baseState = readLatestGroupsState();
+      }
+      const nextState = closeOtherTabs(baseState, groupId, keepTabId);
       for (const tabId of closing) {
         if (!isTabOpenInGroups(nextState, tabId)) {
           registryRef.current.dispose(tabId);
@@ -1321,13 +1345,13 @@ export function FilesWorkbench({
       }
       applyGroups(() => nextState);
     },
-    [applyGroups, confirmDiscardDirtyTabIds, dirtyTabIds, groupsState, pruneClosedTabState],
+    [applyGroups, confirmDiscardDirtyTabIds, dirtyTabIds, groupsState, pruneClosedTabState, readLatestGroupsState],
   );
 
   const renamePath = useCallback(
     async (sourcePath: string, destinationPath: string) => {
       if (!workspaceId) return;
-      if (!confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, sourcePath), "Rename it")) return;
+      if (!(await confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, sourcePath), "Rename it"))) return;
       try {
         await files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
       } catch (err) {
@@ -1344,9 +1368,14 @@ export function FilesWorkbench({
   const deletePath = useCallback(
     async (path: string) => {
       if (!workspaceId) return;
-      const ok = window.confirm(`Delete "${path}"? This cannot be undone.`);
+      const ok = await confirmDialog({
+        title: `Delete "${path}"?`,
+        message: "This cannot be undone.",
+        confirmLabel: "Delete",
+        destructive: true,
+      });
       if (!ok) return;
-      if (!confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, path), "Delete it")) return;
+      if (!(await confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, path), "Delete it"))) return;
       try {
         await files.delete({ workspaceId, path });
         forgetRecentFilesUnder(recentSessionKey, path);

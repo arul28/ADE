@@ -1,5 +1,7 @@
 import React from "react";
 
+import { Banner } from "../ui/notice";
+
 import type { CtoVoiceMicrophoneBlockKind } from "../../../shared/types/ctoVoice";
 import { ctoMicrophoneSettingsAction, openCtoSettingsPane } from "./ctoMicrophoneFix";
 
@@ -33,27 +35,18 @@ export type CtoTalkNotice = {
 export function CtoTalkNoticeLine({ notice }: { notice: CtoTalkNotice }) {
   const action = ctoMicrophoneSettingsAction(notice.microphone);
   return (
-    <div
-      role="status"
-      className="flex items-center gap-2 border-t border-white/[0.05] px-4 py-1.5"
-    >
-      <p
-        data-testid="cto-talk-error"
-        className="min-w-0 flex-1 truncate text-[11px] leading-[1.5] text-amber-300/85"
-        title={notice.message}
-      >
-        {notice.message}
-      </p>
-      {action ? (
-        <button
-          type="button"
-          data-testid="cto-talk-open-mic-settings"
-          onClick={() => { void openCtoSettingsPane(action.paneId); }}
-          className="h-6 flex-shrink-0 rounded-md border border-white/[0.12] px-2 text-[11px] font-medium text-amber-200/90 transition-colors hover:bg-white/[0.05]"
-        >
-          {action.label}
-        </button>
-      ) : null}
-    </div>
+    <Banner
+      layout="inline"
+      style={{ margin: "0 16px 8px" }}
+      model={{
+        id: "cto-talk-notice",
+        tone: "warning",
+        ariaLabel: notice.message,
+        title: <span data-testid="cto-talk-error">{notice.message}</span>,
+        actions: action
+          ? [{ label: action.label, onClick: () => { void openCtoSettingsPane(action.paneId); } }]
+          : undefined,
+      }}
+    />
   );
 }

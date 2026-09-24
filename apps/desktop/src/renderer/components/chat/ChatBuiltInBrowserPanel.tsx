@@ -86,6 +86,7 @@ import {
   type TunnelApprovalState,
 } from "./browserRemoteTunnels";
 import { cn } from "../ui/cn";
+import { confirmDialog } from "../ui/dialog/confirm";
 import {
   useNativeBrowserViewBounds,
   type BrowserBounds,
@@ -1528,10 +1529,17 @@ export function ChatBuiltInBrowserPanel({
     });
   }, [profileOpen, refreshProfileSecurity]);
 
-  const clearRememberedPermission = useCallback((
+  const clearRememberedPermission = useCallback(async (
     decision?: Pick<BuiltInBrowserPermissionDecision, "origin" | "permission">,
   ) => {
-    if (!decision && !window.confirm("Clear all remembered ADE browser permission decisions?")) return;
+    if (
+      !decision
+      && !(await confirmDialog({
+        title: "Clear all remembered ADE browser permission decisions?",
+        confirmLabel: "Clear",
+        destructive: true,
+      }))
+    ) return;
     void (async () => {
       const api = requireBrowserApi();
       if (!api.clearPermissions) throw new Error("This ADE build does not support clearing browser permissions.");

@@ -4513,14 +4513,10 @@ button, [role="button"] {
   .ade-welcome-card__poster:hover .ade-welcome-card__play { transform: translate(-50%, -50%); }
 }
 
-/* Shared toast primitive (ToastStack): slide-up + fade-in on entrance. */
-@keyframes ade-toast-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.ade-toast-enter {
-  animation: ade-toast-in 180ms cubic-bezier(0.2, 0, 0, 1);
+/* Bottom-right toast viewport (ToastViewport): cards animate through motion;
+   the viewport itself only glides when it lifts above the CTO call HUD. */
+.ade-toast-viewport {
+  transition: bottom 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* New-lane launches. A launched chat's sidebar row slides in once; the
@@ -4735,7 +4731,7 @@ button, [role="button"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-toast-enter { animation: none; }
+  .ade-toast-viewport { transition: none; }
   .ade-reasoning-effort-word,
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],

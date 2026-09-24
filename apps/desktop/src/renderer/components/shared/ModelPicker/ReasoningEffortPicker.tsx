@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { CaretDown } from "@phosphor-icons/react";
 import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
+import { usePortalContainer } from "../../ui/portalContainer";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
 import { useReasoningByFamily } from "./useReasoningByFamily";
 
@@ -199,6 +200,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   triggerClassName,
   catalogScopeKey,
 }: ReasoningEffortPickerProps) {
+  const portalContainer = usePortalContainer();
   const [open, setOpen] = useState(false);
   const activePointerGestureRef = useRef<ActivePointerGesture | null>(null);
   const suppressTierClickRef = useRef(false);
@@ -451,7 +453,9 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
           className={cn(triggerClassName, className)}
         />
       </Popover.Trigger>
-      <Popover.Portal>
+      {/* Inside a dialog, portal into it: a modal dialog blocks pointer
+          events and focus everywhere outside its content. */}
+      <Popover.Portal container={portalContainer ?? undefined}>
         <Popover.Content
           side="top"
           align="start"

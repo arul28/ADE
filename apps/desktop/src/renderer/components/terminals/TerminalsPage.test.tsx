@@ -12,6 +12,12 @@ import type {
 } from "../../../shared/types";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { TerminalsPage } from "./TerminalsPage";
+import { confirmDialog } from "../ui/dialog/confirm";
+
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => false),
+}));
 import {
   forgetWorkPtyLaunchPin,
   rememberWorkPtyLaunchPin,
@@ -616,6 +622,7 @@ vi.mock("./WorkViewArea", () => ({
 describe("TerminalsPage chat session activation", () => {
   afterEach(() => {
     cleanup();
+    vi.mocked(confirmDialog).mockResolvedValue(false);
     workMocks.currentWork = { ...workMocks.baseWork, closingPtyIds: new Set<string>() };
     workMocks.projectRoot = null;
     workMocks.projectBinding = null;
@@ -2198,7 +2205,7 @@ describe("TerminalsPage chat session activation", () => {
     const runningShell = workMocks.makeTerminalSession("shell-running", "lane-primary", "shell");
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.mocked(confirmDialog).mockResolvedValue(true);
 
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2235,8 +2242,8 @@ describe("TerminalsPage chat session activation", () => {
     });
     expect(sessionDelete).not.toHaveBeenCalled();
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("shell-running");
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Delete 2 selected sessions?"));
-    confirmSpy.mockRestore();
+    expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ title: "Delete 2 selected sessions?" }));
+    confirmSpy.mockResolvedValue(false);
   });
 
   it("refreshes orphaned session records without deleting sessions or lanes", async () => {
@@ -2396,7 +2403,7 @@ describe("TerminalsPage chat session activation", () => {
       hostname: "studio.local",
     };
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -2505,7 +2512,7 @@ describe("TerminalsPage chat session activation", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "context menu cli-cancel" }));
     fireEvent.click(await screen.findByRole("button", { name: "context stop and delete cli-cancel" }));
-    fireEvent.click(await screen.findByRole("button", { name: "CANCEL" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Stop & delete" })).toBeNull(),
@@ -2595,7 +2602,7 @@ describe("TerminalsPage chat session activation", () => {
       ptyId: null,
     });
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.mocked(confirmDialog).mockResolvedValue(true);
     mountForeignMachine([foreignChat]);
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2621,7 +2628,7 @@ describe("TerminalsPage chat session activation", () => {
         expect.objectContaining({ key: studioBindingForDelete.key }),
       );
     });
-    confirmSpy.mockRestore();
+    confirmSpy.mockResolvedValue(false);
   });
 
   it("clears a foreign row's woke marker on its own machine when opened via Hand off", async () => {
@@ -2668,7 +2675,7 @@ describe("TerminalsPage chat session activation", () => {
       runtimeState: "exited",
     });
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.mocked(confirmDialog).mockResolvedValue(true);
     mountForeignMachine([foreignShell]);
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -2700,7 +2707,7 @@ describe("TerminalsPage chat session activation", () => {
       );
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("shell-foreign-bulk");
     });
-    confirmSpy.mockRestore();
+    confirmSpy.mockResolvedValue(false);
   });
 
   it("finishes a bulk delete past a row that fails, and never shows the IPC channel", async () => {
@@ -2713,7 +2720,7 @@ describe("TerminalsPage chat session activation", () => {
         );
       }
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.mocked(confirmDialog).mockResolvedValue(true);
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -2749,7 +2756,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(banner.textContent).toContain("1 of 2 deleted");
     expect(banner.textContent).not.toContain("Error invoking remote method");
     expect(banner.textContent).toContain("Refresh the list");
-    confirmSpy.mockRestore();
+    confirmSpy.mockResolvedValue(false);
   });
 
   it("gives the tools-pane splitter a keyboard, not just a mouse", () => {

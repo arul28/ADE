@@ -7,6 +7,12 @@ import {
   WEB_OPEN_CONNECTIONS_EVENT,
 } from "../WebConnectionsChip";
 import { WebWorkspaceProvider } from "../WebWorkspaceContext";
+import { confirmDialog } from "../../../components/ui/dialog/confirm";
+
+vi.mock("../../../components/ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../components/ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => false),
+}));
 
 const RELAY = "wss://ade-tunnel-relay.arulsharma1028.workers.dev";
 
@@ -226,7 +232,7 @@ describe("WebConnectionsChip", () => {
 
   it("tells two installs on one Mac apart and warns before removing a live one", async () => {
     const removeAccountMachine = vi.fn(async () => undefined);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const confirm = vi.mocked(confirmDialog).mockClear().mockResolvedValue(false);
     try {
       renderChip(
         [
@@ -244,13 +250,14 @@ describe("WebConnectionsChip", () => {
       fireEvent.click(screen.getByRole("menuitem", { name: "Remove from account" }));
 
       expect(confirm).toHaveBeenCalledTimes(1);
-      const message = String(confirm.mock.calls[0]?.[0]);
-      expect(message).toContain("Remove MacBook Pro · ADE Alpha from your ADE account?");
-      expect(message).toContain("It was active 1 minute ago.");
+      const options = confirm.mock.calls[0]?.[0];
+      expect(options?.title).toBe("Remove MacBook Pro · ADE Alpha from your ADE account?");
+      expect(String(options?.message)).toContain("It was active 1 minute ago.");
       // Declined: nothing is removed.
+      await Promise.resolve();
       expect(removeAccountMachine).not.toHaveBeenCalled();
     } finally {
-      confirm.mockRestore();
+      confirm.mockClear();
     }
   });
 

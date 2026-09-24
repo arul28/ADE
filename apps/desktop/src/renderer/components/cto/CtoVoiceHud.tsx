@@ -13,6 +13,8 @@ import {
   type LiveVoicePhase,
 } from "../../../shared/types/ctoVoice";
 import { COLORS } from "../lanes/laneDesignTokens";
+import { useReportCornerObstacle } from "../app/toast/toastViewportInsets";
+import { NOTICE_FLOAT_SURFACE, noticeTone } from "../ui/notice/noticeTones";
 
 /**
  * The call HUD: a pill that grows a canvas.
@@ -40,11 +42,16 @@ const CANVAS_WIDTH = 420;
  */
 function pillChrome(borderColor: string): React.CSSProperties {
   return {
-    background: "rgba(16,14,22,0.96)",
+    // The notice card colour and float shadow, minus its backdrop blur (above).
+    background: NOTICE_FLOAT_SURFACE.background,
     border: `1px solid ${borderColor}`,
-    boxShadow: "0 12px 32px rgba(0,0,0,0.38)",
+    boxShadow: NOTICE_FLOAT_SURFACE.boxShadow,
   };
 }
+
+/** Same corner inset as the toast stack, which lifts above the HUD while it is up. */
+const HUD_INSET_CLASS = "bottom-3 right-3";
+const ERROR_TONE = noticeTone("error");
 
 /**
  * One label per phase a running call can be in.
@@ -121,7 +128,9 @@ function CaptionBubble({
     <div
       className={`max-w-[420px] rounded-xl px-3 py-1.5 text-[11px] leading-snug${pending ? " italic" : ""}`}
       style={{
-        background: pending ? "rgba(10,9,14,0.78)" : "rgba(10,9,14,0.94)",
+        background: pending
+          ? "color-mix(in srgb, var(--color-card) 80%, transparent)"
+          : "color-mix(in srgb, var(--color-card) 96%, transparent)",
         border: `1px solid ${COLORS.borderMuted}`,
         color: colour,
       }}
@@ -161,8 +170,8 @@ function ConfirmationStrip({
       tabIndex={-1}
       className="flex flex-col gap-2 rounded-xl px-3 py-2.5"
       style={{
-        background: COLORS.cardBgSolid,
-        border: `1px solid ${confirmation.destructive ? COLORS.danger : COLORS.accentBorder}`,
+        background: "var(--color-card)",
+        border: `1px solid ${confirmation.destructive ? ERROR_TONE.ring : noticeTone("accent").ring}`,
       }}
     >
       <div className="flex items-start gap-2">
@@ -216,19 +225,24 @@ function ConfirmationStrip({
  */
 function FailedPill({ onDismiss }: { onDismiss: () => void }) {
   const reduced = useReducedMotion();
+  const hudRef = useRef<HTMLDivElement | null>(null);
+  const [settled, setSettled] = useState(0);
+  useReportCornerObstacle(hudRef, settled);
   return (
     <div className="pointer-events-none fixed inset-0 z-[112]" data-testid="cto-voice-hud-layer">
       <motion.div
+        ref={hudRef}
         initial={reduced ? false : { opacity: 0, y: 14, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 360, damping: 30 }}
-        className="pointer-events-auto absolute bottom-6 right-6 flex items-center gap-2.5 rounded-full py-1.5 pl-3 pr-1.5"
-        style={{ height: PILL_HEIGHT, ...pillChrome(COLORS.danger) }}
+        onAnimationComplete={() => setSettled((value) => value + 1)}
+        className={`pointer-events-auto absolute ${HUD_INSET_CLASS} flex items-center gap-2.5 rounded-full py-1.5 pl-3 pr-1.5`}
+        style={{ height: PILL_HEIGHT, ...pillChrome(ERROR_TONE.edge) }}
         data-testid="cto-voice-hud"
         data-phase="failed"
       >
-        <Warning size={15} weight="fill" style={{ color: COLORS.danger }} />
-        <span className="text-[11px] font-medium" style={{ color: COLORS.danger }}>
+        <Warning size={15} weight="fill" style={{ color: ERROR_TONE.color }} />
+        <span className="text-[11px] font-medium" style={{ color: ERROR_TONE.text }}>
           Call failed
         </span>
         <button
@@ -238,7 +252,7 @@ function FailedPill({ onDismiss }: { onDismiss: () => void }) {
           aria-label="Dismiss"
           data-testid="cto-voice-end"
           className="grid size-8 place-items-center rounded-full transition-transform hover:scale-105"
-          style={{ background: COLORS.danger, color: "#0b0910" }}
+          style={{ background: ERROR_TONE.color, color: "var(--color-bg)" }}
         >
           <Phone size={14} weight="fill" style={{ transform: "rotate(135deg)" }} />
         </button>
@@ -270,7 +284,13 @@ export function CtoVoiceHud({
   const reduced = useReducedMotion();
   const dragControls = useDragControls();
   const constraintsRef = useRef<HTMLDivElement | null>(null);
+  const hudRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Bumped when the HUD settles (arrival spring, drag end) so its reported
+  // rect — which the toast stack clears — is re-measured where it came to rest.
+  const [settled, setSettled] = useState(0);
+  const live = isVoiceCallLive(state.phase);
+  useReportCornerObstacle(hudRef, live ? settled : "idle");
 
   const latestCaption = useMemo(() => {
     for (let i = state.captions.length - 1; i >= 0; i -= 1) {
@@ -299,12 +319,17 @@ export function CtoVoiceHud({
         dragControls={dragControls}
         dragConstraints={constraintsRef}
         dragMomentum={false}
+        ref={hudRef}
         onDragStart={() => setDragging(true)}
-        onDragEnd={() => setDragging(false)}
+        onDragEnd={() => {
+          setDragging(false);
+          setSettled((value) => value + 1);
+        }}
+        onAnimationComplete={() => setSettled((value) => value + 1)}
         initial={reduced ? false : { opacity: 0, y: 14, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 360, damping: 30 }}
-        className="pointer-events-auto absolute bottom-6 right-6 flex flex-col items-end gap-2"
+        className={`pointer-events-auto absolute ${HUD_INSET_CLASS} flex flex-col items-end gap-2`}
         style={{ width: expanded ? CANVAS_WIDTH : "auto" }}
         data-testid="cto-voice-hud"
         data-phase={state.phase}
@@ -320,9 +345,9 @@ export function CtoVoiceHud({
               transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 300, damping: 32 }}
               className="w-full overflow-hidden rounded-2xl"
               style={{
-                background: COLORS.cardBgSolid,
+                background: "var(--color-card)",
                 border: `1px solid ${COLORS.border}`,
-                boxShadow: "0 18px 48px rgba(0,0,0,0.44)",
+                boxShadow: NOTICE_FLOAT_SURFACE.boxShadow,
               }}
               data-testid="cto-voice-canvas"
             >
@@ -339,7 +364,7 @@ export function CtoVoiceHud({
               animate={{ opacity: 1, y: 0 }}
               exit={reduced ? { opacity: 0 } : { opacity: 0, y: 6 }}
               className="w-full"
-              style={{ boxShadow: "0 14px 36px rgba(0,0,0,0.40)" }}
+              style={{ boxShadow: NOTICE_FLOAT_SURFACE.boxShadow }}
             >
               <ConfirmationStrip
                 confirmation={pending}
@@ -474,7 +499,7 @@ export function CtoVoiceHud({
               aria-label="End call"
               data-testid="cto-voice-end"
               className="grid size-8 place-items-center rounded-full transition-transform hover:scale-105"
-              style={{ background: COLORS.danger, color: "#0b0910" }}
+              style={{ background: ERROR_TONE.color, color: "var(--color-bg)" }}
             >
               <Phone size={14} weight="fill" style={{ transform: "rotate(135deg)" }} />
             </button>

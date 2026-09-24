@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "files": {
+    "apps/desktop/src/renderer/components/account/YourMacsCard.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/app/AppShell.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/app/AutoUpdateErrorDialog.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/app/CommandPalette.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/app/FeedbackReporterModal.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/app/TabNav.tsx": {
+      "ade-ui/no-fixed-overlay": 1
+    },
+    "apps/desktop/src/renderer/components/app/TopBar.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/automations/AutomationsWorkspace.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/capture/CaptureFlyIn.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/capture/GlobalCaptureGestureHost.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx": {
+      "ade-ui/no-fixed-overlay": 5,
+      "ade-ui/no-raw-z-index": 5
+    },
+    "apps/desktop/src/renderer/components/chat/AssistantOutputSelectionToolbar.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/BrowserLoginImportDialog.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/chat/ChatCommandMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/ChatGitToolbar.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/ChatWorkflowActiveCard.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/chat/ChipHoverCard.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/ComposerPromptStash.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/ComposerSmartLinkMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/CursorCloudAdvancedMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/chat/DraftMachinePicker.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/cto/CtoVoiceHud.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/files/v2/ContextMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/files/v2/FilesSearchPanel.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/history/HistoryGitContextMenu.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/history/TimelineToolbar.tsx": {
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/lanes/CommitTimeline.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1
+    },
+    "apps/desktop/src/renderer/components/lanes/LaneDialogShell.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/lanes/LaneGitActionsPane.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/lanes/LanePrBadgePopover.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/lanes/LanePrHoverCard.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/lanes/LanesPage.tsx": {
+      "ade-ui/no-fixed-overlay": 4,
+      "ade-ui/no-raw-z-index": 7
+    },
+    "apps/desktop/src/renderer/components/lanes/LinearIssueBadge.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx": {
+      "ade-ui/no-fixed-overlay": 2
+    },
+    "apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/projects/MergeWorktreeProjectDialog.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/projects/PublishToGitHubDialog.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/projects/WorktreeOpenDialog.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/prs/CreatePrModal.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/prs/shared/PrCommandPalettes.tsx": {
+      "ade-ui/no-fixed-overlay": 2
+    },
+    "apps/desktop/src/renderer/components/prs/shared/PrReviewSubmitModal.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/prs/tabs/GitHubTabCreateLaneDialog.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/settings/WebScopeBanner.tsx": {
+      "ade-ui/no-adhoc-notice-component": 1
+    },
+    "apps/desktop/src/renderer/components/shared/MentionInput.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/shared/ModelPicker/ModelListRow.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/shared/ModelPicker/ModelPicker.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/shared/ModelPicker/ReasoningEffortPicker.tsx": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx": {
+      "ade-ui/no-fixed-overlay": 1
+    },
+    "apps/desktop/src/renderer/components/shared/SessionLaunchModelControls.tsx": {
+      "ade-ui/no-raw-z-index": 2
+    },
+    "apps/desktop/src/renderer/components/terminals/ForeignLaneContextMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/terminals/LaneCombobox.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/terminals/SessionHoverCard.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/terminals/SessionInfoPopover.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/terminals/SessionSnoozeControl.tsx": {
+      "ade-ui/no-fixed-overlay": 2,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1
+    },
+    "apps/desktop/src/renderer/components/ui/MenuSubmenu.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/ui/PaneTooltip.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/ui/SmartTooltip.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/ui/paneMenuTokens.ts": {
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/components/usage/UsageAccountRow.tsx": {
+      "ade-ui/no-fixed-overlay": 1
+    },
+    "apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    },
+    "apps/desktop/src/renderer/webclient/shell/ScreenShell.tsx": {
+      "ade-ui/no-fixed-overlay": 2
+    },
+    "apps/desktop/src/renderer/webclient/workspace/WebConnectionsChip.tsx": {
+      "ade-ui/no-fixed-overlay": 1,
+      "ade-ui/no-raw-z-index": 1
+    }
+  }
+}

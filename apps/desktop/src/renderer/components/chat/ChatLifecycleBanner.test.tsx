@@ -104,9 +104,8 @@ describe("ChatLifecycleBanner", () => {
     expect(banner.textContent).toContain("Sending reopens this chat");
     expect(banner.className).toContain("rounded-full");
     expect(banner.className).not.toContain("w-full");
-    // Emerald means "finished cleanly"; amber is reserved for "your move".
-    expect(banner.className).toContain("emerald");
-    expect(banner.className).not.toContain("amber");
+    // Success means "finished cleanly"; warning is reserved for "your move".
+    expect(banner.getAttribute("data-notice-tone")).toBe("success");
   });
 
   it("renders the snoozed variant naming when it comes back, in neutral chrome", () => {
@@ -117,9 +116,8 @@ describe("ChatLifecycleBanner", () => {
     expect(banner.getAttribute("data-lifecycle-variant")).toBe("snoozed");
     expect(banner.textContent).toContain("Snoozed");
     expect(banner.textContent).toContain("Hidden until");
-    // Snooze is a visibility overlay, so it gets neither emerald nor amber.
-    expect(banner.className).not.toContain("emerald");
-    expect(banner.className).not.toContain("amber");
+    // Snooze is a visibility overlay, so it gets the neutral tone, not a hue.
+    expect(banner.getAttribute("data-notice-tone")).toBe("neutral");
   });
 
   it("names the open-ended wake condition rather than a ~100-year date", () => {
@@ -141,15 +139,18 @@ describe("ChatLifecycleBanner", () => {
     seedSessions([makeSession(settledOverrides())]);
     render(<ChatLifecycleBanner sessionId="session-1" />);
     const settledButton = screen.getByTestId("chat-lifecycle-unsettle");
-    expect(settledButton.className).toContain("hover:bg-emerald-300/[0.10]");
-    expect(settledButton.className).toContain("focus-visible:bg-emerald-300/[0.10]");
+    expect(settledButton.className).toContain("hover:bg-[var(--lifecycle-pill-hover)]");
+    expect(settledButton.className).toContain("focus-visible:bg-[var(--lifecycle-pill-hover)]");
+    expect(
+      screen.getByTestId("chat-lifecycle-banner").style.getPropertyValue("--lifecycle-pill-hover"),
+    ).toContain("--color-success");
 
     cleanup();
     seedSessions([makeSession(snoozedOverrides())]);
     render(<ChatLifecycleBanner sessionId="session-1" />);
     const snoozedButton = screen.getByTestId("chat-lifecycle-wake");
-    expect(snoozedButton.className).toContain("hover:bg-white/[0.07]");
-    expect(snoozedButton.className).toContain("focus-visible:bg-white/[0.07]");
+    expect(snoozedButton.className).toContain("hover:bg-[var(--lifecycle-pill-hover)]");
+    expect(snoozedButton.className).toContain("focus-visible:bg-[var(--lifecycle-pill-hover)]");
   });
 
   it("lets snooze win when a chat is both snoozed and settled", () => {

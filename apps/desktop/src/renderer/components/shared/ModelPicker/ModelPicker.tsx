@@ -12,6 +12,7 @@ import { ModelRowLogo } from "../ProviderLogos";
 import { HarnessLogo } from "../HarnessLogo";
 import type { HarnessPresetLogo } from "../../../../shared/harnessPresets";
 import { cn } from "../../ui/cn";
+import { usePortalContainer } from "../../ui/portalContainer";
 import { ModelPickerContent, type ModelPickerSelection } from "./ModelPickerContent";
 import type { AuthStatus } from "./ModelPickerRail";
 import {
@@ -173,6 +174,7 @@ export const ModelPicker = memo(function ModelPicker({
   onOpenRequestHandled,
   catalogScopeKey: catalogScopeKeyOverride,
 }: ModelPickerProps) {
+  const portalContainer = usePortalContainer();
   // The personal-chat surface passes its own scope key
   // (`personalChatCatalogScopeKey`), so the third arm that used to infer it
   // from the removed `surfaceKey` prop had no reachable caller left.
@@ -474,7 +476,9 @@ export const ModelPicker = memo(function ModelPicker({
             className={triggerClassName}
           />
         </Popover.Trigger>
-        <Popover.Portal>
+        {/* Inside a dialog, portal into it: a modal dialog blocks pointer
+            events and focus everywhere outside its content. */}
+        <Popover.Portal container={portalContainer ?? undefined}>
           <Popover.Content
             side="bottom"
             align="start"

@@ -53,7 +53,7 @@ describe("LaneRebaseBanner", () => {
 
   it("renders the full strip in banner mode", () => {
     renderBanner({ visibleRebaseSuggestions: [suggestion("a")], display: "banner" });
-    expect(screen.getByText("REBASE SUGGESTED")).toBeTruthy();
+    expect(screen.getByText("Rebase suggested")).toBeTruthy();
     expect(screen.getByText("lane-a")).toBeTruthy();
   });
 
@@ -64,7 +64,7 @@ describe("LaneRebaseBanner", () => {
     });
 
     // No strip, no per-lane cards, no dismiss buttons.
-    expect(screen.queryByText("REBASE SUGGESTED")).toBeNull();
+    expect(screen.queryByText("Rebase suggested")).toBeNull();
     expect(screen.queryByText("lane-a")).toBeNull();
     expect(screen.getByText("2 behind")).toBeTruthy();
   });
@@ -98,8 +98,8 @@ describe("LaneRebaseBanner", () => {
       bannerBudget: 1,
     });
 
-    expect(screen.queryByText("REBASE SUGGESTED")).toBeNull();
-    expect(screen.queryByText("AUTO-REBASE NEEDS ATTENTION")).toBeNull();
+    expect(screen.queryByText("Rebase suggested")).toBeNull();
+    expect(screen.queryByText("Auto-rebase needs attention")).toBeNull();
     expect(screen.getByText(/1 lane needs attention · 1 behind/)).toBeTruthy();
   });
 
@@ -111,8 +111,8 @@ describe("LaneRebaseBanner", () => {
       bannerBudget: 2,
     });
 
-    expect(screen.getByText("REBASE SUGGESTED")).toBeTruthy();
-    expect(screen.getByText("AUTO-REBASE NEEDS ATTENTION")).toBeTruthy();
+    expect(screen.getByText("Rebase suggested")).toBeTruthy();
+    expect(screen.getByText("Auto-rebase needs attention")).toBeTruthy();
   });
 
   it("keeps the error visible in the collapsed form too", () => {

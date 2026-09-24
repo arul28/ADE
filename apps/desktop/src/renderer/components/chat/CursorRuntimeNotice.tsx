@@ -1,5 +1,5 @@
-import { X } from "@phosphor-icons/react";
-import { EditorTargetLogo } from "../ui/EditorTargetLogo";
+import { CursorAgentLogo } from "../terminals/ToolLogos";
+import { Banner } from "../ui/notice";
 
 /**
  * The pill over the transcript when a Cursor chat has no Cursor runtime. It
@@ -13,32 +13,33 @@ export function CursorRuntimeNotice({
   onDismiss: () => void;
 }) {
   return (
+    // Positions the floating pill at the top center of the transcript only.
     <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-3">
-      <div
-        role="status"
-        data-testid="cursor-runtime-notice"
-        className="pointer-events-auto flex max-w-[28rem] items-center gap-2 rounded-full border border-violet-300/30 bg-violet-500/20 px-2.5 py-1 shadow-[0_10px_28px_rgba(0,0,0,0.35)] backdrop-blur-md"
-      >
-        <EditorTargetLogo target="cursor" size={14} />
-        <p className="min-w-0 truncate font-sans text-[12px] leading-5 text-violet-50/95">
-          Cursor runtime is not available,{" "}
-          <button
-            type="button"
-            className="underline decoration-violet-200/70 underline-offset-2 hover:text-white"
-            onClick={onOpenSettings}
-          >
-            click here
-          </button>
-          {" "}to setup
-        </p>
-        <button
-          type="button"
-          aria-label="Dismiss Cursor runtime notice"
-          className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-violet-100/75 transition-colors hover:bg-white/10 hover:text-white"
-          onClick={onDismiss}
-        >
-          <X size={12} weight="bold" aria-hidden />
-        </button>
+      <div data-testid="cursor-runtime-notice" style={{ display: "contents" }}>
+        <Banner
+          layout="floating"
+          style={{ pointerEvents: "auto", maxWidth: "28rem" }}
+          model={{
+            id: "cursor-runtime-notice",
+            tone: "warning",
+            icon: <CursorAgentLogo size={13} />,
+            ariaLabel: "Cursor runtime notice",
+            title: (
+              <>
+                Cursor runtime is not available,{" "}
+                <button
+                  type="button"
+                  className="cursor-pointer border-none bg-transparent p-0 text-inherit underline underline-offset-2"
+                  onClick={onOpenSettings}
+                >
+                  click here
+                </button>
+                {" "}to setup
+              </>
+            ),
+            dismiss: { onDismiss, label: "Dismiss Cursor runtime notice" },
+          }}
+        />
       </div>
     </div>
   );

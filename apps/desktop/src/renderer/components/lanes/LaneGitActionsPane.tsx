@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -12,10 +12,12 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
+import { Banner, type NoticeTone } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { BranchIcon } from "../ui/vcsIcons";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
+import { confirmDialog } from "../ui/dialog/confirm";
 import {
   WORK_TOOL_CHROME_CHIP,
   WORK_TOOL_CHROME_CHIP_WRAP,
@@ -329,6 +331,15 @@ export function __resetLaneGitActionRuntimeForTests(): void {
   emitLaneGitActionRuntimeChange();
 }
 
+function confirmForcePushWithLease(): Promise<boolean> {
+  return confirmDialog({
+    title: "Force push with lease?",
+    message: "This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
+    confirmLabel: "Force push",
+    destructive: true,
+  });
+}
+
 function formatRelativeTime(ts: string | null): string {
   if (!ts) return "unknown time";
   const date = new Date(ts);
@@ -448,29 +459,29 @@ function getCommitHelperText(commitMessage: string): string {
 }
 
 function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
-  color: string;
+  tone: NoticeTone;
   label: string;
   fallbackMessage: string;
 } {
   if (state === "autoRebased") {
     return {
-      color: COLORS.success,
-      label: "AUTO REBASED",
+      tone: "success",
+      label: "Auto rebased",
       fallbackMessage: "Lane was rebased and pushed automatically."
     };
   }
   if (state === "rebaseConflict" || state === "rebaseFailed") {
     return {
-      color: COLORS.danger,
-      label: "AUTO-REBASE FAILED",
+      tone: "error",
+      label: "Auto-rebase failed",
       fallbackMessage: state === "rebaseConflict"
         ? "ADE predicted conflicts for this lane and stopped before rewriting or pushing it."
         : "ADE tried to auto-rebase this lane, restored the previous state, and stopped before pushing changes."
     };
   }
   return {
-    color: COLORS.warning,
-    label: "AUTO-REBASE PENDING",
+    tone: "warning",
+    label: "Auto-rebase pending",
     fallbackMessage: "ADE will auto-rebase and auto-push this lane when its parent advances."
   };
 }
@@ -1340,30 +1351,45 @@ export function LaneGitActionsPane({
     await refreshChanges();
   };
 
-  const discardFile = (path: string) => {
+  const discardFile = async (path: string) => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard all changes to ${path}? This cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard all changes to ${path}?`,
+      message: "This cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard file", async () => {
       await window.ade.git.discardFile({ laneId, path }, pin);
     });
   };
 
-  const discardStagedFile = (path: string) => {
+  const discardStagedFile = async (path: string) => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard staged and unstaged changes to ${path}? This cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard staged and unstaged changes to ${path}?`,
+      message: "This cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard staged file", async () => {
       await window.ade.git.restoreStagedFile({ laneId, path }, pin);
     });
   };
 
-  const discardAll = () => {
+  const discardAll = async () => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})? This cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})?`,
+      message: "This cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard all", async () => {
       for (const file of changes.unstaged) {
@@ -1372,10 +1398,15 @@ export function LaneGitActionsPane({
     });
   };
 
-  const discardAllStaged = () => {
+  const discardAllStaged = async () => {
     if (!laneId) return;
     if (busyAction) return;
-    const ok = window.confirm(`Discard ALL staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})? This also discards any unstaged edits to the same files and cannot be undone.`);
+    const ok = await confirmDialog({
+      title: `Discard ALL staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})?`,
+      message: "This also discards any unstaged edits to the same files and cannot be undone.",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (!ok) return;
     void runAction("discard staged files", async () => {
       for (const file of changes.staged) {
@@ -1589,10 +1620,17 @@ export function LaneGitActionsPane({
       if (!latestSyncStatus.hasUpstream) {
         const missingRemote = latestSyncStatus.upstreamState === "missing";
         if (confirmPublish) {
-          const ok = window.confirm(
+          const ok = await confirmDialog(
             missingRemote
-              ? `The remote branch for lane '${lane?.name ?? laneId}' is missing. Recreate origin/${lane?.branchRef ?? "current branch"}?`
-              : `Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`
+              ? {
+                title: `The remote branch for lane '${lane?.name ?? laneId}' is missing.`,
+                message: `Recreate origin/${lane?.branchRef ?? "current branch"}?`,
+                confirmLabel: "Recreate",
+              }
+              : {
+                title: `Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`,
+                confirmLabel: "Publish",
+              },
           );
           if (!ok) throw new Error("__ade_cancelled__");
         }
@@ -1602,9 +1640,12 @@ export function LaneGitActionsPane({
 
       if (latestSyncStatus.diverged && latestSyncStatus.ahead > 0) {
         if (confirmPublish) {
-          const ok = window.confirm(
-            `Lane '${lane?.name ?? laneId}' diverged from remote (${latestSyncStatus.ahead} local ahead, ${latestSyncStatus.behind} remote ahead). Force push with lease now?`
-          );
+          const ok = await confirmDialog({
+            title: `Lane '${lane?.name ?? laneId}' diverged from remote (${latestSyncStatus.ahead} local ahead, ${latestSyncStatus.behind} remote ahead).`,
+            message: "Force push with lease now?",
+            confirmLabel: "Force push",
+            destructive: true,
+          });
           if (!ok) throw new Error("__ade_cancelled__");
         }
         await window.ade.git.push({ laneId, forceWithLease: true }, pin);
@@ -1613,9 +1654,10 @@ export function LaneGitActionsPane({
 
       if (latestSyncStatus.ahead > 0) {
         if (confirmPublish) {
-          const ok = window.confirm(
-            `Push ${latestSyncStatus.ahead} commit${latestSyncStatus.ahead === 1 ? "" : "s"} for lane '${lane?.name ?? laneId}' now?`
-          );
+          const ok = await confirmDialog({
+            title: `Push ${latestSyncStatus.ahead} commit${latestSyncStatus.ahead === 1 ? "" : "s"} for lane '${lane?.name ?? laneId}' now?`,
+            confirmLabel: "Push",
+          });
           if (!ok) throw new Error("__ade_cancelled__");
         }
         await window.ade.git.push({ laneId }, pin);
@@ -2038,11 +2080,9 @@ export function LaneGitActionsPane({
               : nextActionHint?.action === "force_push_lease"
                 ? "Force push (lease)"
                 : "Push"}
-          onClick={() => {
+          onClick={async () => {
             if (nextActionHint?.action === "force_push_lease") {
-              const ok = window.confirm(
-                "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
-              );
+              const ok = await confirmForcePushWithLease();
               if (!ok) return;
               runPush(true);
               return;
@@ -2362,58 +2402,32 @@ export function LaneGitActionsPane({
           navigate(`/prs?${search.toString()}`);
         };
         return (
-          <div
-            className="shrink-0 flex flex-wrap items-center gap-3"
-            style={{
-              padding: "8px 16px",
-              fontSize: 10,
-              fontFamily: MONO_FONT,
-              borderBottom: `1px solid ${COLORS.border}`,
-              background: `${bannerConfig.color}08`,
-              color: bannerConfig.color
+          <Banner
+            layout="inline"
+            style={{ margin: "6px 8px", flexShrink: 0 }}
+            model={{
+              id: `lane-auto-rebase:${laneId ?? ""}`,
+              tone: bannerConfig.tone,
+              icon: <GitBranch size={13} weight="bold" />,
+              title: bannerConfig.label,
+              detail: bannerMessage,
+              actions: autoRebaseStatus.state === "autoRebased"
+                ? undefined
+                : isAutoRebaseFailure
+                  ? [{
+                      label: "Open Rebase/Merge tab",
+                      title: "View detailed rebase information and resolve issues.",
+                      disabled: !laneId || busyAction != null,
+                      onClick: openRebaseTab,
+                    }]
+                  : [{
+                      label: "Rebase and push",
+                      title: "Rebase this lane onto its parent, then push the rewritten branch to remote.",
+                      disabled: !laneId || busyAction != null,
+                      onClick: () => runRebaseAndPushFlow(true),
+                    }],
             }}
-          >
-            <span style={{ ...LABEL_STYLE, color: "inherit" }}>
-              {bannerConfig.label}
-            </span>
-            <span className="truncate" style={{ color: COLORS.textMuted, letterSpacing: "0.5px", flex: 1, minWidth: 220 }}>
-              {bannerMessage}
-            </span>
-            {autoRebaseStatus.state !== "autoRebased" ? (
-              isAutoRebaseFailure ? (
-                <SmartTooltip content={{
-                  label: "Open Rebase/Merge Tab",
-                  description: "View detailed rebase information and resolve issues.",
-                  effect: "Navigate to the rebase details view",
-                }}>
-                  <button
-                    type="button"
-                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
-                    disabled={!laneId || busyAction != null}
-                    onClick={openRebaseTab}
-                  >
-                    OPEN REBASE/MERGE TAB
-                  </button>
-                </SmartTooltip>
-              ) : (
-                <SmartTooltip content={{
-                  label: "Rebase and Push",
-                  description: "Rebase this lane onto its parent, then push the rewritten branch to remote.",
-                  gitCommand: "git rebase <parent> && git push",
-                  effect: "Rebase from parent and push to remote",
-                }}>
-                  <button
-                    type="button"
-                    style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
-                    disabled={!laneId || busyAction != null}
-                    onClick={() => runRebaseAndPushFlow(true)}
-                  >
-                    REBASE AND PUSH
-                  </button>
-                </SmartTooltip>
-              )
-            ) : null}
-          </div>
+          />
         );
       })() : null}
 
@@ -2640,11 +2654,9 @@ export function LaneGitActionsPane({
                     ...(nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" ? { color: COLORS.accent, border: "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)", background: "color-mix(in srgb, var(--color-accent) 8%, transparent)" } : {}),
                   }}
                   disabled={!laneId || busyAction != null}
-                  onClick={() => {
+                  onClick={async () => {
                     if (nextActionHint?.action === "force_push_lease") {
-                      const ok = window.confirm(
-                        "Force push with lease? This overwrites the remote branch with your local history. Only use this if you intend to publish rewritten commits.",
-                      );
+                      const ok = await confirmForcePushWithLease();
                       if (!ok) return;
                       runPush(true);
                     } else {
