@@ -336,7 +336,10 @@ Cite the doc section in the finding.
    pass the failures the test itself causes to `/test`.
 10. **Commit and apply the push rule.** Commit the reviewed tree
     (`quality: apply review fixes`) and record its SHA as `qualityReviewedSha`
-    in the ship state. Stage only this lane's files; never commit changes that
+    in the ship state — but only when every change in that commit passed a
+    clean review. When step 7's cap left a final fix unreviewed, keep
+    `qualityReviewedSha` at the commit before that fix, so the delta review at
+    push time covers it. Stage only this lane's files; never commit changes that
     belong to another lane. When Step 0 was skipped and no ship state exists,
     only commit, print `qualityReviewedSha` in the summary, and do not push —
     `/ship` Phase 0 reads it from the summary. If every signal on the remote head is terminal, run the

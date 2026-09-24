@@ -335,9 +335,15 @@ Fix until passing before moving to the next.
 
 ## Parity Passes (4–8)
 
-After the test-suite work above, run five parity reviewers that keep docs, iOS, the CLI, the TUI, and the published SDK packages in lockstep with the desktop changes on this branch. They are independent of one another and of Passes 1–3.
+After the test-suite work above, the parity passes keep docs, iOS, the CLI, the TUI, and the published SDK packages in lockstep with the changes on this branch. They are independent of one another and of Passes 1–3.
 
-**Preferred: TeamCreate** for these five passes so progress is tracked and a single completion event surfaces the batch. Per the global git-worktrees policy, do not pass worktree isolation. Fallback: parallel `Agent` calls in a single tool-call round if TeamCreate is unavailable.
+**Triage first. The number of agents is not fixed.** Map the changed paths (`git diff "$TEST_REVIEW_BASE" --name-only` plus untracked files) to the surfaces each pass owns, using the trigger paths in each pass below:
+
+- **No trigger path changed** → skip the pass. Record "not applicable — <reason>" in the summary.
+- **A small or obvious check** (one README line, one type field, one renamed flag) → do it yourself in the main loop. Do not start an agent.
+- **Real parity work** → start one agent for that pass with the prompt below.
+
+A diff that changes only skills, docs, or tests usually needs no parity agent. A UI-only renderer change usually needs only Pass 4. Start agents only for the passes that need one. When you start several, use **TeamCreate** or parallel `Agent` calls in one round. Per the global git-worktrees policy, do not pass worktree isolation.
 
 ---
 
@@ -739,7 +745,7 @@ Report:
 - typecheck/test/preflight/validate-docs results
 ```
 
-Wait for all five parity agents to complete before moving to Verification.
+Wait for every parity agent you started to complete before moving to Verification.
 
 ### Windows parity and Computer Use evidence
 
@@ -779,7 +785,7 @@ named helper whose contract a test can pin.
 
 ## Verification
 
-After all seven passes:
+After the passes that applied:
 
 1. **Run the affected shards**, not the full suite (`/finalize` runs everything):
    ```bash
