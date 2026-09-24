@@ -8,6 +8,7 @@ import {
   clampExternalSessionBrowserContent,
   externalSessionAnchors,
   externalSessionBrowserActions,
+  externalSessionBrowserTargetOptions,
   externalSessionLaneLabel,
   externalSessionProviderLabel,
   externalSessionRowTitle,
@@ -209,6 +210,28 @@ describe("externalSessionBrowser helpers", () => {
       "cli:resume",
       "cli:fork",
     ]);
+  });
+
+  it("judges an older host's folder match against the lane the list was scanned for", () => {
+    const content: Extract<RightPaneContent, { kind: "external-session-browser" }> = {
+      kind: "external-session-browser",
+      laneId: "main",
+      laneLabel: "Main",
+      providerFilter: "all",
+      query: "",
+      sessions: [],
+      loading: false,
+      selectedIndex: 0,
+      actionIndex: 0,
+    };
+    // No `home`: an older host. Its folder matched the scanned lane.
+    const row = session({ provider: "pi", home: undefined, cwdMatchesRequestedLane: true });
+    const cliContinue = (targetLaneId: string | null) => externalSessionBrowserActions(
+      row,
+      externalSessionBrowserTargetOptions({ ...content, targetLaneId }),
+    ).filter(isImportEntry).find((entry) => entry.key === "cli:resume");
+    expect(cliContinue(null)?.note).toBeNull();
+    expect(cliContinue("apple")?.note).toBe("Runs in its original folder.");
   });
 
   it("turns a CLI import into another lane into a named copy", () => {

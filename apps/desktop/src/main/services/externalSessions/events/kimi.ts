@@ -45,7 +45,8 @@ export const kimiRecordsToEvents: JsonlConverter = (records, ctx) => {
     if (appendedMessage) {
       flushCall();
       flushText();
-      openAiRow(sink, appendedMessage, key, timestamp, toolNames, true);
+      if (str(appendedMessage.role) === "user" && !isKimiUserOrigin(appendedMessage)) return;
+      openAiRow(sink, appendedMessage, key, timestamp, toolNames);
       return;
     }
     if (record.type === "turn_begin") {
@@ -111,11 +112,10 @@ function openAiRow(
   key: string,
   timestamp: string,
   toolNames: Map<string, string>,
-  filterUserOrigin = false,
 ): void {
   const role = str(record.role);
   if (role === "user") {
-    if (!filterUserOrigin || isKimiUserOrigin(record)) sink.user(textOf(record.content), timestamp, key);
+    sink.user(textOf(record.content), timestamp, key);
   } else if (role === "assistant") {
     const content = Array.isArray(record.content) ? record.content : [record.content];
     const text: string[] = [];

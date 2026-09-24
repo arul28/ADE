@@ -8,6 +8,8 @@ import { dedentUserText } from "./common";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope, ExternalSessionProvider } from "../../../../shared/types";
 import type { ExternalSessionDiscoveryRecord } from "../discoveryUtils";
+import { CURSOR_STORE_MAX_MESSAGE_BYTES } from "../discoverCursor";
+import { loadCursorStorePage } from "./cursor";
 import { decodeEventsCursor, loadExternalSessionEvents } from "./index";
 import { openCodeExportToEvents } from "./opencode";
 import { readJsonlWindow } from "./paging";
@@ -615,6 +617,34 @@ describe("loadExternalSessionEvents — Cursor store.db", () => {
       "user_message:now ship it",
       "text:Shipped.",
     ]);
+  });
+
+  it("does not let a skipped oversized blob spend the page's byte budget", () => {
+    const storePath = writeCursorStore([
+      { role: "user", content: [{ type: "text", text: "<user_query>\ndump the log\n</user_query>" }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "t1", toolName: "Shell", result: "x".repeat(CURSOR_STORE_MAX_MESSAGE_BYTES) }] },
+      { role: "assistant", content: [{ type: "text", text: "Too long to show." }] },
+    ]);
+    const page = loadCursorStorePage({
+      storePath,
+      options: {
+        sessionId: "external-preview:cursor:sess-1",
+        provider: "cursor",
+        externalSessionId: "sess-1",
+        importedAt: 1,
+        laneId: null,
+        maxEvents: 50,
+      },
+      cursor: null,
+      maxEvents: 50,
+      maxBytes: 4096,
+      fallbackBaseMs: 0,
+    });
+    expect(shape([...(page?.earlier ?? []), ...(page?.page ?? [])])).toEqual([
+      "user_message:dump the log",
+      "text:Too long to show.",
+    ]);
+    expect(page?.bytesTruncated).toBe(false);
   });
 
   it("falls back to sampled text when the store has no readable conversation", async () => {

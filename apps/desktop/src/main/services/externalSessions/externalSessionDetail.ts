@@ -5,7 +5,7 @@ import type {
   ExternalSessionDetailArgs,
   ExternalSessionDetailMessage,
 } from "../../../shared/types/externalSessionDetail";
-import { discoverExternalSessionRecord, loadExternalSessionEvents } from "./events";
+import { cursorStoreSourceFor, discoverExternalSessionRecord, loadExternalSessionEvents } from "./events";
 import {
   asRecord,
   asString,
@@ -163,12 +163,19 @@ export function externalSessionPreviewChatId(provider: ExternalSessionProvider, 
  */
 export async function loadExternalSessionDetail(
   args: ExternalSessionDetailArgs,
-  options: { maxEvents?: number } = {},
+  options: { maxEvents?: number; homeDir?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<ExternalSessionDetail> {
-  const record = await discoverExternalSessionRecord(args.provider, args.sessionId);
+  const home = {
+    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  };
+  const record = await discoverExternalSessionRecord(args.provider, args.sessionId, home);
   if (!record) return emptyDetail(args);
   const sourcePath = record.sourcePath?.trim() || null;
-  const suffix = sourcePath ? readJsonlRecordsFromSuffix(sourcePath, DETAIL_TAIL_BYTES) : [];
+  // A store-only Cursor chat's source is SQLite, not JSONL: its text tail is
+  // the discovery record's sampled messages.
+  const jsonlPath = sourcePath && !(args.provider === "cursor" && cursorStoreSourceFor(record)) ? sourcePath : null;
+  const suffix = jsonlPath ? readJsonlRecordsFromSuffix(jsonlPath, DETAIL_TAIL_BYTES) : [];
   const messages = suffix.length
     ? messagesFromRecords(args.provider, suffix)
     : (record.messages ?? []);
@@ -180,6 +187,7 @@ export async function loadExternalSessionDetail(
     purpose: "preview",
     before: args.before ?? null,
     ...(options.maxEvents != null ? { maxEvents: options.maxEvents } : {}),
+    ...home,
   }).catch(() => null);
   return {
     provider: record.provider,
@@ -234,12 +242,18 @@ export async function startExternalSessionDetailWatch(args: {
   provider: ExternalSessionProvider;
   sessionId: string;
   onUpdate: (detail: ExternalSessionDetail) => void;
+  /**
+   * Loads the detail, first and on every change; the external sessions
+   * service's `getDetail`, so the watch reads the same home as a plain get.
+   */
+  loadDetail?: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
 }): Promise<ExternalSessionDetail> {
   stopExternalSessionDetailWatch(args.senderId, args.watchId);
   const key = watchKey(args.senderId, args.watchId);
   const generation = nextWatchGeneration++;
   watchGenerations.set(key, generation);
-  const detail = await loadExternalSessionDetail({
+  const loadDetail = args.loadDetail ?? ((detailArgs) => loadExternalSessionDetail(detailArgs));
+  const detail = await loadDetail({
     provider: args.provider,
     sessionId: args.sessionId,
   });
@@ -260,7 +274,7 @@ export async function startExternalSessionDetailWatch(args: {
     entry.timer = setTimeout(() => {
       // Always the newest page (no `before`): a live update shows the tail,
       // and a client that paged back keeps its older pages.
-      void loadExternalSessionDetail({
+      void loadDetail({
         provider: args.provider,
         sessionId: args.sessionId,
       }).then((next) => {

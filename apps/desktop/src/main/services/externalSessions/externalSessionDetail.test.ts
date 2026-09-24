@@ -27,7 +27,12 @@ vi.mock("./events/opencode", async (importOriginal) => ({
   runOpenCodeExport: vi.fn(async () => null),
 }));
 
+import type {
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
+} from "../../../shared/types/externalSessionDetail";
 import { discoverClaudeSessions } from "./discoverClaude";
+import { discoverCursorSessions } from "./discoverCursor";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
 import {
   loadExternalSessionDetail,
@@ -176,6 +181,42 @@ describe("externalSessionDetail", () => {
     expect(oldest.olderCursor).toBeNull();
   });
 
+  it("keeps the sampled messages for a store-only Cursor chat instead of reading SQLite as JSONL", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ext-detail-cursor-"));
+    tempDirs.push(dir);
+    const storePath = path.join(dir, "store.db");
+    // A JSON-looking line inside the binary is what the suffix reader used to
+    // turn into a garbage message.
+    fs.writeFileSync(storePath, `SQLite format 3\u0000\n${JSON.stringify({ role: "user", text: "blob fragment" })}\n`);
+    vi.mocked(discoverCursorSessions).mockResolvedValue([
+      {
+        provider: "cursor",
+        id: "cur-1",
+        cwd: "/Users/dev/project",
+        title: null,
+        preview: "real prompt",
+        messages: [{ role: "user", text: "real prompt", at: null }],
+        createdAt: null,
+        updatedAt: null,
+        messageCount: 1,
+        sourcePath: storePath,
+      },
+    ]);
+    const detail = await loadExternalSessionDetail({ provider: "cursor", sessionId: "cur-1" });
+    expect(detail.messages).toEqual([{ role: "user", text: "real prompt", at: null }]);
+  });
+
+  it("threads the home it is given into discovery", async () => {
+    vi.mocked(discoverClaudeSessions).mockResolvedValue([]);
+    const env = { HOME: "/Users/other" };
+    await loadExternalSessionDetail({ provider: "claude", sessionId: "sess-home" }, { homeDir: "/Users/other", env });
+    expect(discoverClaudeSessions).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "sess-home",
+      homeDir: "/Users/other",
+      env,
+    }));
+  });
+
   it("marks OpenCode details unwatchable when there is no session file", async () => {
     vi.mocked(discoverOpenCodeSessions).mockResolvedValue([
       {
@@ -230,6 +271,44 @@ describe("externalSessionDetail", () => {
     expect(reloaded.messages.some((message) => message.text.includes("third"))).toBe(true);
     stopExternalSessionDetailWatch(1, "w1");
     stopExternalSessionDetailWatch(1, "w1");
+  });
+
+  it("loads the watched detail, first and on change, through the loader it is given", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ext-watch-loader-"));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, "session.jsonl");
+    writeJsonl(filePath, [{ type: "user", role: "user", text: "first", timestamp: 1 }]);
+    const loadDetail = vi.fn(async (detailArgs: ExternalSessionDetailArgs): Promise<ExternalSessionDetail> => ({
+      provider: detailArgs.provider,
+      id: detailArgs.sessionId,
+      cwd: null,
+      title: null,
+      model: null,
+      createdAt: null,
+      updatedAt: null,
+      messageCount: null,
+      messages: [],
+      sourcePath: filePath,
+      watchable: true,
+    }));
+    const onUpdate = vi.fn();
+    try {
+      await startExternalSessionDetailWatch({
+        senderId: 3,
+        watchId: "loader",
+        provider: "claude",
+        sessionId: "watch-loader",
+        onUpdate,
+        loadDetail,
+      });
+      expect(loadDetail).toHaveBeenCalledWith({ provider: "claude", sessionId: "watch-loader" });
+      fs.appendFileSync(filePath, `${JSON.stringify({ type: "user", role: "user", text: "second", timestamp: 2 })}\n`);
+      await vi.waitFor(() => expect(onUpdate).toHaveBeenCalled(), { timeout: 3000 });
+      expect(loadDetail.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(discoverClaudeSessions).not.toHaveBeenCalled();
+    } finally {
+      stopExternalSessionDetailWatch(3, "loader");
+    }
   });
 
   it("leaves exactly one watcher when two starts for the same watch id interleave", async () => {

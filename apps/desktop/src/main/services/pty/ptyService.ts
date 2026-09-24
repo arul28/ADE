@@ -2146,6 +2146,7 @@ function resumeTargetIdForProvider(
 }
 
 const KIMI_WORKDIR_SLUG_MAX = 40;
+const KIMI_BUCKET_ID_RE = /^wd_[a-z0-9._-]*_[0-9a-f]{12}$/;
 
 function isWindowsAbsoluteKimiPath(value: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(value) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(value);
@@ -2161,8 +2162,6 @@ function isWindowsAbsoluteKimiPath(value: string): boolean {
  * Checked against the real `~/.kimi-code/workspaces.json` entry
  * `wd_admin_2151c536b962` for `/Users/admin`.
  */
-const KIMI_BUCKET_ID_RE = /^wd_[a-z0-9._-]*_[0-9a-f]{12}$/;
-
 export function kimiWorkDirKey(workDir: string): string {
   const normalized = isWindowsAbsoluteKimiPath(workDir)
     ? path.win32.resolve(workDir).replaceAll("\\", "/")

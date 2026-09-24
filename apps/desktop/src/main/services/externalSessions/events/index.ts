@@ -121,7 +121,7 @@ function jsonlSourceFor(provider: ExternalSessionProvider, record: ExternalSessi
 }
 
 /** A Cursor chat known only through its `store.db` (no agent transcript). */
-function cursorStoreSourceFor(record: ExternalSessionDiscoveryRecord | null): string | null {
+export function cursorStoreSourceFor(record: ExternalSessionDiscoveryRecord | null): string | null {
   const sourcePath = record?.sourcePath?.trim();
   return sourcePath && path.basename(sourcePath) === "store.db" ? sourcePath : null;
 }

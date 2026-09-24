@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -71,12 +72,25 @@ describe("discoverCursorSessions", () => {
 });
 
 describe("readCursorStorePrompts", () => {
+  /**
+   * A store laid out as Cursor writes it: content-addressed blobs inserted
+   * newest first, so row order is not conversation order, and a protobuf root
+   * (named by `meta['0']`) listing the message ids oldest first.
+   */
   function writeStore(filePath: string, messages: unknown[]): void {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const db = new DatabaseSync(filePath);
     db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
-    const insert = db.prepare("INSERT INTO blobs (id, data) VALUES (?, ?)");
-    messages.forEach((message, index) => insert.run(String(index), Buffer.from(JSON.stringify(message))));
+    const insert = db.prepare("INSERT OR IGNORE INTO blobs (id, data) VALUES (?, ?)");
+    const put = (data: Buffer): string => {
+      const id = createHash("sha256").update(data).digest("hex");
+      insert.run(id, data);
+      return id;
+    };
+    const ids = [...messages].reverse().map((message) => put(Buffer.from(JSON.stringify(message)))).reverse();
+    const rootId = put(Buffer.concat(ids.map((id) => Buffer.concat([Buffer.from([0x0a, 32]), Buffer.from(id, "hex")]))));
+    const meta = { agentId: "sess-1", latestRootBlobId: rootId };
+    db.prepare("INSERT INTO meta (key, value) VALUES ('0', ?)").run(Buffer.from(JSON.stringify(meta)).toString("hex"));
     db.close();
   }
 
@@ -93,6 +107,30 @@ describe("readCursorStorePrompts", () => {
       expect(readCursorStorePrompts(store, null)).toEqual({
         firstUserText: "keep this branch up to date with main",
         userCount: 1,
+        adeOrigin: false,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts prompts in conversation order, a repeated prompt each time", () => {
+    // The blob table holds one row per distinct message, newest first; the
+    // old row scan counted "continue" once and could miss the first prompt.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-"));
+    try {
+      const store = path.join(root, "store.db");
+      const again = { role: "user", content: [{ type: "text", text: "<user_query>\ncontinue\n</user_query>" }] };
+      writeStore(store, [
+        { role: "user", content: [{ type: "text", text: "<user_query>\nfix the banner\n</user_query>" }] },
+        { role: "assistant", content: "Fixed." },
+        again,
+        { role: "assistant", content: "Done." },
+        again,
+      ]);
+      expect(readCursorStorePrompts(store, null)).toEqual({
+        firstUserText: "fix the banner",
+        userCount: 3,
         adeOrigin: false,
       });
     } finally {

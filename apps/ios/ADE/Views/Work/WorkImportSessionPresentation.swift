@@ -43,8 +43,7 @@ extension ExternalSessionSummary {
   }
 
   var sizeDisplay: String? {
-    guard let sizeBytes, sizeBytes.isFinite, sizeBytes >= 0, sizeBytes < 9e18 else { return nil }
-    return ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
+    workExternalSessionSizeText(sizeBytes)
   }
 
   /// Mirrors desktop `sessionHeading`: the provider's title, else the opening
@@ -150,6 +149,21 @@ extension ExternalSessionSummary {
     let seconds = timestamp > 10_000_000_000 ? timestamp / 1000 : timestamp
     return WorkImportSessionFormatters.relative.localizedString(for: Date(timeIntervalSince1970: seconds), relativeTo: Date())
   }
+}
+
+/// Mirrors desktop `formatExternalSessionSize`: 1024-based units, one decimal
+/// under 10, and nothing for a zero or unknown size.
+func workExternalSessionSizeText(_ bytes: Double?) -> String? {
+  guard let bytes, bytes.isFinite, bytes > 0 else { return nil }
+  let units = ["B", "KB", "MB", "GB", "TB"]
+  var value = bytes
+  var unit = 0
+  while value >= 1024 && unit < units.count - 1 {
+    value /= 1024
+    unit += 1
+  }
+  let text = unit == 0 || value >= 10 ? String(Int(value.rounded())) : String(format: "%.1f", value)
+  return "\(text) \(units[unit])"
 }
 
 private func workImportHeadingText(_ value: String?) -> String? {

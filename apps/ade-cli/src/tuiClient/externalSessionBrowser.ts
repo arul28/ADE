@@ -62,6 +62,8 @@ export type ExternalSessionTargetOptions = {
   fallbackLaneId: string | null;
   /** Lane the user picked for this row, if any. */
   targetLaneId?: string | null;
+  /** Lane the session list was scanned for (see `PlanImportOptions.originLaneId`). */
+  originLaneId?: string | null;
   laneName?: (laneId: string) => string | null;
 };
 
@@ -82,10 +84,15 @@ function externalSessionPlans(
   options: ExternalSessionTargetOptions,
 ): ImportPlan[] {
   const targetLaneId = resolveExternalSessionTargetLane(session, options);
-  const first = planImport(session, { surface: null, targetLaneId, laneName: options.laneName });
+  const shared = {
+    targetLaneId,
+    ...(options.originLaneId !== undefined ? { originLaneId: options.originLaneId } : {}),
+    laneName: options.laneName,
+  };
+  const first = planImport(session, { surface: null, ...shared });
   return first.surfaces.map((surface) => surface === first.surface
     ? first
-    : planImport(session, { surface, targetLaneId, laneName: options.laneName }));
+    : planImport(session, { surface, ...shared }));
 }
 
 function importEntries(
@@ -153,6 +160,7 @@ export function externalSessionBrowserTargetOptions(
   return {
     fallbackLaneId: content.laneId,
     targetLaneId: content.targetLaneId ?? null,
+    originLaneId: content.laneId,
     laneName: (laneId) => {
       if (pickedLabel && laneId === content.targetLaneId) return pickedLabel;
       if (laneId === content.laneId) return content.laneLabel;

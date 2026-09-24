@@ -407,10 +407,35 @@ final class ADETests: XCTestCase {
     var away = importSession("pi")
     away.home = nil
     away.cwdMatchesRequestedLane = false
-    XCTAssertEqual(workPlanImport(away, surface: "cli", targetLaneId: "main").note, "Runs in its original folder.")
+    XCTAssertEqual(
+      workPlanImport(away, surface: "cli", targetLaneId: "main", originLaneId: "main").note,
+      "Runs in its original folder."
+    )
     var here = away
     here.cwdMatchesRequestedLane = true
-    XCTAssertNil(workPlanImport(here, surface: "cli", targetLaneId: "main").note)
+    XCTAssertNil(workPlanImport(here, surface: "cli", targetLaneId: "main", originLaneId: "main").note)
+    // The folder matched the scanned lane, not the lane picked since.
+    XCTAssertEqual(
+      workPlanImport(here, surface: "cli", targetLaneId: "apple", originLaneId: "main").note,
+      "Runs in its original folder."
+    )
+    var unknown = away
+    unknown.cwdMatchesRequestedLane = nil
+    XCTAssertEqual(
+      workPlanImport(unknown, surface: "cli", targetLaneId: "main", originLaneId: "main").note,
+      "Runs in its original folder."
+    )
+  }
+
+  func testExternalSessionSizeTextMatchesDesktop() {
+    XCTAssertNil(workExternalSessionSizeText(nil))
+    XCTAssertNil(workExternalSessionSizeText(0))
+    XCTAssertNil(workExternalSessionSizeText(Double.nan))
+    XCTAssertEqual(workExternalSessionSizeText(512), "512 B")
+    XCTAssertEqual(workExternalSessionSizeText(1536), "1.5 KB")
+    XCTAssertEqual(workExternalSessionSizeText(20480), "20 KB")
+    XCTAssertEqual(workExternalSessionSizeText(5 * 1024 * 1024), "5.0 MB")
+    XCTAssertEqual(workExternalSessionSizeText(3 * 1024 * 1024 * 1024), "3.0 GB")
   }
 
   func testImportPlanWarnsBeforeContinuingLiveSession() {

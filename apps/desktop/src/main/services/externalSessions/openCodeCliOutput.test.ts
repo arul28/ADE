@@ -63,13 +63,23 @@ describe("runOpenCodeToFile", () => {
   });
 
   it("reports a timeout after the CLI is stopped and leaves no output file", async () => {
-    const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("ade-opencode-") && name.endsWith(".out"));
-    const slow = fakeCli(`setTimeout(() => {}, 60_000);\n`);
-    const result = await runOpenCodeToFile({
-      executable: slow, argv: [], env: process.env, timeoutMs: 300, maxBytes: 1024,
-    });
-    expect(result).toMatchObject({ ok: false, reason: "timeout" });
-    const after = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("ade-opencode-") && name.endsWith(".out"));
-    expect(after.filter((name) => !before.includes(name))).toEqual([]);
+    // A private temp folder: other suites write `ade-opencode-*` files to the shared one.
+    const privateTmp = fs.mkdtempSync(path.join(dir, "tmp-"));
+    const tmpVars = ["TMPDIR", "TEMP", "TMP"] as const;
+    const previous = tmpVars.map((name) => process.env[name]);
+    for (const name of tmpVars) process.env[name] = privateTmp;
+    try {
+      const slow = fakeCli(`setTimeout(() => {}, 60_000);\n`);
+      const result = await runOpenCodeToFile({
+        executable: slow, argv: [], env: process.env, timeoutMs: 300, maxBytes: 1024,
+      });
+      expect(result).toMatchObject({ ok: false, reason: "timeout" });
+      expect(fs.readdirSync(privateTmp)).toEqual([]);
+    } finally {
+      tmpVars.forEach((name, index) => {
+        if (previous[index] === undefined) delete process.env[name];
+        else process.env[name] = previous[index];
+      });
+    }
   });
 });

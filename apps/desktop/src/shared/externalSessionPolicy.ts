@@ -144,6 +144,12 @@ export type ImportPlan = {
 export type PlanImportOptions = {
   surface?: ImportSurface | null;
   targetLaneId: string | null;
+  /**
+   * The lane the session list was scanned for, which is the lane an older
+   * host's `cwdMatchesRequestedLane` compares against. When omitted, that
+   * folder check alone decides the original-folder note.
+   */
+  originLaneId?: string | null;
   /** Lane names for notes; falls back to the home lane name on the summary. */
   laneName?: (laneId: string) => string | null;
 };
@@ -243,9 +249,14 @@ export function planImport(
     && surface === "cli"
     && pair.resume !== "any"
     && homeId == null
-    // An older host sends no `home`; its folder check is the only signal
-    // that the session runs somewhere other than the chosen lane.
-    && (home != null || summary.cwdMatchesRequestedLane === false)
+    // An older host sends no `home`; its folder check is the only signal,
+    // and it answers for the lane the list was scanned for, not the lane
+    // picked since.
+    && (
+      home != null
+      || summary.cwdMatchesRequestedLane !== true
+      || (options.originLaneId !== undefined && targetLaneId !== options.originLaneId)
+    )
   ) {
     note = "Runs in its original folder.";
   }

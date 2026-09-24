@@ -411,9 +411,10 @@ export function ImportSessionBrowser({
     return planImport(active, {
       surface: surfacePref,
       targetLaneId: requestedTarget,
+      originLaneId: scanLaneId,
       laneName: (id) => lanesById.get(id)?.name ?? null,
     });
-  }, [active, lanesById, requestedTarget, surfacePref]);
+  }, [active, lanesById, requestedTarget, scanLaneId, surfacePref]);
   const model = active
     ? (modelChoice?.key === activeKey ? modelChoice.model : defaultForkModel(active))
     : null;

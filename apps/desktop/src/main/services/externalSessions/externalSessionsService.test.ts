@@ -183,6 +183,34 @@ describe("externalSessionsService", () => {
     });
   });
 
+  it("reads a session's detail from the service's own home", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "66666666-6666-4666-8666-666666666666";
+    const filePath = path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(cwd), `${id}.jsonl`);
+    writeJsonl(filePath, [
+      {
+        type: "user",
+        sessionId: id,
+        cwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+        message: { role: "user", content: "detail from this home" },
+      },
+    ]);
+    const service = createExternalSessionsService({
+      projectRoot: cwd,
+      homeDir,
+      laneService: {},
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const detail = await service.getDetail({ provider: "claude", sessionId: id });
+    expect(detail.sourcePath).toBe(filePath);
+    expect(detail.messages.at(-1)?.text).toBe("detail from this home");
+  });
+
   it("copies optional preview fields through both summary construction paths", () => {
     // The exact-lookup summary is private and the fields are optional, so a
     // structural assertion pins both DTO boundaries without widening the API.

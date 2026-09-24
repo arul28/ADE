@@ -110,11 +110,32 @@ describe("planImport", () => {
   });
 
   it("tells an older host's CLI continue from another folder that it runs in its original folder", () => {
-    const away = planImport(session("pi", { home: null, cwdMatchesRequestedLane: false }), { surface: "cli", targetLaneId: "main" });
+    const away = planImport(
+      session("pi", { home: null, cwdMatchesRequestedLane: false }),
+      { surface: "cli", targetLaneId: "main", originLaneId: "main" },
+    );
     expect(away.primary).toMatchObject({ mode: "resume" });
     expect(away.note).toBe("Runs in its original folder.");
-    const here = planImport(session("pi", { home: null, cwdMatchesRequestedLane: true }), { surface: "cli", targetLaneId: "main" });
+    const here = planImport(
+      session("pi", { home: null, cwdMatchesRequestedLane: true }),
+      { surface: "cli", targetLaneId: "main", originLaneId: "main" },
+    );
     expect(here.note).toBeNull();
+    // Unknown is not a match.
+    const unknown = planImport(
+      session("pi", { home: null, cwdMatchesRequestedLane: null }),
+      { surface: "cli", targetLaneId: "main", originLaneId: "main" },
+    );
+    expect(unknown.note).toBe("Runs in its original folder.");
+  });
+
+  it("does not let an older host's folder match for the scanned lane vouch for another target lane", () => {
+    const plan = planImport(
+      session("pi", { home: null, cwdMatchesRequestedLane: true }),
+      { surface: "cli", targetLaneId: "apple", originLaneId: "main" },
+    );
+    expect(plan.primary).toMatchObject({ mode: "resume" });
+    expect(plan.note).toBe("Runs in its original folder.");
   });
 
   it("warns before continuing a live session", () => {

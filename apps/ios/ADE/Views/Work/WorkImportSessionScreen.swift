@@ -450,6 +450,8 @@ struct WorkImportSessionScreen: View {
       session,
       surface: requestedSurface(for: session),
       targetLaneId: targetLaneId,
+      // The list was scanned for this screen's lane.
+      originLaneId: lane.id,
       laneName: laneName
     )
   }

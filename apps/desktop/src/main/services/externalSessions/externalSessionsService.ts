@@ -26,7 +26,7 @@ import type {
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { liveClaudeSessionIds } from "./claudeLiveSessions";
 import { claudeConfigDir } from "./discoverClaude";
-import { EXTERNAL_SESSION_DISCOVERERS } from "./events/records";
+import { EXTERNAL_SESSION_DISCOVERERS } from "./discoverers";
 import { loadExternalSessionDetail } from "./externalSessionDetail";
 import { createSessionHomeResolver, type SessionHomeLane, type SessionHomeResolver } from "./sessionHome";
 import { importRejectionReason } from "../../../shared/externalSessionPolicy";
@@ -614,8 +614,6 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     };
   };
 
-  const discoverByProvider = EXTERNAL_SESSION_DISCOVERERS;
-
   // Lanes change rarely compared with how often the importer lists, but a
   // stale lane name is worse than a slow list: re-read on every call.
   //
@@ -734,7 +732,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
 
     const settled = await Promise.all(providers.map(async (provider) => {
       try {
-        return await discoverByProvider[provider](discoveryArgs);
+        return await EXTERNAL_SESSION_DISCOVERERS[provider](discoveryArgs);
       } catch (error) {
         args.logger.warn("external_sessions.discovery_failed", {
           provider,
@@ -813,7 +811,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
       const found = await Promise.all(rescued.slice(0, MAX_RESCUED_COPY_ORIGINALS).map(async (entry) => {
         try {
-          const [record] = await discoverByProvider[entry.provider]({ ...discoveryArgs, sessionId: entry.id, limit: 1 });
+          const [record] = await EXTERNAL_SESSION_DISCOVERERS[entry.provider]({ ...discoveryArgs, sessionId: entry.id, limit: 1 });
           return record && record.id === entry.id ? record : null;
         } catch {
           return null;
@@ -873,7 +871,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const openCodeScopeRoots = provider === "opencode"
       ? deriveProjectScopeRoots(args.projectRoot)
       : null;
-    const [session] = await discoverByProvider[provider]({
+    const [session] = await EXTERNAL_SESSION_DISCOVERERS[provider]({
       homeDir: args.homeDir,
       env: args.env,
       ...(provider === "opencode" ? { cwd: destinationCwd } : {}),
@@ -1238,7 +1236,11 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   const getDetail = (
     detailArgs: ExternalSessionDetailArgs,
     options: { maxEvents?: number } = {},
-  ): Promise<ExternalSessionDetail> => loadExternalSessionDetail(detailArgs, options);
+  ): Promise<ExternalSessionDetail> => loadExternalSessionDetail(detailArgs, {
+    ...options,
+    ...(args.homeDir ? { homeDir: args.homeDir } : {}),
+    ...(args.env ? { env: args.env } : {}),
+  });
 
   return {
     list,

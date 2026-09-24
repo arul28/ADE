@@ -1,6 +1,10 @@
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import type { ExternalChatHistoryImportOptions } from "../../chat/externalChatHistoryImport";
-import { CURSOR_STORE_MAX_MESSAGE_BYTES, openCursorStoreConversation } from "../discoverCursor";
+import {
+  CURSOR_STORE_MAX_MESSAGE_BYTES,
+  isCursorEnvironmentMessage,
+  openCursorStoreConversation,
+} from "../discoverCursor";
 import { EnvelopeSink, isRecord, str, textOf, type JsonRecord, type JsonlConverter } from "./common";
 import { cutPage, type EventsCursor, type PageCut } from "./paging";
 
@@ -60,9 +64,7 @@ function cursorStoreMessageToEvents(message: JsonRecord, sink: EnvelopeSink, key
       .filter((part) => typeof part === "string" || (isRecord(part) && str(part.type) === "text"))
       .map(textOf)
       .join("\n");
-    // Cursor sends its environment block (`<user_info>` then `<git_status>`)
-    // as its own user message, as `readCursorStorePrompts` also skips.
-    if (/^<user_info>/u.test(text.trim())) return;
+    if (isCursorEnvironmentMessage(text)) return;
     sink.user(text, timestamp, key);
     return;
   }
@@ -123,13 +125,17 @@ export function loadCursorStorePage(args: {
       const index = start - 1;
       const id = messageIds[index]!;
       const size = conversation.messageSize(id) ?? 0;
-      if (bytes + size > args.maxBytes && start < end) {
+      // One oversized blob (a huge tool output) is left out, not the page, and
+      // so never spends the page's byte budget.
+      if (size > CURSOR_STORE_MAX_MESSAGE_BYTES) {
+        start = index;
+        continue;
+      }
+      if (bytes + size > args.maxBytes && bytes > 0) {
         bytesTruncated = true;
         break;
       }
       start = index;
-      // One oversized blob (a huge tool output) is left out, not the page.
-      if (size > CURSOR_STORE_MAX_MESSAGE_BYTES) continue;
       bytes += size;
       const sink = new EnvelopeSink(args.options);
       const timestamp = new Date(args.fallbackBaseMs + index).toISOString();

@@ -6311,11 +6311,13 @@ export function registerIpc({
         stopExternalSessionDetailWatchesForSender(senderId);
       });
     }
+    const externalSessionsService = getCtx().externalSessionsService;
     return startExternalSessionDetailWatch({
       senderId,
       watchId,
       provider: args.provider,
       sessionId: args.sessionId,
+      ...(externalSessionsService ? { loadDetail: (detailArgs) => externalSessionsService.getDetail(detailArgs) } : {}),
       onUpdate: (detail) => {
         if (sender.isDestroyed()) return;
         const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };

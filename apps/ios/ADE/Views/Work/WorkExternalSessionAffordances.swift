@@ -155,6 +155,7 @@ func workPlanImport(
   _ session: ExternalSessionSummary,
   surface requestedSurface: String?,
   targetLaneId requestedTargetLaneId: String?,
+  originLaneId: String? = nil,
   laneName: ((String) -> String?)? = nil
 ) -> WorkImportPlan {
   let rules = workEffectiveImportRules(session)
@@ -221,8 +222,12 @@ func workPlanImport(
             surface == "cli",
             pair.resume != .any,
             homeId == nil,
-            // An older host sends no `home`; its folder check is the only signal.
-            home != nil || session.cwdMatchesRequestedLane == false {
+            // An older host sends no `home`; its folder check is the only signal,
+            // and it answers for the lane the list was scanned for
+            // (`originLaneId`), not the lane picked since.
+            home != nil
+              || session.cwdMatchesRequestedLane != true
+              || (originLaneId != nil && targetLaneId != originLaneId) {
     note = "Runs in its original folder."
   }
 

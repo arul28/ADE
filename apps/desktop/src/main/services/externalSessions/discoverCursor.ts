@@ -153,7 +153,7 @@ function readCursorStoreMeta(
 }
 
 /** Bounds for reading prompts out of a store with no transcript beside it. */
-const CURSOR_STORE_PROMPT_SCAN_ROWS = 400;
+const CURSOR_STORE_PROMPT_SCAN_MESSAGES = 1000;
 const CURSOR_STORE_PROMPT_MAX_BLOB_BYTES = 256 * 1024;
 
 export type CursorStorePrompts = {
@@ -170,35 +170,40 @@ function blobText(value: unknown): string | null {
 }
 
 /**
+ * Cursor sends its environment block (`<user_info>` then `<git_status>`) as a
+ * user message of its own; it is not a prompt the user typed.
+ */
+export function isCursorEnvironmentMessage(raw: string): boolean {
+  return /^<user_info>/u.test(raw.trim());
+}
+
+/**
  * The prompts of a Cursor chat that exists only as `store.db` (no
- * agent-transcript): its messages are JSON blobs `{ role, content }`. Without
- * this, such chats listed as "Untitled Cursor chat" with no preview — 11 of
- * 27 Cursor rows on 2026-09-23. Bounded by row count and blob size.
+ * agent-transcript), walked in conversation order so a repeated prompt (one
+ * content-addressed blob listed twice) counts each time. Without this, such
+ * chats listed as "Untitled Cursor chat" with no preview — 11 of 27 Cursor
+ * rows on 2026-09-23. Bounded by message count and blob size.
  */
 export function readCursorStorePrompts(
   storePath: string,
   logger: ExternalSessionDiscoveryArgs["logger"],
 ): CursorStorePrompts | null {
-  const db = openExternalSessionDb(storePath, logger);
-  if (!db) return null;
+  const conversation = openCursorStoreConversation(storePath, logger);
+  if (!conversation) return null;
   try {
-    const rows = db.prepare(
-      `SELECT data FROM blobs WHERE length(data) <= ${CURSOR_STORE_PROMPT_MAX_BLOB_BYTES} LIMIT ${CURSOR_STORE_PROMPT_SCAN_ROWS}`,
-    ).all() as Array<{ data?: unknown }>;
     let firstUserText: string | null = null;
     let userCount = 0;
     let adeOrigin = false;
-    for (const row of rows) {
-      const text = blobText(row.data);
-      if (!text || !text.trimStart().startsWith("{")) continue;
-      const record = asRecord(safeParseJson(text));
+    for (const id of conversation.messageIds.slice(0, CURSOR_STORE_PROMPT_SCAN_MESSAGES)) {
+      const size = conversation.messageSize(id);
+      if (size === null || size > CURSOR_STORE_PROMPT_MAX_BLOB_BYTES) continue;
+      const record = conversation.readMessage(id);
       if (asString(record?.role) !== "user") continue;
       const raw = extractText(record?.content);
       if (!raw) continue;
-      if (isAdeContinuityPrompt(cleanExternalSessionUserText(raw))) adeOrigin = true;
       const cleaned = cleanExternalSessionUserText(raw);
-      // Cursor sends a `<user_info>` environment block as its own user message.
-      if (!cleaned || /^<user_info>/u.test(raw.trim())) continue;
+      if (isAdeContinuityPrompt(cleaned)) adeOrigin = true;
+      if (!cleaned || isCursorEnvironmentMessage(raw)) continue;
       userCount += 1;
       firstUserText ??= cleaned;
     }
@@ -206,7 +211,7 @@ export function readCursorStorePrompts(
   } catch {
     return null;
   } finally {
-    closeExternalSessionDb(db);
+    conversation.close();
   }
 }
 
