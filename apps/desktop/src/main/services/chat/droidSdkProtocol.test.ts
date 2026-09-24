@@ -1,6 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   abortedBefore,
@@ -14,25 +11,16 @@ import {
 } from "./droidSdkProtocol";
 
 describe("droidMcpToolsToDisable", () => {
-  it("disables enabled user MCP tools while retaining ADE's leased server", () => {
+  it("disables enabled user MCP tools, keeps ADE's leased server, and fails closed for unknown state", () => {
     expect(droidMcpToolsToDisable([
       { serverName: "ade-cto", name: "list_lanes", isEnabled: true },
       { serverName: "filesystem", name: "write_file", isEnabled: true },
       { serverName: "filesystem", name: "read_file", isEnabled: false },
-      { serverName: "linear", name: "search", isEnabled: true },
+      { serverName: "filesystem", name: "unknown_state" },
+      { serverName: "", name: "write_file", isEnabled: true },
+      { serverName: "linear", name: "", isEnabled: true },
     ], ["ade-cto"])).toEqual([
       { serverName: "filesystem", toolName: "write_file" },
-      { serverName: "linear", toolName: "search" },
-    ]);
-  });
-
-  it("ignores malformed entries and fails closed for unknown MCP state", () => {
-    expect(droidMcpToolsToDisable([
-      { serverName: "", name: "write_file", isEnabled: true },
-      { serverName: "filesystem", name: "", isEnabled: true },
-      { serverName: "filesystem", name: "write_file", isEnabled: false },
-      { serverName: "filesystem", name: "unknown_state" },
-    ], [])).toEqual([
       { serverName: "filesystem", toolName: "unknown_state" },
     ]);
   });
@@ -41,18 +29,16 @@ describe("droidMcpToolsToDisable", () => {
 describe("droidInteractionModeValue", () => {
   const table = { Auto: "AUTO", Spec: "SPEC", AGI: "AGI" } as const;
 
-  it("returns undefined for an omitted mode so the user's settings decide", () => {
-    // The regression: the worker mapped undefined onto Auto, which restated the
-    // mode at the highest precedence and undid the omission the service had
-    // deliberately made. A live probe showed omission resolves each key from the
-    // user's own ~/.factory/settings.json.
-    expect(droidInteractionModeValue(table, undefined)).toBeUndefined();
-  });
-
-  it("maps every stated mode onto its SDK enum value", () => {
-    expect(droidInteractionModeValue(table, "auto")).toBe("AUTO");
-    expect(droidInteractionModeValue(table, "spec")).toBe("SPEC");
-    expect(droidInteractionModeValue(table, "agi")).toBe("AGI");
+  // undefined: the worker once mapped an omitted mode onto Auto, restating it at
+  // the highest precedence and undoing the omission; omission lets the user's
+  // ~/.factory/settings.json decide.
+  it.each([
+    [undefined, undefined],
+    ["auto", "AUTO"],
+    ["spec", "SPEC"],
+    ["agi", "AGI"],
+  ] as const)("maps %s to %s", (mode, expected) => {
+    expect(droidInteractionModeValue(table, mode)).toBe(expected);
   });
 });
 
@@ -79,31 +65,23 @@ describe("droidEditedSpecContentForRequest", () => {
 });
 
 describe("normalizeDroidSdkTokenUsage", () => {
-  it("reads the tokenUsage shape from a worker settings fixture", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-usage-"));
-    try {
-      const settingsPath = path.join(root, "worker.settings.json");
-      fs.writeFileSync(settingsPath, JSON.stringify({
-        modelId: "claude-sonnet-5",
-        tokenUsage: {
-          inputTokens: 120,
-          outputTokens: 80,
-          cacheCreationTokens: 12,
-          cacheReadTokens: 34,
-          thinkingTokens: 56,
-        },
-      }), "utf8");
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as unknown;
-      expect(normalizeDroidSdkTokenUsage(settings)).toEqual({
+  it("reads the tokenUsage block nested in a worker settings file", () => {
+    expect(normalizeDroidSdkTokenUsage({
+      modelId: "claude-sonnet-5",
+      tokenUsage: {
         inputTokens: 120,
         outputTokens: 80,
         cacheCreationTokens: 12,
         cacheReadTokens: 34,
         thinkingTokens: 56,
-      });
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+      },
+    })).toEqual({
+      inputTokens: 120,
+      outputTokens: 80,
+      cacheCreationTokens: 12,
+      cacheReadTokens: 34,
+      thinkingTokens: 56,
+    });
   });
 });
 

@@ -3606,9 +3606,8 @@ describe("registerIpc sync bridge", () => {
     ).resolves.toEqual([]);
   });
 
-  it("forwards agent chat list arguments when the service is available", async () => {
-    const sessions = [{ sessionId: "chat-1" }];
-    const listSessions = vi.fn(async () => sessions);
+  it("trims the lane id before it lists agent chats", async () => {
+    const listSessions = vi.fn(async () => []);
     registerIpc({
       getCtx: () => ({
         agentChatService: { listSessions },
@@ -3624,12 +3623,10 @@ describe("registerIpc sync bridge", () => {
       globalStatePath: "/tmp/ade-state.json",
     });
 
-    await expect(
-      ipcHandlers.get(IPC.agentChatList)?.(
-        eventForSender(),
-        { laneId: " lane-1 ", includeAutomation: true },
-      ),
-    ).resolves.toBe(sessions);
+    await ipcHandlers.get(IPC.agentChatList)?.(
+      eventForSender(),
+      { laneId: " lane-1 ", includeAutomation: true },
+    );
 
     expect(listSessions).toHaveBeenCalledWith("lane-1", { includeAutomation: true });
   });

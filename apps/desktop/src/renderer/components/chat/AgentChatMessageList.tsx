@@ -5384,10 +5384,6 @@ export function resetTranscriptCollapseCacheForTests(): void {
   transcriptCollapseCacheBySessionId.clear();
 }
 
-export function getTranscriptCollapseCacheKeysForTests(): string[] {
-  return [...transcriptCollapseCacheBySessionId.keys()];
-}
-
 function readTranscriptCollapseCache(sessionId: string | null | undefined): TranscriptCollapseCache {
   if (!sessionId) return { events: [], rows: [], context: null };
   const cached = transcriptCollapseCacheBySessionId.get(sessionId);

@@ -29,14 +29,17 @@ function harness() {
 }
 
 describe("createPiUiBridge", () => {
-  it("round-trips an answer and stops tracking the request", async () => {
-    const { bridge, requests } = harness();
+  it("round-trips an answer once, stops tracking it, and does not echo a cancel", async () => {
+    const { bridge, sent, requests } = harness();
     const pending = bridge.request({ origin: "tool", kind: "text", message: "Which one?" });
     expect(bridge.pendingCount()).toBe(1);
 
-    expect(bridge.resolve(requests()[0]!.requestId, { ok: true, value: "left" })).toBe(true);
+    const requestId = requests()[0]!.requestId;
+    expect(bridge.resolve(requestId, { ok: true, value: "left" })).toBe(true);
+    expect(bridge.resolve(requestId, { ok: true, value: "second" })).toBe(false);
     await expect(pending).resolves.toBe("left");
     expect(bridge.pendingCount()).toBe(0);
+    expect(sent.some((message) => message.type === "ui_cancel")).toBe(false);
   });
 
   it("resolves to null instead of rejecting when the user dismisses the card", async () => {
@@ -44,15 +47,6 @@ describe("createPiUiBridge", () => {
     const pending = bridge.request({ origin: "tool", kind: "text", message: "Which one?" });
     bridge.resolve(requests()[0]!.requestId, { ok: false });
     await expect(pending).resolves.toBeNull();
-  });
-
-  it("ignores a second answer for the same request", async () => {
-    const { bridge, requests } = harness();
-    const pending = bridge.request({ origin: "tool", kind: "text", message: "Which one?" });
-    const requestId = requests()[0]!.requestId;
-    bridge.resolve(requestId, { ok: true, value: "first" });
-    expect(bridge.resolve(requestId, { ok: true, value: "second" })).toBe(false);
-    await expect(pending).resolves.toBe("first");
   });
 
   it("drains only the requested origin so a cancelled sign-in leaves a tool card alone", async () => {
@@ -76,22 +70,14 @@ describe("createPiUiBridge", () => {
     await expect(bridge.request({ origin: "tool", kind: "text", message: "again?" })).resolves.toBeNull();
   });
 
-  it("tells the desktop when it settles a request on its own, so the card can close", async () => {
+  it("honours a caller's abort signal and tells the desktop, so the card can close", async () => {
     const { bridge, sent, requests } = harness();
     const controller = new AbortController();
     const pending = bridge.request({ origin: "extension", kind: "text", message: "which?" }, { signal: controller.signal });
     const requestId = requests()[0]!.requestId;
     controller.abort();
-    await pending;
+    await expect(pending).resolves.toBeNull();
     expect(sent.some((message) => message.type === "ui_cancel" && message.requestId === requestId)).toBe(true);
-  });
-
-  it("does not echo a cancel for an answer the desktop supplied", async () => {
-    const { bridge, sent, requests } = harness();
-    const pending = bridge.request({ origin: "tool", kind: "text", message: "which?" });
-    bridge.resolve(requests()[0]!.requestId, { ok: true, value: "x" });
-    await pending;
-    expect(sent.some((message) => message.type === "ui_cancel")).toBe(false);
   });
 
   it("survives a signal whose listener registration throws", async () => {
@@ -105,14 +91,6 @@ describe("createPiUiBridge", () => {
       .resolves.toBeNull();
     expect(bridge.pendingCount()).toBe(0);
   });
-
-  it("honours an abort signal supplied by the caller", async () => {
-    const { bridge } = harness();
-    const controller = new AbortController();
-    const pending = bridge.request({ origin: "extension", kind: "text", message: "which?" }, { signal: controller.signal });
-    controller.abort();
-    await expect(pending).resolves.toBeNull();
-  });
 });
 
 describe("piUiOptionsFromLabels", () => {
@@ -125,28 +103,20 @@ describe("piUiOptionsFromLabels", () => {
 });
 
 describe("extension UI context", () => {
-  it("returns the extension's own option string for a selection", async () => {
+  it("answers select with the extension's own option, denies an unanswered confirm, and keeps a dismissed editor's document", async () => {
     const { bridge, requests } = harness();
     const ui = createPiExtensionUiContext({ bridge });
     const select = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["alpha", "beta"]);
     bridge.resolve(requests()[0]!.requestId, { ok: true, value: "1" });
     await expect(select).resolves.toBe("beta");
-  });
 
-  it("denies a confirm the user never answered", async () => {
-    const { bridge, requests } = harness();
-    const ui = createPiExtensionUiContext({ bridge });
     const confirm = (ui.confirm as (t: string, m: string) => Promise<boolean>)("Delete?", "This cannot be undone.");
-    bridge.resolve(requests()[0]!.requestId, { ok: false });
+    bridge.resolve(requests()[1]!.requestId, { ok: false });
     await expect(confirm).resolves.toBe(false);
-  });
 
-  it("keeps an editor's document when the user dismisses the card", async () => {
-    const { bridge, requests } = harness();
-    const ui = createPiExtensionUiContext({ bridge });
     const editing = (ui.editor as (t: string, p?: string) => Promise<string | undefined>)("Edit", "original text");
-    expect(requests()[0]!.payload.defaultValue).toBe("original text");
-    bridge.resolve(requests()[0]!.requestId, { ok: false });
+    expect(requests()[2]!.payload.defaultValue).toBe("original text");
+    bridge.resolve(requests()[2]!.requestId, { ok: false });
     // Cancelling an editor means "leave it as it was", not "discard it".
     await expect(editing).resolves.toBe("original text");
   });

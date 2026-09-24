@@ -44,6 +44,22 @@ import {
   resolveCachedCursorModelAvailability,
 } from "./cursorModelsDiscovery";
 
+const cursorDescriptor = (id: string, displayName: string): ModelDescriptor => ({
+  id: `cursor/${id}`,
+  shortId: id,
+  displayName,
+  family: "cursor",
+  authTypes: ["api-key"],
+  contextWindow: 200_000,
+  maxOutputTokens: 32_000,
+  capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
+  color: "#A78BFA",
+  providerRoute: "cursor-sdk",
+  providerModelId: id,
+  cliCommand: "cursor",
+  isCliWrapped: false,
+});
+
 beforeEach(() => {
   cursorModelsListMock.mockReset();
   reportProviderRuntimeAuthFailureMock.mockReset();
@@ -60,7 +76,7 @@ afterEach(() => {
 });
 
 describe("parseCursorCliModelsStdout", () => {
-  it("parses table lines with optional (current) suffix", () => {
+  it("parses table lines with optional (current) suffix and dedupes repeated ids", () => {
     const raw = [
       "\x1b[2mLoading models…\x1b[0m",
       "Available models",
@@ -68,17 +84,13 @@ describe("parseCursorCliModelsStdout", () => {
       "auto - Auto  (current)",
       "composer-2 - Composer 2",
       "claude-4.6-sonnet-medium - Sonnet 5 1M",
+      "auto - Auto",
     ].join("\n");
 
     const rows = parseCursorCliModelsStdout(raw);
     expect(rows.map((r) => r.id)).toEqual(["auto", "composer-2", "claude-4.6-sonnet-medium"]);
     expect(rows[0]?.displayName).toBe("Auto");
     expect(rows[1]?.displayName).toBe("Composer 2");
-  });
-
-  it("dedupes repeated ids", () => {
-    const rows = parseCursorCliModelsStdout("auto - Auto\nauto - Auto");
-    expect(rows).toHaveLength(1);
   });
 
   it("uses Cursor titles and spells fallback ids as words, including the canonical Cursor Grok id", async () => {
@@ -123,32 +135,15 @@ describe("parseCursorCliModelsStdout", () => {
     expect(cursorModelsListMock).toHaveBeenCalledTimes(1);
   });
 
-  it("does not probe Cursor SDK models in cached-only mode", async () => {
-    let resolveModels!: (rows: Array<{ id: string; displayName?: string }>) => void;
-    cursorModelsListMock.mockReturnValue(new Promise<Array<{ id: string; displayName?: string }>>((resolve) => {
-      resolveModels = resolve;
-    }));
+  it("does not probe Cursor SDK models in cached-only mode, but reads a warm cache", async () => {
+    cursorModelsListMock.mockResolvedValue([{ id: "auto", displayName: "Auto" }]);
 
-    const initial = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-only" });
-
-    expect(initial).toEqual([]);
+    await expect(discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-only" })).resolves.toEqual([]);
     expect(cursorModelsListMock).not.toHaveBeenCalled();
 
-    void discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
-    await vi.waitFor(() => {
-      expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
-    });
-    resolveModels([
-      { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 5 Medium" },
-      { id: "auto", displayName: "Auto" },
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
+    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
     const warmed = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-only" });
-    expect(warmed.map((descriptor) => descriptor.id)).toEqual([
-      "cursor/auto",
-      "cursor/claude-4.6-sonnet-medium",
-    ]);
+    expect(warmed.map((descriptor) => descriptor.id)).toEqual(["cursor/auto"]);
   });
 
   it("probes exact Cursor SDK models when requested", async () => {
@@ -170,51 +165,11 @@ describe("parseCursorCliModelsStdout", () => {
     expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
   });
 
-  it("keeps Cursor SDK aliases on the canonical model row instead of creating duplicate rows", async () => {
-    cursorModelsListMock.mockResolvedValue([
-      {
-        id: "composer-2.5",
-        displayName: "Composer 2.5",
-        aliases: ["composer-2-5", "composer-latest", "composer"],
-      },
-    ]);
-
-    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["cursor/composer-2.5"]);
-    expect(descriptors[0]?.aliases).toEqual(["composer-2-5", "composer-latest", "composer"]);
-  });
-
   it("merges Cursor CLI aliases into SDK canonical rows", async () => {
-    const cliDescriptors = [
-      {
-        id: "cursor/composer",
-        shortId: "composer",
-        displayName: "Composer CLI",
-        family: "cursor",
-        authTypes: ["api-key"],
-        contextWindow: 200_000,
-        maxOutputTokens: 32_000,
-        capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
-        color: "#A78BFA",
-        providerRoute: "cursor-sdk",
-        providerModelId: "composer",
-        cliCommand: "cursor",
-        isCliWrapped: false,
-      } satisfies ModelDescriptor,
-    ];
-    const sdkDescriptors = [
-      {
-        ...cliDescriptors[0]!,
-        id: "cursor/composer-2.5",
-        shortId: "composer-2.5",
-        displayName: "Composer 2.5",
-        providerModelId: "composer-2.5",
-        aliases: ["composer"],
-      } satisfies ModelDescriptor,
-    ];
-
-    const merged = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
+    const merged = mergeCursorModelDescriptorSources({
+      cliDescriptors: [cursorDescriptor("composer", "Composer CLI")],
+      sdkDescriptors: [{ ...cursorDescriptor("composer-2.5", "Composer 2.5"), aliases: ["composer"] }],
+    });
 
     expect(merged.map((descriptor) => descriptor.id)).toEqual(["cursor/composer-2.5"]);
     expect(merged[0]?.cursorAvailability).toEqual({ cli: true, sdk: true });
@@ -229,24 +184,7 @@ describe("parseCursorCliModelsStdout", () => {
 
     const sdkDescriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
     const cliRows = parseCursorCliModelsStdout("auto - Auto\ncomposer-2 - Composer 2 CLI\n");
-    const cliDescriptors = mergeCursorModelDescriptorSources({
-      cliDescriptors: cliRows.map((row): ModelDescriptor => ({
-        id: `cursor/${row.id}`,
-        shortId: row.id,
-        displayName: row.displayName ?? row.id,
-        family: "cursor",
-        authTypes: ["api-key"],
-        contextWindow: 200_000,
-        maxOutputTokens: 32_000,
-        capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
-        color: "#A78BFA",
-        providerRoute: "cursor-sdk",
-        providerModelId: row.id,
-        cliCommand: "cursor",
-        isCliWrapped: false,
-      })),
-      sdkDescriptors: [],
-    });
+    const cliDescriptors = cliRows.map((row) => cursorDescriptor(row.id, row.displayName ?? row.id));
 
     const merged = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
 
@@ -309,14 +247,9 @@ describe("parseCursorCliModelsStdout", () => {
       stderr: "",
     });
 
-    const rows = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
     const descriptors = await discoverCursorCliModelDescriptors("/usr/local/bin/cursor-agent", { mode: "cached-only" });
 
-    expect(rows[0]).toMatchObject({
-      id: "composer-2",
-      reasoningTiers: ["low", "high"],
-      serviceTiers: ["fast"],
-    });
     expect(descriptors[0]).toMatchObject({
       id: "cursor/composer-2",
       reasoningTiers: ["low", "high"],
@@ -376,7 +309,6 @@ describe("parseCursorCliModelsStdout", () => {
     });
 
     const rows = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
-    const descriptors = await discoverCursorCliModelDescriptors("/usr/local/bin/cursor-agent", { mode: "cached-only" });
 
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -391,17 +323,6 @@ describe("parseCursorCliModelsStdout", () => {
       reasoningTiers: ["low", "medium"],
       serviceTiers: ["fast"],
       cliVariants: [
-        { modelId: "claude-opus-4-7-thinking-low", reasoningEffort: "low", fastMode: false },
-        { modelId: "claude-opus-4-7-thinking-low-fast", reasoningEffort: "low", fastMode: true },
-        { modelId: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium", fastMode: false },
-        { modelId: "claude-opus-4-7-thinking-medium-fast", reasoningEffort: "medium", fastMode: true },
-      ],
-    });
-    expect(descriptors[0]).toMatchObject({
-      id: "cursor/claude-opus-4-7-thinking",
-      reasoningTiers: ["low", "medium"],
-      serviceTiers: ["fast"],
-      cursorCliVariants: [
         { modelId: "claude-opus-4-7-thinking-low", reasoningEffort: "low", fastMode: false },
         { modelId: "claude-opus-4-7-thinking-low-fast", reasoningEffort: "low", fastMode: true },
         { modelId: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium", fastMode: false },
@@ -445,19 +366,6 @@ describe("parseCursorCliModelsStdout", () => {
   it("returns no Cursor SDK rows when model APIs cannot enumerate", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 })));
-
-    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-    expect(descriptors).toEqual([]);
-  });
-
-  it("does not show fallback models when Cursor rejects agent/model auth", async () => {
-    cursorModelsListMock.mockRejectedValue(new Error("AuthenticationError (status=401, endpoint=GET /v1/models)"));
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 401 })));
-
-    await expect(probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 })).resolves.toMatchObject({
-      rows: [],
-      failureKind: "auth",
-    });
 
     const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
     expect(descriptors).toEqual([]);

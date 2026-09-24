@@ -784,7 +784,7 @@ describe("openCodeServerManager", () => {
     expect(__resolveOpenCodeListenerPidForTests(62245)).toBe(7302);
   });
 
-  it("recovers current-owner listeners that no longer have an active manager entry", async () => {
+  it("recovers current-owner listeners after manager state is lost", async () => {
     let staleAlive = true;
     const killProcess = vi.fn((_pid: number) => {
       staleAlive = false;

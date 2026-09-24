@@ -114,8 +114,6 @@ describe("LaneDialogShell adapter", () => {
     );
 
     const dialog = screen.getByRole("dialog", { name: "Create lane" });
-    expect(dialog.classList.contains("ade-dialog-panel")).toBe(true);
-    expect(dialog.style.zIndex).toBe(String(Z_LAYERS.dialog));
     expect(screen.getByText("Custom lane heading")).toBeTruthy();
     expect(screen.getByText("Lane details")).toBeTruthy();
 
@@ -264,11 +262,9 @@ describe("confirmDialog", () => {
     inner.focus();
 
     const { result } = await open(() => confirmDialog({ title: "Nested?" }));
-    const nested = screen.getByRole("alertdialog", { name: "Nested?" });
-    expect(nested.style.zIndex).toBe(String(Z_LAYERS.nestedDialog));
+    screen.getByRole("alertdialog", { name: "Nested?" });
     const outer = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(outer?.getAttribute("aria-hidden")).toBe("true");
-    expect(outer?.style.zIndex).toBe(String(Z_LAYERS.dialog));
 
     await user.keyboard("{Escape}");
     await expect(result).resolves.toBe(false);

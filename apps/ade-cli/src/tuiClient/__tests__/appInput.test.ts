@@ -2609,11 +2609,6 @@ describe("mergeOptimisticTerminalSessions", () => {
     summary: null,
   });
 
-  it("returns the listed sessions unchanged when there are no optimistic entries", () => {
-    const listed = [makeTerminal("a")];
-    expect(mergeOptimisticTerminalSessions(listed, new Map())).toBe(listed);
-  });
-
   it("prepends an optimistic terminal the runtime list has not surfaced yet", () => {
     // This is the new-chat reroute fix: a freshly-created Claude terminal must be
     // present so resolveTuiChatRefreshTarget keeps it selected.

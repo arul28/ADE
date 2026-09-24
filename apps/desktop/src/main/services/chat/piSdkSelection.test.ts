@@ -119,19 +119,15 @@ describe("resolvePiExactModel", () => {
 
   // Pi's CLI resolver would take "gpt-5" to a neighbour (a prefix match, or the
   // same id on another provider) and run that instead.
-  it("fails with the reason instead of running a neighbour when the exact model is missing", async () => {
+  it("fails with the reason instead of running a neighbour or guessing", async () => {
     await expect(resolvePiExactModel(runtime, { provider: "openai", id: "gpt-5" }))
       .rejects.toThrow(/Pi model "openai\/gpt-5" is unavailable: Pi's "openai" provider has no model "gpt-5"/u);
     await expect(resolvePiExactModel(runtime, "anthropic/claude-opus"))
       .rejects.toThrow(/Pi has no provider "anthropic"/u);
-  });
-
-  it("rejects a lookup that answers with a different model", async () => {
-    const loose = { getModel: () => ({ provider: "openai", id: "gpt-5-mini" }) };
-    await expect(resolvePiExactModel(loose, { provider: "openai", id: "gpt-5" })).rejects.toThrow(/unavailable/u);
-  });
-
-  it("refuses a Pi build with no exact lookup rather than guessing", async () => {
+    // A lookup that answers with a different model.
+    await expect(resolvePiExactModel({ getModel: () => ({ provider: "openai", id: "gpt-5-mini" }) }, { provider: "openai", id: "gpt-5" }))
+      .rejects.toThrow(/unavailable/u);
+    // A Pi build with no exact lookup.
     await expect(resolvePiExactModel({}, { provider: "openai", id: "gpt-5" })).rejects.toThrow(/no exact model lookup/u);
   });
 });

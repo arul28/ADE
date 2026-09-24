@@ -1865,46 +1865,53 @@ describe("automationService integration", () => {
   });
 
   it("computes nextRunAt for scheduled rules", async () => {
-    const { db } = createInMemoryAdeDb();
-    const logger = createLogger();
-    const projectId = "proj";
-    const projectRoot = "/tmp";
+    // Saturday noon, local time: the weekday 09:00 rule next fires on Monday.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 8, 26, 12, 0, 0));
+    try {
+      const { db } = createInMemoryAdeDb();
+      const logger = createLogger();
+      const projectId = "proj";
+      const projectRoot = "/tmp";
 
-    const rule = {
-      id: "daily",
-      name: "Daily summary",
-      triggers: [{ type: "schedule" as const, cron: "0 9 * * 1-5" }],
-      trigger: { type: "schedule" as const, cron: "0 9 * * 1-5" },
-      actions: [],
-      enabled: true,
-    };
+      const rule = {
+        id: "daily",
+        name: "Daily summary",
+        triggers: [{ type: "schedule" as const, cron: "0 9 * * 1-5" }],
+        trigger: { type: "schedule" as const, cron: "0 9 * * 1-5" },
+        actions: [],
+        enabled: true,
+      };
 
-    const projectConfigService = {
-      get: () => ({
-        trust: { sharedHash: "", localHash: "" },
-        shared: {},
-        local: { automations: [rule] },
-        effective: { automations: [rule], providerMode: "guest" }
-      })
-    } as any;
+      const projectConfigService = {
+        get: () => ({
+          trust: { sharedHash: "", localHash: "" },
+          shared: {},
+          local: { automations: [rule] },
+          effective: { automations: [rule], providerMode: "guest" }
+        })
+      } as any;
 
-    const laneService = {
-      list: async () => [],
-      getLaneWorktreePath: () => projectRoot,
-      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
-    } as any;
+      const laneService = {
+        list: async () => [],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+      } as any;
 
-    const service = createAutomationService({
-      db: db as any,
-      logger,
-      projectId,
-      projectRoot,
-      laneService,
-      projectConfigService
-    });
+      const service = createAutomationService({
+        db: db as any,
+        logger,
+        projectId,
+        projectRoot,
+        laneService,
+        projectConfigService
+      });
 
-    const listed = service.list();
-    expect(listed[0]?.nextRunAt).toBeTruthy();
+      const listed = service.list();
+      expect(Date.parse(listed[0]?.nextRunAt ?? "")).toBe(new Date(2026, 8, 28, 9, 0, 0).getTime());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("dispatches git.pr_merged automations on merge transitions", async () => {
@@ -2031,7 +2038,7 @@ describe("automationService integration", () => {
   // gone: an automation is personal now, so no rule reaches this service that
   // the signed-in user did not write. What matters instead is that a rule which
   // once would have been blocked simply runs.
-  it("runs a rule that the retired trust gate would have blocked", async () => {
+  it("runs a shared rule that has no trust record", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectId = "proj";
@@ -2069,7 +2076,10 @@ describe("automationService integration", () => {
       projectConfigService
     });
 
-    await expect(service.triggerManually({ id: rule.id })).resolves.toBeTruthy();
+    await expect(service.triggerManually({ id: rule.id })).resolves.toMatchObject({
+      automationId: rule.id,
+      status: "succeeded",
+    });
   });
 
 

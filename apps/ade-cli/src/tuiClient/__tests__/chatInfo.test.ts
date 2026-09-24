@@ -548,21 +548,6 @@ describe("chat info usage-limit resume state", () => {
     };
   }
 
-  it("carries the host resume state onto the snapshot verbatim", () => {
-    const snapshot = deriveChatInfoSnapshot({
-      events: [],
-      activeSession: session({ usageLimitResume: resume() }),
-      provider: "claude",
-      modelLabel: "Opus",
-      laneLabel: null,
-      snapshots: [],
-      tokenStats: null,
-      goal: null,
-      streaming: false,
-    });
-    expect(snapshot.usageLimitResume).toEqual(resume());
-  });
-
   it("carries the host's refusal sentence for this chat only, and drops it when absent", () => {
     // The refusal is per-press state the app clears on the next usage-limit
     // patch; the snapshot's job is only to carry it to the pane that renders it

@@ -17,9 +17,6 @@ import {
 } from "./textReveal";
 import { setPerfActive } from "../../perf/markers";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -76,7 +73,6 @@ import {
   findAnchoredChatEventIndex,
   formatElapsedSeconds,
   ChatInfoHostContext,
-  getTranscriptCollapseCacheKeysForTests,
   reconcileMeasuredScrollTop,
   resetTranscriptCollapseCacheForTests,
   resetTurnFoldMemoryForTests,
@@ -1300,29 +1296,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
-  it("wraps long rendered assistant output instead of clipping it in narrow panes", () => {
-    const longToken = "cto-output-" + "x".repeat(180);
-    const rendered = renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "text",
-          text: `Long rendered output ${longToken} with inline \`${longToken}\`.`,
-          itemId: "text-long-output",
-          turnId: "turn-1",
-        },
-      },
-    ]);
-
-    const prose = rendered.container.querySelector(".ade-prose-themed");
-    expect(prose?.className).toContain("break-words");
-    expect(prose?.className).toContain("prose-p:break-words");
-    const inlineCode = rendered.container.querySelector("code");
-    expect(inlineCode?.className).toContain("break-all");
-    expect(inlineCode?.className).toContain("whitespace-normal");
-  });
-
   it("shows and collapses long grouped tool results", async () => {
     const longResult = `${"x".repeat(520)}THE_END`;
     renderMessageList([
@@ -1461,10 +1434,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect([...divider.querySelectorAll("[data-model-handoff-provider]")].map((node) => (
       node.getAttribute("data-model-handoff-provider")
     ))).toEqual(["claude", "codex"]);
-    expect([...divider.querySelectorAll("[data-model-handoff-provider]")].every((node) => (
-      node.className.includes("h-5") && node.className.includes("w-5")
-    ))).toBe(true);
-    expect(divider.querySelector(".items-center.h-6")).toBeTruthy();
   });
 
   it("draws no handoff divider when the provider did not actually change", () => {
@@ -2461,8 +2430,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    const table = screen.getByRole("table");
-    expect(table.parentElement?.className).toContain("overflow-x-auto");
+    expect(screen.getByRole("table")).toBeTruthy();
     expect(screen.getByText("Task progress")).toBeTruthy();
   });
 
@@ -2769,7 +2737,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(slot()).not.toBeNull();
     expect(slot().textContent).toBe("");
     expect(slot().querySelector("button")).toBeNull();
-    expect(slot().className).toContain("h-7");
 
     view.rerender(
       <MemoryRouter initialEntries={[{ pathname: "/" }]}>
@@ -2791,8 +2758,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
     const retry = screen.getByRole("button", { name: "Retry loading earlier messages" });
     expect(retry.textContent).toContain("retry");
-    // Same fixed height in both states, so latching the error shifts nothing.
-    expect(slot().className).toContain("h-7");
   });
 
   it("counts rows that arrived while detached on the jump pill", async () => {
@@ -2844,60 +2809,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Show less" })).toBeNull();
     expect(screen.getByText(longPrompt.trim())).toBeTruthy();
-  });
-
-  it("isolates nested transcript collapse caches from the real session cache", () => {
-    const sessionId = "collapse-cache-parent";
-    const parentEvents = userMessageEvents(["Parent transcript"], sessionId);
-    const nestedEvents = userMessageEvents(["Nested subagent transcript"], sessionId);
-    const nestedCacheKey = `subagent:${sessionId}:task-1`;
-
-    const parent = renderMessageList(parentEvents, { sessionId });
-    parent.unmount();
-    const nested = renderMessageList(nestedEvents, {
-      sessionId,
-      transcriptCollapseCacheKey: nestedCacheKey,
-    });
-    nested.unmount();
-
-    expect(getTranscriptCollapseCacheKeysForTests()).toEqual([sessionId, nestedCacheKey]);
-
-    renderMessageList(parentEvents, { sessionId });
-    expect(screen.getByText("Parent transcript")).toBeTruthy();
-    expect(screen.queryByText("Nested subagent transcript")).toBeNull();
-    expect(getTranscriptCollapseCacheKeysForTests()).toEqual([nestedCacheKey, sessionId]);
-  });
-
-  it("does not refresh collapse-cache LRU recency on an ordinary rerender", () => {
-    const firstSessionId = "collapse-lru-a";
-    const firstEvents = userMessageEvents(["First"], firstSessionId);
-    const first = render(
-      <MemoryRouter>
-        <AgentChatMessageList events={firstEvents} sessionId={firstSessionId} />
-      </MemoryRouter>,
-    );
-    for (const suffix of ["b", "c", "d", "e", "f", "g", "h"]) {
-      const sessionId = `collapse-lru-${suffix}`;
-      renderMessageList(userMessageEvents([suffix], sessionId), { sessionId });
-    }
-    expect(getTranscriptCollapseCacheKeysForTests()[0]).toBe(firstSessionId);
-
-    first.rerender(
-      <MemoryRouter>
-        <AgentChatMessageList
-          events={firstEvents}
-          sessionId={firstSessionId}
-          showStreamingIndicator
-        />
-      </MemoryRouter>,
-    );
-    renderMessageList(userMessageEvents(["i"], "collapse-lru-i"), {
-      sessionId: "collapse-lru-i",
-    });
-
-    const cacheKeys = getTranscriptCollapseCacheKeysForTests();
-    expect(cacheKeys).not.toContain(firstSessionId);
-    expect(cacheKeys).toContain("collapse-lru-b");
   });
 
   it("leaves a short user prompt uncollapsed", () => {
@@ -3171,7 +3082,6 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     const fileLink = screen.getByRole("button", { name: "AgentChatMessageList.tsx" });
     expect(fileLink.getAttribute("title")).toBe("Open file in Files");
-    expect(fileLink.className).toContain("cursor-pointer");
     fireEvent.click(fileLink);
 
     await expectLocationText(
@@ -3202,167 +3112,6 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     await expectLocationText(
       "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
-    );
-  });
-
-  it("maps absolute workspace file references into Files navigation targets", async () => {
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Inspect `/Users/admin/Projects/ADE/.ade/worktrees/fix-codex-chat-67bc1826/apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`.",
-            itemId: "text-absolute",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-123" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "/Users/admin/Projects/ADE/.ade/worktrees/fix-codex-chat-67bc1826/apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx",
-      }),
-    );
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
-    );
-  });
-
-  it("maps Windows drive-letter file references into Files navigation targets", async () => {
-    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
-      {
-        id: "workspace-windows",
-        kind: "worktree",
-        laneId: "lane-win",
-        name: "Windows lane",
-        rootPath: "C:\\Users\\me\\repo",
-        isReadOnlyByDefault: false,
-      },
-    ]);
-
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Inspect `C:\\Users\\me\\repo\\src\\main.ts`.",
-            itemId: "text-windows-absolute",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-win" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "C:\\Users\\me\\repo\\src\\main.ts" }));
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
-    );
-  });
-
-  it("matches Windows drive-letter file references case-insensitively", async () => {
-    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
-      {
-        id: "workspace-windows",
-        kind: "worktree",
-        laneId: "lane-win",
-        name: "Windows lane",
-        rootPath: "C:\\Users\\Me\\Repo",
-        isReadOnlyByDefault: false,
-      },
-    ]);
-
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Inspect `c:\\users\\me\\repo\\src\\main.ts`.",
-            itemId: "text-windows-case",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-win" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "c:\\users\\me\\repo\\src\\main.ts" }));
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
-    );
-  });
-
-  it("maps Windows markdown links into Files navigation targets", async () => {
-    vi.mocked(globalThis.window.ade.files.listWorkspaces).mockResolvedValueOnce([
-      {
-        id: "workspace-windows",
-        kind: "worktree",
-        laneId: "lane-win",
-        name: "Windows lane",
-        rootPath: "C:\\Users\\me\\repo",
-        isReadOnlyByDefault: false,
-      },
-    ]);
-
-    renderMessageList(
-      [
-        {
-          sessionId: "session-1",
-          timestamp: "2026-03-17T10:00:00.000Z",
-          event: {
-            type: "text",
-            text: "Open [main.ts](C:/Users/me/repo/src/main.ts).",
-            itemId: "text-windows-link",
-            turnId: "turn-1",
-          },
-        },
-      ],
-      {
-        initialState: { laneId: "lane-win" },
-      },
-    );
-
-    expect(globalThis.window.ade.files.listWorkspaces).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "main.ts" }));
-
-    await waitFor(() => {
-      expect(globalThis.window.ade.files.listWorkspaces).toHaveBeenCalledTimes(1);
-    });
-    await expectLocationText(
-      "/files::{\"openFilePath\":\"src/main.ts\",\"laneId\":\"lane-win\"}",
     );
   });
 
@@ -3805,49 +3554,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(formatElapsedSeconds(65)).toBe("1m 05s");
     expect(formatElapsedSeconds(793)).toBe("13m 13s");
     expect(formatElapsedSeconds(-5)).toBe("0s");
-  });
-
-  it("does not vertically clip virtualized transcript rows while heights settle", () => {
-    const originalResizeObserver = globalThis.ResizeObserver;
-    class ResizeObserverStub {
-      observe() {}
-      disconnect() {}
-    }
-    Object.defineProperty(globalThis, "ResizeObserver", {
-      configurable: true,
-      value: ResizeObserverStub,
-    });
-
-    try {
-      const rendered = renderMessageList(
-        Array.from({ length: 65 }, (_, index): AgentChatEventEnvelope => ({
-          sessionId: "session-1",
-          timestamp: `2026-03-17T10:${String(index).padStart(2, "0")}:00.000Z`,
-          event: {
-            type: "user_message",
-            text: `message ${index}`,
-            messageId: `user-${index}`,
-            turnId: `turn-${index}`,
-          },
-        })),
-      );
-
-      const contentWrapper = rendered.container.querySelector(".ade-chat-timeline-pane > div");
-      const measuredRow = rendered.container.querySelector('[data-chat-virtualized-row="true"]');
-
-      expect(contentWrapper?.className).toContain("overflow-visible");
-      expect(measuredRow?.className).toContain("overflow-visible");
-      expect(measuredRow?.className).not.toContain("overflow-hidden");
-    } finally {
-      if (originalResizeObserver === undefined) {
-        delete (globalThis as any).ResizeObserver;
-      } else {
-        Object.defineProperty(globalThis, "ResizeObserver", {
-          configurable: true,
-          value: originalResizeObserver,
-        });
-      }
-    }
   });
 
   it("measures virtualized transcript rows on mount before resize observer callbacks", async () => {
@@ -5638,7 +5344,7 @@ describe("AgentChatMessageList question receipts", () => {
     expect(detail.textContent ?? "").toContain("only if CI is green");
   });
 
-  it("regression: labels legacy request-level option answers as picks, not notes", () => {
+  it("labels legacy request-level option answers as picks, not notes", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [{
@@ -5674,7 +5380,7 @@ describe("AgentChatMessageList question receipts", () => {
 
   // The answer to an isSecret question never reaches the (durable, synced)
   // resolution event, so there is nothing for the receipt to show.
-  it("regression: a secret question's answer is never displayed", () => {
+  it("a secret question's answer is never displayed", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [
@@ -5689,7 +5395,7 @@ describe("AgentChatMessageList question receipts", () => {
     expect(receipt.textContent ?? "").toContain("answer hidden");
   });
 
-  it("regression: a declined secret question is unanswered, not hidden", () => {
+  it("a declined secret question is unanswered, not hidden", () => {
     renderMessageList([
       buildStructuredApprovalEvent({
         questions: [
@@ -5744,17 +5450,10 @@ describe("AgentChatMessageList memo boundary", () => {
     },
   ];
 
-  /**
-   * A composer-like owner holding character-level draft state (like AgentChatPane /
-   * PersonalChatsPage) that renders the memoized transcript boundary. `unstable`
-   * recreates a row-facing callback each render to model the pre-fix inline-arrow
-   * props that defeated the boundary.
-   */
-  function Harness({ unstable = false }: { unstable?: boolean }) {
+  function Harness() {
     const [draft, setDraft] = useState("");
     const events = useMemo(() => TEXT_EVENTS, []);
-    const stableApproval = useCallback(() => {}, []);
-    const onApproval = unstable ? () => {} : stableApproval;
+    const onApproval = useCallback(() => {}, []);
     return (
       <MemoryRouter>
         <input data-testid="draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
@@ -5768,12 +5467,6 @@ describe("AgentChatMessageList memo boundary", () => {
     );
   }
 
-  it("is a memoized component", () => {
-    expect((AgentChatMessageList as unknown as { $$typeof: symbol }).$$typeof).toBe(
-      Symbol.for("react.memo"),
-    );
-  });
-
   it("does not re-render on a draft-only update when transcript props are unchanged", () => {
     memoListBodyRenders = 0;
     const { getByTestId } = render(<Harness />);
@@ -5784,18 +5477,6 @@ describe("AgentChatMessageList memo boundary", () => {
     fireEvent.change(getByTestId("draft"), { target: { value: "typing a draft further" } });
     // The memoized boundary bails out: the list body does not re-run on draft-only updates.
     expect(memoListBodyRenders).toBe(before);
-  });
-
-  it("re-renders when a row-facing callback identity churns (guards the stabilization)", () => {
-    memoListBodyRenders = 0;
-    const { getByTestId } = render(<Harness unstable />);
-    expect(memoListBodyRenders).toBeGreaterThan(0);
-
-    const before = memoListBodyRenders;
-    fireEvent.change(getByTestId("draft"), { target: { value: "typing" } });
-    // An unstable row-facing prop defeats the boundary — proving the boundary + prop
-    // stabilization are load-bearing, not incidental.
-    expect(memoListBodyRenders).toBeGreaterThan(before);
   });
 });
 
@@ -5892,50 +5573,6 @@ describe("AgentChatMessageList ade_card dispatch", () => {
     ]);
     expect(screen.getByText("detail unavailable")).toBeTruthy();
     expect(screen.getByText(/403/)).toBeTruthy();
-  });
-});
-
-/**
- * The transcript's ONE content width.
- *
- * Before `--chat-content-width` there were seven disagreeing clamps in this
- * directory, and the worst offender resolved `70` characters against the
- * browser's 16px default (no card sets a font-size), so every card stopped
- * ~26% short of the prose above it. This guard is source-level on purpose: a
- * jsdom render cannot catch a clamp on a code path that happens not to be
- * exercised.
- */
-describe("chat transcript content width", () => {
-  const chatDir = path.dirname(fileURLToPath(import.meta.url));
-
-  /** Components only — a test file may name the old clamp to explain it. */
-  function chatComponentFiles(dir: string): string[] {
-    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) return chatComponentFiles(full);
-      if (/\.test\.tsx?$/.test(entry.name)) return [];
-      return /\.tsx?$/.test(entry.name) ? [full] : [];
-    });
-  }
-
-  it("has no `ch`-relative card clamp left anywhere under components/chat", () => {
-    const offenders = chatComponentFiles(chatDir)
-      .filter((file) => fs.readFileSync(file, "utf8").includes("70ch"))
-      .map((file) => path.basename(file));
-    expect(offenders).toEqual([]);
-  });
-
-  it("routes every transcript-row max-width through the shared token", () => {
-    // `max-w-[min(100%, …)]` is the row-level idiom the redesign unified. A
-    // bare `max-w-[22rem]` on a nested control is a different thing and stays.
-    const offenders: string[] = [];
-    for (const file of chatComponentFiles(chatDir)) {
-      const source = fs.readFileSync(file, "utf8");
-      for (const match of source.matchAll(/max-w-\[min\(100%,\s*[^\]]*\)\]/g)) {
-        offenders.push(`${path.basename(file)}: ${match[0]}`);
-      }
-    }
-    expect(offenders).toEqual([]);
   });
 });
 

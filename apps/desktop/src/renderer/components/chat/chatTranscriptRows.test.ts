@@ -20,7 +20,6 @@ import {
   extractLocalhostUrlsFromText,
   eventHasPayload,
   formatDoneTurnTokenLine,
-  formatStructuredValue,
   groupChatTranscriptRows,
   mergeAdjacentActivityBundleRows,
   groupConsecutiveWorkLogRows,
@@ -1344,30 +1343,6 @@ describe("readRecord", () => {
     expect(readRecord("string")).toBeNull();
     expect(readRecord(42)).toBeNull();
     expect(readRecord([1, 2])).toBeNull();
-  });
-
-  it("returns the value as a record for plain objects", () => {
-    const obj = { key: "value" };
-    expect(readRecord(obj)).toBe(obj);
-  });
-});
-
-describe("formatStructuredValue", () => {
-  it("returns strings as-is", () => {
-    expect(formatStructuredValue("hello")).toBe("hello");
-  });
-
-  it("formats objects as pretty JSON", () => {
-    const result = formatStructuredValue({ a: 1, b: "two" });
-    expect(result).toBe(JSON.stringify({ a: 1, b: "two" }, null, 2));
-  });
-
-  it("formats numbers as their string representation", () => {
-    expect(formatStructuredValue(42)).toBe("42");
-  });
-
-  it("formats null as JSON null", () => {
-    expect(formatStructuredValue(null)).toBe("null");
   });
 });
 

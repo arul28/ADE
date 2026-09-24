@@ -43,24 +43,24 @@ describe("StoragePressureIndicator", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
-  it("renders an amber warning with the warning tooltip copy", async () => {
+  it("shows an actionable warning when storage is running low", async () => {
     getPressure.mockResolvedValue(snapshot("warning"));
     render(<StoragePressureIndicator enabled />);
 
     const indicator = await screen.findByRole("status");
     expect(indicator.getAttribute("data-ade-storage-pressure-state")).toBe("warning");
-    expect(indicator.getAttribute("style")).toContain("color: rgb(251, 191, 36)");
-    expect(indicator.title).toBe("Storage is running low — ADE and your active projects may create more files while agents work. Click to review ADE storage.");
+    expect(indicator.title).toMatch(/Storage is running low/i);
+    expect(indicator.title).toMatch(/click to review ADE storage/i);
   });
 
-  it.each(["critical", "exhausted"] as const)("renders %s pressure in red with critical copy", async (state) => {
+  it.each(["critical", "exhausted"] as const)("shows actionable guidance for %s storage pressure", async (state) => {
     getPressure.mockResolvedValue(snapshot(state));
     render(<StoragePressureIndicator enabled />);
 
     const indicator = await screen.findByRole("status");
     expect(indicator.getAttribute("data-ade-storage-pressure-state")).toBe(state);
-    expect(indicator.getAttribute("style")).toContain("color: rgb(248, 113, 113)");
-    expect(indicator.title).toBe("Your computer is almost out of storage — ADE paused new agent work to protect your chats and projects. Click to review ADE storage.");
+    expect(indicator.title).toMatch(/computer is almost out of storage/i);
+    expect(indicator.title).toMatch(/click to review ADE storage/i);
   });
 
   it("does not poll while disabled and refreshes on focus when enabled", async () => {

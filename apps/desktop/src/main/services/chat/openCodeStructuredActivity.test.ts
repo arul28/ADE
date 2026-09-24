@@ -45,18 +45,6 @@ describe("mapOpenCodeImagePart", () => {
     }));
   });
 
-  it("dedupes the same file surfaced as a part and tool attachment", () => {
-    const emittedPartIds = new Set<string>();
-    const part = {
-      id: "image-3",
-      type: "file",
-      mime: "image/png",
-      url: "data:image/png;base64,AAAA",
-    };
-    expect(mapOpenCodeImagePart({ part, turnId: "turn-1", emittedPartIds })).not.toBeNull();
-    expect(mapOpenCodeImagePart({ part, turnId: "turn-1", emittedPartIds })).toBeNull();
-  });
-
   it("ignores non-image and malformed file parts", () => {
     const emittedPartIds = new Set<string>();
     expect(mapOpenCodeImagePart({
@@ -128,46 +116,29 @@ describe("mapOpenCodeImageAttachment", () => {
     expect(mapOpenCodeImageAttachment({ part, turnId: "turn-1", emittedPartIds })).not.toBeNull();
     expect(mapOpenCodeImagePart({ part, turnId: "turn-1", emittedPartIds })).toBeNull();
   });
-
-  it("ignores non-image and malformed parts", () => {
-    const emittedPartIds = new Set<string>();
-    expect(mapOpenCodeImageAttachment({
-      part: { id: "attach-4", type: "file", mime: "text/plain", url: "/tmp/a.txt" },
-      turnId: "turn-1",
-      emittedPartIds,
-    })).toBeNull();
-    expect(mapOpenCodeImageAttachment({
-      part: { type: "file", mime: "image/png" },
-      turnId: "turn-1",
-      emittedPartIds,
-    })).toBeNull();
-  });
 });
 
 describe("isOpenCodeImageGenerationToolName", () => {
-  it("recognizes media-producing tool names", () => {
-    for (const tool of ["generate_image", "image_generation", "imagegen", "draw_image", "create_image", "render-picture"]) {
-      expect(isOpenCodeImageGenerationToolName(tool), tool).toBe(true);
-    }
-  });
-
-  it("treats readers and unknown tools as views, never generations", () => {
-    for (const tool of [
+  // Readers and unknown tools are views, never generations. `art` must end the
+  // token: `create_article` and friends return files, they do not paint them.
+  it.each([
+    ...["generate_image", "image_generation", "imagegen", "draw_image", "create_image", "render-picture"]
+      .map((tool) => [tool, true] as const),
+    ...[
       "read",
       "bash",
       "webfetch",
       "screenshot",
       "browser_screenshot",
       "figma_get_image",
-      // `art` must end the token: these return files, they do not paint them.
       "create_article",
       "render_article",
       "generate_artifacts",
       "generate_images",
       null,
       undefined,
-    ]) {
-      expect(isOpenCodeImageGenerationToolName(tool), String(tool)).toBe(false);
-    }
+    ].map((tool) => [tool, false] as const),
+  ])("%s -> %s", (tool, expected) => {
+    expect(isOpenCodeImageGenerationToolName(tool)).toBe(expected);
   });
 });

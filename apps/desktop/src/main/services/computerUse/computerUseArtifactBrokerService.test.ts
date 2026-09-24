@@ -471,7 +471,7 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ limit: 50 })).toHaveLength(0);
   });
 
-  it("regression: a batch whose second row fails to insert files nothing", () => {
+  it("a batch whose second row fails to insert files nothing", () => {
     const events: string[] = [];
     let artifactInserts = 0;
     const failingDb: AdeDb = {
@@ -1655,7 +1655,7 @@ describe("proof provenance", () => {
       expect(result.artifacts[0]!.metadata).toMatchObject({ contentSha256: sha256(bytes), contentBytes: bytes.length });
     });
 
-    it("regression: files a capture whose bytes changed after ADE hashed them as an attach", async () => {
+    it("files a capture whose bytes changed after ADE hashed them as an attach", async () => {
       const broker = makeBroker();
       const bytes = mp4Bytes(null, 18);
       await attach(broker, writeCacheFile("earlier.mp4", bytes), "Earlier");

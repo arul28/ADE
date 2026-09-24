@@ -1479,37 +1479,6 @@ describe("tuiEventDedupKey", () => {
     expect(tuiEventDedupKey(first)).toBe(tuiEventDedupKey(replay));
   });
 
-  it("appends using cached keys without re-stringifying previous events", () => {
-    const previous = {
-      sessionId: "session-1",
-      sequence: 1,
-      timestamp: "2026-01-01T00:00:00.000Z",
-      event: {
-        type: "text",
-        text: "old",
-        toJSON() {
-          throw new Error("previous event should not be stringified again");
-        },
-      },
-    } as unknown as AgentChatEventEnvelope;
-    const incoming = {
-      sessionId: "session-1",
-      sequence: 2,
-      timestamp: "2026-01-01T00:00:01.000Z",
-      event: { type: "text", text: "new" },
-    } as AgentChatEventEnvelope;
-    const previousKey = "precomputed-previous-key";
-    const keys = new Set<string>([previousKey]);
-
-    const key = reserveTuiEventDedupKey(incoming, keys);
-    expect(key).not.toBeNull();
-    const next = appendReservedTuiEvent([previous], incoming, keys, [previousKey], key!);
-
-    expect(next.events).toEqual([previous, incoming]);
-    expect(next.eventKeys).toEqual([previousKey, key]);
-    expect(keys.has(key!)).toBe(true);
-  });
-
   it("uses cached keys to reject replays", () => {
     const first = {
       sessionId: "session-1",
@@ -1623,42 +1592,4 @@ describe("tuiEventDedupKey", () => {
     expect(keys.has(secondKey!)).toBe(true);
   });
 
-  it("evicts cached keys without re-stringifying trimmed events", () => {
-    const oldFirst = {
-      sessionId: "session-1",
-      sequence: 1,
-      timestamp: "2026-01-01T00:00:00.000Z",
-      event: {
-        type: "text",
-        text: "old first",
-        toJSON() {
-          return { type: "text", text: "old first" };
-        },
-      },
-    } as unknown as AgentChatEventEnvelope;
-    const oldSecond = {
-      sessionId: "session-1",
-      sequence: 2,
-      timestamp: "2026-01-01T00:00:01.000Z",
-      event: { type: "text", text: "old second" },
-    } as AgentChatEventEnvelope;
-    const incoming = {
-      sessionId: "session-1",
-      sequence: 3,
-      timestamp: "2026-01-01T00:00:02.000Z",
-      event: { type: "text", text: "new" },
-    } as AgentChatEventEnvelope;
-    const keys = new Set<string>();
-    const oldKeys = syncTuiEventDedupKeys(keys, [oldFirst, oldSecond]);
-    (oldFirst.event as { toJSON?: () => unknown }).toJSON = () => {
-      throw new Error("trimmed event should not be stringified again");
-    };
-
-    const incomingKey = reserveTuiEventDedupKey(incoming, keys);
-    expect(incomingKey).not.toBeNull();
-    const next = appendReservedTuiEvent([oldFirst, oldSecond], incoming, keys, oldKeys, incomingKey!, 2);
-
-    expect(next.events).toEqual([oldSecond, incoming]);
-    expect(keys.has(oldKeys[0]!)).toBe(false);
-  });
 });

@@ -75,7 +75,7 @@ describe("work_tools runtime action domain", () => {
 
 
 describe("the automation action lookup", () => {
-  it("regression: an automation's action list hides every verb it would refuse", () => {
+  it("an automation's action list hides every verb it would refuse", () => {
     const lookup = createAutomationAdeActionLookup(() => ({}));
     const apple = lookup.listActions("ios_simulator");
     // The user-only verb is in the domain allowlist, but an automation is not a
@@ -3221,7 +3221,7 @@ describe("getTurnFileDiffFromGit", () => {
   // The bug: an uncommitted turn reports the same sha on both sides, so both
   // sides were read from the same commit and every listed file opened as a
   // diff of a file against itself.
-  it("regression: reads the modified side from the working tree when the turn never committed", async () => {
+  it("reads the modified side from the working tree when the turn never committed", async () => {
     const repo = await makeRepo();
     const head = await headSha(repo);
     fs.writeFileSync(path.join(repo, "app.ts"), "uncommitted edit\n", "utf8");

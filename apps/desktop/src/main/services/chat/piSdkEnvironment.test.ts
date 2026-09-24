@@ -21,6 +21,8 @@ describe("buildPiWorkerEnvironment", () => {
           headers: {
             "X-Endpoint-Token": "${CUSTOM_PI_HEADER}",
             "X-ADE-Token": "$ADE_BROWSER_ACTOR_TOKEN",
+            // An escaped dollar is literal text, not an environment requirement.
+            "X-Literal": "$$NOT_AN_ENV",
           },
         },
       },
@@ -32,11 +34,13 @@ describe("buildPiWorkerEnvironment", () => {
       CUSTOM_PI_HEADER: "header",
       ADE_BROWSER_ACTOR_TOKEN: "must-not-cross",
       ADE_CHAT_SESSION_ID: "chat-1",
+      NOT_AN_ENV: "secret",
     }, root);
 
     expect(env).toMatchObject({ PATH: "/bin", CUSTOM_PI_KEY: "key", CUSTOM_PI_HEADER: "header" });
     expect(env).not.toHaveProperty("ADE_BROWSER_ACTOR_TOKEN");
     expect(env).not.toHaveProperty("ADE_CHAT_SESSION_ID");
+    expect(env).not.toHaveProperty("NOT_AN_ENV");
   });
 
   it("classifies accounts only from keys the worker already receives", () => {
@@ -51,18 +55,6 @@ describe("buildPiWorkerEnvironment", () => {
     const withheld = ["KIMI_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY", "COPILOT_GITHUB_TOKEN", "OPENCODE_API_KEY", "ANTHROPIC_OAUTH_TOKEN"];
     const env = buildPiWorkerEnvironment(Object.fromEntries(withheld.map((key) => [key, "set"])));
     for (const key of withheld) expect(env).not.toHaveProperty(key);
-  });
-
-  it("does not treat escaped dollar references as environment requirements", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pi-env-"));
-    roots.push(root);
-    fs.writeFileSync(path.join(root, "models.json"), JSON.stringify({
-      providers: { custom: { apiKey: "$$NOT_AN_ENV" } },
-    }));
-
-    const env = buildPiWorkerEnvironment({ NOT_AN_ENV: "secret" }, root);
-
-    expect(env).not.toHaveProperty("NOT_AN_ENV");
   });
 
   it("passes only the explicit per-chat activity scope through the ADE environment boundary", () => {

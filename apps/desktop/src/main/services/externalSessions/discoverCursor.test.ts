@@ -54,7 +54,7 @@ describe("discoverCursorSessions", () => {
     expect(cursorProjectSlug("C:\\repo\\.ade\\worktrees\\lane-1")).toBe("C-repo-ade-worktrees-lane-1");
   });
 
-  it("keeps a transcript in scope when its workspace directory no longer exists", async () => {
+  it("keeps transcripts in scope after their workspace directory is deleted", async () => {
     // The slug-to-cwd resolver cannot help once the directory is gone, so the
     // structural slug comparison is the only thing left.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-import-gone-"));

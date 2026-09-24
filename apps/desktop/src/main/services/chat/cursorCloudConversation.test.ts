@@ -39,30 +39,23 @@ const sdkShellTurn = {
 };
 
 describe("flattenCloudConversationMessages", () => {
-  it("returns a bare ConversationTurn array", () => {
-    expect(flattenCloudConversationMessages([agentTurn])).toEqual([agentTurn]);
+  it.each([
+    ["a bare array", [agentTurn], [agentTurn]],
+    ["{ turns }", { turns: [agentTurn] }, [agentTurn]],
+    ["{ messages }", { messages: [agentTurn] }, [agentTurn]],
+    ["{ conversation }", { conversation: [agentTurn] }, [agentTurn]],
+    ["{ items }", { items: [agentTurn] }, [agentTurn]],
+    ["{ result }", { result: [agentTurn] }, [agentTurn]],
+    ["{ result: { turns } }", { result: { turns: [agentTurn] } }, [agentTurn]],
+    ["a lone turn", agentTurn, [agentTurn]],
+    ["a lone SDK turn", sdkAgentTurn, [sdkAgentTurn]],
+    ["null", null, []],
+    ["an empty object", {}, []],
+  ])("unwraps %s", (_label, payload, expected) => {
+    expect(flattenCloudConversationMessages(payload)).toEqual(expected);
   });
 
-  it("unwraps { turns } which the SDK conversation helper uses", () => {
-    expect(flattenCloudConversationMessages({ turns: [agentTurn] })).toEqual([agentTurn]);
-  });
-
-  it("unwraps messages, conversation, items, and result wrappers", () => {
-    expect(flattenCloudConversationMessages({ messages: [agentTurn] })).toEqual([agentTurn]);
-    expect(flattenCloudConversationMessages({ conversation: [agentTurn] })).toEqual([agentTurn]);
-    expect(flattenCloudConversationMessages({ items: [agentTurn] })).toEqual([agentTurn]);
-    expect(flattenCloudConversationMessages({ result: [agentTurn] })).toEqual([agentTurn]);
-  });
-
-  it("unwraps nested { result: { turns } } worker payloads and a lone turn object", () => {
-    expect(flattenCloudConversationMessages({ result: { turns: [agentTurn] } })).toEqual([agentTurn]);
-    expect(flattenCloudConversationMessages(agentTurn)).toEqual([agentTurn]);
-    expect(flattenCloudConversationMessages(sdkAgentTurn)).toEqual([sdkAgentTurn]);
-  });
-
-  it("treats missing or empty payloads as no turns", () => {
-    expect(flattenCloudConversationMessages(null)).toEqual([]);
-    expect(flattenCloudConversationMessages({})).toEqual([]);
+  it("counts only turns with content", () => {
     expect(cloudConversationHasTurns({ turns: [] })).toBe(false);
     expect(cloudConversationHasTurns({ turns: [agentTurn] })).toBe(true);
     expect(cloudConversationHasTurns({ turns: [sdkAgentTurn] })).toBe(true);
@@ -73,31 +66,16 @@ describe("flattenCloudConversationMessages", () => {
 });
 
 describe("unwrapCloudConversationTurn", () => {
-  it("reads the SDK agentConversationTurn wrapper", () => {
-    expect(unwrapCloudConversationTurn(sdkAgentTurn)).toEqual({
-      kind: "agent",
-      userText: "hi there",
-      steps: sdkAgentTurn.turn.steps,
-    });
-  });
-
-  it("reads the SDK shellConversationTurn wrapper", () => {
-    expect(unwrapCloudConversationTurn(sdkShellTurn)).toEqual({
-      kind: "shell",
-      command: "ls",
-      cwd: "/repo",
-      stdout: "a.ts\n",
-      stderr: "",
-      exitCode: 0,
-    });
-  });
-
-  it("still accepts the flattened { type: agent } shape", () => {
-    expect(unwrapCloudConversationTurn(agentTurn)).toEqual({
-      kind: "agent",
-      userText: "hi there",
-      steps: agentTurn.steps,
-    });
+  it.each([
+    ["the SDK agentConversationTurn wrapper", sdkAgentTurn, { kind: "agent", userText: "hi there", steps: sdkAgentTurn.turn.steps }],
+    ["the flattened { type: agent } shape", agentTurn, { kind: "agent", userText: "hi there", steps: agentTurn.steps }],
+    [
+      "the SDK shellConversationTurn wrapper",
+      sdkShellTurn,
+      { kind: "shell", command: "ls", cwd: "/repo", stdout: "a.ts\n", stderr: "", exitCode: 0 },
+    ],
+  ])("reads %s", (_label, raw, expected) => {
+    expect(unwrapCloudConversationTurn(raw)).toEqual(expected);
   });
 });
 
@@ -111,14 +89,8 @@ describe("isCloudRunStillLive", () => {
   });
 });
 
-describe("latestCloudRunFromList", () => {
-  it("reads { items } from Agent.listRuns", () => {
-    expect(latestCloudRunFromList({
-      items: [{ runId: "run-1", status: "FINISHED", model: { id: "composer-2" } }],
-    })).toEqual({ runId: "run-1", status: "FINISHED", modelSdkId: "composer-2" });
-  });
-
-  it("accepts a bare array and id instead of runId", () => {
+describe("cloudRunsFromList", () => {
+  it("accepts a bare array", () => {
     expect(latestCloudRunFromList([{ id: "run-2", status: "running", modelId: "composer-2" }]))
       .toEqual({ runId: "run-2", status: "running", modelSdkId: "composer-2" });
   });
@@ -166,24 +138,21 @@ describe("cloud turn fingerprints", () => {
 });
 
 describe("nextCursorCloudMirrorDelay", () => {
-  it("resets to the floor when new turns arrive", () => {
-    expect(nextCursorCloudMirrorDelay(45_000, "new")).toBe(3_000);
-    expect(nextCursorCloudMirrorDelay(null, "new")).toBe(3_000);
-  });
-
-  it("steps through backoff while a watched chat is quiet", () => {
-    expect(nextCursorCloudMirrorDelay(0, "unchanged")).toBe(3_000);
-    expect(nextCursorCloudMirrorDelay(null, "unchanged")).toBe(3_000);
-    expect(nextCursorCloudMirrorDelay(3_000, "unchanged")).toBe(8_000);
-    expect(nextCursorCloudMirrorDelay(8_000, "unchanged")).toBe(20_000);
-    expect(nextCursorCloudMirrorDelay(20_000, "unchanged")).toBe(45_000);
-    expect(nextCursorCloudMirrorDelay(45_000, "unchanged")).toBe(45_000);
-  });
-
-  it("keeps the current delay when a tick is skipped", () => {
-    expect(nextCursorCloudMirrorDelay(8_000, "skipped")).toBe(8_000);
-    expect(nextCursorCloudMirrorDelay(null, "skipped")).toBe(3_000);
-    expect(nextCursorCloudMirrorDelay(0, "skipped")).toBe(3_000);
+  // New turns reset to the floor, a quiet chat backs off to a cap, a skipped tick keeps its delay.
+  it.each([
+    [45_000, "new", 3_000],
+    [null, "new", 3_000],
+    [0, "unchanged", 3_000],
+    [null, "unchanged", 3_000],
+    [3_000, "unchanged", 8_000],
+    [8_000, "unchanged", 20_000],
+    [20_000, "unchanged", 45_000],
+    [45_000, "unchanged", 45_000],
+    [8_000, "skipped", 8_000],
+    [null, "skipped", 3_000],
+    [0, "skipped", 3_000],
+  ] as const)("from %s after a %s tick waits %s ms", (current, outcome, expected) => {
+    expect(nextCursorCloudMirrorDelay(current, outcome)).toBe(expected);
   });
 });
 

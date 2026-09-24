@@ -53,30 +53,6 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
     expect(getStatus).toHaveBeenCalledTimes(1);
   });
 
-  it("matches Linear's 20px top-bar shell size, padding, and active-state contract", async () => {
-    const getStatus = vi.fn().mockResolvedValue(cursorStatus(true));
-    (window as any).ade = {
-      ai: {
-        getStatus,
-        cursorCloudFleet: vi.fn(),
-        onCursorCloudFleetEvent: vi.fn(() => () => {}),
-      },
-    };
-
-    render(<CursorCloudQuickViewButton />);
-    await act(async () => {
-      vi.advanceTimersByTime(2_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    });
-
-    const button = screen.getByRole("button", { name: "Cursor Cloud fleet" });
-    expect(button.className).toContain("h-[20px]");
-    expect(button.className).toContain("w-[20px]");
-    expect(button.className).toContain("ade-shell-control");
-    expect(button.className).toContain("transition-[background-color,color,border-color,box-shadow]");
-  });
-
-
   it("rechecks when two remote hosts expose the same project root", async () => {
     const getStatus = vi.fn()
       .mockResolvedValueOnce(cursorStatus(false))

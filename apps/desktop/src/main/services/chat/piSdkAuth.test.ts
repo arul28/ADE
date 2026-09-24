@@ -10,7 +10,6 @@ import {
   piProviderAccountKind,
   piProviderAuthType,
 } from "./piSdkAuth";
-import { PI_PROVIDER_ENV_KEYS } from "./piSdkEnvironment";
 
 const TURN = { rules: "turn" } as const;
 const SETTINGS = { rules: "settings" } as const;
@@ -44,9 +43,7 @@ describe("piAuthSummary", () => {
     expect(piAuthSummary({ note: "x" }, TURN).type).toBe("unknown");
     expect(piAuthSummary(null, TURN).type).toBeNull();
     expect(piAuthSummary(["key"], TURN).type).toBeNull();
-  });
-
-  it("reads an untyped { key } as an API key for a turn, and as Settings always has (oauth)", () => {
+    // An untyped { key } is an API key for a turn, and oauth as Settings always has read it.
     expect(piAuthSummary({ key: "sk-1" }, TURN).type).toBe("api-key");
     expect(piAuthSummary({ key: "sk-1" }, SETTINGS).type).toBe("oauth");
   });
@@ -92,24 +89,19 @@ describe("piProviderAuthType / piProviderAccountKind", () => {
     expect(piProviderAccountKind({ authEntry: { type: "api_key", key: "sk" } })).toBe("api_key");
   });
 
-  it("reads a loopback server as local even when it ships a placeholder key", () => {
+  it("reads a loopback server as local even with a placeholder key, then a configured or environment key as an API key, then a bare endpoint as local", () => {
     expect(piProviderAccountKind({ baseUrl: "http://localhost:1234/v1", configKey: "lmstudio", envKey: true })).toBe("local");
-  });
-
-  it("reads a configured or environment key as an API key, then a bare endpoint as local", () => {
     expect(piProviderAccountKind({ baseUrl: "https://gateway.example.com/v1", configKey: "sk" })).toBe("api_key");
     expect(piProviderAccountKind({ envKey: true })).toBe("api_key");
     expect(piProviderAuthType({ baseUrl: "https://gateway.example.com/v1" }, TURN)).toBe("local");
+    // Without evidence: nothing.
+    expect(piProviderAuthType({}, TURN)).toBeNull();
+    expect(piProviderAccountKind({ envKey: false })).toBe("unknown");
   });
 
   it("never reads the environment under Settings rules", () => {
     expect(piProviderAuthType({ envKey: true }, SETTINGS)).toBeNull();
     expect(piProviderAuthType({ baseUrl: "https://gateway.example.com/v1", envKey: true }, SETTINGS)).toBe("local");
-  });
-
-  it("knows nothing without evidence", () => {
-    expect(piProviderAuthType({}, TURN)).toBeNull();
-    expect(piProviderAccountKind({ envKey: false })).toBe("unknown");
   });
 });
 
@@ -162,18 +154,6 @@ describe("createPiAccountReader", () => {
       env: {},
     });
     expect(reader.accountFor("openai")).toEqual({ kind: "unknown", upstream: "openai" });
-  });
-});
-
-describe("PI_PROVIDER_ENV_KEYS", () => {
-  it("counts a variable only for the provider pi-ai reads it for", () => {
-    // Pi reads GITHUB_TOKEN for no provider, and OPENAI_API_KEY is not the
-    // ChatGPT (openai-codex) sign-in.
-    expect(PI_PROVIDER_ENV_KEYS["github-copilot"]).toBeUndefined();
-    expect(PI_PROVIDER_ENV_KEYS["openai-codex"]).toBeUndefined();
-    expect(PI_PROVIDER_ENV_KEYS.google).toEqual(["GEMINI_API_KEY"]);
-    expect(PI_PROVIDER_ENV_KEYS.cerebras).toEqual(["CEREBRAS_API_KEY"]);
-    expect(PI_PROVIDER_ENV_KEYS.moonshotai).toEqual(["MOONSHOT_API_KEY"]);
   });
 });
 

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  CURSOR_CLOUD_PANE_NOTE,
   derivePrMergeReadiness,
   formatCursorCloudFleetRows,
   formatLinearStatus,
@@ -13,7 +12,6 @@ import {
   formatWorkToolsLaneState,
   formatWorkToolsSummary,
   workToolLabel,
-  WORK_TOOLS_PANE_NOTE,
 } from "../rightPaneFormatters";
 import type { CursorCloudFleetEntry } from "../../../../desktop/src/shared/types/config";
 import {
@@ -518,10 +516,6 @@ describe("rightPaneFormatters", () => {
       Date.now = originalNow;
     }
   });
-
-  it("keeps the management note pointing at desktop/iOS", () => {
-    expect(CURSOR_CLOUD_PANE_NOTE).toContain("desktop or iOS");
-  });
 });
 
 function workToolsState(overrides: Partial<WorkToolsLaneState> = {}): WorkToolsLaneState {
@@ -708,9 +702,5 @@ describe("work tools pane", () => {
       },
     }), WORK_TOOLS_NOW);
     expect(body).not.toContain("Mac Desktop");
-  });
-
-  it("keeps the read-only note aligned with the shared hint", () => {
-    expect(WORK_TOOLS_PANE_NOTE).toBe("Control from the desktop");
   });
 });

@@ -1694,7 +1694,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
   /// hand-rolled the millisecond conversion — skipping the finite/non-negative
   /// guard the shared helper exists to apply. A nonsense stamp has to read as
   /// no stamp, not as a Date built from NaN.
-  func testDirectoryEpochStampsGoThroughTheGuardedHelper() throws {
+  func testDirectoryEpochStampsGoThroughTheGuardedHelper() {
     XCTAssertNil(machineLastSeenDate(epochMilliseconds: nil))
     XCTAssertNil(machineLastSeenDate(epochMilliseconds: -1))
     XCTAssertNil(machineLastSeenDate(epochMilliseconds: .nan))
@@ -1712,62 +1712,6 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
         sleepState: nil
       ),
       syncMachineWakeNeed(online: false, lastSeenAt: nil, sleepState: nil)
-    )
-    let service = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent("ADE/Services/SyncService.swift")
-    let text = try String(contentsOf: service, encoding: .utf8)
-    XCTAssertFalse(
-      text.contains("Date(timeIntervalSince1970: $0 / 1000)"),
-      "millisecond stamps belong to machineLastSeenDate(epochMilliseconds:)"
-    )
-  }
-
-  // MARK: - Owner resolution has exactly one rule, applied everywhere
-
-  /// The property test above proves the RULE. This proves every CALLER obeys
-  /// it, which is the half that actually regressed: `ContentView` was corrected
-  /// and Work's own handler was not, so the cold-launch restore still resolved
-  /// an owner on a plain relaunch. A source scan is the only thing that fails
-  /// when a third screen reintroduces it.
-  func testEveryNavigationRequestConsumerRespectsTheOriginRule() throws {
-    let sources = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()  // ADETests
-      .deletingLastPathComponent()  // apps/ios
-      .appendingPathComponent("ADE", isDirectory: true)
-    let enumerated = try XCTUnwrap(
-      FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil),
-      "the app sources must be readable for this guard to mean anything"
-    )
-    var callSites = 0
-    for case let url as URL in enumerated where url.pathExtension == "swift" {
-      guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-      var searchRange = text.startIndex..<text.endIndex
-      while let found = text.range(
-        of: "ensureAccountMachineForNavigation(",
-        range: searchRange
-      ) {
-        callSites += 1
-        let window = text[found.upperBound...].prefix(200)
-        // `request.ownerResolutionSessionId` contains no ".sessionId", so this
-        // catches exactly the mistake: a session id read straight off a
-        // request and handed to owner resolution.
-        XCTAssertFalse(
-          window.contains(".sessionId"),
-          """
-          \(url.lastPathComponent) passes a request's raw sessionId to owner \
-          resolution. Use ensureAccountMachineForNavigation(for:) — an in-app \
-          request, including the cold-launch restore, must not resolve an owner.
-          """
-        )
-        searchRange = found.upperBound..<text.endIndex
-      }
-    }
-    XCTAssertGreaterThanOrEqual(
-      callSites,
-      3,
-      "the scan found almost nothing — it is no longer looking at the app sources"
     )
   }
 

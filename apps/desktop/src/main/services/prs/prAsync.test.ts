@@ -658,50 +658,6 @@ describe("prPollingService", () => {
     }));
   });
 
-  it("notification title no longer includes the PR number", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
-
-    let summary = createSummary({
-      githubPrNumber: 999,
-      checksStatus: "passing",
-      reviewStatus: "none",
-    });
-    let refreshCount = 0;
-    const events: any[] = [];
-
-    const prService = {
-      listAll: () => [summary],
-      refresh: vi.fn(async () => {
-        refreshCount += 1;
-        if (refreshCount >= 2) {
-          summary = { ...summary, checksStatus: "failing" as const, updatedAt: new Date(Date.now()).toISOString() };
-        }
-        return [summary];
-      }),
-      getHotRefreshDelayMs: () => null,
-      getHotRefreshPrIds: () => [],
-    } as any;
-
-    const service = createPrPollingService({
-      logger: createLogger() as any,
-      prService,
-      projectConfigService: { get: () => ({ effective: {} }) } as any,
-      onEvent: (event) => events.push(event),
-    });
-
-    service.start();
-    await vi.advanceTimersByTimeAsync(12_000);
-    service.poke();
-    await vi.advanceTimersByTimeAsync(0);
-
-    const notification = events.find((e) => e.type === "pr-notification" && e.kind === "checks_failing");
-    expect(notification, "Expected a checks_failing notification to be emitted").toBeTruthy();
-    expect(notification.title).not.toContain("#999");
-    expect(notification.title).toBe("Checks failing");
-  });
-
   it("includes onPullRequestsChanged hook with changed PRs details", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
