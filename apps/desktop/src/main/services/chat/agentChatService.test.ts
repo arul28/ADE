@@ -387,7 +387,11 @@ vi.mock("node:child_process", () => ({
             result = { terminals: [] };
           }
 
+          // A service from an earlier test can still be awaiting Codex. Its
+          // response must not be delivered to the next test's line handler.
+          const generation = mockState.generation;
           const emitResponse = () => {
+            if (generation !== mockState.generation) return;
             const responsePayload = responseError ? {
               jsonrpc: "2.0",
               id: payload.id,
@@ -2314,6 +2318,14 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
   events: AgentChatEventEnvelope[],
   predicate: (event: AgentChatEventEnvelope) => event is T,
 ): Promise<T> {
+  if (usingFakeTimers()) {
+    let match: T | undefined;
+    await waitForFakeTimers(() => {
+      match = events.find(predicate);
+      if (!match) throw new Error("Timed out waiting for agent chat event.");
+    });
+    return match!;
+  }
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const match = events.find(predicate);
     if (match) {
