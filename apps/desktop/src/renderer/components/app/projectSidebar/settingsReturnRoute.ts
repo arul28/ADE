@@ -12,14 +12,24 @@ const DEFAULT_RETURN_ROUTE = "/work";
 const returnRouteByProject = new Map<string, string>();
 const settingsRouteByProject = new Map<string, string>();
 
+function routePathname(route: string): string {
+  return route.split(/[?#]/, 1)[0] ?? "";
+}
+
 export function isSettingsRoute(route: string): boolean {
-  const pathname = route.split(/[?#]/, 1)[0] ?? "";
+  const pathname = routePathname(route);
   return pathname === "/settings" || pathname.startsWith("/settings/");
+}
+
+/** CTO and History cover the page underneath. They are not a place Settings returns to. */
+function isOverlayRoute(route: string): boolean {
+  const pathname = routePathname(route);
+  return pathname === "/cto" || pathname === "/history";
 }
 
 /** Records the route on screen for a project. */
 export function rememberProjectRoute(projectKey: string | null, route: string): void {
-  if (!projectKey || !route) return;
+  if (!projectKey || !route || isOverlayRoute(route)) return;
   if (isSettingsRoute(route)) settingsRouteByProject.set(projectKey, route);
   else returnRouteByProject.set(projectKey, route);
 }

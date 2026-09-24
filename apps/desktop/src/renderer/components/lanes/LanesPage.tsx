@@ -487,9 +487,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // The lane in the main area: the store selection when it is usable,
   // otherwise the first lane in the list.
   const detailLaneId = useMemo(() => {
-    if (selectedLaneId && lanesById.has(selectedLaneId) && !deletingLaneIds.has(selectedLaneId)) return selectedLaneId;
+    const filterActive = laneFilter.trim().length > 0;
+    const selectedKept = Boolean(
+      selectedLaneId
+      && lanesById.has(selectedLaneId)
+      && !deletingLaneIds.has(selectedLaneId)
+      && (!filterActive || filteredLanes.some((lane) => lane.id === selectedLaneId)),
+    );
+    if (selectedKept) return selectedLaneId;
+    if (filterActive) return selectableFilteredLaneIds[0] ?? null;
     return selectableFilteredLaneIds[0] ?? sortedSelectableLaneIds[0] ?? null;
-  }, [selectedLaneId, lanesById, deletingLaneIds, selectableFilteredLaneIds, sortedSelectableLaneIds]);
+  }, [selectedLaneId, lanesById, deletingLaneIds, filteredLanes, laneFilter, selectableFilteredLaneIds, sortedSelectableLaneIds]);
   const detailLane = detailLaneId ? lanesById.get(detailLaneId) ?? null : null;
   const detailLaneIds = useMemo(() => (detailLaneId ? [detailLaneId] : EMPTY_LANE_IDS), [detailLaneId]);
 

@@ -41,6 +41,7 @@ import {
   useLaneOperations,
   useLaneOverviewPrs,
   useLanePrDetail,
+  MAX_LANE_COMMITS,
   PRIMARY_COMMIT_PAGE,
   useLaneSessions,
   useLaneUpstream,
@@ -198,7 +199,7 @@ export function LaneDashboard({
   }), [collapsedSectionIds, projectKey, setWorkViewState]);
 
   // Chats started, ended or changed state when this moves; the rows re-read then.
-  const agentsKey = agents.map((agent) => `${agent.sessionId}:${agent.activity}`).sort().join(",");
+  const agentsKey = agents.map((agent) => `${agent.sessionId}:${agent.activity}:${agent.name}:${agent.lastHint ?? ""}`).sort().join(",");
 
   const [filter, setFilter] = useState<LaneHistoryFilter>("all");
   const [expanded, setExpanded] = useState(false);
@@ -213,7 +214,11 @@ export function LaneDashboard({
   }, [laneId]);
 
   const prs = useLaneOverviewPrs(lane);
-  const { current: currentPr, earlier: earlierPrs } = useMemo(() => splitLanePrs(prs.all), [prs.all]);
+  const { current: currentPr, earlier: earlierPrs } = useMemo(() => {
+    const prominent = splitLanePrs(prs.current).current;
+    if (!prominent) return { current: null, earlier: prs.all };
+    return { current: prominent, earlier: prs.all.filter((pr) => pr.key !== prominent.key) };
+  }, [prs]);
   const livePr = isLivePr(currentPr) ? currentPr : null;
   const { detail: prDetail } = useLanePrDetail(livePr, active);
   const upstream = useLaneUpstream(lane, active);
@@ -249,7 +254,9 @@ export function LaneDashboard({
   }, [commits, historySessions, lane, operations, prs.all, trailerProviderBySha]);
   const filtered = useMemo(() => filterLaneHistory(history, filter), [filter, history]);
   // The primary lane's commit list is paged, so a full page may hide older rows.
-  const hasMoreCommits = lane?.laneType === "primary" && commits.length >= commitLimit;
+  const hasMoreCommits = lane?.laneType === "primary"
+    && commits.length >= commitLimit
+    && commits.length < MAX_LANE_COMMITS;
   const activityWindow = recentActivityWindow({ total: filtered.length, expanded, hasMoreCommits });
   const visible = useMemo(() => filtered.slice(0, activityWindow.count), [filtered, activityWindow.count]);
   const laneCommits = useMemo(

@@ -134,6 +134,16 @@ describe("settings return routes", () => {
     expect(settingsReturnRoute(null)).toBe("/work");
     expect(lastSettingsRoute("local:/missing")).toBeNull();
   });
+
+  it("keeps the page under Settings when CTO or History opens on top", () => {
+    rememberProjectRoute("local:/repo", "/prs?pr=12");
+    rememberProjectRoute("local:/repo", "/settings?tab=account");
+    rememberProjectRoute("local:/repo", "/cto");
+    rememberProjectRoute("local:/repo", "/history");
+
+    expect(settingsReturnRoute("local:/repo")).toBe("/prs?pr=12");
+    expect(lastSettingsRoute("local:/repo")).toBe("/settings?tab=account");
+  });
 });
 
 describe("ProjectSidebarSlot hold", () => {

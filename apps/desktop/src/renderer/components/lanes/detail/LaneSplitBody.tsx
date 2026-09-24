@@ -8,10 +8,21 @@ const DEFAULT_GIT_FRACTION = 0.44;
 const MIN_DASHBOARD_WIDTH = 440;
 const KEY_STEP = 24;
 
-/** The Git column's width for a container, kept inside 420-760px and off the dashboard's floor. */
+/**
+ * The Git column's width for a container. At a normal width it stays inside
+ * 420–760px and leaves the dashboard its floor. Below that, both columns
+ * share the space so neither one collapses to a sliver.
+ */
 export function clampGitColumnWidth(width: number, containerWidth: number): number {
-  const max = Math.min(MAX_GIT_WIDTH, Math.max(MIN_GIT_WIDTH, containerWidth - MIN_DASHBOARD_WIDTH));
-  return Math.round(Math.min(max, Math.max(MIN_GIT_WIDTH, width)));
+  const available = Math.max(0, containerWidth);
+  const maxThatLeavesDashboard = available - MIN_DASHBOARD_WIDTH;
+  if (maxThatLeavesDashboard >= MIN_GIT_WIDTH) {
+    const max = Math.min(MAX_GIT_WIDTH, maxThatLeavesDashboard);
+    return Math.round(Math.min(max, Math.max(MIN_GIT_WIDTH, width)));
+  }
+  const dashboardFloor = Math.min(MIN_DASHBOARD_WIDTH, Math.max(160, Math.round(available * 0.45)));
+  const gitMax = Math.max(0, available - dashboardFloor);
+  return Math.round(Math.min(gitMax, Math.max(0, width)));
 }
 
 function readStoredWidth(): number | null {
@@ -161,7 +172,7 @@ export function LaneSplitBody({ left, right }: { left: React.ReactNode; right: R
         className="flex min-h-0 shrink-0 flex-col overflow-hidden"
         style={{
           width: width ?? `${DEFAULT_GIT_FRACTION * 100}%`,
-          minWidth: MIN_GIT_WIDTH,
+          minWidth: 0,
           maxWidth: MAX_GIT_WIDTH,
           borderLeft: "1px solid var(--ade-work-chrome-rail-border, var(--color-border))",
         }}
