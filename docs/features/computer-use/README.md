@@ -274,7 +274,14 @@ with the bytes.
 
 Alongside the proof broker, ADE exposes a separate **App Control** capability for driving developer-owned Electron apps from a chat. Unlike the proof broker, App Control actively launches and inspects an app over Chrome DevTools Protocol; it then feeds screenshot + DOM context back into the chat as `AppControlContextItem`s. App Control is intentionally a bridge — Playwright, agent-browser, browser-use, or Claude's `computer_use` may also attach to the same app — but ADE keeps the launch/session state and turns snapshots into chat context.
 
-App Control also carries the same agent action model as the built-in browser: `ade app-control observe` returns a screenshot plus a bounded element list with stable `obs-…:e:N` handles, and `click` / `hover` / `fill` / `clear` / `type` / `press` / `scroll` / `wait` act on those handles and answer with a post-action observation and a per-session action trace. `ade app-control proof` registers an observation as a proof artifact under the `ade-app-control` backend. Sessions carry a `driver` (`cdp` today; `computer_use` is typed and capability-gated but not implemented).
+App Control also carries the same agent action model as the built-in browser: `ade app-control observe` returns a screenshot plus a bounded element list with stable `obs-…:e:N` handles, and `click` / `hover` / `fill` / `clear` / `type` / `press` / `scroll` / `wait` act on those handles and answer with a post-action observation and a per-session action trace. Sessions carry a `driver` (`cdp` today; `computer_use` is typed and capability-gated but not implemented).
+
+App Control keeps one session per lane. Proof goes through this broker in two ways:
+
+- `ade app-control proof --caption "…"` files an observation screenshot under the `ade-app-control` backend.
+- `ade app-control record start --caption "…"` … `record stop` records the app's own window (macOS window capture; the CDP screencast on Windows and Linux). A captioned recording is filed when it stops, with provenance `ade-recorder`, under the lane, the chat and the lane's primary PR.
+
+`ade app-control show [--floating]` (or `ade ui show app-control|floating-app-control`) shows the session to the user, and the web client and phone can watch it live over the sync socket.
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
@@ -410,7 +417,7 @@ change. When either list was capped, only the shared prefix is compared.
 
 ## Detail docs
 
-- [`app-control.md`](./app-control.md) — current App Control bridge for Electron apps (CDP launch/connect, snapshot, click/type, source matching, ADE CLI `app-control` and `terminal` surfaces).
+- [`app-control.md`](./app-control.md) — App Control for Electron apps: per-lane sessions, CDP launch/connect, the agent loop, recording and proof, show surfaces, remote viewing, and the ADE CLI `app-control` and `terminal` surfaces.
 
 The backend doc begins with the current direct Codex integration, then retains the pre-rebuild Ghost OS / local-fallback catalog for historical context. The settings/readiness doc is historical.
 

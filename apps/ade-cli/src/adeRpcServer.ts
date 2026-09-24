@@ -33,6 +33,7 @@ import {
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
+import { captureAppControlAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { stripHostAuthoredMessageProvenance } from "../../desktop/src/main/services/chat/spawnMissionOwnership";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
@@ -3715,6 +3716,182 @@ export async function scopeAppleAdeActionArgs(
   };
 }
 
+/**
+ * `app_control` actions that answer without a lane: the capability probe and
+ * the driver list. Everything else acts on, or reads, one lane's session, so a
+ * caller with no lane is refused it.
+ */
+const APP_CONTROL_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDrivers"]);
+
+/**
+ * Derived, not listed, for the reason `MAC_DESKTOP_LANE_BOUND_ACTIONS` is: a
+ * new action added to the allowlist (recording, streaming) is lane-bound from
+ * the moment it exists instead of reachable unpinned until someone copies its
+ * name here.
+ */
+export const APP_CONTROL_LANE_BOUND_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.app_control ?? []).filter(
+    (action) => !APP_CONTROL_LANE_FREE_ACTIONS.has(action) && !isCtoOnlyAdeAction("app_control", action),
+  ),
+);
+
+function appControlLaneBoundError(
+  method: string,
+  callerLaneId: string,
+  requestedLaneId: string,
+  message: string,
+): JsonRpcError {
+  return new JsonRpcError(JsonRpcErrorCode.policyDenied, message, {
+    kind: "lane_bound",
+    method,
+    callerLaneId,
+    requestedLaneId,
+  });
+}
+
+/**
+ * `app_control` for a bound agent caller (a chat, run, step or attempt).
+ *
+ * App Control keeps one session per lane, and `chatSessionId` says which chat
+ * owns it: the release-on-chat-end hook, the recording's chat and the proof
+ * owners all key on it. So the rule is the one `scopeMacDesktopAdeActionArgs`
+ * applies:
+ *
+ * - `chatSessionId` is the caller's own chat, or dropped when it has none. A
+ *   caller-supplied one would let an agent act as, or hand its session to,
+ *   another chat.
+ * - `laneId` is the caller's chat lane. Naming another lane is refused, naming
+ *   both lanes, rather than silently swapped.
+ * - A caller with no resolvable lane may only probe (`getStatus`,
+ *   `listDrivers`). Every other action is refused: with no lane there is no
+ *   session it may own, and the service must never fall back to some lane.
+ *
+ * User clients never reach this; `scopeUnboundAppControlAdeActionArgs` covers
+ * an `ade` process with no chat identity.
+ */
+export function scopeAppControlAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  appControlArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:app_control.${action}`;
+  if (isCtoOnlyAdeAction("app_control", action)) {
+    scopeAccessDenied("app_control viewing actions belong to user clients", method);
+  }
+  const { chatSessionId: _callerSupplied, ...rest } = appControlArgs;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  if (!sessionLaneId && APP_CONTROL_LANE_BOUND_ACTIONS.has(action)) {
+    scopeAccessDenied("app_control actions need a resolvable lane for this caller", method);
+  }
+  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
+  if (sessionLaneId && requestedLaneId && requestedLaneId !== sessionLaneId) {
+    throw appControlLaneBoundError(
+      method,
+      sessionLaneId,
+      requestedLaneId,
+      `This chat is bound to lane ${sessionLaneId}; --lane ${requestedLaneId} was refused. `
+        + "An agent drives only its own lane's App Control session.",
+    );
+  }
+  return {
+    ...rest,
+    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
+    ...(sessionLaneId ? { laneId: sessionLaneId } : {}),
+  };
+}
+
+/**
+ * `app_control` for an `ade` process with no chat identity (`ade-cli:<pid>`,
+ * `ade-rpc-stdio-proxy:<pid>`): a person in a terminal, or an agent whose shell
+ * carries no chat environment (OpenCode). The two cannot be told apart, so both
+ * get the `scopeUnboundMacDesktopAdeActionArgs` rule:
+ *
+ * - It speaks for no chat: `chatSessionId` is stripped, so a session it starts
+ *   is owned by the lane alone and no chat's end releases it.
+ * - Standing in a lane worktree (`callerRoot`) binds it to that lane; naming a
+ *   different lane is refused, naming both. The primary lane does not bind,
+ *   because its worktree is the project root, where a person runs `ade` to
+ *   reach any lane.
+ * - Outside every lane worktree it names the lane itself. With no lane at all,
+ *   everything but the probes says it needs a lane.
+ */
+export async function scopeUnboundAppControlAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  appControlArgs: Record<string, unknown>,
+  callerRootRaw: unknown,
+): Promise<Record<string, unknown>> {
+  const method = `run_ade_action:app_control.${action}`;
+  const { chatSessionId: _callerSupplied, ...rest } = appControlArgs;
+  const callerRoot = asOptionalTrimmedString(callerRootRaw);
+  if (callerRoot && !path.isAbsolute(callerRoot)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
+  }
+  const standing = await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null, { logMiss: false });
+  const standingLaneId = standing && !standing.primary ? standing.laneId : null;
+  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
+  if (standingLaneId && requestedLaneId && requestedLaneId !== standingLaneId) {
+    throw appControlLaneBoundError(
+      method,
+      standingLaneId,
+      requestedLaneId,
+      `This shell is inside lane ${standingLaneId}'s worktree (${callerRoot}); --lane ${requestedLaneId} was refused. `
+        + `Run ade from lane ${requestedLaneId}'s worktree or from the project root.`,
+    );
+  }
+  const laneId = standingLaneId ?? requestedLaneId;
+  if (!laneId && APP_CONTROL_LANE_BOUND_ACTIONS.has(action)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `app_control.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`,
+    );
+  }
+  return { ...rest, ...(laneId ? { laneId } : {}) };
+}
+
+/**
+ * `app_control` actions an agent can call that do NOT drive the lane's app:
+ * probes and reads, observing and waiting, picking context, stopping what it
+ * holds, and the recording's stop and status. The hand-written half of the
+ * derivation below; anything else on the allowlist floats the card.
+ */
+const APP_CONTROL_NON_DRIVING_ACTIONS = new Set<string>([
+  ...APP_CONTROL_LANE_FREE_ACTIONS,
+  "claim",
+  "stop",
+  "screenshot",
+  "getSnapshot",
+  "inspectPoint",
+  "selectPoint",
+  "listTargets",
+  "readTerminal",
+  "observe",
+  "agentWait",
+  "getTrace",
+  "windows",
+  "stopRecording",
+  "getRecordingStatus",
+  "captureProof",
+  "getLatestFrame",
+  "streamSubscribe",
+  "streamUnsubscribe",
+]);
+
+/**
+ * `app_control` actions that mean an agent is driving its lane's app, so the
+ * desktop may float the App Control card over that agent's chat (see
+ * `work_tools.noteAgentAppControlActivity`). Derived like
+ * `MAC_DESKTOP_AGENT_DRIVING_ACTIONS`.
+ */
+export const APP_CONTROL_AGENT_DRIVING_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.app_control ?? []).filter(
+    (action) => !APP_CONTROL_NON_DRIVING_ACTIONS.has(action) && !isCtoOnlyAdeAction("app_control", action),
+  ),
+);
+
 /** `work_tools` actions scoped for every role, the CTO's included. */
 const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow"]);
 
@@ -5093,6 +5270,23 @@ async function runTool(args: {
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
         toolArgs.callerRoot,
       );
+    } else if (domain === "app_control" && !isUserClient) {
+      // A bound agent acts only on its chat's lane session, as its own chat.
+      scopedObjectArgs = scopeAppControlAdeActionArgs(
+        runtime,
+        session,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (domain === "app_control" && isUnboundAdeCliCaller(session)) {
+      // Placed by the lane worktree it stands in, and acting as no chat.
+      scopedObjectArgs = await scopeUnboundAppControlAdeActionArgs(
+        runtime,
+        session,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        toolArgs.callerRoot,
+      );
     } else if (domain === "ios_simulator" && (!isUserClient || isUnboundAdeCliCaller(session))) {
       // Agent callers use only their own lane's device; see the function.
       scopedObjectArgs = await scopeAppleAdeActionArgs(
@@ -5275,7 +5469,18 @@ async function runTool(args: {
         ? "apple"
         : domain === "mac_desktop" && MAC_DESKTOP_AGENT_DRIVING_ACTIONS.has(action)
           ? "mac-desktop"
-          : null;
+          : domain === "app_control" && APP_CONTROL_AGENT_DRIVING_ACTIONS.has(action)
+            ? "app-control"
+            : null;
+    if (domain === "app_control") {
+      // Coarse usage facts only: the outcome, never the lane, chat or app. A
+      // recording counts once it was filed as proof.
+      if (drivenDevice === "app-control") {
+        captureAppControlAnalytics({ analytics: runtime.productAnalyticsService, outcome: "agent_drove" });
+      } else if (action === "stopRecording" && isRecord(result) && typeof result.proofArtifactId === "string") {
+        captureAppControlAnalytics({ analytics: runtime.productAnalyticsService, outcome: "recorded" });
+      }
+    }
     if (drivenDevice) {
       // An agent just drove its chat's device or lane display. The desktop
       // showing that chat may float it if the user has not turned that off.
@@ -5283,6 +5488,7 @@ async function runTool(args: {
       if (chatSessionId) {
         const activity = { chatSessionId, laneId: resolveChatSessionLaneId(runtime, session) ?? null };
         if (drivenDevice === "apple") runtime.workToolsStateService?.noteAgentAppleActivity?.(activity);
+        else if (drivenDevice === "app-control") runtime.workToolsStateService?.noteAgentAppControlActivity?.(activity);
         else runtime.workToolsStateService?.noteAgentMacDesktopActivity?.(activity);
       }
     }
@@ -6138,6 +6344,16 @@ async function runTool(args: {
       ...toolArgs,
       ...(authorized.laneId ? { laneId: authorized.laneId } : {}),
     });
+    // App Control proof also belongs to the lane's pull request, as Mac
+    // Desktop and App Control recordings do.
+    if (
+      backendName === "ade-app-control"
+      && authorized.laneId
+      && !owners.some((owner) => owner.kind === "github_pr")
+    ) {
+      const prUrl = runtime.prService?.getForLane(authorized.laneId)?.githubUrl?.trim();
+      if (prUrl) owners.push({ kind: "github_pr", id: prUrl, relation: "published_to" });
+    }
     // Refused before anything is stored: a row with no owner is shown by no
     // drawer, and it would make the retry with an owner a duplicate.
     if (!hasDrawerOwner(owners)) {

@@ -208,6 +208,8 @@ import type {
   AppControlInspectPointArgs,
   AppControlLaunchArgs,
   AppControlSnapshotArgs,
+  AppControlCaptureProofArgs,
+  AppControlRecordStartArgs,
   AppControlStopArgs,
   AppControlTypeTextArgs,
   BuiltInBrowserBoundsArgs,
@@ -2826,6 +2828,24 @@ export function registerIpc({
     return value as Record<string, unknown>;
   };
 
+  /**
+   * The lane an App Control call acts on. Every call carries one: App Control
+   * keeps a session per lane and refuses a call that names none.
+   */
+  const parseAppControlLaneRef = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): { laneId?: string | null; chatSessionId?: string | null; sessionId?: string | null } => {
+    const ref: { laneId?: string | null; chatSessionId?: string | null; sessionId?: string | null } = {};
+    const laneId = optionalAppControlString(record, "laneId", channel, 512);
+    if (laneId !== undefined) ref.laneId = laneId;
+    const chatSessionId = optionalAppControlString(record, "chatSessionId", channel, 128);
+    if (chatSessionId !== undefined) ref.chatSessionId = chatSessionId;
+    const sessionId = optionalAppControlString(record, "sessionId", channel, 128);
+    if (sessionId !== undefined) ref.sessionId = sessionId;
+    return ref;
+  };
+
   const optionalAppControlString = (
     record: Record<string, unknown>,
     field: string,
@@ -2978,7 +2998,7 @@ export function registerIpc({
 
   const parseAppControlStopArgs = (value: unknown, channel: string): AppControlStopArgs => {
     const record = appControlRecord(value, channel);
-    const args: AppControlStopArgs = {};
+    const args: AppControlStopArgs = { ...parseAppControlLaneRef(record, channel) };
     const force = optionalAppControlBoolean(record, "force", channel);
     if (force !== undefined) args.force = force;
     return args;
@@ -2986,7 +3006,7 @@ export function registerIpc({
 
   const parseAppControlSnapshotArgs = (value: unknown, channel: string): AppControlSnapshotArgs => {
     const record = appControlRecord(value, channel);
-    const args: AppControlSnapshotArgs = {};
+    const args: AppControlSnapshotArgs = { ...parseAppControlLaneRef(record, channel) };
     const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
     if (projectRoot !== undefined) args.projectRoot = projectRoot;
     const x = optionalAppControlNumber(record, "x", channel, { min: 0, max: 100_000 });
@@ -3003,7 +3023,7 @@ export function registerIpc({
     const x = optionalAppControlNumber(record, "x", channel, { min: 0, max: 100_000 });
     const y = optionalAppControlNumber(record, "y", channel, { min: 0, max: 100_000 });
     if (x == null || y == null) invalidAppControlArg(channel, "x and y are required");
-    const args: AppControlInspectPointArgs = { x: x as number, y: y as number };
+    const args: AppControlInspectPointArgs = { ...parseAppControlLaneRef(record, channel), x: x as number, y: y as number };
     const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
     if (scale !== undefined) args.scale = scale;
     const coordinateSpace = optionalAppControlCoordinateSpace(record, channel);
@@ -3023,6 +3043,7 @@ export function registerIpc({
     const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
     const coordinateSpace = optionalAppControlCoordinateSpace(record, channel);
     return {
+      ...parseAppControlLaneRef(record, channel),
       x: x as number,
       y: y as number,
       ...(scale !== undefined ? { scale } : {}),
@@ -3034,7 +3055,32 @@ export function registerIpc({
     const record = appControlRecord(value, channel, true);
     const text = optionalAppControlString(record, "text", channel, 10_000, { trim: false });
     if (text == null) invalidAppControlArg(channel, "text is required");
-    return { text: text as string };
+    return { ...parseAppControlLaneRef(record, channel), text: text as string };
+  };
+
+  const parseAppControlLaneOnlyArgs = (value: unknown, channel: string) =>
+    parseAppControlLaneRef(appControlRecord(value, channel), channel);
+
+  const parseAppControlRecordStartArgs = (value: unknown, channel: string): AppControlRecordStartArgs => {
+    const record = appControlRecord(value, channel);
+    const args: AppControlRecordStartArgs = { ...parseAppControlLaneRef(record, channel) };
+    const caption = optionalAppControlString(record, "caption", channel, 500);
+    if (caption !== undefined) args.caption = caption;
+    const keepIdle = optionalAppControlBoolean(record, "keepIdle", channel);
+    if (keepIdle !== undefined) args.keepIdle = keepIdle;
+    const maxSeconds = optionalAppControlNumber(record, "maxSeconds", channel, { min: 1, max: 4 * 60 * 60 });
+    if (maxSeconds !== undefined) args.maxSeconds = maxSeconds;
+    const fps = optionalAppControlNumber(record, "fps", channel, { integer: true, min: 1, max: 60 });
+    if (fps !== undefined) args.fps = fps;
+    return args;
+  };
+
+  const parseAppControlCaptureProofArgs = (value: unknown, channel: string): AppControlCaptureProofArgs => {
+    const record = appControlRecord(value, channel);
+    const args: AppControlCaptureProofArgs = { ...parseAppControlLaneRef(record, channel) };
+    const caption = optionalAppControlString(record, "caption", channel, 500);
+    if (caption !== undefined) args.caption = caption;
+    return args;
   };
 
   const terminalRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value as Record<string, unknown> : {});
@@ -9450,9 +9496,9 @@ export function registerIpc({
     return { armed: macDesktopEscapeHotkey.isArmed() };
   });
 
-  ipcMain.handle(IPC.appControlGetStatus, async (event) => {
+  ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
-    return ensureAppControl().getStatus();
+    return ensureAppControl().getStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetStatus));
   });
 
   ipcMain.handle(IPC.appControlLaunch, async (event, arg) => {
@@ -9475,19 +9521,19 @@ export function registerIpc({
     return ensureAppControl().stop(parseAppControlStopArgs(arg, IPC.appControlStop));
   });
 
-  ipcMain.handle(IPC.appControlFocusWindow, async (event) => {
+  ipcMain.handle(IPC.appControlFocusWindow, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlFocusWindow, { windowMs: 10_000, max: 20 });
-    return ensureAppControl().focusWindow();
+    return ensureAppControl().focusWindow(parseAppControlLaneOnlyArgs(arg, IPC.appControlFocusWindow));
   });
 
-  ipcMain.handle(IPC.appControlMinimizeWindow, async (event) => {
+  ipcMain.handle(IPC.appControlMinimizeWindow, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlMinimizeWindow, { windowMs: 10_000, max: 20 });
-    return ensureAppControl().minimizeWindow();
+    return ensureAppControl().minimizeWindow(parseAppControlLaneOnlyArgs(arg, IPC.appControlMinimizeWindow));
   });
 
-  ipcMain.handle(IPC.appControlScreenshot, async (event) => {
+  ipcMain.handle(IPC.appControlScreenshot, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlScreenshot, { windowMs: 10_000, max: 30 });
-    return ensureAppControl().screenshot();
+    return ensureAppControl().screenshot(parseAppControlLaneOnlyArgs(arg, IPC.appControlScreenshot));
   });
 
   ipcMain.handle(IPC.appControlGetSnapshot, async (event, arg) => {
@@ -9527,6 +9573,7 @@ export function registerIpc({
       return raw;
     };
     return ensureAppControl().scroll({
+      ...parseAppControlLaneRef(record, IPC.appControlScroll),
       x: finiteNumberOr("x", 0) as number,
       y: finiteNumberOr("y", 0) as number,
       deltaX: finiteNumberOr("deltaX", 0) as number,
@@ -9536,9 +9583,9 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.appControlListTargets, async (event) => {
+  ipcMain.handle(IPC.appControlListTargets, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlListTargets, { windowMs: 10_000, max: 60 });
-    return ensureAppControl().listTargets();
+    return ensureAppControl().listTargets(parseAppControlLaneOnlyArgs(arg, IPC.appControlListTargets));
   });
 
   ipcMain.handle(IPC.appControlAttachToTarget, async (event, arg) => {
@@ -9547,7 +9594,10 @@ export function registerIpc({
     if (typeof rawTargetId !== "string" || rawTargetId.length === 0) {
       throw new Error("appControlAttachToTarget: 'targetId' must be a non-empty string");
     }
-    return ensureAppControl().attachToTarget(rawTargetId);
+    return ensureAppControl().attachToTarget({
+      ...parseAppControlLaneRef(arg as Record<string, unknown>, IPC.appControlAttachToTarget),
+      targetId: rawTargetId,
+    });
   });
 
   ipcMain.handle(IPC.appControlDispatchKey, async (event, arg) => {
@@ -9562,6 +9612,7 @@ export function registerIpc({
     }
     const type = rawType;
     return ensureAppControl().dispatchKey({
+      ...parseAppControlLaneRef(record, IPC.appControlDispatchKey),
       type,
       key: stringField("key"),
       code: stringField("code"),
@@ -9574,6 +9625,32 @@ export function registerIpc({
       windowsVirtualKeyCode: numberField("windowsVirtualKeyCode"),
       nativeVirtualKeyCode: numberField("nativeVirtualKeyCode"),
     });
+  });
+
+  ipcMain.handle(IPC.appControlStartRecording, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlStartRecording, { windowMs: 60_000, max: 10 });
+    return ensureAppControl().startRecording(parseAppControlRecordStartArgs(arg, IPC.appControlStartRecording));
+  });
+
+  ipcMain.handle(IPC.appControlStopRecording, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlStopRecording, { windowMs: 60_000, max: 10 });
+    return ensureAppControl().stopRecording(parseAppControlLaneOnlyArgs(arg, IPC.appControlStopRecording));
+  });
+
+  ipcMain.handle(IPC.appControlCaptureProof, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlCaptureProof, { windowMs: 60_000, max: 30 });
+    return ensureAppControl().captureProof(parseAppControlCaptureProofArgs(arg, IPC.appControlCaptureProof));
+  });
+
+  ipcMain.handle(IPC.appControlGetRecordingStatus, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlGetRecordingStatus, { windowMs: 10_000, max: 60 });
+    return ensureAppControl().getRecordingStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetRecordingStatus));
+  });
+
+  // A new viewer's first picture: the newest frame, or one fresh capture.
+  ipcMain.handle(IPC.appControlGetLatestFrame, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlGetLatestFrame, { windowMs: 10_000, max: 60 });
+    return ensureAppControl().getLatestFrame(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetLatestFrame));
   });
 
   ipcMain.handle(IPC.builtInBrowserGetStatus, async (event, arg) => {

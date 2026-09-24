@@ -30,7 +30,6 @@ import {
 } from "./macDesktopCardGrants";
 import {
   floatWorkLiveCardForChat,
-  markWorkLiveCardSeenForChat,
   readChatCompanionUiState,
   resetChatCompanionUiStateCacheForTests,
   setWorkLivePreviewEnabledForChat,
@@ -159,19 +158,6 @@ function emitBrowserEvent(event: unknown): void {
   act(() => {
     for (const listener of browserListeners) listener(event);
   });
-}
-
-function emitAppControlEvent(event: unknown): void {
-  act(() => {
-    for (const listener of appControlListeners) listener(event);
-  });
-}
-
-const APP_CONTROL_SESSION = { id: "app-1", status: "connected", label: "Playground", chatSessionId: "chat-1" };
-
-/** One screencast frame, the 30fps feed that used to count as "activity". */
-function appControlFrame() {
-  return { type: "frame", frame: { mimeType: "image/jpeg", data: "AAAA", width: 288, height: 180 } };
 }
 
 /** jsdom does not decode images; report a natural size and fire `load`. */
@@ -718,67 +704,6 @@ describe("WorkLiveCornerCard dismissal", () => {
   });
 });
 
-describe("WorkLiveCornerCard App Control dismissal", () => {
-  async function showAppControlCard() {
-    seedProject();
-    const view = renderCard({ activeTool: "browser" });
-    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
-    emitAppControlEvent({ type: "session-started", session: APP_CONTROL_SESSION });
-    const card = await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 });
-    return { ...view, card };
-  }
-
-  it("stays dismissed while the screencast keeps painting", async () => {
-    await showAppControlCard();
-    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
-    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
-
-    for (let i = 0; i < 20; i += 1) emitAppControlEvent(appControlFrame());
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-  });
-
-  it("stays dismissed when the same session reports activity", async () => {
-    await showAppControlCard();
-    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
-    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
-
-    // A status refresh — even with a new trace id — is not a new session.
-    emitAppControlEvent({
-      type: "session-updated",
-      session: { ...APP_CONTROL_SESSION, lastTraceEntryId: "trace-9" },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-  });
-
-  it("stays off for a new App Control session id until the toggle is back on", async () => {
-    await showAppControlCard();
-    fireEvent.click(screen.getByLabelText("Hide the App Control preview"));
-    await waitFor(() => expect(screen.queryByLabelText("App Control live preview")).toBeNull());
-
-    emitAppControlEvent({
-      type: "session-started",
-      session: { ...APP_CONTROL_SESSION, id: "app-2", label: "Playground 2" },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-  });
-
-  it("shows an unowned session only in a chat whose pane has shown it", async () => {
-    seedProject();
-    const unowned = { ...APP_CONTROL_SESSION, id: "app-9", chatSessionId: null };
-    renderCard({ activeTool: "browser" });
-    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
-    emitAppControlEvent({ type: "session-started", session: unowned });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(screen.queryByLabelText("App Control live preview")).toBeNull();
-
-    act(() => { markWorkLiveCardSeenForChat("chat-1", "app-control", "app-9"); });
-    expect(await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 })).toBeTruthy();
-  });
-});
-
 describe("WorkLiveCornerCard scrubbing", () => {
   it("shows the hovered frame's caption and snaps back to live on leave", async () => {
     seedProject();
@@ -938,55 +863,6 @@ describe("WorkLiveCornerCard chrome", () => {
     expect(restDot(card)?.title).toBe("Sign in to staging");
     const chip = card.querySelector("[data-live-card-pill] [title='Sign in to staging']");
     expect(chip?.textContent).toBe("Needs you");
-  });
-});
-
-describe("WorkLiveCornerCard tool switching", () => {
-  it("keeps painting frames after the card has swapped source tools once", async () => {
-    seedProject();
-    renderCard({ activeTool: "git" });
-    await waitFor(() => expect(browserListeners.size).toBeGreaterThan(0));
-    await waitFor(() => expect(appControlListeners.size).toBeGreaterThan(0));
-
-    emitBrowserEvent({ type: "status", status: BROWSER_STATUS });
-    const first = await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
-    const firstFrame = "data:image/jpeg;base64,Zmlyc3Q=";
-    emitBrowserEvent({
-      type: "preview-frame",
-      tabId: "tab-1",
-      dataUrl: firstFrame,
-      width: 480,
-      height: 300,
-      capturedAt: new Date().toISOString(),
-    });
-    await waitFor(() => expect(first.querySelector("img")?.getAttribute("src")).toBe(firstFrame));
-
-    emitAppControlEvent({ type: "session-started", session: APP_CONTROL_SESSION });
-    await screen.findByLabelText("App Control live preview", {}, { timeout: 3_000 });
-
-    emitBrowserEvent({
-      type: "status",
-      status: { ...BROWSER_STATUS, tabs: [{ ...BROWSER_STATUS.tabs[0]!, title: "Signed in" }] },
-    });
-    await screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
-    await waitFor(
-      () => expect(screen.queryByLabelText("App Control live preview")).toBeNull(),
-      { timeout: 3_000 },
-    );
-
-    const secondFrame = "data:image/jpeg;base64,c2Vjb25k";
-    emitBrowserEvent({
-      type: "preview-frame",
-      tabId: "tab-1",
-      dataUrl: secondFrame,
-      width: 480,
-      height: 300,
-      capturedAt: new Date().toISOString(),
-    });
-    await waitFor(() => {
-      const live = screen.getByLabelText("Browser live preview").querySelector("img");
-      expect(live?.getAttribute("src")).toBe(secondFrame);
-    });
   });
 });
 

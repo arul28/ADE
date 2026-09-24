@@ -4,14 +4,17 @@ import {
   ArrowSquareOut,
   Camera,
   Crosshair,
+  Desktop,
   Keyboard,
   ListChecks,
   Minus,
+  PictureInPicture,
+  Power,
+  Record,
+  SealCheck,
   SpinnerGap,
-  Stack,
   Stop,
   Terminal,
-  WarningCircle,
 } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
@@ -46,11 +49,28 @@ import {
 } from "./AppControlOverlays";
 import { AppControlStatusRow, AppControlTraceDrawer } from "./AppControlTraceDrawer";
 import {
-  WORK_TOOL_PRIMARY_BUTTON,
+  WORK_TOOL_CHROME_ROW,
+  WorkToolChromeButton,
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
-import { AppControlToolbar, type AppControlLaunchRecent, type AppControlStatusTone } from "./AppControlToolbar";
+import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
+import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
+import { floatWorkLiveCardForChat } from "./chatCompanionUiState";
+import {
+  APP_CONTROL_DRIVER_LABEL,
+  AppControlToolbar,
+  type AppControlLaunchRecent,
+  type AppControlStatusTone,
+} from "./AppControlToolbar";
+import { AppControlOffCard } from "./AppControlOffCard";
+import { AppControlStatusStrip, type AppControlStripMessage } from "./AppControlStatusStrip";
+import { AppControlStopConfirm, appControlStopQuitsApp } from "./AppControlStopConfirm";
+import { MacDesktopStateCard, MAC_DESKTOP_SECONDARY_BUTTON } from "./MacDesktopStateCard";
+import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
+import { RecordingSavedRow } from "../shared/RecordingReceipt";
+import { formatRecordingElapsed } from "../shared/recordingFormat";
+import { appControlProofCaption, appControlRecordingCaption, useAppControlRecording } from "./useAppControlRecording";
 import {
   CURSOR_TRACE_ACTIONS,
   countConsoleErrors,
@@ -63,7 +83,9 @@ import {
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
+  /** The lane whose App Control session this pane shows. One session per lane. */
   laneId: string | null;
+  laneName?: string | null;
   projectRoot: string | null;
   controlDisabledReason?: string | null;
   onAddContext?: (item: AppControlContextItem) => void;
@@ -87,6 +109,8 @@ type PanelUiState = {
 const MAX_RECENT_LAUNCHES = 5;
 /** How long the agent cursor lingers after the action that summoned it. */
 const AGENT_CURSOR_LINGER_MS = 1_400;
+/** How long "The agent is driving" stays in the strip after its last action. */
+const AGENT_DRIVING_LINGER_MS = 6_000;
 
 const appControlPanelUiStateByKey = new Map<string, PanelUiState>();
 
@@ -261,7 +285,7 @@ function statusInfo(session: AppControlSession | null): StatusInfo {
     case "connected":
       return {
         label: "Connected",
-        word: "attached",
+        word: "live",
         detail: session.cdpPort ? `${session.label} on CDP port ${session.cdpPort}` : session.label,
         tone: "active",
       };
@@ -308,6 +332,7 @@ function remoteMachineLabel(pin: OpenProjectBinding | null | undefined): string 
 export function ChatAppControlPanel({
   sessionId,
   laneId,
+  laneName = null,
   projectRoot,
   controlDisabledReason = null,
   onAddContext,
@@ -322,9 +347,25 @@ export function ChatAppControlPanel({
   // cross-machine merge, and the panel is keyed on the pin at its render sites.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
+  /**
+   * Which lane every call acts on. App Control keeps one session per lane, and
+   * a call that names no lane is refused, so the pane names its lane — or, in
+   * a chat with no lane, the chat, whose lane the service resolves.
+   */
+  const laneArgsRef = useRef<{ laneId?: string | null; chatSessionId?: string | null }>({});
+  laneArgsRef.current = laneId ? { laneId } : { chatSessionId: sessionId };
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const uiStateKey = panelUiStateKey(sessionId, projectRoot, laneId, runtimePin?.key ?? null);
   const initialUiState = readPanelUiState(uiStateKey);
   const [status, setStatus] = useState<AppControlStatus | null>(null);
+  /**
+   * The lane whose events this pane follows: its own, or the one the service
+   * resolved for a lane-less chat. One stream carries every lane's events.
+   */
+  const eventLaneId = laneId ?? status?.laneId ?? null;
+  const eventLaneIdRef = useRef<string | null>(eventLaneId);
+  eventLaneIdRef.current = eventLaneId;
   const [launchCommand, setLaunchCommand] = useState(initialUiState.launchCommand);
   const [launchCwd, setLaunchCwd] = useState(initialUiState.launchCwd);
   const [cdpPort, setCdpPort] = useState(initialUiState.cdpPort);
@@ -334,7 +375,14 @@ export function ChatAppControlPanel({
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   // The 30fps transport — refs, the rAF pump and the health tick — lives in its
   // own hook; the panel keeps only what its JSX reads.
-  const liveFrame = useAppControlLiveFrame(imageRef);
+  // A pane that opens over a still app gets the lane's current picture at
+  // once instead of waiting for the next paint.
+  const seedSession = status?.activeSession ?? snapshot?.session ?? null;
+  const liveFrame = useAppControlLiveFrame(imageRef, {
+    laneId: eventLaneId,
+    targetId: seedSession?.status === "connected" ? seedSession.cdpTargetId ?? null : null,
+    runtimePinRef,
+  });
   const {
     active: liveFrameActive,
     initialSrc: liveFrameInitialSrc,
@@ -381,12 +429,20 @@ export function ChatAppControlPanel({
   const [traceOpen, setTraceOpen] = useState(false);
   const [agentCursor, setAgentCursor] = useState<AgentCursorState | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
+  /** The caption a Record or Proof press asks for, or null when not asking. */
+  const [captionDraft, setCaptionDraft] = useState<string | null>(null);
+  /** Which button the caption prompt belongs to. */
+  const [captionFor, setCaptionFor] = useState<"record" | "proof">("record");
+  const [agentDrivingAt, setAgentDrivingAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const lastTraceIdRef = useRef<string | null>(null);
   const cursorTraceIdRef = useRef<string | null>(null);
   const observationElementsRef = useRef<AppControlElementSnapshot[]>([]);
 
   const activeSession = status?.activeSession ?? snapshot?.session ?? null;
+  const activeSessionRef = useRef<AppControlSession | null>(activeSession);
+  activeSessionRef.current = activeSession;
   const sessionStatus = useMemo(() => statusInfo(activeSession), [activeSession]);
   const controlsDisabled = Boolean(controlDisabledReason);
   /**
@@ -533,7 +589,7 @@ export function ChatAppControlPanel({
           const next = scrollPendingRef.current;
           scrollPendingRef.current = null;
           if (!next || controlsDisabled) return;
-          void window.ade.appControl.scroll(next, runtimePinRef.current).catch(() => {});
+          void window.ade.appControl.scroll({ ...laneArgsRef.current, ...next }, runtimePinRef.current).catch(() => {});
         });
       }
     };
@@ -597,14 +653,14 @@ export function ChatAppControlPanel({
   }, [mode]);
 
   const refreshStatus = useCallback(async () => {
-    const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
+    const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
     setStatus(nextStatus);
     return nextStatus;
   }, []);
 
   const refreshTargets = useCallback(async () => {
     try {
-      const list = await window.ade.appControl.listTargets(runtimePinRef.current);
+      const list = await window.ade.appControl.listTargets(laneArgsRef.current, runtimePinRef.current);
       setTargets(list);
       // Clear the optimistic pick once the backend confirms it's active —
       // OR if the picked target disappeared entirely (window closed mid-attach),
@@ -621,7 +677,7 @@ export function ChatAppControlPanel({
   }, []);
 
   const refreshSnapshot = useCallback(async () => {
-    const nextSnapshot = await window.ade.appControl.getSnapshot({ projectRoot }, runtimePinRef.current);
+    const nextSnapshot = await window.ade.appControl.getSnapshot({ ...laneArgsRef.current, projectRoot }, runtimePinRef.current);
     setSnapshot(nextSnapshot);
     setSelectedElement(nextSnapshot.hitElement);
     return nextSnapshot;
@@ -632,7 +688,7 @@ export function ChatAppControlPanel({
   // signal to re-read. No timer — an idle app costs nothing.
   const refreshTrace = useCallback(async () => {
     try {
-      const result = await window.ade.appControl.getTrace({ limit: 20 }, runtimePinRef.current);
+      const result = await window.ade.appControl.getTrace({ ...laneArgsRef.current, limit: 20 }, runtimePinRef.current);
       setTraceEntries(result.entries);
       const latest = result.entries[result.entries.length - 1] ?? null;
       if (!latest || latest.id === cursorTraceIdRef.current) return;
@@ -655,6 +711,10 @@ export function ChatAppControlPanel({
 
   useEffect(() => {
     let cancelled = false;
+    setStatus(null);
+    setTraceEntries([]);
+    lastTraceIdRef.current = null;
+    cursorTraceIdRef.current = null;
     function resetSessionState(): void {
       // Keeps the last painted frame as the stale one, so a dropped session can
       // show it dimmed behind Reconnect instead of blanking to an empty pane.
@@ -669,12 +729,23 @@ export function ChatAppControlPanel({
       setActiveHandle(null);
       observationElementsRef.current = [];
     }
+    // A lane switch: the last lane's picture is not a stale view of this one.
+    resetSessionState();
+    clearLiveFrame();
     void refreshStatus().then((nextStatus) => {
       if (!cancelled && nextStatus.activeSession?.status === "connected") {
         void refreshSnapshot().catch(() => {});
       }
     }).catch(() => {});
     const unsubscribe = window.ade.appControl.onEvent((event) => {
+      // Another lane's app is not this pane's. Before the first status names
+      // the lane of a lane-less chat, only its own chat's session counts.
+      const followed = eventLaneIdRef.current;
+      if (followed ? event.laneId !== followed : !(
+        (event.type === "session-started" || event.type === "session-updated")
+        && event.session?.chatSessionId
+        && event.session.chatSessionId === sessionIdRef.current
+      )) return;
       if (event.type === "session-started" || event.type === "session-updated") {
         const previousTargetId = activeTargetIdRef.current;
         const nextTargetId = event.session?.cdpTargetId ?? null;
@@ -682,6 +753,8 @@ export function ChatAppControlPanel({
         setStatus((current) => (current ? { ...current, activeSession: event.session } : current));
         const nextTraceId = event.session?.lastTraceEntryId ?? null;
         if (nextTraceId && nextTraceId !== lastTraceIdRef.current) {
+          // The first id a pane sees may predate it; only a change is news.
+          if (lastTraceIdRef.current) setAgentDrivingAt(Date.now());
           lastTraceIdRef.current = nextTraceId;
           void refreshTrace();
         }
@@ -709,6 +782,8 @@ export function ChatAppControlPanel({
       }
       if (event.type === "session-stopped") {
         void refreshStatus().catch(() => {});
+        setConfirmStop(false);
+        setAgentDrivingAt(null);
         resetSessionState();
         setTraceEntries([]);
         lastTraceIdRef.current = null;
@@ -727,7 +802,8 @@ export function ChatAppControlPanel({
       }
       scrollPendingRef.current = null;
     };
-  }, [clearLiveFrame, onLiveFrame, refreshSnapshot, refreshStatus, refreshTrace, resetLiveFrame]);
+    // `laneId`: a different lane is a different session, read afresh.
+  }, [clearLiveFrame, laneId, onLiveFrame, refreshSnapshot, refreshStatus, refreshTrace, resetLiveFrame]);
 
   // Refresh the list of CDP targets while the session is connected so the
   // user can switch to a freshly-opened window without restarting App Control.
@@ -753,7 +829,7 @@ export function ChatAppControlPanel({
   useEffect(() => {
     if (!sessionConnected) return undefined;
     let cancelled = false;
-    void window.ade.appControl.listDrivers(runtimePinRef.current)
+    void window.ade.appControl.listDrivers(laneArgsRef.current, runtimePinRef.current)
       .then((result) => {
         if (!cancelled) setDrivers(result);
       })
@@ -812,7 +888,7 @@ export function ChatAppControlPanel({
           force: true,
         }, runtimePinRef.current);
         rememberLaunch(command, cwd.length ? cwd : null);
-        const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
+        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
         setStatus({ ...nextStatus, activeSession: launched });
         setMode("control");
         if (launched.terminalSessionId && launched.terminalPtyId) {
@@ -823,13 +899,12 @@ export function ChatAppControlPanel({
           });
         }
         if (launched.status === "connected") await refreshSnapshot();
+        // The wait for the debug port is the strip's own line while it lasts,
+        // so the launch says only what it did.
         if (launched.lastError) {
           setMessage({ tone: "error", text: launched.lastError });
         } else {
-          const cdpHint = launched.cdpPort
-            ? ` Waiting for CDP on 127.0.0.1:${launched.cdpPort}. ADE forwards debug flags for common npm/pnpm/yarn/bun and direct Electron launches. If it stays blank, quit any old app instance or wire ADE_APP_CONTROL_DEBUG_FLAGS into the launcher.`
-            : "";
-          setMessage({ tone: "info", text: `Started ${launched.label} in the terminal.${cdpHint}` });
+          setMessage({ tone: "info", text: `Started ${launched.label} in the terminal.` });
         }
       }),
     [controlsDisabled, controlsDisabledMessage, laneId, launchCommand, launchCwd, onShowTerminal, projectRoot, refreshSnapshot, rememberLaunch, runBusy, sessionId],
@@ -850,10 +925,10 @@ export function ChatAppControlPanel({
           // minted against the previous document stop resolving. Fall back to
           // the older attach path when it is not reachable.
           try {
-            const result = await window.ade.appControl.switchWindow({ targetId }, runtimePinRef.current);
+            const result = await window.ade.appControl.switchWindow({ ...laneArgsRef.current, targetId }, runtimePinRef.current);
             setTargets(result.windows);
           } catch {
-            const session = await window.ade.appControl.attachToTarget({ targetId }, runtimePinRef.current);
+            const session = await window.ade.appControl.attachToTarget({ ...laneArgsRef.current, targetId }, runtimePinRef.current);
             setStatus((current) => (current ? { ...current, activeSession: session } : current));
             await refreshTargets();
           }
@@ -885,7 +960,7 @@ export function ChatAppControlPanel({
           chatSessionId: sessionId,
           force: true,
         }, runtimePinRef.current);
-        const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
+        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
         setStatus({ ...nextStatus, activeSession: connected });
         setMode("control");
         await refreshSnapshot();
@@ -919,14 +994,18 @@ export function ChatAppControlPanel({
     () =>
       runBusy("stop", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.stop(undefined, runtimePinRef.current);
-        const nextStatus = await window.ade.appControl.getStatus(runtimePinRef.current);
+        setConfirmStop(false);
+        const stopping = activeSessionRef.current;
+        const quits = appControlStopQuitsApp(stopping);
+        await window.ade.appControl.stop({ ...laneArgsRef.current, chatSessionId: sessionIdRef.current }, runtimePinRef.current);
+        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
         setStatus(nextStatus);
         setSnapshot(null);
         setSelectedElement(null);
         setSelectedPoint(null);
         setSelectedContextItem(null);
-        setMessage({ tone: "info", text: "Session stopped." });
+        const label = stopping?.label ?? "the app";
+        setMessage({ tone: "info", text: quits ? `Quit ${label}.` : `Detached from ${label}. It is still running.` });
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
@@ -935,7 +1014,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("focus-window", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.focusWindow(runtimePinRef.current);
+        await window.ade.appControl.focusWindow(laneArgsRef.current, runtimePinRef.current);
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
@@ -944,7 +1023,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("minimize-window", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.minimizeWindow(runtimePinRef.current);
+        await window.ade.appControl.minimizeWindow(laneArgsRef.current, runtimePinRef.current);
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
@@ -965,6 +1044,7 @@ export function ChatAppControlPanel({
         // `ade app-control observe` gets. The badge you read on screen has to
         // be the badge an agent is talking about, so take the same default.
         const result = await window.ade.appControl.observe({
+          ...laneArgsRef.current,
           includeDom: true,
           includeDiagnostics: true,
           includeDataUrl: false,
@@ -981,7 +1061,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("screenshot", async () => {
         if (!onAddAttachment) throw new Error("Attachments are not available in this panel.");
-        const shot = await window.ade.appControl.screenshot(runtimePinRef.current);
+        const shot = await window.ade.appControl.screenshot(laneArgsRef.current, runtimePinRef.current);
         const { path } = await window.ade.agentChat.saveTempAttachment({
           data: stripDataUrlPrefix(shot.dataUrl),
           filename: "app-control-screenshot.png",
@@ -1007,6 +1087,7 @@ export function ChatAppControlPanel({
         throw new Error("Context insertion is not available in this panel.");
       }
       const result = await window.ade.appControl.selectPoint({
+        ...laneArgsRef.current,
         projectRoot,
         x,
         y,
@@ -1137,7 +1218,7 @@ export function ChatAppControlPanel({
       // updates on its own; gating busy/disabled state through every click
       // makes the picker and Stop button flash and feel locked.
       window.ade.appControl
-        .click({ x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, runtimePinRef.current)
+        .click({ ...laneArgsRef.current, x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, runtimePinRef.current)
         .catch((error) => {
           setMessage({ tone: "error", text: `Click failed: ${errorMessage(error)}` });
         });
@@ -1159,6 +1240,7 @@ export function ChatAppControlPanel({
         hoverInspectTimerRef.current = null;
         void window.ade.appControl
           .inspectPoint({
+            ...laneArgsRef.current,
             projectRoot,
             x: point.viewportX,
             y: point.viewportY,
@@ -1183,7 +1265,7 @@ export function ChatAppControlPanel({
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
         if (modeRef.current !== "control") throw new Error("Switch to Control mode to type into the app.");
         if (!typeText.trim()) return;
-        await window.ade.appControl.typeText({ text: typeText }, runtimePinRef.current);
+        await window.ade.appControl.typeText({ ...laneArgsRef.current, text: typeText }, runtimePinRef.current);
         setTypeText("");
         try {
           await refreshSnapshot();
@@ -1207,7 +1289,9 @@ export function ChatAppControlPanel({
 
   const screenshot = snapshot?.screenshot ?? null;
   const liveFrameAgeMs = liveFrame.ageMs;
-  const liveFrameStale = liveFrameAgeMs != null && liveFrameAgeMs > APP_CONTROL_FRAME_STALE_MS;
+  // A still page sends no screencast frames, so frame age alone is not a
+  // fault. Only an old frame on a session that is no longer connected is.
+  const liveFrameStale = !sessionConnected && liveFrameAgeMs != null && liveFrameAgeMs > APP_CONTROL_FRAME_STALE_MS;
   const focusElement = hoverElement ?? selectedElement;
   const metrics = getDisplayedMetrics();
   const overlayViewport = metrics
@@ -1235,6 +1319,168 @@ export function ChatAppControlPanel({
     && !launching
     && Boolean(staleFrameSrc)
     && sessionStatus.tone === "error";
+
+  const maximize = useWorkToolsMaximize();
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const setWorkViewState = useAppStore((state) => state.setWorkViewState);
+  /**
+   * "Show floating": float this lane's app over the chat and put the tools
+   * pane away, so the float is what you see. Only in the Work tools pane,
+   * which is where the floating player lives; a chat drawer has no pane to
+   * minimize into.
+   */
+  const canFloat = Boolean(maximize && sessionId && projectStateKey);
+  const showFloating = useCallback(() => {
+    if (!sessionId || !projectStateKey) return;
+    floatWorkLiveCardForChat(sessionId, "app-control");
+    maximize?.setMaximized(false);
+    setWorkViewState(projectStateKey, { workSidebarOpen: false });
+  }, [maximize, projectStateKey, sessionId, setWorkViewState]);
+
+  const recorder = useAppControlRecording({
+    laneId: eventLaneId,
+    chatSessionId: sessionId,
+    runtimePin,
+    enabled: hasActiveSession,
+  });
+  const defaultCaption = appControlRecordingCaption(activeSession?.label, laneName);
+  const toggleRecording = useCallback(() => {
+    if (recorder.running) {
+      void recorder.stop();
+      return;
+    }
+    // A person pressing Record wants the file kept, and a caption is what
+    // files it as proof. So Record asks for one, prefilled.
+    setConfirmStop(false);
+    setCaptionDraft((current) => (current != null && captionFor === "record" ? null : defaultCaption));
+    setCaptionFor("record");
+  }, [captionFor, defaultCaption, recorder]);
+  const defaultProofCaption = appControlProofCaption(activeSession?.label);
+  // Proof: one still of the app, filed as proof. Like Record, it asks for a
+  // caption, prefilled, because the caption is what a reviewer judges it on.
+  const toggleProof = useCallback(() => {
+    setConfirmStop(false);
+    setCaptionDraft((current) => (current != null && captionFor === "proof" ? null : defaultProofCaption));
+    setCaptionFor("proof");
+  }, [captionFor, defaultProofCaption]);
+  const submitCaption = useCallback(() => {
+    if (captionFor === "proof") {
+      const caption = captionDraft?.trim() || defaultProofCaption;
+      setCaptionDraft(null);
+      void recorder.captureProof(caption);
+      return;
+    }
+    const caption = captionDraft?.trim() || defaultCaption;
+    setCaptionDraft(null);
+    void recorder.start(caption);
+  }, [captionDraft, captionFor, defaultCaption, defaultProofCaption, recorder]);
+
+  // "The agent is driving" fades a few seconds after its last action. One
+  // timer per action, never a poll.
+  useEffect(() => {
+    if (agentDrivingAt == null) return undefined;
+    const timer = window.setTimeout(() => setAgentDrivingAt(null), AGENT_DRIVING_LINGER_MS);
+    return () => window.clearTimeout(timer);
+  }, [agentDrivingAt]);
+
+  // A session that went away takes its questions with it.
+  useEffect(() => {
+    if (hasActiveSession) return;
+    setConfirmStop(false);
+    setCaptionDraft(null);
+  }, [hasActiveSession]);
+
+  /**
+   * The pane's one strip, most pressing thing first: what went wrong, what is
+   * still starting, what is recording, what the agent is doing, and the note
+   * about the last thing you did. Live and quiet is no line at all.
+   */
+  const stripMessage = ((): AppControlStripMessage | null => {
+    if (message?.tone === "error") {
+      return {
+        key: `error:${message.text}`,
+        tone: "error",
+        sentence: message.text,
+        onDismiss: () => setMessage(null),
+        testId: "app-control-error",
+      };
+    }
+    if (recorder.error) {
+      return {
+        key: `recording-error:${recorder.error}`,
+        tone: "error",
+        sentence: recorder.error,
+        onDismiss: recorder.clearError,
+        testId: "app-control-recording-error",
+      };
+    }
+    if (activeSession && sessionStatus.tone === "error" && !showDisconnected) {
+      return {
+        key: `session:${activeSession.id}:${sessionStatus.detail}`,
+        tone: "error",
+        sentence: sessionStatus.detail,
+        actions: activeSession.cdpPort && !controlsDisabled
+          ? [{ label: "Reconnect", onClick: () => void reconnect(), disabled: Boolean(busy) }]
+          : undefined,
+        testId: "app-control-session-error",
+      };
+    }
+    if (waitingForCdp && activeSession?.cdpPort) {
+      const terminal = activeSession.terminalSessionId && activeSession.terminalPtyId && onShowTerminal
+        ? { terminalId: activeSession.terminalSessionId, ptyId: activeSession.terminalPtyId, label: activeSession.label }
+        : null;
+      return {
+        key: `waiting:${activeSession.id}`,
+        tone: "notice",
+        busy: true,
+        sentence: `Starting ${activeSession.label}. Waiting for its debug port on 127.0.0.1:${activeSession.cdpPort}.`,
+        detail: "ADE adds the debug flags for common npm, pnpm, yarn, bun and direct Electron launches. If this does not end, quit any older copy of the app, or pass ADE_APP_CONTROL_DEBUG_FLAGS to the launcher.",
+        actions: terminal ? [{ label: "Show terminal", onClick: () => onShowTerminal?.(terminal), muted: true }] : undefined,
+        testId: "app-control-waiting",
+      };
+    }
+    if (recorder.running) {
+      return {
+        key: "recording",
+        tone: "notice",
+        icon: <span aria-hidden="true" className="block h-2 w-2 rounded-full bg-[var(--color-error)] motion-safe:animate-pulse" />,
+        sentence: `Recording ${formatRecordingElapsed(recorder.elapsedMs)}`,
+        detail: recorder.recording?.caption ?? null,
+        actions: [{ label: "Stop recording", onClick: () => void recorder.stop(), disabled: recorder.busy }],
+        testId: "app-control-recording",
+      };
+    }
+    if (recorder.notice) {
+      return {
+        key: `recording-notice:${recorder.notice}`,
+        tone: "notice",
+        sentence: recorder.notice,
+        onDismiss: recorder.clearNotice,
+        testId: "app-control-recording-notice",
+      };
+    }
+    if (agentDrivingAt != null && sessionConnected) {
+      return {
+        key: `driving:${agentDrivingAt}`,
+        tone: "notice",
+        icon: <Crosshair size={13} />,
+        sentence: lastActionLine
+          ? `The agent is driving ${activeSession?.label ?? "the app"} · ${lastActionLine}`
+          : `The agent is driving ${activeSession?.label ?? "the app"}`,
+        testId: "app-control-agent-driving",
+      };
+    }
+    if (message) {
+      return {
+        key: `info:${message.text}`,
+        tone: "notice",
+        sentence: message.text,
+        onDismiss: () => setMessage(null),
+        testId: "app-control-message",
+      };
+    }
+    return null;
+  })();
 
   const renderOverflow = useCallback((close: () => void) => (
     <>
@@ -1278,12 +1524,6 @@ export function ChatAppControlPanel({
         }}
       />
 
-      {/* No "Windows" group here. The toolbar already exposes every window —
-          up to three segments plus a `+N` menu listing the rest — and this was
-          a second, complete copy of the same list with a different label rule
-          (raw URL, no host stripping), so the two disagreed on any window
-          without a title. One affordance, one label. */}
-
       {/* Only where there is a chat, draft or CLI session to send to. */}
       {canSendToChat ? <AppControlMenuLabel>Send to chat</AppControlMenuLabel> : null}
       {onAddAttachment ? (
@@ -1314,6 +1554,19 @@ export function ChatAppControlPanel({
       ) : null}
 
       <AppControlMenuLabel>Session</AppControlMenuLabel>
+      {canFloat ? (
+        <AppControlMenuItem
+          icon={<PictureInPicture size={11} />}
+          label="Show floating"
+          hint="Float the app over the chat and close the tools pane"
+          disabled={!hasActiveSession}
+          disabledReason="Launch or attach an app first."
+          onSelect={() => {
+            showFloating();
+            close();
+          }}
+        />
+      ) : null}
       <AppControlMenuItem
         icon={<Terminal size={11} />}
         label="Reveal terminal"
@@ -1355,99 +1608,153 @@ export function ChatAppControlPanel({
         disabled={!canStop || Boolean(busy)}
         disabledReason="No session to stop."
         onSelect={() => {
-          void stopSession();
+          setCaptionDraft(null);
+          setConfirmStop(true);
           close();
         }}
       />
+
+      {/* How ADE drives the app. Read once per session; a driver that is
+          not available here says why in its tooltip. */}
+      <AppControlMenuLabel>Driver</AppControlMenuLabel>
+      {(drivers?.drivers ?? []).length === 0 ? (
+        <div className="px-2 pb-1.5 text-[10.5px] text-muted-fg/65">
+          {APP_CONTROL_DRIVER_LABEL[activeDriver]}
+        </div>
+      ) : (
+        (drivers?.drivers ?? []).map((row) => (
+          <AppControlMenuItem
+            key={row.driver}
+            label={APP_CONTROL_DRIVER_LABEL[row.driver]}
+            checked={row.driver === activeDriver}
+            disabled={row.status !== "available"}
+            disabledReason={row.reason}
+            onSelect={close}
+          />
+        ))
+      )}
     </>
   ), [
-    activeSession, attachSelection, busy, canSendToChat, canStop, controlsDisabled, focusWindow,
-    minimizeWindow, observeMapOn, onAddAttachment, onAddContext, onShowTerminal,
-    refreshSnapshot, runBusy, runObserve, screenshotToChat, selectedPoint, sessionConnected, stopSession,
-    traceOpen,
+    activeDriver, activeSession, attachSelection, busy, canFloat, canSendToChat, canStop, controlsDisabled,
+    drivers, focusWindow, hasActiveSession, minimizeWindow, observeMapOn, onAddAttachment, onAddContext,
+    onShowTerminal, refreshSnapshot, runBusy, runObserve, screenshotToChat, selectedPoint, sessionConnected,
+    showFloating, traceOpen,
   ]);
 
-  return (
-    <div className="flex h-full min-h-0 flex-col font-sans text-[11px] text-fg/75">
-      <AppControlToolbar
-        appLabel={activeSession?.label ?? "Pick an app"}
-        hasSession={hasActiveSession}
-        recents={recents}
-        launchCommand={launchCommand}
-        onLaunchCommandChange={(value) => {
-          setLaunchCommand(value);
-          if (launchCwd) setLaunchCwd("");
+  /* The toolbar's own buttons, in the Mac Desktop row's order. */
+  const chromeActions = hasActiveSession ? (
+    <>
+      <WorkToolChromeButton
+        label={recorder.running ? "Stop recording" : "Record this app"}
+        onClick={toggleRecording}
+        disabled={recorder.busy || controlsDisabled || (!sessionConnected && !recorder.running)}
+        active={recorder.running || (captionDraft != null && captionFor === "record")}
+        testId="app-control-record"
+      >
+        {recorder.running ? <Stop size={16} weight="fill" /> : <Record size={16} weight="fill" />}
+      </WorkToolChromeButton>
+      <WorkToolChromeButton
+        label={recorder.proofBusy ? "Saving screenshot to proof…" : "Save screenshot to proof"}
+        onClick={toggleProof}
+        disabled={recorder.proofBusy || controlsDisabled || !sessionConnected}
+        active={captionDraft != null && captionFor === "proof"}
+        testId="app-control-proof"
+      >
+        <SealCheck size={16} />
+      </WorkToolChromeButton>
+      {onAddAttachment ? (
+        <WorkToolChromeButton
+          label={busy === "screenshot" ? "Attaching screenshot…" : "Screenshot to chat"}
+          onClick={() => void screenshotToChat()}
+          disabled={!sessionConnected || Boolean(busy)}
+          className="@max-[340px]:hidden"
+          testId="app-control-screenshot"
+        >
+          <Camera size={16} />
+        </WorkToolChromeButton>
+      ) : null}
+      {/* Inspect exists to attach an element to a chat, so without one there
+          is only Control, and no toggle. Esc leaves it. */}
+      {onAddContext ? (
+        <WorkToolChromeButton
+          label={mode === "inspect" ? "Stop inspecting" : "Inspect"}
+          shortcut={mode === "inspect" ? "Esc" : undefined}
+          onClick={() => setMode((current) => (current === "inspect" ? "control" : "inspect"))}
+          disabled={controlsDisabled}
+          active={mode === "inspect"}
+          testId="app-control-inspect"
+        >
+          <Crosshair size={16} />
+        </WorkToolChromeButton>
+      ) : null}
+      <WorkToolChromeButton
+        label={appControlStopQuitsApp(activeSession) ? "Stop app" : "Detach from app"}
+        onClick={() => {
+          setCaptionDraft(null);
+          setConfirmStop((current) => !current);
         }}
-        onLaunch={(command, cwd) => void launchSelected(command, cwd)}
-        canLaunch={canLaunch}
-        launching={busy === "launch"}
-        cdpPort={cdpPort}
-        onCdpPortChange={setCdpPort}
-        onConnect={() => void connectPort()}
-        connecting={busy === "connect"}
-        onHelpWireCdp={onInsertDraft ? requestDebugHelp : null}
-        drivers={drivers}
-        activeDriver={activeDriver}
-        statusWord={sessionStatus.word}
-        statusTone={sessionStatus.tone}
-        statusDetail={sessionStatus.detail}
-        remoteLabel={remoteLabel}
-        windows={targets}
-        activeWindowId={pendingTargetId ?? targets.find((target) => target.active)?.id ?? null}
-        onSwitchWindow={(targetId) => void attachToTargetId(targetId)}
-        switching={busy === "attach"}
-        controlsDisabled={controlsDisabled}
-        pickerOpen={pickerOpen}
-        onPickerOpenChange={setPickerOpen}
-        renderOverflow={renderOverflow}
-        previewControls={<WorkToolPreviewControls tool="app-control" chatSessionId={sessionId} />}
-      />
+        disabled={!canStop || busy === "stop"}
+        active={confirmStop}
+        testId="app-control-stop"
+      >
+        <Power size={16} />
+      </WorkToolChromeButton>
+    </>
+  ) : null;
 
-      {waitingForCdp && activeSession?.cdpPort ? (
-        <div
-          className="flex shrink-0 items-start gap-2 border-b border-amber-400/20 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-100/85"
-          role="status"
-        >
-          <WarningCircle size={12} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">
-            Waiting for CDP on 127.0.0.1:{activeSession.cdpPort}. If the app is running but App Control is blank, quit any existing app instance or wire ADE_APP_CONTROL_DEBUG_FLAGS into the launcher.
-          </span>
+  const previewControls = <WorkToolPreviewControls tool="app-control" chatSessionId={sessionId} />;
+
+  /* ── The body: one state at a time ─────────────────────────────────── */
+  const renderBody = () => {
+    if (!hasActiveSession && !showDisconnected && !hasFrame) {
+      return (
+        <div className="min-h-0 flex-1 p-2">
+          <AppControlOffCard
+            launchCommand={launchCommand}
+            onLaunchCommandChange={setLaunchCommand}
+            launchCwd={launchCwd}
+            onLaunchCwdChange={setLaunchCwd}
+            onLaunch={(command, cwd) => void launchSelected(command, cwd)}
+            canLaunch={canLaunch}
+            launching={busy === "launch"}
+            cdpPort={cdpPort}
+            onCdpPortChange={setCdpPort}
+            onConnect={() => void connectPort()}
+            connecting={busy === "connect"}
+            recents={recents}
+            onHelpWireCdp={onInsertDraft ? requestDebugHelp : null}
+            controlsDisabled={controlsDisabled}
+            laneName={laneName}
+          />
         </div>
-      ) : null}
-
-      {message ? (
-        <div
-          className={cn(
-            "flex shrink-0 items-start gap-2 border-b px-2.5 py-1.5 text-[11px]",
-            message.tone === "error"
-              ? "border-rose-400/22 bg-rose-500/10 text-rose-100/85"
-              : "border-sky-400/18 bg-sky-500/8 text-sky-100/80",
-          )}
-          role={message.tone === "error" ? "alert" : "status"}
-        >
-          <WarningCircle size={12} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">{message.text}</span>
-          <button
-            type="button"
-            onClick={() => setMessage(null)}
-            className="ml-auto shrink-0 rounded p-0.5 text-current opacity-50 transition-opacity hover:opacity-100"
-            aria-label="Dismiss"
-          >
-            ×
-          </button>
+      );
+    }
+    if (launching && !hasFrame) {
+      return (
+        <div className="min-h-0 flex-1 p-2">
+          <MacDesktopStateCard
+            testId="app-control-starting"
+            tone="busy"
+            icon={Desktop}
+            title={`Starting ${activeSession?.label ?? "the app"}…`}
+            detail={sessionStatus.detail}
+            actions={canStop ? (
+              <button type="button" className={MAC_DESKTOP_SECONDARY_BUTTON} onClick={() => setConfirmStop(true)}>
+                <Power size={14} />
+                Stop
+              </button>
+            ) : null}
+          />
         </div>
-      ) : null}
-
-      {/*
-        Body — the same card the browser stage draws.
-
-        The frame is inset 8px from the pane, 10px-radius, with a 1px inset
-        ring over the muted surface, so App Control and the browser next door
-        read as one product instead of two panes that merely sit side by side.
-        Every overlay — the mode toggle, the URL chip, the observe badges, the
-        agent cursor — is a child of this inner frame, so all of them stay
-        aligned to the inset edge rather than to the pane's own edge.
-      */}
+      );
+    }
+    return (
+      /*
+        The same card the browser stage draws: inset 8px, 10px radius, a 1px
+        inset ring over the muted surface. Every overlay (the URL chip, the
+        observe badges, the agent cursor, the receipt) is a child of this
+        frame, so all of them stay aligned to its inset edge.
+      */
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col p-2">
         <div
           data-testid="app-control-stage"
@@ -1456,37 +1763,6 @@ export function ChatAppControlPanel({
             "bg-[var(--color-surface)] ring-1 ring-inset ring-white/[0.08]",
           )}
         >
-          {/* Inspect exists to attach an element to a chat, so without one there
-              is only Control left — and a one-option toggle is chrome that asks
-              a question with a single answer. */}
-          {hasActiveSession && onAddContext ? (
-            <div
-              className="absolute left-2 top-2 z-10 inline-flex items-center rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 p-0.5 backdrop-blur"
-              role="group"
-              aria-label="App Control mode"
-            >
-              {(["control", "inspect"] as const).map((nextMode) => (
-                <button
-                  key={nextMode}
-                  type="button"
-                  disabled={controlsDisabled}
-                  aria-pressed={mode === nextMode}
-                  onClick={() => setMode(nextMode)}
-                  className={cn(
-                    "h-[20px] rounded-[3px] px-2 text-[10px] font-medium transition-colors duration-[120ms] ease-out",
-                    "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                    "disabled:cursor-not-allowed disabled:opacity-45",
-                    mode === nextMode
-                      ? "bg-[color-mix(in_srgb,var(--color-accent)_18%,transparent)] text-fg/90"
-                      : "text-muted-fg/65 hover:bg-white/[0.06] hover:text-fg/85",
-                  )}
-                >
-                  {nextMode === "control" ? "Control" : "Inspect"}
-                </button>
-              ))}
-            </div>
-          ) : null}
-
           {snapshot?.url ? (
             <div
               className="absolute right-2 top-2 z-10 max-w-[55%] truncate rounded-[var(--radius-sm)] border border-white/[0.1] bg-black/55 px-2 py-1 text-[10px] text-muted-fg backdrop-blur"
@@ -1624,14 +1900,6 @@ export function ChatAppControlPanel({
                 ) : null}
               </div>
             </div>
-          ) : launching ? (
-            <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4" role="status">
-              <div className="ade-tool-skeleton h-[132px] w-full max-w-[320px] rounded-[var(--radius-lg)]" aria-hidden="true" />
-              <div className="flex items-center gap-1.5 text-[11px] text-muted-fg">
-                <SpinnerGap size={12} className="animate-spin" />
-                {sessionStatus.detail}
-              </div>
-            </div>
           ) : showDisconnected ? (
             <div className="relative flex h-full min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
               <img
@@ -1663,27 +1931,165 @@ export function ChatAppControlPanel({
               </div>
             </div>
           ) : (
-            /* One line and one action, like every other tool's empty state.
-               This was a glyph, a headline, a paragraph, a button and a CLI
-               hint — five things saying the same thing the header already
-               says, in three different casings of "no app". */
-            <WorkToolEmptyLine
-              title={sessionConnected ? "Capture a snapshot to begin" : "No app attached"}
-              action={sessionConnected ? undefined : (
-                <button
-                  type="button"
-                  onClick={() => setPickerOpen(true)}
-                  className={WORK_TOOL_PRIMARY_BUTTON}
-                  data-testid="app-control-empty-pick"
-                >
-                  <Stack size={14} weight="regular" />
-                  <span>Pick an app</span>
-                </button>
-              )}
-            />
+            <WorkToolEmptyLine title="Capture a snapshot to begin" />
           )}
+
+          {recorder.receipt ? (
+            <RecordingSavedRow
+              marker={{ "data-testid": "app-control-saved-receipt" }}
+              durationMs={recorder.receipt.durationMs}
+              bytes={recorder.receipt.bytes}
+              onOpen={() => recorder.receipt && recorder.openReceipt(recorder.receipt)}
+              onDismiss={recorder.clearReceipt}
+            />
+          ) : null}
         </div>
       </div>
+    );
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col font-sans text-[11px] text-fg/75" data-testid="app-control-panel">
+      {hasActiveSession ? (
+        <AppControlToolbar
+          appLabel={activeSession?.label ?? "Pick an app"}
+          hasSession={hasActiveSession}
+          recents={recents}
+          launchCommand={launchCommand}
+          onLaunchCommandChange={(value) => {
+            setLaunchCommand(value);
+            if (launchCwd) setLaunchCwd("");
+          }}
+          onLaunch={(command, cwd) => void launchSelected(command, cwd)}
+          canLaunch={canLaunch}
+          launching={busy === "launch"}
+          cdpPort={cdpPort}
+          onCdpPortChange={setCdpPort}
+          onConnect={() => void connectPort()}
+          connecting={busy === "connect"}
+          onHelpWireCdp={onInsertDraft ? requestDebugHelp : null}
+          statusWord={sessionStatus.word}
+          statusTone={sessionStatus.tone}
+          statusDetail={sessionStatus.detail}
+          remoteLabel={remoteLabel}
+          windows={targets}
+          activeWindowId={pendingTargetId ?? targets.find((target) => target.active)?.id ?? null}
+          onSwitchWindow={(targetId) => void attachToTargetId(targetId)}
+          switching={busy === "attach"}
+          controlsDisabled={controlsDisabled}
+          pickerOpen={pickerOpen}
+          onPickerOpenChange={setPickerOpen}
+          renderOverflow={renderOverflow}
+          actions={chromeActions}
+          previewControls={previewControls}
+        />
+      ) : (
+        /* No app: the slim row every idle tool keeps, with the per-chat
+           floating-preview toggle, as the Mac Desktop pane's Off state does. */
+        <div className={cn(WORK_TOOL_CHROME_ROW, "flex-nowrap justify-end gap-1")} data-testid="app-control-idle-row">
+          {remoteLabel ? (
+            <span
+              className="mr-auto inline-flex h-5 shrink-0 items-center rounded-full bg-white/[0.06] px-2 text-[10px] font-medium text-fg/70"
+              title={`App Control runs on ${remoteLabel}`}
+            >
+              remote: {remoteLabel}
+            </span>
+          ) : null}
+          {previewControls}
+        </div>
+      )}
+
+      <AppControlStatusStrip message={stripMessage} />
+
+      {confirmStop && hasActiveSession ? (
+        <AppControlStopConfirm
+          session={activeSession}
+          busy={busy === "stop"}
+          onKeep={() => setConfirmStop(false)}
+          onStop={() => void stopSession()}
+        />
+      ) : null}
+
+      {captionDraft != null && hasActiveSession ? (
+        <form
+          role="dialog"
+          aria-label={captionFor === "proof" ? "Save screenshot to proof" : "Record this app"}
+          data-testid="app-control-caption-prompt"
+          className="mx-2 mt-1.5 flex min-w-0 shrink-0 flex-wrap items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 font-sans text-[12px] text-fg"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitCaption();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.stopPropagation();
+            setCaptionDraft(null);
+          }}
+        >
+          <label className="flex min-w-0 flex-1 basis-[180px] flex-col gap-1">
+            <span className="text-muted-fg">
+              {captionFor === "proof" ? "Caption. It files the screenshot as proof." : "Caption. It files the video as proof."}
+            </span>
+            <input
+              autoFocus
+              value={captionDraft}
+              onChange={(event) => setCaptionDraft(event.target.value)}
+              aria-label={captionFor === "proof" ? "Proof caption" : "Recording caption"}
+              className="h-7 min-w-0 rounded-[7px] border border-border/70 bg-[color-mix(in_srgb,var(--color-bg)_55%,transparent)] px-2 text-[12px] text-fg outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)]"
+            />
+          </label>
+          <div className="flex shrink-0 items-center gap-2 self-end">
+            <button type="button" className={cn(MAC_DESKTOP_SECONDARY_BUTTON, "h-7")} onClick={() => setCaptionDraft(null)}>
+              Cancel
+            </button>
+            {captionFor === "proof" ? (
+              <button
+                type="submit"
+                data-testid="app-control-proof-save"
+                disabled={recorder.proofBusy}
+                className={cn(MAC_DESKTOP_SECONDARY_BUTTON, "h-7")}
+              >
+                <SealCheck size={12} />
+                Save to proof
+              </button>
+            ) : (
+              <button
+                type="submit"
+                data-testid="app-control-record-start"
+                disabled={recorder.busy}
+                className={cn(
+                  MAC_DESKTOP_SECONDARY_BUTTON,
+                  "h-7 border-[color-mix(in_srgb,var(--color-error)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-error)_14%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-error)_22%,transparent)]",
+                )}
+              >
+                <Record size={12} weight="fill" className="text-[var(--color-error)]" />
+                Record
+              </button>
+            )}
+          </div>
+        </form>
+      ) : null}
+
+      {recorder.missingPermissions.length > 0 && recorder.permissions ? (
+        <div className="mx-2 mt-1.5 shrink-0">
+          <MacDesktopPermissionCard
+            variant="inline"
+            productName="App Control"
+            purposes={{ screenRecording: "Records the app's window. Driving the app does not need it." }}
+            permissions={{ screenRecording: recorder.permissions.screenRecording, accessibility: "granted" }}
+            appName="ADE"
+            signing="unknown"
+            hostIsLocal={recorder.hostIsLocal}
+            machineName={remoteLabel}
+            checking={recorder.checkingPermissions}
+            lastCheck={recorder.permissionCheck}
+            onOpenSettings={recorder.openSettings}
+            onCheckAgain={() => void recorder.checkPermissionsAgain()}
+          />
+        </div>
+      ) : null}
+
+      {renderBody()}
 
       {/* Control-mode keyboard input — the one action the frame can't express. */}
       {mode === "control" && hasActiveSession ? (
@@ -1776,24 +2182,30 @@ export function ChatAppControlPanel({
         </div>
       ) : null}
 
-      <AppControlTraceDrawer
-        open={traceOpen}
-        rows={traceRows}
-        onClose={() => setTraceOpen(false)}
-      />
+      {/* The action ledger belongs to a session; the Off card has none. */}
+      {hasActiveSession || traceEntries.length > 0 ? (
+        <>
+          <AppControlTraceDrawer
+            open={traceOpen}
+            rows={traceRows}
+            onClose={() => setTraceOpen(false)}
+          />
 
-      <AppControlStatusRow
-        lastLine={lastActionLine}
-        // Nothing to report is not a sentence worth a footer row: the empty
-        // state above already says there is no app.
-        hint={sessionConnected ? "No agent actions on this app yet." : ""}
-        consoleErrors={countConsoleErrors(observation?.diagnostics)}
-        networkFailures={countNetworkFailures(observation?.diagnostics)}
-        diagnosticsKnown={Boolean(observation?.diagnostics)}
-        traceCount={traceEntries.length}
-        traceOpen={traceOpen}
-        onToggleTrace={() => setTraceOpen((value) => !value)}
-      />
+          <AppControlStatusRow
+            lastLine={lastActionLine}
+            // Nothing to report is not a sentence worth a footer row: the empty
+            // state above already says there is no app.
+            hint={sessionConnected ? "No agent actions on this app yet." : ""}
+            consoleErrors={countConsoleErrors(observation?.diagnostics)}
+            networkFailures={countNetworkFailures(observation?.diagnostics)}
+            diagnosticsKnown={Boolean(observation?.diagnostics)}
+            traceCount={traceEntries.length}
+            traceOpen={traceOpen}
+            onToggleTrace={() => setTraceOpen((value) => !value)}
+          />
+        </>
+      ) : null}
     </div>
   );
 }
+

@@ -235,6 +235,58 @@ export function macDesktopFloatState(args: {
   };
 }
 
+/**
+ * Whether the floating App Control player is mounted, and whether it is in view.
+ *
+ * App Control floats in its own player (`AppControlMiniPlayer`, on the shared
+ * `FloatingPlayerShell`), not in the corner card. The rule is Mac Desktop's:
+ * it shows for the chat in front when that chat may see the lane's app (its
+ * agent owns the session, its agent was granted the float, it floated the app
+ * by hand, or the session belongs to no chat and this is a chat of the lane),
+ * the chat has not turned the preview off, and a session is live.
+ *
+ * It is never in view while the tools pane shows App Control: a copy of the
+ * pane beside the pane is the duplicate the owner reported for Mac Desktop.
+ */
+export function appControlFloatState(args: {
+  active: boolean;
+  laneId: string | null;
+  chatSessionId: string | null;
+  /** The chat's own lane; null for a lane-less chat. */
+  sessionLaneId: string | null;
+  available: boolean;
+  /** The lane's session is live (not stopped or exited). */
+  live: boolean;
+  ownerChatSessionId: string | null;
+  granted: boolean;
+  floated: boolean;
+  dismissed: boolean;
+  paneTool: WorkSidebarTab | null;
+  paneMounted?: boolean;
+}): { present: boolean; visible: boolean } {
+  const authorized = Boolean(
+    args.chatSessionId
+    && (
+      args.ownerChatSessionId === args.chatSessionId
+      || args.granted
+      || args.floated
+      || (args.ownerChatSessionId == null && args.sessionLaneId != null && args.sessionLaneId === args.laneId)
+    ),
+  );
+  const present = Boolean(
+    args.active
+    && args.laneId
+    && args.available
+    && args.live
+    && authorized
+    && !args.dismissed,
+  );
+  return {
+    present,
+    visible: present && args.paneTool !== "app-control" && !args.paneMounted,
+  };
+}
+
 /* ── Per-tool source adapters ─────────────────────────────────────────────── */
 
 /**

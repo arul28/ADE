@@ -82,6 +82,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
   captureMacDesktopAnalytics,
+  captureAppControlAnalytics,
   captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -374,6 +375,8 @@ import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
 import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
 import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
 import { createAppControlService } from "./services/appControl/appControlService";
+import { createAppControlScreencastRecorderHost } from "./services/appControl/appControlScreencastRecorderHost";
+import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
@@ -1728,12 +1731,20 @@ app.whenReady().then(async () => {
   const builtInBrowserBridgeSocketPath =
     process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
     || machineAdeLayout.desktopBridgeSocketPath;
+  // The App Control screencast encoder (Windows/Linux recording engine). One
+  // per desktop: recordings are keyed per lane, and lane ids are unique across
+  // projects. In-process project contexts use it directly; the runtime daemon
+  // reaches it over the bridge below. It opens no window until a recording starts.
+  const appControlScreencastRecorder = createAppControlScreencastRecorderHost({
+    logger: builtInBrowserBridgeLogger,
+  });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
       socketPath: builtInBrowserBridgeSocketPath,
       service: builtInBrowserService,
       logger: builtInBrowserBridgeLogger,
+      appControlScreencastRecorder,
     });
   } catch (error) {
     builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
@@ -4697,32 +4708,53 @@ app.whenReady().then(async () => {
       projectRoot,
       logger,
       ptyService,
-      resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
-        const explicitLaneId = laneId?.trim();
-        if (explicitLaneId) return explicitLaneId;
-        const chatId = chatSessionId?.trim();
-        if (chatId) {
-          const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
-          if (chatSession?.laneId) return chatSession.laneId;
-        }
-        const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
-        const lanes = await laneService.list({ includeArchived: false });
-        const matchingLane = lanes.find((lane) => {
-          const worktreePath = path.resolve(lane.worktreePath);
-          const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-          return (
-            targetRoot === worktreePath
-            || targetRoot.startsWith(`${worktreePath}${path.sep}`)
-            || (attachedRootPath !== null
-              && (targetRoot === attachedRootPath
-                || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
-          );
-        });
-        return matchingLane?.id ?? lanes[0]?.id ?? null;
+      // No fallback lane: a session whose lane cannot be resolved is refused.
+      resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
+        laneId,
+        chatSessionId,
+        cwd,
+        getChatLaneId: async (chatId) => {
+            const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
+            return chatSession?.laneId ?? null;
+          },
+        isLiveLane: (id) => laneService.findLaneIdentity(id) !== null,
+        laneIdForPath: (absolutePath) => laneService.getLaneIdForPath(absolutePath),
+        isPrimaryLane: async (id) => (await laneService.getSummary(id, { includeStatus: false }))?.laneType === "primary",
+      }),
+      resolveChatLaneId: async (chatId) => {
+        const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
+        return chatSession?.laneId ?? null;
       },
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
+      onEvent: (payload) => {
+        if (payload.type === "session-started") {
+          captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
+        }
+        emitProjectEvent(projectRoot, IPC.appControlEvent, payload);
+      },
+      // Recording: macOS records the app's window with the desktop helper
+      // (the service's default); Windows/Linux use this desktop's encoder.
+      getScreencastRecorder: () => appControlScreencastRecorder,
+      ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      resolvePrimaryPrUrl: (laneId: string): string | null =>
+        prService?.getForLane(laneId)?.githubUrl ?? null,
+      resolveLaneName: async (laneId: string): Promise<string | null> => {
+        const lane = await laneService.getSummary(laneId).catch(() => null);
+        return lane?.name ?? null;
+      },
     });
+    // The session is per lane and owned by a chat: it goes when the chat ends
+    // and when its lane is archived or deleted.
+    agentChatService.registerChatSessionEndedListener((sessionId) => {
+      void appControlService.stopForChat(sessionId).catch((error: unknown) => {
+        logger.debug("app_control.release_on_chat_end_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    laneTeardownDeps.appControlService = {
+      stopForLane: (laneId: string) => appControlService.stopForLane(laneId),
+    };
     const usageTrackingService = createUsageTrackingService({
       logger,
       db,
@@ -7186,6 +7218,11 @@ app.whenReady().then(async () => {
       }
       try {
         builtInBrowserBridgeServer?.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        appControlScreencastRecorder.dispose();
       } catch {
         // ignore
       }

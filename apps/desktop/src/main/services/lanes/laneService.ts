@@ -1365,6 +1365,13 @@ export type LaneDeleteTeardownDeps = {
   macDesktopService?: {
     destroyForLane: (laneId: string) => Promise<{ destroyed: boolean }>;
   };
+  /**
+   * The lane's App Control session: quits the app ADE launched for the lane and
+   * detaches an attached one. Best-effort, like the Mac Desktop step.
+   */
+  appControlService?: {
+    stopForLane: (laneId: string) => Promise<unknown>;
+  };
 };
 
 export function createLaneService({
@@ -4480,6 +4487,9 @@ export function createLaneService({
     try {
       await teardownDeps?.macDesktopService?.destroyForLane(laneId);
     } catch (error) { warn("destroy_mac_desktop", error); }
+    try {
+      await teardownDeps?.appControlService?.stopForLane(laneId);
+    } catch (error) { warn("stop_app_control", error); }
   };
 
   // Named so a few methods (branch-drift resolution) can delegate to sibling
@@ -7640,6 +7650,19 @@ export function createLaneService({
           const result = await svc.destroyForLane(laneId);
           return { detail: result.destroyed ? "display destroyed" : "no display" };
         }, { fatal: false });
+
+        // Not a named step: the delete dialog's step list is a shared contract
+        // (desktop and phone), and releasing App Control has nothing for the
+        // user to watch. Best-effort, before the worktree goes away under the
+        // app it launched.
+        try {
+          await teardownDeps?.appControlService?.stopForLane(laneId);
+        } catch (error) {
+          logger.warn("lane.delete.stop_app_control_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };

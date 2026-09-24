@@ -636,8 +636,13 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * sees cli.ts. The builder is still the one argv reader for that family; it
  * just no longer lives in this file. Its flags stay `MAC_DESKTOP_VALUE_FLAGS`,
  * not browser flags.
+ *
+ * 114 since App Control became per lane and gained recording:
+ * `readAppControlLaneScope` reads the lane and chat for every `ade app-control`
+ * subcommand, and `buildAppControlRecordPlan` reads `record start|stop|status`.
+ * Their flags are App Control flags, not browser flags.
  */
-const ARGV_READER_COUNT = 112;
+const ARGV_READER_COUNT = 114;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

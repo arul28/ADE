@@ -6333,6 +6333,15 @@ describe("CTO-gated Linear sync commands", () => {
         releaseStreamSubscription: vi.fn(async () => {}),
         subscribe: vi.fn(() => () => {}),
       },
+      // A runtime with an App Control service injects its live-view stream,
+      // which is what registers the optional `appControl.*` actions.
+      appControlSyncStream: {
+        getStatus: vi.fn(async () => ({ laneId: null, activeSession: null, sessions: [] })),
+        subscribe: vi.fn(async () => ({ ok: true })),
+        unsubscribe: vi.fn(() => ({ ok: true })),
+        releaseConnection: vi.fn(),
+        dispose: vi.fn(),
+      },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
@@ -6415,6 +6424,9 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.returnControl",
         "macDesktop.renewLease",
         "macDesktop.input",
+        "appControl.status",
+        "appControl.streamSubscribe",
+        "appControl.streamUnsubscribe",
         "apple.status",
         "apple.streamTicket",
         "apple.input",

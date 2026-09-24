@@ -9,7 +9,8 @@ import UIKit
 /// host one, the lane's own private screen — then what the browser has in it
 /// and what App Control is driving. The browser is a `WebContentsView` in ADE
 /// Desktop and App Control is a CDP socket to a local process; neither can be
-/// reached from a phone, so those cards stay read-only. The Apple card offers
+/// driven from a phone. App Control can be watched: its card shows the app's
+/// live frames when the host serves `appControl.streamSubscribe`. The Apple card offers
 /// only a view-only `Watch` button. Mac Desktop is the exception: when the host
 /// advertises takeover, the picture takes a finger, inline or full screen.
 ///
@@ -50,6 +51,8 @@ struct WorkToolsSheet: View {
   /// Bumped after each tools poll. The card retries a stopped stream and
   /// reloads its still on that tick.
   @State private var macDesktopRefreshTick = 0
+  /// The App Control viewer owns the live picture while it is up.
+  @State private var appControlViewerPresented = false
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots. When set, `refresh`
@@ -88,12 +91,15 @@ struct WorkToolsSheet: View {
         try? await Task.sleep(for: Self.refreshInterval)
         guard !Task.isCancelled else { return }
         // The viewer polls the same read itself while it is up.
-        guard !macDesktopViewerPresented else { continue }
+        guard !macDesktopViewerPresented, !appControlViewerPresented else { continue }
         await refresh()
       }
     }
     .onChange(of: macDesktopViewerPresented) { _, presented in
       // Catch up on whatever changed while the viewer was up.
+      if !presented { Task { await refresh() } }
+    }
+    .onChange(of: appControlViewerPresented) { _, presented in
       if !presented { Task { await refresh() } }
     }
   }
@@ -121,7 +127,14 @@ struct WorkToolsSheet: View {
           isLiveMacDesktopMounted: $isLiveMacDesktopMounted
         )
         browserCard
-        appControlCard
+        // Live when the host serves `appControl.streamSubscribe`; otherwise
+        // the card keeps its text-only state.
+        AppControlCard(
+          laneId: laneId,
+          appControl: state?.appControl,
+          refreshTick: macDesktopRefreshTick,
+          viewerPresented: $appControlViewerPresented
+        )
         Text(syncService.supportsMacDesktopControl
           ? "Browser and App Control stay on the desktop."
           : "Control from the desktop")
@@ -264,30 +277,6 @@ struct WorkToolsSheet: View {
       }
     }
   }
-
-  @ViewBuilder
-  private var appControlCard: some View {
-    ADEGlassSection(title: "App Control") {
-      if let appControl = state?.appControl {
-        VStack(alignment: .leading, spacing: 3) {
-          Text(appControl.appName)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          Text("\(appControl.status) · \(appControl.driver)")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-      } else {
-        Text("No app is attached in this lane.")
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-    }
-  }
-
 
   private var loadingState: some View {
     VStack(spacing: 12) {

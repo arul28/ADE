@@ -307,8 +307,8 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
-    expect(service.getStatus().activeSession?.cdpTargetId).toBe("a");
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
+    expect(service.getStatus({ laneId: "lane-1" }).activeSession?.cdpTargetId).toBe("a");
 
     const healthPoll = deferred<FakeCdpTarget[]>();
     mockState.httpResponses.push(healthPoll.promise);
@@ -316,18 +316,18 @@ describe("appControlService", () => {
     await Promise.resolve();
 
     mockState.httpResponses.push([targetA, targetB]);
-    const attached = await service.attachToTarget("b");
+    const attached = await service.attachToTarget("b", { laneId: "lane-1" });
     expect(attached.cdpTargetId).toBe("b");
-    expect(service.getStatus().activeSession?.cdpTargetId).toBe("b");
+    expect(service.getStatus({ laneId: "lane-1" }).activeSession?.cdpTargetId).toBe("b");
 
     healthPoll.resolve([targetA, targetB]);
     await Promise.resolve();
 
-    expect(service.getStatus().activeSession?.cdpTargetId).toBe("b");
-    expect(service.getStatus().activeSession?.cdpEndpoint).toBe(targetB.webSocketDebuggerUrl);
+    expect(service.getStatus({ laneId: "lane-1" }).activeSession?.cdpTargetId).toBe("b");
+    expect(service.getStatus({ laneId: "lane-1" }).activeSession?.cdpEndpoint).toBe(targetB.webSocketDebuggerUrl);
   });
 
-  it("can claim an active renderer for a lane without relaunching it", async () => {
+  it("claims an active renderer for a chat without relaunching or moving it", async () => {
     const targetA = target("a");
     mockState.httpResponses.push([targetA]);
 
@@ -336,8 +336,8 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
-    const claimed = service.claim({ laneId: "lane-1", chatSessionId: "chat-1" });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
+    const claimed = await service.claim({ laneId: "lane-1", chatSessionId: "chat-1" });
 
     expect(claimed.activeSession).toMatchObject({
       laneId: "lane-1",
@@ -355,12 +355,12 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
     socket!.sent.length = 0;
 
-    await service.click({ x: 20, y: 40, scale: 2 });
+    await service.click({ laneId: "lane-1", x: 20, y: 40, scale: 2 });
 
     const mouseEvents = socket!.sent
       .map((payload) => JSON.parse(payload) as { method: string; params?: { type?: string; x?: number; y?: number } })
@@ -381,12 +381,12 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
     socket!.sent.length = 0;
 
-    await service.click({ x: 20, y: 40, scale: 2, coordinateSpace: "viewport" });
+    await service.click({ laneId: "lane-1", x: 20, y: 40, scale: 2, coordinateSpace: "viewport" });
 
     const mouseEvents = socket!.sent
       .map((payload) => JSON.parse(payload) as { method: string; params?: { type?: string; x?: number; y?: number } })
@@ -406,7 +406,7 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
     socket!.emitMessage({
@@ -419,7 +419,7 @@ describe("appControlService", () => {
     });
     socket!.sent.length = 0;
 
-    await service.click({ x: 20, y: 40 });
+    await service.click({ laneId: "lane-1", x: 20, y: 40 });
 
     const mouseEvents = socket!.sent
       .map((payload) => JSON.parse(payload) as { method: string; params?: { type?: string; x?: number; y?: number } })
@@ -444,9 +444,9 @@ describe("appControlService", () => {
       onEvent: (payload) => events.push(payload),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1)!;
-    const sessionId = service.getStatus().activeSession?.id;
+    const sessionId = service.getStatus({ laneId: "lane-1" }).activeSession?.id;
     expect(sessionId).toBeTruthy();
 
     socket.emitMessage({
@@ -524,8 +524,8 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
-    const result = await service.inspectPoint({
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
+    const result = await service.inspectPoint({ laneId: "lane-1",
       x: 20,
       y: 20,
       coordinateSpace: "viewport",
@@ -555,8 +555,8 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
-    const result = await service.inspectPoint({
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
+    const result = await service.inspectPoint({ laneId: "lane-1",
       x: 20,
       y: 40,
       coordinateSpace: "viewport",
@@ -584,12 +584,12 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
     socket!.sent.length = 0;
 
-    await service.click({ x: 20, y: 40, scale: 2 });
+    await service.click({ laneId: "lane-1", x: 20, y: 40, scale: 2 });
 
     const messages = socket!.sent.map((payload) => JSON.parse(payload) as { method: string });
     expect(messages.filter((message) => message.method === "Runtime.evaluate")).toHaveLength(2);
@@ -605,10 +605,10 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const timerCountBeforeCapture = vi.getTimerCount();
 
-    const screenshotPromise = service.screenshot();
+    const screenshotPromise = service.screenshot({ laneId: "lane-1" });
     await vi.advanceTimersByTimeAsync(100);
     const screenshot = await screenshotPromise;
 
@@ -626,13 +626,13 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
     socket!.sent.length = 0;
 
-    await service.focusWindow();
-    await service.minimizeWindow();
+    await service.focusWindow({ laneId: "lane-1" });
+    await service.minimizeWindow({ laneId: "lane-1" });
 
     const messages = socket!.sent.map((payload) => JSON.parse(payload) as { method: string; params?: { bounds?: { windowState?: string } } });
     expect(messages.filter((message) => message.method === "Browser.setWindowBounds").map((message) => message.params?.bounds?.windowState)).toEqual([
@@ -652,12 +652,12 @@ describe("appControlService", () => {
       logger: createLogger(),
     });
 
-    await service.connect({ cdpPort: 12345, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
     const socket = mockState.sockets.at(-1);
     expect(socket).toBeTruthy();
     socket!.sent.length = 0;
 
-    await expect(service.focusWindow()).rejects.toThrow("Could not show the controlled app window");
+    await expect(service.focusWindow({ laneId: "lane-1" })).rejects.toThrow("Could not show the controlled app window");
     const messages = socket!.sent.map((payload) => JSON.parse(payload) as { method: string });
     expect(messages.map((message) => message.method)).toEqual(["Browser.getWindowForTarget"]);
   });
@@ -675,8 +675,8 @@ describe("appControlService", () => {
         logger: createLogger(),
       });
 
-      await service.connect({ cdpPort: 12345, force: true });
-      await expect(service.minimizeWindow()).rejects.toThrow(
+      await service.connect({ laneId: "lane-1", cdpPort: 12345, force: true });
+      await expect(service.minimizeWindow({ laneId: "lane-1" })).rejects.toThrow(
         "Could not minimize the controlled app window: The active CDP target does not expose a browser window id.",
       );
     } finally {
@@ -774,7 +774,7 @@ describe("appControlService agent actions", () => {
   async function connectedService() {
     mockState.httpResponses.push([target("a")]);
     const service = createAppControlService({ projectRoot, logger: createLogger() });
-    await service.connect({ cdpPort: 12345, projectRoot, force: true });
+    await service.connect({ laneId: "lane-1", cdpPort: 12345, projectRoot, force: true });
     return service;
   }
 
@@ -785,18 +785,18 @@ describe("appControlService agent actions", () => {
         mockState.runtimeValues.push(collectorSnapshot([saveButton(), inputField()]));
       }
 
-      const first = await service.observe();
+      const first = await service.observe({ laneId: "lane-1" });
       expect(first.id).toMatch(/^obs-/);
       expect(first.dom?.elements.map((element) => element.handle)).toEqual([
         `${first.id}:e:1`,
         `${first.id}:e:2`,
       ]);
-      expect(first.sessionId).toBe(service.getStatus().activeSession?.id);
+      expect(first.sessionId).toBe(service.getStatus({ laneId: "lane-1" }).activeSession?.id);
       expect(first.diagnostics).toEqual(expect.objectContaining({ pendingRequestCount: 0 }));
 
       const observations = [first];
       for (let round = 0; round < 3; round += 1) {
-        observations.push(await service.observe());
+        observations.push(await service.observe({ laneId: "lane-1" }));
       }
 
       // Handles are per-observation, so a later capture never reuses an id.
@@ -821,7 +821,7 @@ describe("appControlService agent actions", () => {
     const service = await connectedService();
     try {
       mockState.runtimeValues.push(collectorSnapshot([saveButton(), inputField()]));
-      const observation = await service.observe();
+      const observation = await service.observe({ laneId: "lane-1" });
       const handle = observation.dom?.elements[0]?.handle;
       expect(handle).toBe(`${observation.id}:e:1`);
 
@@ -829,7 +829,7 @@ describe("appControlService agent actions", () => {
       const socketIndex = mockState.sockets.length - 1;
       mockState.sockets[socketIndex]!.sent.length = 0;
 
-      const result = await service.agentClick({ handle, observe: false, waitAfterMs: 0 });
+      const result = await service.agentClick({ laneId: "lane-1", handle, observe: false, waitAfterMs: 0 });
 
       expect(result.ok).toBe(true);
       expect(result.observation).toBeNull();
@@ -854,7 +854,7 @@ describe("appControlService agent actions", () => {
         sessionId: observation.sessionId,
       }));
       expect(result.trace?.target).toEqual(expect.objectContaining({ handle }));
-      expect(service.getTrace().entries.map((entry) => entry.action)).toEqual(["click"]);
+      expect(service.getTrace({ laneId: "lane-1" }).entries.map((entry) => entry.action)).toEqual(["click"]);
       // The element the locate found is kept, under the handle the agent used.
       expect(result.resolved).toEqual(expect.objectContaining({ selector: "button.save", label: "Save", handle }));
       expect(result.effect).toEqual({ status: "not_checked", reason: "no observation was taken after the action" });
@@ -871,7 +871,7 @@ describe("appControlService agent actions", () => {
         collectorSnapshot([saveButton(), inputField()], { target: saveButton() }),
         collectorSnapshot([saveButton(), inputField()]),
       );
-      const unchanged = await service.agentClick({ selector: "button.save", waitAfterMs: 0 });
+      const unchanged = await service.agentClick({ laneId: "lane-1", selector: "button.save", waitAfterMs: 0 });
       expect(unchanged.resolved).toEqual(expect.objectContaining({ selector: "button.save" }));
       expect(unchanged.effect).toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
 
@@ -880,7 +880,7 @@ describe("appControlService agent actions", () => {
         collectorSnapshot([saveButton(), inputField()]),
         collectorSnapshot([saveButton(), inputField(), { ...inputField(3), label: "Saved", selector: "p.toast" }]),
       );
-      const changed = await service.agentClick({ x: 30, y: 30, coordinateSpace: "viewport", waitAfterMs: 0 });
+      const changed = await service.agentClick({ laneId: "lane-1", x: 30, y: 30, coordinateSpace: "viewport", waitAfterMs: 0 });
       expect(changed.resolved).toBeNull();
       expect(changed.effect).toEqual({ status: "observed", reason: '1 element appeared (textbox "Saved")' });
     } finally {
@@ -896,16 +896,16 @@ describe("appControlService agent actions", () => {
     mockState.httpResponses.push([target("a"), target("b")]);
     const service = createAppControlService({ projectRoot, logger: createLogger() });
     try {
-      await service.connect({ cdpPort: 12345, projectRoot, force: true });
+      await service.connect({ laneId: "lane-1", cdpPort: 12345, projectRoot, force: true });
       mockState.runtimeValues.push(collectorSnapshot([saveButton()]));
-      const observation = await service.observe();
+      const observation = await service.observe({ laneId: "lane-1" });
       const handle = observation.dom?.elements[0]?.handle;
       expect(handle).toBeTruthy();
 
       mockState.httpResponses.push([target("a"), target("b")], [target("a"), target("b")]);
-      await service.switchWindow({ targetId: "b" });
+      await service.switchWindow({ laneId: "lane-1", targetId: "b" });
 
-      await expect(service.agentClick({ handle, observe: false, waitAfterMs: 0 }))
+      await expect(service.agentClick({ laneId: "lane-1", handle, observe: false, waitAfterMs: 0 }))
         .rejects.toThrow(/different window/i);
     } finally {
       service.dispose();
@@ -918,13 +918,13 @@ describe("appControlService agent actions", () => {
       const disabled = { ...saveButton(), disabled: true };
       mockState.runtimeValues.push(collectorSnapshot([disabled], { target: disabled }));
 
-      await expect(service.agentClick({ selector: "button.save", observe: false, waitAfterMs: 0 }))
+      await expect(service.agentClick({ laneId: "lane-1", selector: "button.save", observe: false, waitAfterMs: 0 }))
         .rejects.toThrow(/disabled/i);
 
       const messages = sentMethods().filter((message) => message.method === "Input.dispatchMouseEvent");
       expect(messages).toHaveLength(0);
 
-      const trace = service.getTrace();
+      const trace = service.getTrace({ laneId: "lane-1" });
       expect(trace.entries).toHaveLength(1);
       expect(trace.entries[0]).toEqual(expect.objectContaining({
         action: "click",
@@ -945,15 +945,15 @@ describe("appControlService agent actions", () => {
         );
       }
       for (let round = 0; round < 5; round += 1) {
-        await service.agentPress({ key: "Enter", observe: false, waitAfterMs: 0 });
+        await service.agentPress({ laneId: "lane-1", key: "Enter", observe: false, waitAfterMs: 0 });
       }
 
-      expect(service.getTrace().entries).toHaveLength(5);
-      const bounded = service.getTrace({ limit: 2 });
+      expect(service.getTrace({ laneId: "lane-1" }).entries).toHaveLength(5);
+      const bounded = service.getTrace({ laneId: "lane-1", limit: 2 });
       expect(bounded.entries).toHaveLength(2);
       expect(bounded.entries.every((entry) => entry.action === "press")).toBe(true);
       // Trace is session-scoped, and the requested id must match.
-      expect(() => service.getTrace({ sessionId: "not-the-active-session" }))
+      expect(() => service.getTrace({ laneId: "lane-1", sessionId: "not-the-active-session" }))
         .toThrow(/not the active session/i);
     } finally {
       service.dispose();
@@ -966,7 +966,7 @@ describe("appControlService agent actions", () => {
       mockState.runtimeValues.push(collectorSnapshot([inputField(1)], { target: inputField(1) }));
       mockState.sockets.at(-1)!.sent.length = 0;
 
-      await service.agentFill({ selector: "input#name", value: "Ada", observe: false, waitAfterMs: 0 });
+      await service.agentFill({ laneId: "lane-1", selector: "input#name", value: "Ada", observe: false, waitAfterMs: 0 });
 
       const evaluate = sentMethods().find((message) => message.method === "Runtime.evaluate");
       const payload = String(evaluate?.params?.expression ?? "");
@@ -975,7 +975,7 @@ describe("appControlService agent actions", () => {
       const insert = sentMethods().find((message) => message.method === "Input.insertText");
       expect(insert?.params).toEqual({ text: "Ada" });
 
-      await expect(service.agentFill({ selector: "input#name", observe: false, waitAfterMs: 0 }))
+      await expect(service.agentFill({ laneId: "lane-1", selector: "input#name", observe: false, waitAfterMs: 0 }))
         .rejects.toThrow(/requires a value/i);
     } finally {
       service.dispose();
@@ -985,7 +985,7 @@ describe("appControlService agent actions", () => {
   it("reports the computer_use driver as unavailable and refuses to select it", async () => {
     const service = await connectedService();
     try {
-      const drivers = service.listDrivers();
+      const drivers = service.listDrivers({ laneId: "lane-1" });
       expect(drivers.activeDriver).toBe("cdp");
       expect(drivers.drivers.find((entry) => entry.driver === "cdp")).toEqual(
         expect.objectContaining({ status: "available", implemented: true }),
@@ -995,7 +995,7 @@ describe("appControlService agent actions", () => {
       expect(computerUse?.reason).toMatch(/not implemented in this build/i);
 
       mockState.httpResponses.push([target("a")]);
-      await expect(service.connect({ cdpPort: 12345, projectRoot, force: true, driver: "computer_use" }))
+      await expect(service.connect({ laneId: "lane-1", cdpPort: 12345, projectRoot, force: true, driver: "computer_use" }))
         .rejects.toThrow(/computer_use.*unavailable/i);
       await expect(service.launch({ command: "npm run dev", driver: "computer_use" }))
         .rejects.toThrow(/computer_use.*unavailable/i);
@@ -1011,7 +1011,7 @@ describe("appControlService agent actions", () => {
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     const service = await connectedService();
     try {
-      const computerUse = service.listDrivers().drivers.find((entry) => entry.driver === "computer_use");
+      const computerUse = service.listDrivers({ laneId: "lane-1" }).drivers.find((entry) => entry.driver === "computer_use");
       expect(computerUse).toEqual(expect.objectContaining({
         status: "unavailable",
         implemented: false,
@@ -1028,23 +1028,23 @@ describe("appControlService agent actions", () => {
     mockState.httpResponses.push([target("a"), target("b")]);
     const service = createAppControlService({ projectRoot, logger: createLogger() });
     try {
-      await service.connect({ cdpPort: 12345, projectRoot, force: true });
+      await service.connect({ laneId: "lane-1", cdpPort: 12345, projectRoot, force: true });
 
       mockState.httpResponses.push([target("a"), target("b")]);
-      const listed = await service.windows();
+      const listed = await service.windows({ laneId: "lane-1" });
       expect(listed.windows.map((entry) => entry.id)).toEqual(["a", "b"]);
       expect(listed.activeTargetId).toBe(listed.windows.find((entry) => entry.active)?.id);
 
       mockState.runtimeValues.push(collectorSnapshot([saveButton()], { target: saveButton() }));
-      await service.agentPress({ key: "Enter", observe: false, waitAfterMs: 0 });
-      expect(service.getTrace().entries).toHaveLength(1);
+      await service.agentPress({ laneId: "lane-1", key: "Enter", observe: false, waitAfterMs: 0 });
+      expect(service.getTrace({ laneId: "lane-1" }).entries).toHaveLength(1);
 
       mockState.httpResponses.push([target("a"), target("b")], [target("a"), target("b")]);
-      const switched = await service.switchWindow({ targetId: "b" });
+      const switched = await service.switchWindow({ laneId: "lane-1", targetId: "b" });
       expect(switched.activeTargetId).toBe("b");
-      expect(service.getStatus().activeSession?.cdpTargetId).toBe("b");
+      expect(service.getStatus({ laneId: "lane-1" }).activeSession?.cdpTargetId).toBe("b");
       // Handles minted against the previous document no longer apply.
-      expect(service.getTrace().entries).toHaveLength(0);
+      expect(service.getTrace({ laneId: "lane-1" }).entries).toHaveLength(0);
     } finally {
       service.dispose();
     }

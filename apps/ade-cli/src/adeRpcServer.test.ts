@@ -6440,6 +6440,106 @@ describe("adeRpcServer", () => {
     });
   });
 
+  describe("app_control for agent callers", () => {
+    // App Control keeps one session per lane, owned by a chat. An agent that
+    // could name another chat or lane would take over, stop or record someone
+    // else's app; the service would also fall back to "some lane" when none
+    // was given.
+    async function setup() {
+      const fixture = createRuntime();
+      fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+        sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-2" } : null
+      ));
+      const click = vi.fn(async (args: unknown) => args);
+      const launch = vi.fn(async (args: unknown) => args);
+      const screenshot = vi.fn(async (args: unknown) => args);
+      const getStatus = vi.fn(async (args: unknown) => args);
+      fixture.runtime.appControlService = { click, launch, screenshot, getStatus } as any;
+      const noteAgentAppControlActivity = vi.fn();
+      const noteAgentMacDesktopActivity = vi.fn();
+      fixture.runtime.workToolsStateService = { noteAgentAppControlActivity, noteAgentMacDesktopActivity };
+      const lane1Root = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+      fs.mkdirSync(lane1Root, { recursive: true });
+      const connect = async (identity: Record<string, unknown>, params: Record<string, unknown> = {}) => {
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, identity, params);
+        return (action: string, args: Record<string, unknown>, callerRoot?: string) =>
+          callTool(handler, "run_ade_action", {
+            domain: "app_control",
+            action,
+            args,
+            ...(callerRoot ? { callerRoot } : {}),
+          });
+      };
+      return { click, launch, screenshot, getStatus, noteAgentAppControlActivity, lane1Root, connect };
+    }
+
+    it.each([
+      ["a bound agent, pinned to its chat's lane", { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, "lane-2", false, "chat-a"],
+      ["an ade process with no chat, placed by its worktree", { callerId: "ade-rpc-stdio-proxy:77355", role: "agent" }, "lane-1", true, undefined],
+    ])("acts for %s as its own chat on its own lane, and refuses another lane", async (_label, identity, ownLane, fromWorktree, ownChat) => {
+      const { launch, click, noteAgentAppControlActivity, lane1Root, connect } = await setup();
+      const call = await connect(identity);
+      const callerRoot = fromWorktree ? lane1Root : undefined;
+
+      // Another chat's id does not survive: it names who owns the session.
+      const launched = await call("launch", { command: "npm run dev", chatSessionId: "chat-b" }, callerRoot);
+      expect(launched?.isError).toBeUndefined();
+      const forwarded = launch.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(forwarded).toMatchObject({ command: "npm run dev", laneId: ownLane });
+      expect(forwarded.chatSessionId).toBe(ownChat);
+      // Launching drives the lane's app, so the card may float over the chat
+      // that did it. A shell with no chat has no chat to float it over.
+      if (ownChat) {
+        expect(noteAgentAppControlActivity).toHaveBeenCalledWith({ chatSessionId: ownChat, laneId: ownLane });
+      } else {
+        expect(noteAgentAppControlActivity).not.toHaveBeenCalled();
+      }
+
+      const refused = await call("click", { x: 1, y: 1, laneId: "lane-3" }, callerRoot);
+      expect(refused?.isError).toBe(true);
+      expect(JSON.stringify(refused)).toContain(`lane ${ownLane}`);
+      expect(JSON.stringify(refused)).toContain("--lane lane-3 was refused");
+      expect(click).not.toHaveBeenCalled();
+    });
+
+    it("does not float the card for reads", async () => {
+      const { screenshot, noteAgentAppControlActivity, connect } = await setup();
+      const call = await connect({ callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+      expect((await call("screenshot", {}))?.isError).toBeUndefined();
+      expect(screenshot).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-2" }));
+      expect(noteAgentAppControlActivity).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a bound agent whose chat has no lane", { callerId: "agent-z", role: "agent", chatSessionId: "chat-z" }],
+      ["an ade process outside every lane worktree", { callerId: "ade-cli:4242", role: "agent" }],
+    ])("gives %s the status probe only", async (_label, identity) => {
+      const { launch, getStatus, connect } = await setup();
+      const call = await connect(identity);
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-outside-"));
+      try {
+        const refused = await call("launch", { command: "npm run dev" }, outside);
+        expect(refused?.isError).toBe(true);
+        expect(JSON.stringify(refused)).toMatch(/need(s)? a (resolvable )?lane/);
+        expect(launch).not.toHaveBeenCalled();
+        expect((await call("getStatus", {}, outside))?.isError).toBeUndefined();
+        expect(getStatus).toHaveBeenCalled();
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it("leaves the desktop's own calls as they were", async () => {
+      const { click, noteAgentAppControlActivity, connect } = await setup();
+      const call = await connect({ callerId: "desktop-1", role: "cto" }, { clientInfo: { name: "ade-desktop-local" } });
+      const clicked = await call("click", { x: 1, y: 1, laneId: "lane-3", chatSessionId: "chat-b" });
+      expect(clicked?.isError).toBeUndefined();
+      expect(click).toHaveBeenCalledWith({ x: 1, y: 1, laneId: "lane-3", chatSessionId: "chat-b" });
+      expect(noteAgentAppControlActivity).not.toHaveBeenCalled();
+    });
+  });
+
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
     // `callerLaneId` IS the aggregator's ownership check, so it is never the
     // caller's to supply — including on the user-client path, where it used to

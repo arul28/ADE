@@ -60,7 +60,6 @@ export type MiscNamespaces = {
   feedback: AdeNamespace<"feedback">;
   computerUse: AdeNamespace<"computerUse">;
   iosSimulator: AdeNamespace<"iosSimulator">;
-  appControl: AdeNamespace<"appControl">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
   automations: AdeNamespace<"automations">;
@@ -772,7 +771,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     feedback: createFeedbackStubs() as AdeNamespace<"feedback">,
     computerUse: createNativeUnavailableNamespace() as AdeNamespace<"computerUse">,
     iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
-    appControl: createNativeUnavailableNamespace() as AdeNamespace<"appControl">,
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
       // `getStatus` is the one member of this namespace whose *shape* is load

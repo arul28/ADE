@@ -385,7 +385,7 @@ import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverr
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
-import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
+import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -501,6 +501,7 @@ export type FormatterId =
   | "app-control-snapshot"
   | "app-control-selection"
   | "app-control-action"
+  | "app-control-recording"
   | "apple-action"
   | "apple-point-action"
   | "browser-action"
@@ -985,11 +986,12 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
-    $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
+    $ ade app-control launch | observe | click | record
+                                                    Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-                                                    Show a surface of this chat to the user
+        | app-control | floating-app-control         Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
@@ -2449,51 +2451,39 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   "app-control": `${ADE_BANNER}
   App Control
 
-  App Control is ADE's bridge for developer-owned app sessions. The first
-  supported kind is Electron: ADE can launch or connect to an Electron renderer
-  that exposes a Chrome DevTools Protocol port, then capture screenshots, DOM
-  elements, selected UI context, and basic input in the same style as the iOS
-  simulator drawer. App Control is intentionally a bridge: Playwright,
-  agent-browser, Computer Use, and other tools may also attach to the same app;
-  ADE keeps the launch/session state and turns snapshots into chat context.
+  App Control drives a desktop app you are building. Today that means an
+  Electron app: ADE launches it (or attaches to one that is running) through a
+  Chrome DevTools Protocol (CDP) port. Then you observe it, act on it, record
+  it, and file proof from it. Playwright, agent-browser and Computer Use can
+  attach to the same app; ADE keeps the session and turns captures into chat
+  context. Aliases: \`ade app\` and \`ade electron\`.
 
-  Launching runs the command in the attached terminal instead of a hidden child
-  process. ADE sets ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS in
-  the environment and auto-forwards debug flags for common npm/pnpm/yarn/bun
-  script launches and direct electron commands. Custom launchers should forward
-  ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT. You can also put
-  {ADE_APP_CONTROL_DEBUG_FLAGS} in the command string for explicit substitution.
+  Each lane has its own session. --lane defaults to ADE_LANE_ID and --chat-session
+  to ADE_CHAT_SESSION_ID. With neither, a call made from inside a lane worktree
+  is bound to that lane; anywhere else it is refused. "launch" or "connect" on
+  a lane that already has a live session refuses; --force replaces it, and only
+  in the same lane.
 
-  Pass \`--cwd\` to launch from a subdirectory. A relative path resolves from the
-  directory you run \`ade\` in, as in any shell command.
+  Launch runs the command in a visible terminal. ADE sets
+  ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS and forwards the
+  debug flags for npm/pnpm/yarn/bun scripts and direct electron commands. A
+  custom launcher must forward ADE_APP_CONTROL_DEBUG_FLAGS (or read
+  ADE_APP_CONTROL_CDP_PORT), or put {ADE_APP_CONTROL_DEBUG_FLAGS} in the
+  command. --cwd resolves a relative path from the directory you run ade in.
 
-  Discovery and lifecycle:
-    $ ade app-control status --text                Show active session and provider readiness
-    $ ade app-control claim --lane <lane-id>       Attribute the active renderer to a lane
+  Session:
+    $ ade app-control status --text                This lane's session and provider readiness
     $ ade app-control launch --command "npm run dev" --text
-    $ ade app-control launch pnpm dev --text       Launch via the visible attached terminal
+    $ ade app-control launch pnpm dev --text       The words after launch are the command
     $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
     $ ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
-    $ ade app-control connect --cdp-port 9222      Attach to an already-running app
-    $ ade app-control targets --text               List debuggable CDP targets
-    $ ade app-control attach-target --target <id>  Attach to one renderer target
-    $ ade app-control logs --text                  Read the active App Control launch terminal
-    $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
-    $ ade app-control focus --text                 Raise the controlled app window on demand
-    $ ade app-control minimize --text              Minimize the controlled app window
-    $ ade app-control stop --text                  Signal the App Control terminal session
-    $ ade app-control actions --text               List every callable app_control action
-    $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
-    $ ade terminal read --pty <pty-id> --text      Read by PTY id
-    $ ade terminal write --chat-session <owner-session-id> --data "y\\n" Answer a prompt
+    $ ade app-control connect --cdp-port 9222      Attach to an app that is already running
+    $ ade app-control claim --lane <lane-id>       Attribute the session to a lane
+    $ ade app-control stop --text                  Quit the app ADE launched; detach an attached one
+    $ ade app-control show --text                  Show the app to the user in the tools pane
+    $ ade app-control show --floating --text       ...or as the floating card over the chat
 
-  Capture and context:
-    $ ade app-control screenshot --text            Capture the active renderer screenshot
-    $ ade app-control snapshot --text              Screenshot + DOM element refs
-    $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
-    $ ade app-control select --x 120 --y 420       Return/select app context (owned sessions auto-attach)
-
-  Observe and act (agent loop, same shape as "ade browser"):
+  Observe, then act (the same loop as "ade browser"):
     $ ade app-control observe --map --text         Screenshot + numbered element map + handles
     $ ade app-control observe --no-dom --text      Screenshot only, no element list
     $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
@@ -2508,16 +2498,48 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control wait --text-match "Saved" --timeout-ms 8000
     $ ade app-control wait --load-state network-idle
     $ ade app-control trace --limit 20 --text      Recent actions for this session
-    $ ade app-control proof --caption "Settings saved"  Observe and register a proof artifact
 
-  Windows and drivers:
-    $ ade app-control windows --text               Debuggable windows for the active session
+  Every acting command answers with a new observation: read its hit and
+  effect before the next step. --no-observe skips it; --fast skips the settle
+  delay. --session <id> guards a command against a session that has changed.
+
+  Capture and proof:
+    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control snapshot --text              Screenshot + DOM element refs
+    $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
+    $ ade app-control select --x 120 --y 420       Add that element to the chat as context
+    $ ade app-control proof --caption "<what>" --text  Capture the app and file the still as proof
+    $ ade app-control record start --caption "<what>" --text
+    $ ade app-control record status --text
+    $ ade app-control record stop --text           Finish the video and file it as proof
+
+  Recording flags (record start):
+    --caption <text>       What the video shows. A captioned video is filed as proof.
+    --keep-idle            Keep still stretches at real length.
+    --max-seconds <n>      Stop after n seconds of real time (default 600).
+
+  A recording captures the app's own window, not the whole screen. Still time
+  is cut unless --keep-idle. record stop reports durationMs (video),
+  wallDurationMs (real time) and idleCutMs. A captioned video is filed as
+  proof under the lane, the chat that started it and the lane's PR. A
+  recording stops itself at its cap (stopReason "cap") or when the app closes
+  (stopReason "app-closed"), and is filed the same way.
+
+  Terminal:
+    $ ade app-control logs --text                  Read the launch terminal
+    $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
+    $ ade app-control terminal signal --signal SIGINT
+    $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
+
+  Windows, targets and drivers:
+    $ ade app-control windows --text               Debuggable windows for this session
     $ ade app-control switch-window --target <id>  Drive a different window
+    $ ade app-control targets --text               List debuggable CDP targets
+    $ ade app-control attach-target --target <id>  Attach to one renderer target
+    $ ade app-control focus --text                 Raise the app window
+    $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
-
-  Every act command answers with a post-action observation. Add --no-observe to
-  skip it, or --fast to skip the settle delay. --session <id> guards a command
-  against a session that is no longer active.
+    $ ade app-control actions --text               List every callable app_control action
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -2739,6 +2761,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ui show mac-desktop      The lane's Mac Desktop, in the tools pane
     $ ade ui show floating-mac-desktop
                                    The floating Mac Desktop card over the chat
+    $ ade ui show app-control      The lane's App Control app, in the tools pane
+    $ ade ui show floating-app-control
+                                   The floating App Control card over the chat
 
   Results:
     shown       The surface is on screen now.
@@ -2758,7 +2783,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
   is "ui show floating-apple". "ade mac-desktop show [--floating]" is the same
-  for the Mac Desktop.
+  for the Mac Desktop, and "ade app-control show [--floating]" for App Control.
 `,
   "work-tools": `${ADE_BANNER}
   ADE work tools
@@ -11964,9 +11989,89 @@ function readTrailingCommand(args: string[]): string | null {
   return command.length ? command : null;
 }
 
+const APP_CONTROL_SESSION_IS_CHAT_SUBCOMMANDS = new Set([
+  "launch",
+  "open",
+  "start",
+  "connect",
+  "attach",
+  "claim",
+]);
+
+/** Lane + chat for an App Control call, without touching --session. */
+function readAppControlLaneScope(args: string[]): ToolClaimArgs {
+  const laneId = asString(
+    readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
+  );
+  const chatSessionId = asString(
+    readValue(args, ["--chat-session", "--chat-session-id"]) ??
+      process.env.ADE_CHAT_SESSION_ID,
+  );
+  return {
+    ...(laneId ? { laneId } : {}),
+    ...(chatSessionId ? { chatSessionId } : {}),
+  };
+}
+
+/** `ade app-control record start|stop|status` — same flags as `mac-desktop record`. */
+function buildAppControlRecordPlan(
+  args: string[],
+  step: (key: string, method: string, payload?: JsonObject) => InvocationStep,
+): CliPlan {
+  // Flags first: a positional read before them would take a flag's value.
+  const caption = readValue(args, ["--caption", "--description", "--desc"]);
+  const keepIdle = readFlag(args, ["--keep-idle"]);
+  const maxSeconds = readNumberOption(args, ["--max-seconds"]);
+  const hasStartFlags = Boolean(caption) || keepIdle || maxSeconds != null;
+  const mode = (firstPositional(args) ?? (hasStartFlags ? "start" : "status")).toLowerCase();
+  const plan = (label: string, method: string, payload: JsonObject = {}): CliPlan => ({
+    kind: "execute",
+    label,
+    formatter: "app-control-recording",
+    steps: [step("result", method, collectGenericObjectArgs(args, payload))],
+  });
+  if (mode === "start" || mode === "begin") {
+    if (maxSeconds != null && maxSeconds <= 0) {
+      throw new CliUsageError("app-control record start --max-seconds must be greater than 0.");
+    }
+    return plan("app-control record start", "startRecording", {
+      ...(caption ? { caption } : {}),
+      ...(keepIdle ? { keepIdle: true } : {}),
+      ...(maxSeconds == null ? {} : { maxSeconds }),
+    });
+  }
+  if (hasStartFlags) {
+    throw new CliUsageError(
+      "--caption, --keep-idle and --max-seconds belong to 'app-control record start'.",
+    );
+  }
+  if (mode === "stop" || mode === "end" || mode === "finish") {
+    return plan("app-control record stop", "stopRecording");
+  }
+  if (mode === "status" || mode === "state") {
+    return plan("app-control record status", "getRecordingStatus");
+  }
+  throw new CliUsageError(
+    `Unknown app-control record command: ${mode}. Use start, stop, or status.`,
+  );
+}
+
 function buildAppControlPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: buildAppControlHelp(args) };
+  // App Control keeps one session per lane, so every call names its lane
+  // (--lane, else ADE_LANE_ID) and its chat (the owner of what it launches).
+  // `launch`, `connect` and `claim` have always read --session as the chat;
+  // everywhere else --session is the App Control session guard, so it must not
+  // be consumed here. Every call also carries `callerRoot`: an ade process with
+  // no chat identity that runs inside a lane worktree is bound to that lane.
+  const sessionIsChat = APP_CONTROL_SESSION_IS_CHAT_SUBCOMMANDS.has(sub);
+  const scope: ToolClaimArgs = sessionIsChat
+    ? readToolClaimArgs(args)
+    : readAppControlLaneScope(args);
+  const callerRootArgs = proofCallerRootArgs();
+  const appControlStep = (key: string, method: string, payload: JsonObject = {}) =>
+    actionStep(key, "app_control", method, { ...scope, ...payload }, callerRootArgs);
   const numericPositionals = () =>
     args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
@@ -11982,15 +12087,21 @@ function buildAppControlPlan(args: string[]): CliPlan {
       label: "App Control actions",
       steps: [listActionsStep("actions", "app_control")],
     };
+  if (sub === "record" || sub === "recording") {
+    return buildAppControlRecordPlan(args, appControlStep);
+  }
+  if (sub === "show" || sub === "reveal") {
+    // Same verb as `ade ui show app-control`, spelled where an agent driving
+    // the app looks for it. `--floating` asks for the floating card instead.
+    const floating = readFlag(args, ["--floating", "--float"]);
+    return workToolShowPlan(scope, floating ? "floating-app-control" : "app-control");
+  }
   if (sub === "status")
     return {
       kind: "execute",
       label: "App Control status",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "getStatus",
+        appControlStep("result", "getStatus",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12000,10 +12111,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "terminal read",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "readTerminal",
+        appControlStep("result", "readTerminal",
           collectGenericObjectArgs(args, {
             maxBytes: readIntOption(args, ["--max-bytes"], undefined),
             since: readIntOption(args, ["--since"], undefined),
@@ -12013,16 +12121,15 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "claim") {
-    const claimArgs = readRequiredToolClaimArgs(args, "App Control");
+    if (!scope.laneId) {
+      throw new CliUsageError("App Control claim requires --lane <lane-id> or ADE_LANE_ID.");
+    }
     return {
       kind: "execute",
       label: "App Control claim",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "claim",
-          collectGenericObjectArgs(args, claimArgs),
+        appControlStep("result", "claim",
+          collectGenericObjectArgs(args, { ...scope }),
         ),
       ],
     };
@@ -12034,10 +12141,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
         kind: "execute",
         label: "terminal read",
         steps: [
-          actionStep(
-            "result",
-            "app_control",
-            "readTerminal",
+          appControlStep("result", "readTerminal",
             collectGenericObjectArgs(args, {
               maxBytes: readIntOption(args, ["--max-bytes"], undefined),
               since: readIntOption(args, ["--since"], undefined),
@@ -12054,10 +12158,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
         kind: "execute",
         label: "terminal write",
         steps: [
-          actionStep(
-            "result",
-            "app_control",
-            "writeTerminal",
+          appControlStep("result", "writeTerminal",
             collectGenericObjectArgs(args, { data }),
           ),
         ],
@@ -12068,10 +12169,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
         kind: "execute",
         label: "terminal signal",
         steps: [
-          actionStep(
-            "result",
-            "app_control",
-            "signalTerminal",
+          appControlStep("result", "signalTerminal",
             collectGenericObjectArgs(args, {
               signal:
                 readValue(args, ["--signal"]) ??
@@ -12086,7 +12184,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     );
   }
   if (sub === "launch" || sub === "open" || sub === "start") {
-    const claimArgs = readToolClaimArgs(args);
+    const claimArgs = scope;
     const trailingCommand = readTrailingCommand(args);
     const command = readValue(args, ["--command", "--cmd"]) ?? trailingCommand;
     const appKind = readValue(args, ["--kind", "--app-kind"]) ?? "electron";
@@ -12112,10 +12210,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control launch",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "launch",
+        appControlStep("result", "launch",
           collectGenericObjectArgs(args, {
             appKind,
             projectRoot,
@@ -12133,15 +12228,12 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "connect" || sub === "attach") {
-    const claimArgs = readToolClaimArgs(args);
+    const claimArgs = scope;
     return {
       kind: "execute",
       label: "App Control connect",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "connect",
+        appControlStep("result", "connect",
           collectGenericObjectArgs(args, {
             appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
             projectRoot: readValue(args, ["--project-root", "--root"]),
@@ -12162,10 +12254,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control targets",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "listTargets",
+        appControlStep("result", "listTargets",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12196,10 +12285,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control stop",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "stop",
+        appControlStep("result", "stop",
           collectGenericObjectArgs(args, {
             force: readFlag(args, ["--force", "-f"]) ? true : undefined,
           }),
@@ -12212,10 +12298,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control focus window",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "focusWindow",
+        appControlStep("result", "focusWindow",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12226,10 +12309,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control minimize window",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "minimizeWindow",
+        appControlStep("result", "minimizeWindow",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12240,10 +12320,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control screenshot",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "screenshot",
+        appControlStep("result", "screenshot",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12254,10 +12331,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control snapshot",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "getSnapshot",
+        appControlStep("result", "getSnapshot",
           collectGenericObjectArgs(args, {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
@@ -12271,10 +12345,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control inspect point",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "inspectPoint",
+        appControlStep("result", "inspectPoint",
           collectGenericObjectArgs(args, {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             x: readCoordinate("--x", 0),
@@ -12295,10 +12366,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control select",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "selectPoint",
+        appControlStep("result", "selectPoint",
           collectGenericObjectArgs(args, {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             x: readCoordinate("--x", 0),
@@ -12325,10 +12393,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control click",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentClick",
+        appControlStep("result", "agentClick",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12353,10 +12418,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control hover",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentHover",
+        appControlStep("result", "agentHover",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12386,10 +12448,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control fill",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentFill",
+        appControlStep("result", "agentFill",
           collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs, value }),
         ),
       ],
@@ -12412,10 +12471,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control clear",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentClear",
+        appControlStep("result", "agentClear",
           collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs }),
         ),
       ],
@@ -12437,10 +12493,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control wait",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentWait",
+        appControlStep("result", "agentWait",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12458,10 +12511,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control observe",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "observe",
+        appControlStep("result", "observe",
           collectGenericObjectArgs(args, readAppControlObservationArgs(args)),
         ),
       ],
@@ -12472,10 +12522,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control trace",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "getTrace",
+        appControlStep("result", "getTrace",
           collectGenericObjectArgs(args, readAppControlTraceArgs(args)),
         ),
       ],
@@ -12486,10 +12533,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control windows",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "windows",
+        appControlStep("result", "windows",
           collectGenericObjectArgs(args, readAppControlSessionArgs(args)),
         ),
       ],
@@ -12505,10 +12549,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control switch window",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "switchWindow",
+        appControlStep("result", "switchWindow",
           collectGenericObjectArgs(args, { ...sessionArgs, targetId }),
         ),
       ],
@@ -12519,65 +12560,30 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control drivers",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "listDrivers",
+        appControlStep("result", "listDrivers",
           collectGenericObjectArgs(args),
         ),
       ],
     };
   }
   if (sub === "proof" || sub === "promote") {
+    // One service action captures the lane's app and files the still, the
+    // way the pane's Proof button does: same capture, same owners (lane,
+    // chat, the lane's PR), same `ade-capture` provenance. With no caption
+    // the service names it "App Control screenshot · <app>".
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
-    const title =
-      readValue(args, ["--title", "--name"]) ?? caption ?? "ADE App Control proof";
-    const ownerBase = readProofOwnerBase(args);
-    const observeArgs = collectGenericObjectArgs(args, {
-      ...readAppControlObservationArgs(args),
-      includeDom: false,
-    });
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     return {
       kind: "execute",
       label: "App Control proof",
+      formatter: "proof-filed",
+      proofFiling: { command: "app-control proof", verify },
       steps: [
-        actionStep("observation", "app_control", "observe", observeArgs),
-        {
-          key: "result",
-          method: "ade/actions/call",
-          unwrapToolResult: true,
-          params: (values) => {
-            // ade/actions/call answers with an {domain, action, result}
-            // envelope; the observation record lives under result.
-            const observation = unwrapActionEnvelope(values.observation);
-            const filePath = isRecord(observation)
-              ? asString(observation.filePath)
-              : null;
-            if (!filePath) {
-              throw new CliUsageError(
-                "App Control proof could not find an observation file path.",
-              );
-            }
-            return {
-              name: "ingest_computer_use_artifacts",
-              arguments: {
-                backendStyle: "manual",
-                backendName: "ade-app-control",
-                toolName: "app-control proof",
-                callerRoot: process.cwd(),
-                ...ownerBase,
-                inputs: [
-                  {
-                    kind: "screenshot",
-                    title,
-                    ...(caption ? { description: caption } : {}),
-                    path: filePath,
-                  },
-                ],
-              },
-            };
-          },
-        },
+        appControlStep("result", "captureProof",
+          collectGenericObjectArgs(args, caption ? { caption } : {}),
+        ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }
@@ -12592,10 +12598,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control scroll",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentScroll",
+        appControlStep("result", "agentScroll",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             x: readCoordinate("--x", 0),
@@ -12617,10 +12620,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control press",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentPress",
+        appControlStep("result", "agentPress",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12636,10 +12636,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control type",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentType",
+        appControlStep("result", "agentType",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             text: requireTypedText(
@@ -12657,7 +12654,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     kind: "execute",
     label: `app-control ${sub}`,
     steps: [
-      actionStep("result", "app_control", sub, collectGenericObjectArgs(args)),
+      appControlStep("result", sub, collectGenericObjectArgs(args)),
     ],
   };
 }
@@ -12797,6 +12794,11 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
   "floating-mac-desktop": "floating-mac-desktop",
   "floating-mac": "floating-mac-desktop",
   "floating-desktop": "floating-mac-desktop",
+  "app-control": "app-control",
+  app: "app-control",
+  electron: "app-control",
+  "floating-app-control": "floating-app-control",
+  "floating-app": "floating-app-control",
 };
 
 /**
@@ -25398,6 +25400,53 @@ function formatAppControlStatus(value: unknown): string {
   ].join("\n");
 }
 
+/**
+ * `app-control record start|stop|status`: the same lines as
+ * `mac-desktop record`, plus which engine captured the window.
+ */
+function formatAppControlRecording(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const status = firstRecord(record, ["recording", "status"]) ?? record;
+  const finite = (entry: unknown): number | null =>
+    typeof entry === "number" && Number.isFinite(entry) ? entry : null;
+  const durationMs = macDesktopRecordingDurationMs(status);
+  const wallDurationMs = finite(status.wallDurationMs);
+  const idleCut = proofIdleCutLabel(finite(status.idleCutMs));
+  const maxDurationMs = finite(status.maxDurationMs);
+  const proofArtifactId = asString(status.proofArtifactId);
+  const finished = status.running !== true && Boolean(status.filePath);
+  const permissions = firstRecord(status, ["permissions"]);
+  return renderKeyValues("ADE App Control recording", [
+    ["lane", status.laneId],
+    ["running", status.running],
+    ["engine", status.engine],
+    ["started", status.startedAt],
+    ["file", status.filePath],
+    // A failed stop still flips `running` to false; say so, or the file looks
+    // like a finished recording.
+    ["error", status.lastError],
+    ["duration", durationMs == null ? null : `${(durationMs / 1000).toFixed(1)}s`],
+    ["real time", idleCut && wallDurationMs != null ? `${formatProofDuration(wallDurationMs)} · ${idleCut}` : null],
+    ["stopped", status.stopReason === "cap" && maxDurationMs != null
+      ? `at its ${formatProofDuration(maxDurationMs)} cap`
+      : status.stopReason === "app-closed"
+        ? "the app closed"
+        : null],
+    ["caption", status.caption],
+    ["screen recording", permissions?.screenRecording],
+    [
+      "proof",
+      proofArtifactId
+        ? `filed (${proofArtifactId}) — it is in the proof drawer`
+        : !finished || status.lastError
+          ? null
+          : status.caption
+            ? "not filed"
+            : "not filed — start with --caption to file it as proof",
+    ],
+  ]);
+}
+
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
   // This machine has no desktop attached, so there is no browser here to
@@ -26838,6 +26887,8 @@ function formatTextOutput(
       return formatAppControlSnapshot(value);
     case "app-control-selection":
       return formatAppControlSelection(value);
+    case "app-control-recording":
+      return formatAppControlRecording(value);
     case "browser-status":
       return formatBrowserStatus(value);
     case "browser-dev-servers":

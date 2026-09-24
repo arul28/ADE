@@ -262,6 +262,7 @@ import {
   type MacDesktopSyncStream,
   type MacDesktopSyncStreamSink,
 } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
@@ -1199,6 +1200,12 @@ type SyncHostServiceArgs = {
    * share one instance. When absent, the fallback path creates its own.
    */
   macDesktopSyncStream?: MacDesktopSyncStream | null;
+  /**
+   * App Control live-frame fan-out. Production (`syncService.ts`) builds it
+   * and injects it here so the command handlers and connection-close cleanup
+   * share one instance. Absent means no `appControl.*` commands.
+   */
+  appControlSyncStream?: AppControlSyncStream | null;
   appleDeviceService?: AppleDeviceRemoteService | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
@@ -2420,6 +2427,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
     macDesktopSyncStream,
+    appControlSyncStream: args.appControlSyncStream ?? null,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -3829,6 +3837,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Every Mac Desktop viewer this socket owned is gone. The release stops
       // the encoder when the set empties, same as a closing chat.
       macDesktopSyncStream?.releaseConnection(peer.macDesktopConnectionId);
+      // Same for App Control viewers on this socket.
+      args.appControlSyncStream?.releaseConnection(peer.macDesktopConnectionId);
       // A socket that was driving a lane's display gives the input lease back
       // now rather than at the TTL. Fire and forget: the lease's own deadline
       // is still the guarantee, and a return that loses a race with a new
@@ -7013,6 +7023,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               pendingBytes: () => peer.ws.bufferedAmount,
             }
           : undefined;
+      // App Control frames ride the same per-socket id. Only the subscribe
+      // handler reads the sink; frames are pushed, never returned.
+      const appControlStreamSink: AppControlSyncStreamSink | undefined =
+        args.appControlSyncStream && peer.authenticated && payload.action === "appControl.streamSubscribe"
+          ? {
+              connectionId: peer.macDesktopConnectionId,
+              sendFrame: (frame) => send(peer, "appControl.streamFrame", frame),
+              sendEnded: (ended) => {
+                send(peer, "appControl.streamEnded", ended);
+              },
+              pendingBytes: () => peer.ws.bufferedAmount,
+              isClosed: () => peer.ws.readyState !== WebSocket.OPEN,
+            }
+          : undefined;
       let created: unknown;
       try {
         created = preparedAnalytics.captureDisabled
@@ -7021,6 +7045,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               signal,
               ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
               ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
+              ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
             });
       } finally {
         stopTrackingCommand();

@@ -139,6 +139,43 @@ export function captureMacDesktopAnalytics(args: {
 }
 
 /**
+ * The whole App Control analytics payload: a session started on a lane, an
+ * agent drove it, or a recording was filed as proof. Nothing about the lane,
+ * the chat, the app, its command or its window can be added without changing
+ * the type.
+ */
+export type AppControlAnalyticsProperties = {
+  action: "app_control";
+  outcome: "started" | "agent_drove" | "recorded";
+};
+
+/**
+ * One coarse App Control fact, the Mac Desktop fact's twin: the dedupe key is
+ * the outcome alone and the interval is a UTC day, so the worst case is three
+ * accepted events per installation per day. Emitted by the brain wiring (the
+ * session-started event and the RPC dispatch), never by the service, which
+ * holds no analytics handle.
+ */
+export function captureAppControlAnalytics(args: {
+  analytics: AgentTurnAnalytics | null | undefined;
+  outcome: AppControlAnalyticsProperties["outcome"];
+}): void {
+  // Called on the action path: a broken analytics handle must never fail the
+  // action it describes.
+  try {
+    args.analytics?.captureInternal({
+      event: "ade_feature_used",
+      surface: "api",
+      dedupeKey: `work_app_control:${args.outcome}`,
+      minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
+      properties: { feature: "work", action: "app_control", outcome: args.outcome },
+    });
+  } catch {
+    // Dropped: analytics is best-effort.
+  }
+}
+
+/**
  * One coarse fact when this client's Claude hooks were ignored because
  * another client already configured the joined session. Identity only —
  * no hook names, payloads, or transcripts. Dedupe per session with a

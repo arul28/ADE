@@ -14613,7 +14613,7 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["app-control", "wait"])).toThrow(/requires --selector/);
   });
 
-  it("app-control proof observes and ingests under the ade-app-control backend", () => {
+  it("app-control proof files the still through app_control.captureProof", () => {
     const plan = buildCliPlan([
       "app-control",
       "proof",
@@ -14622,39 +14622,12 @@ describe("ADE CLI", () => {
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
-    expect(plan.steps).toHaveLength(2);
+    expect(plan.proofFiling).toEqual({ command: "app-control proof", verify: true });
     expect(plan.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "observe",
-        args: { includeDom: false },
-      },
-    });
-    const ingest = plan.steps[1];
-    expect(ingest?.method).toBe("ade/actions/call");
-    const params = typeof ingest?.params === "function"
-      ? ingest.params({
-          observation: {
-            domain: "app_control",
-            action: "observe",
-            result: { filePath: "/repo/.ade/cache/app-control-observations/s/obs-1.png" },
-          },
-        })
-      : null;
-    expect(params).toMatchObject({
-      name: "ingest_computer_use_artifacts",
-      arguments: {
-        backendStyle: "manual",
-        backendName: "ade-app-control",
-        toolName: "app-control proof",
-        inputs: [
-          {
-            kind: "screenshot",
-            title: "Settings saved",
-            description: "Settings saved",
-            path: "/repo/.ade/cache/app-control-observations/s/obs-1.png",
-          },
-        ],
+        action: "captureProof",
+        args: { caption: "Settings saved" },
       },
     });
   });

@@ -595,7 +595,9 @@ describe("WorkSidebar context targets", () => {
     expect(received[0]).not.toHaveProperty("sessionId");
   });
 
-  it("warns when App Control is attached to another lane while keeping Work controls usable", async () => {
+  // App Control keeps one session per lane, so another lane's app is that
+  // lane's, never a claim on this lane's pane.
+  it("never claims App Control for another lane, and keeps Work controls usable", async () => {
     const { terminalWrite } = installAdeMock({ appControlSession: otherLaneAppControlSession });
 
     renderSidebar({
@@ -604,7 +606,8 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This App Control view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByTestId("app-control-panel")).toBeTruthy();
+    expect(screen.queryByText(/App Control view is claimed by/)).toBeNull();
     expect(screen.getByTestId("app-control-panel").getAttribute("data-control-disabled")).toBe("");
     expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByText("Add App Control context"));

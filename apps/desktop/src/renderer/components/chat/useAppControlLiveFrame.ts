@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import type { AppControlScreencastFrame } from "../../../shared/types";
+import type { AppControlScreencastFrame, OpenProjectBinding } from "../../../shared/types";
 import type { LiveFrameDims } from "./appControlFrameGeometry";
 
 /**
@@ -45,8 +45,21 @@ export type AppControlLiveFrame = {
 /** Past this with no frame the feed is presumed wedged rather than idle. */
 export const APP_CONTROL_FRAME_STALE_MS = 4_000;
 
+/**
+ * Which lane and window to ask for a first picture. The screencast sends a
+ * frame only when the page paints, so a viewer that mounts over a still app
+ * would otherwise wait for one forever.
+ */
+export type AppControlLiveFrameSeed = {
+  laneId: string | null;
+  /** The connected window, or null while nothing is connected. */
+  targetId: string | null;
+  runtimePinRef: RefObject<OpenProjectBinding | null>;
+};
+
 export function useAppControlLiveFrame(
   imageRef: RefObject<HTMLImageElement | null>,
+  seed?: AppControlLiveFrameSeed,
 ): AppControlLiveFrame {
   const [active, setActive] = useState(false);
   const [initialSrc, setInitialSrc] = useState<string | null>(null);
@@ -133,6 +146,27 @@ export function useAppControlLiveFrame(
     srcRef.current = null;
     pendingSrcRef.current = null;
   }, []);
+
+  // One read when a window connects (or the viewer mounts over one): the
+  // lane's newest frame, or a fresh capture. A frame event that lands first
+  // wins, and a later one replaces this at once.
+  const seedLaneId = seed?.laneId ?? null;
+  const seedTargetId = seed?.targetId ?? null;
+  const seedPinRef = seed?.runtimePinRef ?? null;
+  useEffect(() => {
+    const read = window.ade?.appControl?.getLatestFrame;
+    if (!seedLaneId || !seedTargetId || typeof read !== "function") return undefined;
+    let cancelled = false;
+    void read({ laneId: seedLaneId }, seedPinRef?.current ?? null)
+      .then((frame) => {
+        if (cancelled || !frame || activeRef.current) return;
+        onFrame(frame, seedTargetId);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [onFrame, seedLaneId, seedPinRef, seedTargetId]);
 
   const clear = useCallback(() => {
     setStaleSrc(null);

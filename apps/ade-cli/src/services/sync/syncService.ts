@@ -78,6 +78,7 @@ import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, typ
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import { createAppControlSyncStream, type AppControlSyncSource } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import {
   buildAddressCandidates,
@@ -182,6 +183,12 @@ type SyncServiceArgs = {
    * the live-view fan-out reads.
    */
   macDesktopService?: MacDesktopService | null;
+  /**
+   * App Control, for the live view on phones and the hosted web client. Only
+   * the status read and the event stream are used; the host never drives the
+   * app from here. Absent on a chat-only runtime.
+   */
+  appControl?: AppControlSyncSource | null;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
@@ -765,6 +772,12 @@ export function createSyncService(args: SyncServiceArgs) {
       })
     : null;
 
+  // One App Control frame fan-out for the whole host, shared by the command
+  // handlers and the host's connection-close cleanup, like the one above.
+  const appControlSyncStream = args.appControl
+    ? createAppControlSyncStream({ logger: args.logger, source: args.appControl })
+    : null;
+
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
     usageTrackingService: args.usageTrackingService,
@@ -800,6 +813,7 @@ export function createSyncService(args: SyncServiceArgs) {
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
     macDesktopSyncStream,
+    appControlSyncStream,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -954,6 +968,7 @@ export function createSyncService(args: SyncServiceArgs) {
       workToolsStateService: args.workToolsStateService,
       macDesktopService,
       macDesktopSyncStream,
+      appControlSyncStream,
       appleDeviceService: args.appleDeviceService,
       appleStreamRelay: args.appleStreamRelay,
       getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -1877,6 +1892,7 @@ export function createSyncService(args: SyncServiceArgs) {
       await stopHostIfRunning();
       // After the host stops, so no pushed record can outlive its socket.
       macDesktopSyncStream?.dispose();
+      appControlSyncStream?.dispose();
       await syncPeerService.dispose();
     },
   };

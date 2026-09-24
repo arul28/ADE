@@ -153,6 +153,7 @@ import {
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureAppControlAnalytics,
   captureMacDesktopAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -179,6 +180,7 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import { resolveSessionLaneId } from "../../desktop/src/main/services/lanes/resolveSessionLaneId";
 import {
   createMacDesktopService,
   type MacDesktopService,
@@ -190,6 +192,7 @@ import {
   createBuiltInBrowserDesktopBridgeClient,
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
+import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
   createRemoteBrowserForwarder,
@@ -247,6 +250,7 @@ import {
   type AdeCliShimBrain,
 } from "./services/runtime/adeCliShim";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
+import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
 import { createPrEventFanout } from "./prEventFanout";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 
@@ -1559,38 +1563,61 @@ export async function createAdeRuntime(args: {
     // closure reads at call time. The chat session store lives in agentChatService
     // (getSessionSummary), not in sessionService (which holds terminal sessions).
     const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
+    // Windows/Linux App Control recording runs in the desktop's encoder, over
+    // the desktop bridge. Set once the bridge client exists (below); null
+    // while no desktop has attached here, which refuses a screencast start.
+    const appControlRecorderBridgeHolder: {
+      current: ReturnType<typeof createAppControlRecorderBridgeClient> | null;
+      isAttached: () => boolean;
+    } = { current: null, isAttached: () => false };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
         projectRoot,
         logger,
         ptyService,
-        onEvent: (event) => pushEvent("runtime", { type: "app_control_event", event }),
-        resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
-          const explicitLaneId = laneId?.trim();
-          if (explicitLaneId) return explicitLaneId;
-          const chatId = chatSessionId?.trim();
-          if (chatId && agentChatServiceHolder.current) {
-            const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
-            if (chatSession?.laneId) return chatSession.laneId;
+        onEvent: (event) => {
+          if (event.type === "session-started") {
+            captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
           }
-          const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
-          const lanes = await laneService.list({ includeArchived: false });
-          const matchingLane = lanes.find((lane) => {
-            const worktreePath = path.resolve(lane.worktreePath);
-            const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-            return (
-              targetRoot === worktreePath
-              || targetRoot.startsWith(`${worktreePath}${path.sep}`)
-              || (attachedRootPath !== null
-                && (targetRoot === attachedRootPath
-                  || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
-            );
-          });
-          return matchingLane?.id ?? lanes[0]?.id ?? null;
+          pushEvent("runtime", { type: "app_control_event", event });
         },
+        resolveChatLaneId: async (chatId) => {
+          if (!agentChatServiceHolder.current) return null;
+          const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+          return chatSession?.laneId ?? null;
+        },
+        getScreencastRecorder: () =>
+          appControlRecorderBridgeHolder.isAttached() ? appControlRecorderBridgeHolder.current : null,
+        ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        resolvePrimaryPrUrl: (laneId: string): string | null =>
+          prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
+        resolveLaneName: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId).catch(() => null);
+          return lane?.name ?? null;
+        },
+        // No fallback lane: a session whose lane cannot be resolved is refused.
+        resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
+          laneId,
+          chatSessionId,
+          cwd,
+          getChatLaneId: async (chatId) => {
+            if (!agentChatServiceHolder.current) return null;
+            const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+            return chatSession?.laneId ?? null;
+          },
+          isLiveLane: (id) => laneService.findLaneIdentity(id) !== null,
+          laneIdForPath: (absolutePath) => laneService.getLaneIdForPath(absolutePath),
+          isPrimaryLane: async (id) => (await laneService.getSummary(id, { includeStatus: false }))?.laneType === "primary",
+        }),
       });
     teardown.push(() => appControlService?.dispose());
+    if (appControlService) {
+      // An archived or deleted lane takes its App Control session with it.
+      laneTeardownDeps.appControlService = {
+        stopForLane: (laneId: string) => appControlService.stopForLane(laneId),
+      };
+    }
     /**
      * One private macOS screen per lane.
      *
@@ -1672,6 +1699,19 @@ export async function createAdeRuntime(args: {
       )
       : null;
     builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
+    if (appControlService) {
+      const appControlRecorderBridge = createAppControlRecorderBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
+        logger,
+      });
+      appControlRecorderBridgeHolder.current = appControlRecorderBridge;
+      appControlRecorderBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
+      teardown.push(() => {
+        appControlRecorderBridgeHolder.current = null;
+        appControlRecorderBridge.dispose();
+      });
+    }
     teardown.push(() => {
       builtInBrowserBridgeForCapabilities = null;
       builtInBrowserBridge?.dispose();
@@ -1691,7 +1731,7 @@ export async function createAdeRuntime(args: {
         ? () => builtInBrowserBridge.getStatusForRuntime()
         : null,
       getAppControlStatus: appControlService
-        ? () => appControlService.getStatus()
+        ? (laneId) => appControlService.getStatus({ laneId })
         : null,
       // The runtime's own Mac Desktop service, read-only: the mirror holds
       // `getStatus` + `subscribe` and nothing that can start a display or move
@@ -1900,6 +1940,16 @@ export async function createAdeRuntime(args: {
         ? { releaseIfOwnedBy: (sessionId: string) => macDesktopService.releaseIfOwnedBy(sessionId) }
         : null,
       logEvent: "mac_desktop.release_on_chat_end_failed",
+      logger,
+    });
+    // A chat that ends releases the App Control session it owns: ADE quits
+    // the app it launched and detaches one it only attached to.
+    bindDeviceReleaseOnChatEnd({
+      agentChatService,
+      device: appControlService
+        ? { releaseIfOwnedBy: (sessionId: string) => appControlService.stopForChat(sessionId) }
+        : null,
+      logEvent: "app_control.release_on_chat_end_failed",
       logger,
     });
     if (agentChatService) {
@@ -2605,6 +2655,15 @@ export async function createAdeRuntime(args: {
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
         macDesktopService,
+        // App Control's `onEvent` feeds the runtime event buffer; the live
+        // view for phones and the web client reads the same events there.
+        appControl: appControlService
+          ? {
+              getStatus: appControlService.getStatus,
+              subscribeEvents: appControlEventsFromRuntimeBuffer(eventBuffer),
+              getLatestFrame: appControlService.getLatestFrame,
+            }
+          : null,
         appleDeviceService: iosSimulatorService,
         appleStreamRelay,
         getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,

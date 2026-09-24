@@ -14,13 +14,15 @@ then follow that surface's loop.
 |---|---|---|
 | An iOS or SwiftUI app | `ade apple` | **ade-apple** |
 | Any macOS app, or anything that must not touch the user's own screen | `ade mac-desktop` (the lane's private display) | this skill, below |
-| A dev Electron app you launch | `ade app-control` (CDP, runs in the background, no cursor) | **ade-app-control** |
+| A dev Electron app you launch or attach to | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 
-App Control captures its own window, so it never needs the user's screen. If
-you want the app fully separate from the user's screen, you may move its
-window onto the lane's Mac Desktop with `ade mac-desktop claim --window <id>`.
-This is optional.
+Pick App Control over Mac Desktop for an Electron app you build: it acts
+through the DOM, so labels, selectors and test ids work, and it records and
+proves the app's own window. App Control never needs the user's screen. If you
+want the app fully separate from the user's screen, you may move its window
+onto the lane's Mac Desktop with `ade mac-desktop claim --window <id>`. This is
+optional.
 
 Note: `ade desktop` is a different command. It launches the ADE desktop app.
 
@@ -46,7 +48,7 @@ the step. Do not repeat the action blindly.
 |---|---|---|
 | Apple | `ade apple proof --caption "<what>"` | `ade apple record-start`, then `ade apple record-stop --keep` |
 | Mac Desktop | `ade mac-desktop proof --caption "<what>"` | `ade mac-desktop record start --caption "<what>"`, then `record stop` |
-| App Control | `ade app-control proof --caption "<what>"` | — |
+| App Control | `ade app-control proof --caption "<what>"` | `ade app-control record start --caption "<what>"`, then `record stop` |
 | Browser | `ade browser proof --tab <id> --caption "<what>"` | `ade browser record start --tab <id> --caption "<what>"`, then `record stop --tab <id>` |
 
 `ade proof capture` and `ade proof record` capture the lane's display. They
@@ -57,9 +59,10 @@ skill covers attaching files and confirming a filing.
 ## Show the user
 
 ```bash
-ade ui show mac-desktop     # also: apple, browser, proof
+ade ui show mac-desktop     # also: apple, browser, proof, app-control
 ade mac-desktop show --text
 ade mac-desktop show --floating --text
+ade app-control show --floating --text
 ```
 
 # Mac Desktop

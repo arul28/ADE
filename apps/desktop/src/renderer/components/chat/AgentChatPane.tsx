@@ -152,6 +152,7 @@ import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from 
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
+import { ChatAppControlRecordingCard } from "./ChatAppControlRecordingCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -4506,7 +4507,7 @@ export function AgentChatPane({
     // which left the toggle permanently hidden — and hiding the toggle is what
     // kept the panel from ever opening to un-skip it.
     let cancelled = false;
-    void api.getStatus(chatRuntimePin)
+    void api.getStatus({ laneId: laneId ?? null }, chatRuntimePin)
       .then((status) => {
         if (cancelled) return;
         setAppControlAvailable(Boolean(status.supported));
@@ -4518,7 +4519,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [chatRuntimePin, laneToolsVisible]);
+  }, [chatRuntimePin, laneId, laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -7782,13 +7783,20 @@ export function AgentChatPane({
     // The full composer bucket effect above owns draft/context hydration for
     // session and lane switches; this effect resets transient chat UI only.
   }, [selectedSessionId, laneId]);
-  const { proofDrawerRef: registerProofDrawer, appleDrawerRef } = useChatPaneShowRequests({
+  const openAppControlDrawer = useCallback(() => {
+    setAppControlAvailable(true);
+    setChatActionsOpen(false);
+    setIosSimulatorOpen(false);
+    setAppControlOpen(true);
+  }, []);
+  const { proofDrawerRef: registerProofDrawer, appleDrawerRef, appControlDrawerRef } = useChatPaneShowRequests({
     chatSessionId: selectedSessionId,
     visible: isTileVisible,
     laneToolDrawersHidden: hideLaneToolDrawers,
     laneId: laneId ?? null,
     openProofDrawer: openProofDrawerForShow,
     openAppleDrawer: openIosSimulatorDrawer,
+    openAppControlDrawer,
   });
   const proofSectionRef = useRef<HTMLDivElement | null>(null);
   const proofDrawerRef = useCallback((element: HTMLDivElement | null) => {
@@ -13691,7 +13699,7 @@ export function AgentChatPane({
           Close
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <div ref={appControlDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
           <Banner
             model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
@@ -14664,12 +14672,25 @@ export function AgentChatPane({
       workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
     />
   ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (
+  /**
+   * An App Control recording this chat made, the same card in the same place.
+   * Null for every chat whose lane never recorded its app.
+   */
+  const appControlRecordingCard = laneId ? (
+    <ChatAppControlRecordingCard
+      laneId={laneId}
+      sessionId={composerSessionId}
+      runtimePin={renderedChatRuntimePin}
+      workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
+    />
+  ) : null;
+  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard || appControlRecordingCard ? (
     <div
       data-testid="chat-composer-notice-overlay"
       className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {macDesktopTimeLapseCard}
+      {appControlRecordingCard}
       {awayDigestCard}
       {lifecyclePill}
     </div>

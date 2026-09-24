@@ -889,16 +889,27 @@ import type {
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
   IosSimulatorWaitForElementArgs,
+  AppControlAttachToTargetArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlDispatchKeyArgs,
   AppControlDriversResult,
   AppControlEventPayload,
   AppControlInspectPointArgs,
   AppControlInspectResult,
+  AppControlLaneArgs,
   AppControlLaunchArgs,
   AppControlObservation,
   AppControlObservationArgs,
+  AppControlCaptureProofArgs,
+  AppControlCaptureProofResult,
+  AppControlRecordStartArgs,
+  AppControlRecordStopArgs,
+  AppControlRecordingStatus,
+  AppControlRecordingStatusArgs,
+  AppControlScreencastFrame,
   AppControlScreenshot,
+  AppControlScrollArgs,
   AppControlSelectResult,
   AppControlSession,
   AppControlSessionTargetArgs,
@@ -1295,14 +1306,17 @@ const iosSimulatorDevicesCache = createKeyedShortIpcCache<IosSimulatorDevice[]>(
   2_000,
 );
 
-// Keyed by binding only (the read takes no arguments): an unpinned status read
-// resolves against whatever machine this window is bound to, so the previous
-// machine's session must not answer for the new one inside the TTL.
+// Keyed by binding and lane: an unpinned status read resolves against
+// whatever machine this window is bound to, so the previous machine's session
+// must not answer for the new one inside the TTL, and App Control keeps one
+// session per lane, so one lane's session must not answer for another's.
 const appControlStatusCache = createKeyedShortIpcCache<AppControlStatus>(
-  () =>
-    callProjectRuntimeActionOr("app_control", "getStatus", {}, () =>
-      ipcRenderer.invoke(IPC.appControlGetStatus),
-    ),
+  (key) => {
+    const args = parseBoundReadCacheArgs<AppControlLaneArgs>(key, {});
+    return callProjectRuntimeActionOr("app_control", "getStatus", { args }, () =>
+      ipcRenderer.invoke(IPC.appControlGetStatus, args),
+    );
+  },
   1_000,
 );
 
@@ -8791,7 +8805,10 @@ const adeBridge = {
     onEvent: subscribeMacDesktopEvents,
   }),
   appControl: {
+    // Every call names its lane: App Control keeps one session per lane, and
+    // a call with no lane (and no chat or session id) is refused.
     getStatus: async (
+      args: AppControlLaneArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlStatus> =>
       pin
@@ -8799,9 +8816,9 @@ const adeBridge = {
             pin,
             "app_control",
             "getStatus",
-            {},
+            { args },
           )
-        : appControlStatusCache.get(boundReadCacheKey()),
+        : appControlStatusCache.get(boundReadCacheKey(args)),
     launch: async (
       args: AppControlLaunchArgs = {},
       pin?: OpenProjectBinding | null,
@@ -8839,7 +8856,7 @@ const adeBridge = {
           ),
       ),
     stop: async (
-      args: AppControlStopArgs = {},
+      args: AppControlStopArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true; previousSession: AppControlSession | null }> =>
       clearAround(
@@ -8850,25 +8867,28 @@ const adeBridge = {
           ),
       ),
     focusWindow: async (
+      args: AppControlLaneArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callAppControlActionOr(pin, "focusWindow", {}, () =>
-        ipcRenderer.invoke(IPC.appControlFocusWindow),
+      callAppControlActionOr(pin, "focusWindow", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlFocusWindow, args),
       ),
     minimizeWindow: async (
+      args: AppControlLaneArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      callAppControlActionOr(pin, "minimizeWindow", {}, () =>
-        ipcRenderer.invoke(IPC.appControlMinimizeWindow),
+      callAppControlActionOr(pin, "minimizeWindow", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlMinimizeWindow, args),
       ),
     screenshot: async (
+      args: AppControlLaneArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlScreenshot> =>
-      callAppControlActionOr(pin, "screenshot", {}, () =>
-        ipcRenderer.invoke(IPC.appControlScreenshot),
+      callAppControlActionOr(pin, "screenshot", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlScreenshot, args),
       ),
     getSnapshot: async (
-      args: AppControlSnapshotArgs = {},
+      args: AppControlSnapshotArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlSnapshot> =>
       callAppControlActionOr(pin, "getSnapshot", { args }, () =>
@@ -8903,27 +8923,28 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.appControlTypeText, args),
       ),
     scroll: async (
-      args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null; coordinateSpace?: "screenshot" | "viewport" | null },
+      args: AppControlScrollArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
       callAppControlActionOr(pin, "scroll", { args }, () =>
         ipcRenderer.invoke(IPC.appControlScroll, args),
       ),
     dispatchKey: async (
-      args: { type: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key?: string | null; code?: string | null; text?: string | null; modifiers?: number | null },
+      args: AppControlDispatchKeyArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
       callAppControlActionOr(pin, "dispatchKey", { args }, () =>
         ipcRenderer.invoke(IPC.appControlDispatchKey, args),
       ),
     listTargets: async (
+      args: AppControlLaneArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlTarget[]> =>
-      callAppControlActionOr(pin, "listTargets", {}, () =>
-        ipcRenderer.invoke(IPC.appControlListTargets),
+      callAppControlActionOr(pin, "listTargets", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlListTargets, args),
       ),
     attachToTarget: async (
-      args: { targetId: string },
+      args: AppControlAttachToTargetArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlSession> =>
       clearAround(
@@ -8932,9 +8953,50 @@ const adeBridge = {
           callAppControlActionOr(
             pin,
             "attachToTarget",
-            { argsList: [args.targetId] },
+            { args },
             () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
           ),
+      ),
+    // Recording: the same contract as Mac Desktop's (cap, idle cut, caption
+    // files it as proof). macOS records the app's window; Windows and Linux
+    // encode the screencast in this desktop app.
+    startRecording: async (
+      args: AppControlRecordStartArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlRecordingStatus> =>
+      callAppControlActionOr(pin, "startRecording", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlStartRecording, args),
+      ),
+    stopRecording: async (
+      args: AppControlRecordStopArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlRecordingStatus> =>
+      callAppControlActionOr(pin, "stopRecording", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlStopRecording, args),
+      ),
+    getRecordingStatus: async (
+      args: AppControlRecordingStatusArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlRecordingStatus> =>
+      callAppControlActionOr(pin, "getRecordingStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlGetRecordingStatus, args),
+      ),
+    // The lane's current picture for a viewer that just mounted: the newest
+    // frame, or one fresh capture when a still app has painted none.
+    getLatestFrame: async (
+      args: AppControlRecordingStatusArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlScreencastFrame | null> =>
+      callAppControlActionOr(pin, "getLatestFrame", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlGetLatestFrame, args),
+      ),
+    // One still of the lane's app, filed as proof.
+    captureProof: async (
+      args: AppControlCaptureProofArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlCaptureProofResult> =>
+      callAppControlActionOr(pin, "captureProof", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlCaptureProof, args),
       ),
     // Agent action model, read side only. The panel shows what an agent did —
     // it never drives `agentClick`/`agentFill`/… from here, so those stay off
@@ -8946,13 +9008,14 @@ const adeBridge = {
     // runtime bound there is nothing to fall back to, so say that plainly
     // instead of invoking a channel that does not exist.
     listDrivers: async (
+      args: AppControlLaneArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlDriversResult> =>
-      callAppControlActionOr(pin, "listDrivers", {}, () =>
+      callAppControlActionOr(pin, "listDrivers", { args }, () =>
         appControlNeedsProjectRuntime("listDrivers"),
       ),
     observe: async (
-      args: AppControlObservationArgs = {},
+      args: AppControlObservationArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlObservation> =>
       // Not a read: `observe` writes an observation record under
@@ -8967,14 +9030,14 @@ const adeBridge = {
           ),
       ),
     getTrace: async (
-      args: AppControlTraceArgs = {},
+      args: AppControlTraceArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlTraceResult> =>
       callAppControlActionOr(pin, "getTrace", { args }, () =>
         appControlNeedsProjectRuntime("getTrace"),
       ),
     windows: async (
-      args: AppControlSessionTargetArgs = {},
+      args: AppControlSessionTargetArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlWindowsResult> =>
       callAppControlActionOr(pin, "windows", { args }, () =>

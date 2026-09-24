@@ -444,7 +444,23 @@ function(inputArg) {
       }
     }
     const exact = candidates.find((entry) => searchableText(entry.node) === needle);
-    return exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
+    const interactive = exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
+    if (interactive) return interactive;
+    // No control carries the text: it may be a heading or a status line
+    // ("Count: 3"), which a wait or an assert must still find. Take the
+    // smallest visible element whose own text contains it.
+    let best = null;
+    for (const ctx of contexts) {
+      if (!contextMatches(ctx)) continue;
+      const walker = ctx.root.querySelectorAll("body *");
+      for (const node of Array.from(walker)) {
+        if (!(node instanceof Element) || !isDisplayed(node, ctx)) continue;
+        const text = lowerText(node.innerText || node.textContent || "");
+        if (!text.includes(needle)) continue;
+        if (!best || text.length < best.length) best = { entry: { node, ctx }, length: text.length };
+      }
+    }
+    return best ? best.entry : null;
   };
   const targetFromLocate = () => {
     if (!locate) return null;

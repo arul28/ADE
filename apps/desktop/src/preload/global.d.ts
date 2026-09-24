@@ -793,16 +793,27 @@ import type {
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
   IosSimulatorWaitForElementArgs,
+  AppControlAttachToTargetArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlDispatchKeyArgs,
   AppControlDriversResult,
   AppControlEventPayload,
   AppControlInspectPointArgs,
   AppControlInspectResult,
+  AppControlLaneArgs,
   AppControlLaunchArgs,
   AppControlObservation,
   AppControlObservationArgs,
+  AppControlCaptureProofArgs,
+  AppControlCaptureProofResult,
+  AppControlRecordStartArgs,
+  AppControlRecordStopArgs,
+  AppControlRecordingStatus,
+  AppControlRecordingStatusArgs,
+  AppControlScreencastFrame,
   AppControlScreenshot,
+  AppControlScrollArgs,
   AppControlSelectResult,
   AppControlSession,
   AppControlSessionTargetArgs,
@@ -2837,7 +2848,14 @@ declare global {
         ) => () => void;
       };
       appControl: {
+        /**
+         * App Control keeps one session per lane. Every call names its lane
+         * (`laneId`, or a `chatSessionId`/`sessionId` that resolves to one);
+         * a call that names none is refused. `getStatus` with no lane answers
+         * `activeSession: null` and lists every lane's session in `sessions`.
+         */
         getStatus: (
+          args?: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlStatus>;
         launch: (
@@ -2852,21 +2870,25 @@ declare global {
           args: AppControlConnectArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
+        /** Quits an app ADE launched (whole process tree); detaches an attached one. */
         stop: (
-          args?: AppControlStopArgs,
+          args: AppControlStopArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
         focusWindow: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         minimizeWindow: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         screenshot: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlScreenshot>;
         getSnapshot: (
-          args?: AppControlSnapshotArgs,
+          args: AppControlSnapshotArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSnapshot>;
         inspectPoint: (
@@ -2886,20 +2908,55 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         scroll: (
-          args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null; coordinateSpace?: "screenshot" | "viewport" | null },
+          args: AppControlScrollArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         dispatchKey: (
-          args: { type: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key?: string | null; code?: string | null; text?: string | null; modifiers?: number | null },
+          args: AppControlDispatchKeyArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         listTargets: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlTarget[]>;
         attachToTarget: (
-          args: { targetId: string },
+          args: AppControlAttachToTargetArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
+        /**
+         * Records the lane's app: its window on macOS (needs Screen
+         * Recording), the CDP screencast on Windows and Linux. Same rules as
+         * Mac Desktop's recording: ten-minute cap for a chat's recording, idle
+         * cut unless `keepIdle`, a caption files it as proof.
+         */
+        startRecording: (
+          args: AppControlRecordStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlRecordingStatus>;
+        stopRecording: (
+          args: AppControlRecordStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlRecordingStatus>;
+        getRecordingStatus: (
+          args: AppControlRecordingStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlRecordingStatus>;
+        /**
+         * The lane's current picture for a viewer that just mounted. The
+         * screencast sends frames only when the page paints, so a still app
+         * would leave a new viewer blank: this answers with the newest frame,
+         * or one fresh capture (also published as a `frame` event). Null with
+         * no connected session.
+         */
+        getLatestFrame?: (
+          args: AppControlRecordingStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlScreencastFrame | null>;
+        /** One still of the lane's app, filed as proof (Mac Desktop's Save screenshot). */
+        captureProof: (
+          args: AppControlCaptureProofArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlCaptureProofResult>;
         /**
          * Agent action model, read side only. `agentClick`/`agentFill`/… are
          * deliberately absent: the panel reports what an agent did, it does not
@@ -2909,19 +2966,20 @@ declare global {
          * channel to fall back to.
          */
         listDrivers: (
+          args?: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlDriversResult>;
         /** Writes an observation record and prunes older ones — never poll it. */
         observe: (
-          args?: AppControlObservationArgs,
+          args: AppControlObservationArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlObservation>;
         getTrace: (
-          args?: AppControlTraceArgs,
+          args: AppControlTraceArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlTraceResult>;
         windows: (
-          args?: AppControlSessionTargetArgs,
+          args: AppControlSessionTargetArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlWindowsResult>;
         /** Re-attaches CDP and clears the trace, like `attachToTarget`. */

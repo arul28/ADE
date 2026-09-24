@@ -23,6 +23,11 @@ import {
   type BuiltInBrowserRuntimeStatus,
 } from "../../../shared/types/builtInBrowserRuntimeStatus";
 import type { Logger } from "../logging/logger";
+import type { AppControlScreencastRecorderBackend } from "../appControl/appControlRecording";
+import {
+  APP_CONTROL_RECORDER_BRIDGE_PREFIX,
+  isAppControlRecorderBridgeMethod,
+} from "../../../../../ade-cli/src/services/builtInBrowser/appControlRecorderBridgeClient";
 import {
   issueBuiltInBrowserActorCapability,
   resolveBuiltInBrowserActorCapability,
@@ -74,6 +79,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   socketPath: string;
   service: BuiltInBrowserService;
   logger: Logger;
+  /**
+   * The App Control screencast recorder (Windows/Linux), served to the runtime
+   * daemon as `app_control_recorder.*`. Absent: those methods are not found.
+   */
+  appControlScreencastRecorder?: AppControlScreencastRecorderBackend | null;
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -207,13 +217,14 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   async function handleRequest(request: JsonRpcRequest): Promise<unknown> {
     const method = request.method ?? "";
-    if (!method.startsWith("built_in_browser.")) {
+    const isRecorderMethod = method.startsWith(APP_CONTROL_RECORDER_BRIDGE_PREFIX);
+    if (!method.startsWith("built_in_browser.") && !isRecorderMethod) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*`,
+        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.* and app_control_recorder.*`,
       );
     }
-    const name = method.slice("built_in_browser.".length);
+    const name = method.slice(isRecorderMethod ? APP_CONTROL_RECORDER_BRIDGE_PREFIX.length : "built_in_browser.".length);
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
     const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
       ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
@@ -223,6 +234,9 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         JsonRpcErrorCode.policyDenied,
         "Built-in browser bridge authentication failed.",
       );
+    }
+    if (isRecorderMethod) {
+      return await handleAppControlRecorder(name, rawParams);
     }
     if (name === "authenticate") {
       return { authenticated: true };
@@ -432,6 +446,55 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
           ifSequence: opened.sequence,
         });
       }
+      if (error instanceof JsonRpcError) throw error;
+      throw new JsonRpcError(
+        JsonRpcErrorCode.internalError,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  /**
+   * The App Control screencast recorder, for the runtime daemon. Bridge auth
+   * is the only gate, as for the Work-tools mirror: the caller is the daemon,
+   * which decides which lane records. Recordings are keyed per lane.
+   */
+  async function handleAppControlRecorder(name: string, params: Record<string, unknown>): Promise<unknown> {
+    const recorder = args.appControlScreencastRecorder ?? null;
+    if (!recorder || !isAppControlRecorderBridgeMethod(name)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Action '${APP_CONTROL_RECORDER_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`,
+      );
+    }
+    const key = normalizedString(params.key);
+    if (!key) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "App Control recorder calls need a recording key.");
+    }
+    try {
+      if (name === "start") {
+        const filePath = normalizedString(params.filePath);
+        // The recorder writes this file, so only an absolute video path is taken.
+        if (!filePath || !path.isAbsolute(filePath) || !/\.(mp4|webm)$/i.test(filePath)) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "App Control recorder start needs an absolute .mp4 or .webm file path.",
+          );
+        }
+        const fps = typeof params.fps === "number" && Number.isFinite(params.fps) ? params.fps : 10;
+        return await recorder.start({ key, filePath, fps, keepIdle: params.keepIdle === true });
+      }
+      if (name === "pushFrame") {
+        const frame = isRecord(params.frame) ? params.frame : null;
+        if (frame && typeof frame.data === "string" && frame.data) {
+          recorder.pushFrame(key, frame as unknown as Parameters<AppControlScreencastRecorderBackend["pushFrame"]>[1]);
+        }
+        return { ok: true };
+      }
+      if (name === "stop") return await recorder.stop(key);
+      recorder.cancel?.(key);
+      return { ok: true };
+    } catch (error) {
       if (error instanceof JsonRpcError) throw error;
       throw new JsonRpcError(
         JsonRpcErrorCode.internalError,

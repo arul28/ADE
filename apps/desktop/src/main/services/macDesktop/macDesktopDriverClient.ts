@@ -647,6 +647,50 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
 
     request,
 
+    /**
+     * App Control: the user windows one process owns, on any display.
+     * Minimized windows are included and say so.
+     */
+    async listWindowsForPid(pid: number): Promise<Array<Record<string, unknown>>> {
+      const reply = await request<{ windows?: unknown }>(MAC_DESKTOP_DRIVER_OPS.listWindows, { pid });
+      return Array.isArray(reply?.windows)
+        ? reply.windows.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+        : [];
+    },
+
+    /**
+     * App Control: records one window instead of a lane display. `key` names
+     * the recording to the helper (it takes the `laneId` slot) and must not
+     * collide with a Mac Desktop lane id.
+     */
+    async startWindowRecording(args: {
+      key: string;
+      windowId: number;
+      fps: number;
+      filePath: string;
+      keepIdle: boolean;
+    }): Promise<Record<string, unknown>> {
+      return await request<Record<string, unknown>>(MAC_DESKTOP_DRIVER_OPS.startRecording, {
+        laneId: args.key,
+        windowId: args.windowId,
+        fps: args.fps,
+        filePath: args.filePath,
+        keepIdle: args.keepIdle,
+      });
+    },
+
+    /** Stops the recording `key` names and returns the finished file's lengths. */
+    async stopRecordingByKey(key: string, options: { timeoutMs?: number } = {}): Promise<Record<string, unknown>> {
+      return await request<Record<string, unknown>>(MAC_DESKTOP_DRIVER_OPS.stopRecording, { laneId: key }, options);
+    },
+
+    /** The helper's Screen Recording and Accessibility grants, from `ping`. */
+    async readPermissions(): Promise<Record<string, unknown> | null> {
+      const reply = await request<{ permissions?: unknown }>(MAC_DESKTOP_DRIVER_OPS.health, {});
+      const permissions = reply?.permissions;
+      return permissions && typeof permissions === "object" ? permissions as Record<string, unknown> : null;
+    },
+
     onEvent(listener: (event: MacDesktopDriverEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);

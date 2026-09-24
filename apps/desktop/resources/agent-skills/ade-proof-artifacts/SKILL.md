@@ -39,7 +39,9 @@ ade mac-desktop proof --caption "Preferences shows the new key" --text
 ade mac-desktop record start --caption "Note saved in TextEdit" --text
 ade mac-desktop record stop --text
 # App Control (ade app-control) — the controlled app's own window
-ade --socket app-control proof --caption "Settings saved" --text
+ade app-control proof --caption "Settings saved" --text
+ade app-control record start --caption "Settings save the API key" --text
+ade app-control record stop --text
 # ADE browser (ade browser)
 ade --socket browser proof --tab <tab-id> --caption "Verified" --text
 ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
@@ -90,7 +92,7 @@ so you can see whether you are looking at your own lane and chat.
 
 Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
 
-- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade apple proof`, `ade app-control proof`, `ade browser proof`, `ade mac-desktop proof --caption "…"` and a captioned `ade mac-desktop record` **do** file.
+- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade apple proof`, `ade app-control proof`, `ade browser proof`, `ade mac-desktop proof --caption "…"`, a captioned `ade mac-desktop record` and a captioned `ade app-control record` **do** file.
 - `ade proof capture` and `ade proof record` never take the user's real screen unless you pass `--real-screen`. For desktop app work on a Mac host, work on the lane's own screen (see the **ade-computer-use** skill) and record there.
 - A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 

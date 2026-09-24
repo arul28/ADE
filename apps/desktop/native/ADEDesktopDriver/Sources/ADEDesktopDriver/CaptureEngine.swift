@@ -210,6 +210,13 @@ final class CaptureEngine {
             let filter = SCContentFilter(desktopIndependentWindow: window)
             return (filter, Int(window.frame.width), Int(window.frame.height))
         }
+        // A window capture with no display to fall back to (App Control records
+        // one app window, not a lane display). A window that is not listed yet
+        // is a race worth retrying; one that closed is not, and the retry
+        // budget runs out on it.
+        if let windowId, displayId == 0 {
+            throw CaptureError.noSurface("Window \(windowId) is not available to ScreenCaptureKit. It may have closed.")
+        }
         if displayId != 0, let display = content.displays.first(where: { $0.displayID == displayId }) {
             let filter = SCContentFilter(display: display, excludingWindows: [])
             return (filter, display.width, display.height)
@@ -240,7 +247,7 @@ final class CaptureEngine {
             do {
                 return try filter(displayId: displayId, windowId: windowId)
             } catch {
-                guard displayId != 0,
+                guard displayId != 0 || windowId != nil,
                       attempt < Self.startBackoffs.count,
                       Self.isRetryableStartFailure(error)
                 else { throw error }
@@ -911,9 +918,14 @@ final class CaptureEngine {
     // Recording
     // -----------------------------------------------------------------------
 
+    /// `windowId` records one window instead of the lane's display: App
+    /// Control records the app it drives, wherever that window sits. The
+    /// capture follows the window when it moves; a resize is scaled into the
+    /// size measured at start. `displayId` is 0 for such a recording.
     func startRecording(
         laneId: String,
         displayId: CGDirectDisplayID,
+        windowId: CGWindowID? = nil,
         fps: Int,
         filePath: String,
         keepIdle: Bool = false
@@ -940,8 +952,20 @@ final class CaptureEngine {
             CaptureError.failed("Lane \(laneId)'s recording was stopped while it was starting.")
         }
 
-        let (_, width, height) = try retryingFilter(displayId: displayId, windowId: nil, label: "record.start")
+        let (measuredFilter, pointWidth, pointHeight) = try retryingFilter(
+            displayId: displayId,
+            windowId: windowId,
+            label: "record.start"
+        )
         guard !startingRecordings.isCancelled(reservation) else { throw cancelled() }
+        // A window filter measures in points. Record it in pixels, as a display
+        // capture is, or a Retina window comes out at half resolution.
+        var pixelScale: CGFloat = 1
+        if windowId != nil, #available(macOS 14.0, *) {
+            pixelScale = CGFloat(measuredFilter.pointPixelScale)
+        }
+        let width = Int((CGFloat(pointWidth) * pixelScale).rounded())
+        let height = Int((CGFloat(pointHeight) * pixelScale).rounded())
         let evenWidth = max(2, width - width % 2)
         let evenHeight = max(2, height - height % 2)
         let url = URL(fileURLWithPath: filePath)
@@ -981,6 +1005,11 @@ final class CaptureEngine {
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.showsCursor = false
         configuration.queueDepth = 5
+        if windowId != nil, #available(macOS 14.0, *) {
+            // The window can grow after the start measured it. Scale it into
+            // the writer's fixed size rather than crop its right and bottom.
+            configuration.scalesToFit = true
+        }
 
         let sink = CaptureFrameSink(
             onFrame: { [weak self] sampleBuffer in
@@ -1037,13 +1066,23 @@ final class CaptureEngine {
             },
             onError: { [weak self] error in
                 self?.log("recording stream error on lane \(laneId): \(error)")
+                // A window recording's stream ends when its window closes or
+                // its app quits. Say so, so the client can stop the recording
+                // and file what it already has instead of waiting for a stop.
+                if windowId != nil {
+                    self?.emit(DriverEvent(event: "recording-interrupted", fields: [
+                        "laneId": .string(laneId),
+                        "windowId": .int(Int(windowId ?? 0)),
+                        "error": .string("\(error)"),
+                    ]))
+                }
             }
         )
         let stream: SCStream
         do {
             stream = try startCaptureStream(
                 displayId: displayId,
-                windowId: nil,
+                windowId: windowId,
                 configuration: configuration,
                 sink: sink,
                 label: "record.start"

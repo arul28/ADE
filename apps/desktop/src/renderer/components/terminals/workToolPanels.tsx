@@ -503,6 +503,7 @@ function WorkIosTool({
 function WorkAppControlTool({
   laneId,
   laneRoot,
+  activeLane,
   toolContext,
   panelSessionId,
   runtimePin,
@@ -514,19 +515,28 @@ function WorkAppControlTool({
   onInsertDraft,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade app-control show` answers "shown" only once this is on screen, and
+  // the floating App Control player stays hidden while it is.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("app-control", mountScope, laneId) : null);
   // Before the lane gate, and before the panel: a read-only surface has
   // something to say whether or not a lane is selected, and must not mount a
   // stubbed namespace.
   if (isReadOnlyWorkTool("app-control", toolContext)) {
-    return <WorkToolReadOnlyView tool="app-control" laneId={laneId} />;
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="app-control" laneId={laneId} />
+      </div>
+    );
   }
   if (!laneId) return <NoLaneNotice />;
   return (
-    <NativePanelFrame warningReason={warningReason} padded>
+    <NativePanelFrame warningReason={warningReason} padded frameRef={mountRef}>
       <ChatAppControlPanel
-        key={`work-appcontrol:${mountScope}`}
+        // One session per lane: another lane is another session, read afresh.
+        key={`work-appcontrol:${mountScope}:${laneId}`}
         sessionId={panelSessionId}
         laneId={laneId}
+        laneName={activeLane?.name ?? null}
         runtimePin={runtimePin}
         projectRoot={laneRoot}
         controlDisabledReason={null}
