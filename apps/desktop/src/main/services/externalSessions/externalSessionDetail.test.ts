@@ -350,6 +350,14 @@ describe("externalSessionDetail", () => {
       watchable: true,
     }));
     const onUpdate = vi.fn();
+    // Fire the change ourselves: a real file event can take seconds on a busy
+    // machine, and this test is about which loader runs, not about fs timing.
+    let fileChanged: (() => void) | null = null;
+    const watchSpy = vi.spyOn(fs, "watch").mockImplementation(((_path: unknown, _options: unknown, listener: () => void) => {
+      fileChanged = listener;
+      return { close: () => undefined } as unknown as fs.FSWatcher;
+    }) as unknown as typeof fs.watch);
+    const watchFileSpy = vi.spyOn(fs, "watchFile").mockImplementation((() => undefined) as unknown as typeof fs.watchFile);
     try {
       await startExternalSessionDetailWatch({
         senderId: 3,
@@ -360,12 +368,15 @@ describe("externalSessionDetail", () => {
         loadDetail,
       });
       expect(loadDetail).toHaveBeenCalledWith({ provider: "claude", sessionId: "55555555-5555-4555-8555-555555555555" });
-      fs.appendFileSync(filePath, `${JSON.stringify({ type: "user", role: "user", text: "second", timestamp: 2 })}\n`);
-      await vi.waitFor(() => expect(onUpdate).toHaveBeenCalled(), { timeout: 3000 });
-      expect(loadDetail.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(fileChanged, "the watch registered a listener").toBeTruthy();
+      fileChanged!();
+      await vi.waitFor(() => expect(onUpdate).toHaveBeenCalled());
+      expect(loadDetail).toHaveBeenCalledTimes(2);
       expect(discoverClaudeSessions).not.toHaveBeenCalled();
     } finally {
       stopExternalSessionDetailWatch(3, "loader");
+      watchSpy.mockRestore();
+      watchFileSpy.mockRestore();
     }
   });
 
