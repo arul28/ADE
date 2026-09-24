@@ -1660,6 +1660,13 @@ type PersistedChatState = {
    */
   devinCloudAttentionRaised?: boolean;
   /**
+   * Hydrate turn that emitted cloud output but never got a provable terminal
+   * status. Persisted so a restarted host still emits `done` for that turn
+   * once Devin reports the session finished — without it the replayed output
+   * dedupes and the turn never completes.
+   */
+  devinCloudPendingDoneTurnId?: string | null;
+  /**
    * True once ADE told this chat that its ACP agent approves its own writes.
    * Persisted so the honest-degradation line stays once per chat rather than
    * once per runtime start.
@@ -16156,6 +16163,15 @@ export function createAgentChatService(args: {
         : prevPersisted?.devinCloudAttentionRaised
           ? { devinCloudAttentionRaised: false }
           : {}),
+      // Same seed-then-write rule as attention: `devinPendingDoneTurnFor`
+      // folds the persisted id in before the write, so a persist that runs
+      // before the mirror's first pass cannot erase a live pending turn, and
+      // a genuinely cleared one writes null rather than carrying forward.
+      ...(devinPendingDoneTurnFor(managed.session.id)
+        ? { devinCloudPendingDoneTurnId: devinCloudPendingDoneTurn.get(managed.session.id) }
+        : prevPersisted?.devinCloudPendingDoneTurnId
+          ? { devinCloudPendingDoneTurnId: null }
+          : {}),
       ...((devinCloudSyncedAttachmentIds.get(managed.session.id)?.size
         ? { devinCloudSyncedAttachmentIds: [...(devinCloudSyncedAttachmentIds.get(managed.session.id) ?? new Set<string>())] }
         : prevPersisted?.devinCloudSyncedAttachmentIds?.length
@@ -16588,6 +16604,10 @@ export function createAgentChatService(args: {
         ? record.devinCloudSyncedAttachmentIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
         : [];
       const devinCloudAttentionRaised = record.devinCloudAttentionRaised === true;
+      const devinCloudPendingDoneTurnId = typeof record.devinCloudPendingDoneTurnId === "string"
+        && record.devinCloudPendingDoneTurnId.trim().length
+        ? record.devinCloudPendingDoneTurnId.trim()
+        : null;
       const acpSupervisionNoticeShown = record.acpSupervisionNoticeShown === true;
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
@@ -16828,6 +16848,7 @@ export function createAgentChatService(args: {
         ...(devinCloudPendingEchoPairs.length ? { devinCloudPendingEchoPairs } : {}),
         ...(devinCloudSyncedAttachmentIds.length ? { devinCloudSyncedAttachmentIds } : {}),
         ...(devinCloudAttentionRaised ? { devinCloudAttentionRaised } : {}),
+        ...(devinCloudPendingDoneTurnId ? { devinCloudPendingDoneTurnId } : {}),
         ...(acpSupervisionNoticeShown ? { acpSupervisionNoticeShown } : {}),
         ...(instanceId ? { instanceId } : {}),
         ...(presetId ? { presetId } : {}),
@@ -46952,6 +46973,8 @@ export function createAgentChatService(args: {
   const devinCloudMessagesTailCursor = new Map<string, string>();
   /** Hydrate turn id that emitted output but never got a provable terminal status, per ADE session. */
   const devinCloudPendingDoneTurn = new Map<string, string>();
+  /** Sessions whose persisted pending-done turn id has been folded into the live map. */
+  const devinCloudPendingDoneTurnSeeded = new Set<string>();
   /** Attachment ids already filed into the proof drawer, per ADE session. */
   const devinCloudSyncedAttachmentIds = new Map<string, Set<string>>();
   /** Sessions whose needs-you marker this mirror raised (so it can clear it without touching others'). */
@@ -47013,6 +47036,21 @@ export function createAgentChatService(args: {
     return devinCloudAttentionRaised.has(sessionId);
   };
 
+  /**
+   * Pending-done turn id for a session, folding the persisted id back into the
+   * live map on first read. Persisting it keeps a hydrated-but-unconfirmed
+   * turn completable across restarts: without it the replayed output dedupes
+   * and `done` can never emit for that turn.
+   */
+  const devinPendingDoneTurnFor = (sessionId: string): string | undefined => {
+    if (!devinCloudPendingDoneTurnSeeded.has(sessionId)) {
+      devinCloudPendingDoneTurnSeeded.add(sessionId);
+      const persisted = readPersistedState(sessionId)?.devinCloudPendingDoneTurnId;
+      if (persisted) devinCloudPendingDoneTurn.set(sessionId, persisted);
+    }
+    return devinCloudPendingDoneTurn.get(sessionId);
+  };
+
   const forgetDevinCloudHydrationState = (sessionId: string): void => {
     devinCloudHydratedEventIds.delete(sessionId);
     devinCloudRemoteNameReadAt.delete(sessionId);
@@ -47022,6 +47060,7 @@ export function createAgentChatService(args: {
     devinCloudDoneAnnounced.delete(sessionId);
     devinCloudMessagesTailCursor.delete(sessionId);
     devinCloudPendingDoneTurn.delete(sessionId);
+    devinCloudPendingDoneTurnSeeded.delete(sessionId);
     devinCloudSyncedAttachmentIds.delete(sessionId);
     devinCloudAttentionRaised.delete(sessionId);
     devinCloudAttentionSeeded.delete(sessionId);
@@ -47039,6 +47078,7 @@ export function createAgentChatService(args: {
     devinCloudDoneAnnounced.clear();
     devinCloudMessagesTailCursor.clear();
     devinCloudPendingDoneTurn.clear();
+    devinCloudPendingDoneTurnSeeded.clear();
     devinCloudSyncedAttachmentIds.clear();
     devinCloudAttentionRaised.clear();
     devinCloudAttentionSeeded.clear();
@@ -47396,7 +47436,7 @@ export function createAgentChatService(args: {
       // mirrored and deduped, a later poll sees no new messages but still owns
       // the pending turn's `done`.
       if (!devinCloudDoneAnnounced.has(managed.session.id)) {
-        const pendingDoneTurnId = devinCloudPendingDoneTurn.get(managed.session.id);
+        const pendingDoneTurnId = devinPendingDoneTurnFor(managed.session.id);
         if (emittedVisible || pendingDoneTurnId) {
           if (liveStatus == null) {
             remote = remote ?? await aiIntegrationService.getDevinCloudSession(devinSessionId).catch(() => null);
@@ -47529,7 +47569,10 @@ export function createAgentChatService(args: {
       // chat for the same Devin session.
       try {
         const rows = sessionService.list({
-          limit: 500,
+          // Unbounded: a bounded scan silently mints a second chat for any
+          // Devin link older than the cutoff. This cold path only runs when
+          // neither managedSessions nor the lane index knows the link.
+          limit: null,
           toolTypes: CHAT_SESSION_TOOL_TYPES,
         });
         for (const row of rows) {

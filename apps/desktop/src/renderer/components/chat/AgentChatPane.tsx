@@ -11282,10 +11282,14 @@ export function AgentChatPane({
    * provenance tags server-side. Same draft-launch-job reporting as Cursor's
    * flow, minus the model and account-repo-list checks Devin does not have.
    */
-  const launchDevinCloudSession = useCallback(async (promptText: string): Promise<boolean> => {
-    // A hand-off passes a synthesized prompt with an empty composer; the
-    // snapshot then comes from the prompt alone — same shape as a typed draft.
-    const snapshot = buildDraftLaunchSnapshotForCurrentState()
+  const launchDevinCloudSession = useCallback(async (
+    promptText: string,
+    opts?: { synthesized?: boolean },
+  ): Promise<boolean> => {
+    // A hand-off passes a synthesized prompt — it must carry only its own
+    // context, never an unrelated composer draft (or that draft's
+    // attachments). Composer sends still take the live draft snapshot.
+    const snapshot = (opts?.synthesized ? null : buildDraftLaunchSnapshotForCurrentState())
       ?? (promptText.trim().length
         ? ({
             text: promptText,
@@ -11495,7 +11499,7 @@ export function AgentChatPane({
       laneDisplayLabel ? `Lane: ${laneDisplayLabel}` : null,
       "Continue the work against this lane's repository.",
     ].filter((line): line is string => Boolean(line));
-    void launchDevinCloudSession(lines.join("\n"));
+    void launchDevinCloudSession(lines.join("\n"), { synthesized: true });
   }, [laneDisplayLabel, launchDevinCloudSession, selectedSession?.title]);
 
   const handoffSession = useCallback(async (mode: "brief" | "fork" = "brief") => {
