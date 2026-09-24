@@ -1210,6 +1210,101 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("batches lane sync-status reads through git.getSyncStatuses on a capable host", async () => {
+    const statuses = {
+      "lane-1": {
+        hasUpstream: true,
+        upstreamState: "tracking",
+        upstreamRef: "origin/main",
+        ahead: 1,
+        behind: 0,
+        diverged: false,
+        recommendedAction: "none",
+      },
+      "lane-2": null,
+    };
+    fake.descriptors = descriptors(["git.getSyncStatuses"]);
+    fake.commandResults.set("git.getSyncStatuses", statuses);
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(
+      adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2", "lane-1", " "] }),
+    ).resolves.toEqual(statuses);
+    expect(fake.commandCalls.map((call) => call.action)).toEqual(["git.getSyncStatuses"]);
+    expect(fake.commandCalls[0].args).toEqual({ laneIds: ["lane-1", "lane-2"] });
+
+    adapter.dispose();
+  });
+
+  it("falls back to per-lane git.getSyncStatus when the host lacks the batch action", async () => {
+    const status = {
+      hasUpstream: true,
+      upstreamState: "tracking",
+      upstreamRef: "origin/main",
+      ahead: 2,
+      behind: 1,
+      diverged: false,
+      recommendedAction: "pull",
+    };
+    fake.descriptors = descriptors(["git.getSyncStatus"]);
+    fake.commandResults.set("git.getSyncStatus", status);
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual({
+      "lane-1": status,
+      "lane-2": status,
+    });
+    expect(fake.commandCalls.map((call) => call.action)).toEqual([
+      "git.getSyncStatus",
+      "git.getSyncStatus",
+    ]);
+    expect(fake.commandCalls.map((call) => call.args)).toEqual([
+      { laneId: "lane-1" },
+      { laneId: "lane-2" },
+    ]);
+
+    adapter.dispose();
+  });
+
+  it("resolves an empty sync-status batch without touching the host", async () => {
+    fake.descriptors = descriptors(["git.getSyncStatuses"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.git.getSyncStatuses({ laneIds: [" ", ""] })).resolves.toEqual({});
+    expect(fake.commandCalls).toEqual([]);
+
+    adapter.dispose();
+  });
+
+  it("rejects a sync-status batch pinned to a machine this adapter cannot route", async () => {
+    fake.descriptors = descriptors(["git.getSyncStatuses"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(
+      adapter.ade.git.getSyncStatuses(
+        { laneIds: ["lane-1"] },
+        {
+          kind: "remote",
+          key: "remote:env-2:project-2",
+          targetId: "env-2",
+          projectId: "project-2",
+          runtimeName: "env-2",
+          rootPath: "/repo",
+          displayName: "env-2",
+        } as never,
+      ),
+    ).rejects.toThrow(/git\.getSyncStatuses/);
+    expect(fake.commandCalls).toEqual([]);
+
+    adapter.dispose();
+  });
+
   it("emits the restored lane from a successful web unarchive", async () => {
     fake.descriptors = descriptors(["lanes.unarchive"]);
     const lane = {

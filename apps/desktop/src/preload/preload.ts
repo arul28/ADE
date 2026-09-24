@@ -7,6 +7,7 @@ import {
 import { createMacDesktopBridge } from "./macDesktopPreload";
 import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
+import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type {
   CtoVoiceBridge,
@@ -356,6 +357,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -2140,6 +2143,21 @@ function callChatLaunchAction<T>(
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
     Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
+}
+
+async function readLegacySyncStatuses(
+  laneIds: string[],
+  pin?: OpenProjectBinding | null,
+): Promise<GitSyncStatuses> {
+  return settleLaneSyncStatuses(laneIds, (laneId) =>
+    callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
+      pin,
+      "git",
+      "getSyncStatus",
+      { args: { laneId } },
+      () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
+    ),
+  );
 }
 
 function readLegacyPrDetailBundle(prId: string): Promise<PrDetailBundle> {
@@ -10495,6 +10513,25 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
       ),
+    getSyncStatuses: async (
+      args: GitSyncStatusesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitSyncStatuses> => {
+      const laneIds = normalizeSyncStatusLaneIds(args);
+      if (laneIds.length === 0) return {};
+      try {
+        return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
+          pin,
+          "git",
+          "getSyncStatuses",
+          { args: { laneIds } },
+          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
+        );
+      } catch (error) {
+        if (!isUnsupportedAdeActionError(error)) throw error;
+        return await readLegacySyncStatuses(laneIds, pin);
+      }
+    },
     getOriginRemote: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,

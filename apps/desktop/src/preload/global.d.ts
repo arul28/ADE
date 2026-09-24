@@ -441,6 +441,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -3474,6 +3476,10 @@ declare global {
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitUpstreamSyncStatus>;
+        getSyncStatuses: (
+          args: GitSyncStatusesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitSyncStatuses>;
         getOriginRemote: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,

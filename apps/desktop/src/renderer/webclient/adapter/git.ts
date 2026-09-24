@@ -1,3 +1,9 @@
+import type {
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
+  GitUpstreamSyncStatus,
+} from "../../../shared/types";
+import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../../../shared/gitSyncStatuses";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg as Pin } from "./runtimePinGuard";
 
@@ -12,6 +18,22 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
 
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+  }
+
+  async function getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
+    const laneIds = normalizeSyncStatusLaneIds(args);
+    if (laneIds.length === 0) return {};
+    if (commands.hasAction("git.getSyncStatuses")) {
+      return await call<GitSyncStatuses>("git.getSyncStatuses", { laneIds }, {});
+    }
+
+    return settleLaneSyncStatuses(laneIds, (laneId) =>
+      commands.call<GitUpstreamSyncStatus | null>(
+        "git.getSyncStatus",
+        { laneId },
+        { fallback: null },
+      ),
+    );
   }
 
   /**
@@ -90,6 +112,10 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
     stashList: (args: unknown, pin?: Pin) => guarded("git.stashList", args, pin, []),
     stashClear: (args: unknown, pin?: Pin) => guarded("git.stashClear", args, pin, gitActionFallback, false),
     getSyncStatus: (args: unknown, pin?: Pin) => guarded("git.getSyncStatus", args, pin, null),
+    getSyncStatuses: async (args: GitSyncStatusesArgs, pin?: Pin) => {
+      assertWebRuntimePinRoutable("git.getSyncStatuses", pin, infra);
+      return await getSyncStatuses(args);
+    },
     getOriginRemote: (args: unknown, pin?: Pin) =>
       guarded("git.getOriginRemote", args, pin, { remoteUrl: null, branch: null }),
     getOpenPrForBranch: (args: unknown, pin?: Pin) =>

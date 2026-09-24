@@ -696,6 +696,7 @@ export const IPC = {
   gitUndoLastHeadChange: "ade.git.undoLastHeadChange",
   gitRedoLastHeadChange: "ade.git.redoLastHeadChange",
   gitGetSyncStatus: "ade.git.getSyncStatus",
+  gitGetSyncStatuses: "ade.git.getSyncStatuses",
   gitGetOriginRemote: "ade.git.getOriginRemote",
   gitGetOpenPrForBranch: "ade.git.getOpenPrForBranch",
   gitSync: "ade.git.sync",
