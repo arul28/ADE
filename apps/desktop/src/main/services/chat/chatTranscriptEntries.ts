@@ -148,6 +148,13 @@ export function transcriptEntriesFromEnvelopes(
   options?: TranscriptEntriesOptions,
 ): AgentChatTranscriptEntry[] {
   const graduated = graduatedSteerIds(sessionId, envelopes);
+  /**
+   * One steer is one message even when its row is written several times as it
+   * moves through its lifecycle (`accepted` then `inline`, Codex's `accepted`
+   * then `processed`, a refused steer's `accepted` then `delivered`). Only the
+   * first row is emitted.
+   */
+  const emittedSteerIds = new Set<string>();
   type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
   const entries: TranscriptDraftEntry[] = [];
   const sourceOffsetByDraft = new WeakMap<TranscriptDraftEntry, number>();
@@ -204,6 +211,7 @@ export function transcriptEntriesFromEnvelopes(
       // it landed inside, or a mid-turn steer splits one message into two
       // entries with no user entry between them.
       if (entry.event.deliveryState === "queued" && steerId && graduated.has(steerId)) continue;
+      if (steerId && emittedSteerIds.has(steerId)) continue;
       flushAssistantDraft();
       openStreamKey = null;
       assistantDraftsByKey.clear();
@@ -222,6 +230,7 @@ export function transcriptEntriesFromEnvelopes(
       };
       rememberDraftSource(draft, entry);
       entries.push(draft);
+      if (steerId) emittedSteerIds.add(steerId);
       continue;
     }
     if (entry.event.type === "text") {

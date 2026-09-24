@@ -38,11 +38,19 @@ export const countHumanChildMessagesForTurn = (
   turnId: string,
 ): number => {
   let count = 0;
+  // A steer's row is written again as it moves through its lifecycle
+  // (`accepted` then `inline`, or `processed`); it is still one message.
+  const countedSteerIds = new Set<string>();
   for (const envelope of history) {
     const event = envelope.event;
     if (event?.type !== "user_message") continue;
     if (event.turnId !== turnId) continue;
     if (!isHumanChildMessage(event)) continue;
+    const steerId = event.steerId?.trim();
+    if (steerId) {
+      if (countedSteerIds.has(steerId)) continue;
+      countedSteerIds.add(steerId);
+    }
     count += 1;
   }
   return count;

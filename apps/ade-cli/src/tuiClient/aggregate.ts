@@ -889,7 +889,9 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
         }
       } else {
         steerMap.delete(event.steerId);
-        resolvedSteerIds.add(event.steerId);
+        // `accepted` is not final: a refused Cursor/OpenCode inline steer comes
+        // back as `queued` on the same steerId, and must show as staged again.
+        if (event.deliveryState !== "accepted") resolvedSteerIds.add(event.steerId);
       }
       continue;
     }

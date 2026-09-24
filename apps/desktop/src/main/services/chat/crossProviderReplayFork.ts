@@ -170,9 +170,28 @@ export function buildTranscriptReplayDocument(
     current = [];
   };
 
+  // An `accepted` steer row is written again once the steer settles
+  // (`inline`, `processed`, or `delivered` on a later turn). The settled row is
+  // where the model actually got the message, so only it is replayed.
+  const settledSteerIds = new Set<string>();
+  for (const envelope of envelopes) {
+    const event = envelope.event;
+    if (event?.type !== "user_message") continue;
+    const steerId = event.steerId?.trim();
+    if (steerId && event.deliveryState !== "accepted" && event.deliveryState !== "queued") {
+      settledSteerIds.add(steerId);
+    }
+  }
   for (const envelope of envelopes) {
     const event = envelope.event;
     if (!event) continue;
+    if (
+      event.type === "user_message"
+      && event.deliveryState === "accepted"
+      && settledSteerIds.has(event.steerId?.trim() ?? "")
+    ) {
+      continue;
+    }
     const body = eventText(event);
     if (!body) continue;
     if (event.type === "user_message") flush();

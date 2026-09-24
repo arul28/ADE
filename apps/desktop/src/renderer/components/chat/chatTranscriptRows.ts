@@ -349,7 +349,7 @@ export type ScheduledWakeDividerRenderEvent = {
  * Header row rendered above a completion message delivered when a spawned
  * `subagent` finished (`user_message.metadata.spawnCompletion`). Carries the
  * child session id so the row's `[open ›]` affordance navigates to the child.
- * Row key: `spawn-wake:${childSessionId}:${turnId}`.
+ * Row key: `spawn-wake:${childSessionId}:${childTurnId || steerId || turnId || sequence}`.
  */
 export type SpawnWakeDividerRenderEvent = {
   type: "spawn_wake_divider";
@@ -1982,9 +1982,15 @@ export function appendCollapsedChatTranscriptEvent(
       const status = completion.status === "completed" || completion.status === "failed" || completion.status === "stopped"
         ? completion.status
         : null;
-      if (childSessionId && spawnKind && status) {
+      // Key per delivered completion, not per parent turn: several wakes from
+      // one child can steer into the same parent turn, and a shared key makes
+      // the virtualized list render ghost rows. The early return above keeps a
+      // re-delivered steer (same `steerId`) from pushing a second divider.
+      const deliveryId = completion.childTurnId?.trim() || steerId || event.turnId || String(sequence);
+      const key = `spawn-wake:${childSessionId}:${deliveryId}`;
+      if (childSessionId && spawnKind && status && !rows.some((row) => row.key === key)) {
         rows.push({
-          key: `spawn-wake:${childSessionId}:${event.turnId ?? sequence}`,
+          key,
           timestamp: envelope.timestamp,
           event: {
             type: "spawn_wake_divider",

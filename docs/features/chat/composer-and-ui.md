@@ -1083,7 +1083,9 @@ chat pane mount, which happens either way.
   turn** (`ArrowBendDownRight`) and **interrupt** (`Lightning`). **Send during
   turn** dispatches the queued message into the active turn via
   `ade.agentChat.dispatchSteer({ mode: "inline" })`; the user message then
-  appears in-transcript with `deliveryState: "inline"`; the service pushes an
+  appears in-transcript with `deliveryState: "inline"` (Cursor and OpenCode
+  show it as `accepted` first, while the turn decides, and put it back to
+  `queued` if the turn refuses it); the service pushes an
   SDK message with `priority: "next"` and `shouldQuery: true`. Claude's
   **Interrupt & send** calls `dispatchSteer({ mode: "interrupt" })`, which uses
   SDK priority `now` to redirect the current model step without tearing down the
