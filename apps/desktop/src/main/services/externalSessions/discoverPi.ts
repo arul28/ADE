@@ -106,7 +106,7 @@ export async function discoverPiSessions(
       .filter((message): message is NonNullable<typeof message> => message !== null)
       .slice(-8);
     const timestamp = asEpochMs(header.timestamp);
-    records.push(recordWithFile({
+    const record = recordWithFile({
       provider: "pi",
       id,
       cwd,
@@ -119,7 +119,9 @@ export async function discoverPiSessions(
       launch: launchFor(normalizedRecords),
       filePath: candidate.filePath,
       sourceMtimeMs: candidate.mtimeMs,
-    }));
+    });
+    record.sizeBytes = candidate.size;
+    records.push(record);
     seen.add(id);
   }
   return sortDiscoveryRecords(records, limit);

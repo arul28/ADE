@@ -1078,6 +1078,33 @@ describe("external session provider discovery", () => {
     });
   });
 
+  it("skips Droid subagent sessions and prefers Droid's summary title", async () => {
+    // 2026-09-23: Task-tool subagents were 149 of 247 listed Droid rows.
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "droid-repo");
+    const parentId = "55555555-5555-4555-8555-555555555555";
+    const childId = "66666666-6666-4666-8666-666666666666";
+    const dir = path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(cwd));
+    const userTurn = { type: "message", timestamp: "2026-07-06T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "go" }] } };
+    writeJsonl(path.join(dir, `${parentId}.jsonl`), [
+      { type: "session_start", id: parentId, title: "please look into the mobile files tab and …", sessionTitle: "Mobile files tab", cwd },
+      userTurn,
+    ]);
+    writeJsonl(path.join(dir, "77777777-7777-4777-8777-777777777777.jsonl"), [
+      { type: "session_start", id: "77777777-7777-4777-8777-777777777777", title: "## Your Assigned Feature", sessionTitle: "New Session", decompSessionType: "worker", decompMissionId: parentId, cwd },
+      userTurn,
+    ]);
+    writeJsonl(path.join(dir, `${childId}.jsonl`), [
+      { type: "session_start", id: childId, title: "# Task Tool Invocation Subagent type: worker", sessionTitle: "worker: Explore", callingSessionId: parentId, cwd },
+      userTurn,
+    ]);
+
+    const sessions = await discoverDroidSessions({ homeDir, limit: 10 });
+
+    expect(sessions.map((session) => session.id)).toEqual([parentId]);
+    expect(sessions[0]?.title).toBe("Mobile files tab");
+  });
+
   it("discovers Droid sessions from Factory storage", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "droid-repo");
@@ -1396,7 +1423,7 @@ describe("external session provider discovery", () => {
         resumeInDifferentCwd: false,
         fork: true,
         forkIntoDifferentCwd: false,
-        importToChat: false,
+        importToChat: true,
       },
     });
 
@@ -1486,6 +1513,30 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(claudeRoot, { recursive: true, force: true });
+});
+
+describe("Claude session folder", () => {
+  it("keeps the folder the session is filed under when the shell later moved into a subfolder", async () => {
+    // 2026-09-23: a session started at a lane root and then ran `cd apps/desktop`.
+    // Taking the last recorded cwd made the lane look like a subfolder, hid
+    // "Continue as ADE chat", and would have run `claude --resume` where Claude
+    // cannot find the session.
+    const laneRoot = path.join(claudeRoot, "lane");
+    const subfolder = path.join(laneRoot, "apps", "desktop");
+    const id = uuidFor("eeee", 7);
+    writeSession({
+      cwd: laneRoot,
+      id,
+      rows: [
+        ...turns({ cwd: laneRoot, prefix: "eeee", from: 0, count: 3 }),
+        ...turns({ cwd: subfolder, prefix: "ffff", from: 3, count: 3 }),
+      ],
+    });
+
+    const [session] = await discoverClaudeSessions({ homeDir: claudeHome, limit: 1 });
+
+    expect(session?.cwd).toBe(laneRoot);
+  });
 });
 
 describe("Claude continuation-chain discovery", () => {
@@ -1733,4 +1784,29 @@ describe("Claude transcript classification", () => {
     expect(sessions.map((session) => session.id)).toEqual([id]);
   });
 });
+});
+
+describe("discoverClaudeSessions launch model", () => {
+  let root: string;
+  beforeEach(() => { root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-claude-model-"))); });
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+  it("records the newest assistant model so a continue keeps it", () => {
+    // 2026-09-23: a Haiku session continued as an ADE chat on the default Opus.
+    const home = path.join(root, "home");
+    const cwd = path.join(root, "lane");
+    fs.mkdirSync(cwd, { recursive: true });
+    const id = "11111111-2222-4333-8444-555555555555";
+    const file = path.join(home, ".claude", "projects", claudeProjectSlugForCwd(cwd), `${id}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const rows = [
+      { type: "user", sessionId: id, cwd, timestamp: "2026-09-23T10:00:00.000Z", message: { role: "user", content: "hi" } },
+      { type: "assistant", sessionId: id, cwd, timestamp: "2026-09-23T10:00:01.000Z", message: { role: "assistant", model: "claude-haiku-4-5-20251001", content: [{ type: "text", text: "hello" }] } },
+      { type: "assistant", sessionId: id, cwd, timestamp: "2026-09-23T10:00:02.000Z", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "limit" }] } },
+    ];
+    fs.writeFileSync(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    return discoverClaudeSessions({ homeDir: home, limit: 5 }).then(([session]) => {
+      expect(session?.launch).toEqual({ model: "claude-haiku-4-5-20251001" });
+    });
+  });
 });

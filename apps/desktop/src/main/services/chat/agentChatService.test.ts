@@ -14,6 +14,7 @@ import {
   resolveOpenCodeExecutablePath,
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
+import { loadExternalSessionEvents } from "../externalSessions/events";
 import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./acpHost/mockAcpAgent";
 import { createAcpSessionPool } from "./acpHost/acpSessionPool";
 import type { AcpSessionUpdate } from "./acpHost/acpProtocolTypes";
@@ -496,6 +497,17 @@ vi.mock("@factory/droid-sdk/node", () => ({
 
 vi.mock("../ai/codexExecutable", () => ({
   resolveCodexExecutable: vi.fn(() => ({ path: "codex", source: "fallback-command" })),
+}));
+
+// The converters read provider stores (and OpenCode shells out); import tests
+// script the page they return instead. Default: a session with no messages.
+vi.mock("../externalSessions/events", () => ({
+  loadExternalSessionEvents: vi.fn(async () => ({
+    events: [],
+    hasOlder: false,
+    olderCursor: null,
+    truncated: false,
+  })),
 }));
 
 vi.mock("../opencode/openCodeRuntime", () => {
@@ -1259,6 +1271,7 @@ import { stableStringify } from "../shared/utils";
 import {
   createDynamicOpenCodeModelDescriptor,
   createDynamicPiModelDescriptor,
+  getDefaultModelDescriptor,
   getDynamicAcpModelDescriptors,
   getModelById,
   replaceDynamicOpenCodeModelDescriptors,
@@ -3736,6 +3749,7 @@ describe("createAgentChatService", () => {
       expect(persisted.importedFrom).toMatchObject({
         provider: "claude",
         sessionId: externalSessionId,
+        mode: "continue",
       });
       expect(typeof persisted.importedFrom.importedAt).toBe("number");
       expect(sessionService.getClaudeSessionPointerByChatSessionId(result.chatSessionId)).toMatchObject({
@@ -3746,11 +3760,14 @@ describe("createAgentChatService", () => {
       expect(sessionService.get(result.chatSessionId)?.title).toBe("Please inspect the failing test");
 
       const history = await service.getChatEventHistory(result.chatSessionId, { maxEvents: 10 });
+      // The turn did tool work, so it is closed with a `done` event: finished
+      // tool calls show only in a turn's done summary.
       expect(history.events.map((envelope) => envelope.event.type)).toEqual([
         "system_notice",
         "user_message",
         "text",
         "tool_call",
+        "done",
       ]);
       expect(history.events[0]!.event).toMatchObject({ type: "system_notice", message: "Session imported from claude CLI (11111111)" });
       expect(history.events[1]!.event).toMatchObject({ type: "user_message", text: "Please inspect the failing test." });
@@ -3840,6 +3857,7 @@ describe("createAgentChatService", () => {
 
         const persisted = readPersistedChatState(result.chatSessionId);
         expect(persisted.sdkSessionId).not.toBe(externalSessionId);
+        expect(persisted.importedFrom).toMatchObject({ sessionId: externalSessionId, mode: "fork" });
         expect(persisted.claudeBackgroundResumeSessionId).toBe(persisted.sdkSessionId);
         expect(fs.readFileSync(sourcePath, "utf8")).toBe(sourceBefore);
         const projectsDir = path.join(claudeConfigRoot, "projects");
@@ -3989,6 +4007,256 @@ describe("createAgentChatService", () => {
         expect.anything(),
       );
       expect(sessionService.get("test-uuid-1")).toBeNull();
+    });
+
+    describe("external sessions from every provider", () => {
+      const importEvents = (chatSessionId: string, texts: { user: string; assistant: string }) => ({
+        events: [
+          {
+            sessionId: chatSessionId,
+            timestamp: "2026-09-23T10:00:00.000Z",
+            event: { type: "system_notice" as const, noticeKind: "info" as const, message: "Session imported from grok CLI (ext-1)" },
+          },
+          {
+            sessionId: chatSessionId,
+            timestamp: "2026-09-23T10:00:01.000Z",
+            event: { type: "user_message" as const, text: texts.user },
+          },
+          {
+            sessionId: chatSessionId,
+            timestamp: "2026-09-23T10:00:02.000Z",
+            event: { type: "text" as const, text: texts.assistant },
+          },
+        ],
+        hasOlder: false,
+        olderCursor: null,
+        truncated: false,
+      });
+
+      it("opens a Grok session as a Grok chat in another lane by replaying its history", async () => {
+        vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
+          importEvents("import-preview", { user: "Map the sync flow.", assistant: "The relay owns the cursor." }),
+        );
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "grok",
+          externalSessionId: "grok-session-1",
+          laneId: "lane-2",
+          cwd: tmpRoot,
+          fork: true,
+        });
+
+        expect(vi.mocked(loadExternalSessionEvents)).toHaveBeenCalledWith(expect.objectContaining({
+          provider: "grok",
+          sessionId: "grok-session-1",
+          record: null,
+          laneId: "lane-2",
+          purpose: "import",
+        }));
+        expect(result.chatSummary).toMatchObject({
+          laneId: "lane-2",
+          provider: "grok",
+          modelId: getDefaultModelDescriptor("grok")!.id,
+          title: "Map the sync flow",
+        });
+        // Nothing was cut, so there is no truncation to disclose.
+        expect(result.replayFork).toBeUndefined();
+        expect(result.providerTargetId).toBe("grok-session-1");
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(persisted.importedFrom).toMatchObject({ provider: "grok", sessionId: "grok-session-1", mode: "fork" });
+        expect(persisted.acpSessionId).toBeUndefined();
+        expect(persisted.pendingTranscriptReplay).toContain("Map the sync flow.");
+        expect(persisted.pendingTranscriptReplay).toContain("The relay owns the cursor.");
+        const history = await service.getChatEventHistory(result.chatSessionId, { maxEvents: 10 });
+        expect(history.events.map((envelope) => envelope.event.type)).toEqual(["system_notice", "user_message", "text"]);
+        expect(history.events.every((envelope) => envelope.sessionId === result.chatSessionId)).toBe(true);
+      });
+
+      it("copies onto the model the source session recorded when it belongs to the family", async () => {
+        const recorded = getDefaultModelDescriptor("droid")!;
+        vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
+          importEvents("import-preview", { user: "Fix the flaky test.", assistant: "Done." }),
+        );
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "droid",
+          externalSessionId: "droid-session-1",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: true,
+          sourceModel: recorded.providerModelId,
+        });
+
+        expect(result.chatSummary).toMatchObject({ provider: "droid", modelId: recorded.id });
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(persisted.droidSdkSessionId).toBeUndefined();
+        expect(persisted.importedFrom).toMatchObject({ provider: "droid", mode: "fork" });
+        expect(persisted.pendingTranscriptReplay).toContain("Fix the flaky test.");
+      });
+
+      it("refuses a copy with nothing to replay and leaves no chat behind", async () => {
+        const { service, sessionService } = createService();
+
+        await expect(service.importExternalChatSession({
+          provider: "kimi",
+          externalSessionId: "kimi-session-empty",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: true,
+        })).rejects.toThrow(/has no messages to replay/i);
+
+        expect(sessionService.get("test-uuid-1")).toBeNull();
+      });
+
+      it("continues a Droid session in place: the chat resumes the external session id", async () => {
+        vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
+          importEvents("import-preview", { user: "Keep going on the parser.", assistant: "On it." }),
+        );
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "droid",
+          externalSessionId: "droid-external-1",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: false,
+        });
+
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(result.providerTargetId).toBe("droid-external-1");
+        expect(persisted.droidSdkSessionId).toBe("droid-external-1");
+        expect(persisted.importedFrom).toMatchObject({ provider: "droid", sessionId: "droid-external-1", mode: "continue" });
+        expect(persisted.pendingTranscriptReplay ?? null).toBeNull();
+        const history = await service.getChatEventHistory(result.chatSessionId, { maxEvents: 10 });
+        expect(history.events.map((envelope) => envelope.event.type)).toEqual(["system_notice", "user_message", "text"]);
+
+        await service.warmupModel({ sessionId: result.chatSessionId, modelId: result.chatSummary.modelId! });
+        expect(mockState.droidAcquireCalls.at(-1)?.resumeSessionId).toBe("droid-external-1");
+        service.forceDisposeAll();
+      });
+
+      it("continues an OpenCode session in place: the runtime opens the external session id", async () => {
+        vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
+          importEvents("import-preview", { user: "Refactor the store.", assistant: "Starting." }),
+        );
+        streamText.mockReturnValue({
+          fullStream: (async function* () {
+            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+          })(),
+        });
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "opencode",
+          externalSessionId: "ses_external1",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: false,
+          model: "opencode/anthropic/claude-sonnet-5",
+        });
+
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(persisted.providerSessionId).toBe("ses_external1");
+        expect(persisted.importedFrom).toMatchObject({ provider: "opencode", mode: "continue" });
+
+        await service.sendMessage({ sessionId: result.chatSessionId, text: "Continue." }, { awaitDispatch: true });
+        await vi.waitFor(() => {
+          expect(vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0]).toEqual(
+            expect.objectContaining({ sessionId: "ses_external1", directory: fs.realpathSync(tmpRoot) }),
+          );
+        });
+        service.forceDisposeAll();
+      });
+
+      it("continues a Pi session in place by seeding its session id", async () => {
+        const piDescriptor = createDynamicPiModelDescriptor("local", "import-continue");
+        replaceDynamicPiModelDescriptors([piDescriptor]);
+        vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
+          importEvents("import-preview", { user: "Add the migration.", assistant: "Added." }),
+        );
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "pi",
+          externalSessionId: "pi-external-1",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: false,
+          sourceModel: piDescriptor.id,
+          sourceReasoningEffort: "high",
+        });
+
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(result.chatSummary).toMatchObject({ provider: "pi", modelId: piDescriptor.id, reasoningEffort: "high" });
+        expect(persisted.piSessionId).toBe("pi-external-1");
+        expect(persisted.importedFrom).toMatchObject({ provider: "pi", mode: "continue" });
+      });
+
+      it("continues a Copilot session in place by seeding its ACP session id", async () => {
+        vi.mocked(loadExternalSessionEvents).mockResolvedValueOnce(
+          importEvents("import-preview", { user: "Count the lines.", assistant: "35" }),
+        );
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "copilot",
+          externalSessionId: "42f148ac-e59c-442f-ab18-520fc7b6081b",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: false,
+        });
+
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(result.chatSummary).toMatchObject({ provider: "copilot" });
+        expect(persisted.acpSessionId).toBe("42f148ac-e59c-442f-ab18-520fc7b6081b");
+        expect(persisted.importedFrom).toMatchObject({ provider: "copilot", mode: "continue" });
+      });
+
+      it("refuses to continue a provider whose own session an ADE chat cannot reopen", async () => {
+        const { service, sessionService } = createService();
+
+        await expect(service.importExternalChatSession({
+          provider: "grok",
+          externalSessionId: "grok-session-2",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: false,
+        })).rejects.toThrow("Grok sessions can't be continued as an ADE chat. Open a copy instead.");
+        await expect(service.importExternalChatSession({
+          provider: "cursor",
+          externalSessionId: "cursor-session-1",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: false,
+        })).rejects.toThrow("Cursor sessions can't be continued as an ADE chat. Open a copy instead.");
+
+        expect(vi.mocked(loadExternalSessionEvents)).not.toHaveBeenCalled();
+        expect(sessionService.get("test-uuid-1")).toBeNull();
+      });
+
+      it("refuses to continue a session from another folder or on another family's model", async () => {
+        const { service, sessionService } = createService();
+
+        await expect(service.importExternalChatSession({
+          provider: "droid",
+          externalSessionId: "droid-external-2",
+          laneId: "lane-1",
+          cwd: path.join(tmpRoot, "lane-2"),
+          fork: false,
+        })).rejects.toThrow(/only be continued in the lane folder they ran in/);
+        await expect(service.importExternalChatSession({
+          provider: "droid",
+          externalSessionId: "droid-external-2",
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: false,
+          model: "anthropic/claude-sonnet-5",
+        })).rejects.toThrow(/only be continued on a Droid model/);
+
+        expect(sessionService.get("test-uuid-1")).toBeNull();
+      });
     });
 
     it("derives the runtime model from modelId when raw action callers omit model", async () => {

@@ -69,6 +69,7 @@ import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
+import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
@@ -24324,6 +24325,23 @@ function formatExternalSessions(value: unknown): string {
     ]);
   }
 
+  if (
+    isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.provider === "string"
+    && (Array.isArray(value.events) || Array.isArray(value.messages) || "watchable" in value)
+  ) {
+    const events = Array.isArray(value.events) ? value.events.length : 0;
+    const messages = Array.isArray(value.messages) ? value.messages.length : 0;
+    return renderKeyValues("ADE external session detail", [
+      ["provider", value.provider],
+      ["session", value.id],
+      ["source", value.sourcePath],
+      ["events", events || messages],
+      ["older", value.hasOlder === true ? value.olderCursor ?? "yes" : "no"],
+    ]);
+  }
+
   const sessions = Array.isArray(value)
     ? value.filter(isRecord)
     : firstArray(value, ["sessions", "results", "items"]);
@@ -28329,6 +28347,9 @@ async function runCli(
       }
     }
     if (plan.kind === "serve") {
+      // The brain hosts terminals and chats; it is never a child of the
+      // Claude session it may have been started from.
+      stripParentClaudeSessionEnv(process.env);
       const result = await runServe(plan.rest, parsed.options);
       return {
         output:

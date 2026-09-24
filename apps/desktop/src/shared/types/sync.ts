@@ -23,6 +23,7 @@ import type {
   ExternalSessionListArgs,
   ExternalSessionSummary,
 } from "./externalSessions";
+import type { ExternalSessionDetail, ExternalSessionDetailArgs } from "./externalSessionDetail";
 import type { PtySendToSessionResult, SessionActivityReport, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
 import type {
@@ -2109,6 +2110,14 @@ export type SyncStartCliSessionResult = {
 export type SyncListExternalSessionsArgs = ExternalSessionListArgs;
 export type SyncListExternalSessionsResult = ExternalSessionSummary[];
 
+export type SyncGetExternalSessionDetailArgs = ExternalSessionDetailArgs;
+/**
+ * One external session's detail for a phone: at most 120 events per page
+ * (`SYNC_EXTERNAL_SESSION_DETAIL_MAX_EVENTS`), compacted for the mobile wire,
+ * and `messages` emptied whenever `events` carries the conversation.
+ */
+export type SyncGetExternalSessionDetailResult = ExternalSessionDetail;
+
 export type SyncImportExternalSessionArgs = ExternalSessionImportArgs;
 export type SyncImportExternalSessionResult = ExternalSessionImportResult;
 
@@ -2239,6 +2248,7 @@ export type SyncRemoteCommandAction =
   | "work.startCliSession"
   | "work.resumeCliSession"
   | "work.listExternalSessions"
+  | "work.getExternalSessionDetail"
   | "work.importExternalSession"
   | "work.sendToSession"
   | "work.stopRuntime"

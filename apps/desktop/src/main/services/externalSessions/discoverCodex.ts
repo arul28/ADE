@@ -808,7 +808,8 @@ async function codexRecordFromSeed(
   exactLookup: boolean,
   logger: ExternalSessionDiscoveryArgs["logger"],
 ): Promise<ExternalSessionDiscoveryRecord> {
-  const exists = safeStat(seed.rolloutPath)?.isFile() === true;
+  const stat = safeStat(seed.rolloutPath);
+  const exists = stat?.isFile() === true;
   const readable = exists && !seed.rolloutPath.endsWith(".jsonl.zst");
   const jsonl = readable ? readJsonlRecords(seed.rolloutPath) : [];
   const first = asRecord(jsonl[0]);
@@ -830,6 +831,7 @@ async function codexRecordFromSeed(
     sourceMtimeMs: seed.mtimeMs,
   });
   if (seed.lineageIds?.length) record.lineageIds = seed.lineageIds;
+  record.sizeBytes = exists && stat ? stat.size : null;
   return record;
 }
 

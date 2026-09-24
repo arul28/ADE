@@ -15,6 +15,8 @@ import {
   buildTrackedCliResumeCommand as buildCanonicalTrackedCliResumeCommand,
   normalizeCliFlagValue,
   OPENCODE_RESUME_REPLAY_LIMIT as CANONICAL_OPENCODE_RESUME_REPLAY_LIMIT,
+  preassignedSessionIdInArgs,
+  type PreassignedSessionIdProvider,
   sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
 import { parseCommandLine } from "../../shared/shell";
@@ -402,8 +404,90 @@ function extractWrappedProviderCommand(command: string, binary: string): string 
   return match?.[1] ?? command;
 }
 
+const ACP_RESUME_SELECTORS: Record<PreassignedSessionIdProvider, { withTarget: readonly string[]; latest: readonly string[] }> = {
+  qwen: { withTarget: ["-r", "--resume"], latest: ["-c", "--continue"] },
+  grok: { withTarget: ["-r", "--resume"], latest: ["-c", "--continue"] },
+  copilot: { withTarget: ["-r", "--resume"], latest: ["--continue"] },
+};
+
+/**
+ * Qwen, Grok, and Copilot resume targets. A pre-assigned id (`--session-id` /
+ * Grok `-s`) names the session this launch runs — a fresh launch, or the
+ * forked copy of a Grok resume — so it wins over any resume selector. A fork
+ * without one mints its own id, so the source id it resumes from is NOT this
+ * launch's target.
+ */
+function parseAcpResumeTarget(provider: PreassignedSessionIdProvider, command: string): string | null | undefined {
+  let parts: string[];
+  try {
+    parts = parseCommandLine(command);
+  } catch {
+    return undefined;
+  }
+  if (parts[0]?.toLowerCase() !== provider) return undefined;
+  const args = parts.slice(1);
+  const assigned = preassignedSessionIdInArgs(provider, args);
+  if (assigned) return sanitizeResumeTargetId(assigned) ?? undefined;
+  const { withTarget, latest } = ACP_RESUME_SELECTORS[provider];
+  const resumeIndex = args.findIndex((part) => {
+    const lower = part.toLowerCase();
+    return withTarget.includes(part)
+      || latest.includes(part)
+      || lower.startsWith("--resume=")
+      || lower.startsWith("-r=");
+  });
+  if (resumeIndex < 0) return undefined;
+  if (args.includes("--fork-session")) return null;
+  const selector = args[resumeIndex]!;
+  const lower = selector.toLowerCase();
+  const inlineTarget = lower.startsWith("--resume=")
+    ? selector.slice("--resume=".length)
+    : lower.startsWith("-r=")
+      ? selector.slice(3)
+      : null;
+  const next = args[resumeIndex + 1];
+  const raw = inlineTarget ?? (
+    withTarget.includes(selector) && next && !next.startsWith("-")
+      ? next
+      : null
+  );
+  if (raw == null) return null;
+  return sanitizeResumeTargetId(raw) ?? undefined;
+}
+
+/**
+ * `claude --resume <source> --fork-session [--session-id <new>]` runs a NEW
+ * conversation: its target is the pre-assigned id when present, else unknown.
+ * Returning `<source>` would make a later resume reopen the original.
+ */
+function parseClaudeForkResumeTarget(command: string): string | null | undefined {
+  let parts: string[];
+  try {
+    parts = parseCommandLine(command);
+  } catch {
+    return undefined;
+  }
+  if (parts[0]?.toLowerCase() !== "claude" || !parts.includes("--fork-session")) return undefined;
+  const args = parts.slice(1);
+  const resumes = args.some((arg) =>
+    arg === "--resume" || arg === "-r" || arg === "--continue" || arg === "-c"
+    || arg.startsWith("--resume=") || arg.startsWith("--continue="),
+  );
+  if (!resumes) return undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const raw = arg === "--session-id"
+      ? args[index + 1]
+      : arg.startsWith("--session-id=") ? arg.slice("--session-id=".length) : undefined;
+    if (raw !== undefined) return sanitizeResumeTargetId(raw) ?? null;
+  }
+  return null;
+}
+
 function parseProviderResumeTarget(provider: TerminalResumeProvider, command: string): string | null | undefined {
   if (provider === "claude") {
+    const fork = parseClaudeForkResumeTarget(command);
+    if (fork !== undefined) return fork;
     const match = command.match(/^claude(?:(?:\s+--[^\s]+)(?:\s+[^\s]+)?)*\s+(?:--resume|-r|resume)(?:\s+([^\s]+))?(?:\s|$)/i);
     if (!match) return undefined;
     if (match[1] == null) return null;
@@ -443,68 +527,8 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
-  if (provider === "grok") {
-    let parts: string[];
-    try {
-      parts = parseCommandLine(command);
-    } catch {
-      return undefined;
-    }
-    if (parts[0]?.toLowerCase() !== "grok") return undefined;
-    const resumeIndex = parts.findIndex((part, index) =>
-      index > 0
-      && (
-        part === "-r"
-        || part === "-c"
-        || part.toLowerCase() === "--resume"
-        || part.toLowerCase() === "--continue"
-        || part.toLowerCase().startsWith("--resume=")
-      ),
-    );
-    if (resumeIndex < 0) return undefined;
-    const selector = parts[resumeIndex]!.toLowerCase();
-    const inlineTarget = selector.startsWith("--resume=")
-      ? parts[resumeIndex]!.slice("--resume=".length)
-      : selector.startsWith("-r=")
-        ? parts[resumeIndex]!.slice(3)
-        : null;
-    const next = parts[resumeIndex + 1];
-    const raw = inlineTarget ?? (
-      (selector === "-r" || selector === "--resume") && next && !next.startsWith("-")
-        ? next
-        : null
-    );
-    if (raw == null) return null;
-    return sanitizeResumeTargetId(raw) ?? undefined;
-  }
-
-  if (provider === "qwen" || provider === "copilot") {
-    let parts: string[];
-    try {
-      parts = parseCommandLine(command);
-    } catch {
-      return undefined;
-    }
-    if (parts[0]?.toLowerCase() !== provider) return undefined;
-    const resumeIndex = parts.findIndex((part, index) =>
-      index > 0
-      && (part.toLowerCase() === "--continue"
-        || part.toLowerCase() === "--resume"
-        || part.toLowerCase().startsWith("--resume=")),
-    );
-    if (resumeIndex < 0) return undefined;
-    const selector = parts[resumeIndex]!.toLowerCase();
-    const inlineTarget = selector.startsWith("--resume=")
-      ? parts[resumeIndex]!.slice("--resume=".length)
-      : null;
-    const next = parts[resumeIndex + 1];
-    const raw = inlineTarget ?? (
-      selector === "--resume" && next && !next.startsWith("-")
-        ? next
-        : null
-    );
-    if (raw == null) return null;
-    return sanitizeResumeTargetId(raw) ?? undefined;
+  if (provider === "grok" || provider === "qwen" || provider === "copilot") {
+    return parseAcpResumeTarget(provider, command);
   }
 
   if (provider === "kimi") {
@@ -608,7 +632,9 @@ export function normalizeResumeCommand(
 export function defaultResumeCommandForTool(toolType: TerminalToolType | null | undefined): string | null {
   if (toolType === "claude" || toolType === "claude-orchestrated") return "claude --resume";
   if (toolType === "codex" || toolType === "codex-orchestrated") return "codex resume";
-  if (toolType === "cursor-cli") return "cursor-agent --model auto --continue";
+  // Null for Cursor too, for the same reason as Pi below: `--continue` reopens
+  // the most recent chat, which need not be this terminal's.
+  if (toolType === "cursor-cli") return null;
   if (toolType === "droid") return "droid --resume";
   if (toolType === "opencode" || toolType === "opencode-orchestrated") return "opencode --continue";
   if (toolType === "qwen") return "qwen --continue";

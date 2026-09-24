@@ -4033,12 +4033,12 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(rendered.container.textContent).toContain("I’ll inspect the renderer first.");
     expect(rendered.container.textContent).toContain("The focused tests pass.");
-    expect(rendered.container.textContent).toContain("tools");
+    expect(rendered.container.textContent).toContain("1tool");
     expect(rendered.container.textContent).toContain("1 file changed");
     expect(rendered.container.textContent).not.toContain("npm test");
     expect(rendered.container.textContent).toContain("ran 5.0s");
     expect(rendered.container.textContent!.indexOf("ran 5.0s"))
-      .toBeLessThan(rendered.container.textContent!.indexOf("tools"));
+      .toBeLessThan(rendered.container.textContent!.indexOf("1tool"));
 
     fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     expect(rendered.container.textContent).toContain("npm test");
@@ -5509,11 +5509,11 @@ describe("turn-level file-change de-clutter", () => {
       },
     ] as never);
 
-    expect(rendered.container.textContent).toContain("tools");
+    expect(rendered.container.textContent).toContain("1tool");
     expect(rendered.container.textContent).toContain("1 file changed");
     const text = rendered.container.textContent ?? "";
-    expect(text.indexOf("tools")).toBeGreaterThan(text.search(/\d{1,2}:\d{2}/));
-    expect(text.indexOf("file changed")).toBeGreaterThan(text.indexOf("tools"));
+    expect(text.indexOf("1tool")).toBeGreaterThan(text.search(/\d{1,2}:\d{2}/));
+    expect(text.indexOf("file changed")).toBeGreaterThan(text.indexOf("1tool"));
   });
 });
 
@@ -6033,10 +6033,10 @@ describe("usage-limit turn footer", () => {
       } as AgentChatEventEnvelope,
     ];
     const rendered = renderMessageList(events);
-    expect(rendered.container.textContent).toContain("tools");
+    expect(rendered.container.textContent).toContain("1tool");
     expect(screen.getByText(/^Paused · usage limit/)).toBeTruthy();
     expect(rendered.container.textContent!.indexOf("Paused · usage limit"))
-      .toBeLessThan(rendered.container.textContent!.indexOf("tools"));
+      .toBeLessThan(rendered.container.textContent!.indexOf("1tool"));
   });
 
   it("replaces the red FAILED line with one quiet paused line on a terminal 429", () => {

@@ -1,16 +1,33 @@
+import { qwenSessionRoot } from "./discoverQwen";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { resolveHomeDir } from "./discoveryUtils";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
 import { isPathInside, pathKey } from "../shared/pathCompare";
 import type { ExternalSessionProvider } from "../../../shared/types/externalSessions";
-import { claudeConfigHome, codexConfigHome, factoryConfigHome } from "../shared/providerConfigHomes";
+import {
+  claudeConfigHome,
+  codexConfigHome,
+  copilotConfigHome,
+  factoryConfigHome,
+  grokConfigHome,
+  kimiCodeConfigHome,
+} from "../shared/providerConfigHomes";
 
 export type ProviderSessionHandle = {
   provider: ExternalSessionProvider;
   sessionId: string;
   filePath: string;
+  /** The process that holds the session file open. */
   pid: number;
+  /**
+   * The tracked ADE PTY root (one of `extraPids`) whose process tree contains
+   * `pid`, or null when the holder is not under any tracked PTY. The file is
+   * usually held by a descendant — shell → node → CLI — never by the PTY root
+   * itself, so ownership must be decided on this, not on `pid`. Always set by
+   * this module; optional only so hand-built fixtures stay valid.
+   */
+  trackedRootPid?: number | null;
 };
 
 export type HandleInspectionAvailability =
@@ -107,11 +124,68 @@ export function providerSessionRoots(args: {
     { provider: "opencode", root: path.join(xdgData, "opencode") },
     { provider: "opencode", root: path.join(homeDir, ".local", "share", "opencode") },
     { provider: "pi", root: piSessionRootForEnvironment(env) },
+    // ACP CLIs. Each one has its own layout; see `sessionIdFromLayout`.
+    // Same root discovery uses (`QWEN_RUNTIME_DIR`, then `QWEN_HOME`), so a
+    // session an ADE terminal runs is recognized wherever Qwen writes it.
+    { provider: "qwen", root: path.join(qwenSessionRoot({ env, homeDir }), "projects") },
+    { provider: "grok", root: path.join(grokConfigHome(providerHome), "sessions") },
+    { provider: "copilot", root: path.join(copilotConfigHome(providerHome), "session-state") },
+    { provider: "kimi", root: path.join(kimiCodeConfigHome(providerHome), "sessions") },
   ];
 }
 
 function isSessionTranscriptPath(filePath: string): boolean {
   return /\.(jsonl|json|db)$/iu.test(filePath);
+}
+
+function validLayoutId(id: string | undefined): string | null {
+  return id && CLI_SESSION_ID.test(id) && !id.startsWith("agent-") ? id : null;
+}
+
+/**
+ * Providers whose session id is a path segment, not a file basename. Their
+ * session directories hold many fixed-name files (`chat_history.jsonl`,
+ * `events.jsonl`, `state.json`, `wire.jsonl`), so the generic basename rule
+ * would mint ids like `chat_history`; a wrong key here decides which session
+ * the importer hides as ADE-owned. Anything outside the known shape is not a
+ * session. `undefined` means "not a layout provider"; `null` means "layout
+ * provider, but this file is not a session file".
+ */
+function sessionIdFromLayout(
+  provider: ExternalSessionProvider,
+  parts: readonly string[],
+): string | null | undefined {
+  switch (provider) {
+    case "qwen": {
+      // <projects>/<encoded-cwd>/chats/<id>.jsonl
+      if (parts.length !== 3 || parts[1]?.toLowerCase() !== "chats") return null;
+      const match = parts[2]!.match(/^(.+)\.jsonl$/iu);
+      return validLayoutId(match?.[1]);
+    }
+    case "grok":
+      // <sessions>/<url-encoded-cwd>/<id>/<file>; `prompt_history.jsonl` sits
+      // directly under the cwd folder and names no session.
+      return parts.length >= 3 ? validLayoutId(parts[1]) : null;
+    case "kimi":
+      // <sessions>/wd_<slug>_<hash12>/<id>/{state.json,context.jsonl,agents/main/wire.jsonl}
+      return parts.length >= 3 && parts[0]!.startsWith("wd_") ? validLayoutId(parts[1]) : null;
+    case "copilot":
+      // <session-state>/<id>/<file> (current) or <session-state>/<id>.jsonl (legacy)
+      if (parts.length >= 2) return validLayoutId(parts[0]);
+      return validLayoutId(parts[0]?.match(/^(.+)\.jsonl$/iu)?.[1]);
+    case "opencode": {
+      // OpenCode keeps sessions in `opencode.db` (SQLite) plus per-session
+      // `storage/**/ses_<id>(.json|/…)` files. The database names no session,
+      // so only a `ses_` segment counts — `opencode` (the db basename) never.
+      for (let index = parts.length - 1; index >= 0; index -= 1) {
+        const stem = parts[index]!.replace(/\.(jsonl|json)$/iu, "");
+        if (/^ses_[A-Za-z0-9]+$/u.test(stem)) return stem;
+      }
+      return null;
+    }
+    default:
+      return undefined;
+  }
 }
 
 function sessionIdFromBasename(filePath: string): string | null {
@@ -150,6 +224,14 @@ export function parseProviderSessionFromPath(
       // to the basename derivation below would mint ids from unrelated files
       // such as `~/.cursor/projects/<slug>/data.json`, and a wrong key here
       // decides which session the importer hides as ADE-owned.
+      continue;
+    }
+    const layoutId = sessionIdFromLayout(
+      provider,
+      path.relative(root, trimmed).split(/[\\/]/u).filter(Boolean),
+    );
+    if (layoutId !== undefined) {
+      if (layoutId) return { provider, sessionId: layoutId };
       continue;
     }
     if (!isSessionTranscriptPath(trimmed)) continue;
@@ -198,22 +280,38 @@ export async function collectDescendantPids(
   runCommand: RunCommand = defaultRunCommand,
   platform: NodeJS.Platform = process.platform,
 ): Promise<number[]> {
-  const roots = uniquePositivePids(rootPids);
-  const found = new Set(roots);
-  const queue = [...roots];
-  while (queue.length) {
-    const parent = queue.pop();
-    if (parent == null) continue;
-    const children = platform === "win32"
-      ? await listWindowsChildPids(parent, runCommand)
-      : await listPosixChildPids(parent, runCommand);
-    for (const child of children) {
-      if (found.has(child)) continue;
-      found.add(child);
-      queue.push(child);
+  return [...(await collectDescendantPidRoots(rootPids, runCommand, platform)).keys()];
+}
+
+/**
+ * Walk each root's process tree and map every pid found to the root it was
+ * reached from. Roots are walked in order and a pid keeps the first root that
+ * reached it, so callers list the roots whose ownership matters first.
+ */
+export async function collectDescendantPidRoots(
+  rootPids: readonly number[],
+  runCommand: RunCommand = defaultRunCommand,
+  platform: NodeJS.Platform = process.platform,
+): Promise<Map<number, number>> {
+  const owners = new Map<number, number>();
+  for (const root of uniquePositivePids(rootPids)) {
+    if (owners.has(root)) continue;
+    owners.set(root, root);
+    const queue = [root];
+    while (queue.length) {
+      const parent = queue.pop();
+      if (parent == null) continue;
+      const children = platform === "win32"
+        ? await listWindowsChildPids(parent, runCommand)
+        : await listPosixChildPids(parent, runCommand);
+      for (const child of children) {
+        if (owners.has(child)) continue;
+        owners.set(child, root);
+        queue.push(child);
+      }
     }
   }
-  return [...found];
+  return owners;
 }
 
 async function listPosixChildPids(parent: number, runCommand: RunCommand): Promise<number[]> {
@@ -284,7 +382,7 @@ async function listProviderCliPids(
 }
 
 function isProviderCliCommandLine(lowerArgs: string): boolean {
-  if (/(?:^|[\\/\s])(?:claude|claude\.exe|codex|codex\.exe|droid|droid\.exe|opencode|opencode\.exe|cursor-agent|cursor-agent\.exe)(?:\s|$|\.exe)/u.test(lowerArgs)) {
+  if (/(?:^|[\\/\s])(?:claude|codex|droid|opencode|cursor-agent|qwen|grok|copilot|kimi)(?:\.exe)?(?:\s|$)/u.test(lowerArgs)) {
     return true;
   }
   return /(?:^|[\\/\s])pi(?:\.exe)?(?:\s|$)/u.test(lowerArgs)
@@ -363,20 +461,25 @@ export async function inspectLiveProviderSessions(args: {
   }
   const roots = providerSessionRoots({ homeDir: args.homeDir, env: args.env });
   const providerPids = await listProviderCliPids(runCommand, platform);
-  const treePids = await collectDescendantPids(
-    [...providerPids, ...(args.extraPids ?? [])],
+  // Tracked PTY roots walk first so a CLI that also shows up in the provider
+  // scan is still attributed to the ADE terminal it runs under.
+  const trackedRoots = new Set(uniquePositivePids(args.extraPids ?? []));
+  const pidRoots = await collectDescendantPidRoots(
+    [...trackedRoots, ...providerPids],
     runCommand,
     platform,
   );
-  for (const { pid, filePath } of await listOpenFilesForPids(treePids, availability, runCommand)) {
+  for (const { pid, filePath } of await listOpenFilesForPids([...pidRoots.keys()], availability, runCommand)) {
     const parsed = parseProviderSessionFromPath(filePath, roots);
     if (!parsed) continue;
     const key = `${parsed.provider}:${parsed.sessionId}`;
+    const root = pidRoots.get(pid);
     const handle: ProviderSessionHandle = {
       provider: parsed.provider,
       sessionId: parsed.sessionId,
       filePath,
       pid,
+      trackedRootPid: root != null && trackedRoots.has(root) ? root : null,
     };
     const existing = byKey.get(key);
     if (existing) existing.push(handle);
@@ -391,6 +494,18 @@ export function handlesForSession(
   sessionId: string,
 ): ProviderSessionHandle[] {
   return index.byKey.get(`${provider}:${sessionId}`) ?? [];
+}
+
+/**
+ * True when a handle is held anywhere inside one of the given tracked PTY
+ * process trees — the PTY root itself or any descendant.
+ */
+export function handleIsOwnedByTrackedPty(
+  handle: Pick<ProviderSessionHandle, "pid" | "trackedRootPid">,
+  trackedRootPids: ReadonlySet<number>,
+): boolean {
+  if (trackedRootPids.has(handle.pid)) return true;
+  return handle.trackedRootPid != null && trackedRootPids.has(handle.trackedRootPid);
 }
 
 export async function captureProviderSessionFromPidTree(args: {
@@ -414,6 +529,7 @@ export async function captureProviderSessionFromPidTree(args: {
       sessionId: parsed.sessionId,
       filePath,
       pid,
+      trackedRootPid: args.rootPid,
     };
   }
   return null;

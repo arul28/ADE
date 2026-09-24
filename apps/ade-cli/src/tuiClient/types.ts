@@ -379,6 +379,11 @@ export type RightPaneContent =
       selectedIndex: number;
       actionIndex: number;
       loadedAt?: number | null;
+      /** Lane the user picked for the selected row; null = the row's home lane. */
+      targetLaneId?: string | null;
+      targetLaneLabel?: string | null;
+      /** Action key waiting on a second Enter (continuing a live session). */
+      confirmKey?: string | null;
     }
   | {
       // /usage pane: provider quota windows plus this session's tokens and cost.

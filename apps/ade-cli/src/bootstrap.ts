@@ -47,6 +47,7 @@ import type { SearchService } from "../../desktop/src/main/services/search/searc
 import {
   createExternalSessionsService,
 } from "../../desktop/src/main/services/externalSessions/externalSessionsService";
+import { chatImportedRefsProvider } from "../../desktop/src/main/services/externalSessions/liveChatProviderRefs";
 import { createSupervisedPtyLoader } from "../../desktop/src/main/services/pty/supervisedPtyHost";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -158,7 +159,11 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
-import { captureNewLaneLaunchAnalytics, capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
+import {
+  captureNewLaneLaunchAnalytics,
+  capturePendingInputDismissedAnalytics,
+  captureSessionImportAnalytics,
+} from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
@@ -2674,25 +2679,6 @@ export async function createAdeRuntime(args: {
         }
       },
     ));
-    const agentChatImportedRefsSource = agentChatService;
-    const chatImportedRefsProvider = agentChatImportedRefsSource
-      ? async () => {
-        const sessions = await agentChatImportedRefsSource.listSessions(undefined, {
-          includeIdentity: true,
-          includeAutomation: true,
-          includeArchived: true,
-        });
-        return sessions.flatMap((session) => {
-          const importedFrom = session.importedFrom;
-          if (!importedFrom?.provider?.trim() || !importedFrom.sessionId?.trim()) return [];
-          return [{
-            provider: importedFrom.provider,
-            externalId: importedFrom.sessionId,
-            chatSessionId: session.sessionId,
-          }];
-        });
-      }
-      : undefined;
     externalSessionsService = createExternalSessionsService({
       projectRoot,
       laneService,
@@ -2700,7 +2686,16 @@ export async function createAdeRuntime(args: {
       ptyService,
       logger,
       chatImporter: agentChatService,
-      ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
+      ...(agentChatService ? { chatImportedRefsProvider: chatImportedRefsProvider(agentChatService) } : {}),
+      chatSessionsDir: paths.chatSessionsDir,
+      onImportOutcome: ({ provider, target, mode, outcome }) => captureSessionImportAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        target,
+        mode,
+        outcome,
+        provider,
+      }),
     });
 
     // Constructed below the chat service on purpose: a call reaches the CTO

@@ -6217,14 +6217,7 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOutsideCliResume.isError).toBe(true);
-    expect(importExternalSession).toHaveBeenCalledWith({
-      provider: "codex",
-      sessionId: "outside-codex",
-      laneId: "lane-1",
-      target: "cli",
-      mode: "resume",
-      enforceLaneScopeCwd: lane1Cwd,
-    });
+    // Refused before the service runs: the session is not this lane's.
 
     const deniedOutsideCliFork = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -6238,14 +6231,7 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOutsideCliFork.isError).toBe(true);
-    expect(importExternalSession).toHaveBeenCalledWith({
-      provider: "claude",
-      sessionId: "outside-session",
-      laneId: "lane-1",
-      target: "cli",
-      mode: "fork",
-      enforceLaneScopeCwd: lane1Cwd,
-    });
+    // Refused before the service runs: the session is not this lane's.
 
     const deniedOutsideChatImport = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -6260,7 +6246,7 @@ describe("adeRpcServer", () => {
     });
     expect(deniedOutsideChatImport.isError).toBe(true);
     expect(deniedOutsideChatImport.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
-    expect(importExternalSession).toHaveBeenCalledTimes(2);
+    expect(importExternalSession).not.toHaveBeenCalled();
 
     const importedOwnCliResume = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -6337,7 +6323,130 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOtherLaneImport.isError).toBe(true);
-    expect(importExternalSession).toHaveBeenCalledTimes(5);
+    expect(importExternalSession).toHaveBeenCalledTimes(3);
+  });
+
+  it("scopes external-sessions.getDetail to a session inside the caller's lane", async () => {
+    const fixture = createRuntime();
+    const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-1") return ownChat;
+      return null;
+    });
+    const lane1Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-1"));
+    const detail = {
+      provider: "qwen",
+      sessionId: "own-qwen",
+      sourcePath: `${lane1Cwd}/session.json`,
+      watchable: true,
+      events: [],
+      messages: [],
+      hasOlder: false,
+      olderCursor: null,
+    };
+    const list = vi.fn(async () => [
+      { provider: "qwen", id: "own-qwen", cwd: lane1Cwd, title: "Own Qwen", preview: "own" },
+      // Project scope also lists another lane's session; its id must not open.
+      { provider: "qwen", id: "other-lane-qwen", cwd: path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-2")), title: "Other", preview: "other" },
+    ]);
+    const getDetail = vi.fn(async () => detail);
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession: vi.fn(), getDetail };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "qwen", sessionId: "own-qwen", before: "cursor-1", extra: "drop" },
+    });
+    expect(own?.isError).toBeUndefined();
+    expect(getDetail).toHaveBeenCalledWith({
+      provider: "qwen",
+      sessionId: "own-qwen",
+      before: "cursor-1",
+    });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "grok", sessionId: "outside-grok" },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
+    const otherLane = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "qwen", sessionId: "other-lane-qwen" },
+    });
+    expect(otherLane.isError).toBe(true);
+    expect(otherLane.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
+    expect(getDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a primary-lane agent out of child lanes' external sessions", async () => {
+    const fixture = createRuntime();
+    const lane1Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-1"));
+    const projectRoot = path.dirname(path.dirname(path.dirname(lane1Cwd)));
+    // Real session folders exist; the owner check resolves symlinks (macOS /var).
+    for (const dir of [path.join(projectRoot, "apps"), lane1Cwd, path.join(projectRoot, ".ade", "worktrees", "gone")]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const lanes = await fixture.runtime.laneService.list({});
+    const primary = { ...lanes[0], id: "lane-primary", laneType: "primary", worktreePath: projectRoot };
+    fixture.runtime.laneService.list.mockImplementation(async () => [primary, ...lanes]);
+    fixture.runtime.laneService.getLaneWorktreePath.mockImplementation((laneId: string) =>
+      laneId === "lane-primary" ? projectRoot : lanes.find((lane: { id: string }) => lane.id === laneId)?.worktreePath);
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) =>
+      sessionId === "chat-p" ? { id: "chat-p", laneId: "lane-primary", chatSessionId: "chat-p" } : null);
+    const list = vi.fn(async (args?: { sessionId?: string }) => [
+      { provider: "qwen", id: "root-qwen", cwd: path.join(projectRoot, "apps"), title: "Root", preview: "root" },
+      // Tracked by an ADE terminal: only an exact lookup returns it.
+      ...(args?.sessionId === "tracked-qwen"
+        ? [{ provider: "qwen", id: "tracked-qwen", cwd: path.join(projectRoot, "apps"), title: "Tracked", preview: "tracked" }]
+        : []),
+      { provider: "qwen", id: "child-qwen", cwd: lane1Cwd, title: "Child", preview: "child" },
+      { provider: "qwen", id: "removed-qwen", cwd: path.join(projectRoot, ".ade", "worktrees", "gone"), title: "Gone", preview: "gone" },
+    ]);
+    const getDetail = vi.fn(async () => ({ provider: "qwen", id: "root-qwen", events: [], messages: [] }));
+    const importExternalSession = vi.fn(async () => ({ kind: "chat", chatSessionId: "chat-copy", laneId: "lane-primary" }));
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession, getDetail };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-p", role: "agent", chatSessionId: "chat-p" });
+
+    const listed = await callTool(handler, "run_ade_action", { domain: "external-sessions", action: "list", args: {} });
+    expect(JSON.stringify(listed)).toContain("root-qwen");
+    expect(JSON.stringify(listed)).not.toContain("child-qwen");
+    expect(JSON.stringify(listed)).not.toContain("removed-qwen");
+    for (const sessionId of ["child-qwen", "removed-qwen"]) {
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "external-sessions",
+        action: "getDetail",
+        args: { provider: "qwen", sessionId },
+      });
+      expect(denied.isError).toBe(true);
+    }
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "qwen", sessionId: "root-qwen" },
+    });
+    expect(own?.isError).toBeUndefined();
+    expect(getDetail).toHaveBeenCalledTimes(1);
+    // A chat copy moves the transcript into this lane; it needs ownership too.
+    const copied = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: { provider: "qwen", sessionId: "child-qwen", target: "chat", mode: "fork" },
+    });
+    expect(copied.isError).toBe(true);
+    expect(importExternalSession).not.toHaveBeenCalled();
+    const tracked = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: { provider: "qwen", sessionId: "tracked-qwen", target: "cli", mode: "resume" },
+    });
+    expect(tracked?.isError).toBeUndefined();
+    expect(importExternalSession).toHaveBeenCalledTimes(1);
   });
 
   it("allows CTO callers to use unscoped external-sessions ADE actions", async () => {

@@ -207,6 +207,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "reset_credit_consumed",
   "pending_input_dismissed",
   "new_lane_launch",
+  // How an external CLI session came into ADE: continued or copied, into a
+  // chat or a terminal. Never the session, its folder, or its title.
+  "session_continue_chat",
+  "session_copy_chat",
+  "session_continue_cli",
+  "session_copy_cli",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {

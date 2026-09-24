@@ -94,6 +94,7 @@ import {
   INERT_KEEP_AWAKE_SNAPSHOT,
   type KeepAwakeSnapshot,
 } from "../shared/types/keepAwake";
+import { createMockExternalSessionsApi } from "./browserMockExternalSessions";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";
@@ -6024,10 +6025,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
     },
-    externalSessions: {
-      list: async () => [],
-      import: async () => ({ kind: "cli" as const, sessionId: "mock-session", ptyId: "mock", laneId: "mock-lane" }),
-    },
+    externalSessions: createMockExternalSessionsApi(() => MOCK_LANES),
     // Stateful on purpose: the accounts UI adds, renames and removes rows, and
     // a stub that always returned the same two entries would make every one of
     // those interactions look broken in the Vite-only preview.

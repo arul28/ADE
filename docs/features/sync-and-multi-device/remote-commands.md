@@ -863,6 +863,20 @@ A handful have more logic:
   for the next sync/session-list refresh. Provider storage, cwd validation, and
   process launch remain host-side; see
   [External Session Import](../terminals-and-sessions/external-session-import.md).
+- **`work.getExternalSessionDetail`** — one external session's conversation for
+  the phone's import preview (`viewerAllowed`, not queueable). Args are
+  `provider`, `sessionId`, and an optional `before` paging cursor. It calls the
+  runtime's `externalSessionsService.getDetail`, the same entry the desktop's
+  `external-sessions.getDetail` action uses (so it reads the service's provider
+  homes), with a 120-event page (the desktop reads 200) so paging stays
+  exact, and returns `ExternalSessionDetail`: `events` (ADE chat envelopes,
+  oldest to newest) compacted by `compactChatEventForMobileWire` minus the
+  `resultTruncatedForMobile` flag (a preview has no stored transcript to fetch a
+  full tool result from), `hasOlder`, and `olderCursor` for the next
+  `before`. When `events` is non-empty `messages` is sent empty; a host that
+  produced no events keeps the text tail. Like list and import it fails with
+  "External sessions service not available." on a runtime without that
+  service. Older hosts do not register it, and the phone feature-detects it.
 - **`work.sendToSession`** — sends text to an existing durable Work
   CLI session. If the PTY is live, the runtime writes into it; if the
   process ended and the session is resumable, the runtime starts the

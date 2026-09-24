@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { ToolLogo } from "../ToolLogos";
-import { ALL_IMPORT_PROVIDERS, PROVIDER_TOOL_TYPE } from "./contract";
+import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
+import { PROVIDER_TOOL_TYPE } from "./contract";
 
 const STORAGE_PREFIX = "ade.importChatsBadge.dismissed:";
 
@@ -77,14 +78,14 @@ export function ImportFloatingBadge({
           aria-label="Import your chats from outside ADE"
         >
           <span className="relative flex h-7 w-[92px] shrink-0 items-center">
-            {ALL_IMPORT_PROVIDERS.map((provider, index) => (
+            {EXTERNAL_SESSION_PROVIDERS.map((provider, index) => (
               <span
                 key={provider}
                 className="absolute rounded-full border border-black/40 bg-[#12101C] shadow-sm"
                 style={{
                   left: index * 12,
                   transform: `rotate(${index % 2 === 0 ? -8 : 7}deg)`,
-                  zIndex: ALL_IMPORT_PROVIDERS.length - index,
+                  zIndex: EXTERNAL_SESSION_PROVIDERS.length - index,
                 }}
               >
                 <ToolLogo toolType={PROVIDER_TOOL_TYPE[provider]} size={22} />

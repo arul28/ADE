@@ -7426,7 +7426,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Import an external CLI session" }));
 
     await waitFor(() => expect(list).toHaveBeenCalled());
-    expect(await screen.findByText("No chats found")).toBeTruthy();
+    expect(await screen.findByText("No sessions found")).toBeTruthy();
     expect(list.mock.calls.every(([args]) => args.laneId === "lane-1")).toBe(true);
   });
 

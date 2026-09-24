@@ -1,8 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { importAffordancesFor, shortenCwd } from "./affordances";
-import { shortenExternalSessionCwd } from "../../../../shared/externalSessionAffordances";
+import { shortenCwd } from "./affordances";
+import { shortenExternalSessionCwd, formatExternalSessionSize } from "../../../../shared/externalSessionAffordances";
 import { sessionAnchors, sessionHeading } from "./sessionPresentation";
 import type { ExternalSessionCapabilities, ExternalSessionSummary } from "./contract";
+import type { AgentChatEventEnvelope } from "../../../../shared/types/chat";
+import {
+  createDynamicPiModelDescriptor,
+  getModelById,
+  replaceDynamicPiModelDescriptors,
+  resolveProviderGroupForModel,
+} from "../../../../shared/modelRegistry";
+import {
+  defaultForkModel,
+  laneFilterKey,
+  matchesSearch,
+  OTHER_FOLDERS_ID,
+  sessionPlace,
+  spliceNewestPage,
+} from "./importBrowserModel";
 
 const NO_CAPS: ExternalSessionCapabilities = {
   resumeInPlace: false,
@@ -35,203 +50,6 @@ function session(
   };
 }
 
-function kinds(summary: ExternalSessionSummary) {
-  return importAffordancesFor(summary).map((a) => a.kind);
-}
-
-describe("importAffordancesFor", () => {
-  it("cwd matches: offers resume-here + fork when both caps present", () => {
-    const affs = importAffordancesFor(
-      session({ cwdMatchesRequestedLane: true, capabilities: { resumeInPlace: true, fork: true } }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual(["resume-here", "fork-into-lane"]);
-    expect(affs.every((a) => a.enabled)).toBe(true);
-    expect(affs.every((a) => a.target === "cli")).toBe(true);
-  });
-
-  it("cwd matches but no resumeInPlace: omits resume-here", () => {
-    expect(kinds(session({ cwdMatchesRequestedLane: true, capabilities: { fork: true } }))).toEqual([
-      "fork-into-lane",
-    ]);
-  });
-
-  it("chat-capable session leads with the hero open-as-chat then fork-as-chat", () => {
-    const affs = importAffordancesFor(
-      session({ cwdMatchesRequestedLane: true, capabilities: { importToChat: true, resumeInPlace: true, fork: true } }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual([
-      "open-as-chat",
-      "fork-as-chat",
-      "resume-here",
-      "fork-into-lane",
-    ]);
-    const hero = affs.find((a) => a.hero);
-    expect(hero?.kind).toBe("open-as-chat");
-    expect(hero?.target).toBe("chat");
-    expect(hero?.mode).toBe("resume");
-    expect(affs.find((a) => a.kind === "fork-as-chat")).toMatchObject({ target: "chat", mode: "fork", hero: false });
-    expect(affs.find((a) => a.kind === "fork-as-chat")?.description).toMatch(/any SDK-backed catalog model/i);
-    expect(affs.find((a) => a.kind === "fork-as-chat")?.hint).toMatch(/any catalog model/i);
-  });
-
-  it("only open-as-chat is ever flagged hero", () => {
-    const affs = importAffordancesFor(
-      session({ capabilities: { importToChat: true, resumeInPlace: true, fork: true, resumeInDifferentCwd: true } }),
-    );
-    expect(affs.filter((a) => a.hero)).toHaveLength(1);
-  });
-
-  it("foreign cwd + cross-cwd resume (codex): resume-here enabled, fork added when forkAcross", () => {
-    const affs = importAffordancesFor(
-      session({
-        provider: "codex",
-        cwdMatchesRequestedLane: false,
-        capabilities: { resumeInDifferentCwd: true, forkIntoDifferentCwd: true },
-      }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual(["resume-here", "fork-into-lane"]);
-    expect(affs[0]).toMatchObject({ enabled: true, mode: "resume" });
-    expect(affs[1]?.hint).toBeUndefined();
-  });
-
-  it("foreign cwd + cross-cwd resume only: no fork row", () => {
-    expect(
-      kinds(session({ cwdMatchesRequestedLane: false, capabilities: { resumeInDifferentCwd: true } })),
-    ).toEqual(["resume-here"]);
-  });
-
-  it("foreign cwd, no cross-cwd resume but forkIntoDifferentCwd: fork substitutes with hint", () => {
-    const affs = importAffordancesFor(
-      session({ cwdMatchesRequestedLane: false, capabilities: { forkIntoDifferentCwd: true } }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual(["fork-into-lane"]);
-    expect(affs[0]).toMatchObject({ enabled: true, mode: "fork" });
-    expect(affs[0]?.hint).toMatch(/another folder/i);
-  });
-
-  it("unknown-cwd Droid sessions still offer a lane-local fork", () => {
-    const affs = importAffordancesFor(
-      session({
-        provider: "droid",
-        cwd: null,
-        cwdMatchesRequestedLane: null,
-        capabilities: { fork: true, forkIntoDifferentCwd: true },
-      }),
-    );
-    expect(affs).toEqual([
-      expect.objectContaining({ kind: "fork-into-lane", enabled: true, mode: "fork" }),
-    ]);
-  });
-
-  it("foreign cwd with forkIntoDifferentCwd and resumeInPlace offers both in priority order", () => {
-    const affs = importAffordancesFor(
-      session({
-        cwdMatchesRequestedLane: false,
-        cwd: "/Users/dev/other-project",
-        capabilities: { resumeInPlace: true, forkIntoDifferentCwd: true },
-      }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual(["fork-into-lane", "resume-in-place"]);
-    expect(affs[0]).toMatchObject({ mode: "fork", hint: expect.stringMatching(/another folder/i) });
-    expect(affs[1]).toMatchObject({
-      mode: "resume",
-      label: "Continue in original folder",
-      foreignCwd: "/Users/dev/other-project",
-    });
-  });
-
-  it("foreign cwd, only resumeInPlace: offers resume-in-place carrying the foreign path", () => {
-    const affs = importAffordancesFor(
-      session({
-        cwdMatchesRequestedLane: false,
-        cwd: "/Users/dev/other-project",
-        capabilities: { resumeInPlace: true },
-      }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual(["resume-in-place"]);
-    expect(affs[0]?.foreignCwd).toBe("/Users/dev/other-project");
-    expect(affs[0]?.label).toBe("Continue in original folder");
-    expect(affs[0]?.mode).toBe("resume");
-  });
-
-  it("resume-in-place appears alongside fork but remains hidden behind cross-cwd resume-here", () => {
-    expect(
-      kinds(session({ cwdMatchesRequestedLane: false, capabilities: { resumeInPlace: true, forkIntoDifferentCwd: true } })),
-    ).toEqual(["fork-into-lane", "resume-in-place"]);
-    // resumeAcross wins over resume-in-place
-    expect(
-      kinds(session({ cwdMatchesRequestedLane: false, capabilities: { resumeInPlace: true, resumeInDifferentCwd: true } })),
-    ).toEqual(["resume-here"]);
-  });
-
-  it("foreign cwd, no CLI caps: resume-here disabled with a provider-specific reason", () => {
-    const affs = importAffordancesFor(
-      session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual(["resume-here"]);
-    expect(affs[0]?.enabled).toBe(false);
-    expect(affs[0]?.disabledReason).toContain("Cursor");
-  });
-
-  it("cross-folder Claude only offers a chat copy, never a misleading continuation", () => {
-    const affs = importAffordancesFor(
-      session({
-        provider: "claude",
-        cwdMatchesRequestedLane: false,
-        capabilities: { importToChat: true, forkIntoDifferentCwd: true },
-      }),
-    );
-    expect(affs.map((a) => a.kind)).toEqual(["fork-as-chat", "fork-into-lane"]);
-    expect(affs[0]).toMatchObject({ label: "Copy as ADE chat", mode: "fork", hero: true });
-  });
-
-  it("no capabilities at all, cwd matches: yields nothing", () => {
-    expect(importAffordancesFor(session({ cwdMatchesRequestedLane: true, capabilities: {} }))).toEqual([]);
-  });
-
-  it("uses explicit continue/copy labels, including original-folder continuation", () => {
-    const summaries = [
-      session({ cwdMatchesRequestedLane: true, capabilities: { importToChat: true, resumeInPlace: true, fork: true } }),
-      session({ cwdMatchesRequestedLane: false, cwd: "/Users/dev/other", capabilities: { resumeInPlace: true, forkIntoDifferentCwd: true } }),
-      session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
-    ];
-    const allowed = new Set([
-      "Continue as ADE chat",
-      "Copy as ADE chat",
-      "Continue as CLI",
-      "Copy as CLI",
-      "Continue in original folder",
-    ]);
-    for (const summary of summaries) {
-      for (const aff of importAffordancesFor(summary)) {
-        expect(allowed.has(aff.label)).toBe(true);
-      }
-    }
-  });
-
-  it("every emitted affordance carries a non-empty meaning description", () => {
-    const summaries = [
-      session({ cwdMatchesRequestedLane: true, capabilities: { importToChat: true, resumeInPlace: true, fork: true } }),
-      session({ cwdMatchesRequestedLane: false, capabilities: { resumeInDifferentCwd: true, forkIntoDifferentCwd: true } }),
-      session({ cwdMatchesRequestedLane: false, cwd: "/Users/dev/other", capabilities: { resumeInPlace: true, forkIntoDifferentCwd: true } }),
-      session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
-    ];
-    for (const summary of summaries) {
-      for (const aff of importAffordancesFor(summary)) {
-        expect(aff.description.length).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  it("the disabled resume-here description explains the cross-folder block", () => {
-    const [aff] = importAffordancesFor(
-      session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
-    );
-    expect(aff?.enabled).toBe(false);
-    expect(aff?.description).toBe(aff?.disabledReason);
-    expect(aff?.description).toContain("Cursor");
-  });
-});
 
 describe("shortenCwd", () => {
   it("keeps short paths intact", () => {
@@ -294,13 +112,20 @@ describe("sessionHeading", () => {
     }))).toBe("this is a test message");
   });
 
-  it("still falls back to the folder when there is no prompt to show", () => {
+  it("uses a sampled user message, then a plain label, when there is no title or prompt", () => {
+    // The old "<folder> · 41d ago" fallback repeated the row's lane and time.
     expect(sessionHeading(session({
       title: null,
       preview: null,
+      messages: [{ role: "assistant", text: "Done." , at: null }, { role: "user", text: "fix the lane sidebar", at: null }],
+    }))).toBe("fix the lane sidebar");
+    expect(sessionHeading(session({
+      provider: "cursor",
+      title: null,
+      preview: null,
       cwd: "/Users/dev/ADE",
-      updatedAt: null,
-    }))).toBe("ADE");
+      messages: [],
+    }))).toBe("Untitled Cursor chat");
   });
 
   it("prefers a real provider title over the prompt", () => {
@@ -372,5 +197,108 @@ describe("sessionDateGroup", () => {
     expect(sessionDateGroup(yesterday, now)).toBe("Yesterday");
     expect(sessionDateGroup(new Date(2026, 0, 2).getTime(), now)).toMatch(/Jan/);
     expect(sessionDateGroup(null, now)).toBe("Older");
+  });
+});
+
+describe("import browser model", () => {
+  function summary(overrides: Partial<ExternalSessionSummary> = {}): ExternalSessionSummary {
+    return {
+      provider: "claude",
+      id: "s1",
+      cwd: "/repo/.ade/worktrees/apple-sim-1a2b",
+      title: "Title",
+      preview: null,
+      createdAt: null,
+      updatedAt: null,
+      messageCount: 1,
+      alreadyImported: false,
+      possiblyActive: false,
+      cwdMatchesRequestedLane: null,
+      capabilities: { resumeInPlace: true, resumeInDifferentCwd: false, fork: true, forkIntoDifferentCwd: false, importToChat: true },
+      ...overrides,
+    };
+  }
+
+  it("keeps a chat copy's default model in the session's own provider", () => {
+    // "gpt-5.2" is a Codex model id too; a Copilot copy must not become a Codex chat.
+    const copilot = defaultForkModel(summary({ provider: "copilot", launch: { model: "gpt-5.2" } }));
+    const copilotDescriptor = getModelById(copilot);
+    expect(copilotDescriptor && resolveProviderGroupForModel(copilotDescriptor)).not.toBe("codex");
+    const codex = defaultForkModel(summary({ provider: "codex", launch: { model: "gpt-5.2" } }));
+    expect(resolveProviderGroupForModel(getModelById(codex)!)).toBe("codex");
+    const unknown = defaultForkModel(summary({ provider: "claude", launch: { model: "no-such-model" } }));
+    expect(resolveProviderGroupForModel(getModelById(unknown)!)).toBe("claude");
+  });
+
+  it("finds Pi's own model for the provider/model name Pi records", () => {
+    const openai = createDynamicPiModelDescriptor("openai", "gpt-5.2");
+    const anthropic = createDynamicPiModelDescriptor("anthropic", "claude-sonnet-4-6");
+    replaceDynamicPiModelDescriptors([anthropic, openai]);
+    try {
+      expect(defaultForkModel(summary({ provider: "pi", launch: { model: "openai/gpt-5.2" } }))).toBe(openai.id);
+      expect(defaultForkModel(summary({ provider: "pi", launch: { model: "anthropic/claude-sonnet-4-6" } }))).toBe(anthropic.id);
+    } finally {
+      replaceDynamicPiModelDescriptors([]);
+    }
+  });
+
+  const HOME = {
+    kind: "lane" as const,
+    laneId: "lane-a",
+    laneName: "Apple Sim",
+    branchRef: "refs/heads/ade/apple-sim",
+    color: "#abc",
+    laneType: "worktree",
+    atLaneRoot: true,
+  };
+
+  function env(timestamp: string, text: string): AgentChatEventEnvelope {
+    return { sessionId: "x", timestamp, event: { type: "text", text } };
+  }
+
+  describe("importBrowserModel", () => {
+    it("names the lane, never the worktree folder", () => {
+      const lanes = new Map([["lane-a", { id: "lane-a", name: "Apple Sim (renamed)", color: "#def" }]]);
+      expect(sessionPlace(summary({ home: HOME }), lanes)).toEqual({
+        kind: "lane",
+        laneId: "lane-a",
+        name: "Apple Sim (renamed)",
+        color: "#def",
+        branch: "ade/apple-sim",
+      });
+      expect(sessionPlace(summary({ home: { ...HOME, kind: "removed-lane", laneId: null } }), lanes).name).toBe("Removed lane");
+      expect(sessionPlace(summary({ cwd: "/repo/scripts", home: { ...HOME, kind: "outside", laneId: null } }), lanes).name).toBe("scripts");
+    });
+
+    it("buckets sessions outside live lanes under Other folders and leaves older hosts unbucketed", () => {
+      expect(laneFilterKey(summary({ home: HOME }))).toBe("lane-a");
+      expect(laneFilterKey(summary({ home: { ...HOME, kind: "outside", laneId: null } }))).toBe(OTHER_FOLDERS_ID);
+      expect(laneFilterKey(summary())).toBeNull();
+    });
+
+    it("searches lane name and branch", () => {
+      const row = summary({ home: HOME });
+      const place = sessionPlace(row, new Map());
+      expect(matchesSearch(row, place, "apple sim")).toBe(true);
+      expect(matchesSearch(row, place, "ade/apple")).toBe(true);
+      expect(matchesSearch(row, place, "nothing-like-this")).toBe(false);
+    });
+
+    it("keeps paged-back events when a newer page overlaps, and starts over when it does not", () => {
+      const current = [env("t1", "a"), env("t2", "b"), env("t3", "c")];
+      expect(spliceNewestPage(current, [env("t2", "b"), env("t3", "c"), env("t4", "d")])?.map((e) => e.timestamp))
+        .toEqual(["t1", "t2", "t3", "t4"]);
+      expect(spliceNewestPage(current, [env("t9", "z")])).toBeNull();
+    });
+
+    it("formats sizes compactly and hides unknown or zero sizes", () => {
+      expect(formatExternalSessionSize(40 * 1024 * 1024)).toBe("40 MB");
+      expect(formatExternalSessionSize(2.44 * 1024 * 1024)).toBe("2.4 MB");
+      expect(formatExternalSessionSize(1536)).toBe("1.5 KB");
+      expect(formatExternalSessionSize(512)).toBe("512 B");
+      expect(formatExternalSessionSize(0)).toBe("");
+      expect(formatExternalSessionSize(null)).toBe("");
+      expect(formatExternalSessionSize(undefined)).toBe("");
+    });
   });
 });

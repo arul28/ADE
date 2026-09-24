@@ -10,6 +10,8 @@ import {
 import type {
   AgentChatImportExternalSessionResult,
   ExternalSessionCapabilities,
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionListArgs,
@@ -23,12 +25,16 @@ import type {
 } from "../../../shared/types";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { liveClaudeSessionIds } from "./claudeLiveSessions";
-import { claudeConfigDir, discoverClaudeSessions } from "./discoverClaude";
-import { discoverCodexSessions } from "./discoverCodex";
-import { discoverCursorSessions } from "./discoverCursor";
-import { discoverDroidSessions } from "./discoverDroid";
-import { discoverOpenCodeSessions } from "./discoverOpenCode";
-import { discoverPiSessions } from "./discoverPi";
+import { claudeConfigDir } from "./discoverClaude";
+import { EXTERNAL_SESSION_DISCOVERERS } from "./discoverers";
+import { validateExternalSessionId } from "./sessionIds";
+import { loadExternalSessionDetail } from "./externalSessionDetail";
+import { createSessionHomeResolver, type SessionHomeLane, type SessionHomeResolver } from "./sessionHome";
+import { importRejectionReason } from "../../../shared/externalSessionPolicy";
+import {
+  EXTERNAL_SESSION_PROVIDER_CAPABILITIES,
+  EXTERNAL_SESSION_PROVIDERS,
+} from "../../../shared/types/externalSessions";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
 import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
@@ -36,6 +42,8 @@ import {
   commandArrayToLine,
   cwdIsInScope,
   directShellLaunchForCommandLine,
+  isAdeContinuityPrompt,
+  isAdeProbeSession,
   normalizeExternalSessionLimit,
   pathContains,
   realishPath,
@@ -52,6 +60,7 @@ import {
 } from "./liveChatProviderRefs";
 import {
   handleInspectionUnavailableMessage,
+  handleIsOwnedByTrackedPty,
   handlesForSession,
   inspectLiveProviderSessions,
   type LiveProviderSessionIndex,
@@ -60,7 +69,11 @@ import {
 
 export interface ExternalChatImporter {
   importExternalChatSession(args: {
-    provider: "claude" | "codex";
+    /**
+     * Any importer provider. A continue keeps the provider session; a fork is
+     * a native fork (same family) or a full-transcript replay into `model`.
+     */
+    provider: ExternalSessionProvider;
     externalSessionId: string;
     laneId: string;
     cwd: string | null;
@@ -68,6 +81,10 @@ export interface ExternalChatImporter {
     title?: string;
     /** Target model; a model outside the source provider's family runs a full-replay fork. */
     model?: string;
+    /** The model the source session recorded; the default for a copy with no `model`. */
+    sourceModel?: string | null;
+    /** The thinking level the source session recorded. */
+    sourceReasoningEffort?: string | null;
   }): Promise<AgentChatImportExternalSessionResult>;
 }
 
@@ -83,6 +100,8 @@ type LoggerLike = {
 };
 
 type LaneServiceLike = {
+  /** Live lanes, for naming each session's home lane. */
+  list?: (args?: { includeArchived?: boolean; includeStatus?: boolean }) => Promise<SessionHomeLane[]> | SessionHomeLane[];
   getLaneWorktreePath?: (laneId: string) => string;
   getLaneBaseAndBranch?: (laneId: string) => { worktreePath?: string | null };
 };
@@ -122,61 +141,29 @@ type ExternalSessionsServiceArgs = {
     extraPids?: readonly number[];
   }) => LiveProviderSessionIndex | Promise<LiveProviderSessionIndex>;
   runHandleCommand?: RunCommand;
+  /**
+   * One call per import attempt that passed argument checks, after it ran or
+   * failed. The host turns it into a content-free analytics event; nothing
+   * here may carry an id, path, or title.
+   */
+  onImportOutcome?: (outcome: ExternalSessionImportOutcome) => void;
+};
+
+export type ExternalSessionImportOutcome = {
+  provider: ExternalSessionProvider;
+  target: ExternalSessionImportArgs["target"];
+  mode: ExternalSessionImportArgs["mode"];
+  outcome: "completed" | "failed";
 };
 
 type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
   enforceLaneScopeCwd?: string | null;
 };
 
-const PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode", "pi"];
-const UUID_EXTERNAL_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
+const PROVIDERS: ExternalSessionProvider[] = [...EXTERNAL_SESSION_PROVIDERS];
 const PROJECT_SCOPE_DISCOVERY_LIMIT = 200;
-
-const PROVIDER_CAPABILITIES: Record<ExternalSessionProvider, ExternalSessionCapabilities> = {
-  claude: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: true,
-    importToChat: true,
-  },
-  codex: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: true,
-    fork: true,
-    forkIntoDifferentCwd: true,
-    importToChat: true,
-  },
-  cursor: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: false,
-    forkIntoDifferentCwd: false,
-    importToChat: false,
-  },
-  droid: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: true,
-    importToChat: false,
-  },
-  opencode: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: false,
-    importToChat: false,
-  },
-  pi: {
-    resumeInPlace: true,
-    resumeInDifferentCwd: false,
-    fork: true,
-    forkIntoDifferentCwd: false,
-    importToChat: false,
-  },
-};
+/** Originals re-listed per call after their ADE copy absorbed them (see `list`). */
+const MAX_RESCUED_COPY_ORIGINALS = 25;
 
 type ImportedSessionRef = NonNullable<ExternalSessionSummary["importedSessionRef"]>;
 
@@ -289,7 +276,7 @@ async function importedSessionRefs(
     if (session.archivedAt) continue;
     liveAdeSessionIds.add(session.id);
     const metadata = session.resumeMetadata as (TerminalResumeMetadata & {
-      importedFrom?: { provider?: ExternalSessionProvider; targetId?: string | null };
+      importedFrom?: { provider?: ExternalSessionProvider; targetId?: string | null; mode?: "resume" | "fork" };
     }) | null | undefined;
     const ref: ImportedSessionRef = {
       kind: isChatToolType(session.toolType) ? "chat" : "cli",
@@ -299,7 +286,13 @@ async function importedSessionRefs(
       putImportedRef(refs, `${metadata.provider}:${metadata.targetId}`, ref);
     }
     if (metadata?.importedFrom?.provider && metadata.importedFrom.targetId) {
-      putImportedRef(refs, `${metadata.importedFrom.provider}:${metadata.importedFrom.targetId}`, ref);
+      // A copy leaves the original untouched: list it again, with the
+      // "imported before" hint, instead of hiding it behind the copy.
+      putImportedRef(
+        refs,
+        `${metadata.importedFrom.provider}:${metadata.importedFrom.targetId}`,
+        metadata.importedFrom.mode === "fork" ? null : ref,
+      );
     }
     if (isChatToolType(session.toolType) && chatSessionsDir) {
       for (const chatRef of await liveChatProviderRefsFromPersistedState(chatSessionsDir, session.id)) {
@@ -316,7 +309,7 @@ async function importedSessionRefs(
     const ref: ImportedSessionRef | null = liveAdeSessionIds.has(record.adeSessionId)
       ? { kind: record.kind, sessionId: record.adeSessionId }
       : null;
-    putImportedRef(refs, `${record.provider}:${record.externalId}`, ref);
+    putImportedRef(refs, `${record.provider}:${record.externalId}`, record.mode === "fork" ? null : ref);
     if (record.targetId) {
       putImportedRef(refs, `${record.provider}:${record.targetId}`, ref);
     }
@@ -327,10 +320,13 @@ async function importedSessionRefs(
     const sessionId = pointer.sessionId?.trim();
     if (!sessionId) continue;
     const chatSessionId = pointer.chatSessionId?.trim();
+    // A pointer outlives the chat it names (deleting a chat keeps it), so it
+    // only opens a chat that still exists; otherwise the session lists again
+    // as "imported before" instead of staying hidden for good.
     putImportedRef(
       refs,
       `claude:${sessionId}`,
-      chatSessionId ? { kind: "chat", sessionId: chatSessionId } : null,
+      chatSessionId && liveAdeSessionIds.has(chatSessionId) ? { kind: "chat", sessionId: chatSessionId } : null,
     );
   }
   if (chatImportedRefsProvider) {
@@ -390,23 +386,6 @@ function toolTypeForProvider(provider: ExternalSessionProvider): TerminalToolTyp
   return provider;
 }
 
-export function validateExternalSessionId(provider: ExternalSessionProvider, id: string): string {
-  const trimmed = id.trim();
-  if (provider === "cursor" && trimmed.startsWith("agent-")) {
-    throw new Error(
-      "cursor external session id is not resumable by cursor-agent; refusing to import SDK-origin transcript.",
-    );
-  }
-  const pattern = provider === "claude" || provider === "codex"
-    ? UUID_EXTERNAL_SESSION_ID
-    : CLI_EXTERNAL_SESSION_ID;
-  if (!pattern.test(trimmed)) {
-    throw new Error(
-      `${provider} external session id is invalid; refusing to import '${trimmed || "(empty)"}'.`,
-    );
-  }
-  return trimmed;
-}
 
 function targetKindForProvider(provider: ExternalSessionProvider): TerminalResumeMetadata["targetKind"] {
   return provider === "codex" ? "thread" : "session";
@@ -494,7 +473,24 @@ async function forkCommandFor(args: {
     return commandArrayToLine(["pi", "--fork", validateExternalSessionId("pi", args.targetId)]);
   }
 
-  throw new Error("Cursor sessions cannot be forked.");
+  // Qwen and Grok both copy with `--fork-session` on top of their resume
+  // selector (`qwen --resume <id>`, `grok -r <id>`); the copy gets a new id
+  // and stays in the source folder.
+  if (args.provider === "qwen") {
+    return `${buildTrackedCliResumeCommand(forkMetadata, args.overrides)} --fork-session`;
+  }
+
+  if (args.provider === "grok") {
+    // The resume launch carries Grok's supervision env; a copy must run under
+    // the same posture, so it rides in front of the line as `NAME=value`.
+    const launch = buildTrackedCliResumeLaunchCommand(forkMetadata, args.overrides, { platform: "linux" });
+    const envPrefix = Object.entries(launch.env ?? {}).map(([key, value]) => commandArrayToLine([`${key}=${value}`]));
+    return [...envPrefix, `${launch.startupCommand} --fork-session`].join(" ");
+  }
+
+  if (args.provider === "cursor") throw new Error("Cursor sessions cannot be forked.");
+  const label = args.provider === "kimi" ? "Kimi" : args.provider === "copilot" ? "Copilot" : args.provider;
+  throw new Error(`${label} sessions cannot be copied.`);
 }
 
 export function createExternalSessionsService(args: ExternalSessionsServiceArgs) {
@@ -580,10 +576,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     cwdExistenceCache?: Map<string, boolean>,
   ): ExternalSessionCapabilities => {
     const base = provider !== "droid"
-      ? PROVIDER_CAPABILITIES[provider]
+      ? EXTERNAL_SESSION_PROVIDER_CAPABILITIES[provider]
       : (() => {
           const fork = droidForkAvailable();
-          return { ...PROVIDER_CAPABILITIES.droid, fork, forkIntoDifferentCwd: fork };
+          return { ...EXTERNAL_SESSION_PROVIDER_CAPABILITIES.droid, fork, forkIntoDifferentCwd: fork };
         })();
     if (session === undefined || provider === "codex") return base;
     const cwd = session?.cwd?.trim() ?? "";
@@ -613,13 +609,83 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     };
   };
 
-  const discoverByProvider: Record<ExternalSessionProvider, (discoveryArgs: ExternalSessionDiscoveryArgs) => Promise<ExternalSessionDiscoveryRecord[]>> = {
-    claude: discoverClaudeSessions,
-    codex: discoverCodexSessions,
-    cursor: discoverCursorSessions,
-    droid: discoverDroidSessions,
-    opencode: discoverOpenCodeSessions,
-    pi: discoverPiSessions,
+  // Lanes change rarely compared with how often the importer lists, but a
+  // stale lane name is worse than a slow list: re-read on every call.
+  //
+  // `knownLane` is the lane an import targets. It is added when the lane list
+  // does not have it, so the import guard never mistakes the target lane's
+  // own sessions for sessions from another folder.
+  const loadHomeResolver = async (knownLane?: SessionHomeLane | null): Promise<SessionHomeResolver> => {
+    let lanes: SessionHomeLane[] = [];
+    try {
+      lanes = [...(await args.laneService.list?.({ includeArchived: false, includeStatus: false }) ?? [])];
+    } catch (error) {
+      args.logger.warn("external_sessions.lane_list_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (knownLane && !lanes.some((lane) => lane.id === knownLane.id)) lanes.push(knownLane);
+    return createSessionHomeResolver(lanes);
+  };
+
+  type ListInputs = {
+    imported: ImportedRefIndex;
+    extraPids: number[];
+    liveHandles: LiveProviderSessionIndex;
+  };
+  // Shared while in flight only: calls that start together (the dialog's
+  // per-provider scan) share one load, and the next call after it settles
+  // reads fresh state — a chat deleted a moment ago must list again.
+  let listInputs: Promise<ListInputs> | null = null;
+  let homeResolverSnapshot: Promise<SessionHomeResolver> | null = null;
+  const loadListInputs = async (): Promise<ListInputs> => {
+    const imported = await importedSessionRefs(
+      args.sessionService,
+      args.chatImportedRefsProvider,
+      importedStore,
+      args.logger,
+      args.chatSessionsDir ?? resolveAdeLayout(args.projectRoot).chatSessionsDir,
+    );
+    const extraPids = args.ptyService.listLiveTrackedCliPids?.() ?? [];
+    const liveHandles = await (args.inspectLiveSessions?.({ extraPids })
+      ?? inspectLiveProviderSessions({
+        homeDir: args.homeDir,
+        env: args.env,
+        extraPids,
+        runCommand: args.runHandleCommand,
+      }));
+    if (!liveHandles.availability.available) {
+      args.logger.warn?.("external_sessions.handle_inspection_unavailable", {
+        reason: liveHandles.availability.reason,
+        detail: handleInspectionUnavailableMessage(liveHandles.availability.reason),
+      });
+    }
+    return { imported, extraPids, liveHandles };
+  };
+  const sharedListInputs = (): Promise<ListInputs> => {
+    if (!listInputs) {
+      const value = loadListInputs();
+      listInputs = value;
+      const clear = () => {
+        if (listInputs === value) listInputs = null;
+      };
+      value.then(clear, clear);
+    }
+    return listInputs;
+  };
+  const sharedHomeResolver = (): Promise<SessionHomeResolver> => {
+    if (!homeResolverSnapshot) {
+      const value = loadHomeResolver();
+      homeResolverSnapshot = value;
+      const clear = () => {
+        if (homeResolverSnapshot === value) homeResolverSnapshot = null;
+      };
+      value.then(clear, clear);
+    }
+    return homeResolverSnapshot;
+  };
+  const dropListSnapshot = () => {
+    listInputs = null;
   };
 
   const list = async (rawArgs: ExternalSessionListArgs = {}): Promise<ExternalSessionSummary[]> => {
@@ -661,7 +727,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
 
     const settled = await Promise.all(providers.map(async (provider) => {
       try {
-        return await discoverByProvider[provider](discoveryArgs);
+        return await EXTERNAL_SESSION_DISCOVERERS[provider](discoveryArgs);
       } catch (error) {
         args.logger.warn("external_sessions.discovery_failed", {
           provider,
@@ -672,31 +738,16 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
     }));
 
-    const imported = await importedSessionRefs(
-      args.sessionService,
-      args.chatImportedRefsProvider,
-      importedStore,
-      args.logger,
-      args.chatSessionsDir ?? resolveAdeLayout(args.projectRoot).chatSessionsDir,
-    );
-    const extraPids = args.ptyService.listLiveTrackedCliPids?.() ?? [];
-    const liveHandles = await (args.inspectLiveSessions?.({ extraPids })
-      ?? inspectLiveProviderSessions({
-        homeDir: args.homeDir,
-        env: args.env,
-        extraPids,
-        runCommand: args.runHandleCommand,
-      }));
-    if (!liveHandles.availability.available) {
-      args.logger.warn?.("external_sessions.handle_inspection_unavailable", {
-        reason: liveHandles.availability.reason,
-        detail: handleInspectionUnavailableMessage(liveHandles.availability.reason),
-      });
-    }
+    // The dialog scans each provider in its own call, and each call used to
+    // redo the same machine-wide work (every chat record, a `ps` + `lsof`
+    // sweep, the lane list): ten calls took ~11 s. Concurrent calls now share
+    // one in-flight load; an import drops it at once.
+    const { imported, extraPids, liveHandles } = await sharedListInputs();
     const liveClaudeIds = providers.includes("claude")
       ? liveClaudeSessionIds({ homeDir: args.homeDir, env: args.env })
       : null;
     const cwdExistenceCache = new Map<string, boolean>();
+    const homeOf = await sharedHomeResolver();
     const discovered = sortDiscoveryRecords(settled.flat(), discoveryLimit * providers.length);
     // `scopeRoots` is non-empty whenever `projectScoped`, so the util's
     // empty-roots-means-everything behaviour is never reached here.
@@ -713,8 +764,14 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         session.id,
         ...(session.lineageIds ?? []),
       ].flatMap((id) => handlesForSession(liveHandles, session.provider, id));
-      return owners.some((handle) => adePids.has(handle.pid));
+      return owners.some((handle) => handleIsOwnedByTrackedPty(handle, adePids));
     };
+    // ADE's own context-restore sessions start with its continuity header. A
+    // provider may keep it as the title (Droid) and show a later prompt as the
+    // preview, so both are checked.
+    const isAdeContinuitySession = (
+      session: Pick<ExternalSessionDiscoveryRecord, "preview" | "title">,
+    ): boolean => isAdeContinuityPrompt(session.preview) || isAdeContinuityPrompt(session.title);
     const isEmptyOfUserPrompts = (
       session: Pick<ExternalSessionDiscoveryRecord, "messageCount">,
     ): boolean => session.messageCount === 0;
@@ -722,7 +779,46 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     // when that session is ADE-tracked or empty.
     const scoped = requestedSessionId
       ? inScope
-      : inScope.filter((session) => !isLiveAdeTracked(session) && !isEmptyOfUserPrompts(session));
+      : inScope.filter((session) => (
+        !isLiveAdeTracked(session)
+        && !isEmptyOfUserPrompts(session)
+        && !isAdeContinuitySession(session)
+        && !isAdeProbeSession(session)
+      ));
+
+    // Discovery folds a session into a newer one that shares its history — a
+    // Claude continuation, a Codex fork. A copy ADE made shares that history
+    // too, so the untouched original folded into ADE's own (hidden) copy and
+    // vanished from the list. An original with a copy receipt (a null ref: it
+    // was imported as a copy, never continued) is looked up on its own again.
+    // A folded ancestor the user *continued* has a live ref and stays folded.
+    if (!requestedSessionId) {
+      const listed = new Set(scoped.map((session) => `${session.provider}:${session.id}`));
+      const rescued: Array<{ provider: ExternalSessionProvider; id: string }> = [];
+      for (const session of inScope) {
+        if (!session.lineageIds?.length || !isLiveAdeTracked(session)) continue;
+        for (const lineageId of session.lineageIds) {
+          const key = `${session.provider}:${lineageId}`;
+          if (listed.has(key) || !imported.refs.has(key) || imported.refs.get(key) != null) continue;
+          listed.add(key);
+          rescued.push({ provider: session.provider, id: lineageId });
+        }
+      }
+      const found = await Promise.all(rescued.slice(0, MAX_RESCUED_COPY_ORIGINALS).map(async (entry) => {
+        try {
+          const [record] = await EXTERNAL_SESSION_DISCOVERERS[entry.provider]({ ...discoveryArgs, sessionId: entry.id, limit: 1 });
+          return record && record.id === entry.id ? record : null;
+        } catch {
+          return null;
+        }
+      }));
+      for (const record of found) {
+        if (!record) continue;
+        if (projectScoped && !cwdIsInScope(record.cwd, scopeRoots)) continue;
+        if (isLiveAdeTracked(record) || isEmptyOfUserPrompts(record)) continue;
+        scoped.push(record);
+      }
+    }
 
     const summaries = scoped
       .map((session): ExternalSessionSummary => {
@@ -745,6 +841,8 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           possiblyActive: liveNow,
           cwdMatchesRequestedLane: cwdMatches(session.cwd, requestedCwd),
           capabilities: capabilitiesFor(session.provider, session, cwdExistenceCache),
+          home: homeOf(session.cwd),
+          sizeBytes: session.sizeBytes ?? null,
         };
       })
       .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
@@ -758,6 +856,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     provider: ExternalSessionProvider,
     sessionId: string,
     destinationCwd: string,
+    destinationLaneId: string,
   ): Promise<ExternalSessionSummary | null> => {
     // OpenCode can omit `directory` from list rows. Its CLI scopes the list by
     // the cwd it runs in, so an exact lookup for a lane-scoped import may use
@@ -767,7 +866,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const openCodeScopeRoots = provider === "opencode"
       ? deriveProjectScopeRoots(args.projectRoot)
       : null;
-    const [session] = await discoverByProvider[provider]({
+    const [session] = await EXTERNAL_SESSION_DISCOVERERS[provider]({
       homeDir: args.homeDir,
       env: args.env,
       ...(provider === "opencode" ? { cwd: destinationCwd } : {}),
@@ -788,6 +887,14 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const liveClaudeIds = provider === "claude"
       ? liveClaudeSessionIds({ homeDir: args.homeDir, env: args.env })
       : null;
+    const homeOf = await loadHomeResolver({
+      id: destinationLaneId,
+      name: destinationLaneId,
+      branchRef: "",
+      color: null,
+      laneType: "worktree",
+      worktreePath: destinationCwd,
+    });
     return {
       provider: session.provider,
       id: session.id,
@@ -804,10 +911,37 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       possiblyActive: isSessionLiveNow(session, liveHandles, liveClaudeIds, liveHandles.availability),
       cwdMatchesRequestedLane: cwdMatches(session.cwd, destinationCwd),
       capabilities: capabilitiesFor(provider, session),
+      home: homeOf(session.cwd),
+      sizeBytes: session.sizeBytes ?? null,
     };
   };
 
+  // An import creates ADE sessions and receipts that the next list must see,
+  // so it drops the shared snapshot however it ends.
   const importExternalSession = async (
+    importArgs: LaneScopedExternalSessionImportArgs,
+  ): Promise<ExternalSessionImportResult> => {
+    const report = (outcome: ExternalSessionImportOutcome["outcome"]): void => {
+      if (!PROVIDERS.includes(importArgs.provider)) return;
+      try {
+        args.onImportOutcome?.({ provider: importArgs.provider, target: importArgs.target, mode: importArgs.mode, outcome });
+      } catch {
+        // Analytics never changes an import's result.
+      }
+    };
+    try {
+      const result = await runImport(importArgs);
+      report("completed");
+      return result;
+    } catch (error) {
+      report("failed");
+      throw error;
+    } finally {
+      dropListSnapshot();
+    }
+  };
+
+  const runImport = async (
     importArgs: LaneScopedExternalSessionImportArgs,
   ): Promise<ExternalSessionImportResult> => {
     const provider = importArgs.provider;
@@ -820,16 +954,13 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     // also what lets the branch below use it without asserting it exists.
     const chatImport = importArgs.target === "chat"
       ? (() => {
-          if (provider !== "claude" && provider !== "codex") {
-            throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
-          }
           if (!args.chatImporter) {
             throw new Error("Chat import unavailable: external chat importer is not configured.");
           }
           return { provider, importer: args.chatImporter };
         })()
       : null;
-    const summary = await findExternalSummary(provider, sessionId, laneCwd);
+    const summary = await findExternalSummary(provider, sessionId, laneCwd, laneId);
     if (!summary) {
       throw new Error(`${provider} external session '${sessionId}' was not found or is not resumable.`);
     }
@@ -841,12 +972,26 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         throw new Error("External session import is not permitted for this lane.");
       }
     }
+    // The list answers the droid `--fork` probe without waiting; an import
+    // must not be refused because that probe had not finished yet.
+    if (provider === "droid" && importArgs.target === "cli" && importArgs.mode === "fork") {
+      const forkAvailable = await resolveDroidForkAvailable();
+      if (!forkAvailable) {
+        throw new Error("The installed droid CLI does not support forking (--fork unavailable) — resume the session in its original folder or update droid.");
+      }
+      summary.capabilities = capabilitiesFor(provider, summary);
+    }
+    // Same plan every client renders: an action the dialog would not offer
+    // for this lane is refused here too, in the same words.
+    const rejection = importRejectionReason(summary, {
+      target: importArgs.target,
+      mode: importArgs.mode,
+      laneId,
+    });
+    if (rejection) throw new Error(rejection);
 
     if (chatImport) {
       const { importer } = chatImport;
-      if (!summary.capabilities.importToChat) {
-        throw new Error(`${provider} session '${sessionId}' cannot be imported as an ADE chat.`);
-      }
       if (
         provider === "claude"
         && importArgs.mode === "resume"
@@ -862,13 +1007,31 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         fork: importArgs.mode === "fork",
         ...(summary?.title ? { title: summary.title } : {}),
         ...(importArgs.model?.trim() ? { model: importArgs.model.trim() } : {}),
+        sourceModel: summary.launch?.model?.trim() || null,
+        sourceReasoningEffort: summary.launch?.reasoningEffort?.trim() || null,
       });
       // A fork import binds the chat to a provider id that did not exist when
       // the user picked the row; both ids have to be marked, or the fork lists
       // back as a fresh session and the original loses its badge.
       const providerTargetId = result.providerTargetId?.trim() || null;
       const forkImport = importArgs.mode === "fork";
-      if (forkImport && (!providerTargetId || providerTargetId === sessionId)) {
+      // A replay copy has no provider id until its first turn runs. The copy is
+      // ADE's own chat, so only the original needs a receipt: it stays listed,
+      // with the "copied before" hint.
+      const replayCopy = forkImport
+        && (!providerTargetId || providerTargetId === sessionId)
+        && provider !== "claude"
+        && provider !== "codex";
+      if (replayCopy) {
+        importedStore.record({
+          provider,
+          externalId: sessionId,
+          targetId: null,
+          kind: "chat",
+          adeSessionId: result.chatSessionId,
+          mode: "fork",
+        });
+      } else if (forkImport && (!providerTargetId || providerTargetId === sessionId)) {
         // A fork always mints a new provider id; without it the copy cannot be
         // marked ADE-created, and a source-only receipt would claim this import
         // is accounted for while the copy lists back as a fresh session. Leave
@@ -948,11 +1111,13 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       } else if (provider === "droid" || provider === "codex") {
         metadataTargetId = null;
         runCwd = laneCwd;
-      } else if (provider === "opencode" || provider === "pi") {
-        if (!sourceCwd) throw new Error(`${provider === "pi" ? "Pi" : "OpenCode"} fork import requires the source session cwd.`);
-        if (!pathsEqual(realishPath(sourceCwd), realishPath(laneCwd))) {
-          throw new Error(`${provider === "pi" ? "Pi" : "OpenCode"} sessions cannot be copied into a different lane folder.`);
-        }
+      } else if (provider === "opencode" || provider === "pi" || provider === "qwen" || provider === "grok") {
+        // These CLIs key a session to the folder it ran in, so the copy is
+        // made and run there — a subfolder of the home lane, or the original
+        // folder of a session no live lane owns. The policy guard above has
+        // already refused a copy into any other lane.
+        const label = { opencode: "OpenCode", pi: "Pi", qwen: "Qwen", grok: "Grok" }[provider];
+        if (!sourceCwd) throw new Error(`${label} fork import requires the source session cwd.`);
         metadataTargetId = null;
         runCwd = sourceCwd;
       }
@@ -1075,10 +1240,21 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     };
   };
 
+  /** Reads the provider's own store; `maxEvents` shrinks the page (the phone asks for fewer). */
+  const getDetail = (
+    detailArgs: ExternalSessionDetailArgs,
+    options: { maxEvents?: number } = {},
+  ): Promise<ExternalSessionDetail> => loadExternalSessionDetail(detailArgs, {
+    ...options,
+    ...(args.homeDir ? { homeDir: args.homeDir } : {}),
+    ...(args.env ? { env: args.env } : {}),
+  });
+
   return {
     list,
     importExternalSession,
     import: importExternalSession,
+    getDetail,
   };
 }
 

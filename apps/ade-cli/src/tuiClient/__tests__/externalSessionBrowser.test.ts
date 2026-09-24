@@ -1,14 +1,40 @@
 import { describe, expect, it } from "vitest";
-import type { ExternalSessionSummary } from "../../../../desktop/src/shared/types/externalSessions";
+import type {
+  ExternalSessionHome,
+  ExternalSessionSummary,
+} from "../../../../desktop/src/shared/types/externalSessions";
 import {
+  EXTERNAL_SESSION_PROVIDER_FILTERS,
   clampExternalSessionBrowserContent,
   externalSessionAnchors,
   externalSessionBrowserActions,
+  externalSessionBrowserTargetOptions,
+  externalSessionLaneLabel,
+  externalSessionProviderLabel,
   externalSessionRowTitle,
+  isImportEntry,
+  nextExternalSessionProviderFilter,
+  nextExternalSessionTargetLane,
   normalizeExternalSessionListResult,
   visibleExternalSessions,
+  withReloadedExternalSessions,
+  type ExternalSessionImportEntry,
 } from "../externalSessionBrowser";
 import type { RightPaneContent } from "../types";
+
+const APPLE: ExternalSessionHome = {
+  kind: "lane",
+  laneId: "apple",
+  laneName: "Apple Sim Preview",
+  branchRef: "refs/heads/ade/apple",
+  color: "#ff8800",
+  laneType: "worktree",
+  atLaneRoot: true,
+};
+
+function importLabels(actions: ReturnType<typeof externalSessionBrowserActions>): string[] {
+  return actions.map((action) => action.label);
+}
 
 function session(overrides: Partial<ExternalSessionSummary>): ExternalSessionSummary {
   return {
@@ -110,12 +136,12 @@ describe("externalSessionBrowser helpers", () => {
   it("clamps selection and action indexes after filter changes", () => {
     const content: Extract<RightPaneContent, { kind: "external-session-browser" }> = {
       kind: "external-session-browser",
-      laneId: "lane-1",
-      laneLabel: "Lane",
+      laneId: "apple",
+      laneLabel: "Apple Sim Preview",
       providerFilter: "claude",
       query: "release",
       sessions: [
-        session({ id: "one", title: "Release plan" }),
+        session({ id: "one", title: "Release plan", home: APPLE }),
         session({ id: "two", title: "Other" }),
       ],
       loading: false,
@@ -123,60 +149,166 @@ describe("externalSessionBrowser helpers", () => {
       actionIndex: 99,
     };
 
+    // Claude in its own root lane: chat Continue + Copy, CLI Continue + Copy.
     expect(clampExternalSessionBrowserContent(content)).toMatchObject({
       selectedIndex: 0,
       actionIndex: 3,
     });
   });
 
-  it("keeps copy actions and resume-in-original without cross-folder chat continuation", () => {
+  it("drops the row's lane and action picks when a reload puts another session at that index", () => {
+    const older = session({ id: "older", title: "Older", updatedAt: 10, home: APPLE });
     const content: Extract<RightPaneContent, { kind: "external-session-browser" }> = {
       kind: "external-session-browser",
-      laneId: "lane-1",
-      laneLabel: "Lane",
-      providerFilter: "claude",
+      laneId: "apple",
+      laneLabel: "Apple Sim Preview",
+      providerFilter: "all",
       query: "",
-      sessions: [
-        session({
-          id: "foreign",
-          cwd: "/repo/other",
-          cwdMatchesRequestedLane: false,
-          capabilities: {
-            resumeInPlace: true,
-            resumeInDifferentCwd: false,
-            fork: true,
-            forkIntoDifferentCwd: true,
-            importToChat: true,
-          },
-        }),
-      ],
+      sessions: [older],
       loading: false,
       selectedIndex: 0,
-      actionIndex: 99,
+      actionIndex: 2,
+      targetLaneId: "other",
+      targetLaneLabel: "Other lane",
+      confirmKey: "claude:older:cli:resume",
     };
 
-    expect(clampExternalSessionBrowserContent(content)).toMatchObject({
+    // Same row still at the index: the picks stay.
+    expect(withReloadedExternalSessions(content, [{ ...older, messageCount: 5 }])).toMatchObject({
       selectedIndex: 0,
       actionIndex: 2,
+      targetLaneId: "other",
+      confirmKey: "claude:older:cli:resume",
+    });
+
+    // A newer session now sorts first: Enter must not import it into the lane
+    // picked for the old row.
+    const newer = session({ id: "newer", title: "Newer", updatedAt: 50, home: APPLE });
+    expect(withReloadedExternalSessions(content, [older, newer])).toMatchObject({
+      selectedIndex: 0,
+      actionIndex: 0,
+      targetLaneId: null,
+      targetLaneLabel: null,
+      confirmKey: null,
     });
   });
 
-  it("makes Open existing the default and suppresses Continue for imported sessions", () => {
+  it("lists one entry per plan action and defaults the target to the home lane", () => {
+    const row = session({ home: APPLE });
+    const actions = externalSessionBrowserActions(row, { fallbackLaneId: "other" });
+    expect(importLabels(actions)).toEqual([
+      "ADE chat · Continue",
+      "ADE chat · Copy",
+      "CLI · Continue",
+      "CLI · Copy",
+    ]);
+    const entries = actions.filter(isImportEntry);
+    expect(entries.every((entry) => entry.laneId === "apple")).toBe(true);
+    expect(entries.map((entry) => `${entry.action.target}:${entry.action.mode}`)).toEqual([
+      "chat:resume",
+      "chat:fork",
+      "cli:resume",
+      "cli:fork",
+    ]);
+  });
+
+  it("judges an older host's folder match against the lane the list was scanned for", () => {
+    const content: Extract<RightPaneContent, { kind: "external-session-browser" }> = {
+      kind: "external-session-browser",
+      laneId: "main",
+      laneLabel: "Main",
+      providerFilter: "all",
+      query: "",
+      sessions: [],
+      loading: false,
+      selectedIndex: 0,
+      actionIndex: 0,
+    };
+    // No `home`: an older host. Its folder matched the scanned lane.
+    const row = session({ provider: "pi", home: undefined, cwdMatchesRequestedLane: true });
+    const cliContinue = (targetLaneId: string | null) => externalSessionBrowserActions(
+      row,
+      externalSessionBrowserTargetOptions({ ...content, targetLaneId }),
+    ).filter(isImportEntry).find((entry) => entry.key === "cli:resume");
+    expect(cliContinue(null)?.note).toBeNull();
+    expect(cliContinue("apple")?.note).toBe("Runs in its original folder.");
+  });
+
+  it("turns a CLI import into another lane into a named copy", () => {
+    const row = session({
+      home: APPLE,
+      capabilities: {
+        resumeInPlace: true,
+        resumeInDifferentCwd: false,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true,
+      },
+    });
+    const actions = externalSessionBrowserActions(row, { fallbackLaneId: "apple", targetLaneId: "other" });
+    const cli = actions.filter(isImportEntry).filter((entry) => entry.surface === "cli");
+    expect(cli).toHaveLength(1);
+    expect(cli[0]).toMatchObject({
+      label: "CLI · Copy here",
+      laneId: "other",
+      laneLocked: false,
+      note: "Original stays in Apple Sim Preview.",
+    });
+  });
+
+  it("pins a locked surface to the home lane and carries the lock reason", () => {
+    const cursor = session({
+      provider: "cursor",
+      home: APPLE,
+      capabilities: {
+        resumeInPlace: true,
+        resumeInDifferentCwd: false,
+        fork: false,
+        forkIntoDifferentCwd: false,
+        importToChat: false,
+      },
+    });
+    const entries = externalSessionBrowserActions(cursor, { fallbackLaneId: "apple", targetLaneId: "other" })
+      .filter(isImportEntry);
+    const chat = entries.find((entry) => entry.surface === "chat");
+    const cli = entries.find((entry) => entry.surface === "cli");
+    expect(chat).toMatchObject({ label: "ADE chat · Open as ADE chat", laneId: "other", laneLocked: false });
+    expect(cli).toMatchObject({
+      label: "CLI · Continue",
+      laneId: "apple",
+      laneLocked: true,
+      lockReason: "Cursor sessions stay in their own lane.",
+    });
+  });
+
+  it("asks for a second Enter before continuing a live session", () => {
+    const live = session({ home: APPLE, possiblyActive: true });
+    const entries = externalSessionBrowserActions(live, { fallbackLaneId: "apple" }).filter(isImportEntry);
+    const byKey = Object.fromEntries(entries.map((entry) => [entry.key, entry])) as Record<string, ExternalSessionImportEntry>;
+    expect(byKey["cli:resume"]).toMatchObject({
+      action: { confirmBeforeRun: true },
+      note: "Open elsewhere — close it there first.",
+    });
+    expect(byKey["cli:fork"]).toMatchObject({ action: { confirmBeforeRun: false }, note: null });
+  });
+
+  it("makes Open existing the default and keeps only copies for imported sessions", () => {
     const imported = session({
+      home: APPLE,
       alreadyImported: true,
       importedSessionRef: { kind: "chat", sessionId: "ade-chat-1" },
     });
 
-    const actions = externalSessionBrowserActions(imported);
-    expect(actions.map((action) => action.kind)).toEqual([
-      "open-existing",
-      "fork-as-chat",
-      "fork-into-lane",
+    const actions = externalSessionBrowserActions(imported, { fallbackLaneId: "apple" });
+    expect(importLabels(actions)).toEqual([
+      "Open existing ADE session",
+      "ADE chat · Copy",
+      "CLI · Copy",
     ]);
     expect(clampExternalSessionBrowserContent({
       kind: "external-session-browser",
-      laneId: "lane-1",
-      laneLabel: "Lane",
+      laneId: "apple",
+      laneLabel: "Apple Sim Preview",
       providerFilter: "all",
       query: "",
       sessions: [imported],
@@ -184,5 +316,39 @@ describe("externalSessionBrowser helpers", () => {
       selectedIndex: 0,
       actionIndex: 99,
     })).toMatchObject({ actionIndex: 2 });
+  });
+
+  it("labels rows by lane, not folder", () => {
+    expect(externalSessionLaneLabel(session({ home: APPLE, cwd: "/repo/.ade/worktrees/apple-sim" })))
+      .toBe("Apple Sim Preview");
+    expect(externalSessionLaneLabel(session({
+      home: { ...APPLE, kind: "removed-lane", laneId: null, laneName: null },
+      cwd: "/repo/.ade/worktrees/gone",
+    }))).toBe("Removed lane");
+    expect(externalSessionLaneLabel(session({
+      home: { ...APPLE, kind: "outside", laneId: null, laneName: null, atLaneRoot: false },
+      cwd: "/Users/me/dev/scratch/tool",
+    }))).toBe("…/scratch/tool");
+  });
+
+  it("finds rows by lane name", () => {
+    const rows = [session({ id: "a", title: "One", home: APPLE }), session({ id: "b", title: "Two" })];
+    expect(visibleExternalSessions(rows, "all", "apple sim").map((row) => row.id)).toEqual(["a"]);
+  });
+
+  it("cycles through every provider, including the ACP ones", () => {
+    expect(EXTERNAL_SESSION_PROVIDER_FILTERS).toEqual([
+      "all", "claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot",
+    ]);
+    expect(nextExternalSessionProviderFilter("pi")).toBe("qwen");
+    expect(nextExternalSessionProviderFilter("copilot")).toBe("all");
+    expect(externalSessionProviderLabel("copilot")).toBe("Copilot");
+  });
+
+  it("cycles target lanes and wraps", () => {
+    expect(nextExternalSessionTargetLane(["a", "b", "c"], "a")).toBe("b");
+    expect(nextExternalSessionTargetLane(["a", "b", "c"], "c")).toBe("a");
+    expect(nextExternalSessionTargetLane(["a", "b"], "gone")).toBe("a");
+    expect(nextExternalSessionTargetLane([], "a")).toBeNull();
   });
 });
