@@ -1915,10 +1915,19 @@ export function createAutomationService({
     const allowedTools = computeAllowedToolList(rule, options, action);
     const cli = action?.permissionConfig?.cli ?? rule.permissionConfig?.cli;
     const inProcess = action?.permissionConfig?.inProcess ?? rule.permissionConfig?.inProcess;
+    const ruleProviders = rule.permissionConfig?.providers;
+    const actionProviders = action?.permissionConfig?.providers;
     const providers = {
-      ...(rule.permissionConfig?.providers ?? {}),
-      ...(action?.permissionConfig?.providers ?? {}),
+      ...(ruleProviders ?? {}),
+      ...(actionProviders ?? {}),
     };
+    const cursorMode = rule.verification.mode === "dry-run"
+      ? "plan"
+      : (actionProviders?.cursor
+        ?? cursorPermissionFromMisfiledOpenCode(actionProviders?.opencode)
+        ?? ruleProviders?.cursor
+        ?? cursorPermissionFromMisfiledOpenCode(ruleProviders?.opencode)
+        ?? "edit");
     return {
       ...(cli
         ? {
@@ -1938,9 +1947,7 @@ export function createAutomationService({
       providers: {
         claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
         codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
-        cursor: rule.verification.mode === "dry-run"
-          ? "plan"
-          : (providers.cursor ?? cursorPermissionFromMisfiledOpenCode(providers.opencode) ?? "edit"),
+        cursor: cursorMode,
         opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
         codexSandbox: providers.codexSandbox ?? "workspace-write",
         ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),

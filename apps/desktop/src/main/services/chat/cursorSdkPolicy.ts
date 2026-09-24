@@ -399,7 +399,7 @@ function isAdeSlashCommandPrompt(token: string): boolean {
   if (!match) return false;
   const rest = match[2] ?? "";
   if (!rest) return true;
-  return !/[\\/]/.test(rest) && !rest.includes("..");
+  return !/[\\/$`]/.test(rest) && !rest.includes("..");
 }
 
 function isAdeCommandBoundary(words: string[], index: number): boolean {

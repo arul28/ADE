@@ -167,6 +167,7 @@ describe("Cursor SDK policy", () => {
     "ade chat note --text /ship > /tmp",
     "ade chat note > /ship",
     "ade chat note /ship > /tmp",
+    'ade chat note "/ship $(cat /etc/passwd)"',
     'ade chat scheduled-work create --prompt "/ship /etc/passwd"',
   ])("still denies a real path inside an ade prompt: %s", (command) => {
     expect(decide("full-auto", "shell", { command }).decision).toBe("deny");

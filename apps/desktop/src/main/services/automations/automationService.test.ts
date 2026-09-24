@@ -2592,6 +2592,77 @@ describe("automationService integration", () => {
     }
   });
 
+  it("lets an action's legacy OpenCode Full Auto override the rule Cursor mode", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-cursor-action-"));
+    const createSession = vi.fn(async () => ({ id: "session-cursor-action" }));
+    const runSessionTurn = vi.fn(async () => ({ outputText: "ok" }));
+    const action = {
+      type: "agent-session" as const,
+      prompt: "Ship the action",
+      sessionTitle: "Action",
+      modelConfig: { modelId: "cursor/grok-4.7" },
+      permissionConfig: {
+        providers: { opencode: "full-auto" as const },
+      },
+    };
+    const rule = {
+      id: "cursor-action-override",
+      name: "Cursor action override",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      modelConfig: { modelId: "cursor/grok-4.7" },
+      permissionConfig: {
+        providers: { cursor: "plan" as const },
+      },
+      toolPalette: [] as const,
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: { kind: "built-in" as const, builtIn: { actions: [action] } },
+      actions: [action],
+    };
+    const projectConfigService = {
+      get: () => ({
+        trust: { sharedHash: "", localHash: "" },
+        effective: { automations: [rule], providerMode: "guest" },
+      }),
+    } as any;
+    const laneService = {
+      list: async () => [{ id: "lane-primary", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot }),
+    } as any;
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: { createSession, runSessionTurn } as any,
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "cursor-action-override" });
+      expect(run.status).toBe("succeeded");
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode: "full-auto",
+        cursorModeId: "full-auto",
+      }));
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("checks the budget cap against the resolved provider group", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
