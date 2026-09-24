@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
-  EXTERNAL_SESSION_PROVIDER_CAPABILITIES,
-  EXTERNAL_SESSION_PROVIDERS,
-} from "../../desktop/src/shared/types/externalSessions";
+  createSessionHomeResolver,
+  type SessionHomeLane,
+} from "../../desktop/src/main/services/externalSessions/sessionHome";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   refusesVoiceCategory,
@@ -3234,7 +3235,6 @@ const APPLE_AGENT_DRIVING_ACTIONS = new Set([
   "recordStart",
 ]);
 
-const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
 const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(EXTERNAL_SESSION_PROVIDERS);
 
 function isExternalSessionProviderName(value: string | null): value is ExternalSessionProvider {
@@ -3262,11 +3262,6 @@ function realishPath(filePath: string): string {
   } catch {
     return path.resolve(filePath);
   }
-}
-
-function isPathInsideOrEqual(parent: string, candidate: string): boolean {
-  const relative = path.relative(realishPath(parent), realishPath(candidate));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function authorizedExternalSessionsLaneId(
@@ -3303,20 +3298,37 @@ function isExternalSessionSummaryLike(value: unknown): value is ExternalSessionS
   return Boolean(isExternalSessionProviderName(provider) && asOptionalTrimmedString(value.id));
 }
 
-function filterExternalSessionSummariesForLane(result: unknown, laneCwd: string): unknown {
+/**
+ * Whether a session folder belongs to `laneId` itself. The primary lane's
+ * worktree is the project root and holds every other lane under
+ * `.ade/worktrees/`, so "inside the lane folder" is not enough: the deepest
+ * lane that contains the folder owns it, and a removed lane's folder belongs to
+ * nobody. A lane list that fails to load refuses everything.
+ */
+async function externalSessionLaneOwnership(
+  runtime: AdeRuntime,
+  laneId: string,
+): Promise<(cwd: unknown) => boolean> {
+  const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+  const resolveHome = createSessionHomeResolver(lanes as SessionHomeLane[]);
+  return (cwd) => {
+    const folder = asOptionalTrimmedString(cwd);
+    if (!folder) return false;
+    const home = resolveHome(folder);
+    return home?.kind === "lane" && home.laneId === laneId;
+  };
+}
+
+function filterExternalSessionSummariesForLane(result: unknown, ownedByLane: (cwd: unknown) => boolean): unknown {
   if (!Array.isArray(result)) return result;
-  return result.filter((session) => {
-    if (!isExternalSessionSummaryLike(session)) return false;
-    const cwd = asOptionalTrimmedString(session.cwd);
-    return Boolean(cwd && isPathInsideOrEqual(laneCwd, cwd));
-  });
+  return result.filter((session) => isExternalSessionSummaryLike(session) && ownedByLane(session.cwd));
 }
 
 function scopeExternalSessionsListArgs(
   runtime: AdeRuntime,
   session: SessionState,
   listArgs: Record<string, unknown>,
-): { scopedArgs: Record<string, unknown>; laneCwd: string } {
+): { scopedArgs: Record<string, unknown>; laneId: string } {
   const method = "run_ade_action:external-sessions.list";
   const { laneId, laneCwd } = resolveAuthorizedExternalSessionsLane(runtime, session, method, listArgs);
   return {
@@ -3326,15 +3338,8 @@ function scopeExternalSessionsListArgs(
       cwd: laneCwd,
       scope: "project",
     },
-    laneCwd,
+    laneId,
   };
-}
-
-function externalSessionImportUsesSourceRunCwd(provider: ExternalSessionProvider, mode: string): boolean {
-  const capabilities = EXTERNAL_SESSION_PROVIDER_CAPABILITIES[provider];
-  if (mode === "resume") return !capabilities.resumeInDifferentCwd;
-  if (mode === "fork") return capabilities.fork && !capabilities.forkIntoDifferentCwd;
-  return false;
 }
 
 async function findExternalSessionSummaryForAuthorization(
@@ -3347,12 +3352,14 @@ async function findExternalSessionSummaryForAuthorization(
 ): Promise<ExternalSessionSummary | null> {
   const externalSessionsService = runtime.externalSessionsService;
   if (!externalSessionsService) externalSessionsAccessDenied(method);
+  // The exact-id lookup, not the browse list: browse hides sessions ADE is
+  // tracking or that have no prompt, and stops at a page size.
   const sessions = await externalSessionsService.list({
     providers: [provider],
     laneId,
     cwd: laneCwd,
     scope: "project",
-    limit: EXTERNAL_SESSION_AUTH_FIND_LIMIT,
+    sessionId,
   });
   return sessions.find((session) => session.id === sessionId) ?? null;
 }
@@ -3367,29 +3374,23 @@ async function scopeExternalSessionsImportArgs(
   const scopedArgs: Record<string, unknown> = { ...importArgs, laneId };
   delete scopedArgs.enforceLaneScopeCwd;
   const provider = asOptionalTrimmedString(scopedArgs.provider);
-  const mode = asOptionalTrimmedString(scopedArgs.mode);
-  const target = asOptionalTrimmedString(scopedArgs.target);
   const sessionId = asOptionalTrimmedString(scopedArgs.sessionId);
   scopedArgs.enforceLaneScopeCwd = laneCwd;
-  const targetChatUsesSourceCwd = target === "chat" && (provider === "claude" || provider === "codex");
-  if (
-    (targetChatUsesSourceCwd || target === "cli")
-    && isExternalSessionProviderName(provider)
-    && mode
-    && sessionId
-    && (targetChatUsesSourceCwd || externalSessionImportUsesSourceRunCwd(provider, mode))
-  ) {
-    const summary = await findExternalSessionSummaryForAuthorization(
-      runtime,
-      method,
-      provider,
-      sessionId,
-      laneId,
-      laneCwd,
-    );
-    const runCwd = asOptionalTrimmedString(summary?.cwd);
-    if (!runCwd || !isPathInsideOrEqual(laneCwd, runCwd)) externalSessionsAccessDenied(method);
-  }
+  // Every import, not only one that runs in the source folder: a copy or a
+  // Codex continue moves the transcript into this lane, so the session must
+  // belong to this lane first. The service's folder check alone admits child
+  // lanes for an agent bound to the primary lane.
+  if (!isExternalSessionProviderName(provider) || !sessionId) externalSessionsAccessDenied(method);
+  const summary = await findExternalSessionSummaryForAuthorization(
+    runtime,
+    method,
+    provider,
+    sessionId,
+    laneId,
+    laneCwd,
+  );
+  const ownedByLane = await externalSessionLaneOwnership(runtime, laneId);
+  if (!ownedByLane(summary?.cwd)) externalSessionsAccessDenied(method);
   return scopedArgs;
 }
 
@@ -3411,7 +3412,10 @@ async function scopeExternalSessionsGetDetailArgs(
     laneId,
     laneCwd,
   );
-  if (!summary) externalSessionsAccessDenied(method);
+  // Project scope lists every lane's sessions; a bound agent may read only a
+  // session its own lane owns, the same rule list and import apply.
+  const ownedByLane = await externalSessionLaneOwnership(runtime, laneId);
+  if (!ownedByLane(summary?.cwd)) externalSessionsAccessDenied(method);
   const before = asOptionalTrimmedString(detailArgs.before);
   return {
     provider,
@@ -4587,7 +4591,10 @@ async function runTool(args: {
           service,
           scoped.scopedArgs,
         );
-        result = filterExternalSessionSummariesForLane(rawResult, scoped.laneCwd);
+        result = filterExternalSessionSummariesForLane(
+          rawResult,
+          await externalSessionLaneOwnership(runtime, scoped.laneId),
+        );
         scopedResultHandled = true;
       } else if (action === "import") {
         scopedObjectArgs = await scopeExternalSessionsImportArgs(runtime, session, externalArgs);
