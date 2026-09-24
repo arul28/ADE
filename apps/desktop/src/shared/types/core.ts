@@ -37,6 +37,13 @@ export type LocalRuntimeStatus = {
     state: SyncAccountDirectoryState;
     failingSinceMs: number | null;
     lastLegDurations: SyncAccountDirectoryLegDurations;
+    /**
+     * The last directory HTTP status and its bounded classified reason. The
+     * Machines banner decodes a 403 refusal from these, so "couldn't publish"
+     * is never shown when the directory actually answered.
+     */
+    lastHttpStatus?: number | null;
+    lastHttpReason?: string | null;
   } | null;
   lastWedge?: {
     lastCommand: string;

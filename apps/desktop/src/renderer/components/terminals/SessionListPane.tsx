@@ -30,6 +30,8 @@ import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneMachineMarker } from "./LaneMachineMarker";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
+import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
+import { useLaneMacDesktops } from "./useLaneMacDesktops";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
@@ -1098,6 +1100,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   const prsByLaneId = useLanePrsByLaneId();
   // Keyed to the lane list, so claims refresh when the lanes do.
   const laneAppleDevices = useLaneAppleDevices({ refreshKey: lanesProp });
+  // One status read plus display events for the whole list, not per row.
+  const laneMacDesktops = useLaneMacDesktops();
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
   const keybindings = useAppStore((state) => state.keybindings);
   const commandPaletteBinding = useMemo(
@@ -2078,6 +2082,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     machineMarker?: CrossMachineLaneMarker | null;
     /** The Apple device a headerless lane holds; its card shows the mark. */
     laneAppleDevice?: LaneAppleDevice | null;
+    /** The headerless lane holds a Mac Desktop display; its card shows the mark. */
+    laneMacDesktop?: boolean;
     /** Board cards only: the column states the status, so the card must not. */
     suppressStatusLabel?: boolean;
     nestedSubagent?: boolean;
@@ -2171,6 +2177,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         runtimePin={foreignRow?.binding}
         machineMarker={options?.machineMarker ?? null}
         laneAppleDevice={options?.laneAppleDevice ?? null}
+        laneMacDesktop={options?.laneMacDesktop ?? false}
         suppressMachineChip={options?.suppressMachineChip}
         suppressStatusLabel={options?.suppressStatusLabel}
         nestedSubagent={options?.nestedSubagent}
@@ -2261,6 +2268,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   laneActions: null,
                   machineMarker: null,
                   laneAppleDevice: null,
+                  laneMacDesktop: false,
                 })}
               </div>
             ))}
@@ -2344,6 +2352,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         : undefined,
       machineMarker: markersByLaneId.get(session.laneId) ?? null,
       laneAppleDevice: lane ? laneAppleDevices.get(lane.id) ?? null : null,
+      laneMacDesktop: lane ? laneMacDesktops.has(lane.id) : false,
       laneActions: lane
         ? {
             laneId: lane.id,
@@ -2857,6 +2866,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     // states the tier once, for everything under it.
     const inQuietShelf = laneShelfFor(lane.id) !== null && !sharedBranchInboxKeepIds.has(lane.id);
     const laneAppleDevice = laneAppleDevices.get(lane.id) ?? null;
+    const laneMacDesktop = laneMacDesktops.has(lane.id);
     return (
       <StickyGroupHeader
         key={lane.id}
@@ -2872,7 +2882,12 @@ export const SessionListPane = React.memo(function SessionListPane({
         accentColor={laneAccent}
         prBadge={prBadge}
         machineMarker={machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
-        appleDevice={laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
+        appleDevice={laneAppleDevice || laneMacDesktop ? (
+          <>
+            {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
+            {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+          </>
+        ) : null}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
         pinned={lanePinned}
         dragProps={laneDragProps(lane.id)}
@@ -2920,6 +2935,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               })}`),
               machineMarker,
               laneAppleDevice,
+              laneMacDesktop,
               laneActions: {
                 laneId: lane.id,
                 laneName: lane.name,

@@ -648,6 +648,30 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run ios_simulator.getScreenSnapshot --input-json '{}' --json",
     },
   },
+  mac_desktop: {
+    getStatus: {
+      description:
+        "Read the lane's Mac Desktop: whether this host can run one, the display, its parked windows, the input lease, and every lane holding a display. Stream fields are redacted.",
+      input: "object { laneId?: string }",
+      example: "ade actions run mac_desktop.getStatus --input-json '{\"laneId\":\"lane-1\"}' --json",
+    },
+    listWindows: {
+      description: "List the windows parked on a lane's Mac Desktop display (omit laneId for every window this host can see).",
+      input: "object { laneId?: string }",
+      example: "ade actions run mac_desktop.listWindows --input-json '{\"laneId\":\"lane-1\"}' --json",
+    },
+    observe: {
+      description:
+        "Capture the lane's desktop as a screenshot plus a numbered accessibility element list. Act on the handles it returns; they are valid only for this observation.",
+      input: "object { laneId: string, windowId?: number, map?: boolean, limit?: number }",
+      example: "ade actions run mac_desktop.observe --input-json '{\"laneId\":\"lane-1\",\"map\":true}' --json",
+    },
+    getStreamStatus: {
+      description: "Read the lane's live-view stream shape: running, frame rate, and client count. The URL and token are always null here.",
+      input: "object { laneId: string }",
+      example: "ade actions run mac_desktop.getStreamStatus --input-json '{\"laneId\":\"lane-1\"}' --json",
+    },
+  },
   app_control: {
     getStatus: {
       description: "Read the desktop app-control session status: what is attached and which chat owns it.",

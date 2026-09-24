@@ -896,6 +896,23 @@ export function sanitizeParentEnvForDevRuntime(parentEnv = process.env) {
   return inherited;
 }
 
+/**
+ * How long a detached dev brain may sit with no client before it exits.
+ *
+ * This brain is spawned `detached` on purpose, so it survives the Electron
+ * restarts a dev loop is made of. What it must NOT survive is the dev app
+ * going away for good: on 2026-09-22 one outlived its window by five hours,
+ * still attached to the shared `~/.ade` database, with no owner and nothing
+ * anywhere saying it was there. `--no-sync` does not help — that guards the
+ * sync lease, not a second writer on the database.
+ *
+ * Twenty minutes is far longer than any restart and far shorter than a night.
+ * The brain already knows how to do this: `ADE_RUNTIME_IDLE_EXIT_MS` drives
+ * `monitorRuntimeIdleExit`, which watches live connections and is what a
+ * throwaway ephemeral brain uses. Only the launcher path never set it.
+ */
+const DEV_RUNTIME_IDLE_EXIT_MS = 20 * 60 * 1000;
+
 export function detachedDevRuntimeEnv(
   socketPath,
   projectRoot,
@@ -907,5 +924,10 @@ export function detachedDevRuntimeEnv(
     // Computed from the sanitized env: the role must not be read back out of
     // the agent shell we just stripped.
     ...devRuntimeEnv(socketPath, projectRoot, inherited),
+    // An explicit value wins: a developer debugging a quiet brain can raise or
+    // disable the budget without editing this file.
+    ADE_RUNTIME_IDLE_EXIT_MS:
+      inherited.ADE_RUNTIME_IDLE_EXIT_MS?.trim()
+      || String(DEV_RUNTIME_IDLE_EXIT_MS),
   };
 }

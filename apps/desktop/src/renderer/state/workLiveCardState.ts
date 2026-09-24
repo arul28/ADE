@@ -1,37 +1,32 @@
 /**
  * The persisted shape of the Work tab's floating live-preview card.
  *
- * Deliberately a `state/` module with no imports: both the store (which
- * normalizes this on load and on every write) and the card's own pure logic in
- * `components/work/workLiveCard.ts` need these two normalizers, and the store
- * must not depend on a component module. Keeping one copy here is what stops
- * the two from drifting — they already had, on which tool ids count as
- * previewable.
+ * Deliberately a `state/` module with no imports beyond the card's pure logic:
+ * both the store (which normalizes the position and width on load and on every
+ * write) and the card's own pure logic in `components/work/workLiveCard.ts` need
+ * these normalizers, and the store must not depend on a component module.
+ * Keeping one copy here is what stops the two from drifting — they already had,
+ * on which tool ids count as previewable.
  */
 
 /** The tools that have something to *look at*. Git and Files do not. */
-export type WorkLiveScreenTool = "browser" | "app-control" | "ios";
+export type WorkLiveScreenTool = "browser" | "app-control" | "ios" | "mac-desktop";
 
-export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = ["browser", "app-control", "ios"];
+export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = [
+  "browser",
+  "app-control",
+  "ios",
+  // The lane's own macOS screen. It qualifies for the same reason the others do
+  // — there is a picture of it — and it is the cheapest of the four to show:
+  // the frame is already in `macDesktopFrameStore`, kept by whichever surface
+  // last held the decoder, so the card adds no capture of its own.
+  "mac-desktop",
+];
 
 export function isWorkLiveScreenTool(tool: string | null | undefined): tool is WorkLiveScreenTool {
-  return tool === "browser" || tool === "app-control" || tool === "ios";
-}
-
-/**
- * Simulator cards are keyed by device, not by the `ios` tool id: two lanes
- * with devices are two cards, and silencing one must not silence the other.
- * `ios:<udid>` is that key. The bare `ios` stamp is still accepted so a
- * dismissal written before device keying still hides the simulator.
- */
-export function workLiveIosDismissalKey(udid: string): string {
-  return `ios:${udid.trim()}`;
-}
-
-export function isWorkLiveDismissalKey(key: string | null | undefined): boolean {
-  if (!key) return false;
-  if (isWorkLiveScreenTool(key)) return true;
-  return key.startsWith("ios:") && key.length > "ios:".length;
+  // Reads the list above rather than repeating it: the two had already drifted
+  // once, which is the whole reason this module exists.
+  return WORK_LIVE_SCREEN_TOOLS.includes(tool as WorkLiveScreenTool);
 }
 
 /**
@@ -41,18 +36,7 @@ export function isWorkLiveDismissalKey(key: string | null | undefined): boolean 
  */
 export type WorkLiveCardPosition = { xPct: number; yPct: number };
 
-/**
- * The activity stamp each card was dismissed at, keyed by tool id or by
- * `ios:<udid>` for a simulator device.
- *
- * Per CARD rather than one flag because "I don't need to watch the browser
- * right now" says nothing about the simulator that boots ten seconds later.
- * The value is the activity clock the card was showing when you closed it, so
- * the rule "come back on NEW activity" is a plain `>` and cannot be defeated by
- * the bookkeeping event that closing the card itself provokes.
- */
-export type WorkLiveCardDismissals = Record<string, number>;
-
+/** Reads a stored fractional position, clamping it into 0..1 and rejecting junk. */
 export function normalizeWorkLiveCardPosition(value: unknown): WorkLiveCardPosition | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<WorkLiveCardPosition>;
@@ -65,35 +49,55 @@ export function normalizeWorkLiveCardPosition(value: unknown): WorkLiveCardPosit
   };
 }
 
-/** Drops unknown keys and non-positive stamps, so a hand-edited blob cannot hide the card forever. */
-export function normalizeWorkLiveCardDismissals(value: unknown): WorkLiveCardDismissals | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const next: WorkLiveCardDismissals = {};
-  for (const [key, stamp] of Object.entries(value as Record<string, unknown>)) {
-    if (!isWorkLiveDismissalKey(key)) continue;
-    if (typeof stamp !== "number" || !Number.isFinite(stamp) || stamp <= 0) continue;
-    next[key] = stamp;
-  }
-  return Object.keys(next).length > 0 ? next : null;
-}
+/**
+ * The width the user chose for the card, in CSS pixels.
+ *
+ * Only the width is chosen: the height follows the source picture's aspect
+ * ratio (see `workLiveCardSize`), because a fixed box is what cropped tall
+ * captures in the first place. `null` means "never resized" and falls back to
+ * the default.
+ */
+export const WORK_LIVE_CARD_DEFAULT_WIDTH = 288;
+export const WORK_LIVE_CARD_MIN_WIDTH = 200;
+/** A card wider than this stops being a corner preview and becomes a pane. */
+export const WORK_LIVE_CARD_MAX_WIDTH = 560;
 
-/* ── Per-chat, per-tool "off" markers ────────────────────────────────────────
- * Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge,
- * take theirs. Additive here: this lane's card still keys its own dismissals by
- * activity stamp (above), and the A4 preview toggle is the per-chat marker
- * below. The two coexist until the lanes meet.
- * ────────────────────────────────────────────────────────────────────────── */
+export function normalizeWorkLiveCardWidth(value: unknown): number | null {
+  // `null` / `undefined` / `""` must stay "never resized" — `Number(null)` is 0,
+  // which would otherwise clamp to the minimum width and shrink every card.
+  if (value == null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(WORK_LIVE_CARD_MIN_WIDTH, Math.min(WORK_LIVE_CARD_MAX_WIDTH, Math.round(n)));
+}
 
 /**
  * Per-tool "closed" markers for one chat.
  *
  * Valued with the SESSION KEY the tool was showing when the user pressed ×
- * (browser active tab id, App Control session id, simulator session id). A tool
- * stays closed for that chat while its key is unchanged; a NEW session key may
- * show the card again. This is per CHAT rather than per lane: the card belongs
- * to the conversation you are reading, not the checkout.
+ * (browser active tab id, App Control session id, simulator session id, the
+ * lane's display id for mac-desktop). A tool stays closed for that chat while
+ * its key is unchanged; a NEW session key may show the card again. This is per
+ * CHAT rather than per lane: the card belongs to the conversation you are
+ * reading, not the checkout.
  */
 export type WorkLiveCardClosedByTool = Partial<Record<WorkLiveScreenTool, string>>;
+
+/** Tools the user explicitly floated back on for one chat. */
+export type WorkLiveCardFloatingTools = WorkLiveScreenTool[];
+
+/**
+ * Per-tool "seen" markers for one chat: the session key each screen tool was
+ * showing the last time this chat's tools pane had that tool open.
+ *
+ * A session nobody owns (a tab opened by hand, an attached app) belongs to no
+ * chat, so it used to float over EVERY chat — the card followed you from
+ * conversation to conversation, and × only ever silenced it in the one you
+ * pressed it in. The rule is now: an unowned session may float only in a chat
+ * whose pane has shown it. Same shape as the closed map on purpose, so both
+ * normalize the same way.
+ */
+export type WorkLiveCardSeenByTool = Partial<Record<WorkLiveScreenTool, string>>;
 
 /**
  * Reads a stored closed map. Unknown tool ids and empty keys are dropped so a
@@ -108,6 +112,27 @@ export function normalizeWorkLiveCardClosedByTool(value: unknown): WorkLiveCardC
     next[key] = sessionKey.trim();
   }
   return next;
+}
+
+/** Reads a stored floating list, keeping only screen tools and dropping dupes. */
+export function normalizeWorkLiveCardFloatingTools(value: unknown): WorkLiveCardFloatingTools {
+  if (!Array.isArray(value)) return [];
+  const next: WorkLiveCardFloatingTools = [];
+  for (const entry of value) {
+    if (!isWorkLiveScreenTool(entry) || next.includes(entry)) continue;
+    next.push(entry);
+  }
+  return next;
+}
+
+/** True when this chat's pane has shown `tool` at exactly this session key. */
+export function isWorkLiveCardSeen(
+  seen: WorkLiveCardSeenByTool | null | undefined,
+  tool: WorkLiveScreenTool,
+  sessionKey: string | null,
+): boolean {
+  if (sessionKey == null) return false;
+  return seen?.[tool] === sessionKey;
 }
 
 /** True when `tool` is closed for this chat at the given session key. */
@@ -134,10 +159,7 @@ export function isWorkLiveCardClosed(
  * it, so a new session no longer reopens a card the user dismissed.
  */
 export function isWorkLivePreviewDisabled(
-  // Both marker maps answer this question the same way — the per-chat map is
-  // keyed by session string, the lane card's by activity stamp — and presence
-  // is the whole test, so one reader serves both rather than two that drift.
-  closed: WorkLiveCardDismissals | WorkLiveCardClosedByTool | null | undefined,
+  closed: WorkLiveCardClosedByTool | null | undefined,
   tool: WorkLiveScreenTool,
 ): boolean {
   return closed?.[tool] != null;

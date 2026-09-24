@@ -1,5 +1,6 @@
 import type { AgentChatTurnSettledEvent, ChatHandoffReplayOutcome } from "../chat/agentChatService";
 import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
+import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
@@ -107,6 +108,33 @@ export function captureChatAutoResumeAnalytics(args: {
     event: "ade_feature_used",
     surface: "api",
     properties: { feature: "work", ...args.properties },
+  });
+}
+
+/** One accepted Mac Desktop fact per outcome per installation per UTC day. */
+export const MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS = 24 * 60 * 60_000;
+
+/**
+ * One coarse fact for the lane's Mac Desktop: a display was created, an agent
+ * drove it, or a recording was filed as proof.
+ *
+ * The service hands over the closed outcome and nothing else, so this function
+ * cannot widen the payload. The dedupe key is the outcome alone — no lane, chat,
+ * app, path, or window — and the service salts and hashes it locally. Worst
+ * case is three accepted events per installation per UTC day, inside the
+ * existing `ade_feature_used` limits. No ceiling was raised.
+ */
+export function captureMacDesktopAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  properties: MacDesktopAnalyticsProperties;
+}): void {
+  const outcome = args.properties.outcome;
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    dedupeKey: `work_mac_desktop:${outcome}`,
+    minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
+    properties: { feature: "work", action: "mac_desktop", outcome },
   });
 }
 

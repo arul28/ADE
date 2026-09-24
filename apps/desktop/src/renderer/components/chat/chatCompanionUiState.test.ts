@@ -4,6 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   chatCompanionUiStorageKey,
+  clearChatCompanionUiState,
+  closeWorkLiveCardForChat,
+  floatWorkLiveCardForChat,
+  isWorkLivePreviewEnabled,
+  markWorkLiveCardSeenForChat,
+  setWorkLivePreviewEnabledForChat,
+  unfloatWorkLiveCardForChat,
+  isWorkLiveCardClosedForChat,
   patchChatCompanionUiState,
   pruneChatCompanionUiState,
   readChatCompanionUiState,
@@ -224,5 +232,136 @@ describe("pruneChatCompanionUiState", () => {
     const restored = readChatCompanionUiState("chat-1");
     expect(restored.chatActionsOpen).toBe(true);
     expect(restored.iosSimulatorOpen).toBe(false);
+  });
+});
+
+describe("workLiveCard seen markers", () => {
+  it("records the session a chat's pane showed, per chat and per tool, without churn", () => {
+    const first = markWorkLiveCardSeenForChat("chat-1", "browser", "tab-1");
+    expect(first.workLiveCardSeenByTool).toEqual({ browser: "tab-1" });
+    // Same marker again returns the same record: the card calls this per render.
+    expect(markWorkLiveCardSeenForChat("chat-1", "browser", "tab-1")).toBe(first);
+    markWorkLiveCardSeenForChat("chat-1", "ios", "sim-1");
+    resetChatCompanionUiStateCacheForTests();
+    expect(readChatCompanionUiState("chat-1").workLiveCardSeenByTool).toEqual({ browser: "tab-1", ios: "sim-1" });
+    // Another chat has seen nothing: the hand-opened tab does not follow you there.
+    expect(readChatCompanionUiState("chat-2").workLiveCardSeenByTool).toEqual({});
+  });
+
+  it("unfloat drops only the named tool, and is a no-op when it was not floated", () => {
+    floatWorkLiveCardForChat("chat-1", "browser");
+    floatWorkLiveCardForChat("chat-1", "ios");
+    expect(unfloatWorkLiveCardForChat("chat-1", "browser").workLiveCardFloating).toEqual(["ios"]);
+    const current = readChatCompanionUiState("chat-1");
+    expect(unfloatWorkLiveCardForChat("chat-1", "browser")).toBe(current);
+  });
+});
+
+describe("workLiveCard closed and floating flags", () => {
+  it("round-trips a closed marker through storage, per chat", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    closeWorkLiveCardForChat("chat-2", "browser", "tab-9");
+    resetChatCompanionUiStateCacheForTests();
+
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool).toEqual({ browser: "tab-1" });
+    expect(readChatCompanionUiState("chat-2").workLiveCardClosedByTool).toEqual({ browser: "tab-9" });
+    // The marker is per tool, and does not silence a different one.
+    expect(isWorkLiveCardClosedForChat("chat-1", "browser", "tab-1")).toBe(true);
+    expect(isWorkLiveCardClosedForChat("chat-1", "browser", "tab-2")).toBe(false);
+    expect(isWorkLiveCardClosedForChat("chat-1", "ios", "sim-1")).toBe(false);
+  });
+
+  it("drops unknown tool ids and empty keys on read", () => {
+    window.localStorage.setItem(
+      chatCompanionUiStorageKey("chat-1"),
+      JSON.stringify({ workLiveCardClosedByTool: { browser: "tab-1", git: "nope", ios: "" } }),
+    );
+    resetChatCompanionUiStateCacheForTests();
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool).toEqual({ browser: "tab-1" });
+  });
+
+  it("float clears the closed marker and opts the tool in", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    expect(isWorkLiveCardClosedForChat("chat-1", "browser", "tab-1")).toBe(true);
+
+    const next = floatWorkLiveCardForChat("chat-1", "browser");
+    expect(next?.workLiveCardClosedByTool.browser).toBeUndefined();
+    expect(next?.workLiveCardFloating).toEqual(["browser"]);
+    // Idempotent: floating twice does not duplicate.
+    expect(floatWorkLiveCardForChat("chat-1", "browser")?.workLiveCardFloating).toEqual(["browser"]);
+    // …and floating a different tool leaves the first alone.
+    expect(floatWorkLiveCardForChat("chat-1", "ios")?.workLiveCardFloating).toEqual(["browser", "ios"]);
+  });
+
+  it("closing a tool removes it from the floated list", () => {
+    floatWorkLiveCardForChat("chat-1", "browser");
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    const state = readChatCompanionUiState("chat-1");
+    expect(state.workLiveCardFloating).toEqual([]);
+    expect(state.workLiveCardClosedByTool.browser).toBe("tab-1");
+  });
+
+  it("keeps the closed flags out of the pane drawer fields", () => {
+    // The two concerns share one record; writing one must not clobber the other.
+    patchChatCompanionUiState("chat-1", { terminalDrawerOpen: true });
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    resetChatCompanionUiStateCacheForTests();
+    const state = readChatCompanionUiState("chat-1");
+    expect(state.terminalDrawerOpen).toBe(true);
+    expect(state.workLiveCardClosedByTool.browser).toBe("tab-1");
+  });
+
+  it("clears a deleted chat's record instead of leaving it to outlive the chat (L3)", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    floatWorkLiveCardForChat("chat-1", "mac-desktop");
+    expect(companionKeysInStorage()).toContain("chat-1");
+
+    clearChatCompanionUiState("chat-1");
+
+    expect(companionKeysInStorage()).not.toContain("chat-1");
+    expect(readChatCompanionUiState("chat-1")).toEqual(DEFAULT_CHAT_COMPANION_UI_STATE);
+    // …and the neighbouring chat is untouched.
+    closeWorkLiveCardForChat("chat-2", "browser", "tab-2");
+    clearChatCompanionUiState("chat-1");
+    expect(readChatCompanionUiState("chat-2").workLiveCardClosedByTool).toEqual({ browser: "tab-2" });
+  });
+});
+
+describe("workLiveCard preview toggle", () => {
+  it("preview is enabled by default", () => {
+    const state = readChatCompanionUiState("chat-1");
+    expect(isWorkLivePreviewEnabled(state, "browser")).toBe(true);
+    expect(isWorkLivePreviewEnabled(state, "ios")).toBe(true);
+    expect(isWorkLivePreviewEnabled(state, "mac-desktop")).toBe(true);
+    expect(isWorkLivePreviewEnabled(state, "app-control")).toBe(true);
+  });
+
+  it("× disables the preview for that tool and chat only", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+
+    const chatOne = readChatCompanionUiState("chat-1");
+    expect(isWorkLivePreviewEnabled(chatOne, "browser")).toBe(false);
+    // Another tool in the same chat is untouched…
+    expect(isWorkLivePreviewEnabled(chatOne, "ios")).toBe(true);
+    // …and another chat never saw the close.
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-2"), "browser")).toBe(true);
+  });
+
+  it("re-enabling clears the closed marker", () => {
+    closeWorkLiveCardForChat("chat-1", "browser", "tab-1");
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "browser")).toBe(false);
+
+    const next = setWorkLivePreviewEnabledForChat("chat-1", "browser", true);
+    expect(next?.workLiveCardClosedByTool.browser).toBeUndefined();
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "browser")).toBe(true);
+    // The opt-in float is remembered, so the card comes back beside the pane.
+    // Enable never floats: floating suspends the "never the active pane" rule
+    // and drew the preview on top of the open pane the moment it went on.
+    expect(next?.workLiveCardFloating).not.toContain("browser");
+
+    // Turning it off again writes the marker the reader treats as disabled.
+    const off = setWorkLivePreviewEnabledForChat("chat-1", "browser", false);
+    expect(isWorkLivePreviewEnabled(readChatCompanionUiState("chat-1"), "browser")).toBe(false);
+    expect(off?.workLiveCardFloating).toEqual([]);
   });
 });

@@ -225,7 +225,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   or may have spawned before the user asked for a restart, so returning its
   promise would report success without restarting anything. A forced call queues
   behind whatever is in flight, runs its own forcing install, and becomes the
-  promise later callers coalesce onto.
+  promise later callers coalesce onto. The compatibility repair path forces it:
+  when the endpoint answered with the wrong identity (`runtime_older`,
+  `build_mismatch`, `role_mismatch`) the brain is running and responsive, so an
+  idempotent install would report "already installed and running" and leave it —
+  a fresh Alpha/Beta app then staleness-locks onto a brain left by an earlier
+  build. Repairing a *missing* endpoint stays a plain install (nothing to
+  replace), and isolated recovery also forces, since it only runs after the
+  primary endpoint failed to probe compatible.
 - `apps/desktop/src/main/services/runtime/lastFailureStore.ts` — bounded typed
   project/machine failure reports used when the background service exits before
   desktop IPC can obtain a normal runtime error.

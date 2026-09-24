@@ -18,6 +18,7 @@ import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
+import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
 import {
   getAppleMiniPlayerLaneDevice,
@@ -537,6 +538,49 @@ function WorkAppControlTool({
   );
 }
 
+/**
+ * The lane's private macOS screen.
+ *
+ * Read-only on the hosted web client in the one sense that matters: no
+ * takeover and no real input, because there is no way to hold the input lease
+ * over a sync socket. It still plays the live picture when the host advertises
+ * `macDesktopStream`, and it can start or stop the lane's display. Everywhere
+ * else — including a Windows or Linux desktop watching a Mac-hosted lane —
+ * this is the full panel: the display lives on the runtime host, so the
+ * viewer's own platform never enters into it.
+ */
+function WorkMacDesktopTool({
+  laneId,
+  activeLane,
+  toolContext,
+  panelSessionId,
+  runtimePin,
+  warningReason,
+}: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade mac-desktop show` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("mac-desktop", mountScope, laneId) : null);
+  if (isReadOnlyWorkTool("mac-desktop", toolContext)) {
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />
+      </div>
+    );
+  }
+  if (!laneId) return <NoLaneNotice />;
+  return (
+    <NativePanelFrame warningReason={warningReason} padded frameRef={mountRef}>
+      <ChatMacDesktopPanel
+        key={`work-mac-desktop:${mountScope}`}
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+      />
+    </NativePanelFrame>
+  );
+}
+
 function WorkPrTool({
   laneId,
   activeLane,
@@ -566,5 +610,6 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   files: WorkFilesTool,
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
+  "mac-desktop": WorkMacDesktopTool,
   pr: WorkPrTool,
 };

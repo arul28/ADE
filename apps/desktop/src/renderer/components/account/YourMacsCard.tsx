@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight,
@@ -33,6 +33,7 @@ import {
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   COLORS,
+  MONO_FONT,
   RADII,
   SANS_FONT,
   cardStyle,
@@ -53,8 +54,10 @@ import {
 import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
 import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
+import { readReconnectFlow, subscribeReconnectFlow } from "../../lib/reconnectThisComputer";
 import {
   formatMachineEndpoint,
+  formatThisComputerVersion,
   relativeLastSeenPhrase,
 } from "../remoteTargets/remoteMachineModel";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -337,6 +340,43 @@ function displayRowFromWebMachine(machine: WebMachineEntry): ComputerDisplayRow 
   };
 }
 
+/**
+ * The sign-in link, shown only when ADE could not open the browser for the
+ * reconnect's "Confirm it's you" step. The prompt copy tells the person to
+ * confirm in their browser; with no browser open, this is the page to go to.
+ */
+function useSignInLinkFallbackUrl(): string | null {
+  const { signInPrompt } = useSyncExternalStore(subscribeReconnectFlow, readReconnectFlow);
+  if (!signInPrompt || signInPrompt.browserOpened !== false) return null;
+  return signInPrompt.verificationUriComplete ?? signInPrompt.verificationUri ?? null;
+}
+
+function SignInLinkFallback({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => setCopied(false), [url]);
+  const write = window.ade?.app?.writeClipboardText;
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary, wordBreak: "break-all" }}>
+        {url}
+      </div>
+      {write ? (
+        <button
+          type="button"
+          onClick={() => {
+            void write(url)
+              .then(() => setCopied(true))
+              .catch(() => {});
+          }}
+          style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px", marginTop: 6 })}
+        >
+          {copied ? "Copied" : "Copy link"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function YourMacsCard() {
   const webMode = isWebClientMode();
   const workspace = useOptionalWebWorkspace();
@@ -361,6 +401,13 @@ export function YourMacsCard() {
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  // This computer's own ADE version facts, from `app.getInfo` — the same source
+  // the Connections pane reads, so the two surfaces cannot name it differently.
+  const [localAppInfo, setLocalAppInfo] = useState<{
+    packageVersion: string | null;
+    channel: string | null;
+    brainVersion: string | null;
+  } | null>(null);
   const [expandedMachineKey, setExpandedMachineKey] = useState<string | null>(null);
   const [inventoryByMachine, setInventoryByMachine] = useState<Record<string, MachineInventoryViewState>>({});
   // Returns what it loaded as well as storing it: the reconnect flow reports
@@ -410,6 +457,32 @@ export function YourMacsCard() {
       .catch(() => {});
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // This computer's ADE version, refreshed on focus: an update or a brain
+  // restart can change it while the page is open.
+  useEffect(() => {
+    let cancelled = false;
+    const read = () => {
+      const infoPromise = window.ade?.app?.getInfo?.();
+      if (!infoPromise) return;
+      void infoPromise
+        .then((info) => {
+          if (cancelled || !info) return;
+          setLocalAppInfo({
+            packageVersion: info.appVersion ?? null,
+            channel: info.packageChannel ?? null,
+            brainVersion: info.localRuntime?.versionSkew?.runtimeVersion ?? null,
+          });
+        })
+        .catch(() => {});
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", read);
     };
   }, []);
 
@@ -583,6 +656,16 @@ export function YourMacsCard() {
   // The card keeps its own idle label: it offers the same button whether the
   // directory refused this computer or only stopped listing it.
   const reconnectAction = reconnectFlow.view({ label: "Reconnect this computer", detail: missingCopy.body });
+  const signInLinkUrl = useSignInLinkFallbackUrl();
+  const thisComputerVersion = useMemo(
+    () =>
+      formatThisComputerVersion({
+        brainVersion: localAppInfo?.brainVersion,
+        packageVersion: localAppInfo?.packageVersion,
+        channel: localAppInfo?.channel,
+      }),
+    [localAppInfo],
+  );
 
   // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
   // stack behind, the cards that follow this one (same approach as `ui/AnchoredMenu`).
@@ -751,6 +834,18 @@ export function YourMacsCard() {
               Your computers
             </div>
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{summary}</div>
+            {thisComputerVersion ? (
+              <div
+                style={{
+                  marginTop: 1,
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  color: COLORS.textMuted,
+                }}
+              >
+                This machine: {thisComputerVersion.text}
+              </div>
+            ) : null}
           </div>
         </div>
         {!webMode ? (
@@ -784,7 +879,12 @@ export function YourMacsCard() {
             id: "this-computer-reconnect",
             tone: "warning",
             title: missingCopy.title,
-            detail: reconnectAction.detail,
+            detail: signInLinkUrl ? (
+              <>
+                {reconnectAction.detail}
+                <SignInLinkFallback url={signInLinkUrl} />
+              </>
+            ) : reconnectAction.detail,
             busy: reconnectAction.busy,
             actions: [{
               label: reconnectAction.label,
@@ -1133,6 +1233,7 @@ export function YourMacsCard() {
             id: "this-computer-reconnect-running",
             tone: "info",
             title: reconnectAction.detail,
+            detail: signInLinkUrl ? <SignInLinkFallback url={signInLinkUrl} /> : undefined,
             busy: true,
             actions: [{ label: reconnectAction.label, onClick: reconnectAction.onClick, variant: "secondary" }],
           }}

@@ -11,19 +11,12 @@ import {
   WifiHigh,
 } from "@phosphor-icons/react";
 import { extractError } from "../../lib/format";
-import { useBrainRepair } from "../../hooks/useBrainRepair";
-import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
-import { useThisComputerRefusal } from "../../hooks/useThisComputerRefusal";
-import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
-import { BrainRepairButton } from "../settings/BrainRepairButton";
-import { ReportIssueButton } from "../app/ReportIssueButton";
 import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
   outlineButton,
 } from "../lanes/laneDesignTokens";
-import { isBrainAccountSessionFailure } from "../../../shared/types";
 import type {
   AdeAccountMachine,
   AdeAccountMachinesResult,
@@ -53,7 +46,6 @@ import {
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   newestKnownAdeVersion,
-  type LocalPublishHealth,
   type MachineSection,
 } from "./remoteMachineModel";
 import {
@@ -171,6 +163,11 @@ const SECTION_LABELS: Record<MachineSection, string> = {
   unavailable: "Unavailable",
 };
 
+/** The advice table's sentences are lowercase; a card opens with a capital. */
+function capitalizeSentence(value: string): string {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
 export function RemoteTargetList({
   onConnected,
   onDisconnectRequested,
@@ -228,8 +225,6 @@ export function RemoteTargetList({
   const [localMachineName, setLocalMachineName] = useState("");
   const [localMachineIdentity, setLocalMachineIdentity] =
     useState<{ machineKey: string; deviceId: string } | null>(null);
-  const [localPublishHealth, setLocalPublishHealth] =
-    useState<LocalPublishHealth | null>(null);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
   const [accountConnectingMachineKey, setAccountConnectingMachineKey] =
     useState<string | null>(null);
@@ -492,68 +487,6 @@ export function RemoteTargetList({
       cancelled = true;
     };
   }, []);
-
-  // This computer's route-publish health, refreshed periodically so a persisting
-  // failure's "for N min" stays truthful while the panel is open. getInfo is a
-  // cheap one-shot; there is no push event for the publisher's health.
-  const publishHealthMountedRef = useRef(true);
-  // The interval and the post-repair refresh can overlap; without a generation
-  // an older in-flight read can land last and restore the failing banner the
-  // newer read already cleared.
-  const publishHealthRequestRef = useRef(0);
-  const refreshPublishHealth = useCallback(() => {
-    const infoPromise = window.ade.app?.getInfo?.();
-    if (!infoPromise) return;
-    const requestId = ++publishHealthRequestRef.current;
-    void infoPromise
-      .then((info) => {
-        if (!publishHealthMountedRef.current) return;
-        if (requestId !== publishHealthRequestRef.current) return;
-        const health = info.localRuntime?.publishHealth ?? null;
-        setLocalPublishHealth(
-          health
-            ? { state: health.state, failingSinceMs: health.failingSinceMs }
-            : null,
-        );
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    publishHealthMountedRef.current = true;
-    refreshPublishHealth();
-    const timer = window.setInterval(refreshPublishHealth, 30_000);
-    return () => {
-      publishHealthMountedRef.current = false;
-      window.clearInterval(timer);
-    };
-  }, [refreshPublishHealth]);
-
-  const publishHealthDisplay = useMemo(
-    () => describePublishHealth(localPublishHealth),
-    // Re-derive on each fetch; the 30s refresh advances the "for N min" count.
-    [localPublishHealth],
-  );
-  // Same brain-side unreadable-session failure the Connections card repairs;
-  // both surfaces read the one publisher health record and share the handler.
-  const repair = useBrainRepair(refreshPublishHealth);
-  const showRepair = publishHealthDisplay.kind === "failing"
-    && isBrainAccountSessionFailure(localPublishHealth?.state)
-    && repair.available;
-  // A directory refusal is the one publish failure with a named cause and a
-  // button that fixes it. Without this the line said "couldn't publish it"
-  // and offered only a report, which is how a removal went unnoticed.
-  const { refusal, refresh: refreshRefusal } = useThisComputerRefusal();
-  const reconnect = useReconnectThisComputer({
-    onSettled: () => {
-      refreshRefusal();
-      refreshPublishHealth();
-    },
-  });
-  const refusalCopy = refusal && reconnect.available ? describeThisComputerRefusal(refusal) : null;
-  const reconnectAction = refusalCopy
-    ? reconnect.view({ label: refusalCopy.action, detail: refusalCopy.title })
-    : null;
 
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
@@ -992,8 +925,6 @@ export function RemoteTargetList({
     && accountMachinesState !== "ok"
     && accountMachinesState !== "signed_out",
   );
-  const showPublishFailure = publishHealthDisplay.kind === "failing"
-    && (accountSignedIn || isBrainAccountSessionFailure(localPublishHealth?.state));
 
   const nearbyPairingByAccountMachineKey = useMemo(() => {
     const matches = new Map<string, RemoteRuntimeDiscoveredMachine>();
@@ -1306,51 +1237,6 @@ export function RemoteTargetList({
               <DesktopTower size={18} weight="regular" color={COLORS.textSecondary} />
               Machines
             </div>
-            {showPublishFailure && publishHealthDisplay.kind === "failing" ? (
-              <div
-                style={{
-                  marginTop: 3,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 5,
-                  flexWrap: "wrap",
-                  color: COLORS.warning,
-                  fontFamily: SANS_FONT,
-                  fontSize: 11,
-                  lineHeight: 1.4,
-                }}
-              >
-                <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
-                {reconnectAction ? (
-                  <>
-                    <span>{reconnectAction.detail}</span>
-                    <button
-                      type="button"
-                      disabled={reconnectAction.disabled}
-                      onClick={reconnectAction.onClick}
-                      style={outlineButton({ height: 22, padding: "0 8px", fontSize: 11 })}
-                    >
-                      {reconnectAction.label}
-                    </button>
-                  </>
-                ) : (
-                  <span>
-                    Other machines may not find this one — ADE couldn't publish it for{" "}
-                    {publishHealthDisplay.minutes} min
-                  </span>
-                )}
-                {showRepair ? <BrainRepairButton repair={repair} height={22} /> : null}
-                <ReportIssueButton
-                  variant="ghost"
-                  context={{
-                    surface: "connections",
-                    headline: "Other machines may not find this one",
-                    code: "publish_failing",
-                    technicalDetail: `publish health: ${publishHealthDisplay.kind}`,
-                  }}
-                />
-              </div>
-            ) : null}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
             <button

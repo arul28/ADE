@@ -77,6 +77,7 @@ const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   stop_chats: "Closing chat sessions",
   stop_ptys: "Closing terminal sessions",
   stop_watchers: "Stopping file watchers",
+  destroy_mac_desktop: "Releasing the Mac Desktop display",
   cleanup_env: "Cleaning environment",
   git_worktree_remove: "Removing worktree",
   git_branch_delete: "Deleting local branch",

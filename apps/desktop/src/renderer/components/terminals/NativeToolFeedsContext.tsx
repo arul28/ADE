@@ -23,6 +23,7 @@ import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
+import { useMacDesktopSupport } from "./useMacDesktopSupport";
 import {
   useNativeToolSessions,
   type NativeToolFeedScope,
@@ -147,10 +148,16 @@ export function NativeToolFeedsProvider({
   // these same components with stubbed native namespaces. Every tool follows
   // the session machine, including a remote pin; Apple additionally follows
   // that runtime's `getStatus().supported`, not this window's OS.
+  // The Mac Desktop gate is the HOST's capability, read once per machine — the
+  // only flag here that is not a property of this computer.
+  const macDesktopSupport = useMacDesktopSupport({ runtimePin, enabled: active });
+
   const context = useMemo<WorkToolContext>(() => ({
     supportsIosSimulator,
     isWebClient: isWebClientMode(),
-  }), [supportsIosSimulator]);
+    supportsMacDesktop: macDesktopSupport?.supported ?? null,
+    macDesktopUnsupportedReason: macDesktopSupport?.reason ?? null,
+  }), [macDesktopSupport, supportsIosSimulator]);
 
   // Collection identity follows the session machine. A Studio pin must keep
   // Studio's checkout after the tab dropdown moves, including `kind: "remote"`

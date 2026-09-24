@@ -19,6 +19,7 @@ import {
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
+import type { SyncHostRecoveryResult } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION, isSearchDocKind } from "../../desktop/src/shared/types";
 import type {
@@ -273,6 +274,11 @@ export type MultiProjectRpcHandlerOptions = {
   repairMachinePairing?: (
     input?: { onlyIfRevoked?: boolean },
   ) => Promise<MachinePairingRepairResult>;
+  /**
+   * Start (or re-host) mobile sync on this machine from the desktop's
+   * Connections card. The same repair the phone's "Fix connection" runs.
+   */
+  startSyncHost?: () => Promise<SyncHostRecoveryResult>;
   /** Machine-level pairing controls for a brain hosting sync with no project scope. */
   projectlessSyncControls?: ProjectlessSyncControls;
   /**
@@ -300,10 +306,17 @@ export type MultiProjectRpcHandlerOptions = {
     | void;
   getRuntimeStatus?: () => {
     syncPort: number | null;
-    publishHealth: Pick<
+    publishHealth: (Pick<
       SyncAccountDirectoryHealth,
       "state" | "failingSinceMs" | "lastLegDurations"
-    > | null;
+    > & {
+      /**
+       * Optional so an older embedder that predates the fields still satisfies
+       * this shape; current brains always set them.
+       */
+      lastHttpStatus?: number | null;
+      lastHttpReason?: string | null;
+    }) | null;
     lastWedge: {
       lastCommand: string;
       blockedMs: number;
@@ -1617,7 +1630,8 @@ export function createMultiProjectRpcRequestHandler(
         || action === "renameMachine"
         // Re-pairing this machine into the account is a machine-operator act,
         // not something a subagent may perform on the owner's behalf.
-        || action === "repairMachinePairing";
+        || action === "repairMachinePairing"
+        || action === "startSyncHost";
       if (ctoOnlyAccountAction && !callerHasRoleAtLeast(role, "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
@@ -1641,11 +1655,21 @@ export function createMultiProjectRpcRequestHandler(
         }
       }
       registerAccountProjects();
+      if (action === "startSyncHost") {
+        if (!options.startSyncHost) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidRequest,
+            "This ADE brain cannot host sync.",
+          );
+        }
+        const result = await options.startSyncHost();
+        return { domain: "account", action, result, statusHints: {} };
+      }
       if (action === "repairMachinePairing") {
         if (!options.repairMachinePairing) {
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidRequest,
-            "This ADE brain is not publishing this machine to your account yet.",
+            "Sync hasn't started on this computer, so it can't reconnect to your account yet. Start sync first.",
           );
         }
         const result = await options.repairMachinePairing();

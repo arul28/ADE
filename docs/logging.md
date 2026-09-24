@@ -546,6 +546,27 @@ third backend id is dropped rather than widening the allowlist. A per-backend
 this to at most two accepted events per installation per UTC day, inside the
 same limits, and no ceiling was raised.
 
+Whether an installation uses its lane's Mac Desktop records the same
+`ade_feature_used` event at the brain-side service
+(`createMacDesktopService`, through an injected emitter — the service never
+reaches the analytics service or an id itself) with `feature: "work"`,
+`action: "mac_desktop"`, and a closed `outcome`: `started` (a display was
+created), `agent_drove` (an acting command succeeded for a caller that is not
+a human takeover — the action bus strips the controller id from every
+agent-shaped caller, and a takeover always carries one), or `recorded` (a
+recording was filed as proof). A display that was already up, a refused
+action, a person's pointer, and a scratch recording that was not filed emit
+nothing.
+
+The product question is only whether the lane screen is used at all, and
+whether agents drive it or file it. Nothing finer crosses the boundary: no
+lane, chat, app name, path, window title, or error text. A per-outcome
+`work_mac_desktop:<outcome>` key with a 24-hour minimum interval bounds this
+to at most three accepted events per installation per UTC day, inside the
+existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
+200-event ceiling; no ceiling was raised. The dashboard spec is deliberately
+untouched: no card asks this yet.
+
 A per-tool `work_tool_opened:<id>` deduplication key with a 24-hour minimum
 interval bounds this to at most six accepted events per installation per UTC
 day no matter how often the user flips between panes, which is well inside the

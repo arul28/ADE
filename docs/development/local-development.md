@@ -168,6 +168,26 @@ arguments. `ADE_RUNTIME_PARENT_PID` / `ADE_RUNTIME_IDLE_EXIT_MS` are removed for
 the separate reason that a shared daemon must outlive the process that launched
 it.
 
+A brain started any other way — `ade serve` or `~/.ade-<channel>/bin/ade serve`
+typed into an agent's shell — now drops the caller identity itself at startup
+(`brainInheritedIdentity.ts`: the chat, spawn, browser-token and run keys above)
+and prints `ADE: This brain was started from an agent's shell. It ignores that
+agent's identity …`. Before that, such a brain clamped EVERY client to the
+launching agent, desktop included, and the Mac Desktop panel answered "Action
+'mac_desktop.startStream' requires elevated role." (2026-09-22). The role
+ceiling is not changed for you: a plain `ade serve` still defaults to `agent`,
+and it now says so — `ADE: This brain serves at role agent, so ADE desktop,
+phone and web clients (role cto) will be refused.` Start a hand-run brain that a
+desktop will connect to as `ade --role cto serve`.
+
+A separate `ADE_HOME` does not isolate a PROJECT. Machine state lives in the
+home, but each project keeps its own database in `<project>/.ade/ade.db`. A
+test brain on `~/.ade-alpha` that opens `~/Projects/ADE` — because it is in that
+home's `projects.json`, or because an `ade` command ran from inside it — writes
+the same `ade.db` as the installed brain. For a test brain that must not touch
+the installed one, register only a throwaway project in its home, and check
+with `lsof <project>/.ade/ade.db` which processes hold a project's database.
+
 Override it when needed:
 
 ```bash
@@ -222,6 +242,56 @@ ade --socket app-control launch --force \
   --text
 ```
 
+### Test Mac Desktop in the dev app instead of an Alpha build
+
+Mac Desktop needs the native helper and two macOS grants, and both are usable
+from the dev app on this Mac, so a lane's Mac Desktop changes do not need a
+packaged Alpha to be tried:
+
+```bash
+cd /path/to/ADE/.ade/worktrees/<lane>
+npm --prefix apps/desktop run build:desktop-driver   # resources/native/ade-desktop-driver
+ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock \
+  npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
+```
+
+The dev app runs the Electron binary from `node_modules`, which carries
+Electron's own stable code signature, so macOS keeps its Screen Recording and
+Accessibility grants across rebuilds; grant them once for "Electron" in System
+Settings. An unpackaged app always starts its brain with `--no-sync`
+(`main.ts`, `disableSync`), so a dev brain can never take the machine-wide sync
+host lease from the installed ADE. On 2026-09-21 one did, before that guard
+existed, and the agents running under the installed brain died with the lease.
+Set `ADE_DEV_RUNTIME_SYNC=1` only when a dev brain must host sync on purpose,
+and never on a machine whose installed ADE is doing real work.
+
+`--no-sync` guards the sync lease and **nothing else**. A dev brain started
+this way still attaches to the same `~/.ade` database as the installed app,
+and two brains on one database can only have one owner for a given chat, so
+the other's agents can stop with no explanation. Starting a brain on a home
+that already has one now prints who else is there and logs
+`brain.home_shared`; if you see that, decide which brain you meant to have.
+List them, with their homes, before assuming:
+
+```bash
+pgrep -alf "cli.cjs serve|/bin/ade serve"
+ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME   # no output = the shared ~/.ade
+```
+
+A dev brain is spawned detached so it survives the Electron restarts a dev
+loop is made of, which also means it survives the app going away for good. One
+ran orphaned on the shared home for five hours. Launcher-spawned brains now
+exit after 20 idle minutes (`ADE_RUNTIME_IDLE_EXIT_MS`, set in
+`scripts/dev-shared.mjs`); raise or clear it when debugging a deliberately
+quiet brain. For work that only needs to read or drive a lane, give the brain
+its own home — `ADE_HOME=$HOME/.ade-<name>` on its own socket — instead of
+sharing `~/.ade`. Because the dev
+brain does not host sync it never publishes to the account, which is why the
+Connections card is not testable this way; everything on the Mac Desktop pane
+is. Use `--project-root` to point the dev app at a throwaway project so the
+lane's displays never touch real work. The floating corner preview only shows
+for chat sessions, so test it from a chat, not from a shell session.
+
 To test auto-runtime creation, use the default dev commands after stopping the dev runtime:
 
 ```bash
@@ -240,6 +310,11 @@ waiting for the GitHub release workflow.
 npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.ade-alpha
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
+
+The build prints one line about code signing. "Signing identity: ADE Local"
+means macOS keeps the app's Screen Recording and Accessibility grants across
+rebuilds. The ad-hoc warning means it does not; set up the certificate once as
+described in [Alpha/Beta builds and macOS permission grants](#alphabeta-builds-and-macos-permission-grants).
 
 `package:alpha` builds exactly the checkout you are in. `package:beta` is
 release-like: it fetches `origin/main`, fast-forwards the local `main` checkout
@@ -261,6 +336,19 @@ apps/desktop/release-alpha/ADE-Alpha-local.zip
 apps/desktop/release-beta/mac-arm64/ADE Beta.app
 apps/desktop/release-beta/ADE-Beta-local.zip
 ```
+
+Every channel build carries a per-build version of the form
+`<base>-<channel>.<yyyymmddHHMM>`, where `<base>` is the newest `v*` tag
+reachable from HEAD (or the `apps/desktop/package.json` version when no tag
+exists) and the timestamp is UTC — for example `1.2.75-alpha.202609211035`.
+The stamp is written into the packaged app's `version` (electron-builder
+`extraMetadata.version`, so `app.getVersion()` reports it), into
+`ADE_CLI_VERSION` for the bundled CLI build, and through `ADE_DESKTOP_VERSION`
+for the Windows packaging wrapper. This is what stops a fresh Alpha/Beta app
+from reusing a brain left by an earlier build: the runtime compatibility gate
+treats equal versions as compatible, so a build has to identify itself with a
+version that changes every time. The desktop never writes the stamp back into
+`package.json`.
 
 Install the build you want to test by replacing the matching app in
 `/Applications`:
@@ -322,5 +410,35 @@ Alpha and Beta also use separate Electron profile directories
 do not collide with dev or stable. Local channel packages include this Mac's
 runtime binary. Release builds still require the full cross-platform runtime
 artifact set used by remote runtime bootstrap.
+
+### Alpha/Beta builds and macOS permission grants
+
+`npm run package:alpha` and `npm run package:beta` sign the app locally. There is
+no Developer ID certificate behind a channel build, so the default is an ad-hoc
+signature, and the app's designated requirement is its cdhash. The cdhash changes
+on every build, so macOS treats each rebuild as a new app and drops its Screen
+Recording and Accessibility grants. Re-adding ADE Alpha or ADE Beta in System
+Settings works until the next build.
+
+A self-signed code-signing certificate makes the designated requirement the
+bundle identifier plus the certificate leaf, which does not change between
+rebuilds. Grants then survive.
+
+Create the certificate once:
+
+1. Open Keychain Access › Certificate Assistant › Create a Certificate.
+2. Name it exactly `ADE Local`, set Certificate Type to `Code Signing`, and
+   create it.
+3. Run a channel build and press `Always Allow` on the keychain prompt, so later
+   builds can use the private key without prompting.
+
+Then remove ADE Alpha or ADE Beta from Screen Recording and from Accessibility,
+add it back once, and the grants are stored against the new requirement.
+
+The packager uses the certificate automatically when an identity named exactly
+`ADE Local` is present. To use another certificate, or a specific SHA-1 hash,
+pass `--sign "<identity>"` or set `ADE_CHANNEL_SIGN_IDENTITY`. Developer ID
+identities are never selected automatically. Without any of these, the build
+stays ad-hoc and prints a warning.
 
 Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.
