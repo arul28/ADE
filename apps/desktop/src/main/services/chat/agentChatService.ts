@@ -47927,6 +47927,11 @@ export function createAgentChatService(args: {
           throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
         }
         const bytes = fs.readFileSync(filePath);
+        // stat only snapshots the size — a file that grew past the cap between
+        // the check and the read still gets rejected here.
+        if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
+          throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
+        }
         attachmentUrls.push(await aiIntegrationService.uploadDevinCloudAttachment({
           name: path.basename(filePath),
           bytes,
@@ -48188,6 +48193,11 @@ export function createAgentChatService(args: {
         throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
       }
       const bytes = fs.readFileSync(filePath);
+      // stat only snapshots the size — a file that grew past the cap between
+      // the check and the read still gets rejected here.
+      if (bytes.length > DEVIN_ATTACHMENT_MAX_BYTES) {
+        throw new Error(`Attachment '${path.basename(filePath)}' is too large to upload to Devin (>50 MB).`);
+      }
       attachmentRefs.push(`ATTACHMENT:"${await aiIntegrationService.uploadDevinCloudAttachment({
         name: path.basename(filePath),
         bytes,

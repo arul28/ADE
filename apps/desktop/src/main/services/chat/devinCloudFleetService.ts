@@ -280,7 +280,11 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
    * and for an existing lane it lands on that lane's own FETCH_HEAD (each
    * worktree keeps its own) before the dirty-worktree-guarded merge.
    */
-  const pullIntoLane = async (devinSessionId: string): Promise<DevinCloudPullIntoLaneResult> => {
+  // Pulls force-fetch and update the same `devin/<id>` branch ref — serialize
+  // per session so a second pull can't interleave its fetch/restore between
+  // another pull's import and rewind the branch it just imported.
+  const pullIntoLaneChains = new Map<string, Promise<unknown>>();
+  const pullIntoLaneInternal = async (devinSessionId: string): Promise<DevinCloudPullIntoLaneResult> => {
     const id = devinSessionId.trim();
     if (!id) throw new Error("Devin cloud session id is required.");
 
@@ -400,6 +404,17 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
       sessionId,
       mergedBranch: safeBranch,
     };
+  };
+
+  const pullIntoLane = (devinSessionId: string): Promise<DevinCloudPullIntoLaneResult> => {
+    const id = devinSessionId.trim();
+    const prior = pullIntoLaneChains.get(id) ?? Promise.resolve();
+    const next = prior.catch(() => undefined).then(() => pullIntoLaneInternal(devinSessionId));
+    pullIntoLaneChains.set(id, next);
+    void next.finally(() => {
+      if (pullIntoLaneChains.get(id) === next) pullIntoLaneChains.delete(id);
+    });
+    return next;
   };
 
   const invalidateCache = (): void => {
