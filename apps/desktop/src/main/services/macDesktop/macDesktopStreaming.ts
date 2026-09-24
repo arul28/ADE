@@ -326,6 +326,9 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
       });
       await endRun(laneId, "stale-restart");
       running = null;
+      // A stop or a teardown that landed during that wait outranks this ask.
+      // It ends stopped, and leaves alone any newer ask's run.
+      if (generationOf(laneId) !== generation) throw stoppedWhileStarting(laneId);
     }
     if (running) {
       // A reconnecting viewer asks again. Restarting would mint a second token
@@ -361,8 +364,10 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
     }
     if (generationOf(laneId) !== generation) {
       // A stop or a teardown landed after the run was built. The lane stays
-      // stopped: nothing is recorded, announced or retried.
-      if (streamServer.getTransport(laneId)?.token === transport.token) {
+      // stopped: nothing is recorded, announced or retried. Only a run built
+      // under this ask's generation is this ask's to stop; a newer ask's run,
+      // joined above, belongs to that ask.
+      if (pending.generation === generation && streamServer.getTransport(laneId)?.token === transport.token) {
         streamServer.stop(laneId);
         await stopDriverStream(laneId, "stopped-while-starting");
       }

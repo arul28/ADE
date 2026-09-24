@@ -654,10 +654,23 @@ final class WindowControl {
         case .success(let resolved):
             element = resolved
         case .failure(let failure):
-            // Only this park's hold: a release and a re-claim by another
-            // lane inside the wait are not this park's to undo.
-            if ownership.owner(ofWindow: Int(windowId)) == laneId {
-                ownership.unpark(windowId: Int(windowId))
+            // The wait pumped the run loop, so the same re-check as the
+            // success path decides whose hold this is. Still this park's own
+            // (it proceeds): drop it, the window never moved. A stop, a
+            // release or a later take of this lane inside the wait: leave the
+            // hold to them, or `releaseLane` never sees the window.
+            switch ParkRecheck.decide(
+                laneId: laneId,
+                windowId: Int(windowId),
+                ownerNow: ownership.owner(ofWindow: Int(windowId)),
+                placementAtStart: placementAtStart,
+                placementNow: lanePlacement(forLane: laneId),
+                isStopping: stopGate.isStopping(laneId)
+            ) {
+            case .proceed:
+                _ = forgetParked(windowId: windowId)
+            case .refuse(_, let dropHold):
+                if dropHold { _ = forgetParked(windowId: windowId) }
             }
             throw failure.driverError(windowId: Int(windowId))
         }

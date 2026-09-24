@@ -176,6 +176,42 @@ describe("macDesktopStreaming release during a start", () => {
     expect(streaming.streamServer.isStreaming("lane-1")).toBe(false);
   });
 
+  it("a stale restart that a stop overtakes ends stopped and leaves the newer run alone", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    disposers.push(() => vi.useRealTimers());
+    const { streaming, provider } = makeStreaming();
+    disposers.push(() => streaming.dispose());
+    await streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1" });
+    // Quiet long enough that a Reconnect restarts the run.
+    vi.setSystemTime(Date.now() + 10_000);
+
+    // Hold the stale run's driver stop open, so a stop and a newer ask land
+    // while the restart waits on it.
+    let finishStop: () => void = () => {};
+    provider.stopStream.mockImplementationOnce(() => new Promise<void>((resolve) => { finishStop = resolve; }));
+    const restart = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-1", fresh: true });
+    const restartOutcome = restart.then(() => "started", () => "stopped");
+    await Promise.resolve();
+    await streaming.stopStream("lane-1", "stopped");
+    // The newer ask's driver start is still in flight when the restart
+    // resumes, so the restart finds it pending and could join it.
+    let finishNewer: () => void = () => {};
+    provider.startStream.mockImplementationOnce(() => new Promise<{ port: number }>((resolve) => {
+      finishNewer = () => resolve({ port: 2 });
+    }));
+    const newerAsk = streaming.startStream({ laneId: "lane-1", chatSessionId: "chat-2" });
+    await Promise.resolve();
+    finishStop();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finishNewer();
+    const newer = await newerAsk;
+
+    expect(await restartOutcome).toBe("stopped");
+    expect(newer.running).toBe(true);
+    expect(streaming.streamServer.getTransport("lane-1")?.token).toBe(newer.transport?.token);
+    expect(streaming.buildStreamStatus("lane-1").viewerChatSessionIds).toEqual(["chat-2"]);
+  });
+
   it("an ask that arrives after the stop still gets a live run", async () => {
     const driver = deferredDriverStart();
     const { streaming, provider } = makeStreaming(driver.start);
