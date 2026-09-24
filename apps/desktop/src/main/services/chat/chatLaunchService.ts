@@ -67,7 +67,10 @@ type LaneServiceLike = {
     options?: LaneCreateRuntimeOptions,
   ) => Promise<LaneSummary>;
   /** import-mode launches adopt an existing branch instead of cutting a new one. */
-  importBranch?: (args: { branchRef: string; name: string }) => Promise<LaneSummary>;
+  importBranch?: (
+    args: { branchRef: string; name: string },
+    options?: { laneId?: string },
+  ) => Promise<LaneSummary>;
   /** Accent color applied once the lane row exists. */
   updateAppearance?: (args: { laneId: string; color: string | null }) => void;
   delete: (args: DeleteLaneArgs) => Promise<unknown>;
@@ -460,10 +463,15 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (config?.mode === "import") {
       if (!config.branchRef) throw new Error("Importing a branch needs a branch ref.");
       if (!deps.laneService.importBranch) throw new Error("This runtime cannot import an existing branch.");
-      lane = await deps.laneService.importBranch({
-        branchRef: config.branchRef,
-        name: record.snapshot.laneName,
-      });
+      lane = await deps.laneService.importBranch(
+        {
+          branchRef: config.branchRef,
+          name: record.snapshot.laneName,
+        },
+        // Keep the launch's reserved lane id so the chat the client already
+        // opened, restart recovery, and cleanup all address the same lane.
+        { laneId: record.snapshot.laneId },
+      );
     } else {
       lane = await deps.laneService.create(
         {
