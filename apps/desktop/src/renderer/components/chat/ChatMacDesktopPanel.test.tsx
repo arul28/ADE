@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -13,7 +13,7 @@ import type {
 import { useAppStore } from "../../state/appStore";
 import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
 import { ChatMacDesktopPanel } from "./ChatMacDesktopPanel";
-import { resetMacDesktopFrames } from "./macDesktopFrameStore";
+import { resetMacDesktopFrames, setMacDesktopFrame } from "./macDesktopFrameStore";
 import { resetMacDesktopLiveViewLeasesForTests } from "./macDesktopLiveViewLease";
 import { resetMacDesktopStatusStoreForTests, stopMacDesktopLane } from "./macDesktopStatusStore";
 
@@ -599,8 +599,88 @@ describe("ChatMacDesktopPanel strip", () => {
     const before = macDesktop.startStream.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     await waitFor(() => expect(macDesktop.startStream.mock.calls.length).toBeGreaterThan(before));
+    // A Reconnect, not a read: the host restarts a run that sends nothing.
+    const calls = macDesktop.startStream.mock.calls as unknown as Array<[Record<string, unknown>]>;
+    expect(calls.at(-1)?.[0]).toMatchObject({ laneId: "lane-1", fresh: true });
   });
 
+});
+
+describe("ChatMacDesktopPanel handover from the floating player", () => {
+  beforeEach(() => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+    // The pane's own decoder is still dialing.
+    macDesktop.startStream.mockImplementation(() => new Promise<MacDesktopStreamStatus>(() => {}));
+  });
+
+  it("regression: shows the last frame at once instead of Connecting video", async () => {
+    // Expanding the floating player into the pane took a second or two to show
+    // anything, although the frame store held the picture the player drew.
+    setMacDesktopFrame({
+      laneId: "lane-1",
+      dataUrl: "data:image/jpeg;base64,ZnJhbWU=",
+      width: 2560,
+      height: 1440,
+      at: Date.now(),
+      caption: null,
+    });
+    renderPanel();
+    const poster = await screen.findByTestId("mac-desktop-handover-frame");
+    expect(poster.getAttribute("src")).toBe("data:image/jpeg;base64,ZnJhbWU=");
+    expect(screen.getByTestId("mac-desktop-surface").contains(poster)).toBe(true);
+    expect(screen.queryByTestId("mac-desktop-surface-status")).toBeNull();
+  });
+
+  it("does not show a frame old enough to be a different screen", async () => {
+    setMacDesktopFrame({
+      laneId: "lane-1",
+      dataUrl: "data:image/jpeg;base64,b2xk",
+      width: 2560,
+      height: 1440,
+      at: Date.now() - 60_000,
+      caption: null,
+    });
+    renderPanel();
+    expect(await screen.findByTestId("mac-desktop-surface-status")).toBeTruthy();
+    expect(screen.queryByTestId("mac-desktop-handover-frame")).toBeNull();
+  });
+});
+
+describe("ChatMacDesktopPanel agent cursor", () => {
+  beforeEach(() => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+  });
+
+  function observation(x: number, y: number): MacDesktopEventPayload {
+    return {
+      type: "observation",
+      laneId: "lane-1",
+      observation: {
+        caption: "click · Sign in",
+        capturedAt: new Date().toISOString(),
+        elementCount: 1,
+        elements: [{ focused: true, center: { x, y } }],
+      },
+    } as unknown as MacDesktopEventPayload;
+  }
+
+  it("regression: glides from one action's point to the next instead of jumping", async () => {
+    const listeners: Array<(event: MacDesktopEventPayload) => void> = [];
+    macDesktop.onEvent.mockImplementation((cb: (event: MacDesktopEventPayload) => void) => {
+      listeners.push(cb);
+      return () => {};
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { left: 0, top: 0, width: 1280, height: 720, right: 1280, bottom: 720, x: 0, y: 0, toJSON: () => ({}) } as DOMRect,
+    );
+    renderPanel();
+    await screen.findByTestId("mac-desktop-surface");
+    act(() => { for (const listener of listeners) listener(observation(200, 200)); });
+    const glyph = await screen.findByTestId("mac-desktop-agent-cursor");
+    act(() => { for (const listener of listeners) listener(observation(1800, 900)); });
+    await waitFor(() => expect(screen.getByTestId("mac-desktop-agent-cursor").style.transition).toContain("transform"));
+    expect(screen.getByTestId("mac-desktop-agent-cursor")).toBe(glyph);
+  });
 });
 
 describe("ChatMacDesktopPanel Apps section", () => {
@@ -936,6 +1016,72 @@ describe("ChatMacDesktopPanel way out", () => {
     fireEvent.click(screen.getByTestId("mac-desktop-stop-confirm-yes"));
     await waitFor(() => expect(macDesktop.stop).toHaveBeenCalledTimes(1));
     expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
+  });
+
+  it("names each app that did not quit on the Off card after a stop, with a Dismiss", async () => {
+    // The driver quits the apps the lane opened; one that asks to save stays
+    // open and moves to the person's own screen. The pane says so, once.
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+    macDesktop.stop.mockResolvedValue({
+      stopped: true,
+      releasedWindows: 0,
+      quitApps: ["Safari"],
+      appsLeftOpen: [
+        { pid: 41, appName: "TextEdit", message: "TextEdit did not quit, probably because it has unsaved work. It moved to your screen." },
+        { pid: 42, appName: "Pages", message: "Pages did not quit, probably because it has unsaved work. It moved to your screen." },
+      ],
+    });
+    renderPanel();
+
+    fireEvent.click(await screen.findByTestId("mac-desktop-stop"));
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    fireEvent.click(screen.getByTestId("mac-desktop-stop-confirm-yes"));
+    const off = await screen.findByTestId("mac-desktop-off");
+    const lines = await within(off).findAllByTestId("mac-desktop-app-left-open");
+    expect(lines.map((line) => line.textContent)).toEqual([
+      expect.stringContaining("TextEdit did not quit, probably because it has unsaved work. It moved to your screen."),
+      expect.stringContaining("Pages did not quit"),
+    ]);
+
+    fireEvent.click(within(lines[0]!).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(within(off).getAllByTestId("mac-desktop-app-left-open")).toHaveLength(1));
+    expect(off.textContent).not.toContain("TextEdit did not quit");
+  });
+
+  it("shows nothing extra when every app quit", async () => {
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+    macDesktop.stop.mockResolvedValue({ stopped: true, releasedWindows: 0, quitApps: ["Safari"], appsLeftOpen: [] });
+    renderPanel();
+    fireEvent.click(await screen.findByTestId("mac-desktop-stop"));
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    fireEvent.click(screen.getByTestId("mac-desktop-stop-confirm-yes"));
+    const off = await screen.findByTestId("mac-desktop-off");
+    expect(within(off).queryByTestId("mac-desktop-app-left-open")).toBeNull();
+  });
+
+  it("names the apps left open when the display was stopped from somewhere else", async () => {
+    // An agent's `stop`, or another window: only the event carries the list.
+    const listeners: Array<(event: MacDesktopEventPayload) => void> = [];
+    macDesktop.onEvent.mockImplementation((cb: (event: MacDesktopEventPayload) => void) => {
+      listeners.push(cb);
+      return () => {};
+    });
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
+    renderPanel();
+    await screen.findByTestId("mac-desktop-surface");
+    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
+    act(() => {
+      for (const listener of listeners) {
+        listener({
+          type: "display-destroyed",
+          laneId: "lane-1",
+          reason: "stopped",
+          appsLeftOpen: [{ pid: 41, appName: "TextEdit", message: "TextEdit did not quit, probably because it has unsaved work. It moved to your screen." }],
+        });
+      }
+    });
+    const off = await screen.findByTestId("mac-desktop-off");
+    expect((await within(off).findByTestId("mac-desktop-app-left-open")).textContent).toContain("TextEdit did not quit");
   });
 
   it("says the host is not answering when a re-read fails, and offers Try again and Reset", async () => {

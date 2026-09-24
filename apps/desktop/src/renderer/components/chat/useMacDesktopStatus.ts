@@ -5,6 +5,7 @@ import {
   MAC_DESKTOP_NOT_PARKED_RETRY_GRACE_MS,
   macDesktopVisibleNotParked,
   reduceMacDesktopNotParked,
+  type MacDesktopAppLeftOpen,
   type MacDesktopEventPayload,
   type MacDesktopNotParked,
   type MacDesktopStatus,
@@ -213,6 +214,14 @@ export type UseMacDesktopStatus = {
    */
   gaveUp: boolean;
   cursor: MacDesktopAgentCursor | null;
+  /**
+   * Apps the last stop could not quit (usually unsaved work), which moved to
+   * the person's own screen. From the stop's answer or the
+   * `display-destroyed` event, whichever arrives; the next display clears it.
+   */
+  appsLeftOpen: readonly MacDesktopAppLeftOpen[];
+  /** Drops one app's line the person has read. */
+  dismissAppLeftOpen: (pid: number) => void;
 };
 
 export function useMacDesktopStatus(args: {
@@ -234,6 +243,7 @@ export function useMacDesktopStatus(args: {
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState<MacDesktopAgentCursor | null>(null);
   const [tracked, setTracked] = useState<readonly MacDesktopNotParked[]>([]);
+  const [appsLeftOpen, setAppsLeftOpen] = useState<readonly MacDesktopAppLeftOpen[]>([]);
   /**
    * Ticks only while a tracked retry is still inside its grace window.
    *
@@ -338,6 +348,7 @@ export function useMacDesktopStatus(args: {
     setStartedAt(Date.now());
     setGaveUp(false);
     setError(null);
+    setAppsLeftOpen([]);
     try {
       const started = await macDesktopApi().start(
         { laneId, laneName, chatSessionId: sessionId },
@@ -368,11 +379,12 @@ export function useMacDesktopStatus(args: {
     setStopping(true);
     let stopped = true;
     try {
-      await withMacDesktopTimeout(
+      const result = await withMacDesktopTimeout(
         stopMacDesktopLane({ laneId, chatSessionId: sessionId, runtimePin }),
         MAC_DESKTOP_STOP_WAIT_MS,
         "Mac Desktop did not stop in time.",
       );
+      setAppsLeftOpen(result?.appsLeftOpen ?? []);
     } catch (caught) {
       stopped = false;
       setError(errorText(caught));
@@ -486,8 +498,13 @@ export function useMacDesktopStatus(args: {
       // the human's own screen is not part of `getStatus`'s answer, so a refresh
       // must not silently clear a warning nothing has fixed.
       setTracked((current) => reduceMacDesktopNotParked(current, event, laneId, Date.now()));
+      if (event.type === "display-created" && event.display.laneId === laneId) setAppsLeftOpen([]);
       if (event.type === "display-destroyed" && event.laneId === laneId) {
         clearMacDesktopFrame(laneId);
+        // A stop from anywhere, an agent's or another window's included. An
+        // event with no list (an idle stop, an older host) keeps what the
+        // pane's own stop said.
+        if (event.appsLeftOpen?.length) setAppsLeftOpen(event.appsLeftOpen);
         return;
       }
       const next = macDesktopCursorFromEvent(event, laneId, Date.now());
@@ -522,6 +539,10 @@ export function useMacDesktopStatus(args: {
     return () => clearTimeout(timer);
   }, [tracked, graceTick]);
 
+  const dismissAppLeftOpen = useCallback((pid: number) => {
+    setAppsLeftOpen((current) => current.filter((app) => app.pid !== pid));
+  }, []);
+
   const dismissNotParked = useCallback((windowId: number) => {
     setTracked((current) => {
       const next = current.filter((entry) => entry.windowId !== windowId);
@@ -545,5 +566,7 @@ export function useMacDesktopStatus(args: {
     cursor,
     notParked,
     dismissNotParked,
+    appsLeftOpen,
+    dismissAppLeftOpen,
   };
 }

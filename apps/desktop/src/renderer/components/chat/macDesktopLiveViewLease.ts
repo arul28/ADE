@@ -1,4 +1,5 @@
 import type { OpenProjectBinding } from "../../../shared/types";
+import type { MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
 
 /**
  * The renderer's ref-counted live-view lease for one lane.
@@ -75,6 +76,16 @@ const leases = new Map<string, LaneLease>();
  * the service hears "this chat left" once.
  */
 const pendingStops = new Map<string, ReturnType<typeof setTimeout>>();
+/**
+ * `startStream` calls still waiting on the host, one per lane and chat.
+ *
+ * A handover starts the new decoder owner while the old one's start may still
+ * be in flight: the floating player asks, the pane mounts a beat later and
+ * takes the decoder, and the pane asked again. The second ask joins the first,
+ * so one viewer's arrival is one start on the host. A different chat still
+ * asks for itself, because the host keeps a viewer list per chat.
+ */
+const pendingStarts = new Map<string, Promise<MacDesktopStreamStatus>>();
 
 function bestHolder(lane: LaneLease): LeaseHolder | null {
   let best: LeaseHolder | null = null;
@@ -125,6 +136,32 @@ function scheduleViewerStop(
     void api.stopStream({ laneId, chatSessionId, localViewer: true }, runtimePin).catch(() => {});
   }, MAC_DESKTOP_LIVE_VIEW_STOP_GRACE_MS);
   pendingStops.set(key, timer);
+}
+
+/**
+ * Asks the host for the lane's stream on behalf of a decoder owner.
+ *
+ * `fresh` is a Reconnect: the host restarts a run that has sent nothing for a
+ * while instead of handing it back. It joins an ask already in flight, which
+ * is a new run anyway.
+ */
+export function startMacDesktopLiveStream(args: {
+  laneId: string;
+  chatSessionId: string | null;
+  runtimePin: OpenProjectBinding | null;
+  fresh?: boolean;
+}): Promise<MacDesktopStreamStatus> {
+  const key = `${args.laneId}\u0000${normalizeChat(args.chatSessionId) ?? ""}`;
+  const pending = pendingStarts.get(key);
+  if (pending) return pending;
+  const started = window.ade.macDesktop.startStream(
+    { laneId: args.laneId, chatSessionId: args.chatSessionId, ...(args.fresh ? { fresh: true } : {}) },
+    args.runtimePin,
+  ).finally(() => {
+    if (pendingStarts.get(key) === started) pendingStarts.delete(key);
+  });
+  pendingStarts.set(key, started);
+  return started;
 }
 
 export type MacDesktopLiveViewLease = {
@@ -195,4 +232,5 @@ export function resetMacDesktopLiveViewLeasesForTests(): void {
   leases.clear();
   for (const timer of pendingStops.values()) clearTimeout(timer);
   pendingStops.clear();
+  pendingStarts.clear();
 }

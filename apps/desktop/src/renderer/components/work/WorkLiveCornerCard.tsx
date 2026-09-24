@@ -150,6 +150,7 @@ export function WorkLiveCornerCard({
   laneId,
   activeTool,
   chatSessionId,
+  sessionLaneId = null,
   runtimePin,
   onPick,
 }: {
@@ -160,6 +161,12 @@ export function WorkLiveCornerCard({
   activeTool: WorkSidebarTab | null;
   /** The chat on screen. The card only shows sessions owned by this chat. */
   chatSessionId: string | null;
+  /**
+   * The chat's own lane, null for a lane-less chat. `laneId` is the pane's
+   * lane, which a lane-less chat borrows; only a chat of the lane gets the
+   * floating Mac Desktop by default.
+   */
+  sessionLaneId?: string | null;
   runtimePin: OpenProjectBinding | null;
   onPick: (tool: WorkSidebarTab) => void;
 }) {
@@ -1258,6 +1265,7 @@ export function WorkLiveCornerCard({
       laneId={laneId}
       paneTool={activeTool}
       chatSessionId={chatSessionId}
+      sessionLaneId={sessionLaneId}
       runtimePin={runtimePin}
       supported={toolContext.supportsMacDesktop !== false}
       onOpenInPane={() => onPick("mac-desktop")}

@@ -4,7 +4,10 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MacDesktopEventPayload, MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
-import { resetMacDesktopLiveViewLeasesForTests } from "./macDesktopLiveViewLease";
+import {
+  MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+  resetMacDesktopLiveViewLeasesForTests,
+} from "./macDesktopLiveViewLease";
 import {
   FIRST_FRAME_TIMEOUT_MS,
   RECOVER_DELAY_MS,
@@ -166,6 +169,61 @@ describe("useMacDesktopLiveView reconnects by itself", () => {
     act(() => emit(stopped("lane-1")));
     await pass(RECOVER_DELAY_MS + 50);
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2 + RECOVER_MAX_TRIES));
+  });
+
+  it("regression: the card and the pane of one chat never start the lane twice", async () => {
+    // Coming back to a chat mounted the floating player and the pane a beat
+    // apart. The player's start was still in flight when the pane took the
+    // decoder, and the pane asked again: two starts, two encoders on the host.
+    let release: (() => void) | null = null;
+    api.startStream.mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve(streamStatus());
+    }));
+    const card = renderHook(() => useMacDesktopLiveView({
+      laneId: "lane-1",
+      runtimePin: null,
+      enabled: true,
+      chatSessionId: "chat-1",
+      priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
+    }));
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1));
+    const pane = renderHook(() => useMacDesktopLiveView({
+      laneId: "lane-1",
+      runtimePin: null,
+      enabled: true,
+      chatSessionId: "chat-1",
+    }));
+    await pass(50);
+    await act(async () => {
+      release?.();
+    });
+    await waitFor(() => expect(pane.result.current.url).toBeTruthy());
+    expect(api.startStream).toHaveBeenCalledTimes(1);
+    expect(card.result.current.url).toBeNull();
+  });
+
+  it("regression: Reconnect and a picture that never arrives ask for a fresh stream", async () => {
+    // Reconnect used to ask for the running stream again and got the same
+    // dead run back every time.
+    const view = mount();
+    await waitFor(() => expect(view.result.current.url).toBeTruthy());
+    expect(api.startStream.mock.calls[0]?.[0]).not.toMatchObject({ fresh: true });
+    act(() => view.result.current.restart());
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
+    expect(api.startStream.mock.calls[1]?.[0]).toMatchObject({ laneId: "lane-1", chatSessionId: "chat-1", fresh: true });
+
+    // An address that draws nothing is as dead: its recovery asks fresh too.
+    await waitFor(() => expect(view.result.current.url).toBeTruthy());
+    await pass(FIRST_FRAME_TIMEOUT_MS + RECOVER_DELAY_MS + 50);
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(3));
+    expect(api.startStream.mock.calls[2]?.[0]).toMatchObject({ fresh: true });
+
+    // A capture that ended is only asked for again, not restarted.
+    act(() => view.result.current.onStatus("playing", null));
+    act(() => emit(stopped("lane-1")));
+    await pass(RECOVER_DELAY_MS + 50);
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(4));
+    expect(api.startStream.mock.calls[3]?.[0]).not.toMatchObject({ fresh: true });
   });
 
   it("a viewer that no longer wants the lane never asks again", async () => {

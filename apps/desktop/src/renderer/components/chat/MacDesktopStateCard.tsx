@@ -45,6 +45,7 @@ export function MacDesktopStateCard({
   title,
   detail,
   actions,
+  footer,
 }: {
   testId: string;
   tone: MacDesktopStateCardTone;
@@ -52,6 +53,8 @@ export function MacDesktopStateCard({
   /** One short line under the title. On an error card, the reason. */
   detail?: string | null;
   actions?: ReactNode;
+  /** Short notes under the actions, such as the apps a stop left open. */
+  footer?: ReactNode;
 }) {
   const busy = tone === "busy";
   const failed = tone === "error";
@@ -89,6 +92,7 @@ export function MacDesktopStateCard({
           ) : null}
         </div>
         {actions ? <div className="flex flex-wrap items-center justify-center gap-2">{actions}</div> : null}
+        {footer}
       </div>
     </div>
   );

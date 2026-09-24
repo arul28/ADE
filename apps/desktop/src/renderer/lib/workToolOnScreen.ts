@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 
 /**
  * Is a surface (a Work tool, a chat drawer) really on screen?
@@ -14,6 +14,12 @@ import { useCallback, useRef } from "react";
 
 const mounted = new Map<string, Set<Element>>();
 const floating = new Map<string, number>();
+/** Told when a surface's element mounts or unmounts. */
+const listeners = new Set<() => void>();
+
+function notifyMountChange(): void {
+  for (const listener of [...listeners]) listener();
+}
 
 /**
  * One surface on one machine. `id` is the lane for a Work tool and the chat for
@@ -29,10 +35,36 @@ export function noteWorkSurfaceMounted(key: string, element: Element): () => voi
   const elements = mounted.get(key) ?? new Set<Element>();
   elements.add(element);
   mounted.set(key, elements);
+  notifyMountChange();
   return () => {
     elements.delete(element);
     if (elements.size === 0 && mounted.get(key) === elements) mounted.delete(key);
+    notifyMountChange();
   };
+}
+
+/** True while a surface's own element is mounted in the tools pane. */
+export function isWorkSurfaceElementMounted(key: string): boolean {
+  return (mounted.get(key)?.size ?? 0) > 0;
+}
+
+function subscribeMountChanges(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/**
+ * Whether a surface's element is mounted, kept current across mounts.
+ *
+ * Mounted, not measured: this answers "is the pane showing it", which a
+ * surface that must never duplicate the pane (the Mac Desktop's floating
+ * player, the turn's time-lapse) needs even while the pane slides open.
+ */
+export function useWorkSurfaceElementMounted(key: string | null): boolean {
+  const snapshot = () => (key ? isWorkSurfaceElementMounted(key) : false);
+  return useSyncExternalStore(subscribeMountChanges, snapshot, snapshot);
 }
 
 /** A ref that registers its element under `key` while it is mounted. */
@@ -131,5 +163,6 @@ export function waitForWorkSurfaceOnScreen(
 export function resetWorkToolOnScreenForTests(): void {
   mounted.clear();
   floating.clear();
+  notifyMountChange();
   documentVisibleOverride = null;
 }

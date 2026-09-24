@@ -1,10 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopTimeLapse } from "../../../shared/types/macDesktop";
 import { localArtifactMediaUrl } from "../../../shared/artifactStreamUrl";
 import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
+import {
+  isWorkSurfaceElementMounted,
+  useWorkSurfaceElementMounted,
+  workSurfaceKey,
+} from "../../lib/workToolOnScreen";
+import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
@@ -14,6 +21,11 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
  * frames the recorder already held, and it is dismissible — so it has to be
  * cheap to ignore. One card at a time, the most recent turn's, because a thread
  * that accumulates clips is a thread you scroll past.
+ *
+ * Never shown while the tools pane shows the lane's Mac Desktop: the person
+ * watched the turn happen live there, and a second picture of the same screen
+ * popping up in the thread is the duplicate the owner reported on 2026-09-24.
+ * A clip that arrives then is dropped, not kept for later.
  *
  * Only rendered when the lane's host is THIS machine. The clip is a file path
  * on the host: pointing a player at a path that exists on another Mac would
@@ -65,6 +77,16 @@ export function ChatMacDesktopTimeLapseCard({
   const rootPath = runtimePin?.rootPath ?? scope.rootPath;
   const [timeLapse, setTimeLapse] = useState<MacDesktopTimeLapse | null>(null);
   const [src, setSrc] = useState<string | null>(null);
+  // The same key the Work pane's Mac Desktop registers under: this lane on
+  // this chat's machine.
+  const boundBinding = useAppStore((s) => s.projectBinding);
+  const paneKey = laneId ? workSurfaceKey("mac-desktop", workRuntimeScopeKey(runtimePin, boundBinding), laneId) : null;
+  const paneShowsDesktop = useWorkSurfaceElementMounted(paneKey);
+  const paneKeyRef = useRef(paneKey);
+  paneKeyRef.current = paneKey;
+  useEffect(() => {
+    if (paneShowsDesktop) setTimeLapse(null);
+  }, [paneShowsDesktop]);
 
   useEffect(() => {
     if (!laneId || !sessionId) return;
@@ -78,6 +100,7 @@ export function ChatMacDesktopTimeLapseCard({
       if (event.type !== "time-lapse") return;
       const clip = event.timeLapse;
       if (clip.laneId !== laneId || clip.chatSessionId !== sessionId) return;
+      if (paneKeyRef.current && isWorkSurfaceElementMounted(paneKeyRef.current)) return;
       setTimeLapse(clip);
     }, runtimePin);
   }, [laneId, runtimePin, sessionId]);
@@ -103,7 +126,7 @@ export function ChatMacDesktopTimeLapseCard({
     };
   }, [filePath, hostIsLocal, rootPath, runtimePin]);
 
-  if (!timeLapse || !hostIsLocal || !src) return null;
+  if (!timeLapse || !hostIsLocal || !src || paneShowsDesktop) return null;
 
   return (
     <div

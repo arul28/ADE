@@ -192,7 +192,9 @@ export function selectWorkLiveCardTool(args: {
  *
  * It is never in view while the tools pane shows the Mac Desktop. A float does
  * not override that, unlike the corner card's Float: a copy of the pane next to
- * the pane is the "banner over the open pane" the owner reported.
+ * the pane is the "banner over the open pane" the owner reported. "Shows" is
+ * the tab id AND the pane's own element being mounted, so a tab state that
+ * reads otherwise for a moment cannot put a second picture beside the pane.
  *
  * `present` also covers a player that holds the lane's decoder before its first
  * frame. The decoder lives in the player's box, so the box mounts (hidden) to
@@ -213,6 +215,8 @@ export function macDesktopFloatState(args: {
   decoding: boolean;
   /** The tool filling the tools pane, or null when the pane is closed. */
   paneTool: WorkSidebarTab | null;
+  /** The pane's Mac Desktop element for this lane is mounted. */
+  paneMounted?: boolean;
 }): { present: boolean; visible: boolean } {
   const wanted = Boolean(
     args.active
@@ -225,7 +229,7 @@ export function macDesktopFloatState(args: {
   );
   return {
     present: wanted || args.decoding,
-    visible: wanted && args.paneTool !== "mac-desktop",
+    visible: wanted && args.paneTool !== "mac-desktop" && !args.paneMounted,
   };
 }
 

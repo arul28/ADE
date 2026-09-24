@@ -1558,6 +1558,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               chatSessionId={activeWorkSession && isChatToolType(activeWorkSession.toolType)
                 ? activeWorkSession.id
                 : null}
+              sessionLaneId={activeWorkSession?.laneId || null}
               runtimePin={activeWorkSessionRuntimePin}
               onPick={setWorkSidebarTool}
             />

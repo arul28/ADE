@@ -15,7 +15,11 @@ import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import { MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY } from "../chat/macDesktopLiveViewLease";
 import { macDesktopErrorText } from "../chat/macDesktopErrorText";
 import { closeWorkLiveCardForChat, useChatCompanionUiState } from "../chat/chatCompanionUiState";
-import { noteFloatingWorkSurfaceShown, workSurfaceKey } from "../../lib/workToolOnScreen";
+import {
+  noteFloatingWorkSurfaceShown,
+  useWorkSurfaceElementMounted,
+  workSurfaceKey,
+} from "../../lib/workToolOnScreen";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import {
   FloatingPlayerShell,
@@ -193,6 +197,7 @@ export function MacDesktopMiniPlayer({
   laneId,
   paneTool,
   chatSessionId,
+  sessionLaneId = null,
   runtimePin,
   supported,
   onOpenInPane,
@@ -200,6 +205,11 @@ export function MacDesktopMiniPlayer({
   /** The Work route is on screen. Everything here is torn down when it is not. */
   active: boolean;
   laneId: string | null;
+  /**
+   * The chat's OWN lane: null for a lane-less chat, whose tools borrow the
+   * pane's fallback lane. Only a chat of the lane gets the default preview.
+   */
+  sessionLaneId?: string | null;
   /** The tool filling the tools pane, or null when the pane is closed. */
   paneTool: WorkSidebarTab | null;
   /** The chat on screen. Only a chat that may see the lane's desktop gets it. */
@@ -230,12 +240,20 @@ export function MacDesktopMiniPlayer({
    */
   const grantedAt = useMacDesktopCardGrant(laneId, chatSessionId);
   const granted = Boolean(chatSessionId && grantedAt != null);
+  /**
+   * On by default, like the floating Apple device: a chat of the lane sees
+   * the lane's running display float over it without having watched it or
+   * driven it first. The chat's preview toggle and × still turn it off
+   * (`dismissed` below), and the Off state stays for a granted chat only.
+   */
+  const laneDefault = Boolean(laneId && sessionLaneId === laneId && macScope.displayKey != null);
   const authorized = Boolean(
     chatSessionId
     && (
       macScope.viewerChatSessionIds.includes(chatSessionId)
       || macScope.leaseHolderId === chatSessionId
       || granted
+      || laneDefault
     ),
   );
   /**
@@ -275,6 +293,8 @@ export function MacDesktopMiniPlayer({
     priority: MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY,
   });
   const decoderPlaying = Boolean(live.url) && live.status === "playing";
+  // The pane's own element, by the key it registers under: see `macDesktopFloatState`.
+  const paneMounted = useWorkSurfaceElementMounted(laneId ? workSurfaceKey("mac-desktop", scopeKey, laneId) : null);
 
   const { present, visible } = macDesktopFloatState({
     active,
@@ -288,6 +308,7 @@ export function MacDesktopMiniPlayer({
     floated,
     decoding: Boolean(live.url),
     paneTool,
+    paneMounted,
   });
 
   const source = useMemo(() => workLiveSource("mac-desktop", {

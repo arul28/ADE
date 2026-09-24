@@ -17,6 +17,11 @@ import {
   resetMacDesktopLiveViewLeasesForTests,
 } from "../chat/macDesktopLiveViewLease";
 import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
+import {
+  noteWorkSurfaceMounted,
+  resetWorkToolOnScreenForTests,
+  workSurfaceKey,
+} from "../../lib/workToolOnScreen";
 import { resetMacDesktopSupportCache } from "../terminals/useMacDesktopSupport";
 import {
   grantMacDesktopCardForChat,
@@ -1372,6 +1377,88 @@ describe("Mac Desktop floated by the chat's agent", () => {
     emitMacDesktopEvent({ type: "display-destroyed", laneId: "lane-1", reason: "stopped" });
     await waitFor(() => expect(macPlayer()).toBeNull());
     expect(screen.queryByText("Mac Desktop is off")).toBeNull();
+  });
+});
+
+describe("Mac Desktop floating preview on by default", () => {
+  function withLaneDisplay() {
+    (window.ade.builtInBrowser.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeBuiltInBrowserStatus({ visible: false, activeTabId: null, tabs: [] }),
+    );
+    macDesktopGetStatus.mockResolvedValue({
+      supported: true,
+      display: macDesktopDisplay(),
+      lease: null,
+      windows: [],
+      recording: null,
+    });
+  }
+
+  afterEach(() => {
+    resetWorkToolOnScreenForTests();
+    macDesktopGetStatus.mockResolvedValue({ supported: true, display: null, lease: null, windows: [], recording: null });
+  });
+
+  it("floats for a chat of the lane while its display runs, like the Apple device", async () => {
+    // The owner's 2026-09-24 ask: "just like Apple Development, make the
+    // floating preview open by default". No viewer entry, no lease, no agent
+    // grant: a chat of the lane with the display up is enough.
+    withLaneDisplay();
+    fakeDecoder.playing = true;
+    renderCard({ activeTool: "browser", sessionLaneId: "lane-1" });
+    const player = await findMacPlayer();
+    await waitFor(() => expect(macDesktopStartStream).toHaveBeenCalledWith(
+      { laneId: "lane-1", chatSessionId: "chat-1" },
+      null,
+    ));
+    expect(player.querySelector("[data-mac-mini-decoder] canvas")).toBeTruthy();
+  });
+
+  it("stays off when the chat turned its preview off, and Close turns it off", async () => {
+    withLaneDisplay();
+    fakeDecoder.playing = true;
+    setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+    renderCard({ activeTool: "browser", sessionLaneId: "lane-1" });
+    await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(macPlayer()).toBeNull();
+
+    act(() => { setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true); });
+    closeMacPlayer(await findMacPlayer());
+    await waitFor(() => expect(macPlayer()).toBeNull());
+    expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"]).toBeTruthy();
+  });
+
+  it("does not float for a chat of another lane or a lane-less chat, or with no display", async () => {
+    withLaneDisplay();
+    setMacDesktopFrame(macDesktopFrame());
+    const view = renderCard({ activeTool: "browser", sessionLaneId: null });
+    await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(macPlayer()).toBeNull();
+    view.unmount();
+
+    macDesktopGetStatus.mockResolvedValue({ supported: true, display: null, lease: null, windows: [], recording: null });
+    renderCard({ activeTool: "browser", sessionLaneId: "lane-1" });
+    await waitFor(() => expect(macDesktopGetStatus).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(macPlayer()).toBeNull();
+    expect(macDesktopStartStream).not.toHaveBeenCalled();
+  });
+
+  it("regression: never in view while the pane's Mac Desktop is mounted, whatever the tab state says", async () => {
+    // Two pictures of one desktop, the owner's 2026-09-24 report: the rule must
+    // follow the pane that is actually on screen, not only the tab id.
+    macDesktopGetStreamStatus.mockResolvedValue(makeStreamStatus({ viewerChatSessionIds: ["chat-1"] }));
+    setMacDesktopFrame(macDesktopFrame());
+    const release = noteWorkSurfaceMounted(workSurfaceKey("mac-desktop", "bound", "lane-1"), document.createElement("div"));
+    renderCard({ activeTool: "browser" });
+    await waitFor(() => expect(macDesktopGetStreamStatus).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(macPlayer()).toBeNull();
+
+    act(() => release());
+    expect(await findMacPlayer()).toBeTruthy();
   });
 });
 

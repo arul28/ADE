@@ -47,6 +47,7 @@ import {
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { H264VideoCanvas } from "./H264VideoCanvas";
+import { MacDesktopAgentCursor } from "./MacDesktopAgentCursor";
 import { macDesktopApi } from "./macDesktopApi";
 import {
   MacDesktopPermissionCard,
@@ -134,6 +135,16 @@ const MAC_DESKTOP_FULLSCREEN_MARGIN = 16;
  * cannot leave the pane on "Connecting video" with nothing to press.
  */
 export const MAC_DESKTOP_CONNECT_SLOW_MS = 20_000;
+
+/**
+ * How old the lane's last frame may be and still stand in for the picture
+ * while the pane's own decoder connects.
+ *
+ * The floating player writes the frame store four times a second while it
+ * decodes, so a handover from it finds a frame well inside this. A frame older
+ * than this is a picture of a screen that has since moved on.
+ */
+export const MAC_DESKTOP_HANDOVER_FRAME_TTL_MS = 10_000;
 
 /** A Check again that answers at once still shows it looked. */
 const MAC_DESKTOP_CHECK_MIN_MS = 600;
@@ -290,6 +301,8 @@ export function ChatMacDesktopPanel({
     cursor,
     notParked,
     dismissNotParked,
+    appsLeftOpen,
+    dismissAppLeftOpen,
   } = useMacDesktopStatus({
     laneId,
     laneName,
@@ -568,6 +581,18 @@ export function ChatMacDesktopPanel({
   }, [laneId, runtimePin]);
 
   const lastFrame = useMacDesktopFrame(laneId);
+  /**
+   * The last frame, shown under the decoder until it draws its own.
+   *
+   * Expanding the floating player into the pane hands the lane's decoder over:
+   * the pane dials the stream and waits for a keyframe, which took a second or
+   * two of "Connecting video" although the player had just drawn the picture.
+   */
+  const handoverFrame = lastFrame
+    && live.status !== "playing"
+    && Date.now() - lastFrame.at <= MAC_DESKTOP_HANDOVER_FRAME_TTL_MS
+    ? lastFrame.dataUrl
+    : null;
 
   /* ── Takeover ────────────────────────────────────────────────────────── */
 
@@ -1233,6 +1258,28 @@ export function ChatMacDesktopPanel({
         tone="idle"
         title="Mac Desktop is off"
         detail="A private screen for this lane's apps."
+        footer={appsLeftOpen.length > 0 ? (
+          /* The apps the stop could not quit, in the driver's own sentence.
+             Nothing at all when every app quit. */
+          <ul className="flex w-full min-w-0 flex-col gap-1.5 text-left" data-testid="mac-desktop-apps-left-open">
+            {appsLeftOpen.map((app) => (
+              <li
+                key={app.pid}
+                data-testid="mac-desktop-app-left-open"
+                className="flex min-w-0 items-start gap-2 font-sans text-xs leading-5 text-muted-fg"
+              >
+                <span className="min-w-0 flex-1 break-words">{app.message}</span>
+                <button
+                  type="button"
+                  className="shrink-0 text-muted-fg underline-offset-2 hover:text-fg hover:underline"
+                  onClick={() => dismissAppLeftOpen(app.pid)}
+                >
+                  Dismiss
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         actions={(
           <button
             type="button"
@@ -1479,11 +1526,22 @@ export function ChatMacDesktopPanel({
         {/* Where the decoder's canvas is parked while this copy is the one on
             screen. Empty in the other copy, which is behind an opaque overlay
             or not expanded. */}
+        {active && handoverFrame ? (
+          <img
+            src={handoverFrame}
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+            data-testid="mac-desktop-handover-frame"
+            className="pointer-events-none absolute inset-0 h-full w-full select-none object-contain"
+          />
+        ) : null}
         <div ref={active ? attachCanvasSlot : undefined} className="absolute inset-0" />
 
         {/* Only the wait is painted on the picture here. A stopped or stuck
-            video is the overlay card's to say, because it has the Reconnect. */}
-        {active && live.status !== "playing" && live.status !== "error" && !connectSlow ? (
+            video is the overlay card's to say, because it has the Reconnect.
+            The handover frame is the picture while the decoder connects. */}
+        {active && !handoverFrame && live.status !== "playing" && live.status !== "error" && !connectSlow ? (
           <p
             className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-[12px] text-muted-fg"
             data-testid="mac-desktop-surface-status"
@@ -1548,16 +1606,8 @@ export function ChatMacDesktopPanel({
           />
         ) : null}
 
-        {active && cursorPoint ? (
-          <span
-            aria-hidden
-            data-testid="mac-desktop-agent-cursor"
-            className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 text-accent"
-            style={{ left: cursorPoint.x, top: cursorPoint.y }}
-          >
-            <Cursor size={16} weight="fill" />
-          </span>
-        ) : null}
+        {/* Glides between action points and fades once the agent is idle. */}
+        {active ? <MacDesktopAgentCursor point={cursorPoint} /> : null}
 
       </div>
     );
@@ -1717,7 +1767,8 @@ export function ChatMacDesktopPanel({
 
   /**
    * "Stop Mac Desktop?", asked in the pane like the Apple pane asks before it
-   * switches devices. Stop sends the lane's windows back to the main screen.
+   * switches devices. Stop quits the apps the lane opened and sends the
+   * windows it borrowed back to the main screen.
    */
   const renderStopConfirm = () => (confirmStop ? (
     <div
@@ -1728,7 +1779,7 @@ export function ChatMacDesktopPanel({
     >
       <span className="min-w-0 flex-1">
         <span className="font-medium">Stop Mac Desktop?</span>
-        <span className="text-muted-fg"> Its windows go back to your main screen.</span>
+        <span className="text-muted-fg"> Apps it opened quit. Windows you moved here go back to your main screen.</span>
       </span>
       <button
         type="button"

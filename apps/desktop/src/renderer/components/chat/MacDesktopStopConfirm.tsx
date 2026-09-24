@@ -8,9 +8,10 @@ import { macDesktopStatusKey, publishMacDesktopStatus, withMacDesktopTimeout } f
 /**
  * "Stop Mac Desktop?", the question closing the Mac Desktop TAB asks.
  *
- * Closing the tab stops the lane's display and sends its windows back to the
- * main screen. The Apple tab asks before it powers a simulator off; this tab
- * did not ask at all, so a stray click on × ended the display with no warning.
+ * Closing the tab stops the lane's display, quits the apps it opened, and
+ * sends the windows it borrowed back to the main screen. The Apple tab asks
+ * before it powers a simulator off; this tab did not ask at all, so a stray
+ * click on × ended the display with no warning.
  *
  * Three answers, not two. Unlike a simulator, a display is cheap to keep, and
  * an agent may still be using it, so "Keep running" closes the tab and leaves
@@ -160,7 +161,7 @@ function MacDesktopStopConfirmDialog() {
             Stop Mac Desktop?
           </h2>
           <p id="mac-desktop-stop-confirm-body" className="mt-2 text-[12px] leading-5 text-muted-fg">
-            This lane's windows go back to your main screen. Keep it running if the agent still needs it.
+            Apps this lane opened quit, and windows you moved here go back to your main screen. Keep it running if the agent still needs it.
           </p>
         </div>
         <footer className="flex items-center justify-end gap-2 border-t border-border/60 px-5 py-3.5">

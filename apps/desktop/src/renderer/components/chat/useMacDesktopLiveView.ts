@@ -6,6 +6,7 @@ import { setMacDesktopFrame } from "./macDesktopFrameStore";
 import {
   MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,
   acquireMacDesktopLiveViewLease,
+  startMacDesktopLiveStream,
 } from "./macDesktopLiveViewLease";
 
 /**
@@ -25,6 +26,8 @@ import {
  *   host's `startStream` is idempotent while a lane is running and hands back
  *   the transport it is already serving, so this is a read, not a restart —
  *   and it is the only way to notice that the run it belonged to has ended.
+ *   Reconnect is the one exception: it asks `fresh`, and the host restarts a
+ *   run that has sent nothing for seconds.
  * - **A remote lane's address is loopback on the OTHER Mac.** It is resolved
  *   through `resolveStreamUrl`, which builds the SSH forward, and re-resolved
  *   on reconnect because a runtime reconnect closes that forward while the
@@ -175,13 +178,22 @@ export function useMacDesktopLiveView(args: {
    */
   const recoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recoverTriesRef = useRef(0);
-  const scheduleRecover = useCallback(() => {
+  /**
+   * The next start is a Reconnect: the host restarts a run that has sent
+   * nothing instead of handing the same dead run back. Set by `restart()` and
+   * by an address that drew nothing; a capture that merely ended is asked for
+   * again, not restarted.
+   */
+  const freshNextRef = useRef(false);
+  const scheduleRecover = useCallback((options?: { fresh?: boolean }) => {
     if (recoverTimerRef.current != null) return;
     if (recoverTriesRef.current >= RECOVER_MAX_TRIES) return;
     recoverTriesRef.current += 1;
     recoverTimerRef.current = setTimeout(() => {
       recoverTimerRef.current = null;
-      if (wantedRef.current) setRestartNonce((nonce) => nonce + 1);
+      if (!wantedRef.current) return;
+      if (options?.fresh) freshNextRef.current = true;
+      setRestartNonce((nonce) => nonce + 1);
     }, RECOVER_DELAY_MS * recoverTriesRef.current);
   }, []);
   useEffect(() => () => {
@@ -206,7 +218,7 @@ export function useMacDesktopLiveView(args: {
   // An address that never draws a frame is as dead as one that ended.
   useEffect(() => {
     if (!wanted || !url || status !== "starting") return undefined;
-    const timer = setTimeout(scheduleRecover, FIRST_FRAME_TIMEOUT_MS);
+    const timer = setTimeout(() => scheduleRecover({ fresh: true }), FIRST_FRAME_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [scheduleRecover, status, url, wanted]);
 
@@ -238,6 +250,7 @@ export function useMacDesktopLiveView(args: {
   const restart = useCallback(() => {
     setResolveFailures(0);
     recoverTriesRef.current = 0;
+    freshNextRef.current = true;
     setRestartNonce((nonce) => nonce + 1);
   }, []);
 
@@ -254,11 +267,17 @@ export function useMacDesktopLiveView(args: {
     setStatus("starting");
     setError(null);
 
+    const fresh = freshNextRef.current;
+    freshNextRef.current = false;
     const run = async () => {
-      const started = await window.ade.macDesktop.startStream(
-        { laneId, chatSessionId },
-        pinRef.current,
-      );
+      // Through the lease module, so a start another holder of this chat
+      // already has in flight is joined rather than repeated.
+      const started = await startMacDesktopLiveStream({
+        laneId,
+        chatSessionId,
+        runtimePin: pinRef.current,
+        fresh,
+      });
       if (cancelled) return;
       setStreamStatus(started);
       const hostUrl = started.transport?.url ?? null;
@@ -296,10 +315,11 @@ export function useMacDesktopLiveView(args: {
         // only ever handed out by this call, and a stream that was restarted
         // on the host — or taken over by a second viewer — has a different one.
         // The host returns the running transport untouched when there is one.
-        const started = await window.ade.macDesktop.startStream(
-          { laneId, chatSessionId },
-          pinRef.current,
-        );
+        const started = await startMacDesktopLiveStream({
+          laneId,
+          chatSessionId,
+          runtimePin: pinRef.current,
+        });
         if (cancelled) return;
         setStreamStatus(started);
         const hostUrl = started.transport?.url ?? null;
