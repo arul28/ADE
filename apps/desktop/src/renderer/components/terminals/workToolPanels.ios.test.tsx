@@ -18,6 +18,10 @@ vi.mock("../apple/AppleDevicePane", () => ({
   AppleDevicePane: () => <canvas data-testid="fake-decoder" width={decoder.width} height={decoder.height} />,
 }));
 
+vi.mock("./WorkToolReadOnlyView", () => ({
+  WorkToolReadOnlyView: ({ tool }: { tool: string }) => <div data-testid={`read-only-${tool}`} />,
+}));
+
 const { WORK_TOOL_COMPONENTS } = await import("./workToolPanels");
 const {
   appleStreamLeaseKey,
@@ -195,5 +199,29 @@ describe("the Apple tool panel's handover", () => {
     render(<WorkIosTool {...props()} laneId={null} />);
     expect(deviceList).not.toHaveBeenCalled();
     expect(getAppleMiniPlayerTarget()).toBeNull();
+  });
+});
+
+describe("the Mac Desktop tool panel on a read-only surface", () => {
+  /*
+   * The hosted web client shows the desktop's Mac Desktop read-only. `ade
+   * mac-desktop show` answers "shown" only once the surface registers, so the
+   * read-only view must register it the way the browser's read-only view does.
+   */
+  it("registers the read-only view as the lane's Mac Desktop surface", () => {
+    resetWorkToolOnScreenForTests();
+    const WorkMacDesktopTool = WORK_TOOL_COMPONENTS["mac-desktop"];
+    const key = workSurfaceKey("mac-desktop", "bound", LANE);
+    expect(isWorkSurfaceMounted(key)).toBe(false);
+    const view = render(
+      <WorkMacDesktopTool
+        {...props()}
+        toolContext={{ isWebClient: true } as WorkToolPanelProps["toolContext"]}
+      />,
+    );
+    expect(view.getByTestId("read-only-mac-desktop")).toBeTruthy();
+    expect(isWorkSurfaceMounted(key)).toBe(true);
+    view.unmount();
+    expect(isWorkSurfaceMounted(key)).toBe(false);
   });
 });

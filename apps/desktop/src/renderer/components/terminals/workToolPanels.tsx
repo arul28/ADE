@@ -561,7 +561,11 @@ function WorkMacDesktopTool({
   // `ade mac-desktop show` answers "shown" only once this is on screen.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("mac-desktop", mountScope, laneId) : null);
   if (isReadOnlyWorkTool("mac-desktop", toolContext)) {
-    return <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />;
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />
+      </div>
+    );
   }
   if (!laneId) return <NoLaneNotice />;
   return (
