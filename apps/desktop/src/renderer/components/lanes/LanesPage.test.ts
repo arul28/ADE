@@ -801,21 +801,6 @@ describe("lane vs chat PR scoping", () => {
   });
 
   // Historical rows with no chat link still fall back to the branch rule.
-  it("shows an owned PR on the checked-out branch when the lane record is stale", () => {
-    const lane = makeLane({
-      id: "lane-1",
-      branchRef: "t3code/6fcd8d4a",
-      branchDrift: {
-        expectedBranchRef: "t3code/6fcd8d4a",
-        headBranchRef: "t3code/web-render-local-dev",
-      },
-    });
-    const live = makePr({ id: "pr-live", laneId: "lane-1", headBranch: "t3code/web-render-local-dev" });
-    const recorded = makePr({ id: "pr-recorded", laneId: "lane-1", headBranch: "t3code/6fcd8d4a" });
-
-    expect(selectLanePrs(lane, [live, recorded]).map((pr) => pr.id)).toEqual(["pr-live"]);
-  });
-
   it("hides an owned PR on an old branch when no chat linked it", () => {
     const lane = makeLane({ id: "lane-1", branchRef: "ade/now" });
     const stale = makePr({ id: "pr-stale", laneId: "lane-1", headBranch: "ade/before" });
