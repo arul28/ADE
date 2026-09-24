@@ -7,6 +7,7 @@ import { AutoUpdateBanner, describeStalenessBanner } from "./AutoUpdateBanner";
 import { ToastStack } from "./toast/ToastStack";
 import { AppBannerHost } from "../ui/notice";
 import { resetAppBannersForTests } from "../ui/notice/appBannerStore";
+import { DialogHost, __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 import { getToasts, dismissToast } from "./toast/toastStore";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
@@ -27,6 +28,7 @@ function installAdeMock(initial: AutoUpdateSnapshot = snapshot({})) {
     configurable: true,
     value: {
       updateGetState: vi.fn(async () => current),
+      updateGetInstallImpact: vi.fn(async () => ({ connectedPhones: [] })),
       updateQuitAndInstall,
       updateCancelAutoApply,
       analytics: { capture },
@@ -94,6 +96,7 @@ describe("AutoUpdateBanner", () => {
 
   afterEach(() => {
     cleanup();
+    __resetDialogRequestsForTests();
     resetAppBannersForTests();
     for (const toast of getToasts()) dismissToast(toast.id);
     vi.useRealTimers();
@@ -108,14 +111,54 @@ describe("AutoUpdateBanner", () => {
     });
   });
 
-  it("does not show a wide banner for a normally ready update", async () => {
+  it("shows a floating prompt for a normally ready update", async () => {
+    installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
+    render(<><AutoUpdateBanner /><AppBannerHost /></>);
+
+    const title = await screen.findByText("Update v1.2.35 is ready to install");
+    expect(title.closest('[data-banner-layout="floating"]')).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restart and install" })).toBeTruthy();
+    expect(screen.queryByTestId("app-banner-dock")).toBeNull();
+  });
+
+  it("reappears for a new ready version after the current prompt is dismissed", async () => {
     const mock = installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
     render(<><AutoUpdateBanner /><AppBannerHost /></>);
 
+    await screen.findByText("Update v1.2.35 is ready to install");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss update prompt" }));
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: /restart now/i })).toBeNull();
+      expect(screen.queryByText("Update v1.2.35 is ready to install")).toBeNull();
     });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      properties: expect.objectContaining({ user_action: "dismissed" }),
+    }));
+
+    mock.emit(snapshot({ status: "ready", version: "1.2.36" }));
+    expect(await screen.findByText("Update v1.2.36 is ready to install")).toBeTruthy();
+  });
+
+  it("uses the shared install confirmation and action from the floating prompt", async () => {
+    const mock = installAdeMock(snapshot({ status: "ready", version: "1.2.35" }));
+    render(<><AutoUpdateBanner /><AppBannerHost /><DialogHost /></>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restart and install" }));
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "ADE will quit and reopen automatically to install v1.2.35.",
+    });
+    expect(dialog.textContent).toContain("Open ADE Code terminals and running agent sessions");
+    expect(window.ade.updateGetInstallImpact).toHaveBeenCalledTimes(1);
     expect(mock.updateQuitAndInstall).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => {
+      expect(mock.updateQuitAndInstall).toHaveBeenCalledTimes(1);
+    });
+    expect(mock.capture).toHaveBeenCalledWith(expect.objectContaining({
+      event: "ade_update_prompted",
+      properties: expect.objectContaining({ user_action: "accepted", to_version: "1.2.35" }),
+    }));
+    expect(screen.getByRole("button", { name: "Restarting…" })).toBeTruthy();
   });
 
   it("shows the parked retry copy", async () => {

@@ -4,8 +4,7 @@ import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
-import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
-import { confirmDialog } from "../ui/dialog/confirm";
+import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
 import { Dialog } from "../ui/dialog";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
@@ -121,42 +120,12 @@ export function AutoUpdateControl() {
   }, [dismissInstalledNotice]);
 
   const handleRestartToInstall = useCallback(async () => {
-    // Best-effort probe of live connections (paired phones) so the user knows
-    // what drops while ADE and its brain service restart on the new version.
-    const impact = await window.ade.updateGetInstallImpact().catch(() => null);
-    const phones = impact?.connectedPhones ?? [];
-    const title = `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.`;
-    const lines: string[] = [];
-    if (phones.length === 1) {
-      lines.push(
-        `${phones[0].deviceName} is connected through ADE phone sync. It will disconnect during the update and reconnect automatically once ADE is back.`,
-      );
-    } else if (phones.length > 1) {
-      lines.push(
-        `Connected phones (${phones.map((phone) => phone.deviceName).join(", ")}) will disconnect during the update and reconnect automatically once ADE is back.`,
-      );
-    }
-    lines.push(
-      "Open ADE Code terminals and running agent sessions on this machine will disconnect while the ADE service restarts — you can reopen them right after the update.",
-      "",
-      "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
+    const started = await requestDownloadedUpdateInstall(
+      snapshot,
+      () => setInstallRequested(true),
     );
-    const confirmed = await confirmDialog({ title, message: lines.join("\n"), confirmLabel: "Continue" });
-    if (!confirmed) {
-      captureUpdatePromptDecision(snapshot, "deferred");
-      return;
-    }
-    captureUpdatePromptDecision(snapshot, "accepted");
-    setInstallRequested(true);
-    void window.ade.updateQuitAndInstall()
-      .then((started) => {
-        if (!started) setInstallRequested(false);
-      })
-      .catch(() => {
-        setInstallRequested(false);
-        // The main process logs updater failures.
-      });
-  }, [snapshot.currentVersion, snapshot.version]);
+    if (!started) setInstallRequested(false);
+  }, [snapshot]);
 
   const handleSkewUpdateCheck = useCallback(() => {
     setSnapshot((current) => current.status === "idle"

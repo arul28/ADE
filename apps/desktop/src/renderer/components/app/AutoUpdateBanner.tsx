@@ -6,10 +6,12 @@ import { useBrainRepair, type BrainRepair } from "../../hooks/useBrainRepair";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { APP_BANNER_PRIORITY, useAppBanner, type NoticeAction } from "../ui/notice";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
+import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
 import { ReportIssueButton } from "./ReportIssueButton";
 
 const AUTO_APPLY_TOAST_ID = "ade-auto-update-auto-apply";
 const APP_BANNER = { placement: "docked", priority: APP_BANNER_PRIORITY.app } as const;
+const UPDATE_PROMPT_BANNER = { placement: "floating", priority: APP_BANNER_PRIORITY.app } as const;
 
 type StalenessBanner = {
   /** Exceptional install states that need a prominent recovery action. */
@@ -57,7 +59,9 @@ export function describeStalenessBanner(snapshot: AutoUpdateSnapshot): Staleness
 export function AutoUpdateBanner() {
   const snapshot = useAutoUpdateSnapshot();
   const [dismissedSignature, setDismissedSignature] = useState<string | null>(null);
+  const [dismissedReadyVersion, setDismissedReadyVersion] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [installRequested, setInstallRequested] = useState(false);
   const cancelRequestedRef = useRef(false);
 
   const banner = describeStalenessBanner(snapshot);
@@ -70,6 +74,10 @@ export function AutoUpdateBanner() {
   useEffect(() => {
     setRestarting(false);
   }, [signature]);
+
+  useEffect(() => {
+    if (snapshot.status !== "ready") setInstallRequested(false);
+  }, [snapshot.status, updateVersion]);
 
   const handleRestart = useCallback(() => {
     captureUpdatePromptDecision({ currentVersion, version: updateVersion }, "accepted");
@@ -98,6 +106,13 @@ export function AutoUpdateBanner() {
       },
     );
   }, [currentVersion, updateVersion]);
+
+  const handleInstallReadyUpdate = useCallback(() => {
+    void requestDownloadedUpdateInstall(snapshot, () => setInstallRequested(true))
+      .then((started) => {
+        if (!started) setInstallRequested(false);
+      });
+  }, [snapshot]);
 
   // Drive the countdown toast off `autoApplyPending`. Re-render once a second so
   // the visible seconds tick down; the snapshot event clears it on apply/cancel.
@@ -130,6 +145,11 @@ export function AutoUpdateBanner() {
   useEffect(() => () => dismissToast(AUTO_APPLY_TOAST_ID), []);
 
   const showBanner = Boolean(banner) && signature !== dismissedSignature;
+  const showReadyUpdatePrompt =
+    snapshot.status === "ready"
+    && Boolean(updateVersion)
+    && !banner
+    && dismissedReadyVersion !== updateVersion;
 
   useAppBanner(
     showBanner && banner
@@ -157,6 +177,34 @@ export function AutoUpdateBanner() {
         }
       : null,
     APP_BANNER,
+  );
+
+  useAppBanner(
+    showReadyUpdatePrompt
+      ? {
+          id: "auto-update-ready",
+          tone: "accent",
+          icon: <ArrowsClockwise size={13} weight="bold" />,
+          title: `Update v${updateVersion} is ready to install`,
+          actions: [{
+            label: installRequested ? "Restarting…" : "Restart and install",
+            icon: <ArrowsClockwise size={12} weight="bold" />,
+            variant: "primary",
+            busy: installRequested,
+            disabled: installRequested,
+            onClick: handleInstallReadyUpdate,
+          }],
+          dismiss: {
+            label: "Dismiss update prompt",
+            title: "Dismiss update prompt",
+            onDismiss: () => {
+              captureUpdatePromptDecision(snapshot, "dismissed");
+              setDismissedReadyVersion(updateVersion);
+            },
+          },
+        }
+      : null,
+    UPDATE_PROMPT_BANNER,
   );
 
   return <UpdateTransactionNotice result={snapshot.updateTransaction ?? null} />;

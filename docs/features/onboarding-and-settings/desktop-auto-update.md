@@ -283,10 +283,14 @@ vanish: the snapshot records `parked: { reason, at }` where `reason` is a typed
 — Restart to retry". It also renders "ADE update did not install — Restart to
 retry" when launch reconciliation proves that a requested install returned on
 the old version. Both provide a **Restart now** action wired to
-`updateQuitAndInstall()`. A normal downloaded `ready` update stays in the
-top-right `AutoUpdateControl` and does not duplicate that control with a wide
-banner. Banner dismissal is keyed on a stable failure signature so a fresh
-abort or failed attempt reappears while an unchanged state stays hidden.
+`updateQuitAndInstall()`. A normally downloaded `ready` update appears as a
+floating app-shell prompt with its version and a **Restart and install** action,
+alongside the flashing top-right `AutoUpdateControl`. Both actions use the same
+impact confirmation and install handler. Dismissing the floating prompt hides
+it for that version in the current app session; the top-right control remains
+available, and a new version raises a fresh prompt. Recovery-banner dismissal
+is keyed on a stable failure signature so a fresh abort or failed attempt
+reappears while an unchanged state stays hidden.
 
 ## Applying an update is one transaction
 

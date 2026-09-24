@@ -1502,15 +1502,23 @@ banner):
   app-shell banner, and the About panel — consumes it so they never disagree
   about what is running versus what is staged.
 - `apps/desktop/src/renderer/components/app/AutoUpdateBanner.tsx` — the
-  exceptional app-shell recovery banner plus the automatic-install countdown
-  toast, colocated so both read one snapshot subscription. Renders a `parked` state as
-  "ADE update didn't finish — Restart to retry" and a failed handoff as "ADE
-  update did not install — Restart to retry", each with a **Restart now**
-  action. A normally staged `ready` update does not render the wide banner; it
-  remains available from the top-right control. Dismissal is keyed on a stable
-  failure signature so a fresh abort or failed attempt can reappear. The toast
-  reads "ADE will update in Ns", is driven off `autoApplyPending`, and has a
-  **Cancel** action wired to `updateCancelAutoApply()`.
+  floating prompt for a normally staged `ready` update, the exceptional
+  app-shell recovery banner, and the automatic-install countdown toast,
+  colocated so they read one snapshot subscription. The ready prompt names the
+  version and offers **Restart and install**, sharing its impact confirmation
+  and install handler with the flashing top-right control. Dismissing it hides
+  that version's prompt for the current app session; the top-right control
+  remains available. The banner renders a `parked` state as "ADE update didn't
+  finish — Restart to retry" and a failed handoff as "ADE update did not
+  install — Restart to retry", each with a **Restart now** action. Recovery
+  dismissal is keyed on a stable failure signature so a fresh abort or failed
+  attempt can reappear. The toast reads "ADE will update in Ns", is driven off
+  `autoApplyPending`, and has a **Cancel** action wired to
+  `updateCancelAutoApply()`.
+- `apps/desktop/src/renderer/components/app/autoUpdateInstallAction.ts` — the
+  shared install-impact confirmation, decision capture, and
+  `updateQuitAndInstall()` action used by the top-right control and floating
+  ready prompt.
 - `apps/desktop/src/renderer/components/app/BrainRecoveryNotice.tsx` — the
   app-shell notice shown once per distinct machine-brain event-loop recovery.
   It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()` and words
