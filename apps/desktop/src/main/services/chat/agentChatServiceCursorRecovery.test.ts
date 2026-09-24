@@ -1487,22 +1487,37 @@ describe("createAgentChatService", () => {
         .filter((event) => event.event.type === "system_notice")
         .map((event) => (event.event.type === "system_notice" ? event.event.message : ""));
 
-      it("folds the message into the live run when the turn accepts it", async () => {
+      /** Every delivery state the steer carrying `text` was shown in, in order. */
+      const steerRowStates = (events: AgentChatEventEnvelope[], text: string) => events
+        .flatMap((event) => (event.event.type === "user_message" && event.event.text === text
+          ? [event.event.deliveryState ?? "plain"]
+          : []));
+
+      it("shows the message as accepted while the run decides, then folds it inline on the same row", async () => {
         const events: AgentChatEventEnvelope[] = [];
         const { service, session } = await startStalledCursorTurn(events);
 
-        await service.steer({
+        // `Run.steer()` stays pending until the turn reads the message, which
+        // can take many seconds. The message must be on screen meanwhile.
+        const releaseSteer = parkCursorSteer();
+        const steering = service.steer({
           sessionId: session.id,
           text: "Do this instead.",
           dispatchMode: "inline",
         });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        expect(steerRowStates(events, "Do this instead.")).toEqual(["accepted"]);
+        releaseSteer();
+        const { steerId } = await steering;
 
         expect(mockState.cursorSdkSteerCalls).toEqual(["Do this instead."]);
         // The steered text belongs to the live turn, so it must not start one.
         expect(mockState.cursorSdkSendCalls).toHaveLength(1);
-        const inline = events.filter((event) =>
-          event.event.type === "user_message" && event.event.deliveryState === "inline");
-        expect(inline).toHaveLength(1);
+        // One row, moved on: the same steerId, no second bubble.
+        expect(steerRowStates(events, "Do this instead.")).toEqual(["accepted", "inline"]);
+        expect(events.filter((event) =>
+          event.event.type === "user_message" && event.event.text === "Do this instead."
+          && event.event.steerId !== steerId)).toEqual([]);
         // Nothing is left staged, so no chip survives the send.
         expect(events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(false);
@@ -1599,6 +1614,8 @@ describe("createAgentChatService", () => {
         const texts = noticeTexts(events);
         expect(texts.some((text) => text.includes("queue is full"))).toBe(true);
         expect(texts.some((text) => text.includes("send as a new message"))).toBe(false);
+        // The row it was offered on does not stay "Steering…".
+        expect(steerRowStates(events, "One too many.")).toEqual(["accepted", "failed"]);
       });
 
       it("queues the message rather than losing it when the steer call throws", async () => {
@@ -1642,6 +1659,16 @@ describe("createAgentChatService", () => {
         await pumpUntil("stranded row delivered", () => mockState.cursorSdkSendCalls.length >= 2);
         expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
           .toContain("Stranded without the flush.");
+        // It lands on the row it was offered on, not beside it as a second
+        // bubble: every row of this text is the one steer.
+        await pumpUntil("stranded row settled", () =>
+          steerRowStates(events, "Stranded without the flush.").includes("delivered"));
+        const rows = events.filter((event) =>
+          event.event.type === "user_message" && event.event.text === "Stranded without the flush.");
+        expect(steerRowStates(events, "Stranded without the flush.")[0]).toBe("accepted");
+        expect(steerRowStates(events, "Stranded without the flush.").at(-1)).toBe("delivered");
+        expect(new Set(rows.map((event) => event.event.type === "user_message" ? event.event.steerId : null)).size).toBe(1);
+        expect(steerRowStates(events, "Stranded without the flush.")).not.toContain("plain");
       });
 
       it("refuses to edit or cancel a row while its dispatch is in flight", async () => {
@@ -1767,6 +1794,51 @@ describe("createAgentChatService", () => {
         expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(true);
         expect(events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "inline")).toBe(false);
+      });
+
+      it("reports a promoted row dropped, and fails it, when Stop clears the queue mid-offer", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Offered, then stopped." });
+        await pumpUntil("staged row", () => steerRowStates(events, "Offered, then stopped.").includes("queued"));
+
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const releaseSteer = parkCursorSteer();
+        const dispatching = service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "inline" });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        expect(steerRowStates(events, "Offered, then stopped.").at(-1)).toBe("accepted");
+
+        // Stop clears the queue while the run is still deciding.
+        void service.interrupt({ sessionId: session.id });
+        await pumpUntil("queue cleared", () => steerRowStates(events, "Offered, then stopped.").includes("failed"));
+        releaseSteer();
+        const result = await dispatching;
+
+        // Gone, not still queued: nothing is left to send it.
+        expect(result).toEqual({ dispatchedAt: null, reason: "dropped" });
+        expect(steerRowStates(events, "Offered, then stopped.").at(-1)).toBe("failed");
+        expect(noticeTexts(events).some((text) => text.includes("send as a new message"))).toBe(false);
+      });
+
+      it("reports a promoted row dropped, and fails it, when the user cancels it after a recycle mid-offer", async () => {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service, session } = await startStalledCursorTurn(events);
+        const staged = await service.steer({ sessionId: session.id, text: "Offered, recycled, cancelled." });
+        await pumpUntil("staged row", () => steerRowStates(events, "Offered, recycled, cancelled.").includes("queued"));
+
+        mockState.cursorSteerOutcome = "revert_to_followup";
+        const releaseSteer = parkCursorSteer();
+        const dispatching = service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "inline" });
+        await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
+        // The recycle carries the row onto the replacement runtime, where the
+        // user cancels it while the old runtime's offer is still awaiting.
+        await tripCursorSdkSilenceWatchAndRecycle();
+        await service.cancelSteer({ sessionId: session.id, steerId: staged.steerId });
+        releaseSteer();
+        const result = await dispatching;
+
+        expect(result).toEqual({ dispatchedAt: null, reason: "dropped" });
+        expect(steerRowStates(events, "Offered, recycled, cancelled.").at(-1)).toBe("failed");
       });
     });
 

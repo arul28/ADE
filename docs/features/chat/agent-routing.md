@@ -1196,15 +1196,28 @@ Two consequences worth stating rather than discovering:
 
 The service never throws for a refused inline steer. `tryCursorInlineSteer`
 declines up front for attachments, per-message overrides, a cloud session, or a
-dead runtime, and otherwise asks the worker; only a `complete_delivered` outcome
-transfers ownership of the message to the turn (`CursorSdkSteerOutcome` in
+dead runtime (`declined`, no row emitted), and otherwise writes the user row as
+`accepted` and asks the worker. `Run.steer()` stays pending until the turn
+reads the message at its next model step, so the row is on screen for that
+wait instead of appearing only when it ends. Only a `complete_delivered`
+outcome moves the row to `inline` and transfers ownership of the message to
+the turn (`CursorSdkSteerOutcome` in
 `cursorSdkProtocol.ts` — `revert_to_followup` is the SDK's refusal and
 `unsupported` is ADE's diagnostics-only third value, treated identically). Every
-other outcome stages the row exactly as a queued send would have, emits one
-"couldn't go into the running turn" notice, and — because Cursor drains
-`pendingSteers` only at a turn boundary — runs `drainCursorQueueHeadIfIdle` so a
-row that landed after that boundary already passed is not left waiting for the
-user to send something else.
+other outcome (`refused`) moves the same row on: it stages the row exactly as a
+queued send would have (`queued`), sends it as its own turn when the runtime
+was recycled and nothing is running (`delivered`, same `steerId`, through
+`sendRefusedSteerAsOwnTurn`), or marks it `failed` when the session closed or
+the queue is full. It emits one "couldn't go into the running turn" notice,
+and — because Cursor drains `pendingSteers` only at a turn boundary — runs
+`drainCursorQueueHeadIfIdle` so a row that landed after that boundary already
+passed is not left waiting for the user to send something else. A drained
+Cursor or OpenCode row is sent with its `steerId`, as Claude's is, so it lands
+on its own row as `delivered` rather than as a second bubble. OpenCode and Pi
+write `accepted` before their admission round trip the same way, so every
+inline steer shares one lifecycle; a refused OpenCode steer is settled by the
+same three outcomes, and a Pi steer has no queue fallback, so a throw marks the
+row `failed`.
 
 #### Cursor turn telemetry
 

@@ -12903,9 +12903,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // refusals are ADE's own (attachments, a cloud run, no live turn) and the
         // agent is never asked.
         const notDispatched = dispatched?.dispatchedAt == null;
-        const inlineNotice = notDispatched
-          ? "The message couldn't go into the running turn; it is still queued."
-          : `Sent staged message into the active ${agentLabel} turn.`;
+        // `dropped`: the refused message is gone, not back on the queue.
+        const dropped = notDispatched && dispatched?.reason === "dropped";
+        let inlineNotice = `Sent staged message into the active ${agentLabel} turn.`;
+        if (dropped) inlineNotice = "The message couldn't go into the running turn and was dropped.";
+        else if (notDispatched) inlineNotice = "The message couldn't go into the running turn; it is still queued.";
         const interruptNotice = notDispatched
           ? "The staged message couldn't be promoted into the running turn; it is still queued."
           : interruptContinues

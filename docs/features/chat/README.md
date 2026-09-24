@@ -2391,10 +2391,10 @@ meets the bubble's hover actions (time, undo, copy). The line reads:
 | `deliveryState` | Line | Tone and glyph |
 |---|---|---|
 | `inline` (Claude, Cursor, OpenCode, Pi steer into the live turn) | Steered | muted, steering wheel |
-| `accepted` (Codex took the steer, the model has not read it) | Steering… | muted, steering wheel |
+| `accepted` (Codex, Cursor, OpenCode, or Pi took the steer; the model has not read it yet) | Steering… | muted, steering wheel |
 | `processed` (Codex model read the steer) | Steered | muted, steering wheel |
 | `unprocessed` (the turn ended before the model read it) | Not steered — turn ended first, then Run next / Edit / Dismiss | amber, steering wheel |
-| `delivered` with a `steerId` (a staged message sent at the turn boundary) | Sent after turn | muted, clock |
+| `delivered` with a `steerId` (a staged message sent at the turn boundary, or a refused inline steer sent as its own turn) | Sent after turn | muted, clock |
 | `failed` with a `steerId` | Steer failed | red, steering wheel |
 | `failed` on a new-lane launch message | Couldn't send — retrying (reason on hover) | amber, warning |
 | `failed` otherwise | Couldn't send | red, warning |

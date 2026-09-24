@@ -16,6 +16,7 @@ import {
   waitForEvent,
   waitForFakeTimerCondition,
   waitForFakeTimers,
+  writePersistedChatState,
   writeTestTranscriptEnvelopes,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
@@ -513,6 +514,77 @@ describe("createAgentChatService", () => {
           && entry.event.deliveryState === "unprocessed"
         )).toBe(true);
       });
+    });
+
+    // A Cursor / OpenCode / Pi row reads `accepted` only while this process
+    // awaits the provider. A crash in that window leaves it "Steering…" for
+    // good unless the next load fails it.
+    it.each([
+      { label: "fails a Cursor steer a crash left accepted", provider: "cursor", swept: true },
+      { label: "leaves a Codex accepted steer to its own hydration", provider: "codex", swept: false },
+      { label: "leaves a Cursor steer that is still on the restored queue", provider: "cursor", swept: false, onQueue: true },
+      { label: "leaves a Cursor steer another ADE home's brain owns", provider: "cursor", swept: false, foreignOwner: true },
+    ] as const)("on load, $label", async ({ provider, swept, ...fixture }) => {
+      installRealTranscriptParser();
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const first = createService();
+      const session = await first.service.createSession({
+        laneId: "lane-1",
+        provider,
+        model: provider === "codex" ? "gpt-5.5" : "composer-2",
+        ...(provider === "cursor" ? { modelId: "cursor/composer-2" } : {}),
+      });
+      const transcriptPath = String(first.sessionService.get(session.id)?.transcriptPath);
+      first.service.forceDisposeAll();
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, `${JSON.stringify({
+        sessionId: session.id,
+        timestamp: "2026-09-24T05:20:00.000Z",
+        sequence: 1,
+        event: {
+          type: "user_message",
+          text: "Steered right before the crash.",
+          steerId: "steer-orphan",
+          turnId: "turn-old",
+          deliveryState: "accepted",
+        },
+      })}\n`, "utf8");
+      const fireAt = Date.now() + 30 * 60_000;
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        // Armed by a usage limit: failing the row is not the chat doing work,
+        // so it must not clear this.
+        usageLimitResume: {
+          state: "armed",
+          provider,
+          fireAt: new Date(fireAt).toISOString(),
+          resetAt: new Date(fireAt - 90_000).toISOString(),
+          scheduleId: `auto-resume:${session.id}`,
+          attempts: 1,
+          providerDetail: "100% utilized",
+          turnId: "turn-old",
+          updatedAt: new Date().toISOString(),
+        },
+        ...("onQueue" in fixture ? { pendingSteers: [{ steerId: "steer-orphan", text: "Steered right before the crash." }] } : {}),
+        ...("foreignOwner" in fixture
+          ? { runtimeOwner: { brainId: "other-brain", pid: 4242, startedAt: null, adeHome: "/elsewhere/.ade" } }
+          : {}),
+      });
+
+      const events: AgentChatEventEnvelope[] = [];
+      const second = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      await second.service.resumeSession({ sessionId: session.id });
+
+      const failed = events.filter((entry) =>
+        entry.event.type === "user_message"
+        && entry.event.steerId === "steer-orphan"
+        && entry.event.deliveryState === "failed");
+      expect(failed).toHaveLength(swept ? 1 : 0);
+      if (swept) {
+        expect(failed[0]!.event).toMatchObject({ text: "Steered right before the crash.", turnId: "turn-old" });
+        expect((await second.service.getSessionSummary(session.id))?.usageLimitResume ?? null).not.toBeNull();
+      }
+      second.service.forceDisposeAll();
     });
 
     it("runs an unprocessed Codex follow-up once and records an idempotent durable resolution", async () => {

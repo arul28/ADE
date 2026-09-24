@@ -70,7 +70,7 @@ export function describeUserMessageStatus(event: UserMessageEvent): UserMessageS
         label: "Steering…",
         tone: "muted",
         icon: "steer",
-        title: "The running turn accepted this; the agent has not read it yet.",
+        title: "Offered to the running turn; the agent has not read it yet.",
       };
     case "delivered":
       return isSteer

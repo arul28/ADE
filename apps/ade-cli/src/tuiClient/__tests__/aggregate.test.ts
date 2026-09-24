@@ -565,6 +565,18 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(derivePendingSteers(events)).toEqual([{ steerId: "steer-1", text: "queued" }]);
   });
 
+  it.each([
+    // A refused Cursor/OpenCode inline steer comes back as `queued` on the same steerId.
+    { label: "shows a steer staged again after its inline offer is refused", states: ["queued", "accepted", "queued"], staged: true },
+    { label: "clears a steer the live turn took inline", states: ["queued", "accepted", "inline"], staged: false },
+    { label: "clears a steer that went nowhere", states: ["accepted", "failed"], staged: false },
+  ] as const)("$label", ({ states, staged }) => {
+    const events = states.map((deliveryState, index) =>
+      env(`2026-01-01T12:00:0${index}.000Z`, { type: "user_message", text: "steer me", steerId: "steer-1", deliveryState }));
+
+    expect(derivePendingSteers(events)).toEqual(staged ? [{ steerId: "steer-1", text: "steer me" }] : []);
+  });
+
   it("treats a stateless context_compact as a completed (done) block", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", turnId: "turn-1" }),
