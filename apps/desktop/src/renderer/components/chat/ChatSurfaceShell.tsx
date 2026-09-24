@@ -81,7 +81,7 @@ export function ChatSurfaceShell({
   const inner = (
     <>
       {header ? (
-        <div className="ade-chat-shell-header relative z-10 w-full min-w-0 max-w-full overflow-visible rounded-none">
+        <div data-chat-shell-header="" className="ade-chat-shell-header relative z-10 w-full min-w-0 max-w-full overflow-visible rounded-none">
           {header}
         </div>
       ) : null}

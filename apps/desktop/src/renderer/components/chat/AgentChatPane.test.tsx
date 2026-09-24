@@ -26,6 +26,7 @@ import type {
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { openChatHandoff, takeChatHandoff } from "../../lib/chatHandoffIntent";
+import { stashComposerHandoffOrigin } from "./launch/chatLaunchDock";
 import { CLAUDE_SESSION_QUOTA_CARD_ACTION, CLAUDE_SESSION_QUOTA_FORK_NOTE } from "../../../shared/claudeSessionQuota";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
@@ -35,7 +36,10 @@ import {
   invalidateAiDiscoveryCache,
   type AiStatusCacheUpdatedEventDetail,
 } from "../../lib/aiDiscoveryCache";
-import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
+import {
+  DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  type DraftLaunchJob,
+} from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -1301,6 +1305,7 @@ function renderParallelDraftPane(args?: {
 }
 
 function renderAutoCreateDraftPane(args?: {
+  draftContextTargetId?: string | null;
   onSessionCreated?: (
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
@@ -1352,6 +1357,7 @@ function renderAutoCreateDraftPane(args?: {
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
+                draftContextTargetId={args?.draftContextTargetId}
                 availableLanes={lanes}
                 onLaneChange={args?.onLaneChange ?? vi.fn()}
                 onDraftMachineChange={args?.onDraftMachineChange}
@@ -3447,6 +3453,173 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText("Open the simulator screen in preview.")).toBeTruthy();
     });
+  });
+
+  it("starts dock and departing motion while a reused pane waits for its seeded bubble", async () => {
+    const sessionA = buildSession("session-a", { status: "idle" });
+    const sessionB = buildSession("session-b", { status: "idle" });
+    installAdeMocks({ sessions: [sessionA, sessionB] });
+
+    const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const departingHost = document.createElement("div");
+    const departingLayer = document.createElement("div");
+    departingHost.appendChild(departingLayer);
+    document.body.appendChild(departingHost);
+    const animationCalls: Array<{ target: string; cardIsInDom: boolean; cardText: string }> = [];
+    const originalElementQuerySelector = Element.prototype.querySelector;
+    let delayNextCardLookup = false;
+    let delayedCardLookup = false;
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.matches("[data-chat-user-message-card]")) {
+          return {
+            x: 360,
+            y: 260,
+            left: 360,
+            top: 260,
+            right: 660,
+            bottom: 300,
+            width: 300,
+            height: 40,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        if (this.matches("[data-chat-composer-dock]")) {
+          return {
+            x: 220,
+            y: 300,
+            left: 220,
+            top: 300,
+            right: 740,
+            bottom: 420,
+            width: 520,
+            height: 120,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return originalRect.call(this);
+      },
+    });
+    Object.defineProperty(Element.prototype, "querySelector", {
+      configurable: true,
+      writable: true,
+      value(this: Element, selector: string) {
+        if (delayNextCardLookup && selector === "[data-chat-user-message-card]") {
+          delayNextCardLookup = false;
+          delayedCardLookup = true;
+          return null;
+        }
+        return originalElementQuerySelector.call(this, selector);
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "animate", {
+      configurable: true,
+      writable: true,
+      value(this: HTMLElement) {
+        const card = document.querySelector<HTMLElement>("[data-chat-user-message-card]");
+        let target = "other";
+        if (this.matches("[data-chat-user-message-card]")) target = "user-card";
+        else if (this.closest("[data-chat-first-message-flight]")) target = "first-flight";
+        else if (this.matches("[data-chat-composer-dock]")) target = "dock";
+        else if (this === departingLayer) target = "departing";
+        animationCalls.push({ target, cardIsInDom: Boolean(card?.isConnected), cardText: card?.textContent ?? "" });
+        return { addEventListener: vi.fn() } as unknown as Animation;
+      },
+    });
+
+    try {
+      const view = render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionA.laneId}
+            lockSessionId={sessionA.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionA}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+      await screen.findByRole("textbox");
+
+      const firstMessageText = "Seed the reused pane before its flight.";
+      const firstMessage: AgentChatEventEnvelope = {
+        sessionId: sessionB.sessionId,
+        timestamp: "2026-09-22T10:00:00.000Z",
+        event: { type: "user_message", text: firstMessageText, deliveryState: "queued" },
+      };
+      stashComposerHandoffOrigin(sessionB.sessionId, {
+        composer: { left: 120, top: 180, width: 520, height: 120 },
+        text: {
+          left: 148,
+          top: 200,
+          box: { left: 120, top: 180, width: 520, height: 120 },
+          typed: {
+            text: firstMessageText,
+            width: 480,
+            height: 80,
+            font: "14px sans-serif",
+            lineHeight: "20px",
+            letterSpacing: "normal",
+            color: "white",
+          },
+        },
+        departing: {
+          host: departingHost,
+          items: [{
+            layer: departingLayer,
+            kind: "fade",
+            rect: { left: 12, top: 16, width: 120, height: 24 },
+          }],
+          played: false,
+        },
+        firstMessage,
+      });
+
+      delayNextCardLookup = true;
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionB.laneId}
+            lockSessionId={sessionB.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionB}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => expect(delayedCardLookup).toBe(true));
+      await waitFor(() => expect(animationCalls.some((call) => call.target === "dock")).toBe(true));
+      await waitFor(() => expect(animationCalls.some((call) => call.target === "departing")).toBe(true));
+      await waitFor(() => {
+        const card = document.querySelector<HTMLElement>("[data-chat-user-message-card]");
+        expect(card?.textContent).toContain(firstMessageText);
+      });
+      await waitFor(() => expect(animationCalls.some((call) => call.target === "first-flight")).toBe(true));
+      expect(animationCalls.find((call) => call.target === "first-flight")).toMatchObject({
+        cardIsInDom: true,
+        cardText: expect.stringContaining(firstMessageText),
+      });
+    } finally {
+      Object.defineProperty(Element.prototype, "querySelector", {
+        configurable: true,
+        writable: true,
+        value: originalElementQuerySelector,
+      });
+      departingHost.remove();
+      if (originalAnimate) {
+        Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "animate");
+      }
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+        configurable: true,
+        writable: true,
+        value: originalRect,
+      });
+    }
   });
 
   it("matches a recovered committed user message to the optimistic first bubble", () => {
@@ -7642,6 +7815,289 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("preserves a replacement draft and same-path reattachment through a delayed remounted send", async () => {
+    const { send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    const draftContextTargetId = "remounted-foreground-draft";
+    const submittedPrompt = "Fix bug";
+    const replacementPrompt = "Fix bug in tests";
+    const submittedAttachment = "/tmp/project-under-test/submitted.png";
+    const laterAttachment = "/tmp/project-under-test/later.txt";
+    const draftStorageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    });
+
+    const firstPane = renderAutoCreateDraftPane({ draftContextTargetId });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const firstTextbox = await screen.findByRole("textbox");
+    fireEvent.change(firstTextbox, { target: { value: submittedPrompt } });
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: submittedAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+
+    firstPane.unmount();
+    const savedBeforeRemount = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    savedBeforeRemount.mentionLabels = {
+      "@chat:chat-1": "Submitted chat",
+      "@chat:chat-2": "Follow-up chat",
+    };
+    const submittedAttachmentDraftId = savedBeforeRemount.attachmentDraftIds[0];
+    window.localStorage.setItem(draftStorageKey, JSON.stringify(savedBeforeRemount));
+    const remountedPane = renderAutoCreateDraftPane({ draftContextTargetId });
+    const remountedTextbox = await screen.findByDisplayValue(submittedPrompt) as HTMLTextAreaElement;
+    remountedTextbox.setSelectionRange(0, submittedPrompt.length);
+    fireEvent(remountedTextbox, new InputEvent("beforeinput", {
+      bubbles: true,
+      inputType: "deleteContentBackward",
+    }));
+    fireEvent.change(remountedTextbox, { target: { value: "" } });
+    remountedTextbox.setSelectionRange(0, 0);
+    fireEvent(remountedTextbox, new InputEvent("beforeinput", {
+      bubbles: true,
+      inputType: "insertText",
+      data: replacementPrompt,
+    }));
+    fireEvent.change(remountedTextbox, { target: { value: replacementPrompt } });
+    expect(remountedTextbox.value).toBe(replacementPrompt);
+
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove submitted.png" }));
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: submittedAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: laterAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("later.txt")).toBeTruthy();
+
+    remountedPane.unmount();
+    await act(async () => {
+      resolveSend();
+    });
+
+    const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    expect(saved.text).toBe(replacementPrompt);
+    expect(saved.mentionLabels).toEqual({});
+    expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([submittedAttachment, laterAttachment]);
+    expect(saved.attachmentDraftIds).toHaveLength(2);
+    expect(saved.attachmentDraftIds[0]).not.toBe(submittedAttachmentDraftId);
+  });
+
+  it("clears an unchanged submitted prefix and keeps appended text after a delayed send", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    const submittedPrompt = "Send this prompt.";
+    const appendedText = " and keep this follow-up";
+    fireEvent.change(textbox, { target: { value: submittedPrompt } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    textbox.setSelectionRange(submittedPrompt.length, submittedPrompt.length);
+    fireEvent(textbox, new InputEvent("beforeinput", {
+      bubbles: true,
+      inputType: "insertText",
+      data: appendedText,
+    }));
+    fireEvent.change(textbox, { target: { value: `${submittedPrompt}${appendedText}` } });
+    await act(async () => {
+      resolveSend();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+
+    const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    })) ?? "null");
+    expect(stored.text).toBe(appendedText);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the submitted prompt before sidebar-inserted text after a delayed send", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    renderAutoCreateDraftPane({ draftContextTargetId: "work:draft:lane-1:chat" });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    const submittedPrompt = "Send this prompt once. ";
+    const insertedText = "Inspect the selected browser context.";
+    fireEvent.change(textbox, { target: { value: submittedPrompt } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    window.dispatchEvent(new CustomEvent("ade:agent-chat:insert-draft", {
+      detail: { draftTargetId: "work:draft:lane-1:chat", text: insertedText },
+    }));
+    await waitFor(() => expect(textbox.value).toBe(`${submittedPrompt}\n\n${insertedText}`));
+    await act(async () => {
+      resolveSend();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+
+    const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    })) ?? "null");
+    expect(stored.text).toBe(`\n\n${insertedText}`);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves hydrated unsent attachments when an already-ready foreground launch opens on remount", async () => {
+    installAdeMocks({ sessions: [] });
+    const submittedPrompt = "Send this first prompt.";
+    const submittedAttachment = { path: "/tmp/project-under-test/submitted.png", type: "file" as const };
+    const laterAttachment = { path: "/tmp/project-under-test/later.txt", type: "file" };
+    const draftStorageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    });
+    const updatedAt = "2026-07-27T18:00:00.000Z";
+    window.localStorage.setItem(draftStorageKey, JSON.stringify({
+      version: 1,
+      text: submittedPrompt,
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: null,
+      fastMode: false,
+      executionMode: "focused",
+      controls: {},
+      attachments: [submittedAttachment, laterAttachment],
+      attachmentOwnerBinding: null,
+      contextAttachments: [],
+      iosContextItems: [],
+      appControlContextItems: [],
+      builtInBrowserContextItems: [],
+      draftLaunchTargetId: null,
+      updatedAt,
+    }));
+    const scopeKey = draftLaunchJobsScopeKeyForTest({
+      projectBindingKey: LOCAL_PROJECT_BINDING.key,
+      laneId: "lane-1",
+    });
+    const readyLaunchJob = {
+      id: "ready-foreground-launch",
+      mode: "foreground",
+      draftKind: "chat",
+      target: "local",
+      status: "ready",
+      title: "Ready launch after remount",
+      laneId: "lane-1",
+      laneName: "current-lane",
+      sessionId: "created-session",
+      namingModelId: null,
+      error: null,
+      warning: null,
+      autoOpen: true,
+      createdAtMs: Date.now(),
+      snapshot: {
+        text: submittedPrompt,
+        draft: submittedPrompt,
+        modelId: "openai/gpt-5.4",
+        reasoningEffort: null,
+        fastMode: false,
+        cursorCloudServiceTier: null,
+        executionMode: "focused",
+        interactionMode: "default",
+        nativeControls: {
+          interactionMode: "default",
+          claudePermissionMode: "default",
+          codexApprovalPolicy: "on-request",
+          codexSandbox: "workspace-write",
+          codexConfigSource: "flags",
+          opencodePermissionMode: "edit",
+          droidPermissionMode: "auto-low",
+          cursorModeId: "agent",
+          cursorConfigValues: {},
+        },
+        attachments: [submittedAttachment],
+        contextAttachments: [],
+        iosContextItems: [],
+        appControlContextItems: [],
+        builtInBrowserContextItems: [],
+        visualContextPrefix: "",
+        visualContextDisplayChips: "",
+        isLiteralSlashCommand: false,
+      },
+    } satisfies DraftLaunchJob;
+    useAppStore.setState({
+      draftLaunchJobsByScope: {
+        [scopeKey]: [readyLaunchJob],
+      },
+    });
+
+    const rendered = renderAutoCreateDraftPane();
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+    rendered.unmount();
+
+    const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    expect(saved.text).toBe("");
+    expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([laterAttachment.path]);
+  });
+
   it("allows stale active draft launch rows to be hidden", async () => {
     installAdeMocks({ sessions: [] });
     const scopeKey = draftLaunchJobsScopeKeyForTest({
@@ -9943,7 +10399,7 @@ describe("AgentChatPane submit recovery", () => {
 // Pure function unit tests (consolidated from AgentChatPane.test.ts)
 // ---------------------------------------------------------------------------
 
-describe("AgentChatPane brain-owned new-lane launch", () => {
+describe("AgentChatPane Work draft launches", () => {
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   afterEach(() => {
@@ -10094,6 +10550,46 @@ describe("AgentChatPane brain-owned new-lane launch", () => {
     });
     const [args] = api.start.mock.calls[0] as unknown as [ChatLaunchArgs];
     expect(getChatLaunchEntry(args.launchId)).toBeNull();
+  });
+
+  it("holds one foreground launch when the draft is edited and resubmitted while sending", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    const submittedPrompt = "Send this prompt once.";
+    fireEvent.change(textbox, { target: { value: submittedPrompt } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(textbox, { target: { value: "A different follow-up prompt." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("A foreground chat launch is already in progress.")).toBeTruthy();
+
+    await act(async () => {
+      resolveSend();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a failed start as a failed launch instead of retrying locally", async () => {
