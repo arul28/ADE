@@ -462,8 +462,10 @@ The timeline for an ordinary lane:
      position, expected parent branch) from `gh stack view --json`.
    - **A state file exists** (for example, `/quality` runs again on a lane that
      `/ship` already started): keep its `status`, `iteration`,
-     `addressedCommentIds`, and `harvests`. Update only `lastPushSha`,
-     `lastPushAt`, and `localAhead`, and clear the three binding fields when this step pushed.
+     `addressedCommentIds`, and `harvests`. Always update `localAhead`. Only
+     when this step pushed, also update `lastPushSha` and `lastPushAt` and
+     clear the three binding fields; without a push, the grace window keeps
+     counting from the last real push.
 
 Do not wait for anything. Start the quality review immediately.
 
@@ -500,7 +502,10 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
 
 - **Push** when both of these hold:
   - at least 12 minutes have passed since `lastPushAt` (the bot grace window —
-    earlier, a bot that has not started yet looks idle); and
+    earlier, a bot that has not started yet looks idle). An older state file
+    without `lastPushAt` uses the time GitHub recorded for the push of
+    `lastPushSha` (the earliest check run on that head), and falls back to its
+    committer date; and
   - every CI job and every bot with start evidence on the remote head is
     terminal.
 
@@ -510,9 +515,11 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
 - **Hold** otherwise. Commit locally, set `localAhead: true`, and continue to
   the next phase. The next harvest or `/ship` pushes the held commits together
   with its own fixes, in one push.
-- Before any push, run **Commit-bound quality revalidation**. At the end of
-  `/quality` the delta is already clean, so this is only the bind and the push.
-  At the end of `/test` it reviews only what `/test` changed.
+- Before any push, run **Commit-bound quality revalidation**. It reviews the
+  delta since `qualityReviewedSha`. At the end of `/quality` that delta is
+  usually empty, so this is only the bind and the push; a fix that the review
+  cap left outside the reviewed range is reviewed here first. At the end of
+  `/test` it reviews only what `/test` changed.
 
 ### What `/ship` inherits
 

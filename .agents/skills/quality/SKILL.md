@@ -343,8 +343,9 @@ Cite the doc section in the finding.
     belong to another lane. When Step 0 was skipped and no ship state exists,
     only commit, print `qualityReviewedSha` in the summary, and do not push —
     `/ship` Phase 0 reads it from the summary. If every signal on the remote head is terminal, run the
-    playbook's Commit-bound quality revalidation (the delta is empty, so this
-    only binds and pushes). This starts round 2, which runs while `/test`
+    playbook's Commit-bound quality revalidation. When `qualityReviewedSha`
+    is HEAD, the delta is empty and this only binds and pushes. When the cap
+    left a fix outside it, review that delta first, like any other push. This starts round 2, which runs while `/test`
     works. If a bot is still in flight, hold the commit and let `/test` push
     it.
 
