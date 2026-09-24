@@ -1,4 +1,5 @@
 import type { GitCommitSummary } from "../../../shared/types";
+import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 
 export type HistoryGitActionId =
   | "checkout"
@@ -327,7 +328,7 @@ export async function runHistoryGitAction(args: {
         navigate?.(laneCommitDeepLink(laneId, commit.sha));
         return;
       case "create_branch": {
-        const branchName = window.prompt(`Create branch at ${commit.shortSha}`);
+        const branchName = await promptDialog({ title: `Create branch at ${commit.shortSha}`, confirmLabel: "Create" });
         const trimmed = branchName?.trim();
         if (!trimmed) return;
         const validationError = validateBranchName(trimmed);
@@ -346,7 +347,11 @@ export async function runHistoryGitAction(args: {
       }
       case "create_lane": {
         const fallbackBranchName = defaultBranchNameForCommit(commit);
-        const branchName = window.prompt(`Create lane branch at ${commit.shortSha}`, fallbackBranchName);
+        const branchName = await promptDialog({
+          title: `Create lane branch at ${commit.shortSha}`,
+          defaultValue: fallbackBranchName,
+          confirmLabel: "Create",
+        });
         const trimmedBranchName = branchName?.trim();
         if (!trimmedBranchName) return;
         const branchValidationError = validateBranchName(trimmedBranchName);
@@ -354,7 +359,7 @@ export async function runHistoryGitAction(args: {
           onError?.(branchValidationError);
           return;
         }
-        const laneName = window.prompt("Lane name", trimmedBranchName)?.trim();
+        const laneName = (await promptDialog({ title: "Lane name", defaultValue: trimmedBranchName }))?.trim();
         if (!laneName) return;
         const remote = await window.ade.git.getOriginRemote({ laneId });
         const lane = await window.ade.lanes.create({
@@ -369,10 +374,10 @@ export async function runHistoryGitAction(args: {
         return;
       }
       case "create_tag": {
-        const tagName = window.prompt(`Create tag at ${commit.shortSha}`);
+        const tagName = await promptDialog({ title: `Create tag at ${commit.shortSha}`, confirmLabel: "Create" });
         const trimmed = tagName?.trim();
         if (!trimmed) return;
-        const message = window.prompt("Tag message (optional)")?.trim();
+        const message = (await promptDialog({ title: "Tag message (optional)", allowEmpty: true }))?.trim();
         await window.ade.git.createTag({
           laneId,
           tagName: trimmed,
@@ -383,13 +388,13 @@ export async function runHistoryGitAction(args: {
         return;
       }
       case "cherry_pick": {
-        if (!window.confirm(`Cherry-pick ${commit.shortSha} onto this lane?`)) return;
+        if (!(await confirmDialog({ title: `Cherry-pick ${commit.shortSha} onto this lane?`, confirmLabel: "Cherry-pick" }))) return;
         await window.ade.git.cherryPickCommit({ laneId, commitSha: commit.sha });
         onNotice?.(`Cherry-picked ${commit.shortSha}`);
         return;
       }
       case "revert": {
-        if (!window.confirm(`Revert ${commit.shortSha}? This creates a new commit.`)) return;
+        if (!(await confirmDialog({ title: `Revert ${commit.shortSha}?`, message: "This creates a new commit.", confirmLabel: "Revert" }))) return;
         await window.ade.git.revertCommit({ laneId, commitSha: commit.sha });
         onNotice?.(`Reverted ${commit.shortSha}`);
         return;
@@ -403,7 +408,13 @@ export async function runHistoryGitAction(args: {
           reset_hard: { mode: "hard" as const, detail: " This discards uncommitted worktree changes." },
         };
         const { mode, detail } = resetModes[actionId];
-        if (!window.confirm(`Reset this lane to ${commit.shortSha}?${detail}`)) return;
+        const confirmed = await confirmDialog({
+          title: `Reset this lane to ${commit.shortSha}?`,
+          message: detail.trim(),
+          confirmLabel: "Reset",
+          destructive: true,
+        });
+        if (!confirmed) return;
         await window.ade.git.resetToCommit({ laneId, commitSha: commit.sha, mode });
         onNotice?.(`Reset lane to ${commit.shortSha}`);
         return;

@@ -1386,8 +1386,9 @@ Desktop connection UI:
   **Reconnect this computer** button (`useThisComputerRefusal` +
   `useReconnectThisComputer`) instead of only "ADE couldn't publish it" and a
   report button.
-- `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` — hosts
-  the `relay-offline` banner alongside the GitHub/AI-provider family.
+- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` registers
+  the `relay-offline` banner with the global `AppBannerHost`, alongside the
+  GitHub and AI-provider notices.
   `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (the physical
   machine's relay, not whichever runtime a remote-bound project routes to) via
   the shared `localSyncStatusReader`, so its read of a broadcast coalesces with

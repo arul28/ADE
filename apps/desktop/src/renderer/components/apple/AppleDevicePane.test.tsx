@@ -401,9 +401,9 @@ describe("AppleDevicePane states", () => {
       await waitFor(() => expect(paneState()).toBe("stopped"));
       const offScreen = document.querySelector("[data-apple-off-screen]");
       expect(offScreen?.textContent).toBe("Off");
-      // The Apple mark is what a BOOTING device shows; none may be drawn
-      // anywhere in the viewport of one that is off.
-      expect(document.querySelector("[data-apple-pane] svg path[d^='M17.02']")).toBeNull();
+      // The Apple mark is what a BOOTING device shows; an Apple mark in the
+      // separate status banner is fine, but none belongs on the device stage.
+      expect(screen.getByTestId("apple-stage").querySelector("svg path[d^='M17.02']")).toBeNull();
       expect(String(stage.props?.className ?? "")).toContain("opacity-40");
     });
 

@@ -6,6 +6,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
+import { confirmDialog } from "../ui/dialog/confirm";
+
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => true),
+}));
 
 const idleSnapshot: AutoUpdateSnapshot = {
   status: "idle",
@@ -196,7 +202,7 @@ describe("AutoUpdateControl", () => {
   it("records accepted and deferred manual update decisions", async () => {
     const readySnapshot = { ...idleSnapshot, status: "ready" as const, version: "1.3.0" };
     const mock = installAdeMock({ snapshot: readySnapshot });
-    vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    vi.mocked(confirmDialog).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 
     render(<AutoUpdateControl />);
     const install = await screen.findByRole("button", { name: /install update v1\.3\.0/i });

@@ -28,6 +28,7 @@ import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPromptPreview } from "./CtoPromptPreview";
 import { CTO_SECTION_COLORS, CtoCard, FactRow, ctoButtonStyle, type CtoSectionKey } from "./ctoSettingsUi";
 import { ctoModelSupportsLiveRedirect } from "./useCtoModelOptions";
+import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 
 /**
  * The CTO's settings, in the same visual language as the rest of Settings.
@@ -320,6 +321,8 @@ function FreshSessionCard({
 }
 
 export type CtoSettingsPageProps = {
+  /** True while the CTO page is on screen; gates the project sidebar portal. */
+  active?: boolean;
   identity: CtoIdentity | null;
   sessionLogs: CtoSessionLogEntry[];
   currentModelId: string;
@@ -353,6 +356,7 @@ export type CtoSettingsPageProps = {
 };
 
 export function CtoSettingsPage({
+  active = true,
   identity,
   sessionLogs,
   currentModelId,
@@ -369,6 +373,7 @@ export function CtoSettingsPage({
   onClose,
 }: CtoSettingsPageProps) {
   const [section, setSection] = useState<CtoSectionKey>("model");
+  const hasProjectSidebar = useHasProjectSidebar();
   const [name, setName] = useState(identity?.name ?? "");
   const [extra, setExtra] = useState(identity?.systemPromptExtension ?? "");
   const savedRef = useRef({ name: identity?.name ?? "", extra: identity?.systemPromptExtension ?? "" });
@@ -662,82 +667,101 @@ export function CtoSettingsPage({
   const activeSection = SECTIONS.find((entry) => entry.id === section) ?? SECTIONS[0]!;
   const ActiveIcon = activeSection.icon;
 
-  return (
-    <div className="flex min-h-0 flex-1" data-testid="cto-settings-page">
-      <nav
-        aria-label="CTO settings sections"
+  // Inside a project the section list lives in the project sidebar, beside the
+  // page. Outside one (tests, the hosted web client) the page keeps its column.
+  const sectionList = (
+    <>
+      <button
+        type="button"
+        onClick={onClose}
         style={{
-          width: 196,
-          flexShrink: 0,
           display: "flex",
-          flexDirection: "column",
-          borderRight: `1px solid ${COLORS.borderMuted}`,
-          background: "color-mix(in srgb, var(--color-bg) 92%, #000 8%)",
+          alignItems: "center",
+          gap: 8,
+          margin: "8px 8px 0",
+          padding: "8px 10px",
+          borderRadius: 8,
+          fontFamily: SANS_FONT,
+          fontSize: 12,
+          fontWeight: 500,
+          color: COLORS.textMuted,
+          cursor: "pointer",
         }}
       >
-        <button
-          type="button"
-          onClick={onClose}
+        <ArrowLeft size={13} weight="bold" />
+        Back to the thread
+      </button>
+      <div style={{ height: 1, margin: "8px 12px", background: COLORS.borderMuted }} />
+      <div style={{ display: "grid", gap: 2, padding: "0 8px 12px" }}>
+        {SECTIONS.map((entry) => {
+          const Icon = entry.icon;
+          const selected = entry.id === section;
+          const entryAccent = CTO_SECTION_COLORS[entry.id];
+          return (
+            <button
+              key={entry.id}
+              type="button"
+              onClick={() => setSection(entry.id)}
+              aria-current={selected ? "page" : undefined}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "7px 10px",
+                borderRadius: 8,
+                textAlign: "left",
+                cursor: "pointer",
+                fontFamily: SANS_FONT,
+                fontSize: 12.5,
+                fontWeight: selected ? 600 : 500,
+                color: selected ? COLORS.textPrimary : COLORS.textMuted,
+                background: selected ? `color-mix(in srgb, ${entryAccent} 13%, transparent)` : "transparent",
+              }}
+            >
+              <Icon
+                size={15}
+                weight={selected ? "fill" : "regular"}
+                style={{ color: selected ? entryAccent : COLORS.textDim, flexShrink: 0 }}
+              />
+              {entry.label}
+              {entry.id === "history" && sessionLogs.length > 0 ? (
+                <span style={{ marginLeft: "auto", fontSize: 10.5, color: COLORS.textDim }}>
+                  {sessionLogs.length}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1" data-testid="cto-settings-page">
+      {hasProjectSidebar ? (
+        <ProjectSidebarSlot active={active}>
+          <nav
+            aria-label="CTO settings sections"
+            style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto" }}
+          >
+            {sectionList}
+          </nav>
+        </ProjectSidebarSlot>
+      ) : (
+        <nav
+          aria-label="CTO settings sections"
           style={{
+            width: 196,
+            flexShrink: 0,
             display: "flex",
-            alignItems: "center",
-            gap: 8,
-            margin: "8px 8px 0",
-            padding: "8px 10px",
-            borderRadius: 8,
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            fontWeight: 500,
-            color: COLORS.textMuted,
-            cursor: "pointer",
+            flexDirection: "column",
+            borderRight: `1px solid ${COLORS.borderMuted}`,
+            background: "color-mix(in srgb, var(--color-bg) 92%, #000 8%)",
           }}
         >
-          <ArrowLeft size={13} weight="bold" />
-          Back to the thread
-        </button>
-        <div style={{ height: 1, margin: "8px 12px", background: COLORS.borderMuted }} />
-        <div style={{ display: "grid", gap: 2, padding: "0 8px 12px" }}>
-          {SECTIONS.map((entry) => {
-            const Icon = entry.icon;
-            const selected = entry.id === section;
-            const entryAccent = CTO_SECTION_COLORS[entry.id];
-            return (
-              <button
-                key={entry.id}
-                type="button"
-                onClick={() => setSection(entry.id)}
-                aria-current={selected ? "page" : undefined}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "7px 10px",
-                  borderRadius: 8,
-                  textAlign: "left",
-                  cursor: "pointer",
-                  fontFamily: SANS_FONT,
-                  fontSize: 12.5,
-                  fontWeight: selected ? 600 : 500,
-                  color: selected ? COLORS.textPrimary : COLORS.textMuted,
-                  background: selected ? `color-mix(in srgb, ${entryAccent} 13%, transparent)` : "transparent",
-                }}
-              >
-                <Icon
-                  size={15}
-                  weight={selected ? "fill" : "regular"}
-                  style={{ color: selected ? entryAccent : COLORS.textDim, flexShrink: 0 }}
-                />
-                {entry.label}
-                {entry.id === "history" && sessionLogs.length > 0 ? (
-                  <span style={{ marginLeft: "auto", fontSize: 10.5, color: COLORS.textDim }}>
-                    {sessionLogs.length}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      </nav>
+          {sectionList}
+        </nav>
+      )}
 
       <div style={{ flex: 1, minWidth: 0, overflow: "auto", background: COLORS.pageBg, padding: 24 }}>
         {/* Same ceiling as a Settings tab: wide enough to use the window, short

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
-import { Play, WarningCircle } from "@phosphor-icons/react";
+import { Play } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
   AgentChatFileRef,
@@ -30,10 +30,10 @@ import {
 } from "../apple/appleMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
-import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
@@ -101,10 +101,11 @@ function useWorkToolMountScope(runtimePin: OpenProjectBinding | null): string {
 
 export function WarningBanner({ message }: { message: string }) {
   return (
-    <div className="flex shrink-0 items-start gap-2 border-b border-amber-400/15 bg-amber-500/[0.055] px-3 py-2 text-[11px] leading-4 text-amber-100/85">
-      <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-200/80" />
-      <span>{message}</span>
-    </div>
+    <Banner
+      layout="inline"
+      model={{ id: "work-tool-lane-warning", tone: "warning", title: message }}
+      style={{ margin: "6px 8px", flexShrink: 0 }}
+    />
   );
 }
 
@@ -286,38 +287,26 @@ function WorkGitTool({
   if (pinnedMachineOffline) {
     return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
-  const hasDiffSelection = Boolean(selectedPath || selectedCommit);
+  // The pane shows the selected file or commit's diff itself, in place of the
+  // file list, so it gets the full height. Wrapping it in an auto-height box
+  // and mounting a second diff below squeezed the pane's own sections to
+  // nothing and loaded every diff twice.
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={cn("min-h-0 overflow-auto", hasDiffSelection ? "max-h-[58%] shrink-0" : "flex-1")}>
-        <LaneGitActionsPane
-          key={`work-git:${mountScope}:${laneId}`}
-          laneId={laneId}
-          runtimePin={runtimePin}
-          variant="pane"
-          autoRebaseEnabled={false}
-          onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
-          onSelectFile={onSelectFile}
-          onSelectCommit={onSelectCommit}
-          onClearDiffSelection={onClearDiffSelection}
-          selectedPath={selectedPath}
-          selectedMode={selectedMode}
-          selectedCommit={selectedCommit}
-          selectedCommitSha={selectedCommit?.sha ?? null}
-        />
-      </div>
-      {hasDiffSelection ? (
-        <div className="min-h-0 flex-1 border-t border-white/[0.08]">
-          <LaneDiffPane
-            laneId={laneId}
-            runtimePin={runtimePin}
-            selectedPath={selectedPath}
-            selectedFileMode={selectedMode}
-            selectedCommit={selectedCommit}
-            liveSync
-          />
-        </div>
-      ) : null}
+      <LaneGitActionsPane
+        key={`work-git:${mountScope}:${laneId}`}
+        laneId={laneId}
+        runtimePin={runtimePin}
+        autoRebaseEnabled={false}
+        onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
+        onSelectFile={onSelectFile}
+        onSelectCommit={onSelectCommit}
+        onClearDiffSelection={onClearDiffSelection}
+        selectedPath={selectedPath}
+        selectedMode={selectedMode}
+        selectedCommit={selectedCommit}
+        selectedCommitSha={selectedCommit?.sha ?? null}
+      />
     </div>
   );
 }

@@ -233,7 +233,8 @@ jobs:
             packages/sdk/node_modules
             packages/chat-ui/node_modules
           key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
-      - run: cd apps/desktop && npm run lint
+      - run: cd apps/desktop && npm run test:lint-tooling
+      - run: cd apps/desktop && npm run lint:ci
 
   test-desktop:
     needs: install

@@ -1,5 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowClockwise,
   WarningCircle,
@@ -39,6 +38,8 @@ import { ActivitySessionsColumn } from "./ActivitySessionsColumn";
 import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 import { activityFooterLine, summarizeActivity } from "./activityPriority";
 import { refreshActivitySnapshot } from "./useActivitySync";
+import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import "./Activity.css";
 
 function navigationErrorMessage(error: unknown): string {
@@ -148,7 +149,6 @@ export function ActivityPane({
   const acknowledgementErrors = useActivityStore((state) => state.acknowledgementErrors);
   const hideDetails = useActivityStore(selectActivityHideDetails);
 
-  const paneRef = useRef<HTMLDivElement | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [filters, setFilters] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTERS);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
@@ -191,31 +191,19 @@ export function ActivityPane({
 
   const closeSheet = useCallback(() => setSelectedItemId(null), []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      // The settings popover is a dialog inside this one and owns its own
-      // Escape; closing both at once would be a single key undoing two steps.
-      if (document.querySelector(".activity-settings-popover")) return;
+  // Esc and outside presses are the Dialog's (Radix). Escape peels one layer:
+  // the settings popover (a dialog inside this one) owns its own Escape, then
+  // the detail sheet closes, and the pane only once nothing is stacked on it.
+  const handleEscapeKeyDown = useCallback((event: KeyboardEvent) => {
+    if (document.querySelector(".activity-settings-popover")) {
       event.preventDefault();
-      // Escape peels one layer: the detail sheet first, the pane only once
-      // nothing is stacked on top of it.
-      if (selectedItemId) closeSheet();
-      else onClose();
-    };
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (!target || paneRef.current?.contains(target)) return;
-      onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onDown);
-    };
-  }, [closeSheet, onClose, open, selectedItemId]);
+      return;
+    }
+    if (selectedItemId) {
+      event.preventDefault();
+      closeSheet();
+    }
+  }, [closeSheet, selectedItemId]);
 
   // A dismissed or expired row cannot keep a sheet open over an empty list.
   useEffect(() => {
@@ -316,26 +304,29 @@ export function ActivityPane({
   const footerLine = activityFooterLine(summary);
   const filtered = !activityFiltersAreEmpty(filters);
 
-  return createPortal(
-    <>
-      <button
-        type="button"
-        aria-label="Close Activity backdrop"
-        data-activity-pane-backdrop="true"
-        className="fixed inset-0 z-[9998] cursor-default bg-black/55 backdrop-blur-md"
-        onClick={onClose}
-        tabIndex={-1}
-      />
-      <div
-        ref={paneRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Activity"
-        data-testid="activity-pane"
-        className="activity-pane fixed left-1/2 top-1/2 z-[9999] flex h-[min(820px,calc(100dvh-28px))] w-[min(1280px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-white/10 text-fg shadow-2xl shadow-black/50"
-      >
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title="Activity"
+      hideHeader
+      testId="activity-pane"
+      panelClassName="activity-pane"
+      width={1280}
+      height="min(820px, calc(100dvh - 28px))"
+      maxHeight="calc(100dvh - 28px)"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column", color: "var(--color-fg)" }}
+      // Nothing in the pane grabs focus on open; the panel holds it.
+      preventAutoFocus
+      panelStyle={{ background: "var(--activity-surface)", borderRadius: 12 }}
+      onEscapeKeyDown={handleEscapeKeyDown}
+    >
         <header className="activity-pane-head">
-          <h2>Activity</h2>
+          <h2 aria-hidden="true">Activity</h2>
           <span className="activity-pane-machines">{footerLine}</span>
           {freshness ? (
             freshness.retry ? (
@@ -385,10 +376,11 @@ export function ActivityPane({
         {/* While the sheet is up it covers this strip, so the failure is
             reported there instead — one alert, wherever the click was. */}
         {navigationError && !selectedItem ? (
-          <div className="activity-pane-alert" role="alert">
-            <WarningCircle size={14} weight="fill" />
-            <span>{navigationError}</span>
-          </div>
+          <Banner
+            model={{ id: "activity-navigation-error", tone: "error", title: navigationError }}
+            layout="inline"
+            style={{ margin: "8px 12px" }}
+          />
         ) : null}
 
         <div className="activity-pane-body">
@@ -423,8 +415,6 @@ export function ActivityPane({
             />
           ) : null}
         </div>
-      </div>
-    </>,
-    document.body,
+    </Dialog>
   );
 }

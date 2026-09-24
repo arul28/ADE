@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { applyShellHeaderInset } from "../../lib/zoom";
+import { resetAppZoomCacheForTests } from "../../lib/appZoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -50,16 +52,13 @@ vi.mock("../settings/SyncDevicesSection", () => ({
   ),
 }));
 
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => false),
+}));
+
 vi.mock("./AutoUpdateControl", () => ({
   AutoUpdateControl: () => null,
-}));
-
-vi.mock("./FeedbackReporterModal", () => ({
-  FeedbackReporterModal: () => null,
-}));
-
-vi.mock("../onboarding/HelpMenu", () => ({
-  HelpMenu: () => null,
 }));
 
 vi.mock("../usage/HeaderUsageControl", () => ({
@@ -420,6 +419,7 @@ describe("TopBar", () => {
       globalThis.window.__adeWebClient = originalWebClientMode;
     }
     resetActivityStoreForTests();
+    resetAppZoomCacheForTests();
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
   });
 
@@ -480,6 +480,52 @@ describe("TopBar", () => {
     expect(onOpenActivityPane).toHaveBeenCalledTimes(1);
     expect(onNavigate).not.toHaveBeenCalledWith("/attention");
     expect(onNavigate).not.toHaveBeenCalledWith("/activity");
+  });
+
+  it("shows the sidebar toggle only while a project surface is on screen", () => {
+    const root = "/Users/arul/ADE";
+    useAppStore.setState({
+      project: { rootPath: root, name: "ADE" },
+      projectHydrated: true,
+      showWelcome: false,
+      isNewTabOpen: false,
+    } as any);
+    window.localStorage.removeItem("ade.shell.projectSidebar.hidden");
+
+    const { rerender } = render(<TopBar />);
+    const toggle = screen.getByRole("button", { name: "Toggle sidebar" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+
+    rerender(<TopBar personalChatsRouteActive />);
+    expect(screen.queryByRole("button", { name: "Toggle sidebar" })).toBeNull();
+
+    act(() => {
+      useAppStore.setState({ showWelcome: true } as any);
+    });
+    rerender(<TopBar />);
+    expect(screen.queryByRole("button", { name: "Toggle sidebar" })).toBeNull();
+  });
+
+  // Account, Settings, feedback, help, and zoom moved to the project sidebar
+  // (the footer cog and the settings sidebar header).
+  it("keeps account, settings, feedback, help, and zoom out of the top bar", () => {
+    useAppStore.setState({
+      project: { rootPath: "/Users/arul/ADE", name: "ADE" },
+      projectBinding: null,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(<TopBar />);
+
+    expect(screen.queryByRole("button", { name: /^Account/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Report bug or suggest feature" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Zoom in" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Zoom out" })).toBeNull();
   });
 
   it("shows connections before a project is open without immediate polling", async () => {
@@ -1109,16 +1155,21 @@ describe("TopBar", () => {
       switchProjectToPath,
     } as any);
 
+    const confirm = vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+
     renderTopBarWithRouter();
     act(() => openConnectionsPanel("machines"));
     fireEvent.click(
       await screen.findByRole("button", { name: "Disconnect" }),
     );
-    fireEvent.click(await screen.findByRole("button", { name: "DISCONNECT" }));
 
     await waitFor(() => {
       expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
     });
+    expect(confirm).toHaveBeenLastCalledWith(expect.objectContaining({
+      confirmLabel: "DISCONNECT",
+      destructive: true,
+    }));
     expect(disconnect).not.toHaveBeenCalled();
     expect(
       useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key),
@@ -1982,7 +2033,7 @@ describe("TopBar", () => {
       expect(screen.getAllByText("Add Linear quick view").length).toBeGreaterThan(0);
     });
     const quickViewDialog = screen.getByRole("dialog", { name: /linear quick view/i });
-    expect(document.body.querySelector("[data-linear-quick-view-backdrop]")).toBeTruthy();
+    expect(document.body.querySelector(".ade-dialog-scrim")).toBeTruthy();
     expect(quickViewDialog.getAttribute("style")).toContain("rgba(123, 138, 240, 0.55)");
 
     // Single-issue flow now routes through the unified launch dock: select the
@@ -2303,20 +2354,22 @@ describe("TopBar", () => {
   });
 
   it("confirms before closing a project tab", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const confirm = vi.mocked(confirmDialog).mockResolvedValue(false);
 
     render(<TopBar />);
 
     await screen.findByText("ADE");
     fireEvent.click(screen.getByTitle("Remove project"));
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Close \"ADE\" project tab?"));
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: "Close \"ADE\" project tab?" }));
+    });
     expect(globalThis.window.ade.project.forgetRecent).not.toHaveBeenCalled();
     expect(useAppStore.getState().closeProject).not.toHaveBeenCalled();
   });
 
   it("closes the active project tab after confirmation without removing it from recents", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
 
     render(<TopBar />);
 

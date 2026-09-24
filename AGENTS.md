@@ -68,6 +68,17 @@ The most common defect class in this repo is a change that works on the path you
 - For computer-use changes, treat policy enforcement and artifact ownership as hard requirements, not prompt guidance.
 - `ade search "<query>" --text` searches everything in ADE (chats, terminal scrollback, PRs, commits, branches, lanes, files, Linear) instead of grepping `.ade/` internals; see the ade-search skill.
 
+## UI primitives
+
+The desktop renderer has exactly one of each notice and overlay. Read `docs/design/notices.md` before adding any banner, toast, dialog, or popover-like surface. Never invent a new style.
+
+- **Banners:** `Banner` / `useAppBanner` from `components/ui/notice`. App-wide states are docked, short prompts float, and a banner about one pane is `layout="inline"`. Never write a new `*Banner` component with its own styling.
+- **Toasts:** `showToast()` from `components/app/toast/toastStore`. No toast libraries and no hand-positioned corner cards.
+- **Confirm / prompt / modals:** `confirmDialog()` / `promptDialog()` / `<Dialog>` from `components/ui/dialog`. Never call `window.confirm`, `prompt`, or `alert`.
+- **Top-bar dropdowns:** `HeaderSheet`.
+- **Stacking:** `Z_LAYERS` from `components/ui/zLayers.ts`. No raw `zIndex` ≥ 50, `z-50`, or `z-[N]`, and no `position: fixed` outside the hosts.
+- **Lint:** the `ade-ui/*` rules are warnings, and `npm --prefix apps/desktop run lint:ci` fails CI if any file's count grows. After fixing violations, run `npm run lint:baseline` in `apps/desktop` and commit the smaller baseline.
+
 ## Ways to hurt yourself
 
 These are the operational hazards of developing ADE from inside ADE. Each one has caused real damage.
@@ -96,7 +107,7 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
   - `npm --prefix apps/desktop run typecheck`
   - `npm run test:desktop:sharded`
   - `npm --prefix apps/desktop run build`
-  - `npm --prefix apps/desktop run lint`
+  - `npm --prefix apps/desktop run lint:ci` (lint + `ade-ui` ratchet, what CI runs)
 - ADE CLI checks:
   - `npm --prefix apps/ade-cli run typecheck`
   - `npm --prefix apps/ade-cli run test`

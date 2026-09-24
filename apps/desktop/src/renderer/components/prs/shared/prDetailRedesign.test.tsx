@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { PrDetail, PrReview, PrReviewThread, PrStatus, PrTimelineEvent, PrWithConflicts } from "../../../../shared/types/prs";
 import { usePrActionsMenu, type PrActionsTarget } from "./PrActionsMenu";
 import { PrMarkdown } from "./PrMarkdown";
@@ -12,6 +12,7 @@ import { buildPrChatPrompt, handPromptToChat, prFailingCheckNames, prOpenFinding
 import { PrCommentCard, collectPrReviewers } from "./PrFloatingDock";
 import { PrShippedSummary } from "./PrShippedSummary";
 import { formatTimestampShort } from "./prFormatters";
+import { __resetDialogRequestsForTests } from "../../ui/dialog/confirm";
 
 vi.mock("./CodeHighlighter", () => ({}));
 vi.mock("../../chat/CodeHighlighter", () => ({
@@ -23,6 +24,7 @@ const prsMock = vi.hoisted(() => ({ markPrTerminalLocally: vi.fn(), clearPrTermi
 vi.mock("../state/PrsContext", () => ({ useOptionalPrs: () => prsMock }));
 
 afterEach(() => {
+  act(() => __resetDialogRequestsForTests());
   cleanup();
   vi.clearAllMocks();
 });
@@ -129,9 +131,9 @@ describe("usePrActionsMenu", () => {
     const open = renderHook(() => usePrActionsMenu({ pr: target }));
     find(open, "close")?.onSelect?.();
     // Close asks first; the list must not change until the user confirms.
-    await waitFor(() => expect(open.result.current.dialog.props.state?.open).toBe(true));
+    const confirm = await screen.findByRole("button", { name: "Close pull request" });
     expect(close).not.toHaveBeenCalled();
-    open.result.current.dialog.props.state.onConfirm();
+    fireEvent.click(confirm);
     await waitFor(() => expect(prsMock.markPrTerminalLocally).toHaveBeenCalledWith(target, "closed"));
     expect(close).toHaveBeenCalledWith({ prId: "pr-1" });
 

@@ -6,6 +6,7 @@ import geistVariableUrl from "../../../node_modules/geist/dist/fonts/geist-sans/
 import geistMonoVariableUrl from "../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";
 import { AdeSyncClient, bindProjectHostRecoveryClient } from "./sync";
 import { WebClientRoot } from "./shell/WebClientRoot";
+import { installScrollingIndicator } from "../lib/scrollingIndicator";
 
 // Mark web-client mode before any renderer module loads, so desktop-only chrome
 // (extra tabs, onboarding tour, native window controls, updater) hides cleanly.
@@ -56,6 +57,9 @@ document.documentElement.setAttribute("data-theme", document.documentElement.get
 const client = new AdeSyncClient();
 // Single-client boot: this one client is always the machine on screen.
 bindProjectHostRecoveryClient(client);
+
+// Scrollbars show only while you scroll the region under the pointer.
+installScrollingIndicator();
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <WebClientRoot client={client} />,

@@ -16,7 +16,8 @@ import {
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { formatThisComputerVersion } from "../remoteTargets/remoteMachineModel";
 import { QRCodeSVG } from "qrcode.react";
-import { createPortal } from "react-dom";
+import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import {
   isBrainAccountSessionFailure,
   type AdeAccountSessionState,
@@ -431,19 +432,11 @@ export function ThisMacCard({
       </div>
 
       {crdtUnavailable ? (
-        <div
-          role="alert"
-          style={{
-            ...helperTextStyle,
-            color: COLORS.warning,
-            border: `1px solid ${COLORS.warning}55`,
-            borderRadius: 8,
-            padding: "9px 10px",
-            background: `${COLORS.warning}12`,
-          }}
-        >
-          {status.blockingStateText}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 0" }}
+          model={{ id: "sync-devices-crdt-unavailable", tone: "warning", title: status.blockingStateText }}
+        />
       ) : null}
 
       {host && !crdtUnavailable ? (
@@ -1023,35 +1016,10 @@ function QrCodeSvgTile({ value, title, size }: { value: string; title: string; s
 
 function QrCodeBox({ value, title }: { value: string; title: string }) {
   const [expanded, setExpanded] = useState(false);
-  const triggerRef = useRef<HTMLDivElement | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!expanded) return;
-    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        setExpanded(false);
-      } else if (event.key === "Tab") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        dialogRef.current?.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("keydown", onKey, true);
-      triggerRef.current?.focus();
-    };
-  }, [expanded]);
 
   return (
     <>
       <div
-        ref={triggerRef}
         role="button"
         tabIndex={0}
         title="Click to enlarge"
@@ -1076,42 +1044,27 @@ function QrCodeBox({ value, title }: { value: string; title: string }) {
           <QrCodeSvgTile value={value} title={title} size={148} />
         </div>
       </div>
-      {expanded && typeof document !== "undefined"
-        ? createPortal(
-          <div
-            onClick={() => setExpanded(false)}
-            style={{
-              position: "fixed",
-              inset: 0,
-              zIndex: 200,
-              display: "grid",
-              placeItems: "center",
-              background: "rgba(0,0,0,0.62)",
-            }}
-          >
-            <div
-              ref={dialogRef}
-              role="dialog"
-              aria-modal="true"
-              aria-label={title}
-              tabIndex={-1}
-              onClick={(event) => event.stopPropagation()}
-              style={{
-                display: "inline-flex",
-                padding: 22,
-                borderRadius: 20,
-                background: "#FFFFFF",
-                border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
-                boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
-                outline: "none",
-              }}
-            >
-              <QrCodeSvgTile value={value} title={title} size={360} />
-            </div>
-          </div>,
-          document.body,
-        )
-        : null}
+      <Dialog
+        open={expanded}
+        onOpenChange={setExpanded}
+        title={title}
+        hideHeader
+        hideClose
+        preventAutoFocus
+        // The lightbox owns Escape; it must not also reach the page behind.
+        onEscapeKeyDown={(event) => event.stopPropagation()}
+        width={404}
+        bodyPadding={false}
+        scrollBody={false}
+        bodyStyle={{ display: "flex", justifyContent: "center", padding: 22 }}
+        panelStyle={{
+          background: "#FFFFFF",
+          borderRadius: 20,
+          border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
+        }}
+      >
+        <QrCodeSvgTile value={value} title={title} size={360} />
+      </Dialog>
     </>
   );
 }

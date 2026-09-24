@@ -22,12 +22,12 @@ const baseEvent = {
 };
 
 describe("getPrToastTone", () => {
-  it("maps checks_failing to danger", () => {
-    expect(getPrToastTone("checks_failing")).toBe("danger");
+  it("maps checks_failing to error", () => {
+    expect(getPrToastTone("checks_failing")).toBe("error");
   });
 
-  it("maps changes_requested to danger", () => {
-    expect(getPrToastTone("changes_requested")).toBe("danger");
+  it("maps changes_requested to error", () => {
+    expect(getPrToastTone("changes_requested")).toBe("error");
   });
 
   it("maps review_requested to warning", () => {

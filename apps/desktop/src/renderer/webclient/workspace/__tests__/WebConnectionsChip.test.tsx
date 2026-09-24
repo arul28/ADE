@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   WebConnectionsChip,
   WEB_OPEN_CONNECTIONS_EVENT,
 } from "../WebConnectionsChip";
 import { WebWorkspaceProvider } from "../WebWorkspaceContext";
+import { confirmDialog } from "../../../components/ui/dialog/confirm";
+
+vi.mock("../../../components/ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../components/ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => false),
+}));
 
 const RELAY = "wss://ade-tunnel-relay.arulsharma1028.workers.dev";
 
@@ -226,7 +232,11 @@ describe("WebConnectionsChip", () => {
 
   it("tells two installs on one Mac apart and warns before removing a live one", async () => {
     const removeAccountMachine = vi.fn(async () => undefined);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    let resolveConfirm: (accepted: boolean) => void = () => {};
+    const confirmation = new Promise<boolean>((resolve) => {
+      resolveConfirm = resolve;
+    });
+    const confirm = vi.mocked(confirmDialog).mockClear().mockReturnValueOnce(confirmation);
     try {
       renderChip(
         [
@@ -244,13 +254,76 @@ describe("WebConnectionsChip", () => {
       fireEvent.click(screen.getByRole("menuitem", { name: "Remove from account" }));
 
       expect(confirm).toHaveBeenCalledTimes(1);
-      const message = String(confirm.mock.calls[0]?.[0]);
-      expect(message).toContain("Remove MacBook Pro · ADE Alpha from your ADE account?");
-      expect(message).toContain("It was active 1 minute ago.");
+      const options = confirm.mock.calls[0]?.[0];
+      expect(options?.title).toBe("Remove MacBook Pro · ADE Alpha from your ADE account?");
+      expect(String(options?.message)).toContain("It was active 1 minute ago.");
       // Declined: nothing is removed.
+      await act(async () => {
+        resolveConfirm(false);
+        await expect(confirmation).resolves.toBe(false);
+      });
       expect(removeAccountMachine).not.toHaveBeenCalled();
     } finally {
-      confirm.mockRestore();
+      confirm.mockClear();
+    }
+  });
+
+  it("confirms forgetting a browser pairing and only forgets it after acceptance", async () => {
+    const environment = pairing("studio", "Mac Studio");
+    const forgetEnvironment = vi.fn(async () => undefined);
+    const confirm = vi.mocked(confirmDialog).mockClear().mockResolvedValue(false);
+    renderChip(
+      [machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true })],
+      { forgetEnvironment },
+      { environments: [environment] },
+    );
+
+    openPopover();
+    fireEvent.click(screen.getByLabelText("Manage Mac Studio"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Forget on this browser" }));
+
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    expect(confirm.mock.calls[0]?.[0]).toMatchObject({
+      title: "Forget Mac Studio on this browser?",
+      confirmLabel: "Forget",
+      destructive: true,
+    });
+    expect(forgetEnvironment).not.toHaveBeenCalled();
+
+    confirm.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByLabelText("Manage Mac Studio"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Forget on this browser" }));
+
+    await waitFor(() => expect(forgetEnvironment).toHaveBeenCalledWith(environment.envId));
+  });
+
+  it("stays open while the user works in a confirm raised from its machine menu", async () => {
+    renderChip([
+      machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true }),
+    ]);
+    openPopover();
+    const popover = await screen.findByRole("dialog");
+    // The confirm renders in its own body portal, outside the popover.
+    const confirm = document.createElement("div");
+    confirm.setAttribute("role", "alertdialog");
+    const button = document.createElement("button");
+    confirm.appendChild(button);
+    document.body.appendChild(confirm);
+    try {
+      fireEvent.pointerDown(button);
+      fireEvent.keyDown(button, { key: "Escape" });
+      expect(popover.isConnected).toBe(true);
+
+      // Escape inside the popover itself (also a role="dialog") still closes it.
+      fireEvent.keyDown(popover, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      openPopover();
+      await screen.findByRole("dialog");
+      fireEvent.pointerDown(document.body);
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    } finally {
+      confirm.remove();
     }
   });
 
@@ -290,7 +363,11 @@ describe("WebConnectionsChip", () => {
 
     openPopover();
     const popover = await screen.findByRole("dialog");
-    expect(popover.parentElement).toBe(document.body);
+    const viewportHost = popover.parentElement;
+    expect(viewportHost?.parentElement).toBe(document.body);
+    expect(viewportHost?.style.position).toBe("fixed");
+    expect(viewportHost?.style.pointerEvents).toBe("none");
+    expect(viewportHost?.style.zIndex).toBe("100");
   });
 
   it("labels a leftover pairing as remembered in this browser", () => {

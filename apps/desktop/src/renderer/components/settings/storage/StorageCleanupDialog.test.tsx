@@ -10,6 +10,16 @@ afterEach(() => {
 });
 
 describe("StorageDialogFrame", () => {
+  it("opens on its first control", async () => {
+    render(
+      <StorageDialogFrame title="Reclaim" onClose={vi.fn()}>
+        <button type="button">First action</button>
+        <button type="button">Second action</button>
+      </StorageDialogFrame>,
+    );
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "First action" })));
+  });
+
   it("lets only the topmost dialog close on Escape", () => {
     const closeBack = vi.fn();
     const closeFront = vi.fn();
@@ -24,7 +34,7 @@ describe("StorageDialogFrame", () => {
       </>,
     );
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
 
     expect(closeFront).toHaveBeenCalledTimes(1);
     expect(closeBack).not.toHaveBeenCalled();
@@ -34,7 +44,7 @@ describe("StorageDialogFrame", () => {
         <button type="button">Back action</button>
       </StorageDialogFrame>,
     );
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
 
     expect(closeBack).toHaveBeenCalledTimes(1);
   });
@@ -53,7 +63,7 @@ describe("StorageDialogFrame", () => {
       </>,
     );
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
 
     expect(closeFront).not.toHaveBeenCalled();
     expect(closeBack).not.toHaveBeenCalled();

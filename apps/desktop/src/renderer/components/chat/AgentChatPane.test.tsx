@@ -42,6 +42,12 @@ import {
 } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { confirmDialog } from "../ui/dialog/confirm";
+
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => false),
+}));
 import {
   applyChatLaunchSnapshot,
   buildOptimisticChatLaunchSnapshot,
@@ -1474,7 +1480,6 @@ describe("AgentChatPane remote startup", () => {
     renderPane(session);
 
     await screen.findByRole("button", { name: /^Select model/ });
-    await Promise.resolve();
 
     expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
   });
@@ -1843,7 +1848,6 @@ describe("AgentChatPane remote startup", () => {
     renderPane(session);
 
     await screen.findByRole("button", { name: /^Select model/ });
-    await Promise.resolve();
 
     expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
   });
@@ -12698,7 +12702,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
     const mocks = installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.mocked(confirmDialog).mockResolvedValue(true);
 
     render(
       <MemoryRouter>
@@ -12719,7 +12723,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
       );
     });
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
-    confirmSpy.mockRestore();
+    confirmSpy.mockResolvedValue(false);
   });
 
   it("pins selected-chat transcripts, goals, schedules, and handoff as one control class", async () => {

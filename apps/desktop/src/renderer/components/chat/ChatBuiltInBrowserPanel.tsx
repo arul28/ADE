@@ -17,6 +17,7 @@ import type {
   BuiltInBrowserRecordingStatus,
 } from "../../../shared/types/builtInBrowser";
 import { BrowserLoginImportDialog } from "./BrowserLoginImportDialog";
+import { Banner } from "../ui/notice/Banner";
 import { browserToolbarLayout } from "./browser/builtInBrowserToolbar";
 import {
   activeEmulationPresetId,
@@ -86,6 +87,7 @@ import {
   type TunnelApprovalState,
 } from "./browserRemoteTunnels";
 import { cn } from "../ui/cn";
+import { confirmDialog } from "../ui/dialog/confirm";
 import {
   useNativeBrowserViewBounds,
   type BrowserBounds,
@@ -1529,10 +1531,17 @@ export function ChatBuiltInBrowserPanel({
     });
   }, [profileOpen, refreshProfileSecurity]);
 
-  const clearRememberedPermission = useCallback((
+  const clearRememberedPermission = useCallback(async (
     decision?: Pick<BuiltInBrowserPermissionDecision, "origin" | "permission">,
   ) => {
-    if (!decision && !window.confirm("Clear all remembered ADE browser permission decisions?")) return;
+    if (
+      !decision
+      && !(await confirmDialog({
+        title: "Clear all remembered ADE browser permission decisions?",
+        confirmLabel: "Clear",
+        destructive: true,
+      }))
+    ) return;
     void (async () => {
       const api = requireBrowserApi();
       if (!api.clearPermissions) throw new Error("This ADE build does not support clearing browser permissions.");
@@ -1880,12 +1889,12 @@ export function ChatBuiltInBrowserPanel({
         title: "HAR exported",
         message: `${result.entryCount} ${result.entryCount === 1 ? "request" : "requests"} · ${result.relativePath ?? result.filePath}`,
         tone: "success",
-        action: {
+        actions: [{
           label: "Reveal",
           onClick: () => {
             void window.ade.app.revealPath(result.filePath).catch(() => {});
           },
-        },
+        }],
       });
     });
   }, [runBusy, withBrowserScope]);
@@ -1906,12 +1915,12 @@ export function ChatBuiltInBrowserPanel({
           ? `Added to proof · ${result.relativePath ?? result.path}`
           : (result.relativePath ?? result.path),
         tone: "success",
-        action: {
+        actions: [{
           label: "Reveal",
           onClick: () => {
             void window.ade.app.revealPath(result.path).catch(() => {});
           },
-        },
+        }],
       });
     });
   }, [applyStatus, runBusy, withBrowserScope]);
@@ -2702,35 +2711,19 @@ export function ChatBuiltInBrowserPanel({
         />
 
         {pendingApproval ? (
-          <div
-            role="alert"
-            className="flex h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-b border-amber-300/15 bg-amber-500/10 px-2.5 text-[11.5px] text-amber-100/90"
-          >
-            <span className="min-w-0 flex-1 truncate">
-              {`Agent wants to reach port ${pendingApproval.remotePort} on ${pendingApproval.machineLabel}`}
-            </span>
-            <button
-              type="button"
-              onClick={() => pendingApproval.decide("once")}
-              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-50/90 transition-colors duration-[120ms] ease-out hover:bg-amber-400/15"
-            >
-              Allow once
-            </button>
-            <button
-              type="button"
-              onClick={() => pendingApproval.decide("always")}
-              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-50/90 transition-colors duration-[120ms] ease-out hover:bg-amber-400/15"
-            >
-              Always for this lane
-            </button>
-            <button
-              type="button"
-              onClick={() => pendingApproval.decide("deny")}
-              className="inline-flex h-6 shrink-0 items-center rounded-md px-2 text-[11px] font-medium text-amber-100/65 transition-colors duration-[120ms] ease-out hover:bg-white/[0.06]"
-            >
-              Deny
-            </button>
-          </div>
+          <Banner
+            model={{
+              id: "browser-port-approval",
+              tone: "warning",
+              title: `Agent wants to reach port ${pendingApproval.remotePort} on ${pendingApproval.machineLabel}`,
+              actions: [
+                { label: "Allow once", onClick: () => pendingApproval.decide("once") },
+                { label: "Always for this lane", onClick: () => pendingApproval.decide("always"), variant: "secondary" },
+                { label: "Deny", onClick: () => pendingApproval.decide("deny"), variant: "link" },
+              ],
+            }}
+            layout="inline"
+          />
         ) : null}
 
         <BrowserToolbarRow

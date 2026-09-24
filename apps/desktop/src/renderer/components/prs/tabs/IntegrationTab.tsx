@@ -12,6 +12,7 @@ import type {
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
+import { PRS_LIST_ROOT_CLASS, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { PrRebaseBanner } from "../PrRebaseBanner";
 import { usePrs } from "../state/PrsContext";
@@ -25,6 +26,7 @@ import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
 import { findLaneBaseNeed, findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { getActiveRebaseNeeds } from "./rebaseWorkflowModel";
+import { confirmDialog } from "../../ui/dialog/confirm";
 
 /* ---- Outcome dot with design-system colors ---- */
 
@@ -496,6 +498,10 @@ type IntegrationTabProps = {
 };
 
 export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0 }: IntegrationTabProps) {
+  // Inside the PRs page the list goes to the list column; on its own it keeps
+  // the tiled list and detail panes.
+  const listHost = usePrsListHost();
+  const inListColumn = listHost !== undefined;
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
   const resolveTargetLaneId = React.useCallback((baseBranch: string): string | null => {
     const normalizedBase = normalizeBranchName(baseBranch);
@@ -674,7 +680,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         return result.pr.id;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and create the integration PR anyway?`)) {
+        if (
+          !isDirtyWorktreeErrorMessage(message)
+          || !(await confirmDialog({
+            title: "Continue and create the integration PR anyway?",
+            message: stripDirtyWorktreePrefix(message),
+            confirmLabel: "Continue",
+            tone: "warning",
+          }))
+        ) {
           throw error;
         }
         const result = await window.ade.prs.commitIntegration({
@@ -710,13 +724,16 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
   const handleResimulate = async (p: IntegrationProposal) => {
     const deleteIntegrationLane = p.integrationLaneId && isAdeOwnedIntegrationLane(p)
-      ? window.confirm(
-          [
-            "Re-simulating will replace this proposal.",
+      ? await confirmDialog({
+          title: "Re-simulating will replace this proposal.",
+          message: [
             `Also delete the integration lane "${p.integrationLaneName || p.integrationLaneId}" that ADE created for it?`,
             ...getIntegrationLaneWarningMessages(p),
           ].join("\n\n"),
-        )
+          confirmLabel: "Delete",
+          cancelLabel: "Keep lane",
+          destructive: true,
+        })
       : false;
     setResimBusy(true);
     setCommitError(null);
@@ -1083,7 +1100,15 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         result = await runCreate(false);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\nContinue and prepare the integration lane anyway?`)) {
+        if (
+          !isDirtyWorktreeErrorMessage(message)
+          || !(await confirmDialog({
+            title: "Continue and prepare the integration lane anyway?",
+            message: stripDirtyWorktreePrefix(message),
+            confirmLabel: "Continue",
+            tone: "warning",
+          }))
+        ) {
           throw error;
         }
         result = await runCreate(true);
@@ -1474,27 +1499,29 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
    * ============================================================ */
 
   const listPane = (
-    <div style={{ background: "#0F0D14", height: "100%" }}>
-      {/* Header */}
-      <div
-        style={{
-          padding: "14px 16px 10px",
-          borderBottom: "1px solid #1E1B26",
-          background: "#0C0A10",
-        }}
-      >
-        <span
-          className="font-mono font-bold uppercase tracking-[1px]"
-          style={{ fontSize: 10, color: "#A1A1AA" }}
+    <div style={{ background: inListColumn ? "transparent" : "var(--chat-canvas-bg)", height: "100%" }}>
+      {/* Header. The list column already names the list, so it goes there. */}
+      {inListColumn ? null : (
+        <div
+          style={{
+            padding: "14px 16px 10px",
+            borderBottom: "1px solid #1E1B26",
+            background: "#0C0A10",
+          }}
         >
-          INTEGRATION PRS
-        </span>
-      </div>
+          <span
+            className="font-mono font-bold uppercase tracking-[1px]"
+            style={{ fontSize: 10, color: "#A1A1AA" }}
+          >
+            INTEGRATION PRS
+          </span>
+        </div>
+      )}
 
       {/* List body */}
-      <div style={{ padding: 8, overflowY: "auto", height: "calc(100% - 44px)" }}>
+      <div style={{ padding: 8, overflowY: "auto", height: inListColumn ? "100%" : "calc(100% - 44px)" }}>
         {!integrationPrs.length && !proposals.length ? (
-          <EmptyState
+          inListColumn ? <PrsQuietLine>No integration PRs</PrsQuietLine> : <EmptyState
             title="No integration PRs"
             description="Use Create PR to set up an integration branch from multiple lanes."
           />
@@ -1645,7 +1672,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
    * ============================================================ */
 
   const detailPane = selectedPr ? (
-    <div style={{ background: "#0F0D14", height: "100%", overflowY: "auto" }}>
+    <div style={{ background: "var(--chat-canvas-bg)", height: "100%", overflowY: "auto" }}>
       <div style={{ padding: 20 }}>
         {/* ---- Rebase banners for source lanes ---- */}
         {mergeSourcesResolved.map((s) => (
@@ -2038,7 +2065,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       </div>
     </div>
   ) : selectedProposal ? (
-    <div style={{ background: "#0F0D14", height: "100%", overflowY: "auto" }}>
+    <div style={{ background: "var(--chat-canvas-bg)", height: "100%", overflowY: "auto" }}>
       <div style={{ padding: 20 }}>
         {/* ---- Header card ---- */}
         <div
@@ -3157,8 +3184,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         )}
       </div>
     </div>
+  ) : inListColumn ? (
+    <PrsQuietLine fill>Select an integration PR</PrsQuietLine>
   ) : (
-    <div className="flex h-full items-center justify-center" style={{ background: "#0F0D14" }}>
+    <div className="flex h-full items-center justify-center" style={{ background: "var(--chat-canvas-bg)" }}>
       <EmptyState
         title="No integration PR selected"
         description="Select an integration PR or create one via the Create PR button."
@@ -3185,6 +3214,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+
+  if (inListColumn) {
+    return (
+      <>
+        <PrsListPortal>
+          <div className={PRS_LIST_ROOT_CLASS}>{listPane}</div>
+        </PrsListPortal>
+        <div className="flex min-h-0 flex-1 flex-col">{detailPane}</div>
+      </>
+    );
+  }
 
   return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

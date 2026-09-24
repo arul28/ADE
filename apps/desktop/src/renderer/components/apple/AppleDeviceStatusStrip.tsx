@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from "react";
-import { ToolStatusStrip, ToolStatusStripAction } from "../shared/ToolStatusStrip";
+import { useState } from "react";
+import { AppleLogo } from "../ui/appleIcons";
+import { Banner, type NoticeAction } from "../ui/notice";
 import {
   describeAppleError,
   type AppleErrorAction,
@@ -37,28 +38,47 @@ export function AppleDeviceStatusStrip({
   const [open, setOpen] = useState(false);
   const described = describeAppleError(error);
   const action = described.action;
+  const actions: NoticeAction[] = [];
+  if (action && onAction) {
+    actions.push({ label: ACTION_LABEL[action], onClick: () => onAction(action) });
+  }
+  if (described.detail) {
+    actions.push({
+      label: "Details",
+      variant: "link",
+      expanded: open,
+      onClick: () => setOpen((value) => !value),
+    });
+  }
   return (
-    <StripShell
-      tone="error"
-      sentence={described.sentence}
-      onDismiss={onDismiss}
-      detail={open && described.detail ? described.detail : null}
-      actions={(
-        <>
-          {action && onAction ? (
-            <StripAction label={ACTION_LABEL[action]} onClick={() => onAction(action)} />
-          ) : null}
-          {described.detail ? (
-            <StripAction
-              label="Details"
-              expanded={open}
-              muted
-              onClick={() => setOpen((value) => !value)}
-            />
-          ) : null}
-        </>
-      )}
-    />
+    <div data-apple-status-strip="error" style={{ display: "contents" }}>
+      <Banner
+        layout="inline"
+        style={{ margin: "6px 8px", flexShrink: 0 }}
+        model={{
+          id: "apple-device-status",
+          tone: "error",
+          title: described.sentence,
+          actions,
+          dismiss: { onDismiss, title: "Dismiss this message", label: "Dismiss this message" },
+          extra: open && described.detail ? (
+            <div
+              style={{
+                maxHeight: 96,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
+                fontSize: 11,
+                lineHeight: 1.45,
+                color: "var(--color-muted-fg)",
+              }}
+            >
+              {described.detail}
+            </div>
+          ) : undefined,
+        }}
+      />
+    </div>
   );
 }
 
@@ -67,10 +87,6 @@ export function AppleDeviceStatusStrip({
  * "Video stopped." A dead device is a fact about the device, not an error the
  * user caused, so it gets the same one line and the same one button without
  * the red.
- *
- * A strip may carry ONE quieter second choice after the first — "is off." has
- * two honest answers, turn it back on or pick another device, and a person
- * should not have to find the second one in the rail's overflow menu.
  */
 export function AppleDeviceNoticeStrip({
   sentence,
@@ -87,33 +103,28 @@ export function AppleDeviceNoticeStrip({
   onSecondaryAction?: (() => void) | undefined;
   onDismiss?: (() => void) | undefined;
 }) {
+  const actions: NoticeAction[] = [{ label: actionLabel, onClick: onAction }];
+  if (secondaryActionLabel && onSecondaryAction) {
+    actions.push({
+      label: secondaryActionLabel,
+      variant: "secondary",
+      onClick: onSecondaryAction,
+    });
+  }
   return (
-    <StripShell
-      tone="notice"
-      sentence={sentence}
-      detail={null}
-      onDismiss={onDismiss}
-      actions={(
-        <>
-          <StripAction label={actionLabel} onClick={onAction} />
-          {secondaryActionLabel && onSecondaryAction ? (
-            <StripAction label={secondaryActionLabel} muted onClick={onSecondaryAction} />
-          ) : null}
-        </>
-      )}
-    />
+    <div data-apple-status-strip="notice" style={{ display: "contents" }}>
+      <Banner
+        layout="inline"
+        style={{ margin: "6px 8px", flexShrink: 0 }}
+        model={{
+          id: "apple-device-notice",
+          tone: "neutral",
+          icon: <AppleLogo size={13} />,
+          title: sentence,
+          actions,
+          dismiss: onDismiss ? { onDismiss, title: "Dismiss this message", label: "Dismiss this message" } : undefined,
+        }}
+      />
+    </div>
   );
 }
-
-/** The shell is shared with the Mac Desktop pane; this keeps Apple's marker. */
-function StripShell(props: {
-  tone: "error" | "notice";
-  sentence: string;
-  detail: string | null;
-  actions: ReactNode;
-  onDismiss?: (() => void) | undefined;
-}) {
-  return <ToolStatusStrip {...props} marker={{ "data-apple-status-strip": props.tone }} />;
-}
-
-const StripAction = ToolStatusStripAction;

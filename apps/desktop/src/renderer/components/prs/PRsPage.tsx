@@ -1,5 +1,5 @@
 import React from "react";
-import { GitPullRequest, GithubLogo, Plus } from "@phosphor-icons/react";
+import { Plus } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
@@ -7,10 +7,10 @@ import { PrsProvider, usePrs } from "./state/PrsContext";
 import { CreatePrModal, type CreatePrModalInitialValues } from "./CreatePrModal";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useDialogBus } from "../../lib/useDialogBus";
-import { GitHubTab, type GitHubHeaderChromeState } from "./tabs/GitHubTab";
+import { GitHubTab } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
-import { GitHubRepoSyncBar } from "./shared/GitHubRepoSyncBar";
-import { GitHubPrSearchInput } from "./shared/GitHubPrSearchInput";
+import { PrsListHostProvider } from "./shared/PrsListHost";
+import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import {
   buildPrsRouteSearch,
@@ -107,7 +107,7 @@ function createInitialValuesFromDialogProps(props?: Record<string, unknown>): Cr
   return { sourceLaneId: sourceLaneId || null, target };
 }
 
-function PRsPageInner() {
+function PRsPageInner({ active }: { active: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const projectRoot = useAppStore(selectActiveProjectRoot);
@@ -133,7 +133,8 @@ function PRsPageInner() {
   const consumedCreateRouteKeyRef = React.useRef<string | null>(null);
   const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>(() => readLastWorkflowTab(projectRoot));
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
-  const [githubHeaderChrome, setGithubHeaderChrome] = React.useState<GitHubHeaderChromeState | null>(null);
+  const hasProjectSidebar = useHasProjectSidebar();
+  const [listHost, setListHost] = React.useState<HTMLElement | null>(null);
   const lastRouteLocationKeyRef = React.useRef<string | null>(null);
   const [selectedPrTarget, setSelectedPrTarget] = React.useState<PrRouteSelectionTarget | null>(() => {
     try {
@@ -207,6 +208,7 @@ function PRsPageInner() {
   }, [handleRefresh, setActiveTab, setSelectedPrId, setSelectedPrTarget]);
 
   React.useEffect(() => {
+    if (!active || location.pathname !== "/prs") return;
     const syncFromLocation = () => {
       try {
         const locationKey = `${location.pathname}${location.search}${window.location.hash}`;
@@ -283,9 +285,10 @@ function PRsPageInner() {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [location.hash, location.pathname, location.search, loading, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
+  }, [active, location.hash, location.pathname, location.search, loading, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
+    if (!active || location.pathname !== "/prs") return;
     const current = parsePrsRouteState({ search: location.search, hash: location.hash });
     const localSelectedPr = selectedPrId ? prs.find((pr) => pr.id === selectedPrId) ?? null : null;
     const target = selectedPrTarget ?? (localSelectedPr ? {
@@ -336,6 +339,7 @@ function PRsPageInner() {
     if (location.search === nextSearch) return;
     void navigate({ pathname: location.pathname, search: nextSearch }, { replace: true });
   }, [
+    active,
     activeTab,
     prs,
     selectedPrId,
@@ -358,151 +362,83 @@ function PRsPageInner() {
 
   const activeMode: SurfaceMode = activeTab === "normal" ? "github" : "workflows";
 
-  React.useEffect(() => {
-    if (activeMode !== "github") {
-      setGithubHeaderChrome(null);
-    }
-  }, [activeMode]);
-
-  if (error && prs.length === 0) {
-    return (
-      <EmptyState title="PRs" description={`Failed to load PRs: ${error}`}>
-        <button
-          type="button"
-          onClick={() => void handleRefresh()}
-          className="mt-4 flex items-center gap-2"
-          style={{
-            height: 30,
-            padding: "0 14px",
-            borderRadius: 9,
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            fontWeight: 600,
-            color: "#fff",
-            background: "linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%)",
-            border: "none",
-            cursor: "pointer",
-            boxShadow: "0 2px 8px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.10)",
-            transition: "all 150ms ease",
-          }}
-        >
-          Retry
-        </button>
-      </EmptyState>
-    );
-  }
-
-  if (loading && prs.length === 0) {
-    return (
-      <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
-        <div className="flex flex-1 flex-col items-center justify-center gap-4">
-          {/* Shimmer skeleton loader */}
-          <style>{`
-            @keyframes prs-shimmer {
-              0% { background-position: -200% 0; }
-              100% { background-position: 200% 0; }
-            }
-            .prs-shimmer-bar {
-              background: linear-gradient(90deg, rgba(167,139,250,0.04) 25%, rgba(167,139,250,0.10) 50%, rgba(167,139,250,0.04) 75%);
-              background-size: 200% 100%;
-              animation: prs-shimmer 1.8s ease-in-out infinite;
-            }
-          `}</style>
-          <div className="flex flex-col items-center gap-3">
-            <div className="prs-shimmer-bar h-5 w-52 rounded-lg" />
-            <div className="prs-shimmer-bar h-3 w-36 rounded-lg" style={{ opacity: 0.7 }} />
-          </div>
-          <div className="mt-2 grid w-80 gap-2.5">
-            <div className="prs-shimmer-bar h-12 rounded-xl" style={{ border: "1px solid rgba(167,139,250,0.08)" }} />
-            <div className="prs-shimmer-bar h-12 rounded-xl" style={{ border: "1px solid rgba(167,139,250,0.06)", animationDelay: "0.15s" }} />
-            <div className="prs-shimmer-bar h-12 rounded-xl" style={{ border: "1px solid rgba(167,139,250,0.04)", animationDelay: "0.3s" }} />
-          </div>
-          <div
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: 500,
-              letterSpacing: "0.3px",
-              color: "#71717A",
-              marginTop: 4,
-            }}
-          >
-            Loading pull requests...
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
-      {/* Header bar with subtle gradient */}
-      <div
-        className="flex h-12 shrink-0 items-center gap-4 px-5"
+  const errorContent = error && prs.length === 0 ? (
+    <EmptyState title="PRs" description={`Failed to load PRs: ${error}`}>
+      <button
+        type="button"
+        onClick={() => void handleRefresh()}
+        className="mt-4 flex items-center gap-2"
         style={{
-          background: "linear-gradient(180deg, rgba(167,139,250,0.06) 0%, rgba(167,139,250,0.01) 100%)",
-          borderBottom: "1px solid rgba(167,139,250,0.10)",
+          height: 30,
+          padding: "0 14px",
+          borderRadius: 9,
+          fontFamily: SANS_FONT,
+          fontSize: 12,
+          fontWeight: 600,
+          color: "#fff",
+          background: "linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%)",
+          border: "none",
+          cursor: "pointer",
+          boxShadow: "0 2px 8px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.10)",
+          transition: "all 150ms ease",
         }}
       >
-        <div className="flex items-center gap-2.5">
-          <div
-            className="flex items-center justify-center"
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: 7,
-              background: "linear-gradient(135deg, rgba(167,139,250,0.18) 0%, rgba(139,92,246,0.08) 100%)",
-              border: "1px solid rgba(167,139,250,0.15)",
-            }}
-          >
-            <GitPullRequest size={14} weight="bold" className="text-[#A78BFA]" />
-          </div>
-          <span
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 14,
-              fontWeight: 700,
-              letterSpacing: "-0.3px",
-              color: "#FAFAFA",
-            }}
-          >
-            Pull Requests
-          </span>
-        </div>
+        Retry
+      </button>
+    </EmptyState>
+  ) : null;
 
-        <div role="tablist" aria-label="PR surfaces" className="flex items-center gap-1">
+  const loadingContent = !errorContent && loading && prs.length === 0 ? (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3">
+      <style>{`
+        @keyframes prs-shimmer {
+          0% { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
+        .prs-shimmer-bar {
+          background: linear-gradient(90deg, rgba(167,139,250,0.04) 25%, rgba(167,139,250,0.10) 50%, rgba(167,139,250,0.04) 75%);
+          background-size: 200% 100%;
+          animation: prs-shimmer 1.8s ease-in-out infinite;
+        }
+      `}</style>
+      <div className="prs-shimmer-bar h-4 w-44 rounded-md" />
+      <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: "#71717A" }}>
+        Loading pull requests...
+      </div>
+    </div>
+  ) : null;
+
+  // The list column: the surface switch and Create PR on top, then an empty
+  // host that the active surface fills with its own controls and list.
+  const listColumn = (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="prs-list-column" data-tour="prs.list">
+      <div className="flex shrink-0 items-center gap-1.5 px-2.5 pb-2 pt-1">
+        <div
+          role="tablist"
+          aria-label="PR surfaces"
+          className="flex min-w-0 flex-1 items-center gap-0.5 rounded-lg p-0.5"
+          style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" }}
+        >
           {([
-            { id: "github", label: "GitHub", icon: GithubLogo },
+            { id: "github", label: "GitHub" },
             { id: "workflows", label: "Workflows" },
-          ] as Array<{ id: SurfaceMode; label: string; icon?: React.ElementType }>).map((surface) => {
-            const active = activeMode === surface.id;
-            const Icon = surface.icon;
+          ] as Array<{ id: SurfaceMode; label: string }>).map((surface) => {
+            const selected = activeMode === surface.id;
             return (
               <button
                 key={surface.id}
                 type="button"
                 role="tab"
-                aria-selected={active}
+                aria-selected={selected}
                 className={cn(
-                  "relative flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-all duration-200",
-                  active
-                    ? "text-[#FAFAFA]"
-                    : "text-[#71717A] hover:text-[#A1A1AA]"
+                  "flex h-6 min-w-0 flex-1 items-center justify-center rounded-md px-2 transition-colors duration-150",
+                  selected ? "text-[#FAFAFA]" : "text-[#71717A] hover:text-[#A1A1AA]",
                 )}
                 style={{
                   fontFamily: SANS_FONT,
-                  fontSize: 12,
-                  fontWeight: active ? 600 : 500,
-                  ...(active
-                    ? {
-                        background: "linear-gradient(135deg, rgba(167,139,250,0.14) 0%, rgba(139,92,246,0.06) 100%)",
-                        border: "1px solid rgba(167,139,250,0.20)",
-                        boxShadow: "0 0 12px rgba(167,139,250,0.08)",
-                      }
-                    : {
-                        border: "1px solid transparent",
-                        background: "transparent",
-                      }),
+                  fontSize: 11.5,
+                  fontWeight: selected ? 600 : 500,
+                  background: selected ? "rgba(255,255,255,0.08)" : "transparent",
                 }}
                 onClick={() => {
                   if (surface.id === "github") {
@@ -512,89 +448,69 @@ function PRsPageInner() {
                   }
                 }}
               >
-                {Icon ? <Icon size={14} weight={active ? "fill" : "regular"} /> : null}
-                <span>{surface.label}</span>
+                <span className="truncate">{surface.label}</span>
               </button>
             );
           })}
         </div>
-
-        {activeMode === "github" && githubHeaderChrome ? (
-          <GitHubPrSearchInput
-            value={githubHeaderChrome.searchQuery}
-            onChange={githubHeaderChrome.onSearchQueryChange}
-            compact
-          />
-        ) : null}
-
-        <div className="ml-auto flex shrink-0 items-center gap-3">
-          {activeMode === "github" && githubHeaderChrome?.repoLabel ? (
-            <GitHubRepoSyncBar
-              repoLabel={githubHeaderChrome.repoLabel}
-              syncing={githubHeaderChrome.syncing}
-              syncedAt={githubHeaderChrome.syncedAt}
-              onSync={githubHeaderChrome.onSync}
-              compact
-            />
-          ) : null}
-          <button
-            type="button"
-            data-tour="prs.createBtn"
-            onClick={() => openCreatePr()}
-            className="flex items-center gap-2"
-            style={{
-              height: 30,
-              padding: "0 14px",
-              borderRadius: 9,
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#fff",
-              background: "linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%)",
-              border: "none",
-              cursor: "pointer",
-              boxShadow: "0 2px 8px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.10)",
-              transition: "all 150ms ease",
-            }}
-          >
-            <Plus size={14} weight="bold" />
-            Create PR
-          </button>
-        </div>
+        <button
+          type="button"
+          data-tour="prs.createBtn"
+          aria-label="Create PR"
+          title="Create PR"
+          onClick={() => openCreatePr()}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#C4B5FD] transition-colors duration-150 hover:bg-[rgba(167,139,250,0.14)] hover:text-[#EDE9FE]"
+          style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.16)" }}
+        >
+          <Plus size={13} weight="bold" />
+        </button>
       </div>
+      <div ref={setListHost} className="flex min-h-0 flex-1 flex-col" />
+    </div>
+  );
 
-      <div className="min-h-0 flex-1">
-        {activeMode === "github" ? (
-          <GitHubTab
-            lanes={visibleLanes}
-            mergeMethod={mergeMethod}
-            selectedPrId={selectedPrId}
-            selectedPrTarget={selectedPrTarget}
-            onSelectPr={handleSelectPr}
-            selectedDetailTab={selectedDetailTab}
-            onDetailTabChange={setSelectedDetailTab}
-            onRefreshAll={handleRefresh}
-            relocateHeaderChrome
-            onHeaderChromeChange={setGithubHeaderChrome}
-            onOpenRebaseTab={(laneId) => {
-              if (laneId) setSelectedRebaseItemId(laneId);
-              setActiveTab("rebase");
-            }}
-          />
-        ) : (
-          <WorkflowsTab
-            activeCategory={activeTab === "normal" ? lastWorkflowTab : activeTab}
-            onChangeCategory={(category) => setActiveTab(category)}
-            onRefreshAll={handleRefresh}
-            selectedPrId={selectedPrId}
-            onSelectPr={setSelectedPrId}
-            onOpenGitHubTab={(prId) => {
-              setSelectedPrId(prId);
-              setActiveTab("normal");
-            }}
-            integrationRefreshNonce={integrationRefreshNonce}
-          />
-        )}
+  return (
+    <div className="flex h-full min-w-0" style={{ background: "var(--chat-canvas-bg)" }}>
+      {hasProjectSidebar ? (
+        <ProjectSidebarSlot active={active}>{listColumn}</ProjectSidebarSlot>
+      ) : (
+        <div className="flex h-full w-[320px] shrink-0 flex-col" style={{ borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+          {listColumn}
+        </div>
+      )}
+
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <PrsListHostProvider host={listHost}>
+          {errorContent ?? loadingContent ?? (activeMode === "github" ? (
+            <GitHubTab
+              lanes={visibleLanes}
+              mergeMethod={mergeMethod}
+              selectedPrId={selectedPrId}
+              selectedPrTarget={selectedPrTarget}
+              onSelectPr={handleSelectPr}
+              selectedDetailTab={selectedDetailTab}
+              onDetailTabChange={setSelectedDetailTab}
+              onRefreshAll={handleRefresh}
+              onOpenRebaseTab={(laneId) => {
+                if (laneId) setSelectedRebaseItemId(laneId);
+                setActiveTab("rebase");
+              }}
+            />
+          ) : (
+            <WorkflowsTab
+              activeCategory={activeTab === "normal" ? lastWorkflowTab : activeTab}
+              onChangeCategory={(category) => setActiveTab(category)}
+              onRefreshAll={handleRefresh}
+              selectedPrId={selectedPrId}
+              onSelectPr={setSelectedPrId}
+              onOpenGitHubTab={(prId) => {
+                setSelectedPrId(prId);
+                setActiveTab("normal");
+              }}
+              integrationRefreshNonce={integrationRefreshNonce}
+            />
+          ))}
+        </PrsListHostProvider>
       </div>
 
       <CreatePrModal
@@ -614,7 +530,7 @@ export function PRsPage({ active = true }: { active?: boolean } = {}) {
 
   return (
     <PrsProvider key={providerKey} active={active}>
-      <PRsPageInner />
+      <PRsPageInner active={active} />
     </PrsProvider>
   );
 }

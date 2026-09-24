@@ -300,7 +300,7 @@ function installBrowserApi() {
         saveTempAttachment: vi.fn(),
       },
       app: {
-        openExternal: vi.fn(),
+        openExternal: vi.fn().mockResolvedValue(undefined),
         openSystemSettingsPane: vi.fn().mockResolvedValue({ opened: true }),
         revealPath: vi.fn().mockResolvedValue(undefined),
         readClipboardText: vi.fn().mockResolvedValue(""),

@@ -113,9 +113,8 @@ required.
 | `apps/desktop/src/renderer/components/chat/MacDesktopStateCard.tsx` | The card when there is no picture: Off, Checking, Starting, Stopping, and failures. |
 | `apps/desktop/src/renderer/components/chat/MacDesktopStopConfirm.tsx` | "Stop Mac Desktop?" when the tab closes: Stop, Keep running, or Cancel. |
 | `apps/desktop/src/renderer/components/chat/macDesktopStatusStore.ts` | The one status the pane and the tool card read. A failed read is unconfirmed; a stop in flight holds the pane on "Stopping…". |
-| `apps/desktop/src/renderer/components/chat/MacDesktopStatusStrip.tsx` | The pane's one status strip: a sentence, its buttons, and Details. |
+| `apps/desktop/src/renderer/components/chat/MacDesktopStatusStrip.tsx` | The pane's one status strip: a sentence, its buttons, and Details, in the shared inline `Banner`. |
 | `apps/desktop/src/renderer/components/shared/RecordingReceipt.tsx` | The recording pill and the "Saved to proof" receipt, shared with the Apple device pane. |
-| `apps/desktop/src/renderer/components/shared/ToolStatusStrip.tsx` | The opaque status strip shell, shared with the Apple device pane. |
 | `apps/desktop/src/renderer/components/chat/useMacDesktopLiveView.ts` | The live view, its low-power idle rate, and its reconnect budget. |
 | `apps/desktop/src/renderer/components/chat/macDesktopLiveViewLease.ts` | The renderer-side ref-counted lease: one stream per lane, one decoder, pane outranking the corner card. |
 | `apps/desktop/src/renderer/components/chat/h264FrameGate.ts` | The pure sequence-gap/keyframe gate both pushed-source decoders hold P-frames with after a skipped record or a decoder error. |
@@ -446,7 +445,8 @@ desktop."), and the word "lease" never appears in the pane. An empty desktop
 reads "No apps on this desktop yet." with the Add app button in its heading.
 
 Under the chrome row sits one status strip, in the Apple device pane's style
-(`MacDesktopStatusStrip.tsx` over the shared `shared/ToolStatusStrip.tsx`). It
+(`MacDesktopStatusStrip.tsx`, the same inline `Banner` from `ui/notice` that
+the Apple device strip uses). It
 says one thing at a time, most pressing first: a capture that failed or a note
 about one, a refused real input, a missing grant (with Open settings and Check
 again), and a stopped video. The stopped video reads "Video stopped." with a

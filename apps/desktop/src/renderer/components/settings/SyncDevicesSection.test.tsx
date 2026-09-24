@@ -296,7 +296,7 @@ describe("ThisMacCard", () => {
 
     render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
 
-    expect(screen.getByRole("alert").textContent).toContain(
+    expect(screen.getByRole("status").textContent).toContain(
       "Phone sync is unavailable in this ADE installation.",
     );
     // The alert above carries the runtime's full explanation; the status line

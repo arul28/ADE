@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import * as Dialog from "@radix-ui/react-dialog";
+import * as RadixDialog from "@radix-ui/react-dialog";
 import { GitPullRequest, GitMerge, CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
@@ -20,6 +20,9 @@ import {
 } from "../../../shared/linearMagicWords";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
+import { confirmDialog } from "../ui/dialog/confirm";
+import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
@@ -98,19 +101,6 @@ const textareaStyle: React.CSSProperties = {
   resize: "none" as const,
 };
 
-const errorBannerStyle: React.CSSProperties = {
-  background: `color-mix(in srgb, ${C.error} 5%, transparent)`,
-  border: `1px solid color-mix(in srgb, ${C.error} 20%, transparent)`,
-  borderRadius: 0,
-  padding: "10px 14px",
-  fontSize: 11,
-  fontFamily: "var(--font-sans)",
-  color: C.error,
-  whiteSpace: "pre-wrap",
-  maxHeight: "200px",
-  overflowY: "auto",
-};
-
 /** Regex for characters/patterns not allowed in git branch names. */
 const INVALID_GIT_REF_RE = /[\s~^:?*\[\\]|\.{2}|^\/|\/$/;
 
@@ -119,6 +109,20 @@ function StepOutcome({ outcome }: { outcome: IntegrationProposalStep["outcome"] 
   if (outcome === "conflict") return <Warning size={14} weight="fill" style={{ color: C.warning }} />;
   if (outcome === "blocked") return <Warning size={14} weight="fill" style={{ color: C.error }} />;
   return <div style={{ height: 14, width: 14, background: C.textDisabled, borderRadius: 0 }} />;
+}
+
+function CreatePrErrorBanner({ message }: { message: string }) {
+  return (
+    <Banner
+      model={{
+        id: "create-pr-error",
+        tone: "error",
+        ariaLabel: message,
+        title: <span style={{ display: "block", maxHeight: 200, overflowY: "auto", whiteSpace: "pre-wrap" }}>{message}</span>,
+      }}
+      layout="inline"
+    />
+  );
 }
 
 /* ── stepper bar ───────────────────────────────────────────────────── */
@@ -226,7 +230,10 @@ async function runWithDirtyWorktreeConfirmation<T>(args: {
     return await args.run(false);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!isDirtyWorktreeErrorMessage(message) || !window.confirm(`${stripDirtyWorktreePrefix(message)}\n\n${args.confirmMessage}`)) {
+    if (
+      !isDirtyWorktreeErrorMessage(message)
+      || !(await confirmDialog({ title: args.confirmMessage, message: stripDirtyWorktreePrefix(message), confirmLabel: "Continue", tone: "warning" }))
+    ) {
       throw error;
     }
     return await args.run(true);
@@ -417,74 +424,48 @@ function LaneWarningPanel({
   if (!items.length && !loading) return null;
   const primaryRebaseLaneId = rebaseLaneIds[0] ?? null;
   return (
-    <div
-      style={{
-        marginTop: 12,
-        background: `color-mix(in srgb, ${C.warning} 7%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${C.warning} 19%, transparent)`,
-        padding: 12,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-        <Warning size={14} weight="fill" style={{ color: C.warning, marginTop: 1, flexShrink: 0 }} />
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: 10,
-              fontWeight: 700,
-              fontFamily: MONO_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              color: C.warning,
-            }}
-          >
-            Check Before Creating PR
-          </div>
-          {items.map((item) => (
-            <div key={item.laneId} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.textPrimary, fontFamily: MONO_FONT }}>
-                {item.laneName}
-              </div>
-              {item.messages.map((message) => (
-                <div key={`${item.laneId}:${message}`} style={{ fontSize: 11, color: C.textSecondary, lineHeight: "16px" }}>
-                  {message}
+    <Banner
+      layout="inline"
+      style={{ marginTop: 12 }}
+      model={{
+        id: "create-pr-lane-readiness",
+        tone: "warning",
+        icon: <Warning size={14} weight="fill" />,
+        title: "Check Before Creating PR",
+        busy: loading,
+        extra: (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+            {items.map((item) => (
+              <div key={item.laneId} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.textPrimary, fontFamily: MONO_FONT }}>
+                  {item.laneName}
                 </div>
-              ))}
-            </div>
-          ))}
-          {loading ? (
-            <div style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
-              Checking remote sync status...
-            </div>
-          ) : null}
-          {primaryRebaseLaneId ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-              <button
-                type="button"
-                onClick={() => onOpenRebase(primaryRebaseLaneId)}
-                style={{
-                  background: "transparent",
-                  border: `1px solid color-mix(in srgb, ${C.warning} 27%, transparent)`,
-                  color: C.warning,
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  fontWeight: 700,
-                  textTransform: "uppercase",
-                  letterSpacing: "1px",
-                  padding: "4px 10px",
-                  cursor: "pointer",
-                }}
-              >
-                Open Rebase/Merge tab
-              </button>
-              <span style={{ fontSize: 10, color: C.textMuted, fontFamily: MONO_FONT }}>
+                {item.messages.map((message) => (
+                  <div key={`${item.laneId}:${message}`} style={{ fontSize: 11, color: C.textSecondary, lineHeight: "16px" }}>
+                    {message}
+                  </div>
+                ))}
+              </div>
+            ))}
+            {loading ? (
+              <div style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
+                Checking remote sync status...
+              </div>
+            ) : null}
+            {primaryRebaseLaneId ? (
+              <div style={{ fontSize: 10, color: C.textMuted, fontFamily: MONO_FONT }}>
                 Review rebase status before PR creation{rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.
-              </span>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </div>
+              </div>
+            ) : null}
+          </div>
+        ),
+        actions: primaryRebaseLaneId ? [{
+          label: "Open Rebase/Merge tab",
+          title: `Review rebase status before PR creation${rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.`,
+          onClick: () => onOpenRebase(primaryRebaseLaneId),
+        }] : undefined,
+      }}
+    />
   );
 }
 
@@ -1017,35 +998,40 @@ export function CreatePrModal({
   );
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => { if (!next && busy) return; onOpenChange(next); }}>
-      <Dialog.Portal>
-        <Dialog.Overlay
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 50,
-            background: "rgba(0,0,0,0.55)",
-            backdropFilter: "blur(8px)",
-          }}
-        />
-        <Dialog.Content
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!next && busy) return; onOpenChange(next); }}
+      title="Create pull request"
+      description={
+        numericStep === 1 ? "Configure branch and PR type"
+          : numericStep === 2 ? "Enter PR details"
+            : numericStep === 3 ? "Review results"
+              : undefined
+      }
+      hideHeader
+      hideClose
+      width={560}
+      maxHeight="84vh"
+      dismissible={!busy}
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      panelStyle={{
+        // Pinned near the top, not centered: the wizard changes height between
+        // steps, and a centered panel would jump on every step.
+        margin: "8vh auto auto",
+        borderRadius: 0,
+        background: C.bgCard,
+        border: `1px solid ${C.border}`,
+      }}
+    >
+        <div
           data-tour="prs.createModal"
           style={{
-            position: "fixed",
-            left: "50%",
-            top: "8%",
-            zIndex: 50,
-            width: "min(560px, calc(100vw - 24px))",
-            transform: "translateX(-50%)",
-            borderRadius: 0,
-            background: C.bgCard,
-            border: `1px solid ${C.border}`,
-            boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
-            outline: "none",
-            maxHeight: "84vh",
+            flex: "1 1 auto",
+            minHeight: 0,
             display: "flex",
             flexDirection: "column",
-            overflow: "hidden",
           }}
         >
           {/* ── Modal Header ────────────────────────────────────── */}
@@ -1067,7 +1053,7 @@ export function CreatePrModal({
             }}>
               01
             </span>
-            <Dialog.Title style={{
+            <span aria-hidden="true" style={{
               fontFamily: "var(--font-sans)",
               fontSize: 16,
               fontWeight: 700,
@@ -1076,8 +1062,8 @@ export function CreatePrModal({
               flex: 1,
             }}>
               CREATE PULL REQUEST
-            </Dialog.Title>
-            <Dialog.Close asChild>
+            </span>
+            <RadixDialog.Close asChild>
               <button
                 disabled={busy}
                 style={{
@@ -1095,23 +1081,22 @@ export function CreatePrModal({
               >
                 <X size={18} weight="bold" />
               </button>
-            </Dialog.Close>
+            </RadixDialog.Close>
           </div>
-
-          {/* Visually hidden description for accessibility */}
-          <Dialog.Description style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)" }}>
-            {numericStep === 1 && "Configure branch and PR type"}
-            {numericStep === 2 && "Enter PR details"}
-            {numericStep === 3 && "Review results"}
-          </Dialog.Description>
 
           {/* ── Stepper ─────────────────────────────────────────── */}
           <Stepper currentStep={numericStep} />
 
           {branchLoadError ? (
-            <div role="alert" style={{ padding: "8px 24px", fontSize: 11, color: C.error, background: `color-mix(in srgb, ${C.error} 6%, transparent)` }}>
-              Could not load branch list: {branchLoadError}
-            </div>
+            <Banner
+              model={{
+                id: "create-pr-branch-load-error",
+                tone: "error",
+                title: `Could not load branch list: ${branchLoadError}`,
+              }}
+              layout="inline"
+              style={{ margin: "8px 24px" }}
+            />
           ) : null}
 
           {/* ── Scrollable Body ─────────────────────────────────── */}
@@ -1635,9 +1620,7 @@ export function CreatePrModal({
                   </div>
                 )}
 
-                {execError && (
-                  <div style={errorBannerStyle}>{execError}</div>
-                )}
+                {execError ? <CreatePrErrorBanner message={execError} /> : null}
               </div>
             )}
 
@@ -1857,9 +1840,7 @@ export function CreatePrModal({
                   </>
                 )}
 
-                {execError && (
-                  <div style={errorBannerStyle}>{execError}</div>
-                )}
+                {execError ? <CreatePrErrorBanner message={execError} /> : null}
 
                 {integrationProgress && (
                   <div style={{
@@ -2036,9 +2017,7 @@ export function CreatePrModal({
                 )}
 
                 {/* Error display */}
-                {execError && (
-                  <div style={errorBannerStyle}>{execError}</div>
-                )}
+                {execError ? <CreatePrErrorBanner message={execError} /> : null}
               </div>
             )}
           </div>
@@ -2057,7 +2036,7 @@ export function CreatePrModal({
             {/* Left side */}
             <div>
               {numericStep === 1 && (
-                <Dialog.Close asChild>
+                <RadixDialog.Close asChild>
                   <button
                     style={{
                       background: "transparent",
@@ -2075,7 +2054,7 @@ export function CreatePrModal({
                   >
                     CANCEL
                   </button>
-                </Dialog.Close>
+                </RadixDialog.Close>
               )}
               {numericStep === 2 && (
                 <button
@@ -2163,7 +2142,7 @@ export function CreatePrModal({
                 </button>
               )}
               {numericStep === 3 && results && (
-                <Dialog.Close asChild>
+                <RadixDialog.Close asChild>
                   <button
                     onClick={() => onCreated?.(results)}
                     style={{
@@ -2182,12 +2161,11 @@ export function CreatePrModal({
                   >
                     DONE
                   </button>
-                </Dialog.Close>
+                </RadixDialog.Close>
               )}
             </div>
           </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        </div>
+    </Dialog>
   );
 }

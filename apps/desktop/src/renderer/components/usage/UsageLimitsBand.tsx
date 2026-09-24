@@ -13,7 +13,7 @@
  * (`usageWindowFormat`, `UsagePaceBar`, `usageDesign`).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise, ArrowSquareOut, Gauge, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, Gauge } from "@phosphor-icons/react";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -29,14 +29,13 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { type ThemeId, useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { providerColor } from "./providerColors";
 import { ProviderMark, UsageAccountRow } from "./UsageAccountRow";
 import {
   USAGE_BAR_TRACK_CLASS,
-  USAGE_BUTTON_CLASS,
   USAGE_CARD_CLASS,
   USAGE_DIVIDER_COLOR_CLASS,
-  USAGE_HAIRLINE_CLASS,
   USAGE_NUMERIC_CLASS,
   USAGE_TEXT,
   usagePressureColor,
@@ -190,81 +189,52 @@ function ProviderStatusNotice({
       ? "Reconnect"
       : "Retry";
 
+  // The provider's sentence is already the first line of this notice;
+  // repeating it here just says it twice.
+  const failureLine = !blocked && phase === "failed"
+    ? (failureDetail && failureDetail !== message
+      ? `Still failing: ${failureDetail}`
+      : "Tried again just now — still failing.")
+    : undefined;
+
+  const outcomeLine = blocked ? (
+    <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)" }}>
+      Retries again in {formatWaitShort(blockedForMs)}.
+    </span>
+  ) : phase === "succeeded" ? (
+    <span style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--color-muted-fg)" }}>Refreshed.</span>
+  ) : undefined;
+
   return (
-    <div
-      role="status"
-      className={cn(
-        "flex min-w-0 flex-col gap-1.5 rounded-md border bg-surface-recessed px-2.5 py-2",
-        USAGE_HAIRLINE_CLASS,
-      )}
-      style={{
-        borderColor: "color-mix(in srgb, var(--color-usage-warn, #F5A623) 35%, transparent)",
+    <Banner
+      layout="inline"
+      model={{
+        id: `usage-provider-status:${status.state}`,
+        tone: "warning",
+        title: message,
+        // The bars below are still real. Say so, so "couldn't refresh" is never
+        // read as "the numbers are gone".
+        detail: hasReadings ? (
+          <>
+            Figures below are the last good reading, from{" "}
+            {formatUpdatedAge(status.lastSuccessAt ?? status.updatedAt, nowMs)}.
+          </>
+        ) : undefined,
+        actions: [
+          {
+            label: actionLabel,
+            icon: <ArrowClockwise size={11} />,
+            onClick: () => void handleRetry(),
+            busy: phase === "pending",
+            disabled: blocked,
+            title: blocked ? "Rate-limited — the next attempt runs on its own" : undefined,
+          },
+        ],
+        dismiss: { onDismiss, title: "Dismiss until you open usage again", label: "Dismiss this warning" },
+        extra: outcomeLine,
+        error: failureLine,
       }}
-    >
-      <div className="flex min-w-0 items-start gap-2">
-        <span
-          aria-hidden
-          className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
-          style={{ background: "var(--color-usage-warn, #F5A623)" }}
-        />
-        <p className={cn(USAGE_TEXT.micro, "m-0 min-w-0 flex-1 leading-relaxed text-fg/80")}>
-          {message}
-        </p>
-        <button
-          type="button"
-          onClick={onDismiss}
-          aria-label="Dismiss this warning"
-          title="Dismiss until you open usage again"
-          className="-mr-1 -mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-fg transition-colors duration-150 hover:bg-muted hover:text-fg motion-reduce:transition-none"
-        >
-          <X size={11} weight="regular" />
-        </button>
-      </div>
-
-      {/* The bars below are still real. Say so, so "couldn't refresh" is never
-          read as "the numbers are gone". */}
-      {hasReadings ? (
-        <p className={cn(USAGE_TEXT.micro, "m-0 pl-3.5 text-muted-fg")}>
-          Figures below are the last good reading, from{" "}
-          {formatUpdatedAge(status.lastSuccessAt ?? status.updatedAt, nowMs)}.
-        </p>
-      ) : null}
-
-      <div className="flex min-w-0 items-center gap-2 pl-3.5">
-        <button
-          type="button"
-          onClick={() => void handleRetry()}
-          disabled={phase === "pending" || blocked}
-          title={blocked ? "Rate-limited — the next attempt runs on its own" : undefined}
-          className={cn(USAGE_BUTTON_CLASS, "min-h-7 px-2", USAGE_TEXT.micro)}
-        >
-          <ArrowClockwise
-            size={11}
-            className={phase === "pending" ? "animate-spin motion-reduce:animate-none" : undefined}
-          />
-          {actionLabel}
-        </button>
-        {blocked ? (
-          <span className={cn(USAGE_TEXT.micro, "min-w-0 truncate text-muted-fg")}>
-            Retries again in {formatWaitShort(blockedForMs)}.
-          </span>
-        ) : phase === "failed" ? (
-          <span
-            className={cn(USAGE_TEXT.micro, "min-w-0 truncate")}
-            style={{ color: "var(--color-usage-warn, #F5A623)" }}
-            title={failureDetail ?? undefined}
-          >
-            {/* The provider's sentence is already the first line of this
-                notice; repeating it here just truncates it twice. */}
-            {failureDetail && failureDetail !== message
-              ? `Still failing: ${failureDetail}`
-              : "Tried again just now — still failing."}
-          </span>
-        ) : phase === "succeeded" ? (
-          <span className={cn(USAGE_TEXT.micro, "min-w-0 truncate text-muted-fg")}>Refreshed.</span>
-        ) : null}
-      </div>
-    </div>
+    />
   );
 }
 
@@ -274,34 +244,24 @@ function NoticeRow({
   actionLabel,
   onAction,
   actionDisabled,
-  className,
 }: {
   message: string;
   actionLabel?: string;
   onAction?: () => void;
   actionDisabled?: boolean;
-  className?: string;
 }) {
   return (
-    <div
-      className={cn(
-        "flex items-center justify-between gap-3 rounded-md border bg-surface-recessed px-2.5 py-1.5",
-        USAGE_HAIRLINE_CLASS,
-        className,
-      )}
-    >
-      <span className={cn(USAGE_TEXT.micro, "min-w-0 text-muted-fg")}>{message}</span>
-      {actionLabel && onAction ? (
-        <button
-          type="button"
-          onClick={onAction}
-          disabled={actionDisabled}
-          className={cn(USAGE_BUTTON_CLASS, "min-h-8 shrink-0 px-2", USAGE_TEXT.micro)}
-        >
-          {actionLabel}
-        </button>
-      ) : null}
-    </div>
+    <Banner
+      layout="inline"
+      model={{
+        id: `usage-notice:${message}`,
+        tone: "neutral",
+        title: message,
+        actions: actionLabel && onAction
+          ? [{ label: actionLabel, onClick: onAction, disabled: actionDisabled }]
+          : undefined,
+      }}
+    />
   );
 }
 
@@ -564,20 +524,16 @@ function ProviderLimitsRow({
       {statusNotice}
 
       {messages.slice(0, 1).map((message) => (
-        <div
+        <Banner
           key={message.id}
-          className={cn(
-            USAGE_TEXT.micro,
-            "rounded-md border bg-surface-recessed px-2.5 py-1.5 leading-relaxed text-muted-fg",
-            USAGE_HAIRLINE_CLASS,
-          )}
-          title={message.message}
-        >
-          <span className="mr-1.5 font-semibold text-fg/75">
-            {message.kind === "headline" ? "Notice" : "Update"}
-          </span>
-          {message.message}
-        </div>
+          layout="inline"
+          model={{
+            id: `usage-message:${message.id}`,
+            tone: "info",
+            title: message.kind === "headline" ? "Notice" : "Update",
+            detail: message.message,
+          }}
+        />
       ))}
 
       {identityRows.map((row) => (

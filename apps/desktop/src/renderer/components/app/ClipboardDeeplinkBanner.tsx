@@ -1,5 +1,5 @@
 import React from "react";
-import { Link as LinkIcon, X } from "@phosphor-icons/react";
+import { Link as LinkIcon } from "@phosphor-icons/react";
 
 import {
   buildDeeplink,
@@ -8,7 +8,7 @@ import {
   parseDeeplink,
 } from "../../../shared/deeplinks";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 
 /**
  * Watches the system clipboard when the ADE window gains focus. If the
@@ -25,7 +25,7 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
  * read and produced the next — the whole app read as needing two clicks for
  * everything.
  */
-export function ClipboardDeeplinkBanner(): React.ReactElement | null {
+export function ClipboardDeeplinkBanner(): null {
   const [candidate, setCandidate] = React.useState<{
     url: string;
     label: string;
@@ -63,9 +63,8 @@ export function ClipboardDeeplinkBanner(): React.ReactElement | null {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  if (!candidate) return null;
-
   const onOpen = () => {
+    if (!candidate) return;
     const opener = window.ade?.app?.openExternal;
     if (typeof opener === "function") {
       const parsed = parseDeeplink(candidate.url);
@@ -77,63 +76,24 @@ export function ClipboardDeeplinkBanner(): React.ReactElement | null {
   };
 
   const onDismiss = () => {
+    if (!candidate) return;
     dismissedRef.current.add(candidate.url);
     setCandidate(null);
   };
 
-  return (
-    <div
-      style={{
-        position: "fixed",
-        top: 14,
-        left: "50%",
-        transform: "translateX(-50%)",
-        zIndex: 150,
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "8px 14px",
-        borderRadius: 999,
-        background: COLORS.cardBgSolid,
-        border: `1px solid ${COLORS.border}`,
-        boxShadow: "0 18px 40px rgba(0,0,0,0.35)",
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-        color: COLORS.textPrimary,
-      }}
-    >
-      <LinkIcon size={14} weight="bold" />
-      <span>Found ADE link in clipboard — open {candidate.label}?</span>
-      <button
-        type="button"
-        onClick={onOpen}
-        style={{
-          padding: "4px 10px",
-          borderRadius: 999,
-          border: "none",
-          background: "var(--color-accent, #6ee7b7)",
-          color: "var(--color-bg, #0a0a0a)",
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        Open
-      </button>
-      <button
-        type="button"
-        onClick={onDismiss}
-        aria-label="Dismiss"
-        style={{
-          padding: 4,
-          borderRadius: 999,
-          border: "none",
-          background: "transparent",
-          color: COLORS.textSecondary,
-          cursor: "pointer",
-        }}
-      >
-        <X size={12} />
-      </button>
-    </div>
+  useAppBanner(
+    candidate
+      ? {
+          id: "clipboard-deeplink",
+          tone: "accent",
+          icon: <LinkIcon size={14} weight="bold" />,
+          title: `Found ADE link in clipboard — open ${candidate.label}?`,
+          actions: [{ label: "Open", variant: "solid", onClick: onOpen }],
+          dismiss: { onDismiss },
+        }
+      : null,
+    { placement: "floating", priority: APP_BANNER_PRIORITY.prompt },
   );
+
+  return null;
 }

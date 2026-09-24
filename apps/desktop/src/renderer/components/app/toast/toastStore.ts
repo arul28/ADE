@@ -1,34 +1,35 @@
 import { useSyncExternalStore } from "react";
+import type { NoticeTone } from "../../ui/notice/noticeTones";
+import type { ToastCardAction, ToastCardModel, ToastChip } from "../../ui/notice/ToastCard";
 
 /**
- * Reusable, renderer-only toast store. Bespoke bottom-right notices in
- * `AppShell` (PR notifications, auto-link, remote/stale banners) predate this
- * and are intentionally left alone; this is the shared primitive new product
- * code should push through. Timers (auto-dismiss + hover pause/resume) live in
- * the store so rendering components stay dumb; see `ToastStack`.
+ * ADE's one toast store. Every bottom-right notice — lane events, PR
+ * notifications, auto-link undo, the idle-sessions nudge, batch launches —
+ * goes through `showToast` and renders as the shared `ToastCard` in
+ * `ToastStack`. Timers (auto-dismiss + hover pause/resume) live in the store so
+ * rendering components stay dumb.
  */
 
-export type ToastTone = "info" | "success" | "error";
+export type ToastTone = NoticeTone;
 
-export type ToastAction = {
-  label: string;
-  onClick: () => void;
-};
+export type { ToastCardAction, ToastChip };
 
-export type ToastInput = {
+/**
+ * A toast is a `ToastCardModel` plus the store's own bookkeeping, so the stack
+ * hands it to `ToastCard` as-is. `actions` are pill buttons (the first is the
+ * primary); an action dismisses the toast unless it sets `keepOpen`.
+ */
+export type ToastInput = Omit<ToastCardModel, "tone" | "title"> & {
   id?: string;
   title: string;
-  message?: string;
+  /** Defaults to "info". */
   tone?: ToastTone;
-  /** CSS color for the small lane dot rendered before the title. */
-  colorDot?: string;
-  action?: ToastAction;
+  /** Runs when the user closes the toast with × (not on auto-dismiss). */
+  onClose?: () => void;
   /**
-   * A second, quieter action beside the first. Added for notices that offer
-   * both "look at this" and "stop doing this"; most toasts want neither or one.
+   * Auto-dismiss delay; <= 0 or non-finite keeps the toast until dismissed.
+   * Sticky toasts outlive timed ones when the stack is over its cap.
    */
-  secondaryAction?: ToastAction;
-  /** Auto-dismiss delay; <= 0 or non-finite keeps the toast until dismissed. */
   durationMs?: number;
   /**
    * Fires once `ToastStack` has actually committed this toast to the DOM.
@@ -44,23 +45,17 @@ export type ToastInput = {
   onRendered?: () => void;
 };
 
-export type Toast = {
+export type Toast = Omit<ToastInput, "id" | "tone" | "durationMs"> & {
   id: string;
-  title: string;
-  message?: string;
   tone: ToastTone;
-  colorDot?: string;
-  action?: ToastAction;
-  secondaryAction?: ToastAction;
   durationMs: number;
-  onRendered?: () => void;
 };
 
 /** Merge-patch shape for {@link updateToast}. */
 export type ToastPatch = Partial<Omit<ToastInput, "id">>;
 
 const DEFAULT_DURATION_MS = 6000;
-const MAX_TOASTS = 4;
+const MAX_TOASTS = 5;
 
 type TimerEntry = {
   handle: ReturnType<typeof setTimeout> | null;
@@ -119,6 +114,23 @@ function scheduleTimer(id: string, durationMs: number): void {
   });
 }
 
+function isSticky(toast: Toast): boolean {
+  return !Number.isFinite(toast.durationMs) || toast.durationMs <= 0;
+}
+
+/**
+ * Which toast to drop when the stack is over its cap: the oldest one that would
+ * time out anyway. Sticky toasts (live progress, "N sessions idle", an undo that
+ * waits for an answer) only go when every toast is sticky, so a burst of
+ * "Lane created" events cannot push them off screen.
+ */
+function oldestEvictableIndex(stack: readonly Toast[], arrivingId: string): number {
+  // The toast being shown right now always survives: the user just caused it.
+  const timed = stack.findIndex((t) => t.id !== arrivingId && !isSticky(t));
+  if (timed >= 0) return timed;
+  return stack.findIndex((t) => t.id !== arrivingId);
+}
+
 /**
  * Show a toast, or replace an in-place one when `id` matches an existing toast
  * (keeping its stack position). Returns the toast id.
@@ -127,15 +139,10 @@ export function showToast(input: ToastInput): string {
   const id = input.id ?? generateId();
   const durationMs = input.durationMs ?? DEFAULT_DURATION_MS;
   const toast: Toast = {
+    ...input,
     id,
-    title: input.title,
-    message: input.message,
     tone: input.tone ?? "info",
-    colorDot: input.colorDot,
-    action: input.action,
-    secondaryAction: input.secondaryAction,
     durationMs,
-    onRendered: input.onRendered,
   };
 
   const existingIndex = toasts.findIndex((t) => t.id === id);
@@ -144,14 +151,11 @@ export function showToast(input: ToastInput): string {
     next[existingIndex] = toast;
     toasts = next;
   } else {
-    let next = [...toasts, toast];
-    if (next.length > MAX_TOASTS) {
-      const dropCount = next.length - MAX_TOASTS;
-      for (const dropped of next.slice(0, dropCount)) {
-        clearTimer(dropped.id);
-        timers.delete(dropped.id);
-      }
-      next = next.slice(dropCount);
+    const next = [...toasts, toast];
+    while (next.length > MAX_TOASTS) {
+      const [dropped] = next.splice(oldestEvictableIndex(next, id), 1);
+      clearTimer(dropped.id);
+      timers.delete(dropped.id);
     }
     toasts = next;
   }

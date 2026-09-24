@@ -1,4 +1,5 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Copy } from "@phosphor-icons/react";
 import { MultiFileDiff, PatchDiff } from "@pierre/diffs/react";
 import type { FileContents } from "@pierre/diffs/react";
 import type { FileDiff, FilePatch } from "../../../shared/types";
@@ -33,6 +34,23 @@ const DIFF_UNSAFE_CSS = `
     border-radius: 0;
   }
 `;
+
+/** Tighter button padding when the toolbar itself is narrow. */
+const TOOLBAR_BUTTON_CLASS = "@max-[340px]:px-[5px]!";
+
+/** A toolbar toggle: accent text when on, never wrapping or shrinking. */
+function toolbarButton(on: boolean, extra?: React.CSSProperties): React.CSSProperties {
+  return outlineButton({
+    height: 24,
+    padding: "0 8px",
+    fontSize: 11,
+    borderRadius: 6,
+    color: on ? COLORS.accent : COLORS.textSecondary,
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+    ...extra,
+  });
+}
 
 function makeFileContents(path: string, contents: string, suffix: string): FileContents {
   return {
@@ -152,25 +170,35 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
       }}
     >
       {showToolbar ? (
+        // One line at any width: labels never wrap, the bar scrolls sideways
+        // if it has to, and "Copy path" drops to its icon in narrow panes.
         <div
-          className="flex shrink-0 items-center gap-1 border-b border-border"
+          className="@container flex shrink-0 flex-nowrap items-center gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
           style={{ minHeight: compact ? 30 : 34, padding: compact ? "3px 6px" : "4px 8px", background: COLORS.recessedBg }}
         >
-          <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 6, color: layout === "split" ? COLORS.accent : COLORS.textSecondary })} onClick={() => setLayout("split")}>
+          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(layout === "split")} onClick={() => setLayout("split")}>
             Split
           </button>
-          <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 6, color: layout === "unified" ? COLORS.accent : COLORS.textSecondary })} onClick={() => setLayout("unified")}>
+          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(layout === "unified")} onClick={() => setLayout("unified")}>
             Unified
           </button>
-          <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 6, color: overflow === "wrap" ? COLORS.accent : COLORS.textSecondary })} onClick={() => setOverflow((value) => (value === "wrap" ? "scroll" : "wrap"))}>
+          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(overflow === "wrap")} onClick={() => setOverflow((value) => (value === "wrap" ? "scroll" : "wrap"))}>
             Wrap
           </button>
-          <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 6, color: lineNumbers ? COLORS.accent : COLORS.textSecondary })} onClick={() => setLineNumbers((value) => !value)}>
+          <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(lineNumbers)} onClick={() => setLineNumbers((value) => !value)}>
             Lines
           </button>
           {activePath ? (
-            <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 6, marginLeft: "auto" })} onClick={() => copyText(activePath)}>
-              Copy path
+            <button
+              type="button"
+              className={TOOLBAR_BUTTON_CLASS}
+              style={toolbarButton(false, { marginLeft: "auto", gap: 5 })}
+              onClick={() => copyText(activePath)}
+              title={`Copy path: ${activePath}`}
+              aria-label="Copy path"
+            >
+              <Copy size={12} aria-hidden />
+              <span className="hidden @[400px]:inline">Copy path</span>
             </button>
           ) : null}
         </div>

@@ -175,6 +175,8 @@ export type WorkSessionListOrganization =
  * `by-time` branch in `SessionListPane` to grow a board case.
  */
 export type WorkViewMode = "list" | "board";
+/** Lanes sidebar grouping. "state" is the default; "stack" is the plain stack tree. */
+export type LanesSidebarGroupBy = "state" | "stack";
 /**
  * A Cursor-style grid: a set of chat/CLI sessions that share the work area in a
  * resizable split layout. `sessionIds` is the membership (drives the sidebar
@@ -210,8 +212,6 @@ export type WorkProjectViewState = {
   workCollapsedTabGroupIds: string[];
   /** Section ids collapsed in status/time sidebar groupings (e.g. "status:running", "time:today"). */
   workCollapsedSectionIds: string[];
-  /** When true, sessions sidebar is hidden for a full-width content area (persisted per project). */
-  workFocusSessionsHidden: boolean;
   /** Global Work right sidebar state; content follows the active lane/session. */
   workSidebarOpen: boolean;
   /**
@@ -255,9 +255,7 @@ export type WorkProjectViewState = {
   /** Session ids pinned to the front of their lane's tab group. */
   pinnedSessionIds: string[];
   /**
-   * Work-sidebar lane pins. Deliberately NOT `lanesPinnedLaneIds` below: that
-   * set belongs to the Lanes tab, and the two surfaces pin for different
-   * reasons. Pinned lanes sort above everything and never take the compact
+   * Work-sidebar lane pins. Pinned lanes sort above everything and never take the compact
    * quiet styling.
    */
   workPinnedLaneIds: string[];
@@ -273,8 +271,12 @@ export type WorkProjectViewState = {
    * tab switch by construction — it has to live here to be preserved at all.
    */
   lanesFilter: string;
-  lanesPinnedLaneIds: string[];
-  lanesExpandedLaneId: string | null;
+  /** How the Lanes sidebar list is grouped: by what each lane needs, or as the stack tree. */
+  lanesGroupBy: LanesSidebarGroupBy;
+  /** State groups collapsed in the Lanes sidebar (e.g. "lanes-state:done"). */
+  lanesCollapsedGroupIds: string[];
+  /** Collapsed sections of the lane overview (e.g. "chats"), shared by every lane. */
+  lanesCollapsedSectionIds: string[];
   /**
    * `"<machineId>:<remotePort>"` pairs the human answered "Always for this
    * lane" to, when a chat pinned to another machine asks the built-in browser
@@ -335,7 +337,6 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workCollapsedTabGroupIds: [],
     // Settled starts collapsed: the tier is present but quiet by default.
     workCollapsedSectionIds: ["status:settled"],
-    workFocusSessionsHidden: false,
     workSidebarOpen: false,
     workSidebarTool: null,
     workSidebarOpenTools: [],
@@ -351,8 +352,9 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workLaneOrder: [],
     workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
     lanesFilter: "",
-    lanesPinnedLaneIds: [],
-    lanesExpandedLaneId: null,
+    lanesGroupBy: "state",
+    lanesCollapsedGroupIds: [],
+    lanesCollapsedSectionIds: [],
     browserTunnelAlwaysKeys: [],
   };
 }
@@ -448,7 +450,6 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workCollapsedLaneIds: normalizeStringArray(candidate.workCollapsedLaneIds),
     workCollapsedTabGroupIds: normalizeStringArray(candidate.workCollapsedTabGroupIds),
     workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
-    workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
     workSidebarOpen: candidate.workSidebarOpen === true,
     workSidebarTool: activeWorkSidebarTool,
     workSidebarOpenTools: normalizeWorkSidebarOpenTools(
@@ -467,8 +468,11 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workLaneOrder: normalizeUniqueStringArray(candidate.workLaneOrder),
     workSessionFilters: normalizeWorkSessionFilters(candidate.workSessionFilters),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
-    lanesPinnedLaneIds: normalizeStringArray(candidate.lanesPinnedLaneIds),
-    lanesExpandedLaneId: normalizeOptionalString(candidate.lanesExpandedLaneId),
+    // Additive like the other lanes keys: an older blob has no grouping and
+    // lands on the State default.
+    lanesGroupBy: candidate.lanesGroupBy === "stack" ? "stack" : "state",
+    lanesCollapsedGroupIds: normalizeUniqueStringArray(candidate.lanesCollapsedGroupIds),
+    lanesCollapsedSectionIds: normalizeUniqueStringArray(candidate.lanesCollapsedSectionIds),
     browserTunnelAlwaysKeys: normalizeUniqueStringArray(candidate.browserTunnelAlwaysKeys),
   };
 }

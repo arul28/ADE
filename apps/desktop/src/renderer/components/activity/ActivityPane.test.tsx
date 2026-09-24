@@ -247,32 +247,40 @@ describe("ActivityPane", () => {
     render(<ActivityPane open onClose={onClose} />);
 
     openDetail("Task approval");
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Task approval detail" })).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("closes on a click outside and on the backdrop", () => {
+  it("closes on a click outside and on the backdrop", async () => {
     const onClose = vi.fn();
     render(<ActivityPane open onClose={onClose} />);
+    // Radix arms its outside-press listener a tick after the dialog mounts.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Activity backdrop" }));
+    // The shared Dialog's scrim, then anywhere outside the panel.
+    fireEvent.pointerDown(document.body.querySelector(".ade-dialog-scrim")!);
     expect(onClose).toHaveBeenCalled();
 
     onClose.mockClear();
-    fireEvent.mouseDown(document.body);
+    fireEvent.pointerDown(document.body);
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("keeps clicks inside the pane from closing it", () => {
+  it("keeps clicks inside the pane from closing it", async () => {
     const onClose = vi.fn();
     activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={onClose} />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
-    fireEvent.mouseDown(screen.getByTestId("activity-pane"));
+    fireEvent.pointerDown(screen.getByTestId("activity-pane"));
     expect(onClose).not.toHaveBeenCalled();
   });
 

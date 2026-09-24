@@ -9,7 +9,6 @@ import {
   FolderDashed,
   HardDrives,
   ShieldCheck,
-  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import {
@@ -31,6 +30,7 @@ import type {
   LaneReclaimRisk,
 } from "../../../shared/types";
 import { SettingsCard, SettingsGroup, SettingsNumber } from "./primitives";
+import { showToast, type ToastTone } from "../app/toast/toastStore";
 import { SettingsDashboardPage } from "./primitives/SettingsDashboardPage";
 import { relativeWhen } from "../../lib/format";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
@@ -53,6 +53,7 @@ import { PANEL_STYLE, STORAGE_BRAND } from "./storage/storageUiConstants";
 import { DiagnosticsStrip, TrendArrow } from "./storage/StorageDiagnostics";
 import { MaintenanceJournal } from "./storage/StorageMaintenanceJournal";
 import { AppleRecordingsWarning } from "./AppleRecordingsWarning";
+import { Banner } from "../ui/notice";
 import {
   CATEGORY_META,
   CATEGORY_ORDER,
@@ -73,6 +74,9 @@ import {
   safeReclaimableBytes,
   type Trend,
 } from "./storage/storageView";
+
+/** One storage result at a time: a new outcome replaces the last in place. */
+const STORAGE_TOAST_ID = "settings-storage-result";
 
 type CompressNow = () => Promise<{ filesCompressed: number; savedBytes: number }>;
 type RunMaintenanceNow = () => Promise<MaintenanceRunReport>;
@@ -862,10 +866,11 @@ function ReclaimConfirmDialog({
         {warnings.length > 0 ? (
           <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
             {warnings.map((warning) => (
-              <div key={warning.code} style={{ display: "flex", gap: 8, padding: "8px 10px", borderRadius: 8, border: `1px solid ${COLORS.warning}35`, color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45 }}>
-                <WarningCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                {warning.message}
-              </div>
+              <Banner
+                key={warning.code}
+                layout="inline"
+                model={{ id: `lane-reclaim-warning:${warning.code}`, tone: "warning", title: warning.message }}
+              />
             ))}
           </div>
         ) : null}
@@ -1027,19 +1032,18 @@ export function StorageSection() {
   const [reclaimConfirm, setReclaimConfirm] = React.useState("");
   const [discardDirtyConfirmed, setDiscardDirtyConfirmed] = React.useState(false);
   const [reclaimBusy, setReclaimBusy] = React.useState(false);
-  const [toast, setToast] = React.useState<string | null>(null);
-  const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const policySaveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const compressNow = React.useMemo(() => getCompressNow(), []);
   const runMaintenanceNow = React.useMemo(() => getRunMaintenanceNow(), []);
   const runtimeHealthFn = React.useMemo(() => getRuntimeHealthFn(), []);
 
-  const showToast = React.useCallback((message: string) => {
-    setToast(message);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 4500);
+  const notify = React.useCallback((message: string, tone: ToastTone = "success") => {
+    showToast({ id: STORAGE_TOAST_ID, title: message, tone, durationMs: 4500 });
   }, []);
+  const notifyMaintenance = React.useCallback((outcome: { message: string; failed: boolean }) => {
+    notify(outcome.message, outcome.failed ? "warning" : "success");
+  }, [notify]);
 
   const load = React.useCallback(async (opts: { force?: boolean; silent?: boolean } = {}) => {
     if (opts.silent || opts.force) setRefreshing(true);
@@ -1091,7 +1095,6 @@ export function StorageSection() {
     void load();
     void loadDiagnostics();
     return () => {
-      if (toastTimer.current) clearTimeout(toastTimer.current);
       // Flush a pending rule edit rather than dropping it on unmount.
       if (policySaveTimer.current) clearTimeout(policySaveTimer.current);
     };
@@ -1102,29 +1105,29 @@ export function StorageSection() {
     setCompressing(true);
     try {
       const result = await compressNow();
-      showToast(`Compressed ${result.filesCompressed} ${result.filesCompressed === 1 ? "file" : "files"}, freed ${formatBytes(result.savedBytes)}`);
+      notify(`Compressed ${result.filesCompressed} ${result.filesCompressed === 1 ? "file" : "files"}, freed ${formatBytes(result.savedBytes)}`);
       void load({ force: true, silent: true });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not compress history");
+      notify(err instanceof Error ? err.message : "Could not compress history", "error");
     } finally {
       setCompressing(false);
     }
-  }, [compressNow, load, showToast]);
+  }, [compressNow, load, notify]);
 
   const runMaintenanceInline = React.useCallback(async () => {
     if (!runMaintenanceNow || maintenanceBusy) return;
     setMaintenanceBusy(true);
     try {
       const report = await runMaintenanceNow();
-      showToast(maintenanceOutcome(report).message);
+      notifyMaintenance(maintenanceOutcome(report));
       void load({ force: true, silent: true });
       void loadDiagnostics();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not run cleanup");
+      notify(err instanceof Error ? err.message : "Could not run cleanup", "error");
     } finally {
       setMaintenanceBusy(false);
     }
-  }, [runMaintenanceNow, maintenanceBusy, showToast, load, loadDiagnostics]);
+  }, [runMaintenanceNow, maintenanceBusy, notify, notifyMaintenance, load, loadDiagnostics]);
 
   const savePolicy = React.useCallback(async (next: LaneCleanupConfig) => {
     setPolicyBusy(true);
@@ -1136,11 +1139,11 @@ export function StorageSection() {
       });
       void load({ force: true, silent: true });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not save storage rules");
+      notify(err instanceof Error ? err.message : "Could not save storage rules", "error");
     } finally {
       setPolicyBusy(false);
     }
-  }, [load, showToast]);
+  }, [load, notify]);
 
   /**
    * Storage rules save as you edit — there is no Save button anywhere in
@@ -1163,9 +1166,9 @@ export function StorageSection() {
       setDiscardDirtyConfirmed(false);
       setReclaimRisk(risk);
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not review this lane");
+      notify(err instanceof Error ? err.message : "Could not review this lane", "error");
     }
-  }, [showToast]);
+  }, [notify]);
 
   const confirmReclaim = React.useCallback(async () => {
     if (!reclaimRisk || reclaimConfirm !== "RECLAIM" || (reclaimRisk.dirty && !discardDirtyConfirmed)) return;
@@ -1176,29 +1179,32 @@ export function StorageSection() {
         confirmation: "RECLAIM",
         ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
       });
-      showToast(`Reclaimed about ${formatBytes(result.reclaimedBytes)}. The lane, branch, and chats were kept.`);
+      notify(`Reclaimed about ${formatBytes(result.reclaimedBytes)}. The lane, branch, and chats were kept.`);
       setReclaimRisk(null);
       setReclaimConfirm("");
       setDiscardDirtyConfirmed(false);
       void load({ force: true, silent: true });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not reclaim this lane");
+      notify(err instanceof Error ? err.message : "Could not reclaim this lane", "error");
     } finally {
       setReclaimBusy(false);
     }
-  }, [discardDirtyConfirmed, load, reclaimConfirm, reclaimRisk, showToast]);
+  }, [discardDirtyConfirmed, load, reclaimConfirm, reclaimRisk, notify]);
 
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
       const result = await window.ade.lanes.unarchive({ laneId });
-      showToast(result.setupWarning
-        ? `Lane restored. Setup needs attention: ${result.setupWarning}`
-        : result.worktreeRecreated ? "Lane restored and its worktree was recreated." : "Lane restored.");
+      notify(
+        result.setupWarning
+          ? `Lane restored. Setup needs attention: ${result.setupWarning}`
+          : result.worktreeRecreated ? "Lane restored and its worktree was recreated." : "Lane restored.",
+        result.setupWarning ? "warning" : "success",
+      );
       void load({ force: true, silent: true });
     } catch (err) {
-      showToast(err instanceof Error ? err.message : "Could not restore this lane");
+      notify(err instanceof Error ? err.message : "Could not restore this lane", "error");
     }
-  }, [load, showToast]);
+  }, [load, notify]);
 
   const onCleaned = React.useCallback((_result: StorageCleanupResult) => {
     void load({ force: true, silent: true });
@@ -1229,7 +1235,7 @@ export function StorageSection() {
           confirmLabel: "Clean up safely",
           runMaintenance: runMaintenanceNow,
           onMaintenanceDone: (report) => {
-            showToast(maintenanceOutcome(report).message);
+            notifyMaintenance(maintenanceOutcome(report));
           },
         },
       };
@@ -1247,7 +1253,7 @@ export function StorageSection() {
         confirmLabel: "Clean up safely",
       },
     };
-  }, [snapshot, laneIdByKey, runMaintenanceNow, showToast]);
+  }, [snapshot, laneIdByKey, runMaintenanceNow, notifyMaintenance]);
 
   const description = "What ADE keeps on this computer for this project, and what you can safely clear.";
 
@@ -1363,29 +1369,6 @@ export function StorageSection() {
               ADE never removes lane folders, build output, or leftovers in the background. It can archive a safe idle lane, but files stay until you review and confirm cleanup.
             </div>
           </>
-        ) : null}
-
-        {toast ? (
-          <div
-            style={{
-              position: "fixed",
-              bottom: 24,
-              right: 24,
-              zIndex: 9998,
-              padding: "10px 14px",
-              borderRadius: 10,
-              background: COLORS.cardBgSolid,
-              border: `1px solid ${COLORS.outlineBorder}`,
-              boxShadow: "0 18px 48px -24px rgba(0,0,0,0.8)",
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              color: COLORS.textPrimary,
-              maxWidth: 360,
-            }}
-            role="status"
-          >
-            {toast}
-          </div>
         ) : null}
 
         <StorageCleanupDialog

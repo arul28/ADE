@@ -72,6 +72,9 @@
     "ade:test": "npm --prefix ../ade-cli run test",
     "regen-cli-help": "node ./scripts/regen-ade-cli-help.cjs",
     "lint": "node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js \"src/**/*.{ts,tsx}\"",
+    "lint:ci": "node --max-old-space-size=8192 ./scripts/lint-ratchet.mjs",
+    "lint:baseline": "node --max-old-space-size=8192 ./scripts/lint-ratchet.mjs --update",
+    "test:lint-tooling": "node --test ./eslint-rules/ade-ui.test.mjs ./scripts/lint-ratchet.test.mjs",
     "rebuild:native": "node ./scripts/rebuild-native.mjs",
     "version:ci": "node ./scripts/set-ci-version.mjs",
     "version:release": "node ./scripts/set-release-version.mjs"

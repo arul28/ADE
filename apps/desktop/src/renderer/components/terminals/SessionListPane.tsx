@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, CaretDown, CaretRight, Circle, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, Plus, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretRight, Circle, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -32,11 +33,9 @@ import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneApple
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
 import { useLaneMacDesktops } from "./useLaneMacDesktops";
 import { SessionCard } from "./SessionCard";
-import { WorkHeaderSidebarToggle } from "../work/WorkHeaderPaneToggles";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
 import { LaneCombobox } from "./LaneCombobox";
-import { CreateLaneDialogHost } from "../lanes/CreateLaneDialogHost";
 import {
   orderWorkLanes,
   workLaneTier,
@@ -91,7 +90,6 @@ import {
   handoffLaunchTitle,
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
-import { settingsRouteFor } from "../settings/settingsManifest";
 import {
   attachedShellSectionId,
   nestedSubagentDrawerAttention,
@@ -116,8 +114,10 @@ const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
 const EMPTY_BOARD_WAITING_REASONS: ReadonlyMap<string, WorkBoardWaitingReason> = new Map();
 /** Upper bound on the foreign-row snooze-expiry timer. */
 const FOREIGN_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
-const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
-const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
+// Filter pills wrap at their natural width: the list sits in a 240–440px
+// sidebar, and fixed grid cells cut labels like "Running" to "Run…".
+const FILTER_OPTION_GRID_CLASS = "flex min-w-0 flex-1 flex-wrap gap-0.5";
+const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 max-w-full truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 /**
  * One button idiom, top and bottom of the column: no border, no fill, no accent
  * outline — just a muted glyph that picks up a surface on hover, exactly like
@@ -601,16 +601,11 @@ function StickyGroupHeader({
    */
   layoutDependency?: string;
 }) {
-  // Toggled off for the duration of a sink: a `position: sticky` element inside
-  // a transformed ancestor sticks to the transformed box, so the header visibly
-  // detaches from the top of the list mid-slide.
-  const [sliding, setSliding] = useState(false);
   const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
   const isLane = variant === "lane";
   const isQuietShelf = variant === "quiet-shelf";
   const isQuietLane = isLane && quietCounts != null && !pinned;
-  const stickyClass = sliding ? "relative" : "sticky top-0";
   const branchText = subLabel?.trim() ?? "";
   // The lane header no longer renders the branch. The lane name is already
   // derived from the branch (CreateLaneDialog seeds one from the other), so
@@ -680,8 +675,6 @@ function StickyGroupHeader({
       layout={layoutDependency ? "position" : false}
       layoutDependency={layoutDependency}
       transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-      onLayoutAnimationStart={() => setSliding(true)}
-      onLayoutAnimationComplete={() => setSliding(false)}
       className={cn("relative", dimmed && "opacity-55")}
       data-dimmed={dimmed ? "true" : undefined}
       /* Addresses the GROUP, headerless or not. `data-section-id` lives on the
@@ -710,9 +703,7 @@ function StickyGroupHeader({
         // together; the quiet variant now differs from the active one by opacity
         // and its inline counts, nothing else.
         //
-        // The outer element owns the sticky position and an OPAQUE pane-coloured
-        // fill — not a surface treatment, just the thing that stops scrolled
-        // cards showing through a pinned row now that the blur is gone. The inner
+        // Headers scroll with the list; none of them pins to the top. The inner
         // row paints the only surface this header ever has: hover.
         //
         // It is a flex row, NOT one big <button>: the PR badge is itself
@@ -721,12 +712,10 @@ function StickyGroupHeader({
         // spans everything left of the badge cluster, hairline included.
         <div
           className={cn(
-            "ade-lane-group-header z-10 w-full rounded-md select-none",
-            stickyClass,
+            "ade-lane-group-header relative w-full rounded-md select-none",
             isQuietLane && "opacity-60",
             busyLabel && "opacity-70",
           )}
-          style={{ background: "var(--work-session-sidebar-bg, var(--work-sidebar-bg))" }}
           data-section-id={sectionId}
           data-lane-quiet={isQuietLane ? "true" : undefined}
           aria-busy={busyLabel ? "true" : undefined}
@@ -955,6 +944,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   setWorkViewMode,
   workBoardBuckets,
   workBoardWaitingReasons = EMPTY_BOARD_WAITING_REASONS,
+  boardHost,
   workCollapsedLaneIds,
   toggleWorkLaneCollapsed,
   workCollapsedSectionIds,
@@ -972,7 +962,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   activeItemId = null,
   handoffJobs = [],
   crossMachineSyncActive = true,
-  onToggleSessionsPane,
 }: {
   lanes: LaneSummary[];
   runningFiltered: TerminalSessionSummary[];
@@ -1055,6 +1044,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   workBoardBuckets?: Record<WorkBoardColumn, TerminalSessionSummary[]>;
   /** Why each Waiting row is waiting. Keyed by session id; empty is valid. */
   workBoardWaitingReasons?: ReadonlyMap<string, WorkBoardWaitingReason>;
+  /**
+   * Where the board draws. Left out, the board replaces the list inside this
+   * pane. Given, the pane stays a list and the board is portaled into this
+   * element (the page's main area); null means that element is still mounting.
+   */
+  boardHost?: HTMLElement | null;
   workCollapsedLaneIds: string[];
   toggleWorkLaneCollapsed: (laneId: string) => void;
   workCollapsedSectionIds: string[];
@@ -1082,7 +1077,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   }) => void;
   handoffJobs?: HandoffLaunchJob[];
   crossMachineSyncActive?: boolean;
-  onToggleSessionsPane?: () => void;
 }) {
   const navigate = useNavigate();
   /**
@@ -1216,7 +1210,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     },
     [effectiveFilingBucketsProp, foreignFilingNowMs],
   );
-  const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
   const {
     trigger: triggerLaneContextMenu,
@@ -1234,6 +1227,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   // fall back to the list rather than render four empty columns.
   const boardAvailable = Boolean(workBoardBuckets && setWorkViewMode);
   const isBoard = boardAvailable && workViewMode === "board";
+  // True when the board takes this pane's own list area. With a `boardHost`
+  // the board draws elsewhere and this pane keeps behaving as a list.
+  const boardReplacesList = isBoard && boardHost === undefined;
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
@@ -1365,7 +1361,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Same-lane `spawnKind: "subagent"` chats nest under the parent in by-lane
   // list mode only. Status, time, and the board stay flat so a swarm cannot
   // hide inside a column that is supposed to be one row per session.
-  const nestSubagents = isByLane && !isBoard;
+  const nestSubagents = isByLane && !boardReplacesList;
   // One filing pass for local by-lane drawers: nested subagents, remounted
   // shells, and the ids that must not also render as top-level cards.
   const workNesting = useMemo(
@@ -1939,18 +1935,21 @@ export const SessionListPane = React.memo(function SessionListPane({
     (sessions: TerminalSessionSummary[]): string[] => collectVisibleIdsFrom(sessions, workNesting),
     [collectVisibleIdsFrom, workNesting],
   );
-  const renderedSessionIds = useMemo(() => {
-    // Board mode first: it replaces the list wholesale, so the ids downstream
-    // consumers get (range selection, `onSelectSession`'s visible set) have to
-    // be the board's reading order — columns left to right, cards top to
-    // bottom — and not the list's, which is not on screen at all.
-    if (isBoard && workBoardBuckets) {
-      const ids: string[] = [];
-      for (const column of WORK_BOARD_COLUMNS) {
-        ids.push(...collectVisibleIds(workBoardBuckets[column.key]));
-      }
-      return ids;
+  // The board's reading order — columns left to right, cards top to bottom.
+  // Range selection on a board card walks this, not the list's order.
+  const boardSessionIds = useMemo(() => {
+    if (!isBoard || !workBoardBuckets) return null;
+    const ids: string[] = [];
+    for (const column of WORK_BOARD_COLUMNS) {
+      ids.push(...collectVisibleIds(workBoardBuckets[column.key]));
     }
+    return ids;
+  }, [collectVisibleIds, isBoard, workBoardBuckets]);
+  const renderedSessionIds = useMemo(() => {
+    // Board first when it replaces the list wholesale: the ids downstream
+    // consumers get (range selection, `onSelectSession`'s visible set) are then
+    // the board's, since the list is not on screen at all.
+    if (boardReplacesList && boardSessionIds) return boardSessionIds;
     if (isByLane) {
       const ids: string[] = [];
       const laneVisibleIds = (laneId: string, list: TerminalSessionSummary[]): string[] => {
@@ -2009,14 +2008,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     return ids;
   }, [
     awaitingInputFiltered,
+    boardReplacesList,
+    boardSessionIds,
     collectVisibleIds,
     endedFiltered,
     headerlessLaneIds,
-    isBoard,
     isByLane,
     isByTime,
     laneShelfFor,
-    workBoardBuckets,
     missingLaneSessionGroups,
     orderedLanes,
     quietIdSet,
@@ -2138,7 +2137,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           // foreign-runtime handler (which also owns the not-open-binding
           // fallback). The machine chip on the card is untouched either way.
           if (!foreignRow) {
-            onSelectSession(id, event, renderedSessionIds);
+            onSelectSession(id, event, options?.visibleSessionIds ?? renderedSessionIds);
           } else if (isChatToolType(session.toolType)) {
             onSelectSession(id, event, options?.visibleSessionIds ?? [], foreignRow.binding);
           } else if (foreignRow.binding && onSelectForeignRuntimeSession) {
@@ -2336,6 +2335,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     const primaryPr = lane ? selectPrimaryLanePr(lane, lanePrs) : null;
     return renderCardCore(session, {
       showLaneIdentity: true,
+      visibleSessionIds: boardSessionIds ?? undefined,
       // The column header is the authority on status here; a card repeating it
       // is at best noise and at worst a contradiction (a "Done" pill under the
       // "Needs you" heading). The word moves to the hover card — see SessionCard.
@@ -2465,7 +2465,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             title: `Moved to ${WORK_BOARD_COLUMN_LABEL[to]}`,
             message: result.message ? "The agent will be told." : undefined,
             durationMs: 5_000,
-            action: {
+            actions: [{
               label: "Undo",
               onClick: () => {
                 const undo = window.ade.sessions?.undoBoardMove;
@@ -2502,7 +2502,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                     });
                   });
               },
-            },
+            }],
           });
         })
         .catch((error: unknown) => {
@@ -3430,6 +3430,17 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 
+  const boardElement = isBoard && workBoardBuckets ? (
+    <WorkKanbanBoard
+      buckets={workBoardBuckets}
+      waitingReasons={workBoardWaitingReasons}
+      renderCard={renderBoardCard}
+      laneAccentFor={(session) => laneById.get(session.laneId)?.color ?? null}
+      onMoveSession={handleBoardMove}
+      pulsingSessionIds={boardMovePulses}
+    />
+  ) : null;
+
   return (
     <div
       className="relative flex h-full flex-col overflow-hidden"
@@ -3444,9 +3455,6 @@ export const SessionListPane = React.memo(function SessionListPane({
           className="ade-session-list-toolbar-row flex h-8 min-w-0 items-center gap-1 overflow-hidden px-2"
           data-testid="work-session-list-header"
         >
-          {onToggleSessionsPane ? (
-            <WorkHeaderSidebarToggle collapsed={false} onToggle={onToggleSessionsPane} />
-          ) : null}
           <SmartTooltip
             content={{
               label: "Search",
@@ -3770,19 +3778,12 @@ export const SessionListPane = React.memo(function SessionListPane({
           // The board scrolls per column, so the outer box must not scroll at
           // all — otherwise the columns grow to their content and the whole
           // board scrolls as one, which is the thing four columns exist to avoid.
-          isBoard ? "overflow-hidden" : "overflow-y-auto overflow-x-hidden",
+          boardReplacesList ? "overflow-hidden" : "overflow-y-auto overflow-x-hidden",
         )}
         data-tour="work.crossLaneSwitch"
       >
-        {isBoard && workBoardBuckets ? (
-          <WorkKanbanBoard
-            buckets={workBoardBuckets}
-            waitingReasons={workBoardWaitingReasons}
-            renderCard={renderBoardCard}
-            laneAccentFor={(session) => laneById.get(session.laneId)?.color ?? null}
-            onMoveSession={handleBoardMove}
-            pulsingSessionIds={boardMovePulses}
-          />
+        {boardReplacesList ? (
+          boardElement
         ) : !hasAnySessions && chipFiltersActive ? (
           // Chip filters persist across restarts, so an empty list has to say
           // WHY it is empty — otherwise a filter left on last week reads as
@@ -3826,32 +3827,6 @@ export const SessionListPane = React.memo(function SessionListPane({
         )}
       </div>
 
-      {/* New lane. Left-aligned so it lines up with the lane names above rather
-          than floating centered, and borderless so the column has ONE button
-          idiom top and bottom instead of a pill at the foot of a list that has
-          none. The separator survives as a hairline. */}
-      <div className="shrink-0 px-2 pb-2 pt-1">
-        <div aria-hidden className="mb-1 h-px bg-white/[0.06]" />
-        <SmartTooltip content={{ label: "New lane", description: "Create a new lane without leaving Work." }}>
-          <button
-            type="button"
-            className={cn(SIDEBAR_BARE_BUTTON_CLASS, "h-7 cursor-pointer px-1.5 text-[11px] font-medium")}
-            onClick={() => setCreateLaneOpen(true)}
-          >
-            <Plus size={11} weight="bold" aria-hidden />
-            New lane
-          </button>
-        </SmartTooltip>
-      </div>
-      {createLaneOpen ? (
-        <CreateLaneDialogHost
-          open={createLaneOpen}
-          onOpenChange={setCreateLaneOpen}
-          behavior="close-on-create"
-          onNavigateToTemplates={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
-          onOpenLinearSettings={() => navigate(settingsRouteFor("integrations.linear"))}
-        />
-      ) : null}
       {settleUndo ? (
         <div
           className="ade-chat-drawer-glass absolute bottom-12 left-2 right-2 z-30 flex items-center gap-2 px-2.5 py-2 text-[10px] text-fg/85 shadow-lg"
@@ -3868,6 +3843,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         </div>
       ) : null}
       {laneContextMenuPortal}
+      {!boardReplacesList && boardElement && boardHost ? createPortal(boardElement, boardHost) : null}
     </div>
   );
 });

@@ -47,6 +47,7 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/renderer/components/<area>/**` | `docs/features/<same-area>/` | match by area above |
 | `apps/desktop/src/renderer/state/` (incl. `appStore.ts`) | `docs/ARCHITECTURE.md` (UI framework) | `ade-perf-lanes` |
 | `apps/desktop/src/shared/**` | `docs/ARCHITECTURE.md` + the touching feature's doc | — |
+| Any renderer UI (`apps/desktop/src/renderer/**/*.tsx`), esp. `components/ui/notice/**`, `components/ui/dialog/**`, `components/app/toast/**`, `HeaderSheet.tsx`, `zLayers.ts`, `eslint-rules/**` | `docs/design/notices.md` (in addition to the area's docs) | — |
 
 ## ADE CLI & TUI
 

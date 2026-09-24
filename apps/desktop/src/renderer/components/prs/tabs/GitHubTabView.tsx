@@ -1,26 +1,21 @@
 import React from "react";
-import { CircleNotch, GitMerge, GithubLogo, XCircle } from "@phosphor-icons/react";
+import { CircleNotch, GitMerge, GithubLogo } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Group, Panel } from "react-resizable-panels";
 import type {
   GitHubPrListItem,
   GitHubPrStack,
   PrSummary,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
-import { ResizeGutter } from "../../ui/ResizeGutter";
+import { Banner } from "../../ui/notice";
 import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
-  cardStyle,
   outlineButton,
   primaryButton,
 } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
-import {
-  PR_OVERVIEW_MIN_PX,
-} from "../detail/PrDetailTimelineRails";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
 import { GitHubStackInspector } from "../shared/GitHubStackInspector";
@@ -36,6 +31,7 @@ import {
   type GitHubFilterCounts,
 } from "./githubTabModel";
 import { prRouteCoordinatesMatch } from "../prsRouteState";
+import { PRS_LIST_ROOT_CLASS, PrsListPortal, usePrsListHost } from "../shared/PrsListHost";
 
 const FILTER_ACCENTS: Record<GitHubFilter, string> = {
   open: "#60A5FA",
@@ -43,45 +39,10 @@ const FILTER_ACCENTS: Record<GitHubFilter, string> = {
   merged: "#4ADE80",
 };
 
-const GITHUB_PR_LIST_WIDTH_KEY = "ade.prs.githubListWidth";
-const GITHUB_PR_LIST_MIN_PX = 260;
-const GITHUB_PR_LIST_MAX_PX = 560;
-const GITHUB_PR_LIST_DEFAULT_PX = 380;
-/**
- * The detail pane's floor, in pixels — NOT a percentage.
- *
- * Taken from the Overview's own minimum so the two cannot drift. A percentage
- * floor did not know about it: a list dragged to its max could squeeze the
- * thread and the floating dock card until both truncated. The list may not
- * take space the detail pane needs to stay whole.
- */
-const GITHUB_PR_DETAIL_MIN_PX = PR_OVERVIEW_MIN_PX;
-
-function readPersistedGithubPrListPx(): number {
-  try {
-    const raw = localStorage.getItem(GITHUB_PR_LIST_WIDTH_KEY);
-    if (raw) {
-      const value = Number(raw);
-      if (Number.isFinite(value) && value >= GITHUB_PR_LIST_MIN_PX && value <= GITHUB_PR_LIST_MAX_PX) {
-        return value;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return GITHUB_PR_LIST_DEFAULT_PX;
-}
-
-function persistGithubPrListPx(px: number): void {
-  try {
-    localStorage.setItem(GITHUB_PR_LIST_WIDTH_KEY, String(Math.round(px)));
-  } catch {
-    /* ignore */
-  }
-}
+/** Width of the list column when there is no project sidebar to hold it. */
+const INLINE_LIST_WIDTH_PX = 340;
 
 type GitHubTabViewChrome = {
-  relocated: boolean;
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
   repoLabel: string;
@@ -135,37 +96,229 @@ export type GitHubTabViewProps = {
 };
 
 export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
-  const selectedItem = detail.selectedItem;
-  const selectedStack = detail.selectedStack;
-  const defaultListPx = React.useMemo(() => readPersistedGithubPrListPx(), []);
+  const listHost = usePrsListHost();
+  const connectNeeded = Boolean(chrome.error && !list.hasSnapshot);
 
-  if (chrome.error && !list.hasSnapshot) {
+  const detailContent = connectNeeded ? (
+    <EmptyState title="GitHub" description={chrome.error ?? undefined}>
+      <button
+        type="button"
+        onClick={chrome.onConnectGitHub}
+        style={primaryButton({ marginTop: 16 })}
+      >
+        <GithubLogo size={14} weight="fill" />
+        Connect GitHub
+      </button>
+    </EmptyState>
+  ) : (
+    <GitHubTabDetail chrome={chrome} detail={detail} />
+  );
+  const listColumn = connectNeeded ? null : <GitHubTabListColumn chrome={chrome} list={list} />;
+
+  // No PRs page above (tests): keep a plain list column on the left.
+  if (listHost === undefined) {
     return (
-      <EmptyState title="GitHub" description={chrome.error}>
-        <button
-          type="button"
-          onClick={chrome.onConnectGitHub}
-          style={primaryButton({ marginTop: 16 })}
-        >
-          <GithubLogo size={14} weight="fill" />
-          Connect GitHub
-        </button>
-      </EmptyState>
+      <div style={{ display: "flex", height: "100%", minHeight: 0 }}>
+        {listColumn ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              width: INLINE_LIST_WIDTH_PX,
+              flexShrink: 0,
+              minHeight: 0,
+              borderRight: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            {listColumn}
+          </div>
+        ) : null}
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0 }}>
+          {detailContent}
+        </div>
+      </div>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {!chrome.relocated ? (
-        <div style={{
+    <>
+      {listColumn ? <PrsListPortal>{listColumn}</PrsListPortal> : null}
+      <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0 }}>
+        {detailContent}
+      </div>
+    </>
+  );
+}
+
+/**
+ * The list side: search, the open/merged/closed filter, the rows, and the
+ * repo sync line at the bottom.
+ */
+function GitHubTabListColumn({
+  chrome,
+  list,
+}: {
+  chrome: GitHubTabViewChrome;
+  list: GitHubTabViewList;
+}) {
+  return (
+    <div className={PRS_LIST_ROOT_CLASS}>
+      <div style={{ display: "flex", padding: "0 10px 6px", flexShrink: 0 }}>
+        <GitHubPrSearchInput value={chrome.searchQuery} onChange={chrome.onSearchQueryChange} />
+      </div>
+      <div
+        role="group"
+        aria-label="Pull request state"
+        style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "8px 16px",
+          padding: "0 6px",
+          flexShrink: 0,
           borderBottom: "1px solid rgba(255,255,255,0.06)",
-          background: "rgba(255,255,255,0.01)",
-        }}>
-          <GitHubPrSearchInput value={chrome.searchQuery} onChange={chrome.onSearchQueryChange} />
+        }}
+      >
+        {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
+          const active = list.filter === state;
+          const accent = FILTER_ACCENTS[state];
+          const count = list.filterCounts[state];
+          const tabLoading = active && (
+            list.loading
+            || chrome.syncing
+            || list.loadingFilter === state
+            || list.loadingOlderHistory
+          );
+          return (
+            <button
+              key={state}
+              type="button"
+              aria-pressed={active}
+              onClick={() => list.onFilterChange(state)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 5,
+                height: 32,
+                padding: "0 8px",
+                fontSize: 12,
+                fontWeight: active ? 600 : 400,
+                fontFamily: SANS_FONT,
+                color: active ? accent : COLORS.textMuted,
+                background: "transparent",
+                border: "none",
+                borderBottom: active ? `2px solid ${accent}` : "2px solid transparent",
+                cursor: "pointer",
+                textTransform: "capitalize",
+                whiteSpace: "nowrap",
+                transition: "all 150ms ease",
+              }}
+            >
+              {state}
+              {tabLoading ? (
+                <CircleNotch
+                  size={11}
+                  className="animate-spin"
+                  weight="bold"
+                  aria-label={`Loading ${state} pull requests`}
+                  style={{ color: active ? accent : COLORS.accent, opacity: 0.9 }}
+                />
+              ) : (
+                <span style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  color: active ? accent : COLORS.textDim,
+                  opacity: active ? 0.8 : 0.6,
+                }}>
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+        <div style={{ flex: 1 }} />
+        {list.showLoadingIndicator ? (
+          <span
+            role="status"
+            aria-label="Loading pull requests"
+            title="Loading pull requests"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 22,
+              height: 22,
+              flexShrink: 0,
+              color: COLORS.accent,
+              opacity: 0.9,
+            }}
+          >
+            <CircleNotch size={13} className="animate-spin" weight="bold" />
+          </span>
+        ) : null}
+      </div>
+
+      {chrome.error ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px", flexShrink: 0 }}
+          model={{ id: "github-tab-error", tone: "error", title: chrome.error }}
+        />
+      ) : null}
+
+      <div ref={list.parentRef} style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+        {list.filteredItems.length === 0 ? (
+          <div style={{
+            padding: "28px 16px",
+            textAlign: "center",
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            color: COLORS.textMuted,
+          }}>
+            {list.loading && !list.hasSnapshot ? "Loading pull requests..." : "No pull requests"}
+          </div>
+        ) : list.filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT ? (
+          <GitHubTabVirtualList
+            parentRef={list.parentRef}
+            rows={list.rows}
+            selectedItemId={list.selectedItemId}
+            prsByIdMap={list.prsByIdMap}
+            onSelect={list.onSelect}
+            onRowActionDone={list.onRowActionDone}
+            onRowActionError={list.onRowActionError}
+            onHydrationItemsChange={list.onHydrationItemsChange}
+          />
+        ) : (
+          <GitHubTabPlainList
+            parentRef={list.parentRef}
+            rows={list.rows}
+            selectedItemId={list.selectedItemId}
+            prsByIdMap={list.prsByIdMap}
+            onSelect={list.onSelect}
+            onRowActionDone={list.onRowActionDone}
+            onRowActionError={list.onRowActionError}
+          />
+        )}
+        {list.canLoadOlderHistory ? (
+          <div style={{ padding: "12px 12px 16px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+            <button
+              type="button"
+              aria-label="Load older pull requests"
+              disabled={list.loadingOlderHistory}
+              onClick={list.onLoadOlderHistory}
+              style={{
+                ...outlineButton({ height: 30, width: "100%", opacity: list.loadingOlderHistory ? 0.6 : 1 }),
+                justifyContent: "center",
+              }}
+            >
+              {list.loadingOlderHistory ? "Loading older..." : "Load older PRs"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {chrome.repoLabel ? (
+        <div style={{ flexShrink: 0, padding: "4px 8px 4px 12px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
           <GitHubRepoSyncBar
             repoLabel={chrome.repoLabel}
             syncing={chrome.syncing}
@@ -174,237 +327,126 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
           />
         </div>
       ) : null}
+    </div>
+  );
+}
 
-      {chrome.error ? (
-        <div style={{
-          padding: "10px 16px",
-          borderBottom: "1px solid rgba(239,68,68,0.2)",
-          background: "rgba(239,68,68,0.06)",
-          color: COLORS.danger,
+/** The detail side: the selected PR, full width, or one quiet line. */
+function GitHubTabDetail({
+  chrome,
+  detail,
+}: {
+  chrome: GitHubTabViewChrome;
+  detail: GitHubTabViewDetail;
+}) {
+  const selectedItem = detail.selectedItem;
+  const selectedStack = detail.selectedStack;
+  if (!selectedItem || !detail.paneProps) {
+    return (
+      <div
+        data-tour="prs.detailDrawer"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flex: 1,
+          minHeight: 0,
           fontFamily: SANS_FONT,
           fontSize: 12,
-          borderRadius: 0,
-        }}>
-          {chrome.error}
+          color: COLORS.textDim,
+        }}
+      >
+        Select a pull request
+      </div>
+    );
+  }
+  return (
+    <div data-tour="prs.detailDrawer" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+      {detail.selectedBucketMismatch ? (
+        <div style={{ padding: "10px 12px 0", flexShrink: 0 }}>
+          <PrBucketTransitionBanner
+            state={selectedItem.state}
+            onShow={() => detail.onFilterChange(bucketForState(selectedItem.state))}
+          />
         </div>
       ) : null}
-
-      <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
-        <Group id="github-pr-layout" orientation="horizontal" className="flex h-full min-h-0 w-full">
-          <Panel
-            id="github-pr-list"
-            data-tour="prs.list"
-            defaultSize={defaultListPx}
-            minSize={GITHUB_PR_LIST_MIN_PX}
-            maxSize={GITHUB_PR_LIST_MAX_PX}
-            onResize={(size) => persistGithubPrListPx(size.inPixels)}
-            className="min-h-0 min-w-0"
-            style={{ overflow: "hidden", borderRight: "1px solid rgba(255,255,255,0.06)" }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0,
-                padding: "0 16px",
-                flexShrink: 0,
-                borderBottom: "1px solid rgba(255,255,255,0.06)",
-                background: "rgba(255,255,255,0.01)",
-              }}>
-                {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
-                  const active = list.filter === state;
-                  const accent = FILTER_ACCENTS[state];
-                  const count = list.filterCounts[state];
-                  const icon = state === "merged" ? <GitMerge size={12} weight="bold" /> : null;
-                  const tabLoading = active && (
-                    list.loading
-                    || chrome.syncing
-                    || list.loadingFilter === state
-                    || list.loadingOlderHistory
-                  );
-                  return (
-                    <button
-                      key={state}
-                      type="button"
-                      onClick={() => list.onFilterChange(state)}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 5,
-                        height: 36,
-                        padding: "0 14px",
-                        fontSize: 12,
-                        fontWeight: active ? 600 : 400,
-                        fontFamily: SANS_FONT,
-                        color: active ? accent : COLORS.textMuted,
-                        background: "transparent",
-                        border: "none",
-                        borderBottom: active ? `2px solid ${accent}` : "2px solid transparent",
-                        cursor: "pointer",
-                        textTransform: "capitalize",
-                        transition: "all 150ms ease",
-                      }}
-                    >
-                      {icon}
-                      {state}
-                      {tabLoading ? (
-                        <CircleNotch
-                          size={12}
-                          className="animate-spin"
-                          weight="bold"
-                          aria-label={`Loading ${state} pull requests`}
-                          style={{ color: active ? accent : COLORS.accent, opacity: 0.9 }}
-                        />
-                      ) : (
-                        <span style={{
-                          fontFamily: MONO_FONT,
-                          fontSize: 10,
-                          fontWeight: 600,
-                          color: active ? accent : COLORS.textDim,
-                          opacity: active ? 0.8 : 0.6,
-                        }}>
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-                <div style={{ flex: 1 }} />
-                {list.showLoadingIndicator ? (
-                  <span
-                    role="status"
-                    aria-label="Loading pull requests"
-                    title="Loading pull requests"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 24,
-                      height: 24,
-                      color: COLORS.accent,
-                      opacity: 0.9,
-                    }}
-                  >
-                    <CircleNotch size={14} className="animate-spin" weight="bold" />
-                  </span>
-                ) : null}
-              </div>
-              <div ref={list.parentRef} style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-                {list.filteredItems.length === 0 ? (
-                  <div style={{ padding: 20 }}>
-                    <EmptyState
-                      title={list.loading && !list.hasSnapshot ? "Preparing pull requests" : "No pull requests"}
-                      description={list.loading && !list.hasSnapshot ? "ADE is syncing GitHub in the background." : "No pull requests match the current filters."}
-                    />
-                  </div>
-                ) : list.filteredItems.length > GITHUB_TAB_VIRTUALIZE_AT ? (
-                  <GitHubTabVirtualList
-                    parentRef={list.parentRef}
-                    rows={list.rows}
-                    selectedItemId={list.selectedItemId}
-                    prsByIdMap={list.prsByIdMap}
-                    onSelect={list.onSelect}
-                    onRowActionDone={list.onRowActionDone}
-                    onRowActionError={list.onRowActionError}
-                    onHydrationItemsChange={list.onHydrationItemsChange}
-                  />
-                ) : (
-                  list.rows.map((row) => (
-                    row.kind === "header" ? (
-                      <PrListGroupHeaderRow key={`header-${row.id}`} header={row} />
-                    ) : (
-                      <GitHubTabPrRow
-                        key={row.item.id}
-                        item={row.item}
-                        selected={row.item.id === list.selectedItemId}
-                        linkedPr={row.item.linkedPrId ? list.prsByIdMap.get(row.item.linkedPrId) ?? null : null}
-                        onSelect={list.onSelect}
-                        onActionDone={list.onRowActionDone}
-                        onActionError={list.onRowActionError}
-                      />
-                    )
-                  ))
-                )}
-                {list.canLoadOlderHistory ? (
-                  <div style={{ padding: "12px 14px 16px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
-                    <button
-                      type="button"
-                      aria-label="Load older pull requests"
-                      disabled={list.loadingOlderHistory}
-                      onClick={list.onLoadOlderHistory}
-                      style={{
-                        ...outlineButton({ height: 32, width: "100%", opacity: list.loadingOlderHistory ? 0.6 : 1 }),
-                        justifyContent: "center",
-                      }}
-                    >
-                      {list.loadingOlderHistory ? "Loading older..." : "Load older PRs"}
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </Panel>
-          {/* `thin` only, never `narrow`: narrow renders a 4px strip with no
-              handle, which is the width of a hairline and effectively unaimable.
-              This was the one splitter in the renderer using it, and the one
-              users reported as not working. */}
-          <ResizeGutter orientation="vertical" thin />
-          <Panel
-            id="github-pr-detail"
-            data-tour="prs.detailDrawer"
-            minSize={GITHUB_PR_DETAIL_MIN_PX}
-            className="min-h-0 min-w-0"
-            style={{ overflow: "hidden" }}
-          >
-            {selectedItem && detail.paneProps ? (
-              <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-                {detail.selectedBucketMismatch ? (
-                  <div style={{ padding: "10px 12px 0", flexShrink: 0 }}>
-                    <PrBucketTransitionBanner
-                      state={selectedItem.state}
-                      onShow={() => detail.onFilterChange(bucketForState(selectedItem.state))}
-                    />
-                  </div>
-                ) : null}
-                {selectedStack ? (
-                  <GitHubStackInspector
-                    stack={selectedStack}
-                    items={detail.displayedItems.filter(
-                      (item) => prRouteCoordinatesMatch(
-                        { prNumber: item.githubPrNumber, repoOwner: item.repoOwner, repoName: item.repoName },
-                        { prNumber: null, repoOwner: selectedStack.repoOwner, repoName: selectedStack.repoName },
-                      ),
-                    )}
-                    selectedPrNumber={selectedItem.githubPrNumber}
-                    syncing={chrome.syncing}
-                    onSelectPr={detail.onSelect}
-                    onOpenGitHub={() => {
-                      void window.ade.app.openExternal(selectedItem.githubUrl);
-                    }}
-                    onSync={detail.onSync}
-                    onAddPullRequests={detail.onAddStackPullRequests}
-                    onUnstack={detail.onUnstack}
-                  />
-                ) : null}
-                <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-                  <PrDetailPane key={detail.paneProps.pr.id} {...detail.paneProps} />
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-                <EmptyState
-                  icon={GithubLogo}
-                  iconSize={64}
-                  title="No pull request selected"
-                  description="Choose a GitHub pull request to inspect details."
-                />
-              </div>
-            )}
-          </Panel>
-        </Group>
+      {selectedStack ? (
+        <GitHubStackInspector
+          stack={selectedStack}
+          items={detail.displayedItems.filter(
+            (item) => prRouteCoordinatesMatch(
+              { prNumber: item.githubPrNumber, repoOwner: item.repoOwner, repoName: item.repoName },
+              { prNumber: null, repoOwner: selectedStack.repoOwner, repoName: selectedStack.repoName },
+            ),
+          )}
+          selectedPrNumber={selectedItem.githubPrNumber}
+          syncing={chrome.syncing}
+          onSelectPr={detail.onSelect}
+          onOpenGitHub={() => {
+            void window.ade.app.openExternal(selectedItem.githubUrl);
+          }}
+          onSync={detail.onSync}
+          onAddPullRequests={detail.onAddStackPullRequests}
+          onUnstack={detail.onUnstack}
+        />
+      ) : null}
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+        <PrDetailPane key={detail.paneProps.pr.id} {...detail.paneProps} />
       </div>
     </div>
+  );
+}
+
+/**
+ * Short lists render every row. When the selection changes (a click, or a
+ * deep link), bring the selected row into view once if it is off screen.
+ */
+function GitHubTabPlainList({
+  parentRef,
+  rows,
+  selectedItemId,
+  prsByIdMap,
+  onSelect,
+  onRowActionDone,
+  onRowActionError,
+}: {
+  parentRef: React.RefObject<HTMLDivElement>;
+  rows: PrListRow[];
+  selectedItemId: string | null;
+  prsByIdMap: Map<string, PrSummary>;
+  onSelect: (item: GitHubPrListItem) => void;
+  onRowActionDone?: (prId: string) => void;
+  onRowActionError?: (message: string) => void;
+}) {
+  const scrolledToIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!selectedItemId || scrolledToIdRef.current === selectedItemId) return;
+    const rowEls = parentRef.current?.querySelectorAll<HTMLElement>("[data-pr-row-id]") ?? [];
+    const row = Array.from(rowEls).find((el) => el.dataset.prRowId === selectedItemId);
+    if (!row) return;
+    scrolledToIdRef.current = selectedItemId;
+    row.scrollIntoView?.({ block: "nearest" });
+  }, [parentRef, rows, selectedItemId]);
+
+  return (
+    <>
+      {rows.map((row) => (
+        row.kind === "header" ? (
+          <PrListGroupHeaderRow key={`header-${row.id}`} header={row} />
+        ) : (
+          <div key={row.item.id} data-pr-row-id={row.item.id}>
+            <GitHubTabPrRow
+              item={row.item}
+              selected={row.item.id === selectedItemId}
+              linkedPr={row.item.linkedPrId ? prsByIdMap.get(row.item.linkedPrId) ?? null : null}
+              onSelect={onSelect}
+              onActionDone={onRowActionDone}
+              onActionError={onRowActionError}
+            />
+          </div>
+        )
+      ))}
+    </>
   );
 }
 
@@ -417,36 +459,18 @@ function PrBucketTransitionBanner({
 }) {
   const isMerged = state === "merged";
   const label = isMerged ? "Merged" : "Closed";
-  const accent = isMerged ? COLORS.success : COLORS.danger;
   return (
-    <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `color-mix(in srgb, ${accent} 30%, transparent)` }}>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 10,
-        padding: "8px 12px",
-        background: `color-mix(in srgb, ${accent} 7%, transparent)`,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {isMerged ? (
-            <GitMerge size={14} weight="bold" style={{ color: accent, flexShrink: 0 }} />
-          ) : (
-            <XCircle size={14} weight="fill" style={{ color: accent, flexShrink: 0 }} />
-          )}
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
-            This PR is now {label}
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={onShow}
-          style={{ ...outlineButton({ height: 24, padding: "0 10px", fontSize: 11 }), color: COLORS.textMuted, flexShrink: 0 }}
-        >
-          Show in {label}
-        </button>
-      </div>
-    </div>
+    <Banner
+      layout="inline"
+      style={{ margin: "10px 12px 0", flexShrink: 0 }}
+      model={{
+        id: `pr-bucket-transition:${state}`,
+        tone: isMerged ? "success" : "error",
+        icon: isMerged ? <GitMerge size={13} weight="bold" /> : undefined,
+        title: `This PR is now ${label}`,
+        actions: [{ label: `Show in ${label}`, variant: "secondary", onClick: onShow }],
+      }}
+    />
   );
 }
 
@@ -489,6 +513,19 @@ function GitHubTabVirtualList({
       [headerIndices],
     ),
   });
+
+  // Bring the selected row into view once per selection, so a deep link to a
+  // PR far down the list lands on it. The rows may arrive after the selection,
+  // so wait for them; later row updates must not pull the list back.
+  const scrolledToIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!selectedItemId || scrolledToIdRef.current === selectedItemId) return;
+    const index = rows.findIndex((row) => row.kind === "item" && row.item.id === selectedItemId);
+    if (index < 0) return;
+    scrolledToIdRef.current = selectedItemId;
+    const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "auto" }));
+    return () => cancelAnimationFrame(frame);
+  }, [rows, selectedItemId, virtualizer]);
 
   const virtualItems = virtualizer.getVirtualItems();
   const activeHeaderIndex = activeHeaderFor(headerIndices, virtualizer.range?.startIndex ?? 0);

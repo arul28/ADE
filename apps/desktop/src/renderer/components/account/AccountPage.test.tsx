@@ -576,9 +576,11 @@ describe("AccountPage signed-in", () => {
     const trigger = screen.getByRole("button", { name: /Options for Studio/ });
     fireEvent.click(trigger);
     const menu = screen.getByRole("menu");
-    // Portaled directly under document.body, outside the scrolling account column.
-    expect(menu.parentElement).toBe(document.body);
-    expect(menu.style.position).toBe("fixed");
+    // The viewport host is portaled under body, outside the scrolling column;
+    // the menu is positioned within that host.
+    expect(menu.parentElement?.parentElement).toBe(document.body);
+    expect(menu.parentElement?.style.position).toBe("fixed");
+    expect(menu.style.position).toBe("absolute");
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Rename/ })),
     );

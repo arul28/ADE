@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
-import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
-import { useAppStore } from "../../state/appStore";
 import { WorkHeaderToolsToggle } from "./WorkHeaderPaneToggles";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
@@ -296,15 +294,9 @@ export function CenteredWorkSurfaceHeader(props: CenteredWorkSurfaceHeaderProps)
     onContextMenu,
     testId,
   } = props;
-  const theme = useAppStore((state) => state.theme);
   const { tileDragging, titleDragProps, generatingTitle, gitToolbar, toolsToggle } = useWorkSurfaceHeaderParts(props);
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, "relative", className)} data-testid={testId} onContextMenu={onContextMenu}>
-      <div className="pointer-events-none absolute -inset-x-2 inset-y-0 overflow-hidden" aria-hidden>
-        <div className="relative h-full w-full">
-          <WorkToolPickerBackdrop theme={theme} variant="header" />
-        </div>
-      </div>
       <div className="relative z-10 flex w-full items-center">
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-16">
           <div

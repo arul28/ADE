@@ -14,7 +14,7 @@ import {
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./WorkToolPickerBackdrop";
-import { FRAG, HEADER_SLICE, UNIFORMS, headerBackdropScale } from "./workToolPickerBackdropShader";
+import { FRAG, UNIFORMS } from "./workToolPickerBackdropShader";
 
 /**
  * A WebGL context that answers every call the backdrop makes.
@@ -223,19 +223,6 @@ describe("backdropThemeFor", () => {
     expect(FRAG).toContain("exp(-dot(p - c, p - c) * 3.5)");
     expect(FRAG).toContain("u_colors[0] * 0.10");
     expect(FRAG).toContain("smoothstep(0.48, 1.08, vd)");
-  });
-
-  it("fits the same field across a short header instead of one lobe", () => {
-    const wide = headerBackdropScale(1400, 32);
-    const narrow = headerBackdropScale(700, 32);
-    expect(wide).toBeLessThan(0.12);
-    expect(wide).toBeGreaterThan(0.03);
-    expect(narrow).toBeGreaterThan(wide);
-    const half = (1400 / 32) / 2;
-    expect(wide * half * HEADER_SLICE.reachAcross).toBeCloseTo(HEADER_SLICE.fieldReach, 5);
-    expect(Math.abs(HEADER_SLICE.timeScale)).toBeGreaterThan(Math.abs(UNIFORMS.timeScale));
-    expect(HEADER_SLICE.hoverIntensity).toBeGreaterThan(HEADER_SLICE.intensity);
-    expect(HEADER_SLICE.cursorRadius).toBeGreaterThan(UNIFORMS.cursorRadius);
   });
 });
 

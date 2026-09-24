@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import type React from "react";
 import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
@@ -12,22 +13,30 @@ import {
 } from "../../lib/sessionListCache";
 import { useAppStore } from "../../state/appStore";
 import { AppShell, productAnalyticsScreenForPathname } from "./AppShell";
+import { getToasts } from "./toast/toastStore";
 
 vi.mock("./CommandPalette", () => ({
   CommandPalette: () => null,
 }));
 
-vi.mock("./TabNav", () => ({
-  TabNav: ({ githubStatus }: { githubStatus: unknown }) => (
-    <nav data-testid="tab-nav">
-      <span data-testid="github-status">{githubStatus ? JSON.stringify(githubStatus) : "none"}</span>
-    </nav>
-  ),
-}));
-
 vi.mock("./TopBar", () => ({
   TopBar: () => <div data-testid="top-bar" />,
 }));
+
+// The shell hands its GitHub status to the banner host; the probe reads it
+// there while the real host still renders its banners.
+vi.mock("./IntegrationBanners", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./IntegrationBanners")>();
+  return {
+    ...actual,
+    IntegrationBanners: (props: React.ComponentProps<typeof actual.IntegrationBanners>) => (
+      <>
+        <span data-testid="github-status">{props.githubStatus ? JSON.stringify(props.githubStatus) : "none"}</span>
+        <actual.IntegrationBanners {...props} />
+      </>
+    ),
+  };
+});
 
 vi.mock("../ui/TabBackground", () => ({
   TabBackground: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -287,11 +296,68 @@ describe("AppShell AI provider status", () => {
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain(message);
     expect(alert.querySelector(".truncate")).toBeNull();
+    // Drawn by the one app banner host AppShell mounts under the top bar.
+    expect(screen.getByTestId("app-banner-dock").contains(alert)).toBe(true);
 
     act(() => {
-      screen.getByRole("button", { name: "Dismiss project error" }).click();
+      screen.getByTitle("Dismiss project error").click();
     });
     expect(useAppStore.getState().projectTransitionError).toBeNull();
+  });
+
+  it("raises the project-missing banner for the open project and hides it on dismiss", async () => {
+    let reportMissing: ((payload: { rootPath: string }) => void) | null = null;
+    vi.mocked(window.ade.project.onMissing).mockImplementation(((listener: (payload: { rootPath: string }) => void) => {
+      reportMissing = listener;
+      return () => {};
+    }) as never);
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    await act(async () => {});
+
+    act(() => reportMissing?.({ rootPath: "/somewhere/else" }));
+    expect(screen.queryByText(/Project directory not found/)).toBeNull();
+
+    act(() => reportMissing?.({ rootPath: project.rootPath }));
+    const banner = screen.getByText("Project directory not found — it may have been moved or deleted.");
+    expect(screen.getByTestId("app-banner-dock").contains(banner)).toBe(true);
+    expect(screen.getByRole("button", { name: "Relocate" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+
+    act(() => {
+      screen.getByRole("button", { name: /^Dismiss: Project directory not found/ }).click();
+    });
+    expect(screen.queryByText(/Project directory not found/)).toBeNull();
+  });
+
+  it("shows report generation as a sticky progress toast and clears it when done", async () => {
+    let onFeedback: ((event: { submission?: { status?: string } }) => void) | null = null;
+    vi.mocked(window.ade.feedback.onUpdate).mockImplementation(((listener: typeof onFeedback) => {
+      onFeedback = listener;
+      return () => {};
+    }) as never);
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    await act(async () => {});
+
+    act(() => onFeedback?.({ submission: { status: "generating" } }));
+    const toast = getToasts().find((entry) => entry.title === "Generating feedback report...");
+    expect(toast).toMatchObject({ busy: true, dismissible: false, durationMs: 0 });
+
+    act(() => onFeedback?.({ submission: { status: "posted" } }));
+    expect(getToasts().some((entry) => entry.title === "Generating feedback report...")).toBe(false);
   });
 
   it("refreshes the missing-provider banner when AI status cache is invalidated", async () => {

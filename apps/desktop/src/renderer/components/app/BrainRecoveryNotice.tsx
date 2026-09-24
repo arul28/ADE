@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowCounterClockwise } from "@phosphor-icons/react";
 import type { LocalRuntimeStatus } from "../../../shared/types";
+import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 
 type LastWedge = NonNullable<LocalRuntimeStatus["lastWedge"]>;
 
@@ -78,10 +79,10 @@ function writeAckedTs(ts: string): void {
 }
 
 /**
- * App-shell banner announcing that the brain recovered from a background
- * event-loop wedge.
+ * App-level banner announcing that the brain recovered from a background
+ * event-loop wedge. Registers with the app banner host; renders nothing itself.
  */
-export function BrainRecoveryNotice() {
+export function BrainRecoveryNotice(): null {
   const [lastWedge, setLastWedge] = useState<LastWedge | null>(null);
   const [ackedTs, setAckedTs] = useState<string | null>(() => readAckedTs());
 
@@ -117,23 +118,20 @@ export function BrainRecoveryNotice() {
     setAckedTs(lastWedge.ts);
   }, [lastWedge]);
 
-  if (!shouldShowRecoveryNotice(lastWedge, ackedTs) || !lastWedge) return null;
+  const visible = shouldShowRecoveryNotice(lastWedge, ackedTs) && lastWedge != null;
 
-  return (
-    <div className="shrink-0 mx-3 mt-1.5 flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800">
-      <ArrowCounterClockwise size={14} weight="bold" className="shrink-0" aria-hidden="true" />
-      <span className="flex-1 min-w-0">
-        {formatRecoveryMessage(lastWedge)}
-      </span>
-      <button
-        type="button"
-        onClick={handleDismiss}
-        className="shrink-0 text-amber-900/70 hover:text-amber-900"
-        title="Dismiss"
-        aria-label="Dismiss recovery notice"
-      >
-        ×
-      </button>
-    </div>
+  useAppBanner(
+    visible && lastWedge
+      ? {
+          id: "brain-recovery",
+          tone: "warning",
+          icon: <ArrowCounterClockwise size={13} weight="bold" />,
+          title: formatRecoveryMessage(lastWedge),
+          dismiss: { onDismiss: handleDismiss },
+        }
+      : null,
+    { placement: "docked", priority: APP_BANNER_PRIORITY.app },
   );
+
+  return null;
 }
