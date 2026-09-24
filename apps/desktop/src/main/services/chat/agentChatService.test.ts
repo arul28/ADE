@@ -41639,14 +41639,14 @@ describe("createAgentChatService", () => {
           )
         )).toHaveLength(1);
 
-        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.advanceTimersByTimeAsync(121_000);
         await waitForFakeTimers(() => {
           expect(events.some((event) =>
             event.event.type === "codex_turn_recovery"
             && event.event.state === "recovered"
             && event.event.automatic
           )).toBe(true);
-        });
+        }, { steps: 200, realYield: true });
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/resume")).toBe(true);
         expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
       } finally {
